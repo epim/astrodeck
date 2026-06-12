@@ -1,0 +1,210 @@
+@import "@fontsource/chakra-petch/500.css";
+@import "@fontsource/chakra-petch/600.css";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ tokens */
+
+:root {
+  --bg: #06080d;
+  --bg-raise: #0b0f17;
+  --bg-panel: #0d121cdd;
+  --line: #1c2638;
+  --line-bright: #2c3b56;
+  --text: #c8d4e8;
+  --text-dim: #5d6c85;
+  --accent: #7dd3fc;
+  --accent-dim: #38709c;
+  --good: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --glow: #7dd3fc55;
+  --img-filter: none;
+}
+
+:root.night {
+  --bg: #0a0303;
+  --bg-raise: #140606;
+  --bg-panel: #170808dd;
+  --line: #361010;
+  --line-bright: #571a1a;
+  --text: #e08585;
+  --text-dim: #8a4040;
+  --accent: #ff5d5d;
+  --accent-dim: #a03535;
+  --good: #ff7a7a;
+  --warn: #ff9b5d;
+  --bad: #ff4040;
+  --glow: #ff5d5d44;
+  --img-filter: sepia(1) saturate(3) hue-rotate(-35deg) brightness(0.75);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-raise: var(--bg-raise);
+  --color-panel: var(--bg-panel);
+  --color-line: var(--line);
+  --color-line2: var(--line-bright);
+  --color-ink: var(--text);
+  --color-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-accent2: var(--accent-dim);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --font-display: "Chakra Petch", sans-serif;
+  --font-sans: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+/* ------------------------------------------------------------------- base */
+
+html, body, #root { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+  /* starfield atmosphere: two layers of box-shadow "stars" via gradients */
+  background-image:
+    radial-gradient(1px 1px at 12% 28%, #ffffff18 50%, transparent 50%),
+    radial-gradient(1px 1px at 78% 12%, #ffffff14 50%, transparent 50%),
+    radial-gradient(1.5px 1.5px at 42% 64%, #ffffff10 50%, transparent 50%),
+    radial-gradient(1px 1px at 91% 81%, #ffffff12 50%, transparent 50%),
+    radial-gradient(1px 1px at 23% 88%, #ffffff0e 50%, transparent 50%),
+    radial-gradient(ellipse 1200px 800px at 70% -10%, #101a2e66, transparent);
+}
+
+:root.night body {
+  background-image:
+    radial-gradient(ellipse 1200px 800px at 70% -10%, #2a0a0a55, transparent);
+}
+
+* { scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent; }
+
+img.astro { filter: var(--img-filter); }
+
+/* ------------------------------------------------------- panel w/ brackets */
+
+.panel {
+  position: relative;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(6px);
+}
+
+.panel::before, .panel::after {
+  content: "";
+  position: absolute;
+  width: 10px; height: 10px;
+  border-color: var(--accent-dim);
+  border-style: solid;
+  pointer-events: none;
+}
+.panel::before { top: -1px; left: -1px; border-width: 1.5px 0 0 1.5px; }
+.panel::after { bottom: -1px; right: -1px; border-width: 0 1.5px 1.5px 0; }
+
+.panel-title {
+  font-family: "Chakra Petch", sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.btn {
+  font-family: "Chakra Petch", sans-serif;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-raise);
+  color: var(--text);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s, background 0.15s;
+  user-select: none;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 12px var(--glow), inset 0 0 12px #ffffff06;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-accent {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raise));
+}
+.btn-danger { border-color: #7c2d2d; color: var(--bad); }
+.btn-danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); box-shadow: 0 0 12px #f8717144; }
+
+.field {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  padding: 6px 9px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.field:focus { border-color: var(--accent-dim); }
+select.field { appearance: none; }
+
+.mono { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+.label {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+/* ------------------------------------------------------------------- misc */
+
+.led { position: relative; width: 8px; height: 8px; border-radius: 50%; }
+.led-on { background: var(--good); box-shadow: 0 0 8px var(--good); }
+.led-off { background: #2a3447; }
+.led-warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.blink { animation: pulse-glow 1.6s ease-in-out infinite; }
+
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(400%); }
+}
+
+.progress-track { background: var(--bg); border: 1px solid var(--line); height: 14px; position: relative; overflow: hidden; }
+.progress-fill { background: linear-gradient(90deg, var(--accent-dim), var(--accent)); height: 100%; transition: width 0.6s ease; }
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+.view-enter { animation: fade-up 0.25s ease both; }
+
+.crosshair {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(var(--accent) 0 0) center/1px 18px no-repeat,
+    linear-gradient(var(--accent) 0 0) center/18px 1px no-repeat;
+  opacity: 0.5;
+}
