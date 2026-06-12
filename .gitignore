@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+ui/dist/
+*.fits
+captures/
+.pytest_cache/
+.remember/
+*.egg-info/
