@@ -65,12 +65,16 @@ them. For guiding, start PHD2 with its event server enabled and hit
 ### NINA transition mode
 
 If you already image with NINA, install the **Advanced API** plugin in NINA
-(enable it; default port 1888), then on the Rig page use **NINA Bridge** —
-enter the host/IP of the NINA machine and click **Bridge to NINA**. AstroDeck
-will reflect whatever equipment NINA has connected and drive it through NINA's
-API: captures show NINA's stretched frames with its measured HFR/star counts,
-the Focus page runs NINA's native autofocus and draws its real V-curve, and
-centering uses NINA's plate solver.
+(enable it; default port 1888), then on the Rig page use **NINA Bridge**.
+Click **Scan Network** to auto-discover NINA instances (AstroDeck sweeps your
+local subnet for the Advanced API signature and lists each instance with its
+NINA version and connected equipment), then click **Bridge** — or enter the
+host/IP manually. AstroDeck reflects whatever equipment NINA has connected and
+drives it through NINA's API: captures show NINA's stretched frames with its
+measured HFR/star counts, the Focus page runs NINA's native autofocus and draws
+its real V-curve, and centering uses NINA's plate solver. Slewing is
+position-convergence based, so it's robust to ASCOM drivers that report
+`Slewing` non-standardly.
 
 To try NINA mode without a NINA install, run the bundled mock — it serves
 NINA-shaped responses backed by the simulator star-field:

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
 import { Field, Led, Panel } from "../components/ui";
-import type { AlpacaServer } from "../types";
+import type { AlpacaServer, NinaInstance } from "../types";
 
 const ROLES = ["camera", "telescope", "focuser", "filterwheel", "switch"];
 
@@ -17,6 +17,8 @@ export default function ConnectView() {
   const [manualPort, setManualPort] = useState("11111");
   const [ninaHost, setNinaHost] = useState("127.0.0.1");
   const [ninaPort, setNinaPort] = useState("1888");
+  const [ninaFound, setNinaFound] = useState<NinaInstance[] | null>(null);
+  const [ninaScanning, setNinaScanning] = useState(false);
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -37,6 +39,15 @@ export default function ConnectView() {
     const body = await res.json();
     setServers([{ address: manualHost, port: Number(manualPort), devices: body.Value ?? [] }]);
   });
+
+  const scanNina = async () => {
+    setNinaScanning(true);
+    try {
+      const q = ninaHost ? `?host=${encodeURIComponent(ninaHost)}&port=${Number(ninaPort) || 1888}` : "";
+      setNinaFound(await api.get<NinaInstance[]>(`/api/discover/nina${q}`));
+    } catch (e) { showToast("error", String((e as Error).message)); }
+    setNinaScanning(false);
+  };
 
   const connectDevice = (srv: AlpacaServer, d: AlpacaServer["devices"][0]) => {
     const role = d.DeviceType.toLowerCase();
@@ -151,7 +162,14 @@ export default function ConnectView() {
       </Panel>
 
       <Panel title="NINA Bridge — Transition Mode" className="lg:col-span-2"
-        right={mode === "nina" && <span className="label text-accent">● bridged</span>}>
+        right={
+          <div className="flex items-center gap-3">
+            {mode === "nina" && <span className="label text-accent">● bridged</span>}
+            <button className="btn !py-1" onClick={scanNina} disabled={ninaScanning}>
+              {ninaScanning ? "Scanning…" : "⟳ Scan Network"}
+            </button>
+          </div>
+        }>
         <p className="text-xs text-dim mb-3 leading-relaxed max-w-3xl">
           Already running <span className="text-ink">NINA</span> on the machine at your scope?
           Point AstroDeck at NINA's <span className="text-ink">Advanced API</span> plugin and fly your
@@ -159,8 +177,42 @@ export default function ConnectView() {
           plate-solving and guiding to NINA's own routines, then you can migrate to direct Alpaca
           device by device. (Enable the Advanced API plugin in NINA; default port 1888.)
         </p>
+
+        {ninaFound !== null && (
+          <div className="mb-4">
+            {ninaFound.length === 0 && (
+              <p className="text-warn text-xs">no NINA instances found on this network</p>
+            )}
+            <div className="flex flex-col gap-1.5">
+              {ninaFound.map((inst) => (
+                <div key={inst.url}
+                  className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
+                  <Led on />
+                  <div className="min-w-0 flex-1">
+                    <div className="mono text-xs text-ink truncate">
+                      {inst.hostname ?? inst.host}
+                      <span className="text-dim"> :{inst.port}</span>
+                      {inst.nina_version && <span className="text-dim"> · NINA {inst.nina_version}</span>}
+                    </div>
+                    <div className="text-[10px] text-dim truncate">
+                      {Object.keys(inst.devices).length
+                        ? Object.entries(inst.devices).map(([r, n]) => `${r}: ${n}`).join("  ·  ")
+                        : "no equipment connected in NINA"}
+                    </div>
+                  </div>
+                  <button className="btn btn-accent !py-1" disabled={busy}
+                    onClick={() => run(() => api.post("/api/connect/nina",
+                      { host: inst.host, port: inst.port }))}>
+                    ◈ Bridge
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-[1fr_110px_auto] gap-2 items-end max-w-xl">
-          <Field label="NINA host">
+          <Field label="NINA host (or hint for scan)">
             <input className="field" value={ninaHost} onChange={(e) => setNinaHost(e.target.value)} />
           </Field>
           <Field label="API port">

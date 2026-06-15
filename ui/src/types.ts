@@ -104,6 +104,16 @@ export interface AlpacaServer {
   devices: { DeviceName: string; DeviceType: string; DeviceNumber: number }[];
 }
 
+export interface NinaInstance {
+  host: string;
+  hostname: string | null;
+  port: number;
+  url: string;
+  api_version: string;
+  nina_version: string | null;
+  devices: Record<string, string>;
+}
+
 export interface ExposureStep {
   filter: string | null;
   exposure_s: number;

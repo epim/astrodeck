@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from ..catalog import search_catalog
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
+from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import hub
@@ -133,6 +134,11 @@ def create_app() -> FastAPI:
     @app.get("/api/discover")
     async def discover():
         return await alpaca_backend.discover()
+
+    @app.get("/api/discover/nina")
+    async def discover_nina_instances(host: str = "", port: int = 1888):
+        extra = [host] if host else None
+        return await discover_nina(port=port, extra_hosts=extra)
 
     @app.post("/api/connect/sim")
     async def connect_sim():

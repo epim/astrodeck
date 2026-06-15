@@ -58,7 +58,7 @@ export default function App() {
               <span className="truncate">{status.mount.dec_str}</span>
               <span>ALT {status.mount.alt.toFixed(0)}°</span>
               <span className={status.mount.tracking ? "text-good" : "text-warn"}>
-                {status.mount.slewing ? "SLEWING" : status.mount.parked ? "PARKED"
+                {status.mount.parked ? "PARKED" : status.mount.slewing ? "SLEWING"
                   : status.mount.tracking ? "TRACKING" : "IDLE"}
               </span>
             </>

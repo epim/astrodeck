@@ -44,8 +44,8 @@ export default function MountView() {
               tone={m && m.alt < 20 ? "warn" : undefined} />
             <Stat label="Azimuth" value={m ? `${m.az}°` : "—"} />
             <Stat label="State"
-              value={m ? (m.slewing ? "SLEWING" : m.parked ? "PARKED" : m.tracking ? "TRACKING" : "IDLE") : "—"}
-              tone={m?.slewing ? "warn" : m?.tracking ? "good" : undefined} />
+              value={m ? (m.parked ? "PARKED" : m.slewing ? "SLEWING" : m.tracking ? "TRACKING" : "IDLE") : "—"}
+              tone={m?.parked ? undefined : m?.slewing ? "warn" : m?.tracking ? "good" : undefined} />
           </div>
           <div className="flex items-center gap-3 mt-4 border-t border-line pt-3">
             <Toggle checked={!!m?.tracking} disabled={!m}

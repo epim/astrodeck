@@ -52,6 +52,37 @@ cases) and runnable live (`python -m tools.mock_nina`). Confirmed end to end:
 bridge connect, capture with rendered preview + HFR/stars, native autofocus
 converging to true focus, NINA plate-solve centering 1.8′→0.1′.
 
+## Instance discovery (added, validated live)
+
+`discover_nina()` sweeps this machine's own /24 subnet(s) plus any named host,
+probing `<host>:1888/v2/api/version` concurrently (semaphore 128, ~0.6s
+timeout; connection-refused is fast so only firewalled hosts cost the full
+timeout). Confirmed instances get a detail fetch (NINA version + connected
+equipment by role) and reverse-DNS hostname. Exposed at `GET /api/discover/nina`
+and surfaced as **Scan Network** in the NINA Bridge panel.
+
+## Validated against a live NINA (2026-06-14)
+
+Tested end to end against a real rig (`astrotown.lan` / 192.168.250.220,
+Advanced API 2.2.15.1, NINA 3.2.0.9001 — Poseidon-M PRO camera, ASI Mount, ZWO
+Focuser, Wanderer 8-position wheel, PHD2):
+
+- discovery found it in ~3.4s with full equipment summary
+- bridge reflected the real rig; status showed live coords/temps/filters
+- a 2s capture round-tripped through `capture → prepared-image → statistics`
+  and rendered the real 6252×4176 frame in the UI
+- a careful 5° mount slew (Dec 90→85) executed and the original parked state
+  was restored
+
+Real-world fixes this surfaced, now in the code:
+- `SideOfPier` is `"pierEast"/"pierWest"` (not `"East"/"West"`) — parse loosely
+- the ASI Mount ASCOM driver reports `Slewing=true` while parked/idle, which
+  would hang a server-side `waitToFinish` — so `slew()` now fires
+  `waitToFinish=false` and converges on position (`_sep_deg`, pole-safe), and
+  the UI shows `PARKED` ahead of `SLEWING`
+- `switch/info` returns `{Connected:false}` when no power box is present — the
+  role is correctly skipped
+
 ## Known limitations / future
 
 - Manual slew-pad nudging isn't in NINA's REST surface (use Goto); the bridge

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import socket
 import time
 from typing import Any
 
@@ -74,6 +75,17 @@ def _maybe_int(v: Any) -> int | None:
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def _sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
+    """Angular separation (deg) between two equatorial coords; well-behaved
+    near the pole where RA differences are mechanically ill-conditioned."""
+    import math
+    ra1, ra2 = math.radians(ra1_h * 15), math.radians(ra2_h * 15)
+    d1, d2 = math.radians(dec1), math.radians(dec2)
+    cos_sep = (math.sin(d1) * math.sin(d2)
+               + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
 
 
 def _decode_gray16(data: bytes) -> np.ndarray:
@@ -279,12 +291,34 @@ class NinaTelescope(_NinaDevice, Telescope):
         return bool(pick(await self.info(force=True), "Slewing", default=False))
 
     async def slew(self, ra_hours: float, dec_deg: float) -> None:
+        # Fire-and-forget, then converge on position. This is robust to ASCOM
+        # drivers that report Slewing=true even when idle (observed on the ASI
+        # Mount), which would hang NINA's server-side waitToFinish.
         try:
             await self.client.get("/equipment/mount/slew", ra=ra_hours, dec=dec_deg,
-                                  waitToFinish="true", timeout=300.0)
+                                  waitToFinish="false", timeout=30.0)
         except asyncio.CancelledError:
             await self.stop()
             raise
+        last: tuple[float, float] | None = None
+        stable = 0
+        for _ in range(240):  # ~120s ceiling
+            await asyncio.sleep(0.5)
+            try:
+                info = await self.info(force=True)
+            except DeviceError:
+                continue
+            ra = float(pick(info, "RightAscension", "RA", default=0) or 0)
+            dec = float(pick(info, "Declination", "Dec", default=0) or 0)
+            if _sep_deg(ra, dec, ra_hours, dec_deg) < 0.25:
+                return
+            if last is not None and _sep_deg(ra, dec, last[0], last[1]) < 0.02:
+                stable += 1
+                if stable >= 4:   # stopped moving for ~2s — settled close enough
+                    return
+            else:
+                stable = 0
+            last = (ra, dec)
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
         await self.client.get("/equipment/mount/sync", ra=ra_hours, dec=dec_deg)
@@ -309,8 +343,13 @@ class NinaTelescope(_NinaDevice, Telescope):
         raise DeviceError("manual nudging isn't available through NINA — use Goto")
 
     async def pier_side(self) -> PierSide:
-        side = pick(await self.info(), "SideOfPier", default=None)
-        return {"East": PierSide.EAST, "West": PierSide.WEST}.get(side, PierSide.UNKNOWN)
+        # NINA/ASCOM report e.g. "pierEast"/"pierWest" (or "East"/"West").
+        side = str(pick(await self.info(), "SideOfPier", default="")).lower()
+        if "east" in side:
+            return PierSide.EAST
+        if "west" in side:
+            return PierSide.WEST
+        return PierSide.UNKNOWN
 
     async def stop(self) -> None:
         await self.client.get("/equipment/mount/slew-stop")
@@ -586,3 +625,111 @@ async def build_nina_rig(host: str, port: int = DEFAULT_PORT,
         guider = None
 
     return {"client": client, "devices": devices, "guider": guider}
+
+
+# -------------------------------------------------------------------- discovery
+
+def _local_subnets() -> list[str]:
+    """The /24 prefixes this machine is on (e.g. '192.168.250')."""
+    ips: set[str] = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))           # no packets sent; just resolves the route
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    subnets = set()
+    for ip in ips:
+        if ip.startswith("127."):
+            continue
+        parts = ip.split(".")
+        if len(parts) == 4:
+            subnets.add(".".join(parts[:3]))
+    return sorted(subnets)
+
+
+async def _probe_version(client: httpx.AsyncClient, host: str, port: int) -> str | None:
+    """Return the Advanced-API version if host:port speaks NINA, else None."""
+    try:
+        r = await client.get(f"http://{host}:{port}/v2/api/version")
+        if r.status_code != 200:
+            return None
+        body = r.json()
+        if body.get("Type") == "API" and body.get("Success"):
+            return str(body.get("Response"))
+    except Exception:
+        return None
+    return None
+
+
+async def _detail(client: httpx.AsyncClient, host: str, port: int) -> dict:
+    base = f"http://{host}:{port}/v2/api"
+    out: dict[str, Any] = {"nina_version": None, "devices": {}}
+    try:
+        r = await client.get(f"{base}/version/nina")
+        out["nina_version"] = r.json().get("Response")
+    except Exception:
+        pass
+    role_paths = [("camera", "camera"), ("telescope", "mount"),
+                  ("focuser", "focuser"), ("filterwheel", "filterwheel"),
+                  ("guider", "guider")]
+    for role, path in role_paths:
+        try:
+            r = await client.get(f"{base}/equipment/{path}/info")
+            d = r.json().get("Response", {})
+            if isinstance(d, dict) and d.get("Connected"):
+                out["devices"][role] = pick(d, "Name", "DisplayName", default=role)
+        except Exception:
+            pass
+    return out
+
+
+async def discover_nina(port: int = DEFAULT_PORT, timeout: float = 0.6,
+                        extra_hosts: list[str] | None = None) -> list[dict]:
+    """Find NINA Advanced API instances on the local network.
+
+    Sweeps this machine's own /24 subnet(s) plus any explicitly named hosts,
+    probing ``<host>:<port>/v2/api/version`` concurrently. Connection-refused
+    is fast, so only firewalled hosts cost the full timeout. Returns a list of
+    ``{host, hostname, port, url, api_version, nina_version, devices}``.
+    """
+    candidates: list[str] = []
+    for sub in _local_subnets():
+        candidates += [f"{sub}.{i}" for i in range(1, 255)]
+    for h in extra_hosts or []:
+        try:
+            candidates.append(socket.gethostbyname(h))
+        except OSError:
+            pass
+    candidates = list(dict.fromkeys(candidates))  # de-dupe, preserve order
+
+    sem = asyncio.Semaphore(128)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        async def guarded(ip: str):
+            async with sem:
+                ver = await _probe_version(client, ip, port)
+                return (ip, ver) if ver else None
+
+        probed = await asyncio.gather(*[guarded(ip) for ip in candidates])
+        found = [p for p in probed if p]
+
+        results = []
+        for ip, api_version in found:
+            detail = await _detail(client, ip, port)
+            try:
+                hostname = socket.gethostbyaddr(ip)[0]
+            except OSError:
+                hostname = None
+            results.append({
+                "host": ip, "hostname": hostname, "port": port,
+                "url": f"http://{ip}:{port}", "api_version": api_version,
+                **detail,
+            })
+    results.sort(key=lambda r: r["host"])
+    return results

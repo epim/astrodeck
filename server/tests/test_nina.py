@@ -7,9 +7,17 @@ import httpx
 import pytest
 
 import astrodeck.hub as hub_module
-from astrodeck.devices.nina import build_nina_rig
+from astrodeck.devices.nina import build_nina_rig, _sep_deg
 from astrodeck.focus import run_autofocus
 from tools.mock_nina import create_mock_nina
+
+
+def test_sep_deg_pole_safe():
+    # From the pole, separation is just the declination difference at any RA —
+    # this is what makes the convergence-based slew robust near Dec 90.
+    assert abs(_sep_deg(9.88, 90.0, 0.70, 85.14) - 4.86) < 0.05
+    assert _sep_deg(5.0, 10.0, 5.0, 10.0) < 1e-6
+    assert abs(_sep_deg(0.0, 0.0, 12.0, 0.0) - 180.0) < 1e-3
 
 
 def _mock_client():
