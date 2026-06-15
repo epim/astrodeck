@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus, usePreview } from "../store";
 import { Histogram } from "../components/graphs";
 import { Field, Panel, Stat, Toggle } from "../components/ui";
 
 export default function CaptureView() {
-  const { status, preview, showToast } = useStore();
+  const status = useStatus();
+  const preview = usePreview();
+  const showToast = useStore((s) => s.showToast);
   const [exposure, setExposure] = useState("2");
   const [gain, setGain] = useState("120");
   const [offset, setOffset] = useState("30");

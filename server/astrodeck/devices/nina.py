@@ -34,6 +34,7 @@ import numpy as np
 from PIL import Image
 
 from ..events import bus
+from .alpaca import AlpacaScanError, validate_scan_host
 from .base import (
     Camera,
     CameraFrame,
@@ -118,32 +119,53 @@ class NinaClient:
         self.http = http or httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
         )
+        # link-health stamps — refreshed on every successful round-trip so the
+        # nina_link health readout (and the 5s heartbeat) stay honest even when
+        # a long capture means no incidental NINA traffic for minutes.
+        self.last_ok: float | None = None        # time.monotonic() of last success
+        self.last_ok_wall: float | None = None   # time.time() of last success
+        self.last_error: str | None = None       # str(e)[:200] of last failure
 
     @staticmethod
     def _params(params: dict[str, Any]) -> dict[str, Any]:
         return {k: v for k, v in params.items() if v is not None}
 
+    def _stamp_ok(self) -> None:
+        self.last_ok = time.monotonic()
+        self.last_ok_wall = time.time()
+        self.last_error = None
+
     async def get(self, path: str, *, timeout: float | None = None, **params: Any) -> Any:
         """GET a JSON endpoint and return the unwrapped ``Response`` payload."""
-        r = await self.http.get(f"{self.base}{path}", params=self._params(params),
-                                timeout=timeout)
-        if r.status_code != 200:
-            raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:160]}")
         try:
-            body = r.json()
-        except ValueError:
-            raise DeviceError(f"NINA returned non-JSON on {path}")
-        if not body.get("Success", True):
-            raise DeviceError(pick(body, "Error", default=f"NINA error on {path}"))
+            r = await self.http.get(f"{self.base}{path}", params=self._params(params),
+                                    timeout=timeout)
+            if r.status_code != 200:
+                raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:160]}")
+            try:
+                body = r.json()
+            except ValueError:
+                raise DeviceError(f"NINA returned non-JSON on {path}")
+            if not body.get("Success", True):
+                raise DeviceError(pick(body, "Error", default=f"NINA error on {path}"))
+        except Exception as e:
+            self.last_error = str(e)[:200]
+            raise
+        self._stamp_ok()
         return body.get("Response")
 
     async def get_bytes(self, path: str, *, timeout: float | None = None,
                         **params: Any) -> bytes:
         """GET a binary endpoint (image stream)."""
-        r = await self.http.get(f"{self.base}{path}", params=self._params(params),
-                                timeout=timeout)
-        if r.status_code != 200:
-            raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:120]}")
+        try:
+            r = await self.http.get(f"{self.base}{path}", params=self._params(params),
+                                    timeout=timeout)
+            if r.status_code != 200:
+                raise DeviceError(f"NINA HTTP {r.status_code} on {path}: {r.text[:120]}")
+        except Exception as e:
+            self.last_error = str(e)[:200]
+            raise
+        self._stamp_ok()
         return r.content
 
     async def close(self) -> None:
@@ -156,11 +178,15 @@ class _NinaDevice:
     into a dozen HTTP round-trips per cycle."""
 
     info_path: str = ""
+    backend = "nina"
 
     def __init__(self, client: NinaClient, name: str):
         self.client = client
         self.name = name
         self.connected = False
+        self.role = ""
+        self.host = client.host
+        self.port = client.port
         self._info: dict | None = None
         self._info_ts = 0.0
 
@@ -178,7 +204,8 @@ class _NinaDevice:
 
     def describe(self) -> dict:
         return {"name": self.name, "kind": getattr(self, "kind", "device"),
-                "connected": self.connected}
+                "connected": self.connected, "host": self.host, "port": self.port,
+                "dev_type": "", "dev_num": 0, "role": self.role, "backend": self.backend}
 
 
 # ---------------------------------------------------------------------- camera
@@ -724,9 +751,15 @@ async def discover_nina(port: int = DEFAULT_PORT, timeout: float = 0.6,
     for sub in _local_subnets():
         candidates += [f"{sub}.{i}" for i in range(1, 255)]
     for h in extra_hosts or []:
+        # SSRF guard: an explicitly-named extra host is user-controlled, so
+        # validate (bare hostname/IP, in-range port, resolves to a routable IP)
+        # before probing it. The local-subnet sweep above is trusted LAN; this
+        # only gates the user-supplied additions. A blocked/invalid host is
+        # skipped (discovery is best-effort and must not 500 on one bad input).
         try:
+            validate_scan_host(h, port)
             candidates.append(socket.gethostbyname(h))
-        except OSError:
+        except (AlpacaScanError, OSError):
             pass
     candidates = list(dict.fromkeys(candidates))  # de-dupe, preserve order
 

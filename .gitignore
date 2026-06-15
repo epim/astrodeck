@@ -9,3 +9,5 @@ captures/
 .pytest_cache/
 .remember/
 *.egg-info/
+server/config/
+ui/tsconfig.tsbuildinfo

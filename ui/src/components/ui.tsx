@@ -44,20 +44,29 @@ export function Stat({ label, value, unit, tone }: {
   );
 }
 
-export function Toggle({ checked, onChange, disabled = false }: {
+export function Toggle({ checked, onChange, disabled = false, label, showState = false }: {
   checked: boolean; onChange: (v: boolean) => void; disabled?: boolean;
+  label?: string; showState?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`relative w-9 h-5 border transition-colors shrink-0
-        ${checked ? "bg-accent2/40 border-accent" : "bg-raise border-line2"}
-        ${disabled ? "opacity-40" : "cursor-pointer"}`}
-    >
-      <span className={`absolute top-0.5 w-3.5 h-3.5 transition-all
-        ${checked ? "left-[18px] bg-accent" : "left-0.5 bg-dim"}`} />
-    </button>
+    <span className="inline-flex items-center min-h-11 sm:min-h-0">
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative w-9 h-5 border transition-colors shrink-0
+          ${checked ? "bg-accent2/40 border-accent" : "bg-raise border-line2"}
+          ${disabled ? "opacity-40" : "cursor-pointer"}`}
+      >
+        <span className={`absolute top-0.5 w-3.5 h-3.5 transition-all
+          ${checked ? "left-[18px] bg-accent" : "left-0.5 bg-dim"}`} />
+      </button>
+      {showState && (
+        <span className="label ml-2" aria-hidden>{checked ? "ON" : "OFF"}</span>
+      )}
+    </span>
   );
 }

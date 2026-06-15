@@ -35,9 +35,13 @@ export default function ConnectView() {
   };
 
   const scanManual = () => run(async () => {
-    const res = await fetch(`http://${manualHost}:${manualPort}/management/v1/configureddevices`);
-    const body = await res.json();
-    setServers([{ address: manualHost, port: Number(manualPort), devices: body.Value ?? [] }]);
+    // Route through the backend proxy (fixes browser CORS) — the server returns
+    // the AlpacaServer shape directly and a differentiated error on failure
+    // (unreachable vs. reached-but-not-Alpaca vs. timeout), surfaced via run().
+    const port = Number(manualPort) || 11111;
+    const srv = await api.get<AlpacaServer>(
+      `/api/discover/alpaca?host=${encodeURIComponent(manualHost)}&port=${port}`);
+    setServers([srv]);
   });
 
   const scanNina = async () => {
