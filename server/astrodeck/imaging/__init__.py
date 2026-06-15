@@ -1,6 +1,21 @@
-from .processing import auto_stretch, compute_histogram, to_png
-from .stars import detect_stars, median_hfr
+from .processing import (
+    auto_levels,
+    auto_stretch,
+    compute_histogram,
+    display_histogram,
+    frame_stats,
+    levels_to_mtf,
+    stretch_with,
+    to_jpeg,
+    to_png,
+    to_thumb,
+)
+from .stars import Star, detect_stars, measure_frame, median_hfr, star_marks
 from .fitsio import save_fits
 
-__all__ = ["auto_stretch", "compute_histogram", "to_png", "detect_stars",
-           "median_hfr", "save_fits"]
+__all__ = [
+    "auto_stretch", "auto_levels", "compute_histogram", "display_histogram",
+    "frame_stats", "levels_to_mtf", "stretch_with", "to_jpeg", "to_png",
+    "to_thumb", "Star", "detect_stars", "measure_frame", "median_hfr",
+    "star_marks", "save_fits",
+]

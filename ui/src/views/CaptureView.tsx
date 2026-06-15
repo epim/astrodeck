@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { api } from "../api";
-import { useStore, useStatus, usePreview } from "../store";
-import { Histogram } from "../components/graphs";
+import { useStore, useStatus } from "../store";
+import { LivePreview } from "../components/preview/LivePreview";
 import { Field, Panel, Stat, Toggle } from "../components/ui";
 
 export default function CaptureView() {
   const status = useStatus();
-  const preview = usePreview();
   const showToast = useStore((s) => s.showToast);
   const [exposure, setExposure] = useState("2");
   const [gain, setGain] = useState("120");
@@ -34,45 +33,8 @@ export default function CaptureView() {
 
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
-      {/* ------------------------------------------------------- preview */}
-      <Panel title="Live Preview" className="min-h-[420px]"
-        right={preview && (
-          <span className="mono text-[11px] text-dim">
-            {preview.width}×{preview.height} · {preview.exposure_s}s · gain {preview.gain} · bin {preview.binning}
-          </span>
-        )}>
-        <div className="relative bg-black/60 border border-line flex items-center justify-center min-h-[380px] overflow-hidden">
-          {preview ? (
-            <img src={`/api/preview/${preview.id}.png`} alt="latest frame"
-              className="astro max-w-full max-h-[62vh] object-contain" />
-          ) : (
-            <div className="text-dim text-xs tracking-[0.3em] uppercase py-32 text-center">
-              <div className="text-3xl mb-3 opacity-40">◉</div>
-              no frame yet — take an exposure
-            </div>
-          )}
-          <div className="crosshair" />
-        </div>
-        {preview && (
-          <div className="grid grid-cols-5 gap-3 mt-3">
-            <Stat label="min" value={preview.stats.min} />
-            <Stat label="median" value={preview.stats.median} />
-            <Stat label="mean" value={preview.stats.mean} />
-            <Stat label="max" value={preview.stats.max}
-              tone={preview.stats.max >= 65535 ? "warn" : undefined} />
-            <Stat label="σ" value={preview.stats.std} />
-          </div>
-        )}
-        {preview && (preview.hfr != null || preview.stars != null) && (
-          <div className="grid grid-cols-5 gap-3 mt-2 border-t border-line pt-2">
-            {preview.hfr != null && (
-              <Stat label="HFR" value={preview.hfr.toFixed(2)} unit="px"
-                tone={preview.hfr < 3 ? "good" : preview.hfr < 5 ? "warn" : "bad"} />
-            )}
-            {preview.stars != null && <Stat label="stars" value={preview.stars} />}
-          </div>
-        )}
-      </Panel>
+      {/* live-preview overhaul: stage + zoom/pan + stretch + overlays + filmstrip */}
+      <LivePreview />
 
       <div className="flex flex-col gap-4">
         {/* ------------------------------------------------- exposure ctl */}
@@ -124,11 +86,8 @@ export default function CaptureView() {
           )}
         </Panel>
 
-        {/* ---------------------------------------------------- histogram */}
-        <Panel title="Histogram">
-          {preview ? <Histogram data={preview.histogram} /> :
-            <p className="text-dim text-xs">awaiting first frame</p>}
-        </Panel>
+        {/* histogram + stretch now live inside <LivePreview/> (the stretch is
+            coupled to the image, so a decoupled read-only histogram would lie) */}
 
         {/* ------------------------------------------------------- filter */}
         {status?.filterwheel && (

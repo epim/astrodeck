@@ -3,7 +3,21 @@ import math
 
 import numpy as np
 
-from astrodeck.imaging import auto_stretch, compute_histogram, detect_stars, median_hfr
+from astrodeck.imaging import (
+    auto_levels,
+    auto_stretch,
+    compute_histogram,
+    detect_stars,
+    display_histogram,
+    levels_to_mtf,
+    measure_frame,
+    median_hfr,
+    star_marks,
+    stretch_with,
+    to_jpeg,
+    to_thumb,
+)
+from astrodeck.imaging.stars import DEFAULT_MAX_MARKS, DEFAULT_MAX_STARS, Star
 
 
 def synthetic_field(n_stars: int = 20, sigma: float = 1.6,
@@ -57,3 +71,110 @@ def test_empty_frame_has_no_stars():
     hfr, n = median_hfr(img)
     assert hfr is None
     assert n < 3
+
+
+# ----------------------------------------------------------- stretch params
+
+def test_auto_levels_in_range_and_ordered():
+    img = synthetic_field()
+    black, mid, white = auto_levels(img)
+    assert 0.0 <= black < white <= 1.0
+    assert 0.0 < mid < 1.0
+
+
+def test_stretch_with_explicit_levels_brightens_like_auto():
+    img = synthetic_field()
+    black, mid, white = auto_levels(img)
+    # replaying the auto levels reproduces the auto-stretch result closely
+    out = stretch_with(img, black, mid, white)
+    assert out.min() >= 0.0 and out.max() <= 1.0
+    assert abs(np.median(out) - np.median(auto_stretch(img))) < 0.06
+
+
+def test_stretch_with_black_white_clip():
+    img = synthetic_field()
+    # raising black darkens the background; lowering white brightens highlights
+    dark = stretch_with(img, 0.5, 0.5, 1.0)
+    bright = stretch_with(img, 0.0, 0.5, 0.3)
+    assert np.median(dark) < np.median(bright)
+
+
+def test_levels_to_mtf_clamps_inverted_order():
+    black, mid, white = levels_to_mtf(0.8, 2.0, 0.2)  # white < black, mid > 1
+    assert black < white
+    assert 0.0 < mid < 1.0
+
+
+def test_display_histogram_has_travel():
+    img = synthetic_field()
+    black, mid, white = auto_levels(img)
+    stretched = stretch_with(img, black, mid, white)
+    disp = display_histogram(stretched, bins=128)
+    lin = compute_histogram(img, bins=128)
+    assert len(disp) == 128
+    # a linear light-frame histogram piles into the first few bins; the
+    # display-domain one spreads, so its mass is not all on the left edge.
+    assert sum(disp[10:]) > sum(lin[10:])
+
+
+def test_to_jpeg_returns_bytes_and_dims():
+    img = synthetic_field(shape=(900, 1600))
+    data, w, h = to_jpeg(img, max_width=1400)
+    assert isinstance(data, (bytes, bytearray)) and len(data) > 0
+    assert w == 1400 and 0 < h < 1400
+
+
+def test_to_thumb_from_data_and_from_bytes():
+    img = synthetic_field()
+    t1 = to_thumb(img, max_width=160)
+    jpeg, _, _ = to_jpeg(img)
+    t2 = to_thumb(jpeg, max_width=160)
+    assert len(t1) > 0 and len(t2) > 0
+
+
+# ----------------------------------------------------------- star-list shape
+
+def test_star_marks_shape_and_coords():
+    img = synthetic_field(n_stars=20)
+    stars = detect_stars(img)
+    marks = star_marks(stars)
+    assert isinstance(marks, list) and len(marks) >= 12
+    for m in marks:
+        assert set(m) >= {"x", "y", "hfr"}     # Pass 1: no ecc/theta
+        assert "ecc" not in m and "theta" not in m
+        assert 0 <= m["x"] <= img.shape[1]
+        assert 0 <= m["y"] <= img.shape[0]
+        assert m["hfr"] > 0
+
+
+def test_measure_frame_single_pass_matches_median_hfr():
+    img = synthetic_field(n_stars=20)
+    hfr, count, marks = measure_frame(img)
+    ref_hfr, ref_count = median_hfr(img)
+    assert count == ref_count
+    assert hfr is not None and abs(hfr - ref_hfr) < 1e-9
+    # the overlay carries every detected star up to the marks cap — the explicit
+    # coupling (P3-5): len(marks) == min(count, DEFAULT_MAX_MARKS), which holds
+    # only because DEFAULT_MAX_MARKS >= DEFAULT_MAX_STARS so marks never drops a
+    # detected star. A bump of max_stars above the marks cap would break this.
+    assert len(marks) == min(count, DEFAULT_MAX_MARKS)
+
+
+def test_star_marks_cap_covers_detect_cap():
+    # the marks cap MUST be >= the detect cap so the overlay never silently drops
+    # a star the detector found (P3-5 — latent coupling made explicit).
+    assert DEFAULT_MAX_MARKS >= DEFAULT_MAX_STARS
+
+
+def test_star_marks_ecc_only_for_unsaturated_midbright():
+    # an explicit star list with ecc set on both a saturated and a faint star;
+    # neither should get an ecc field attached (Pass-1 keeps ecc 0.0 anyway, and
+    # the gating must never attach it to a saturated flat-top star).
+    full_well = 60000
+    stars = [
+        Star(x=10, y=10, flux=1e5, hfr=2.0, peak=59000, ecc=0.4, theta=0.1),  # saturated
+        Star(x=20, y=20, flux=5e4, hfr=2.1, peak=30000, ecc=0.3, theta=0.2),  # mid-bright
+    ]
+    marks = star_marks(stars, full_well=full_well)
+    sat_mark = next(m for m in marks if m["x"] == 10)
+    assert "ecc" not in sat_mark   # saturated star never carries ecc

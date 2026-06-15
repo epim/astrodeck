@@ -584,14 +584,105 @@ def create_app() -> FastAPI:
                 pass
         return {"looping": False}
 
-    @app.get("/api/preview/{preview_id}.png")
-    async def preview(preview_id: int):
+    # ---- live-preview routes (Pass 1, live-preview spec §4.4) --------------
+    # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
+    # the event. `/lossless.png` / `/thumb.jpg` / `/fits` / `/png` are the
+    # paused-zoom / filmstrip / FITS-download / PNG-download variants. `/crop`
+    # and `/render.png` are declared now but stubbed 501 (Pass 2).
+
+    _PREVIEW_CACHE = {"Cache-Control": "max-age=3600"}
+
+    @app.get("/api/preview/{preview_id:int}")
+    async def preview_display(preview_id: int):
+        """Display bytes for the live loop, with the correct mime (JPEG for the
+        linear path, NINA's JPEG verbatim otherwise).
+
+        The ``:int`` path convertor matches digits ONLY, so ``/api/preview/5.png``
+        falls through to the ``.png`` compat route below rather than 422-ing here."""
         entry = hub.previews.get(preview_id)
         if entry is None:
             raise HTTPException(404, "preview expired")
-        png, mime = entry
-        return Response(png, media_type=mime,
-                        headers={"Cache-Control": "max-age=3600"})
+        return Response(entry.display, media_type=entry.mime,
+                        headers=_PREVIEW_CACHE)
+
+    @app.get("/api/preview/{preview_id}.png")
+    async def preview_png_compat(preview_id: int):
+        """Back-compat `.png` URL. Returns a REAL PNG (the lossless base) when one
+        is held; otherwise 404 so callers fall back to `/`. Never a JPEG-under-
+        .png (live-preview spec §4.4)."""
+        entry = hub.previews.get(preview_id)
+        if entry is None:
+            raise HTTPException(404, "preview expired")
+        if entry.lossless is not None:
+            return Response(entry.lossless, media_type="image/png",
+                            headers=_PREVIEW_CACHE)
+        if entry.mime == "image/png":
+            return Response(entry.display, media_type="image/png",
+                            headers=_PREVIEW_CACHE)
+        raise HTTPException(404, "no PNG for this frame — use /api/preview/{id}")
+
+    @app.get("/api/preview/{preview_id}/lossless.png")
+    async def preview_lossless(preview_id: int):
+        """Lossless stretched PNG for the paused/zoomed frame (latest 1–2 only).
+        422 when the lossless base is no longer held (Pi memory cap)."""
+        entry = hub.previews.get(preview_id)
+        if entry is None:
+            raise HTTPException(404, "preview expired")
+        if entry.lossless is None:
+            raise HTTPException(422, "lossless base not held for this frame")
+        return Response(entry.lossless, media_type="image/png",
+                        headers=_PREVIEW_CACHE)
+
+    @app.get("/api/preview/{preview_id}/thumb.jpg")
+    async def preview_thumb(preview_id: int):
+        """~160px JPEG thumbnail for the filmstrip (kept for many frames)."""
+        thumb = hub.preview_thumbs.get(preview_id)
+        if thumb is None:
+            entry = hub.previews.get(preview_id)
+            thumb = entry.thumb if entry else None
+        if not thumb:
+            raise HTTPException(404, "thumbnail expired")
+        return Response(thumb, media_type="image/jpeg", headers=_PREVIEW_CACHE)
+
+    @app.get("/api/preview/{preview_id}/fits")
+    async def preview_fits(preview_id: int):
+        """The saved FITS for this frame, but only when it is a real file under
+        CAPTURE_DIR (`saved_local`). The guard is the hub's own
+        ``_is_local_save`` (resolves + ``is_relative_to(CAPTURE_DIR)``), so a
+        crafted path can never escape (live-preview spec §4.4 security)."""
+        entry = hub.previews.get(preview_id)
+        if entry is None:
+            raise HTTPException(404, "preview expired")
+        saved_path = entry.meta.get("saved_path")
+        if not saved_path or not hub._is_local_save(saved_path):
+            raise HTTPException(404, "saved FITS is not available locally")
+        p = Path(saved_path).resolve()
+        return FileResponse(p, media_type="application/fits", filename=p.name)
+
+    @app.get("/api/preview/{preview_id}/png")
+    async def preview_png_download(preview_id: int):
+        """Full-res stretched PNG as a download (attachment)."""
+        entry = hub.previews.get(preview_id)
+        if entry is None:
+            raise HTTPException(404, "preview expired")
+        png = entry.lossless or (entry.display if entry.mime == "image/png" else None)
+        if png is None:
+            raise HTTPException(404, "no PNG available for this frame")
+        return Response(png, media_type="image/png", headers={
+            **_PREVIEW_CACHE,
+            "Content-Disposition": f'attachment; filename="preview_{preview_id}.png"'})
+
+    @app.get("/api/preview/{preview_id}/crop")
+    async def preview_crop(preview_id: int, x: int = 0, y: int = 0,
+                           w: int = 0, h: int = 0):
+        """Sensor-1:1 ROI from linear data. Pass 2 — stubbed."""
+        raise HTTPException(501, "preview crop is not implemented yet (Pass 2)")
+
+    @app.get("/api/preview/{preview_id}/render.png")
+    async def preview_render(preview_id: int, black: float = 0.0,
+                             mid: float = 0.5, white: float = 1.0):
+        """Server-side baked stretch / export. Pass 2 — stubbed."""
+        raise HTTPException(501, "server render is not implemented yet (Pass 2)")
 
     @app.post("/api/camera/cooler")
     async def cooler(body: CoolerBody):
@@ -828,6 +919,18 @@ def create_app() -> FastAPI:
     @app.get("/api/sequence/state")
     async def sequence_state():
         return engine.state | {"running": engine.running, "paused": engine.paused}
+
+    # ----------------------------------------------------------------- monitor
+
+    @app.get("/api/monitor/snapshot")
+    async def monitor_snapshot():
+        """One-shot cold-load hydration for the Monitor view (monitor spec §8).
+        Non-fatal: the WS catches up within ~2s, so the view never blocks on it.
+        Uses the live engine state (running/paused), not just the last snapshot."""
+        snap = await hub.monitor_snapshot()
+        snap["sequence"] = engine.state | {
+            "running": engine.running, "paused": engine.paused}
+        return snap
 
     @app.get("/api/sequence/preflight")
     async def sequence_preflight(ra_hours: float, dec_deg: float):

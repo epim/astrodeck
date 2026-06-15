@@ -1,13 +1,54 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore, useStatus, useFocus } from "../store";
+import {
+  useStore,
+  useStatus,
+  useFocus,
+  useHfrThresholds,
+  useLinkDown,
+  useLivePreview,
+  useLivePreviewId,
+  useNight,
+  useOverlays,
+  usePreviews,
+  useSelectedPreviewId,
+  useStretch,
+  useViewport,
+} from "../store";
 import { VCurve } from "../components/graphs";
+import { PreviewStage } from "../components/preview/PreviewStage";
+import { FocusVerdict } from "../components/preview/FocusVerdict";
+import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Panel, Stat } from "../components/ui";
 
 export default function FocusView() {
   const status = useStatus();
   const focus = useFocus();
   const showToast = useStore((s) => s.showToast);
+
+  // Live preview so manual focus is not blind (spec §10). Read-only here: zoom/pan
+  // + verdict, no stretch/overlay controls (those are the Capture surface).
+  const shown = useLivePreview();
+  const previews = usePreviews();
+  const selectedId = useSelectedPreviewId();
+  const liveId = useLivePreviewId();
+  const viewport = useViewport();
+  const stretch = useStretch();
+  const overlays = useOverlays();
+  const { good: hfrGood, warn: hfrWarn } = useHfrThresholds();
+  const night = useNight();
+  const linkDown = useLinkDown();
+  const setViewport = useStore((s) => s.setViewport);
+  const selectPreview = useStore((s) => s.selectPreview);
+  const focusControls = useRef<{ fit: () => void; hundred: () => void; zoomIn: () => void; zoomOut: () => void } | null>(
+    null,
+  );
+  const pinned = selectedId != null && selectedId !== liveId;
+  const prevFrame = useMemo(() => {
+    if (!shown) return null;
+    const idx = previews.findIndex((p) => p.id === shown.id);
+    return idx > 0 ? previews[idx - 1] : null;
+  }, [shown, previews]);
   const [absTarget, setAbsTarget] = useState("");
   const [afExposure, setAfExposure] = useState("2");
   const [afStep, setAfStep] = useState("350");
@@ -23,18 +64,49 @@ export default function FocusView() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-      <Panel title="V-Curve · HFR vs Position"
-        right={running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}>
-        <VCurve points={focus?.points ?? []} best={focus?.best ?? null} />
-        {focus?.state === "done" && focus.best && (
-          <p className="text-good text-xs mono mt-2">
-            ✓ best focus {focus.best.position}{focus.best.hfr ? ` · HFR ${focus.best.hfr.toFixed(2)} px` : ""}
-          </p>
-        )}
-        {focus?.state === "failed" && (
-          <p className="text-bad text-xs mono mt-2">✗ autofocus failed — check stars in frame</p>
-        )}
-      </Panel>
+      <div className="flex flex-col gap-4">
+        {/* live preview so manual focus is not blind (spec §10) */}
+        <Panel title="Live Preview" right={<FocusVerdict preview={shown} prev={prevFrame} hfrGood={hfrGood} hfrWarn={hfrWarn} />}>
+          <div className="flex flex-col gap-2">
+            <PreviewStage
+              compact
+              preview={shown}
+              viewport={viewport}
+              setViewport={setViewport}
+              stretch={stretch}
+              overlays={overlays}
+              hfrGood={hfrGood}
+              hfrWarn={hfrWarn}
+              night={night}
+              linkDown={linkDown}
+              pinned={pinned}
+              newSincePinned={pinned && selectedId != null ? previews.filter((p) => p.id > selectedId).length : 0}
+              onReturnToLive={() => selectPreview(null)}
+              onControls={(c) => (focusControls.current = c)}
+            />
+            <div className="flex items-center gap-1 preview-toolbar">
+              <button className="btn !px-2.5 min-h-11" aria-label="Zoom out" onClick={() => focusControls.current?.zoomOut()}>−</button>
+              <button className="btn !px-2.5 min-h-11" aria-label="Zoom in" onClick={() => focusControls.current?.zoomIn()}>+</button>
+              <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={() => focusControls.current?.fit()}>Fit</button>
+              <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={() => focusControls.current?.hundred()}>100%</button>
+            </div>
+            {shown && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} compact />}
+          </div>
+        </Panel>
+
+        <Panel title="V-Curve · HFR vs Position"
+          right={running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}>
+          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} />
+          {focus?.state === "done" && focus.best && (
+            <p className="text-good text-xs mono mt-2">
+              ✓ best focus {focus.best.position}{focus.best.hfr ? ` · HFR ${focus.best.hfr.toFixed(2)} px` : ""}
+            </p>
+          )}
+          {focus?.state === "failed" && (
+            <p className="text-bad text-xs mono mt-2">✗ autofocus failed — check stars in frame</p>
+          )}
+        </Panel>
+      </div>
 
       <div className="flex flex-col gap-4">
         <Panel title="Focuser">

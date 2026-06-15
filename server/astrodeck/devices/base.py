@@ -53,6 +53,14 @@ class CameraFrame:
     hfr: float | None = None              # backend-measured HFR, if any
     stars: int | None = None              # backend-measured star count, if any
     saved_path: str | None = None         # path if the backend saved the file
+    #: driver-derived saturation ADU so the clip/saturation overlay is honest.
+    #: Linear backends (sim, Alpaca) populate this from MaxADU / render
+    #: saturation; None leaves the clip mask disabled (never a wrong overlay).
+    full_well: int | None = None
+    #: whether ``data`` is raw linear sensor data (sim/Alpaca → True) vs a
+    #: decoded-from-render 8-bit promotion (NINA → False). The preview gates the
+    #: linear histogram + clip mask on this (live-preview spec finding #1).
+    data_is_linear: bool = True
 
 
 class Device(ABC):

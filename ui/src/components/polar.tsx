@@ -33,7 +33,8 @@ export function PolarReticle({ az, alt, autoZoom = true }: {
   ];
 
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} className="w-full max-w-[420px] mx-auto block">
+    <svg viewBox={`0 0 ${size} ${size}`} className="w-full max-w-[420px] mx-auto block instr-fit"
+      style={{ aspectRatio: "1 / 1" }}>
       <defs>
         <marker id="pa-arrow" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
           <path d="M0,0 L6,3 L0,6 Z" fill={col} />
@@ -47,9 +48,9 @@ export function PolarReticle({ az, alt, autoZoom = true }: {
       {/* rings + arcmin labels */}
       {rings.map((m) => (
         <g key={m}>
-          <circle cx={cx} cy={cy} r={m * k} fill="none" stroke="var(--line2)"
+          <circle cx={cx} cy={cy} r={m * k} fill="none" stroke="var(--line-bright)"
             strokeWidth={m === smax ? 1.2 : 0.7} strokeDasharray={m === smax ? "" : "2 5"} />
-          <text x={cx + 4} y={cy - m * k + 11} fill="var(--dim)" fontSize={9}
+          <text x={cx + 4} y={cy - m * k + 12} fill="var(--text-dim)" fontSize={11}
             fontFamily="IBM Plex Mono">{m}'</text>
         </g>
       ))}
@@ -58,7 +59,7 @@ export function PolarReticle({ az, alt, autoZoom = true }: {
       <line x1={cx - R} y1={cy} x2={cx + R} y2={cy} stroke="var(--line)" />
       <line x1={cx} y1={cy - R} x2={cx} y2={cy + R} stroke="var(--line)" />
       {labels.map(([x, y, t, anchor], i) => (
-        <text key={i} x={x} y={y} fill="var(--dim)" fontSize={9} fontFamily="Chakra Petch"
+        <text key={i} x={x} y={y} fill="var(--text-dim)" fontSize={11} fontFamily="Chakra Petch"
           letterSpacing="2" textAnchor={anchor as "middle" | "start" | "end"}>{t}</text>
       ))}
 
