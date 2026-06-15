@@ -1,19 +1,23 @@
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import type {
   AppConfig,
   FocusEvent,
   GuideStats,
   LogLine,
   NinaHealth,
+  OverlayToggles,
   PolarState,
   PreviewInfo,
   RigStatus,
   SequencePlan,
   SequenceState,
   SiteInfo,
+  StretchParams,
   Toast,
   ToastLevel,
   ViewName,
+  Viewport,
   WsPhase,
 } from "./types";
 import { deriveNinaHealth } from "./lib/health";
@@ -100,6 +104,92 @@ function loadPlan(): SequencePlan {
   return defaultPlan();
 }
 
+// ----------------------------------------------------------- live-preview state
+// Ring buffer + view state for the live-preview overhaul (live-preview spec §4.2).
+// Persistence (`astrodeck-preview` key): ONLY `overlays`, `stretch.auto`,
+// `stretch.advancedOpen` survive a reload. Absolute B/M/W/brightness/contrast,
+// the viewport, and the pinned id are NEVER persisted (master §A.2) — manual
+// stretch resets per session/target so a stale level never lies about a frame.
+const PREVIEW_KEY = "astrodeck-preview";
+const PREVIEW_CAP = 24; // client metadata ring; server keeps thumbs for many
+
+function defaultViewport(): Viewport {
+  return { scale: 1, x: 0, y: 0, fit: true };
+}
+
+function defaultStretch(): StretchParams {
+  return {
+    auto: true, // sticky, on by default (honest auto-stretch)
+    black: 0,
+    mid: 0.5,
+    white: 1,
+    brightness: 0,
+    contrast: 0,
+    advancedOpen: false,
+  };
+}
+
+function defaultOverlays(): OverlayToggles {
+  return {
+    stars: false,
+    clip: false,
+    reticle: false,
+    centerMark: true, // subtle framing aid on by default
+  };
+}
+
+interface PersistedPreview {
+  overlays?: Partial<OverlayToggles>;
+  auto?: boolean;
+  advancedOpen?: boolean;
+}
+
+function loadPreviewPersisted(): { overlays: OverlayToggles; stretch: StretchParams } {
+  const overlays = defaultOverlays();
+  const stretch = defaultStretch();
+  try {
+    const raw = localStorage.getItem(PREVIEW_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as PersistedPreview;
+      if (p.overlays) Object.assign(overlays, p.overlays);
+      if (typeof p.auto === "boolean") stretch.auto = p.auto;
+      if (typeof p.advancedOpen === "boolean") stretch.advancedOpen = p.advancedOpen;
+    }
+  } catch {
+    /* defaults */
+  }
+  return { overlays, stretch };
+}
+
+// Remember the last-written serialized subset so a B/M/W/brightness drag (which
+// fires setStretch dozens/sec but never touches the persisted {auto,advancedOpen,
+// overlays}) doesn't hammer localStorage.setItem on every move (resolves P2-8).
+let lastPersistedPreview: string | null = null;
+
+function persistPreview(overlays: OverlayToggles, stretch: StretchParams): void {
+  const payload: PersistedPreview = {
+    overlays,
+    auto: stretch.auto,
+    advancedOpen: stretch.advancedOpen,
+  };
+  const serialized = JSON.stringify(payload);
+  // No-op when the persisted subset is unchanged vs the last write — skips the
+  // per-drag setItem entirely (the absolute levels in the drag never persist).
+  if (serialized === lastPersistedPreview) return;
+  try {
+    localStorage.setItem(PREVIEW_KEY, serialized);
+    lastPersistedPreview = serialized;
+  } catch {
+    /* quota / unavailable — keep in-memory */
+  }
+}
+
+// ----------------------------------------------------------------- monitor state
+const AUTO_MONITOR_KEY = "astrodeck-monitor-auto";
+type RunBanner = { active: boolean; plan_name?: string; percent?: number } | null;
+// states the engine sits in when NOT actively running (rising-edge detection).
+const RUN_RISING_FROM = new Set(["idle", "complete", "aborted", "error", "nina_native"]);
+
 interface AppState {
   // --- core view/session ---
   view: ViewName;
@@ -136,6 +226,22 @@ interface AppState {
   // --- confirm host (onboarding) ---
   confirm: ConfirmRequest | null;
 
+  // --- live-preview (Batch-2; master §A.2) ---
+  previews: PreviewInfo[]; // newest last, cap 24 (client metadata ring)
+  selectedPreviewId: number | null; // null => follow live
+  livePreviewId: number | null;
+  viewport: Viewport; // in-memory only (survives tab switch, NOT localStorage)
+  stretch: StretchParams; // auto/advancedOpen persist; B/M/W do NOT
+  overlays: OverlayToggles; // persists to localStorage
+  hfrGood: number; // verdict threshold (px), default 2.5
+  hfrWarn: number; // default 4.0
+
+  // --- monitor (Batch-2; master §A.2 + monitor §3.2) ---
+  lastFrameAtMs: number | null; // set on each preview event (stall/LIVE detection)
+  lastGuideAtMs: number | null; // set on each guide event
+  autoMonitor: boolean; // localStorage pref, default false (auto-SELECT only)
+  runBanner: RunBanner; // persistent "Sequence running — open Live" banner
+
   // --- backward-compat shims ---
   wsConnected: boolean; // = wsPhase === "up"
 
@@ -167,6 +273,17 @@ interface AppState {
   pushConfirm: (req: Omit<ConfirmRequest, "resolve">) => Promise<boolean>;
   resolveConfirm: (ok: boolean) => void;
 
+  // --- actions: live-preview ---
+  pushPreview: (p: PreviewInfo) => void;
+  selectPreview: (id: number | null) => void; // null => snap back to live
+  setViewport: (v: Partial<Viewport>) => void;
+  setStretch: (s: Partial<StretchParams>) => void;
+  setOverlays: (o: Partial<OverlayToggles>) => void;
+
+  // --- actions: monitor ---
+  setAutoMonitor: (v: boolean) => void;
+  dismissRunBanner: () => void;
+
   // --- actions: compat shims ---
   setWsConnected: (ok: boolean) => void;
   showToast: (level: string, message: string) => void;
@@ -175,6 +292,9 @@ interface AppState {
 let toastId = 0;
 let linkDownTimer: ReturnType<typeof setTimeout> | null = null;
 const LINK_DOWN_ALERT_MS = 30000;
+
+// Hydrate the persisted preview toggles once at module load (mirrors loadPlan()).
+const PREVIEW_PERSISTED = loadPreviewPersisted();
 
 export const useStore = create<AppState>((set, get) => ({
   // --- core ---
@@ -211,6 +331,22 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- confirm ---
   confirm: null,
+
+  // --- live-preview ---
+  previews: [],
+  selectedPreviewId: null,
+  livePreviewId: null,
+  viewport: defaultViewport(),
+  overlays: PREVIEW_PERSISTED.overlays,
+  stretch: PREVIEW_PERSISTED.stretch,
+  hfrGood: 2.5,
+  hfrWarn: 4.0,
+
+  // --- monitor ---
+  lastFrameAtMs: null,
+  lastGuideAtMs: null,
+  autoMonitor: localStorage.getItem(AUTO_MONITOR_KEY) === "1",
+  runBanner: null,
 
   // --- compat ---
   wsConnected: false,
@@ -362,6 +498,44 @@ export const useStore = create<AppState>((set, get) => ({
     set({ confirm: null });
   },
 
+  // --------------------------------------------------------------- live-preview
+  // Append, trim to cap, set livePreviewId. Pinning is sticky: if the user has
+  // pinned a frame (selectedPreviewId !== null) the stage does NOT move — the
+  // filmstrip badges the new live arrival and the pinned banner counts it.
+  pushPreview: (p) =>
+    set((s) => {
+      const previews = [...s.previews, p];
+      if (previews.length > PREVIEW_CAP) previews.splice(0, previews.length - PREVIEW_CAP);
+      return { previews, livePreviewId: p.id };
+    }),
+
+  selectPreview: (id) => set({ selectedPreviewId: id }),
+
+  setViewport: (v) => set((s) => ({ viewport: { ...s.viewport, ...v } })),
+
+  setStretch: (s) =>
+    set((st) => {
+      const stretch = { ...st.stretch, ...s };
+      // Persist only the toggles (auto/advancedOpen); B/M/W/brightness never persist.
+      persistPreview(st.overlays, stretch);
+      return { stretch };
+    }),
+
+  setOverlays: (o) =>
+    set((st) => {
+      const overlays = { ...st.overlays, ...o };
+      persistPreview(overlays, st.stretch);
+      return { overlays };
+    }),
+
+  // -------------------------------------------------------------------- monitor
+  setAutoMonitor: (v) => {
+    localStorage.setItem(AUTO_MONITOR_KEY, v ? "1" : "0");
+    set({ autoMonitor: v });
+  },
+
+  dismissRunBanner: () => set({ runBanner: null }),
+
   // -------------------------------------------------------------- compat shims
   setWsConnected: (ok) => get().setWsPhase(ok ? "up" : "down"),
 
@@ -396,20 +570,44 @@ export const useStore = create<AppState>((set, get) => ({
         // re-GET, never partial-merge (settings spec C1-H28/C2-12)
         void get().loadConfig();
         break;
-      case "preview":
-        set({ preview: ev.data as unknown as PreviewInfo });
+      case "preview": {
+        const p = ev.data as unknown as PreviewInfo;
+        // Keep the single-frame `preview` (existing consumers) AND push into the
+        // ring + stamp the liveness timestamp the Monitor's LIVE/STALL uses.
+        set({ preview: p, lastFrameAtMs: Date.now() });
+        get().pushPreview(p);
         break;
+      }
       case "focus":
         set({ focus: ev.data as unknown as FocusEvent });
         break;
       case "guide":
-        set({ guide: ev.data as unknown as GuideStats });
+        set({ guide: ev.data as unknown as GuideStats, lastGuideAtMs: Date.now() });
         break;
       case "sequence": {
         const seq = ev.data as unknown as SequenceState;
-        const prev = get().sequence.state;
-        set({ sequence: seq });
-        if (seq.state === "error" && prev !== "error") {
+        const prevState = get().sequence.state;
+        const percent = seq.progress?.percent;
+
+        // --- monitor runBanner (monitor §3.2): persistent, NOT the focal toast ---
+        // Rising edge (not-running → running) raises the banner; subsequent
+        // progress refreshes percent; any terminal/idle state clears it.
+        let runBanner: RunBanner = get().runBanner;
+        if (seq.state === "running") {
+          if (RUN_RISING_FROM.has(prevState)) {
+            runBanner = { active: true, plan_name: seq.plan_name, percent };
+          } else if (runBanner) {
+            runBanner = { ...runBanner, percent };
+          }
+        } else if (seq.state === "paused") {
+          if (runBanner) runBanner = { ...runBanner, percent };
+        } else {
+          // idle / complete / aborted / error / nina_native → clear the banner.
+          runBanner = null;
+        }
+        set({ sequence: seq, runBanner });
+
+        if (seq.state === "error" && prevState !== "error") {
           get().enqueueToast({
             level: "error",
             kind: "sequence",
@@ -419,13 +617,26 @@ export const useStore = create<AppState>((set, get) => ({
             action: { label: "View log", kind: "openLog" },
           });
           notifyAndBeep(get(), "Sequence failed", humanizeSeqError(seq.detail));
-        } else if (seq.state === "complete" && prev !== "complete") {
+        } else if (seq.state === "complete" && prevState !== "complete") {
           notifyAndBeep(
             get(),
             "Sequence complete",
             `${seq.progress?.frames_done ?? 0} frames captured`,
           );
           // no toast — the green panel is enough
+        }
+
+        // --- guarded auto-SELECT (monitor §3.2; resolves A3/B6) ---
+        // NEVER a forced redirect. Only switch to Monitor on a rising-edge run
+        // start when the pref is on AND the user is parked on the connect view
+        // (a cold-start landing), never mid-workflow.
+        if (
+          seq.state === "running" &&
+          RUN_RISING_FROM.has(prevState) &&
+          get().autoMonitor &&
+          get().view === "connect"
+        ) {
+          set({ view: "monitor" });
         }
         break;
       }
@@ -489,3 +700,45 @@ export const usePlan = () => useStore((s) => s.plan);
 export const useSite = () => useStore((s) => s.site);
 export const useEquipConnected = () => useStore((s) => s.equipConnected);
 export const useConfirm = () => useStore((s) => s.confirm);
+
+// ============================================================================
+// Live-preview narrow hooks (live-preview spec §4.2). Each subscribes to one
+// slice so a new frame re-renders only the stage/filmstrip, not the whole tree.
+// ============================================================================
+export const usePreviews = () => useStore((s) => s.previews);
+/** Metadata for the frame the stage should show: pinned id if set, else live. */
+export const useLivePreview = (): PreviewInfo | null =>
+  useStore((s) => {
+    const id = s.selectedPreviewId ?? s.livePreviewId;
+    if (id == null) return null;
+    // Search newest-first (the live/pinned frame is usually at/near the end).
+    for (let i = s.previews.length - 1; i >= 0; i--) {
+      if (s.previews[i].id === id) return s.previews[i];
+    }
+    return null;
+  });
+export const useSelectedPreviewId = () => useStore((s) => s.selectedPreviewId);
+export const useLivePreviewId = () => useStore((s) => s.livePreviewId);
+export const useViewport = () => useStore((s) => s.viewport);
+export const useStretch = () => useStore((s) => s.stretch);
+export const useOverlays = () => useStore((s) => s.overlays);
+export const useHfrThresholds = () =>
+  useStore(useShallow((s) => ({ good: s.hfrGood, warn: s.hfrWarn })));
+
+// ============================================================================
+// Monitor narrow hooks (monitor spec §2 "Selector discipline", resolves D20).
+// `handleEvent` replaces the whole `status` object by reference every 2s poll,
+// so any selector pulling a `status` sub-object MUST use shallow equality or it
+// re-renders every tick. Primitive-returning selectors don't need useShallow.
+// ============================================================================
+export const useSeq = () => useStore((s) => s.sequence);
+export const useGuideRecent = () =>
+  useStore(useShallow((s) => s.guide?.recent ?? s.status?.guider?.recent ?? []));
+export const useGuideRms = () => useStore(useShallow((s) => s.guide ?? s.status?.guider ?? null));
+export const useCamera = () => useStore(useShallow((s) => s.status?.camera ?? null));
+export const useMeridian = () => useStore(useShallow((s) => s.status?.meridian ?? null));
+export const useMount = () => useStore(useShallow((s) => s.status?.mount ?? null));
+export const useLiveness = () =>
+  useStore(useShallow((s) => ({ frame: s.lastFrameAtMs, guide: s.lastGuideAtMs })));
+export const useRunBanner = () => useStore(useShallow((s) => s.runBanner));
+export const useAutoMonitor = () => useStore((s) => s.autoMonitor);

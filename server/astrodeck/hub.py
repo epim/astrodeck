@@ -10,17 +10,30 @@ import asyncio
 import json
 import shutil
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .config import config_store, fov_deg, image_scale_arcsec_px
 from .devices import alpaca as alpaca_backend
-from .devices.base import Camera, DeviceError, FilterWheel, Focuser, Switch, Telescope
+from .devices.base import Camera, DeviceError, FilterWheel, Focuser, PierSide, Switch, Telescope
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .devices.sim import build_sim_rig
 from .events import bus
 from .guide import Guider, PHD2Guider, SimGuider
-from .imaging import compute_histogram, save_fits, to_png
+from .imaging import (
+    auto_levels,
+    compute_histogram,
+    display_histogram,
+    measure_frame,
+    save_fits,
+    stretch_with,
+    to_jpeg,
+    to_png,
+    to_thumb,
+)
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
@@ -29,6 +42,28 @@ from .solve import get_solver
 ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch")
 
 CAPTURE_DIR = Path(__file__).resolve().parents[2] / "captures"
+
+#: how many full display frames the ring keeps (memory cap on the Pi), how many
+#: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
+#: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
+#: 1–2 — live-preview spec finding #18 / §6).
+PREVIEW_DISPLAY_KEEP = 8
+PREVIEW_THUMB_KEEP = 50
+PREVIEW_LINEAR_KEEP = 2
+
+
+@dataclass
+class PreviewEntry:
+    """One ring slot. Replaces the old ``tuple[bytes, str]`` — carries the bytes
+    each preview route serves plus the published meta dict (the API reads this).
+    ``lossless``/``linear`` are held only for the latest 1–2 frames."""
+
+    display: bytes
+    mime: str
+    thumb: bytes
+    lossless: bytes | None = None       # only latest 1–2 (paused/zoom PNG)
+    linear: np.ndarray | None = None    # only latest 1–2 (for /crop, /render Pass 2)
+    meta: dict = field(default_factory=dict)
 
 
 class Hub:
@@ -41,8 +76,15 @@ class Hub:
         # site is no longer hardcoded — it is a property backed by config_store
         # (fixes the San-Francisco P0). See the `site` property below.
         self.preview_seq = 0
-        self.previews: dict[int, tuple[bytes, str]] = {}  # id -> (bytes, mime)
+        self.previews: dict[int, PreviewEntry] = {}   # id -> ring slot
+        self.preview_thumbs: dict[int, bytes] = {}    # id -> thumb (kept longer)
         self.last_frame = None                  # most recent CameraFrame
+        # the sequence engine registers itself so poll_status can report the
+        # active plan's meridian_flip setting without importing the engine.
+        self.engine = None
+        # last meridian dict from poll_status, so the engine's (sync) ETA can
+        # window-gate the flip cost without device I/O.
+        self.last_meridian: dict | None = None
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
         self._nina_ws_task: asyncio.Task | None = None
@@ -407,16 +449,13 @@ class Hub:
                                  light=(frame_type.upper() != "DARK"),
                                  save=save, target=target)
         self.last_frame = frame
-        info = await self._publish_preview(frame)
-        if save and frame.rendered_bytes is not None:
-            # The backend (NINA) already saved the file on the imaging machine.
-            if frame.saved_path:
-                info["saved_path"] = frame.saved_path
-                bus.log("info", f"NINA saved {Path(frame.saved_path).name}", "capture")
-            else:
-                bus.log("info", "NINA saved the frame", "capture")
-        elif save:
-            path = self._capture_path(target or "untargeted", frame_type)
+        # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
+        # preview so the first `preview` event already carries the correct
+        # saved_path/saved_local (P2-2). NINA saves on the imaging host during
+        # expose() and the frame already carries its saved_path.
+        local_save_path: Path | None = None
+        if save and frame.rendered_bytes is None:
+            local_save_path = self._capture_path(target or "untargeted", frame_type)
             ra = dec = None
             tel = self.devices.get("telescope")
             if tel and tel.connected:
@@ -431,41 +470,189 @@ class Hub:
                     filt = fw.filter_names[await fw.get_position()]
                 except Exception:
                     pass
-            save_fits(frame, path, target=target, filter_name=filt,
+            save_fits(frame, local_save_path, target=target, filter_name=filt,
                       frame_type=frame_type, ra_hours=ra, dec_deg=dec,
                       instrument=cam.name)
-            info["saved_path"] = str(path)
-            bus.log("info", f"saved {path.name}", "capture")
+            # carry the path on the frame so _publish_preview reports a correct
+            # saved_path/saved_local in the very first event (no stale re-publish).
+            frame.saved_path = str(local_save_path)
+
+        info = await self._publish_preview(frame)
+
+        if save and frame.rendered_bytes is not None:
+            # The backend (NINA) already saved the file on the imaging machine.
+            if frame.saved_path:
+                bus.log("info", f"NINA saved {Path(frame.saved_path).name}", "capture")
+            else:
+                bus.log("info", "NINA saved the frame", "capture")
+        elif local_save_path is not None:
+            bus.log("info", f"saved {local_save_path.name}", "capture")
         return info
 
+    def _preview_source(self) -> str:
+        """The PreviewSource label ("sim"|"alpaca"|"nina") for the event."""
+        return self.mode if self.mode in ("sim", "alpaca", "nina") else "sim"
+
+    def _pixel_scale_arcsec(self, binning: int) -> float | None:
+        """Arcsec/px for the captured (binned) frame, from the effective optics,
+        so HFR can be shown in arcsec and the scale bar drawn. None when optics
+        aren't known."""
+        opt = self.effective_optics()
+        base = opt.get("image_scale_arcsec_px")
+        if not base:
+            return None
+        return round(float(base) * max(1, int(binning or 1)), 3)
+
     async def _publish_preview(self, frame) -> dict:
-        # NINA frames arrive pre-rendered (auto-stretched) — use them verbatim;
-        # raw frames (sim/Alpaca) get our screen stretch.
-        if getattr(frame, "rendered_bytes", None) is not None:
-            png, mime = frame.rendered_bytes, frame.rendered_mime
-        else:
-            png = await asyncio.to_thread(to_png, frame.data)
-            mime = "image/png"
+        """Build + publish the ``preview`` event = the PreviewInfo contract
+        (live-preview spec §4.5/§6). Two corrected paths:
+
+        * **NINA** — pre-rendered (auto-stretched) JPEG used verbatim; histogram
+          is display-domain (``data_is_linear=False``); no lossless/linear
+          retention; clip mask disabled; no per-star list (NINA gives none).
+        * **raw/linear** (sim/Alpaca) — one ``detect_stars`` pass feeds HFR/count
+          AND the star overlay; display JPEG via the auto-stretch; both a display
+          histogram and a true linear histogram; a lossless PNG + the linear
+          array kept for the latest 1–2 frames only (Pi memory)."""
         self.preview_seq += 1
-        self.previews[self.preview_seq] = (png, mime)
-        for old in [k for k in self.previews if k <= self.preview_seq - 8]:
-            del self.previews[old]
-        info = {
-            "id": self.preview_seq,
-            "stats": frame_stats(frame.data),
-            "histogram": compute_histogram(frame.data),
+        pid = self.preview_seq
+        data = frame.data
+        source = self._preview_source()
+        binning = int(getattr(frame, "binning", 1) or 1)
+        full_well = getattr(frame, "full_well", None)
+        is_nina = getattr(frame, "rendered_bytes", None) is not None
+        data_is_linear = bool(getattr(frame, "data_is_linear", not is_nina))
+
+        saved_path = getattr(frame, "saved_path", None)
+        info: dict[str, Any] = {
+            "id": pid,
+            "stats": frame_stats(data),
             "exposure_s": frame.exposure_s,
             "gain": frame.gain,
-            "binning": frame.binning,
-            "width": int(frame.data.shape[1]),
-            "height": int(frame.data.shape[0]),
+            "binning": binning,
+            "data_width": int(data.shape[1]),
+            "data_height": int(data.shape[0]),
+            "source": source,
+            "is_stretched": is_nina,
+            "data_is_linear": data_is_linear,
+            "full_well": int(full_well) if full_well else None,
+            "pixel_scale_arcsec": self._pixel_scale_arcsec(binning),
+            "bayer_pattern": getattr(frame, "bayer_pattern", None),
+            "saved_path": saved_path,
+            "saved_local": self._is_local_save(saved_path),
+            "ts": time.time(),
         }
+
+        if is_nina:
+            # display = NINA's rendered bytes verbatim; histogram is of the
+            # decoded 8-bit copy, honestly labeled display-domain.
+            display, mime = frame.rendered_bytes, frame.rendered_mime
+            thumb = await asyncio.to_thread(to_thumb, display)
+            dw, dh = self._image_dims(display)
+            # P3-2: _image_dims returns (0,0) on a PIL decode failure; fall back to
+            # the data dims so the client never gets a 0-wide invisible stage /
+            # broken ScaleBar (the client also guards with `|| data_width`).
+            if not dw or not dh:
+                dw, dh = info["data_width"], info["data_height"]
+            info.update({
+                "histogram": await asyncio.to_thread(compute_histogram, data),
+                "histogram_domain": "display",
+                "display_width": dw, "display_height": dh,
+                "mime": mime, "has_lossless": False,
+                "auto_levels": {"black": 0.0, "mid": 0.5, "white": 1.0},
+            })
+            entry = PreviewEntry(display=display, mime=mime, thumb=thumb, meta=info)
+        else:
+            black, mid, white = await asyncio.to_thread(auto_levels, data)
+            jpeg, dw, dh = await asyncio.to_thread(
+                to_jpeg, data, black=black, mid=mid, white=white)
+            lossless = await asyncio.to_thread(to_png, data)
+            thumb = await asyncio.to_thread(to_thumb, data)
+            # display-domain histogram (handles have travel) + the true linear one
+            stretched = await asyncio.to_thread(stretch_with, data, black, mid, white)
+            hist_display = await asyncio.to_thread(display_histogram, stretched)
+            # one detection pass → HFR + count + overlay marks (no double detect)
+            hfr, count, marks = await asyncio.to_thread(
+                measure_frame, data, full_well=info["full_well"])
+            info.update({
+                "histogram": hist_display,
+                "histogram_linear": await asyncio.to_thread(compute_histogram, data),
+                "histogram_domain": "display",
+                "display_width": dw, "display_height": dh,
+                "mime": "image/jpeg", "has_lossless": True,
+                "auto_levels": {"black": round(black, 4), "mid": round(mid, 4),
+                                "white": round(white, 4)},
+                "star_list": marks,
+            })
+            # backend-measured HFR/stars (e.g. native) win; else our detection.
+            if hfr is not None:
+                info.setdefault("hfr", round(float(hfr), 2))
+                info.setdefault("stars", int(count))
+            # P3-1: do NOT retain the ~125 MB linear uint16 array in Pass 1 —
+            # nothing reads entry.linear yet (/crop and /render are 501 stubs and
+            # /lossless.png already covers paused/zoom). Re-enable retention
+            # (linear=data) when those Pass-2 routes land.
+            entry = PreviewEntry(display=jpeg, mime="image/jpeg", thumb=thumb,
+                                 lossless=lossless, linear=None, meta=info)
+
+        # backend-measured HFR/stars override (NINA carries its own)
         if getattr(frame, "hfr", None) is not None:
             info["hfr"] = round(float(frame.hfr), 2)
         if getattr(frame, "stars", None) is not None:
             info["stars"] = int(frame.stars)
+
+        self.previews[pid] = entry
+        self.preview_thumbs[pid] = entry.thumb
+        self._trim_previews()
         bus.publish("preview", **info)
         return info
+
+    @staticmethod
+    def _is_local_save(saved_path: str | None) -> bool:
+        """True only when ``saved_path`` is a real file under CAPTURE_DIR, so the
+        UI never offers a FITS download that will 404 (spec honesty rule #5).
+        NINA saves on the imaging host → not local → no FITS download offered."""
+        if not saved_path:
+            return False
+        try:
+            p = Path(saved_path).resolve()
+            return p.is_relative_to(CAPTURE_DIR.resolve()) and p.exists()
+        except (OSError, ValueError):
+            return False
+
+    def note_preview_saved(self, pid: int, saved_path: str) -> None:
+        """Record a post-publish local save on the ring entry's meta so the
+        ``/fits`` route can serve it (the hub saves sim/Alpaca FITS *after* the
+        preview event has already gone out)."""
+        entry = self.previews.get(pid)
+        if entry is None:
+            return
+        entry.meta["saved_path"] = saved_path
+        entry.meta["saved_local"] = self._is_local_save(saved_path)
+
+    @staticmethod
+    def _image_dims(buf: bytes) -> tuple[int, int]:
+        """(width, height) of an encoded image, best-effort (0,0 on failure)."""
+        try:
+            import io
+            from PIL import Image
+            with Image.open(io.BytesIO(buf)) as im:
+                return int(im.width), int(im.height)
+        except Exception:
+            return 0, 0
+
+    def _trim_previews(self) -> None:
+        """Enforce the three memory caps: full display for the latest 8, thumbs
+        for the latest 50, and the heavy lossless/linear only for the latest 1–2."""
+        cur = self.preview_seq
+        for k in [k for k in self.previews if k <= cur - PREVIEW_DISPLAY_KEEP]:
+            del self.previews[k]
+        for k in [k for k in self.preview_thumbs if k <= cur - PREVIEW_THUMB_KEEP]:
+            del self.preview_thumbs[k]
+        for k, e in self.previews.items():
+            if k <= cur - PREVIEW_LINEAR_KEEP:
+                e.lossless = None
+                e.linear = None
 
     def _capture_path(self, target: str, frame_type: str) -> Path:
         safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in target).strip() or "untargeted"
@@ -671,6 +858,90 @@ class Hub:
                 pass
             await asyncio.sleep(2.0)
 
+    # ----------------------------------------------------------- monitor telemetry
+
+    @staticmethod
+    def _cooler_at_target_c() -> float:
+        """The shared at-target band — imported from the engine so the Monitor's
+        ``at_target`` flag and the engine's cooling-wait gate never drift
+        (master plan §A.7). Falls back to 1.0 if the engine isn't importable."""
+        try:
+            from .sequence.engine import COOLER_AT_TARGET_C
+            return float(COOLER_AT_TARGET_C)
+        except Exception:
+            return 1.0
+
+    def _plan_flip_enabled(self) -> bool:
+        """Whether the active sequence plan asks for a meridian flip (a GEM with
+        the flip turned OFF near the meridian is a pier-collision risk the
+        Monitor warns about). False when there is no plan."""
+        eng = self.engine
+        plan = getattr(eng, "plan", None) if eng else None
+        return bool(plan and getattr(plan, "meridian_flip", False))
+
+    @staticmethod
+    def _is_gem(side: str) -> bool:
+        """Treat a real east/west pier report as a German-equatorial; ``unknown``
+        is not determinable (fork mounts report unknown/none)."""
+        return side in ("east", "west")
+
+    async def _compute_meridian(self, tel, ra_hours: float | None) -> dict:
+        """The MeridianInfo block. Prefers the device's own value (NINA); for
+        sim/Alpaca derives hours-to-flip from the hour angle HA = LST − RA."""
+        from .catalog.coords import lst_hours
+        meridian: dict[str, Any] = {
+            "status": "unknown", "hours_to_flip": None,
+            "flip_enabled": self._plan_flip_enabled(), "pier_side": "unknown"}
+        try:
+            ttf = await tel.time_to_meridian_flip()      # NINA → number; others None
+        except Exception:
+            ttf = None
+        try:
+            side = (await tel.pier_side()).value
+        except Exception:
+            side = "unknown"
+        meridian["pier_side"] = side
+        if ttf is None and ra_hours is not None:
+            # HA = LST − RA, wrapped to [−12, 12]; a GEM on the east side tracking
+            # west flips when the target crosses the meridian (HA crosses 0).
+            lst = lst_hours(self.site["longitude"])
+            ha = ((lst - ra_hours + 12) % 24) - 12
+            ttf = -ha
+        meridian["flip_enabled"] = self._is_gem(side) and self._plan_flip_enabled()
+        if not self._is_gem(side):
+            meridian["status"] = "n_a_fork" if side != "unknown" else "unknown"
+        elif not self._plan_flip_enabled():
+            meridian["status"] = "flip_disabled"          # GEM but plan disabled it
+        elif ttf is None:
+            meridian["status"] = "unknown"
+        elif ttf <= 0:
+            meridian["status"] = "due"
+            meridian["hours_to_flip"] = round(ttf, 4)
+        else:
+            meridian["status"] = "counting"
+            meridian["hours_to_flip"] = round(ttf, 4)
+        return meridian
+
+    async def monitor_snapshot(self) -> dict:
+        """One-shot cold-load hydration for the Monitor view (monitor spec §8).
+        Non-fatal; mirrors what the WS would push in ≤2s."""
+        eng = self.engine
+        seq = getattr(eng, "state", None) if eng else None
+        if not seq:
+            seq = {"state": "idle"}
+        guide_recent: list = []
+        if self.guider and self.guider.connected:
+            try:
+                guide_recent = list(getattr(self.guider.stats(), "recent", []) or [])
+            except Exception:
+                guide_recent = []
+        return {
+            "sequence": seq,
+            "status": await self.poll_status(),
+            "preview_id": self.preview_seq or None,
+            "guide_recent": guide_recent,
+        }
+
     async def poll_status(self) -> dict:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
@@ -692,6 +963,7 @@ class Hub:
             pass
         tel = self.devices.get("telescope")
         if tel and tel.connected:
+            ra = dec = None
             try:
                 ra, dec = await tel.get_position()
                 from .catalog import altaz, format_dec, format_ra
@@ -704,6 +976,17 @@ class Hub:
                     "parked": await tel.is_parked(),
                     "slewing": await tel.is_slewing(),
                 }
+            except Exception:
+                pass
+            # Server-computed meridian (Monitor): NINA returns a real number; for
+            # sim/Alpaca the hub derives it from the hour angle so the Monitor's
+            # flip countdown populates on every backend (monitor spec §6.1).
+            try:
+                meridian = await self._compute_meridian(tel, ra)
+                out["meridian"] = meridian
+                # stash so the engine's (sync) ETA can window-gate the flip cost
+                # without doing device I/O.
+                self.last_meridian = meridian
             except Exception:
                 pass
         foc = self.devices.get("focuser")
@@ -728,13 +1011,29 @@ class Hub:
         cam = self.devices.get("camera")
         if cam and cam.connected:
             try:
+                temp = await cam.get_temperature()
                 out["camera"] = {
-                    "temperature": await cam.get_temperature(),
+                    "temperature": temp,
                     "can_cool": cam.can_cool,
                     "has_dew_heater": getattr(cam, "has_dew_heater", False),
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
                 }
+                # Monitor cooler readout — driven by the per-backend get_cooler()
+                # (sim power model, Alpaca coolerpower probe, NINA optional). The
+                # at_target band is the single shared COOLER_AT_TARGET_C so it
+                # never drifts from the engine's cooling-wait gate.
+                getc = getattr(cam, "get_cooler", None)
+                if callable(getc):
+                    cooler = await getc()
+                    if cooler is not None:
+                        tgt = cooler.get("target_c")
+                        cooler["at_target"] = bool(
+                            tgt is not None and temp is not None
+                            and abs(temp - tgt) <= self._cooler_at_target_c())
+                        cooler.setdefault("can_report_power",
+                                          getattr(cam, "can_report_cooler_power", False))
+                        out["camera"]["cooler"] = cooler
             except Exception:
                 pass
         if self.guider and self.guider.connected:

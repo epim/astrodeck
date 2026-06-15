@@ -1,0 +1,671 @@
+// ============================================================================
+// Monitor presentational cells (monitor spec §11). Lane 2E.
+//
+// Consumes ONLY landed primitives: components/icons.tsx (Icon + IconName),
+// components/ui.tsx (Stat/Led/HoldButton/Panel), lib/eta.ts (formatters +
+// constants), lib/stateMeta.ts (honest state map). NO lucide-react — the
+// project's own icon set is the in-lane primitive (master §A reconciliation;
+// stateMeta.ts already chose project icons over lucide).
+//
+// Normative perceptual rules (monitor spec §9 / §4): state/urgency NEVER by
+// color alone — always glyph + word + (ring-fill / shape). All decorative motion
+// is gated behind prefers-reduced-motion (read once here via matchMedia). Leaf 1s
+// tickers (LiveTimer / CountdownTile) own their own interval so a per-second
+// repaint touches only those digits, never the MonitorView grid (resolves G1).
+// ============================================================================
+
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { Icon, type IconName } from "./icons";
+import { HoldButton as UiHoldButton, Led, Stat } from "./ui";
+import { stateMeta, type StateTone } from "../lib/stateMeta";
+import {
+  deriveFinish,
+  fmtClock,
+  fmtCountdown,
+  fmtDuration,
+  SPARKLINE_SCALE_ARCSEC,
+} from "../lib/eta";
+import type { SequenceState } from "../types";
+
+// ----------------------------------------------------------------- motion gate
+/** One reactive read of `prefers-reduced-motion`. Decorative motion (blink,
+ *  LIVE pulse, sub-frame animation) is suppressed when the user asks for it; the
+ *  numeric/glyph liveness channels always remain (monitor spec §9 "Motion"). */
+export function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => {
+    if (typeof matchMedia !== "function") return false;
+    return matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return;
+    const mq = matchMedia("(prefers-reduced-motion: reduce)");
+    const on = () => setReduced(mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return reduced;
+}
+
+/** 1s wall-clock tick, local to a leaf so only that leaf repaints (resolves
+ *  G1/G2). Returns Date.now() refreshed every second. */
+function useNowTick(periodMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), periodMs);
+    return () => clearInterval(t);
+  }, [periodMs]);
+  return now;
+}
+
+// tone → text color class (Monitor's StateTone is wider than the design Tone).
+const TONE_TEXT: Record<StateTone, string> = {
+  good: "text-good",
+  warn: "text-warn",
+  bad: "text-bad",
+  accent: "text-accent",
+  dim: "text-dim",
+};
+
+// ============================================================ STATE BADGE
+/** Sequence-state badge: Icon + the WORD always (never icon-only, never
+ *  color-only). Blinks only for blinkable states when motion is allowed
+ *  (resolves D3/E.1/E.2). */
+export const StateBadge = memo(function StateBadge({
+  state,
+  reducedMotion,
+}: {
+  state: SequenceState["state"];
+  reducedMotion?: boolean;
+}) {
+  const m = stateMeta(state);
+  const blink = m.blinkable && !reducedMotion;
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 text-xs font-display font-semibold
+        tracking-[0.2em] uppercase ${TONE_TEXT[m.tone]} ${blink ? "blink" : ""}`}
+      role="status"
+    >
+      <Icon name={m.icon} size={15} />
+      {m.label}
+    </span>
+  );
+});
+
+// ============================================================ LIVE TIMER
+/** Finish clock + relative remaining, both derived from ONE client clock
+ *  (resolves C11/B4). `~`/"estimating…" until the server marks the ETA
+ *  confident; "PAUSED — no ETA" when paused (a paused run has no honest finish).
+ *  Finish clock is the largest header text (>=20px mono — accessibility-3). */
+export const LiveTimer = memo(function LiveTimer({
+  etaS,
+  receivedAtMs,
+  confident,
+  paused,
+}: {
+  etaS?: number;
+  receivedAtMs: number;
+  confident?: boolean;
+  paused?: boolean;
+}) {
+  const now = useNowTick();
+
+  if (paused) {
+    return (
+      <div className="flex flex-col items-end leading-tight">
+        <span className="mono text-[20px] text-warn tabular-nums">PAUSED</span>
+        <span className="label !text-[10px]">no ETA while paused</span>
+      </div>
+    );
+  }
+
+  if (etaS == null) {
+    return (
+      <div className="flex flex-col items-end leading-tight">
+        <span className="mono text-[20px] text-dim tabular-nums">—:—</span>
+        <span className="label !text-[10px]">estimating…</span>
+      </div>
+    );
+  }
+
+  const { remainingS, finishAtMs } = deriveFinish(etaS, receivedAtMs, now);
+  const lowConf = confident === false;
+  const prefix = lowConf ? "~" : "";
+
+  return (
+    <div className="flex flex-col items-end leading-tight">
+      <span
+        className={`mono text-[20px] tabular-nums ${lowConf ? "text-dim" : "text-ink"}`}
+        aria-label={`Finish at ${fmtClock(finishAtMs, now)}`}
+      >
+        {prefix}
+        {fmtClock(finishAtMs, now)}
+      </span>
+      <span className={`label !text-[10px] ${lowConf ? "" : "text-dim"}`}>
+        {lowConf ? "estimating…" : `in ${prefix}${fmtDuration(remainingS)}`}
+      </span>
+    </div>
+  );
+});
+
+// ============================================================ HOLD BUTTON
+/** Monitor-shaped Abort hold-button. Thin adapter over the canonical
+ *  design-system HoldButton (master §A.0 — design-system OWNS it, everyone
+ *  consumes). `label` is the canonical announce/a11y slot — the BARE verb
+ *  phrase ("Abort sequence"); the design-system prepends "HOLD TO …" itself, so
+ *  callers must NOT pass "Hold to …" (P2-6: that produced "HOLD TO HOLD TO …").
+ *  `face` is the short resting button text ("Abort"). Maps
+ *  {face,label,onConfirm,holdMs,danger} → the render-prop bind, drawing the
+ *  ring-fill from `bind.progress`. >=48px, focus ring; the keyboard arm/confirm
+ *  + aria-live live inside the design-system component. */
+export function HoldButton({
+  face,
+  label,
+  holdMs = 800,
+  danger = true,
+  onConfirm,
+  hint,
+  disabled,
+}: {
+  face: string; // short resting button text, e.g. "Abort"
+  label: string; // bare announce verb phrase, e.g. "Abort sequence" (NO "Hold to")
+  holdMs?: number;
+  danger?: boolean;
+  onConfirm: () => void;
+  hint?: string; // optional sub-line, e.g. "link down — sending anyway"
+  disabled?: boolean;
+}) {
+  return (
+    <UiHoldButton onConfirm={onConfirm} label={label} holdMs={holdMs} disabled={disabled}>
+      {(bind) => (
+        <button
+          type="button"
+          aria-label={bind["aria-label"]}
+          onPointerDown={bind.onPointerDown}
+          onPointerUp={bind.onPointerUp}
+          onPointerCancel={bind.onPointerUp}
+          onKeyDown={bind.onKeyDown}
+          onKeyUp={bind.onKeyUp}
+          disabled={disabled}
+          className={`relative overflow-hidden inline-flex flex-col items-center justify-center
+            min-h-[48px] min-w-[88px] px-4 select-none touch-none
+            border ${danger ? "border-danger/55 text-danger" : "border-line2 text-ink"}
+            bg-raise font-display font-semibold text-xs tracking-[0.14em] uppercase
+            ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+        >
+          {/* ring-fill progress — the non-color hold signal (master §A.0) */}
+          <span
+            aria-hidden
+            className="absolute inset-y-0 left-0 bg-danger/25 pointer-events-none transition-[width] duration-75"
+            style={{ width: `${Math.round(bind.progress * 100)}%` }}
+          />
+          <span className="relative z-10 inline-flex items-center gap-1.5">
+            <Icon name="stop" size={14} />
+            {bind.armed ? bind.hintLabel : face}
+          </span>
+          {hint && (
+            <span className="relative z-10 label !text-[9px] !tracking-normal normal-case text-warn mt-0.5">
+              {hint}
+            </span>
+          )}
+        </button>
+      )}
+    </UiHoldButton>
+  );
+}
+
+// ============================================================ PAUSE BUTTON
+/** Plain (non-hold) Pause/Resume — pause is non-destructive (resolves A1/B5).
+ *  >=44px, focus ring inherited from index.css. */
+export function PauseButton({
+  paused,
+  onPause,
+  onResume,
+  disabled,
+}: {
+  paused: boolean;
+  onPause: () => void;
+  onResume: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={paused ? onResume : onPause}
+      className={`btn ${paused ? "btn-accent" : ""} inline-flex items-center gap-1.5
+        min-h-[44px] !px-4`}
+      aria-label={paused ? "Resume sequence" : "Pause sequence"}
+    >
+      <Icon name={paused ? "play" : "pause"} size={14} />
+      {paused ? "Resume" : "Pause"}
+    </button>
+  );
+}
+
+// ============================================================ SPARKLINE
+const SPARK_W = 240;
+const SPARK_H = 56;
+
+/** Fixed-scale dual-axis guide sparkline (or single hfr trend). FIXED +-4"
+ *  scale with clip indicators — no per-tick rescale that flattens spikes
+ *  (resolves C2). RA vs DEC differentiated by dash + width + inline text labels,
+ *  NOT color (night collapses accent ~= warn — resolves D10). Memoized. */
+export const Sparkline = memo(function Sparkline({
+  samples,
+  scaleArcsec = SPARKLINE_SCALE_ARCSEC,
+  mode = "guide",
+}: {
+  samples: { t: number; ra: number; dec: number }[] | number[];
+  scaleArcsec?: number;
+  mode?: "guide" | "trend";
+}) {
+  const paths = useMemo(() => {
+    if (samples.length === 0) return null;
+
+    const toX = (i: number, n: number) => (n <= 1 ? SPARK_W : (i / (n - 1)) * SPARK_W);
+
+    if (mode === "trend") {
+      const arr = samples as number[];
+      const n = arr.length;
+      // trend uses its own data-driven band (hfr px), not the arcsec guide scale.
+      const max = Math.max(scaleArcsec, ...arr) || 1;
+      const toY = (v: number) => SPARK_H - (Math.min(v, max) / max) * SPARK_H;
+      let d = "";
+      arr.forEach((v, i) => (d += `${i === 0 ? "M" : "L"}${toX(i, n).toFixed(1)} ${toY(v).toFixed(1)} `));
+      return { trend: d.trim(), clipHi: false, clipLo: false };
+    }
+
+    const arr = samples as { t: number; ra: number; dec: number }[];
+    const n = arr.length;
+    const mid = SPARK_H / 2;
+    const toY = (v: number) => mid - (Math.max(-scaleArcsec, Math.min(scaleArcsec, v)) / scaleArcsec) * mid;
+    let clipHi = false;
+    let clipLo = false;
+    let ra = "";
+    let dec = "";
+    arr.forEach((s, i) => {
+      if (s.ra > scaleArcsec || s.dec > scaleArcsec) clipHi = true;
+      if (s.ra < -scaleArcsec || s.dec < -scaleArcsec) clipLo = true;
+      const x = toX(i, n).toFixed(1);
+      ra += `${i === 0 ? "M" : "L"}${x} ${toY(s.ra).toFixed(1)} `;
+      dec += `${i === 0 ? "M" : "L"}${x} ${toY(s.dec).toFixed(1)} `;
+    });
+    return { ra: ra.trim(), dec: dec.trim(), clipHi, clipLo };
+  }, [samples, scaleArcsec, mode]);
+
+  if (!paths) {
+    return <div className="text-dim text-xs py-4 text-center">no data</div>;
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+      preserveAspectRatio="none"
+      className="w-full"
+      style={{ height: SPARK_H }}
+      role="img"
+      aria-label={mode === "trend" ? "HFR trend" : "Guide error over time"}
+    >
+      {/* zero baseline (guide) */}
+      {mode === "guide" && (
+        <line x1={0} y1={SPARK_H / 2} x2={SPARK_W} y2={SPARK_H / 2} stroke="var(--line-bright)" strokeWidth={1} />
+      )}
+      {mode === "guide" ? (
+        <>
+          {/* RA = solid, thicker; DEC = dashed, thinner. Differentiated without color. */}
+          <path d={paths.ra} fill="none" stroke="var(--accent)" strokeWidth={1.6} />
+          <path d={paths.dec} fill="none" stroke="var(--text-dim)" strokeWidth={1} strokeDasharray="3 2" />
+          {/* clip indicators (resolves C2) */}
+          {paths.clipHi && <polygon points={`${SPARK_W - 6},2 ${SPARK_W - 1},8 ${SPARK_W - 11},8`} fill="var(--bad)" />}
+          {paths.clipLo && (
+            <polygon
+              points={`${SPARK_W - 6},${SPARK_H - 2} ${SPARK_W - 1},${SPARK_H - 8} ${SPARK_W - 11},${SPARK_H - 8}`}
+              fill="var(--bad)"
+            />
+          )}
+        </>
+      ) : (
+        <path d={paths.trend} fill="none" stroke="var(--accent)" strokeWidth={1.4} />
+      )}
+    </svg>
+  );
+});
+
+// ============================================================ COUNTDOWN TILE
+/** Single countdown primitive (Donut removed). Urgency by RING-FILL proportion +
+ *  glyph + text, NOT a color ramp (night collapses colors — resolves D2/E.9).
+ *  `seconds=null` => non-counting variants render their static label only. Leaf
+ *  1s ticker. */
+export function CountdownTile({
+  label,
+  seconds,
+  warnAtS,
+  totalS,
+  dueLabel,
+  variant,
+  tone = "accent",
+  reducedMotion,
+  sub,
+}: {
+  label: string;
+  seconds: number | null;
+  warnAtS: number;
+  totalS?: number; // ring denominator; defaults to a sane window
+  dueLabel?: string;
+  variant: "flip" | "cooling";
+  tone?: StateTone;
+  reducedMotion?: boolean;
+  sub?: ReactNode;
+}) {
+  const now = useNowTick();
+  // Anchor the countdown to the client clock so it ticks smoothly between the 2s
+  // status polls (CountdownTile is re-mounted with a fresh `seconds` each poll).
+  const anchoredRef = useRef<{ at: number; seconds: number } | null>(null);
+  useEffect(() => {
+    anchoredRef.current = seconds == null ? null : { at: Date.now(), seconds };
+  }, [seconds]);
+
+  const liveSeconds =
+    seconds == null
+      ? null
+      : Math.max(0, (anchoredRef.current?.seconds ?? seconds) - (now - (anchoredRef.current?.at ?? now)) / 1000);
+
+  const due = liveSeconds != null && liveSeconds <= 0;
+  const warn = liveSeconds != null && liveSeconds <= warnAtS && !due;
+  // ring fills as the remaining time shrinks against the window.
+  const denom = totalS && totalS > 0 ? totalS : Math.max(warnAtS * 4, 3600);
+  const frac = liveSeconds == null ? 0 : 1 - Math.min(1, liveSeconds / denom);
+  const ringTone: StateTone = due ? "bad" : warn ? "warn" : tone;
+
+  const R = 18;
+  const C = 2 * Math.PI * R;
+  const blink = (variant === "flip" && warn && !reducedMotion);
+
+  return (
+    <div className="flex items-center gap-3 min-w-0">
+      <svg width={44} height={44} viewBox="0 0 44 44" aria-hidden className="shrink-0">
+        <circle cx={22} cy={22} r={R} fill="none" stroke="var(--line-bright)" strokeWidth={3} />
+        {liveSeconds != null && (
+          <circle
+            cx={22}
+            cy={22}
+            r={R}
+            fill="none"
+            stroke={`var(--${ringTone === "accent" ? "accent" : ringTone === "bad" ? "bad" : ringTone === "warn" ? "warn" : "good"})`}
+            strokeWidth={3}
+            strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={C * (1 - frac)}
+            transform="rotate(-90 22 22)"
+          />
+        )}
+      </svg>
+      <div className="min-w-0 leading-tight">
+        <div className="label !text-[10px] truncate">{label}</div>
+        {liveSeconds == null ? (
+          <div className={`text-xs ${TONE_TEXT[tone]} truncate`}>{sub}</div>
+        ) : due ? (
+          <div className={`inline-flex items-center gap-1 text-sm font-semibold text-bad ${blink ? "blink" : ""}`}>
+            <Icon name="alert" size={14} />
+            {dueLabel ?? "DUE"}
+          </div>
+        ) : (
+          <>
+            <div
+              className={`mono text-base tabular-nums ${due ? "text-bad" : warn ? "text-warn" : "text-ink"} ${blink ? "blink" : ""}`}
+            >
+              {fmtCountdown(liveSeconds)}
+            </div>
+            {sub && <div className="label !text-[9px] text-dim truncate">{sub}</div>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================ THERMOMETER BAR
+/** Cooler power readout. With power: 0-100% bar + target + at-target check.
+ *  Without (`canReportPower=false`): degrade to an ON/OFF Led + the WORD
+ *  "ON"/"OFF" + target + "(no power readout)" — the word is required because the
+ *  Led is color-only and red at night (resolves accessibility-13/crit2-A2).
+ *  Memoized: its props derive from the 2s status poll, never the parent's 1s
+ *  coarse tick, so the per-second repaint skips this cell entirely (P3-8). */
+export const ThermometerBar = memo(function ThermometerBar({
+  power,
+  on,
+  target,
+  atTarget,
+  canReportPower,
+}: {
+  power: number | null;
+  on: boolean;
+  target: number | null;
+  atTarget: boolean;
+  canReportPower: boolean;
+}) {
+  const targetStr = target != null ? `${target > 0 ? "+" : ""}${target}°C` : "—";
+
+  if (!canReportPower || power == null) {
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        <Led state={on ? "on" : "off"} label={on ? "cooler on" : "cooler off"} />
+        <span className={`mono text-xs ${on ? "text-ink" : "text-dim"}`}>{on ? "ON" : "OFF"}</span>
+        <span className="text-xs text-dim">→ {targetStr}</span>
+        {atTarget && (
+          <span className="inline-flex items-center gap-0.5 text-good text-xs">
+            <Icon name="check" size={12} /> at target
+          </span>
+        )}
+        <span className="label !text-[9px] ml-auto">(no power readout)</span>
+      </div>
+    );
+  }
+
+  const pct = Math.max(0, Math.min(100, power));
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <div className="flex items-center justify-between text-xs">
+        <span className="label !text-[10px]">cooler power</span>
+        <span className="mono text-ink tabular-nums">{Math.round(pct)}%</span>
+      </div>
+      {/* reuse the canonical progress track so the night min-contrast top edge applies */}
+      <div className="progress-track !h-2.5" role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
+        <div className="progress-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex items-center gap-2 text-xs text-dim">
+        <span>→ {targetStr}</span>
+        {atTarget && (
+          <span className="inline-flex items-center gap-0.5 text-good">
+            <Icon name="check" size={12} /> at target
+          </span>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ============================================================ PREVIEW TILE
+/** Last-frame thumbnail. Double-buffered (no per-frame flash) with an onError
+ *  guard (evicted/decoded-fail keeps the previous frame and flips to STALE,
+ *  resolves F3). Per-tile night brightness dimmer (resolves D1, applied as an
+ *  extra filter on top of img.astro). LIVE = a dim outline (not a glow). Real
+ *  <button> for keyboard/SR (resolves accessibility-7). Server thumb route
+ *  (/api/preview/{id}/thumb.jpg, same as the filmstrip) so NINA JPEG + evicted
+ *  older frames stay live instead of 404→STALE on the .png compat route.
+ *  Memoized so the parent's 1s coarse tick repaints this heavy cell only when a
+ *  prop it actually depends on changes (live/stale flip, new frame, brightness),
+ *  not every second — caller must pass useMemo-stable meta/clip (P3-8). */
+export const PreviewTile = memo(function PreviewTile({
+  previewId,
+  live,
+  stale,
+  hfr,
+  stars,
+  meta,
+  clip,
+  brightness,
+  onBrightness,
+  onOpen,
+  hfrGood = 3,
+  hfrWarn = 5,
+  reducedMotion,
+}: {
+  previewId: number | null;
+  live: boolean;
+  stale: boolean;
+  hfr?: number;
+  stars?: number;
+  meta?: string;
+  clip?: boolean;
+  brightness: number;
+  onBrightness: (v: number) => void;
+  onOpen: () => void;
+  hfrGood?: number;
+  hfrWarn?: number;
+  reducedMotion?: boolean;
+}) {
+  // Double buffer: track the id currently painted; only swap on a successful load
+  // of the incoming id. On error we keep the old frame and report stale upward.
+  const [shownId, setShownId] = useState<number | null>(previewId);
+  const [loadError, setLoadError] = useState(false);
+
+  useEffect(() => {
+    if (previewId == null) return;
+    setLoadError(false);
+  }, [previewId]);
+
+  const showStale = stale || loadError;
+  const showLive = live && !showStale;
+  const hfrTone = hfr == null ? "" : hfr < hfrGood ? "text-good" : hfr < hfrWarn ? "text-warn" : "text-bad";
+
+  return (
+    <div className="flex flex-col gap-2 min-w-0">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="Open live preview in Capture"
+        className="astro-surface group relative block w-full overflow-hidden border bg-black
+          aspect-[16/10] cursor-pointer"
+        style={{
+          borderColor: showLive ? "var(--accent-dim)" : "var(--line)",
+          boxShadow: showLive && !reducedMotion ? "0 0 0 1px var(--accent-dim)" : undefined,
+        }}
+      >
+        {previewId == null ? (
+          <span className="absolute inset-0 flex items-center justify-center text-dim text-xs tracking-[0.2em] uppercase">
+            no frame yet
+          </span>
+        ) : (
+          <>
+            {/* incoming buffer (hidden until it loads) drives the swap. Canonical
+                server thumb (/thumb.jpg — always JPEG, kept ~50 frames) so NINA
+                frames + evicted older sim frames stay live, not 404→STALE. */}
+            <img
+              key={previewId}
+              src={`/api/preview/${previewId}/thumb.jpg`}
+              alt=""
+              className="astro absolute inset-0 w-full h-full object-contain"
+              style={{ filter: `brightness(${brightness})` }}
+              onLoad={() => {
+                setShownId(previewId);
+                setLoadError(false);
+              }}
+              onError={() => setLoadError(true)}
+            />
+            {/* fallback: last good frame stays visible if the new one failed */}
+            {loadError && shownId != null && shownId !== previewId && (
+              <img
+                src={`/api/preview/${shownId}/thumb.jpg`}
+                alt=""
+                className="astro absolute inset-0 w-full h-full object-contain"
+                style={{ filter: `brightness(${brightness})` }}
+              />
+            )}
+          </>
+        )}
+
+        {/* LIVE / STALE chip — tied to real frame age, not motion */}
+        {previewId != null && (
+          <span className="absolute top-1.5 left-1.5 preview-chip inline-flex items-center gap-1">
+            <span
+              className="w-1.5 h-1.5 rounded-full"
+              style={{ background: showLive ? "var(--accent)" : "var(--warn)" }}
+              aria-hidden
+            />
+            {showLive ? "LIVE" : "STALE"}
+          </span>
+        )}
+
+        {/* clip chip (only when linear+clipping, gated by caller) */}
+        {clip && (
+          <span className="absolute top-1.5 right-1.5 preview-chip !text-bad inline-flex items-center gap-1">
+            <Icon name="alert" size={10} /> CLIP
+          </span>
+        )}
+
+        {/* HFR / stars / exposure chips, bottom-left */}
+        {(hfr != null || stars != null || meta) && (
+          <span className="absolute bottom-1.5 left-1.5 flex flex-wrap gap-1">
+            {hfr != null && (
+              <span className={`preview-chip inline-flex items-center gap-1 ${hfrTone}`}>
+                HFR {hfr.toFixed(2)}
+              </span>
+            )}
+            {stars != null && <span className="preview-chip">{stars}★</span>}
+            {meta && <span className="preview-chip">{meta}</span>}
+          </span>
+        )}
+      </button>
+
+      {/* per-tile night brightness dimmer (ships day-one, persisted by caller) */}
+      <label className="flex items-center gap-2 text-[10px]">
+        <Icon name="moon" size={12} className="text-dim shrink-0" />
+        <input
+          type="range"
+          min={0.2}
+          max={1}
+          step={0.05}
+          value={brightness}
+          onChange={(e) => onBrightness(Number(e.target.value))}
+          className="dimmer flex-1"
+          aria-label="Thumbnail brightness"
+        />
+        <span className="mono text-dim tabular-nums w-8 text-right">{Math.round(brightness * 100)}%</span>
+      </label>
+    </div>
+  );
+});
+
+// ============================================================ METRIC STRIP
+/** Compact label/value strip wrapping Stat — used for thermal + guide RMS rows.
+ *  Pure layout, no state. */
+export function MetricStrip({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">{children}</div>;
+}
+
+// ============================================================ RMS WORD
+/** RMS qualitative word + glyph — the accessible channel (resolves C3/D16).
+ *  <1" good, 1-2" soft, >2" poor. Color is decorative reinforcement only. */
+export function RmsVerdict({ rms }: { rms: number | null | undefined }) {
+  if (rms == null) return <Stat label="RMS" value={null} />;
+  const tone: StateTone = rms < 1 ? "good" : rms <= 2 ? "warn" : "bad";
+  const word = rms < 1 ? "good" : rms <= 2 ? "soft" : "poor";
+  const glyph: IconName = rms < 1 ? "check" : rms <= 2 ? "alert" : "x";
+  return (
+    <div className="flex flex-col gap-0.5 min-w-0">
+      <span className="label">RMS total</span>
+      <span className={`inline-flex items-center gap-1 mono text-sm ${TONE_TEXT[tone]}`}>
+        <Icon name={glyph} size={12} />
+        {rms.toFixed(2)}″ <span className="text-xs">{word}</span>
+      </span>
+    </div>
+  );
+}

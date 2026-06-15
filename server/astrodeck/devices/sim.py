@@ -45,6 +45,16 @@ class SimCamera(Camera):
     """Renders stars from a deterministic per-sky-tile catalog."""
 
     FOV_DEG = 1.4  # diagonal field of view at bin 1
+    AMBIENT_C = 12.3  # uncooled sensor temperature; also the cooler-power baseline
+
+    #: the sim is the one backend that reports a real cooler-power number so the
+    #: Monitor ThermometerBar is exercised out of the box (monitor spec §6.2).
+    can_report_cooler_power: bool = True
+
+    #: the sim renders into a full 16-bit container and clips at 65535, so that is
+    #: its true saturation ADU. Carried on each frame so the clip/saturation
+    #: overlay is exercised on the dev-default backend (live-preview finding #1/#3).
+    full_well: int | None = 65535
 
     def __init__(self, rig: SimRig, name: str = "Sim Camera 533MM"):
         super().__init__(name)
@@ -59,6 +69,8 @@ class SimCamera(Camera):
         self._cooler_on = False
         self._target_c = -10.0
         self._abort = asyncio.Event()
+        self.can_report_cooler_power = True
+        self.full_well = 65535
 
     async def connect(self) -> None:
         await asyncio.sleep(0.1)
@@ -76,7 +88,20 @@ class SimCamera(Camera):
             self._target_c = target_c
 
     async def get_temperature(self) -> float | None:
-        return self.rig.sensor_temp if self._cooler_on else 12.3
+        return self.rig.sensor_temp if self._cooler_on else self.AMBIENT_C
+
+    async def get_cooler(self) -> dict | None:
+        """A trivial power model so the Monitor cooler readout is non-trivial:
+        power tracks how hard the cooler is working to hold the delta from
+        ambient (0% when off / at ambient, ~100% pulling the full delta)."""
+        temp = await self.get_temperature()
+        if not self._cooler_on or temp is None:
+            power = 0.0
+        else:
+            span = self.AMBIENT_C - self._target_c
+            power = 0.0 if span <= 0 else (self.AMBIENT_C - temp) / span * 100.0
+        return {"on": self._cooler_on, "power": round(max(0.0, min(100.0, power)), 1),
+                "target_c": self._target_c, "can_report_power": True}
 
     async def set_dew_heater(self, power: int) -> None:
         self._dew_power = max(0, min(100, int(power)))
@@ -101,6 +126,9 @@ class SimCamera(Camera):
             bayer_pattern=None,
             temperature_c=await self.get_temperature(),
             timestamp=time.time(),
+            # raw linear render that clips at 65535 → carry full_well so the
+            # clip/saturation overlay is honest on the dev-default backend.
+            full_well=self.full_well, data_is_linear=True,
         )
 
     # ---------------------------------------------------------------- render

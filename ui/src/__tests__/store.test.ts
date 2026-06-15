@@ -30,7 +30,7 @@ if (typeof g.localStorage === "undefined") {
 
 // Import AFTER the stub is installed so the store's top-level loadPlan() succeeds.
 const { useStore } = await import("../store");
-import type { RigStatus, SiteInfo } from "../types";
+import type { PreviewInfo, RigStatus, SiteInfo } from "../types";
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -129,6 +129,206 @@ test("P3-4: store has no backward-compat `toast` mirror field", () => {
   // The real queue still works.
   useStore.getState().enqueueToast({ level: "error", title: "Boom" });
   assert(useStore.getState().toasts.length > 0, "enqueue still populates toasts");
+});
+
+// ====================================================================
+// BATCH-2 (lane 2A) — live-preview ring + monitor slices
+// ====================================================================
+function mkPreview(id: number): PreviewInfo {
+  return {
+    id,
+    stats: { min: 0, max: 100, mean: 10, median: 8, std: 5 },
+    histogram: [],
+    histogram_domain: "display",
+    exposure_s: 2,
+    gain: 100,
+    binning: 1,
+    data_width: 1000,
+    data_height: 800,
+    display_width: 1000,
+    display_height: 800,
+    mime: "image/jpeg",
+    source: "sim",
+    is_stretched: false,
+    data_is_linear: true,
+    has_lossless: true,
+    full_well: 65535,
+    auto_levels: { black: 0, mid: 0.5, white: 1 },
+    ts: id,
+  };
+}
+
+// --------------------------------- live-preview: pushPreview ring (cap 24)
+test("preview: pushPreview appends, caps at 24, tracks livePreviewId", () => {
+  // reset ring
+  useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+  for (let i = 1; i <= 30; i++) useStore.getState().pushPreview(mkPreview(i));
+  const s = useStore.getState();
+  eq(s.previews.length, 24, "capped at 24");
+  eq(s.previews[0].id, 7, "oldest trimmed (30-24+1=7)");
+  eq(s.previews[s.previews.length - 1].id, 30, "newest last");
+  eq(s.livePreviewId, 30, "livePreviewId follows newest");
+});
+
+// --------------------------------- live-preview: "preview" event -> pushPreview + liveness
+test("preview: 'preview' event pushes ring, sets preview + lastFrameAtMs", () => {
+  useStore.setState({ previews: [], preview: null, livePreviewId: null, lastFrameAtMs: null });
+  const before = Date.now();
+  useStore.getState().handleEvent({
+    type: "preview",
+    data: mkPreview(42) as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const s = useStore.getState();
+  eq(s.preview!.id, 42, "single preview set");
+  eq(s.previews.length, 1, "ring received frame");
+  eq(s.livePreviewId, 42, "livePreviewId set");
+  assert(s.lastFrameAtMs !== null && s.lastFrameAtMs >= before, "lastFrameAtMs stamped");
+});
+
+// --------------------------------- live-preview: pinning is sticky
+test("preview: selectPreview pins; new live frame does not move the pin", () => {
+  useStore.setState({ previews: [], selectedPreviewId: null, livePreviewId: null });
+  useStore.getState().pushPreview(mkPreview(1));
+  useStore.getState().selectPreview(1);
+  useStore.getState().pushPreview(mkPreview(2)); // new live arrival
+  const s = useStore.getState();
+  eq(s.selectedPreviewId, 1, "pin held");
+  eq(s.livePreviewId, 2, "live advanced underneath");
+});
+
+// --------------------------------- live-preview: persistence of toggles only
+test("preview: setStretch persists auto/advancedOpen only, never absolute levels", () => {
+  localStorage.removeItem("astrodeck-preview");
+  useStore.getState().setStretch({ auto: false, advancedOpen: true, black: 0.3, mid: 0.7 });
+  const raw = localStorage.getItem("astrodeck-preview");
+  assert(!!raw, "persisted");
+  const p = JSON.parse(raw as string);
+  eq(p.auto, false, "auto persisted");
+  eq(p.advancedOpen, true, "advancedOpen persisted");
+  assert(!("black" in p) && p.stretch === undefined, "absolute levels NOT persisted");
+  // store still holds the in-memory absolute levels for the session
+  eq(useStore.getState().stretch.black, 0.3, "black kept in-memory");
+});
+
+// --------------------------------- P2-8: persistPreview no-op on unchanged subset
+// Dragging a B/M/W handle fires setStretch dozens/sec but never changes the
+// persisted subset {auto, advancedOpen, overlays}; persistPreview must skip the
+// localStorage.setItem on those moves (only write when the subset actually
+// changes).
+test("P2-8: setStretch B/M/W drag does not re-write localStorage; toggle change does", () => {
+  // Establish a known persisted baseline (auto:false, advancedOpen:false).
+  useStore.getState().setStretch({ auto: false, advancedOpen: false });
+
+  // Count setItem calls hitting the preview key.
+  const store = globalThis.localStorage as unknown as {
+    setItem: (k: string, v: string) => void;
+  };
+  const orig = store.setItem.bind(store);
+  let previewWrites = 0;
+  store.setItem = (k: string, v: string) => {
+    if (k === "astrodeck-preview") previewWrites++;
+    orig(k, v);
+  };
+  try {
+    // Pure B/M/W/brightness drag — persisted subset unchanged → zero writes.
+    useStore.getState().setStretch({ black: 0.1 });
+    useStore.getState().setStretch({ black: 0.2, mid: 0.6 });
+    useStore.getState().setStretch({ white: 0.9, brightness: 0.3 });
+    eq(previewWrites, 0, "no writes during B/M/W drag");
+
+    // A real toggle change must still persist.
+    useStore.getState().setStretch({ advancedOpen: true });
+    eq(previewWrites, 1, "toggle change writes once");
+
+    // Re-applying the same toggle value is also a no-op.
+    useStore.getState().setStretch({ advancedOpen: true });
+    eq(previewWrites, 1, "idempotent toggle write skipped");
+  } finally {
+    store.setItem = orig;
+  }
+});
+
+// --------------------------------- monitor: guide event stamps lastGuideAtMs
+test("monitor: 'guide' event stamps lastGuideAtMs", () => {
+  useStore.setState({ lastGuideAtMs: null });
+  const before = Date.now();
+  useStore.getState().handleEvent({
+    type: "guide",
+    data: { guiding: true, rms_ra: 0.5, rms_dec: 0.4, rms_total: 0.6, snr: 30, recent: [] } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const t = useStore.getState().lastGuideAtMs;
+  assert(t !== null && t >= before, "lastGuideAtMs stamped");
+});
+
+// --------------------------------- monitor: runBanner rising edge + clear
+test("monitor: sequence rising-edge raises runBanner; terminal clears it", () => {
+  useStore.setState({ sequence: { state: "idle" }, runBanner: null, view: "capture", autoMonitor: false });
+  // idle -> running raises the banner
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "Tonight", progress: { frames_done: 0, frames_total: 10, percent: 0, elapsed_s: 0, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  let s = useStore.getState();
+  assert(!!s.runBanner && s.runBanner.active, "banner active on rising edge");
+  eq(s.runBanner!.plan_name, "Tonight", "plan_name carried");
+  // progress updates percent
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "Tonight", progress: { frames_done: 5, frames_total: 10, percent: 50, elapsed_s: 100, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  eq(useStore.getState().runBanner!.percent, 50, "percent updated");
+  // complete clears the banner
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "complete", progress: { frames_done: 10, frames_total: 10, percent: 100, elapsed_s: 200, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  s = useStore.getState();
+  eq(s.runBanner, null, "banner cleared on complete");
+  eq(s.view, "capture", "no forced redirect (autoMonitor off, not on connect)");
+});
+
+// --------------------------------- monitor: guarded auto-select only from connect+pref
+test("monitor: auto-select to monitor only when autoMonitor on AND view is connect", () => {
+  // pref off → no switch even from connect
+  useStore.setState({ sequence: { state: "idle" }, view: "connect", autoMonitor: false, runBanner: null });
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "P" } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  eq(useStore.getState().view, "connect", "no switch when pref off");
+
+  // pref on + on connect → switches to monitor on rising edge
+  useStore.setState({ sequence: { state: "idle" }, view: "connect", autoMonitor: true, runBanner: null });
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "P" } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  eq(useStore.getState().view, "monitor", "switches to monitor");
+
+  // pref on but mid-workflow (view=mount) → never hijacks
+  useStore.setState({ sequence: { state: "idle" }, view: "mount", autoMonitor: true, runBanner: null });
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "P" } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  eq(useStore.getState().view, "mount", "no hijack mid-workflow");
+});
+
+// --------------------------------- monitor: setAutoMonitor persists
+test("monitor: setAutoMonitor persists to localStorage", () => {
+  useStore.getState().setAutoMonitor(true);
+  eq(localStorage.getItem("astrodeck-monitor-auto"), "1", "persisted on");
+  eq(useStore.getState().autoMonitor, true, "store updated");
+  useStore.getState().setAutoMonitor(false);
+  eq(localStorage.getItem("astrodeck-monitor-auto"), "0", "persisted off");
 });
 
 // ---------------------------------------------------------------- report
