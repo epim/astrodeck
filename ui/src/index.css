@@ -6,7 +6,14 @@
 @import "@fontsource/ibm-plex-mono/500.css";
 @import "tailwindcss";
 
-/* ------------------------------------------------------------------ tokens */
+/* ===================================================================== CSS-TOKENS
+   CANONICAL palette (Batch-2 design-system owns the full token pass).
+   Every token routed into text / button labels / graph DATA labels measures
+   >=4.5:1 against the surface it sits on. --text-faint is the ONLY sub-4.5:1
+   role and is decoration-only (gridline / ghost-illustration strokes).
+   --accent-dim is borders / large-text only (it is ~3.78:1 — fails as small text).
+   Night LUT uses an INVERTED luminance ladder: alarm (--bad) is the brightest,
+   most-saturated rung; --good is the calm dim rung. Severity tracks salience.   */
 
 :root {
   --bg: #06080d;
@@ -14,17 +21,32 @@
   --bg-panel: #0d121cdd;
   --line: #1c2638;
   --line-bright: #2c3b56;
-  --text: #c8d4e8;
-  /* AA-corrected dim (was #5d6c85 — failed AA on --bg). Batch-2 design-system
-     owns the full token pass; this is the reliability/focus subset bump only. */
-  --text-dim: #7e8ca6;
-  --accent: #7dd3fc;
-  --accent-dim: #38709c;
+
+  --text: #c8d4e8;            /* ~12:1 on --bg */
+  --text-dim: #97a6c2;        /* ~6.5:1 on --bg — AA for small text */
+  --text-faint: #5d6c85;      /* decoration ONLY — gridlines/ghost strokes, never readable text */
+
+  --accent: #7dd3fc;          /* interactive cyan */
+  --accent-dim: #38709c;      /* borders / large-text ONLY (3.78:1, fails as small text) */
+
+  /* status — day values all pass AA as small text */
   --good: #4ade80;
   --warn: #fbbf24;
-  --bad: #f87171;
+  --bad:  #f87171;
+  --danger-ink: var(--bad);   /* destructive-button chrome; day == --bad */
+
   --glow: #7dd3fc55;
   --img-filter: none;
+
+  /* live-preview / atlas surface tokens (consumed by those surfaces; defined
+     here so the canonical pass owns them). */
+  --halo: #00000099;          /* contrast halo behind preview labels/reticle */
+  --survey-filter: none;      /* survey-cutout image filter (red-tinted at night) */
+
+  /* global dimmer — store sets --screen-brightness (0.08..1) + --scrim-opacity
+     at runtime (clamp-on-read in store). Floor defaults so first paint is sane. */
+  --screen-brightness: 1;
+  --scrim-opacity: 0;
 }
 
 :root.night {
@@ -33,16 +55,32 @@
   --bg-panel: #170808dd;
   --line: #361010;
   --line-bright: #571a1a;
-  --text: #e08585;
-  /* AA-corrected dim for night (was #8a4040). */
-  --text-dim: #b06a6a;
-  --accent: #ff5d5d;
-  --accent-dim: #a03535;
-  --good: #ff7a7a;
-  --warn: #ff9b5d;
-  --bad: #ff4040;
+
+  --text: #e08a8a;            /* primary, ~6:1 on night --bg */
+  --text-dim: #cc7676;        /* re-derived to ~5.0:1 (was #a85252 = 3.92:1, FAILED) */
+  --text-faint: #6e2a2a;      /* decoration only */
+
+  --accent: #ff5d5d;          /* interactive red, 5.93:1 on --bg */
+  --accent-dim: #a03535;      /* borders / large-text ONLY */
+
+  /* INVERTED severity ladder — alarm is BRIGHTEST/most-saturated; good is the
+     calm dim rung. All three deep-red (hue-safe for dark adaptation), all >=4.5:1.
+     Shape + glyph + blink (LEDs / Stat) are the PRIMARY differentiator; the
+     luminance ladder is the secondary cue. */
+  --bad:  #ff8f8f;           /* brightest + high-sat — grabs the eye; the alarm. relL 0.43, ~9.3:1 */
+  --warn: #d06a5a;           /* mid rung; deep red-leaning, low green (no amber). relL 0.24, ~5.7:1 */
+  --good: #b86a6a;           /* dim, low-sat red — "fine, ignore me". relL 0.22, ~5.2:1 */
+
+  --danger-ink: #ff8f8f;     /* button text/border: bright readable red, decoupled from status ladder */
+
   --glow: #ff5d5d44;
-  --img-filter: sepia(1) saturate(3) hue-rotate(-35deg) brightness(0.75);
+  --halo: #1a000099;
+  --survey-filter: sepia(0.6) saturate(1.4) hue-rotate(-12deg) brightness(0.85);
+
+  /* Night image filter — PRESERVES luminance/contrast so a defocused vs sharp
+     star still differ. No grayscale/saturate(6)/brightness(0.55). Focus judgment
+     MUST survive night mode. */
+  --img-filter: sepia(0.55) saturate(1.6) hue-rotate(-12deg) brightness(0.9) contrast(1.05);
 }
 
 @theme inline {
@@ -53,11 +91,13 @@
   --color-line2: var(--line-bright);
   --color-ink: var(--text);
   --color-dim: var(--text-dim);
+  --color-faint: var(--text-faint);
   --color-accent: var(--accent);
   --color-accent2: var(--accent-dim);
   --color-good: var(--good);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
+  --color-danger: var(--danger-ink);
   --font-display: "Chakra Petch", sans-serif;
   --font-sans: "IBM Plex Sans", sans-serif;
   --font-mono: "IBM Plex Mono", monospace;
@@ -73,24 +113,59 @@ body {
   font-family: "IBM Plex Sans", sans-serif;
   font-size: 14px;
   overflow: hidden;
-  /* starfield atmosphere: two layers of box-shadow "stars" via gradients */
-  background-image:
-    radial-gradient(1px 1px at 12% 28%, #ffffff18 50%, transparent 50%),
-    radial-gradient(1px 1px at 78% 12%, #ffffff14 50%, transparent 50%),
-    radial-gradient(1.5px 1.5px at 42% 64%, #ffffff10 50%, transparent 50%),
-    radial-gradient(1px 1px at 91% 81%, #ffffff12 50%, transparent 50%),
-    radial-gradient(1px 1px at 23% 88%, #ffffff0e 50%, transparent 50%),
-    radial-gradient(ellipse 1200px 800px at 70% -10%, #101a2e66, transparent);
-}
-
-:root.night body {
-  background-image:
-    radial-gradient(ellipse 1200px 800px at 70% -10%, #2a0a0a55, transparent);
 }
 
 * { scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent; }
 
-img.astro { filter: var(--img-filter); }
+/* Night red-tint covers BOTH preview paths: the NINA <img.astro> and the linear
+   client-LUT <canvas.astro>. NINA's inline `ninaFilter` prepends var(--img-filter)
+   so it overrides this rule via inline style and still composes the tint. */
+.astro, img.astro, canvas.astro, .astro-surface img.astro, .astro-surface canvas.astro { filter: var(--img-filter); }
+
+/* astro surface: a frame wrapper for the live preview / atlas image that keeps a
+   contrast halo available to overlaid labels/reticles regardless of frame data. */
+.astro-surface {
+  position: relative;
+  background: #000;
+  --astro-halo: var(--halo);
+}
+
+/* ===================================================================== CSS-DIMMER
+   Overlay-scrim dimmer (NOT filter on #root — that would make #root the
+   containing block for fixed overlays, dim the error toast, and trap the user
+   behind a dimmed slider thumb). Filter is applied ONLY to .dim-content; the
+   scrim multiply-darkens above content; .overlay-top is a sibling, never dimmed. */
+
+.dim-content { filter: brightness(var(--screen-brightness, 1)); }
+
+.dim-scrim {
+  position: fixed; inset: 0; z-index: 40; pointer-events: none;
+  background: #000;
+  opacity: var(--scrim-opacity, 0);     /* store: clamp(0, 1 - brightness*1.05, 0.92) */
+  transition: opacity 0.25s ease;        /* mode-change reads as intentional (B5) */
+}
+
+.dim-content { transition: filter 0.25s ease; }
+
+.overlay-top {
+  position: fixed; inset: 0; z-index: 50; pointer-events: none;
+}
+.overlay-top > * { pointer-events: auto; }  /* children opt back in */
+
+/* ===================================================================== CSS-FOCUS
+   ONE :focus-visible ring, whole-app. Specificity above Tailwind's outline-none
+   utilities (element selectors beat utility classes here). Solid 2px outline is
+   the cue; one cue per field (ring, not ring+border). */
+
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:focus:not(:focus-visible), a:focus:not(:focus-visible),
+input:focus:not(:focus-visible), select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outline: none; }
+.field:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* ------------------------------------------------------- panel w/ brackets */
 
@@ -99,18 +174,30 @@ img.astro { filter: var(--img-filter); }
   background: var(--bg-panel);
   border: 1px solid var(--line);
   backdrop-filter: blur(6px);
+  /* CSS-BRACKETS — 4 corner marks via a single layered background-image (no
+     extra DOM; ::before/::after only give 2 corners). */
+  background-image:
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim)),
+    linear-gradient(var(--accent-dim), var(--accent-dim));
+  background-repeat: no-repeat;
+  /* horizontal arm = 10x1.5, vertical arm = 1.5x10, at each of 4 corners */
+  background-size:
+    10px 1.5px, 1.5px 10px,   /* top-left */
+    10px 1.5px, 1.5px 10px,   /* top-right */
+    10px 1.5px, 1.5px 10px,   /* bottom-left */
+    10px 1.5px, 1.5px 10px;   /* bottom-right */
+  background-position:
+    -1px -1px, -1px -1px,                 /* top-left */
+    calc(100% + 1px) -1px, calc(100% + 1px) -1px,   /* top-right */
+    -1px calc(100% + 1px), -1px calc(100% + 1px),   /* bottom-left */
+    calc(100% + 1px) calc(100% + 1px), calc(100% + 1px) calc(100% + 1px); /* bottom-right */
 }
-
-.panel::before, .panel::after {
-  content: "";
-  position: absolute;
-  width: 10px; height: 10px;
-  border-color: var(--accent-dim);
-  border-style: solid;
-  pointer-events: none;
-}
-.panel::before { top: -1px; left: -1px; border-width: 1.5px 0 0 1.5px; }
-.panel::after { bottom: -1px; right: -1px; border-width: 0 1.5px 1.5px 0; }
 
 .panel-title {
   font-family: "Chakra Petch", sans-serif;
@@ -150,8 +237,9 @@ img.astro { filter: var(--img-filter); }
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-raise));
 }
-.btn-danger { border-color: #7c2d2d; color: var(--bad); }
-.btn-danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); box-shadow: 0 0 12px #f8717144; }
+/* danger chrome decoupled from the status ladder via --danger-ink */
+.btn-danger { border-color: color-mix(in srgb, var(--danger-ink) 45%, transparent); color: var(--danger-ink); }
+.btn-danger:hover:not(:disabled) { border-color: var(--danger-ink); color: var(--danger-ink); box-shadow: 0 0 12px color-mix(in srgb, var(--danger-ink) 28%, transparent); }
 
 .field {
   background: var(--bg);
@@ -170,89 +258,164 @@ select.field { appearance: none; }
 .mono { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
 
 .label {
-  font-size: 10px;
+  font-size: 11px;             /* bumped 10->11 (settings) for AA legibility */
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-dim);
   font-weight: 500;
 }
 
-/* ------------------------------------------------------------------- misc */
+/* dimmer slider + glove steppers (header cluster lives in App.tsx; styles here) */
+.dimmer {
+  -webkit-appearance: none; appearance: none;
+  height: 4px; border-radius: 2px;
+  background: var(--line-bright);
+  outline: 1px solid var(--text-dim);   /* >=3:1 track outline so extent is visible at night */
+  cursor: pointer;
+}
+.dimmer::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: 1px solid var(--bg);
+  /* >=44px hit area without changing visual size */
+  box-shadow: 0 0 0 14px transparent;
+}
+.dimmer::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: 1px solid var(--bg);
+}
+.step-btn {
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-raise);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 16px; line-height: 1;
+  cursor: pointer;
+}
+.step-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-.led { position: relative; width: 8px; height: 8px; border-radius: 50%; }
-.led-on { background: var(--good); box-shadow: 0 0 8px var(--good); }
-.led-off { background: #2a3447; }
-.led-warn {
-  background: var(--warn);
-  /* Static halo ring (mirrors .led-bad) so warn stays shape-distinguishable from
-     ok when the blink is killed under prefers-reduced-motion. */
-  box-shadow: 0 0 8px var(--warn), 0 0 0 2px color-mix(in srgb, var(--warn) 30%, transparent);
+/* ===================================================================== CSS-LED
+   Each state is a DISTINCT silhouette (not just color/animation) so it survives
+   grayscale + reduced-motion. 11px for shape discrimination. */
+
+.led { position: relative; width: 11px; height: 11px; border-radius: 50%; flex: none; }
+.led-off  { width: 11px; height: 2px; border-radius: 1px; background: var(--text-faint); align-self: center; }
+.led-on   { background: var(--good); box-shadow: 0 0 6px var(--good); }
+.led-warn { background: var(--warn); box-shadow: 0 0 6px var(--warn);
+            outline: 1.5px solid var(--warn); outline-offset: 2px; }          /* haloed circle */
+.led-bad  { background: var(--bad); border-radius: 1px;                       /* SQUARE */
+            box-shadow: 0 0 9px var(--bad); animation: pulse-glow 1.0s ease-in-out infinite; }
+.led-busy { background: var(--accent);
+            clip-path: inset(0 50% 0 0);                                      /* HALF-FILLED */
+            animation: led-sweep 1.4s linear infinite; }
+
+@keyframes pulse-glow { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@keyframes led-sweep  { 0% { clip-path: inset(0 50% 0 0); } 50% { clip-path: inset(0 0 0 50%); } 100% { clip-path: inset(0 50% 0 0); } }
+
+/* letter inside an LED dot — night-safe shape cue (e.g. L / N for link/NINA) */
+.led-letter {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; border-radius: 50%;
+  font-size: 9px; font-weight: 700; font-family: "IBM Plex Mono", monospace; line-height: 1;
 }
 
-@keyframes pulse-glow {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
-}
+@keyframes blink-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.blink-alert { animation: blink-alert 0.7s steps(2, end) infinite; }
 .blink { animation: pulse-glow 1.6s ease-in-out infinite; }
 
-@keyframes sweep {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(400%); }
-}
+/* ------------------------------------------------------------------- misc */
 
 .progress-track { background: var(--bg); border: 1px solid var(--line); height: 14px; position: relative; overflow: hidden; }
 .progress-fill { background: linear-gradient(90deg, var(--accent-dim), var(--accent)); height: 100%; transition: width 0.6s ease; }
 
-@keyframes fade-up {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
-}
-.view-enter { animation: fade-up 0.25s ease both; }
-
-.crosshair {
-  position: absolute; inset: 0; pointer-events: none;
-  background:
-    linear-gradient(var(--accent) 0 0) center/1px 18px no-repeat,
-    linear-gradient(var(--accent) 0 0) center/18px 1px no-repeat;
-  opacity: 0.5;
-}
-
-/* ============================================================ reliability + focus
-   Batch-1 lane-1A subset ONLY (led shapes/blink, focus rings, reduced-motion).
-   The FULL token/LUT/dimmer pass is owned by Batch-2 design-system (2B);
-   nothing here is re-added there. */
-
-/* error LED — does not exist today; the link-down indicator is invisible without it */
-.led-bad {
-  background: var(--bad);
-  box-shadow: 0 0 8px var(--bad), 0 0 0 2px color-mix(in srgb, var(--bad) 30%, transparent);
-}
-
-/* letter inside an LED dot — night-safe shape cue (L / N) */
-.led-letter {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px; height: 14px;
-  border-radius: 50%;
-  font-size: 9px;
-  font-weight: 700;
-  font-family: "IBM Plex Mono", monospace;
-  line-height: 1;
-}
-
-@keyframes blink-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
-.blink-alert { animation: blink-alert 0.7s steps(2, end) infinite; } /* faster than .blink */
-
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: none; } }
 .sheet-enter { animation: slide-up 0.2s ease both; }
 
-/* keyboard focus rings (review: outline:none everywhere today). One rule, whole-app. */
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-:root.night :focus-visible { outline-color: var(--accent); } /* red ring still >=3:1 on dark */
+/* ===================================================================== CSS-MOTION
+   View cross-fade with NO scale() (scale re-rasters text -> shimmer). */
+@keyframes view-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.view-enter { animation: view-fade 0.22s ease both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .blink, .blink-alert, .view-enter, .sheet-enter { animation: none !important; }
-  /* keep a non-motion severity cue: .led-bad AND .led-warn retain static halo
-     rings above, so warn/bad stay shape-distinguishable from ok without blink. */
+  .view-enter, .blink, .blink-alert, .sheet-enter, .empty-ghost,
+  .led-bad, .led-busy { animation: none !important; }
+  .dim-content, .dim-scrim { transition: none !important; }
+  /* reduced-motion users still get the state: bad keeps a static double cue. */
+  .led-bad  { outline: 1.5px solid var(--bad); outline-offset: 2px; }
 }
+
+/* ===================================================================== CSS-FLEX
+   Kill dead vertical space without stretching instruments. The panel grows;
+   the instrument SVG inside is aspect-locked + centered (graphs.tsx / polar.tsx). */
+.fill-col  { display: flex; flex-direction: column; min-height: 100%; }
+.fill-grow { flex: 1 1 auto; min-height: 0; }
+.fill-center { display: flex; align-items: center; justify-content: center; }
+/* aspect-locked, centered instrument inside a grown panel */
+.instr-fit { max-width: 100%; max-height: 100%; margin: auto; display: block; }
+
+/* ===================================================================== CSS-EMPTY
+   Static empty states (no pulse — a pulse implies loading where there is none). */
+.empty-ghost { opacity: 0.28; }   /* low opacity ONLY, no animation */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 10px; padding: 28px 18px;
+  color: var(--text-dim);
+}
+.empty-state-inline {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--text-dim); font-size: 12px;
+}
+
+/* ===================================================================== CSS-STARS
+   Dimmed night starfield rendered on the .dim-content background so it dims WITH
+   the UI (decoration never out-shines data at floor brightness). Day starfield
+   also lives here for the same reason. */
+.dim-content {
+  background-image:
+    radial-gradient(1px 1px at 12% 28%, #ffffff18 50%, transparent 50%),
+    radial-gradient(1px 1px at 78% 12%, #ffffff14 50%, transparent 50%),
+    radial-gradient(1.5px 1.5px at 42% 64%, #ffffff10 50%, transparent 50%),
+    radial-gradient(1px 1px at 91% 81%, #ffffff12 50%, transparent 50%),
+    radial-gradient(1px 1px at 23% 88%, #ffffff0e 50%, transparent 50%),
+    radial-gradient(ellipse 1200px 800px at 70% -10%, #101a2e66, transparent);
+  background-attachment: fixed;
+}
+:root.night .dim-content {
+  background-image:
+    radial-gradient(1px 1px at 12% 28%, #ff9b9b10 50%, transparent 50%),
+    radial-gradient(1px 1px at 78% 12%, #ff9b9b0c 50%, transparent 50%),
+    radial-gradient(1.5px 1.5px at 42% 64%, #ff9b9b0a 50%, transparent 50%),
+    radial-gradient(1px 1px at 91% 81%, #ff9b9b0c 50%, transparent 50%),
+    radial-gradient(1px 1px at 23% 88%, #ff9b9b08 50%, transparent 50%),
+    radial-gradient(ellipse 1200px 800px at 70% -10%, #2a0a0a44, transparent);
+  background-attachment: fixed;
+}
+
+/* ===================================================================== CSS-PREVIEW
+   Live-preview surface tokens/utilities (consumed by components/preview/*).
+   Defined in the canonical pass; the preview surface only references them. */
+.preview-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: #fff;
+  text-shadow: 0 0 3px var(--halo), 0 0 6px var(--halo);  /* readable over any frame */
+}
+.preview-reticle { stroke: var(--accent); filter: drop-shadow(0 0 2px var(--halo)); }
+.preview-chip {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px;
+  padding: 2px 6px; border-radius: 2px;
+  background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+  border: 1px solid var(--line-bright);
+  color: var(--text);
+}
+.preview-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.preview-scalebar { stroke: #fff; filter: drop-shadow(0 0 2px var(--halo)); }
+
+/* Night overrides — these two leak hardcoded white over the live preview, which
+   breaks dark adaptation. Redshift them (keeping the --halo contrast shadow) so
+   nothing on a focusing screen emits white at night. (.preview-reticle/.preview-chip
+   already redshift via their tokens.) */
+:root.night .preview-label { color: var(--text); }
+:root.night .preview-scalebar { stroke: var(--accent); }

@@ -1,0 +1,219 @@
+// PreviewToolbar.tsx — always-visible zoom primaries + overlay toggles + download
+// (stream T). Spec §5 "Toolbar", §11/§12.
+//
+//  - Always-visible (>=44px): −, zoom %, +, Fit, 100%. Never collapsed (§ rejected
+//    C3 — Fit/100% never go in the overflow sheet).
+//  - Toggles (Stars / Clip / Reticle / Center): filled-background active state +
+//    a check glyph (NOT color-only — §11.1). Disabled honestly when the data
+//    can't support them (no stars / NINA clip) with an inline reason via title.
+//  - Download ▾: FITS only if saved_local (else disabled + lock glyph + reason);
+//    stretched PNG; raw/lossless PNG (when has_lossless). §12.5 — never a 404.
+import { useEffect, useRef, useState } from "react";
+import type { OverlayToggles, PreviewInfo } from "../../types";
+import { Icon, type IconName } from "../icons";
+
+function Toggle({
+  on,
+  disabled,
+  icon,
+  label,
+  title,
+  onClick,
+}: {
+  on: boolean;
+  disabled?: boolean;
+  icon: IconName;
+  label: string;
+  title?: string;
+  onClick: () => void;
+}) {
+  // Honest disabled (spec §11.8): a defined dim token (--text-dim is AA, >=4.5:1)
+  // + a lock glyph + aria-disabled — NOT the native `disabled` attribute (whose
+  // .btn:disabled is opacity:0.35, which the spec rejects). We swallow the click.
+  return (
+    <button
+      type="button"
+      aria-pressed={disabled ? undefined : on}
+      aria-disabled={disabled}
+      title={title}
+      onClick={disabled ? undefined : onClick}
+      className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px] ${
+        on && !disabled ? "btn-accent" : ""
+      } ${disabled ? "!text-dim cursor-not-allowed" : ""}`}
+    >
+      {disabled ? <Icon name="lock" size={12} /> : on ? <Icon name="check" size={12} /> : <Icon name={icon} size={12} />}
+      {label}
+    </button>
+  );
+}
+
+export function PreviewToolbar({
+  preview,
+  overlays,
+  setOverlays,
+  scalePct,
+  onZoomIn,
+  onZoomOut,
+  onFit,
+  onHundred,
+  starsAvailable,
+  clipAvailable,
+  linkDown,
+}: {
+  preview: PreviewInfo | null;
+  overlays: OverlayToggles;
+  setOverlays: (o: Partial<OverlayToggles>) => void;
+  scalePct: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onFit: () => void;
+  onHundred: () => void;
+  starsAvailable: boolean;
+  clipAvailable: boolean; // data_is_linear && full_well != null
+  linkDown: boolean;
+}) {
+  const [dlOpen, setDlOpen] = useState(false);
+  const dlRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!dlOpen) return;
+    const onDoc = (e: Event) => {
+      if (dlRef.current && !dlRef.current.contains(e.target as Node)) setDlOpen(false);
+    };
+    document.addEventListener("pointerdown", onDoc);
+    return () => document.removeEventListener("pointerdown", onDoc);
+  }, [dlOpen]);
+
+  const id = preview?.id;
+  const savedLocal = !!preview?.saved_local;
+  const hasLossless = !!preview?.has_lossless;
+  // §12.5 — never offer a download that will 404. The "Stretched PNG" route
+  // (/api/preview/{id}/png) only serves a real PNG when a lossless base is held
+  // OR the frame's own bytes are already PNG. For NINA (JPEG, no lossless) it
+  // 404s, so gate the menuitem and render the disabled+lock variant when false,
+  // mirroring the FITS item's honest-disabled treatment.
+  const pngAvailable = hasLossless || preview?.mime === "image/png";
+
+  return (
+    <div className="preview-toolbar">
+      {/* zoom cluster — always visible */}
+      <div className="flex items-center gap-1">
+        <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom out" onClick={onZoomOut}>
+          −
+        </button>
+        <span className="mono text-[11px] text-dim w-12 text-center tabular-nums" aria-live="off">
+          {scalePct}%
+        </span>
+        <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom in" onClick={onZoomIn}>
+          +
+        </button>
+        <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={onFit}>
+          Fit
+        </button>
+        <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={onHundred} title="100% of the preview image">
+          100%
+        </button>
+      </div>
+
+      <span className="w-px h-6 bg-line mx-1 hidden sm:block" aria-hidden />
+
+      {/* overlay toggles */}
+      <Toggle
+        on={overlays.stars}
+        disabled={!starsAvailable}
+        icon="align"
+        label="Stars"
+        title={starsAvailable ? "Toggle star HFR overlay" : "No per-star data for this frame"}
+        onClick={() => setOverlays({ stars: !overlays.stars })}
+      />
+      <Toggle
+        on={overlays.clip}
+        disabled={!clipAvailable}
+        icon="alert"
+        label="Clip"
+        title={clipAvailable ? "Toggle saturation mask" : "Clip mask needs linear data + known full well"}
+        onClick={() => setOverlays({ clip: !overlays.clip })}
+      />
+      <Toggle
+        on={overlays.reticle}
+        icon="focus"
+        label="Reticle"
+        title="Toggle full reticle"
+        onClick={() => setOverlays({ reticle: !overlays.reticle })}
+      />
+      <Toggle
+        on={overlays.centerMark}
+        icon="capture"
+        label="Center"
+        title="Toggle center mark"
+        onClick={() => setOverlays({ centerMark: !overlays.centerMark })}
+      />
+
+      <span className="flex-1" />
+
+      {/* download */}
+      <div className="relative" ref={dlRef}>
+        <button
+          className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px]"
+          aria-haspopup="menu"
+          aria-expanded={dlOpen}
+          disabled={id == null || linkDown}
+          onClick={() => setDlOpen((v) => !v)}
+        >
+          <Icon name="arrow-down" size={12} /> Download ▾
+        </button>
+        {dlOpen && id != null && (
+          <div role="menu" className="panel absolute right-0 top-full mt-1 z-50 p-1 w-44 flex flex-col gap-0.5">
+            {pngAvailable ? (
+              <a
+                role="menuitem"
+                href={`/api/preview/${id}/png`}
+                className="btn !justify-start !px-2 !py-1.5 text-[11px]"
+                onClick={() => setDlOpen(false)}
+              >
+                Stretched PNG
+              </a>
+            ) : (
+              <span
+                role="menuitem"
+                aria-disabled
+                className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
+                title="PNG only available while paused or zoomed (no lossless base for this frame)"
+              >
+                <Icon name="lock" size={11} /> Stretched PNG
+              </span>
+            )}
+            {hasLossless && (
+              <a
+                role="menuitem"
+                href={`/api/preview/${id}/lossless.png`}
+                className="btn !justify-start !px-2 !py-1.5 text-[11px]"
+                onClick={() => setDlOpen(false)}
+              >
+                Lossless PNG
+              </a>
+            )}
+            {savedLocal ? (
+              <a
+                role="menuitem"
+                href={`/api/preview/${id}/fits`}
+                className="btn !justify-start !px-2 !py-1.5 text-[11px]"
+                onClick={() => setDlOpen(false)}
+              >
+                FITS
+              </a>
+            ) : (
+              <span
+                className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
+                aria-disabled
+                title="FITS saved on the NINA host — not downloadable here"
+              >
+                <Icon name="lock" size={11} /> FITS (on host)
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -171,8 +171,12 @@ async def test_hub_connect_capture_and_solve(monkeypatch):
 
         info = await h.capture(1.0, 120, 30, save=True, target="M31")
         assert info["id"] in h.previews
-        _png, mime = h.previews[info["id"]]
-        assert mime == "image/jpeg"
+        entry = h.previews[info["id"]]   # PreviewEntry ring slot (live-preview spec §6)
+        assert entry.mime == "image/jpeg"
+        assert info["mime"] == "image/jpeg"
+        # NINA is a pre-rendered, decoded-from-render path → not linear, no clip
+        assert info["is_stretched"] is True
+        assert info["data_is_linear"] is False
         assert "hfr" in info
         assert info.get("saved_path")  # NINA reports where it saved
 

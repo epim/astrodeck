@@ -22,10 +22,19 @@ class Star:
     flux: float
     hfr: float
     peak: float
+    ecc: float = 0.0      # Pass 2 (unsaturated mid-bright only); 0.0 placeholder in Pass 1
+    theta: float = 0.0    # Pass 2 (radians)
 
 
-def detect_stars(data: np.ndarray, k_sigma: float = 5.0, max_stars: int = 200,
-                 box: int = 15) -> list[Star]:
+#: cap on detected stars (detect_stars) and on overlay marks (star_marks). The
+#: marks cap MUST be >= the detect cap so the overlay never silently drops stars
+#: the detector already found; star_marks asserts this coupling (P3-5).
+DEFAULT_MAX_STARS = 200
+DEFAULT_MAX_MARKS = 400
+
+
+def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
+                 max_stars: int = DEFAULT_MAX_STARS, box: int = 15) -> list[Star]:
     img = data.astype(np.float64)
     # Robust background: median + MAD
     bg = float(np.median(img))
@@ -80,17 +89,68 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0, max_stars: int = 200,
     return stars
 
 
-def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
-    """Return (median HFR over the brightest stars, star count).
+def _median_hfr_from(stars: list[Star], min_stars: int = 3) -> tuple[float | None, int]:
+    """Median HFR over the brightest stars, from an already-detected list.
 
     Faint detections near the threshold measure the noise floor, not the PSF —
     their flux-weighted radius plateaus at the cutout's noise radius. Bright
     stars are the focus signal, so only the top-flux quartile (5..25 stars)
     votes.
     """
-    stars = detect_stars(data)
     if len(stars) < min_stars:
         return None, len(stars)
     by_flux = sorted(stars, key=lambda s: -s.flux)
     n = max(min(len(by_flux), 5), min(len(by_flux) // 4, 25))
     return float(np.median([s.hfr for s in by_flux[:n]])), len(stars)
+
+
+def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
+    """Return (median HFR over the brightest stars, star count)."""
+    return _median_hfr_from(detect_stars(data), min_stars)
+
+
+def star_marks(stars: list[Star], *, full_well: int | None = None,
+               max_marks: int = DEFAULT_MAX_MARKS) -> list[dict]:
+    """Compact per-star overlay payload: ``[{x, y, hfr[, ecc, theta]}]``.
+
+    Coords are in ``frame.data`` pixel space (the detector ran there); the
+    client scales by ``display_width / data_width`` (spec finding #2). Rounded
+    to keep the event small. ``ecc``/``theta`` are Pass-2 and only attached for
+    the unsaturated, mid-bright population ``median_hfr`` already trusts — never
+    on saturated flat-top stars (spec finding #5); in Pass 1 they stay 0.0 and
+    are omitted.
+
+    ``max_marks`` MUST be >= ``detect_stars``' ``max_stars`` so the overlay never
+    silently drops a star the detector found — otherwise a future bump of
+    ``max_stars`` above ``max_marks`` would diverge ``len(marks)`` from the star
+    count. The default cap pair (DEFAULT_MAX_MARKS=400 >= DEFAULT_MAX_STARS=200)
+    holds this invariant by construction (P3-5).
+    """
+    assert max_marks >= DEFAULT_MAX_STARS, (
+        "star_marks max_marks must be >= detect_stars max_stars so the overlay "
+        "never drops detected stars")
+    marks: list[dict] = []
+    floor = 0.0
+    if stars:
+        floor = float(np.median([s.peak for s in stars])) * 0.05
+    sat = (full_well * 0.9) if full_well else None
+    for s in sorted(stars, key=lambda s: -s.flux)[:max_marks]:
+        m = {"x": round(float(s.x), 1), "y": round(float(s.y), 1),
+             "hfr": round(float(s.hfr), 2)}
+        unsaturated_mid = (s.peak > floor and (sat is None or s.peak < sat))
+        if s.ecc and unsaturated_mid:
+            m["ecc"] = round(float(s.ecc), 3)
+            m["theta"] = round(float(s.theta), 3)
+        marks.append(m)
+    return marks
+
+
+def measure_frame(data: np.ndarray, *, full_well: int | None = None,
+                  min_stars: int = 3) -> tuple[float | None, int, list[dict]]:
+    """One detection pass feeding both the focus metric and the overlay.
+
+    Returns ``(median_hfr, star_count, star_marks)`` so the capture hot path
+    never detects twice (spec §6 / §4.6)."""
+    stars = detect_stars(data)
+    hfr, count = _median_hfr_from(stars, min_stars)
+    return hfr, count, star_marks(stars, full_well=full_well)

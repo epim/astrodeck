@@ -214,6 +214,15 @@ class NinaCamera(_NinaDevice, Camera):
     kind = "camera"
     info_path = "/equipment/camera/info"
 
+    #: NINA serves a decoded-from-render 8-bit copy, so its frames are NOT linear
+    #: sensor data (live-preview spec finding #1) and a real ``full_well`` is only
+    #: known when NINA exposes the sensor bit depth. The clip mask stays disabled
+    #: while full_well is None.
+    full_well: int | None = None
+    #: NINA's camera info rarely exposes cooler power across versions, so default
+    #: the Monitor to the on/off degrade rather than a guessed bar.
+    can_report_cooler_power: bool = False
+
     async def connect(self) -> None:
         info = await self.info(force=True)
         self.connected = bool(pick(info, "Connected", default=False))
@@ -227,6 +236,12 @@ class NinaCamera(_NinaDevice, Camera):
         self.has_dew_heater = bool(pick(info, "HasDewHeater", default=False))
         sensor = pick(info, "SensorType", default=None)
         self.bayer_pattern = None if sensor in (None, "Monochrome", "Mono") else sensor
+        # full_well from bit depth if NINA exposes it; otherwise unknown.
+        bits = pick(info, "BitDepth", "SensorBitDepth", default=None)
+        try:
+            self.full_well = (2 ** int(bits) - 1) if bits else None
+        except (TypeError, ValueError):
+            self.full_well = None
 
     def _preview_size(self) -> str:
         w, h = self.sensor_width, self.sensor_height
@@ -269,7 +284,7 @@ class NinaCamera(_NinaDevice, Camera):
         except DeviceError:
             pass
 
-        return CameraFrame(
+        frame = CameraFrame(
             data=_decode_gray16(png),
             exposure_s=seconds, gain=gain, offset=offset, binning=binning,
             bayer_pattern=None,
@@ -280,6 +295,13 @@ class NinaCamera(_NinaDevice, Camera):
             stars=_maybe_int(pick(stats, "Stars", "DetectedStars")),
             saved_path=(pick(stats, "Filename", "FilePath") if save else None),
         )
+        # NINA's data is a decoded-from-render 8-bit promotion, NOT linear sensor
+        # data — so the preview never claims a linear histogram/clip mask for it
+        # (live-preview spec finding #1). full_well is only known when NINA
+        # exposed the sensor bit depth at connect; otherwise None (clip disabled).
+        frame.data_is_linear = False
+        frame.full_well = self.full_well
+        return frame
 
     async def abort_exposure(self) -> None:
         try:
@@ -297,6 +319,19 @@ class NinaCamera(_NinaDevice, Camera):
 
     async def get_temperature(self) -> float | None:
         return _maybe_float(pick(await self.info(), "Temperature"))
+
+    async def get_cooler(self) -> dict | None:
+        """``{on, power, target_c, can_report_power}`` for the Monitor, or None
+        when NINA reports no cooler. ``power`` is None unless NINA exposes
+        ``CoolerPower`` (rare across versions)."""
+        if not self.can_cool:
+            return None
+        info = await self.info()
+        on = bool(pick(info, "CoolerOn", "IsCooling", default=False))
+        power = _maybe_float(pick(info, "CoolerPower"))
+        target = _maybe_float(pick(info, "TemperatureSetPoint", "TargetTemp"))
+        return {"on": on, "power": power, "target_c": target,
+                "can_report_power": power is not None}
 
     async def set_dew_heater(self, power: int) -> None:
         await self.client.get("/equipment/camera/dew-heater", power=int(power))

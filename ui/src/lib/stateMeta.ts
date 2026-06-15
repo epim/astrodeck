@@ -1,0 +1,40 @@
+// stateMeta(state) — the honest sequence-state presentation map for the Monitor
+// (monitor spec §4.2 / resolves D3/E.1/E.2). Returns an icon NAME (from the
+// project's Batch-1 icon set, NOT lucide-react — staying in-lane and consuming
+// the landed `components/icons.tsx` primitive), a word that is ALWAYS shown, a
+// tone, and whether the badge may blink (only when motion is allowed).
+//
+// Normative: never reuse SequenceView.tsx's pure-color logic — it collapses in
+// night mode where good/warn/bad all read as red. The `label` word is the
+// accessible channel; color and icon are redundant reinforcement.
+
+import type { IconName } from "../components/icons";
+import type { SequenceState } from "../types";
+
+// Broader than the frozen design-system `Tone` (good|warn|bad): the Monitor also
+// needs "accent" (complete / NINA-driving) and "dim" (idle). Kept local so the
+// shared `Tone` contract is not widened for everyone.
+export type StateTone = "good" | "warn" | "bad" | "accent" | "dim";
+
+export interface StateMeta {
+  icon: IconName; // render via <Icon name={icon} /> in the cell (lane 2B/2E)
+  label: string; // ALWAYS rendered — the accessible, non-color channel
+  tone: StateTone;
+  blinkable: boolean; // may pulse only if prefers-reduced-motion is not set
+}
+
+const MAP: Record<SequenceState["state"], StateMeta> = {
+  running: { icon: "monitor", label: "RUNNING", tone: "good", blinkable: true },
+  paused: { icon: "pause", label: "PAUSED", tone: "warn", blinkable: false },
+  complete: { icon: "check", label: "COMPLETE", tone: "accent", blinkable: false },
+  aborted: { icon: "stop", label: "ABORTED", tone: "bad", blinkable: false },
+  error: { icon: "alert", label: "ERROR", tone: "bad", blinkable: false },
+  nina_native: { icon: "link", label: "NINA DRIVING", tone: "accent", blinkable: false },
+  idle: { icon: "info", label: "IDLE", tone: "dim", blinkable: false },
+};
+
+/** Presentation metadata for a sequence state. Falls back to IDLE on anything
+ *  unexpected so a cell never throws or renders a blank badge. */
+export function stateMeta(state: SequenceState["state"]): StateMeta {
+  return MAP[state] ?? MAP.idle;
+}

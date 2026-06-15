@@ -301,9 +301,18 @@ _SENSOR_TYPES = {0: None, 1: None, 2: "RGGB", 3: "CMYG", 4: "CMYG2", 5: "LRGB"}
 class AlpacaCamera(_AlpacaDevice, Camera):
     dev_type = "camera"
 
+    #: driver-derived saturation ADU (MaxADU). None until proven; the clip mask
+    #: stays disabled while it is unknown (live-preview spec finding #3).
+    full_well: int | None = None
+    #: whether ``coolerpower`` is readable (probed once at connect); drives the
+    #: Monitor ThermometerBar power bar vs. on/off degrade (monitor spec §6.2).
+    can_report_cooler_power: bool = False
+
     def __init__(self, conn: AlpacaConnection, dev_num: int, name: str):
         _AlpacaDevice.__init__(self, conn, dev_num, name)
         self._exposing = False
+        self.full_well = None
+        self.can_report_cooler_power = False
 
     async def connect(self) -> None:
         await _AlpacaDevice.connect(self)
@@ -322,6 +331,23 @@ class AlpacaCamera(_AlpacaDevice, Camera):
             self.bayer_pattern = _SENSOR_TYPES.get(await self._get("sensortype"))
         except DeviceError:
             self.bayer_pattern = None
+        # MaxADU → full_well. Many CMOS deliver 12/14-bit in a 16-bit container,
+        # so true saturation is well below 65535; reading it makes the clip mask
+        # honest. A driver that doesn't expose it (or reports 0) leaves full_well
+        # None → clip mask disabled, never a wrong "approximate" overlay.
+        try:
+            mx = await self._get("maxadu")
+            self.full_well = int(mx) if mx and int(mx) > 0 else None
+        except DeviceError:
+            self.full_well = None
+        # Probe coolerpower once so the Monitor can show a real power bar where
+        # the camera supports it and degrade to ON/OFF where it doesn't.
+        if self.can_cool:
+            try:
+                await self._get("coolerpower")
+                self.can_report_cooler_power = True
+            except DeviceError:
+                self.can_report_cooler_power = False
 
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
                      light: bool = True, save: bool = False,
@@ -352,6 +378,10 @@ class AlpacaCamera(_AlpacaDevice, Camera):
             data=data, exposure_s=seconds, gain=gain, offset=offset,
             binning=binning, bayer_pattern=self.bayer_pattern,
             temperature_c=temp, timestamp=time.time(),
+            # Alpaca returns raw linear sensor data; carry the probed MaxADU →
+            # full_well so the clip/saturation overlay is honest (clip mask stays
+            # disabled while full_well is None).
+            full_well=self.full_well, data_is_linear=True,
         )
 
     async def _download_image(self) -> np.ndarray:
@@ -407,6 +437,31 @@ class AlpacaCamera(_AlpacaDevice, Camera):
             return await self._get("ccdtemperature")
         except DeviceError:
             return None
+
+    async def get_cooler(self) -> dict | None:
+        """``{on, power, target_c}`` for the Monitor thermal cell, or None when
+        the camera has no cooler. ``power`` is None when the driver can't report
+        it (``can_report_cooler_power`` was False at connect). ``at_target`` is
+        computed by the hub against the shared ``COOLER_AT_TARGET_C``."""
+        if not self.can_cool:
+            return None
+        try:
+            on = bool(await self._get("cooleron"))
+        except DeviceError:
+            on = False
+        power: float | None = None
+        if self.can_report_cooler_power:
+            try:
+                power = float(await self._get("coolerpower"))
+            except DeviceError:
+                power = None
+        target: float | None = None
+        try:
+            target = float(await self._get("setccdtemperature"))
+        except DeviceError:
+            target = None
+        return {"on": on, "power": power, "target_c": target,
+                "can_report_power": self.can_report_cooler_power}
 
 
 _PULSE_DIRS = {"north": 0, "south": 1, "east": 2, "west": 3}

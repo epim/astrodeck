@@ -40,8 +40,18 @@ export interface RigStatus {
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
   filterwheel?: { position: number; names: string[] };
-  camera?: { temperature: number | null; can_cool: boolean; has_dew_heater?: boolean; width: number; height: number; max_gain: number };
+  camera?: {
+    temperature: number | null;
+    can_cool: boolean;
+    has_dew_heater?: boolean;
+    width: number;
+    height: number;
+    max_gain: number;
+    cooler?: CoolerInfo; // monitor (Batch-2) — null/absent when no cooler
+  };
   guider?: GuideStats & { name: string };
+  // --- monitor (Batch-2; server-computed from HA for sim/Alpaca, device value for NINA) ---
+  meridian?: MeridianInfo;
   // --- reliability (additive; old clients ignore) ---
   busy?: "slewing" | "solving" | "focusing" | "capturing" | null;
   nina_link?: {
@@ -82,18 +92,77 @@ export interface GuideStats {
   recent: { t: number; ra: number; dec: number }[];
 }
 
+// ============================================================================
+// LIVE PREVIEW (Batch-2, Pass-1) — owner: lane 2A (this lane).
+// PreviewInfo is REWRITTEN: width/height → data_width/data_height plus the
+// linear/full_well/display-dims/source/stretch fields. This is the program's
+// only breaking rename (master §C-Risk-7). The single existing consumer
+// (CaptureView header span) is rewritten by lane 2D; Monitor's PreviewTile (2E)
+// uses /api/preview/{id}.png and the renamed fields. Be the contract SSOT.
+// ============================================================================
+
+export type PreviewSource = "sim" | "alpaca" | "nina";
+
+export interface StarMark {
+  x: number; // image-data pixel coords == frame.data space (NOT sensor space)
+  y: number;
+  hfr: number; // px
+  ecc?: number; // 0..1, Pass 2 (optional; absent in Pass 1)
+  theta?: number; // radians, Pass 2
+}
+
 export interface PreviewInfo {
   id: number;
   stats: { min: number; max: number; mean: number; median: number; std: number };
-  histogram: number[];
+  histogram: number[]; // DISPLAY-domain bins (see histogram_domain)
+  histogram_linear?: number[]; // linear bins, present only when data_is_linear
+  histogram_domain: "display" | "linear";
   exposure_s: number;
   gain: number;
   binning: number;
-  width: number;
-  height: number;
+  data_width: number; // == frame.data.shape[1]  (was `width`)
+  data_height: number; // == frame.data.shape[0]  (was `height`)
+  display_width: number; // encoded preview px after ≤1400 downscale
+  display_height: number;
+  mime: string; // "image/jpeg" | "image/png"
+  source: PreviewSource;
+  is_stretched: boolean; // true => no client re-stretch (NINA)
+  data_is_linear: boolean; // false for NINA (decoded-from-render)
+  has_lossless: boolean; // a lossless base is cached (paused/zoom)
+  full_well: number | null; // driver-derived; null => clip mask disabled
+  pixel_scale_arcsec?: number; // for arcsec HFR + scale bar, when known
+  bayer_pattern?: string | null; // non-null => OSC frame (mono preview note)
+  auto_levels: { black: number; mid: number; white: number }; // 0..1 in display domain
   saved_path?: string;
+  saved_local?: boolean; // true only if saved_path is under CAPTURE_DIR (FITS dl ok)
   hfr?: number;
   stars?: number;
+  star_list?: StarMark[];
+  ts: number; // server epoch seconds (filmstrip age)
+}
+
+export interface Viewport {
+  scale: number;
+  x: number;
+  y: number;
+  fit: boolean;
+}
+
+export interface StretchParams {
+  auto: boolean; // sticky; default true
+  black: number; // display-domain 0..1, used in Manual
+  mid: number;
+  white: number;
+  brightness: number; // simple primary slider, -1..1 (maps to mid)
+  contrast: number; // display-only path (NINA), -1..1
+  advancedOpen: boolean; // disclosure for B/M/W + curve, default false
+}
+
+export interface OverlayToggles {
+  stars: boolean; // default false
+  clip: boolean; // default false (only effective when linear+full_well)
+  reticle: boolean; // default false (full reticle)
+  centerMark: boolean; // default TRUE (subtle framing aid)
 }
 
 export interface FocusPoint {
@@ -107,13 +176,67 @@ export interface FocusEvent {
   best: { position: number; hfr: number | null } | null;
 }
 
+// ----------------------------------------------------------------- monitor (Batch-2)
+// SequenceProgress is the named progress shape — server-computed magnitudes; the
+// client derives wall-clock finish from its own clock (monitor spec §5). All ETA
+// fields optional: absent => client renders "—"/low-confidence, elapsed only.
+export interface SequenceProgress {
+  frames_done: number;
+  frames_total: number;
+  percent: number; // 0..100
+  elapsed_s: number; // server-computed, EXCLUDES paused time (§5)
+  rejected: number; // engine already tracks _rejected
+
+  eta_s?: number; // total predicted seconds to finish (authoritative magnitude)
+  eta_confident?: boolean; // false until >= ETA_MIN_FRAMES real frames measured
+  server_now_ms?: number; // server epoch at emit; client uses to offset-correct
+  current_exposure_s?: number; // exposure of the step in flight (for sub-frame bar)
+  frame_started_at_ms?: number; // server epoch when the in-flight exposure began
+  // event-cost breakdown (transparency/debugging; not required by the UI):
+  remaining_capture_s?: number;
+  events_cost_s?: number; // sum of remaining dither/AF/flip costs
+}
+
 export interface SequenceState {
-  state: "idle" | "running" | "paused" | "complete" | "aborted" | "error";
+  // "nina_native" lets the Monitor show the honest "NINA is driving" state.
+  state: "idle" | "running" | "paused" | "complete" | "aborted" | "error" | "nina_native";
   detail?: string;
   target?: string;
   target_index?: number;
   plan_name?: string;
-  progress?: { frames_done: number; frames_total: number; percent: number; elapsed_s: number; rejected?: number };
+  progress?: SequenceProgress;
+}
+
+export interface CoolerInfo {
+  // under RigStatus.camera.cooler
+  on: boolean;
+  power: number | null; // 0..100 %, null if camera can't report power
+  target_c: number | null;
+  at_target: boolean; // |temp - target| <= COOLER_AT_TARGET_C (shared 1.0)
+  can_report_power: boolean; // false => ThermometerBar degrades to on/off + target
+}
+
+export type MeridianStatus =
+  | "n_a_fork" // mount reports no flip needed (fork/non-GEM): informational
+  | "flip_disabled" // plan.meridian_flip === false on a GEM: WARNING (pier risk)
+  | "counting" // hours_to_flip is a real positive number
+  | "due" // hours_to_flip <= 0
+  | "unknown"; // can't determine (no mount / no data)
+
+export interface MeridianInfo {
+  // top-level on RigStatus
+  status: MeridianStatus;
+  hours_to_flip: number | null; // null unless status === "counting" | "due"
+  flip_enabled: boolean; // plan.meridian_flip AND mount is GEM
+  pier_side: "east" | "west" | "unknown";
+}
+
+// Cold-load aggregator response (monitor §8) for GET /api/monitor/snapshot.
+export interface MonitorSnapshot {
+  sequence: SequenceState;
+  status: RigStatus;
+  preview_id: number | null;
+  guide_recent: { t: number; ra: number; dec: number }[];
 }
 
 export interface LogLine {
