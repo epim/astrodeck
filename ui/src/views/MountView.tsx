@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle } from "../components/ui";
 import type { CatalogEntry } from "../types";
 
 const RATES = [0.05, 0.5, 2.0];
 
 export default function MountView() {
-  const { status, showToast } = useStore();
+  const status = useStatus();
+  const showToast = useStore((s) => s.showToast);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [rateIdx, setRateIdx] = useState(1);

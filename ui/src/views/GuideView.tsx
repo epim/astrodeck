@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus, useGuide } from "../store";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Panel, Stat } from "../components/ui";
 
 export default function GuideView() {
-  const { status, guide, showToast } = useStore();
+  const status = useStatus();
+  const guide = useGuide();
+  const showToast = useStore((s) => s.showToast);
   const [ditherPx, setDitherPx] = useState("3");
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;

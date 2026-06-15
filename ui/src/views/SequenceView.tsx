@@ -2,38 +2,46 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
 import { Field, Panel, Stat, Toggle } from "../components/ui";
-import type { CatalogEntry, ExposureStep, SequencePlan, Target } from "../types";
+import { Icon } from "../components/icons";
+import type { IconName } from "../components/icons";
+import { humanizeSeqError } from "../lib/humanize";
+import type { CatalogEntry, ExposureStep, Target } from "../types";
 
 const DEFAULT_STEP: ExposureStep = {
   filter: null, exposure_s: 120, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light",
 };
 
-const DEFAULT_PLAN: SequencePlan = {
-  name: "Tonight", targets: [], guide: true, dither_every: 3, dither_pixels: 3,
-  autofocus_every: 0, cool_to: -10, cool_timeout_s: 600, apply_filter_offsets: true,
-  refocus_on_temp_delta_c: 1.5, meridian_flip: true, recover_guiding: true,
-  hfr_reject_factor: 0, park_when_done: false, warm_cooler_when_done: false,
-};
-
-function loadPlan(): SequencePlan {
-  try {
-    const raw = localStorage.getItem("astrodeck-plan");
-    if (raw) return { ...DEFAULT_PLAN, ...JSON.parse(raw) } as SequencePlan;
-  } catch { /* fall through */ }
-  return DEFAULT_PLAN;
+/** State-tone badge with a shape glyph + word so it reads in night mode. */
+function SeqStateBadge({ state }: { state: string }) {
+  const map: Record<string, { icon: IconName; cls: string; word: string }> = {
+    running: { icon: "play", cls: "text-good blink", word: "RUNNING" },
+    paused: { icon: "pause", cls: "text-warn", word: "PAUSED" },
+    complete: { icon: "check", cls: "text-good", word: "COMPLETE" },
+    error: { icon: "x", cls: "text-bad", word: "ERROR" },
+    aborted: { icon: "stop", cls: "text-bad", word: "ABORTED" },
+  };
+  const m = map[state] ?? { icon: "info" as IconName, cls: "text-accent", word: state.toUpperCase() };
+  return (
+    <span className={`flex items-center gap-1 text-[11px] tracking-widest uppercase ${m.cls}`}>
+      <Icon name={m.icon} size={13} />
+      {m.word}
+    </span>
+  );
 }
 
 export default function SequenceView() {
-  const { status, sequence, showToast } = useStore();
-  const [plan, setPlan] = useState<SequencePlan>(loadPlan);
+  const status = useStore((s) => s.status);
+  const sequence = useStore((s) => s.sequence);
+  const showToast = useStore((s) => s.showToast);
+  const openLog = useStore((s) => s.openLog);
+  // SSOT: the plan lives in the store (single writer of `astrodeck-plan`; setPlan
+  // persists). No private useState / localStorage effect here.
+  const plan = useStore((s) => s.plan);
+  const setPlan = useStore((s) => s.setPlan);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [recoverable, setRecoverable] =
     useState<{ name: string; frames_done: number; frames_total: number } | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem("astrodeck-plan", JSON.stringify(plan));
-  }, [plan]);
 
   useEffect(() => {
     if (!search) { setResults([]); return; }
@@ -49,6 +57,13 @@ export default function SequenceView() {
   };
 
   const running = sequence.state === "running" || sequence.state === "paused";
+  const finished = ["complete", "error", "aborted"].includes(sequence.state);
+  const failed = sequence.state === "error" || sequence.state === "aborted";
+  const showPanel = running || finished;        // NOT gated on progress
+
+  // Resume-from-N is offered only when the backend says the run is recoverable;
+  // a pre-first-frame failure has no resume file, so the button is simply absent.
+  const resumable = !!recoverable && failed && sequence.state === "error";
 
   useEffect(() => {
     if (running) return;
@@ -91,8 +106,8 @@ export default function SequenceView() {
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
       <div className="flex flex-col gap-4">
-        {/* ----------------------------------------------- recover banner */}
-        {recoverable && !running && (
+        {/* -------------------------------- recover banner (no live panel) */}
+        {recoverable && !showPanel && (
           <Panel title="Resume Interrupted Run">
             <div className="flex items-center gap-3">
               <span className="text-xs text-dim flex-1">
@@ -101,30 +116,58 @@ export default function SequenceView() {
               </span>
               <button className="btn btn-accent !py-1" onClick={() =>
                 act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
-                ▸ Resume
+                <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Resume
               </button>
             </div>
           </Panel>
         )}
-        {/* --------------------------------------------------- progress */}
-        {(running || sequence.state === "complete") && sequence.progress && (
-          <Panel title={`Sequence · ${sequence.plan_name ?? ""}`}
-            right={<span className={`text-[11px] tracking-widest uppercase ${
-              sequence.state === "running" ? "text-good blink" :
-              sequence.state === "paused" ? "text-warn" : "text-accent"}`}>
-              {sequence.state}
-            </span>}>
-            <div className="progress-track mb-2">
-              <div className="progress-fill" style={{ width: `${sequence.progress.percent}%` }} />
-            </div>
-            <div className="flex justify-between text-xs mono text-dim">
-              <span>{sequence.detail}</span>
-              <span>
-                {sequence.progress.frames_done}/{sequence.progress.frames_total} frames
-                · {Math.floor(sequence.progress.elapsed_s / 60)}m elapsed
-              </span>
-            </div>
-            <div className="flex gap-2 mt-3">
+        {/* ------------------------------------------- run / status panel */}
+        {showPanel && (
+          <Panel title={`Sequence · ${sequence.plan_name ?? plan.name ?? ""}`}
+            className={failed ? "!border-bad/60" : ""}
+            right={<SeqStateBadge state={sequence.state} />}>
+
+            {/* Failure banner — decoupled from progress so an early (pre-first-frame)
+                failure still shows a clear, human reason. */}
+            {failed && (
+              <div className="flex items-start gap-2 border border-bad/50 bg-bad/5 px-3 py-2 mb-3">
+                <Icon name={sequence.state === "error" ? "x" : "stop"} size={16}
+                  className="text-bad mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm text-ink leading-snug">
+                    {sequence.state === "error" ? "Sequence failed" : "Sequence aborted"}
+                  </p>
+                  <p className="text-xs text-ink/85 leading-snug mt-0.5">
+                    {humanizeSeqError(sequence.detail)}
+                  </p>
+                  {sequence.detail && (
+                    <p className="text-[10px] mono text-dim leading-snug mt-1 break-words">
+                      {sequence.detail}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Progress bar — only when a progress block actually exists. */}
+            {sequence.progress && (
+              <>
+                <div className="progress-track mb-2">
+                  <div className="progress-fill" style={{ width: `${sequence.progress.percent}%` }} />
+                </div>
+                <div className="flex justify-between text-xs mono text-dim">
+                  <span>{!failed && sequence.detail}</span>
+                  <span>
+                    {sequence.progress.frames_done}/{sequence.progress.frames_total} frames
+                    {sequence.progress.rejected ? ` · ${sequence.progress.rejected} rejected` : ""}
+                    · {Math.floor(sequence.progress.elapsed_s / 60)}m elapsed
+                  </span>
+                </div>
+              </>
+            )}
+
+            {/* Actions by state. Stop-type (Abort) is never disabled. */}
+            <div className="flex flex-wrap gap-2 mt-3">
               {sequence.state === "running" && (
                 <button className="btn" onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
               )}
@@ -134,11 +177,32 @@ export default function SequenceView() {
               {running && (
                 <button className="btn btn-danger" onClick={() => act(() => api.post("/api/sequence/abort"))}>Abort</button>
               )}
+              {failed && (
+                <>
+                  <button className="btn btn-accent" disabled={totalFrames === 0}
+                    onClick={() => act(() => api.post("/api/sequence/start", plan))}>
+                    <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Re-run plan
+                  </button>
+                  <button className="btn" onClick={() => {
+                    document.getElementById("seq-targets")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  }}>
+                    Edit plan
+                  </button>
+                  <button className="btn" onClick={openLog}>View log</button>
+                  {resumable && recoverable && (
+                    <button className="btn" onClick={() =>
+                      act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
+                      Resume from frame {recoverable.frames_done}
+                    </button>
+                  )}
+                </>
+              )}
             </div>
           </Panel>
         )}
 
         {/* ----------------------------------------------------- targets */}
+        <span id="seq-targets" className="block scroll-mt-4" aria-hidden="true" />
         <Panel title="Targets"
           right={
             <div className="relative">

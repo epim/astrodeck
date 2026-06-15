@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any
 
+from .config import config_store, fov_deg, image_scale_arcsec_px
 from .devices import alpaca as alpaca_backend
 from .devices.base import Camera, DeviceError, FilterWheel, Focuser, Switch, Telescope
 from .devices.nina import build_nina_rig, pick as nina_pick
@@ -21,6 +23,7 @@ from .guide import Guider, PHD2Guider, SimGuider
 from .imaging import compute_histogram, save_fits, to_png
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
+from .profiles import Profile, ProfileDevice, profiles
 from .solve import get_solver
 
 ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch")
@@ -35,15 +38,23 @@ class Hub:
         self.sim_rig = None                    # set when sim profile connected
         self.nina_client = None                # set when bridged to NINA
         self.mode = "none"                     # none | sim | alpaca | nina
-        self.site = {"latitude": 37.77, "longitude": -122.42}
+        # site is no longer hardcoded — it is a property backed by config_store
+        # (fixes the San-Francisco P0). See the `site` property below.
         self.preview_seq = 0
         self.previews: dict[int, tuple[bytes, str]] = {}  # id -> (bytes, mime)
         self.last_frame = None                  # most recent CameraFrame
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
         self._nina_ws_task: asyncio.Task | None = None
+        self._nina_hb_task: asyncio.Task | None = None   # 5s NINA heartbeat
+        self._bridge_ready = False              # false until first successful NINA poll
         self._busy: dict[str, asyncio.Task] = {}
         self.polar = PolarAlignSession(self)
+        # cache of the active Profile, keyed by its id, so the 2s status poll's
+        # effective_optics() never does a blocking disk read on the event loop.
+        # Invalidated on apply/save/delete and on an active-id change.
+        self._profile_cache_id: str | None = None
+        self._profile_cache: Profile | None = None
 
     # ------------------------------------------------------------ connection
 
@@ -67,6 +78,7 @@ class Hub:
     async def connect_nina(self, host: str, port: int = 1888) -> dict:
         """Bridge to a running NINA instance (Advanced API plugin)."""
         await self.disconnect_all()
+        self._bridge_ready = False             # warming-up until first heartbeat
         rig = await build_nina_rig(host, port)
         self.nina_client = rig["client"]
         self.mode = "nina"
@@ -84,6 +96,7 @@ class Hub:
                                     dev_type: str, dev_num: int, name: str) -> dict:
         dev = alpaca_backend.make_device(host, port, dev_type, dev_num, name)
         await dev.connect()
+        dev.role = role                        # device identity for Profiles (A.6)
         old = self.devices.get(role)
         if old:
             try:
@@ -114,6 +127,10 @@ class Hub:
         if self._nina_ws_task and not self._nina_ws_task.done():
             self._nina_ws_task.cancel()
         self._nina_ws_task = None
+        if self._nina_hb_task and not self._nina_hb_task.done():
+            self._nina_hb_task.cancel()
+        self._nina_hb_task = None
+        self._bridge_ready = False
         for task in self._busy.values():
             task.cancel()
         self._busy.clear()
@@ -153,7 +170,232 @@ class Hub:
             "sim": self.sim_rig is not None,
             "mode": self.mode,
             "site": self.site,
+            "optics": self.effective_optics(),
         }
+
+    # ------------------------------------------------------------ site & optics
+
+    @property
+    def site(self) -> dict:
+        """The observing site as a plain dict — the single reconciliation point
+        read by altaz/polar/catalog/meridian. Backed by ``config_store`` so it is
+        persisted and no longer hardcoded. Carries the merged onboarding fields
+        (``is_default``/``horizon_min_deg``) every later batch only reads."""
+        s = config_store.cfg().site
+        return {"name": s.name, "latitude": s.latitude, "longitude": s.longitude,
+                "elevation_m": s.elevation_m, "is_default": s.is_default,
+                "horizon_min_deg": s.horizon_min_deg}
+
+    def mark_site_configured(self, horizon_min_deg: float | None = None) -> None:
+        """Flip a deliberately-saved site off ``is_default`` and record the
+        per-site minimum altitude (onboarding). Called by the API after a
+        successful ``PUT /api/site``."""
+        cfg = config_store.cfg()
+        update: dict = {"is_default": False}
+        if horizon_min_deg is not None:
+            update["horizon_min_deg"] = horizon_min_deg
+        cfg.site = cfg.site.model_copy(update=update)
+        config_store.bump_and_save()
+
+    def invalidate_profile_cache(self) -> None:
+        """Drop the cached active Profile so the next ``effective_optics`` re-reads
+        from disk. Call after any save/delete/apply that may change the active
+        profile's content."""
+        self._profile_cache_id = None
+        self._profile_cache = None
+
+    def _active_profile(self) -> Profile | None:
+        """Active Profile, served from an in-memory cache so the 2s status poll
+        never blocks the event loop on a disk read. The cache is keyed by the
+        active-profile id, so flipping the active profile auto-invalidates; an
+        in-place save/delete of the active profile invalidates explicitly via
+        ``invalidate_profile_cache``."""
+        active_id = config_store.cfg().active_profile_id
+        if not active_id:
+            return None
+        if active_id != self._profile_cache_id:
+            self._profile_cache = profiles.active(active_id)
+            self._profile_cache_id = active_id
+        return self._profile_cache
+
+    def effective_optics(self) -> dict:
+        """Resolve config-override-or-camera optics with an explicit source +
+        availability flag, plus the computed image scale / FOV (bin-1). The
+        per-active-profile override wins at READ time and never stomps global."""
+        o = config_store.cfg().optics
+        prof = self._active_profile()
+        if prof and prof.optics:
+            o = prof.optics
+        cam = self.devices.get("camera")
+        cam_on = bool(cam and cam.connected)
+        px = o.pixel_size_um or (getattr(cam, "pixel_size_um", 0.0) if cam_on else 0.0)
+        w = o.sensor_width_px or (getattr(cam, "sensor_width", 0) if cam_on else 0)
+        h = o.sensor_height_px or (getattr(cam, "sensor_height", 0) if cam_on else 0)
+        have = bool(px and w and h)
+        fw, fh, diag = fov_deg(o.focal_length_mm, px, w, h) if have else (0.0, 0.0, 0.0)
+        if o.pixel_size_um and o.sensor_width_px:
+            src = "config"
+        elif not o.pixel_size_um and not o.sensor_width_px and cam_on:
+            src = "camera"
+        elif have:
+            src = "mixed"
+        else:
+            src = "none"
+        return {
+            "focal_length_mm": o.focal_length_mm,
+            "pixel_size_um": px,
+            "sensor_width_px": int(w),
+            "sensor_height_px": int(h),
+            "have_optics": have,
+            "source": src,
+            "image_scale_arcsec_px":
+                round(image_scale_arcsec_px(o.focal_length_mm, px), 2) if have else None,
+            "fov_w_deg": round(fw, 3) if have else None,
+            "fov_h_deg": round(fh, 3) if have else None,
+            "fov_diag_deg": round(diag, 3) if have else None,
+        }
+
+    async def push_site_to_mount(self) -> None:
+        """Best-effort: push the saved site to a connected Alpaca telescope so
+        the app-side and mount-side LST agree. No-op for backends without
+        setters (NINA/sim); never fatal."""
+        tel = self.devices.get("telescope")
+        if not (tel and tel.connected):
+            return
+        put = getattr(tel, "_put", None)
+        if put is None:
+            return
+        s = self.site
+        try:
+            await put("sitelatitude", SiteLatitude=s["latitude"])
+            await put("sitelongitude", SiteLongitude=s["longitude"])
+            await put("siteelevation", SiteElevation=s["elevation_m"])
+            bus.log("info", "pushed observing site to mount", "config")
+        except Exception as e:
+            bus.log("warning", f"could not push site to mount: {e}", "config")
+
+    def _check_horizon(self, ra_hours: float, dec_deg: float, *, force: bool = False) -> None:
+        """Server-side below-horizon guard (defense in depth). Inert on a default
+        site; blocks only ``alt < 0`` (the visible horizon) on a real site. Called
+        from user-initiated GOTO / sequence-start paths only — never from
+        ``goto_and_center`` (shared by meridian_flip)."""
+        s = self.site
+        if s.get("is_default"):
+            return
+        from .catalog import altaz
+        alt, _ = altaz(ra_hours, dec_deg, s["latitude"], s["longitude"])
+        if alt < 0 and not force:
+            raise DeviceError(
+                f"target is below the visible horizon (alt {alt:.0f}°)")
+
+    # ----------------------------------------------------------- reliability
+
+    @property
+    def busy_label(self) -> str | None:
+        """One word for the current long backend op (or None). Drives the
+        telemetry-stale suppression — a slew/solve/AF/capture legitimately
+        starves the 2s status poll, so "busy" means "not stalled"."""
+        live = {n for n, t in self._busy.items() if t and not t.done()}
+        if self.looping:
+            live.add("looping")
+        for name, label in (("goto", "slewing"), ("solve", "solving"),
+                            ("autofocus", "focusing"), ("focuser", "focusing"),
+                            ("capture", "capturing"), ("looping", "capturing")):
+            if name in live:
+                return label
+        return None
+
+    async def _nina_heartbeat(self) -> None:
+        """Every 5s, ping NINA ``/version`` so ``last_ok`` stays honest even when
+        a multi-minute capture means no other NINA traffic. Never fatal."""
+        while self.nina_client is not None:
+            try:
+                await self.nina_client.get("/version", timeout=8.0)
+                # guard the disconnect race: a teardown between the await above
+                # and here must not flip _bridge_ready true after the client is
+                # gone.
+                if self.nina_client is None:
+                    return
+                self._bridge_ready = True
+            except Exception:
+                pass
+            await asyncio.sleep(5.0)
+
+    # --------------------------------------------------------------- profiles
+
+    async def apply_profile(self, p: Profile) -> dict:
+        """Replay a profile's connection intent, returning a per-device outcome
+        (never a lying "all connected" toast). Auto-detected camera optics are
+        persisted back so a later disconnected apply still has a real FOV."""
+        await self.disconnect_all()
+        results: list[dict] = []
+        for d in p.devices:
+            if d.backend != "alpaca":
+                continue
+            try:
+                await self.connect_alpaca_device(
+                    d.role, d.host, d.port, d.dev_type, d.dev_num,
+                    d.name or f"{d.dev_type} #{d.dev_num}")
+                results.append({"role": d.role, "ok": True})
+            except Exception as e:
+                results.append({"role": d.role, "ok": False, "error": str(e)})
+                bus.log("warning", f"profile '{p.name}': {d.role} failed: {e}", "profile")
+        if p.nina_host and any(d.backend == "nina" for d in p.devices):
+            try:
+                await self.connect_nina(p.nina_host, p.nina_port)
+                results.append({"role": "nina", "ok": True})
+            except Exception as e:
+                results.append({"role": "nina", "ok": False, "error": str(e)})
+        if p.phd2_host:
+            try:
+                await self.connect_phd2(p.phd2_host, p.phd2_port)
+                results.append({"role": "phd2", "ok": True})
+            except Exception as e:
+                results.append({"role": "phd2", "ok": False, "error": str(e)})
+        cam = self.devices.get("camera")
+        if cam and cam.connected and config_store.cfg().optics.auto_from_camera:
+            o = config_store.cfg().optics
+            new_optics = o.model_copy(update={
+                "pixel_size_um": o.pixel_size_um or getattr(cam, "pixel_size_um", 0.0),
+                "sensor_width_px": o.sensor_width_px or getattr(cam, "sensor_width", 0),
+                "sensor_height_px": o.sensor_height_px or getattr(cam, "sensor_height", 0),
+            })
+            # offload the blocking disk write (with its time.sleep retry) so it
+            # never freezes the event loop on the Windows target.
+            await asyncio.to_thread(
+                config_store.set_optics, new_optics, None)
+        await asyncio.to_thread(config_store.set_active_profile, p.id)
+        # seed the active-profile cache from the object we already hold (no disk
+        # read), so the next effective_optics() is served from memory.
+        self._profile_cache = p
+        self._profile_cache_id = p.id
+        bus.publish("config", version=config_store.cfg().version)
+        ok = sum(1 for r in results if r["ok"])
+        # summary must be a real RigStatus shape (connected/looping/mode/site/
+        # optics/busy) — poll_status emits exactly that; devices are connected
+        # at this point so the device I/O is fine.
+        return {"summary": await self.poll_status(), "results": results,
+                "connected": ok, "total": len(results)}
+
+    async def capture_profile(self, name: str) -> Profile:
+        """Build a profile from the currently-connected devices (uses the
+        device-identity contract) and save it."""
+        devs: list[ProfileDevice] = []
+        for role, d in self.devices.items():
+            if role not in ROLES:
+                continue
+            if getattr(d, "backend", None) == "alpaca":
+                devs.append(ProfileDevice(
+                    role=role, backend="alpaca", host=getattr(d, "host", ""),
+                    port=getattr(d, "port", 0), dev_type=getattr(d, "dev_type", ""),
+                    dev_num=getattr(d, "dev_num", 0), name=d.name))
+            elif self.mode == "nina":
+                devs.append(ProfileDevice(role=role, backend="nina", name=d.name))
+        p = Profile(name=name, devices=devs,
+                    nina_host=(self.nina_client.host if self.nina_client else None),
+                    site_name=self.site.get("name"))
+        profiles.save(p)
+        return p
 
     # --------------------------------------------------------------- capture
 
@@ -272,9 +514,18 @@ class Hub:
         tmp = CAPTURE_DIR / "_solve" / "solve.fits"
         save_fits(frame, tmp)
         solver = get_solver(self.sim_rig)
-        bus.log("info", f"plate solving with {solver.name}…", "solve")
+        # FOV hint from the configured optics (bin-1, bin-independent — correct
+        # even though the solve frame is binned 2×). None → ASTAP radius search,
+        # preserving the old behavior when optics aren't known.
+        opt = self.effective_optics()
+        # ASTAP's -fov expects the VERTICAL (height) field, not the diagonal —
+        # the diagonal is ~1.2–1.8× larger and over-widens the scale search.
+        fov_hint = opt["fov_h_deg"] or None
+        bus.log("info",
+                f"plate solving with {solver.name} (fov hint {fov_hint or 'auto'})…",
+                "solve")
         result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                    fov_deg_hint=1.0)
+                                    fov_deg_hint=fov_hint)
         if not result.success:
             raise DeviceError(f"plate solve failed: {result.message}")
         await tel.sync(result.ra_hours, result.dec_deg)
@@ -409,6 +660,8 @@ class Hub:
     def ensure_status_poller(self) -> None:
         if self._status_task is None or self._status_task.done():
             self._status_task = asyncio.create_task(self._status_loop())
+        if self.mode == "nina" and (self._nina_hb_task is None or self._nina_hb_task.done()):
+            self._nina_hb_task = asyncio.create_task(self._nina_heartbeat())
 
     async def _status_loop(self) -> None:
         while True:
@@ -421,6 +674,22 @@ class Hub:
     async def poll_status(self) -> dict:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
+        # These must live in poll_status (not just summary): the store does a
+        # wholesale set({status}) every 2s, so anything absent here flickers.
+        s = self.site
+        out["site"] = {"name": s["name"], "latitude": s["latitude"],
+                       "longitude": s["longitude"], "elevation_m": s["elevation_m"],
+                       "is_default": s["is_default"],
+                       "horizon_min_deg": s["horizon_min_deg"]}
+        out["optics"] = self.effective_optics()        # in-process, no device I/O
+        out["busy"] = self.busy_label                  # reliability: busy-aware stale
+        try:
+            du = shutil.disk_usage(CAPTURE_DIR)
+            free_gb = du.free / 1e9
+            out["disk"] = {"free_gb": round(free_gb, 1),
+                           "low": free_gb < 10, "critical": free_gb < 1}
+        except OSError:
+            pass
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             try:
@@ -470,6 +739,20 @@ class Hub:
                 pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
+        if self.mode == "nina" and self.nina_client is not None:
+            c = self.nina_client
+            age = (time.monotonic() - c.last_ok) if c.last_ok is not None else None
+            busy = self.busy_label is not None
+            # busy-aware: a long exposure/solve/AF legitimately starves the
+            # heartbeat window, so don't call it unhealthy while we know we're busy.
+            healthy = (not self._bridge_ready) or busy or (age is not None and age <= 45.0)
+            out["nina_link"] = {
+                "active": True,
+                "last_ok_age_s": round(age, 1) if age is not None else None,
+                "last_error": c.last_error,
+                "healthy": healthy,
+                "warming_up": not self._bridge_ready,
+            }
         return out
 
 

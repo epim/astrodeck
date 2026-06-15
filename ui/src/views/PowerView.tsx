@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus } from "../store";
 import { Led, Panel } from "../components/ui";
 import type { SwitchPort } from "../types";
 
 export default function PowerView() {
-  const { status, showToast } = useStore();
+  const status = useStatus();
+  const showToast = useStore((s) => s.showToast);
   const [ports, setPorts] = useState<SwitchPort[] | null>(null);
   const connected = !!status?.connected?.switch?.connected;
 

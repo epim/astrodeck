@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus, useFocus } from "../store";
 import { VCurve } from "../components/graphs";
 import { Field, Panel, Stat } from "../components/ui";
 
 export default function FocusView() {
-  const { status, focus, showToast } = useStore();
+  const status = useStatus();
+  const focus = useFocus();
+  const showToast = useStore((s) => s.showToast);
   const [absTarget, setAbsTarget] = useState("");
   const [afExposure, setAfExposure] = useState("2");
   const [afStep, setAfStep] = useState("350");

@@ -1,7 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
+import type { JSX } from "react";
 import { useStore, type ViewName } from "./store";
 import { connectWs } from "./ws";
+import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
+import ConnectionBanner from "./components/ConnectionBanner";
+import HealthLeds from "./components/HealthLeds";
+import Toasts from "./components/Toasts";
+import LogDrawer from "./components/LogDrawer";
 import ConnectView from "./views/ConnectView";
 import CaptureView from "./views/CaptureView";
 import FocusView from "./views/FocusView";
@@ -11,34 +17,72 @@ import GuideView from "./views/GuideView";
 import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
 
-const NAV: { id: ViewName; label: string; icon: string }[] = [
-  { id: "connect", label: "Rig", icon: "◈" },
-  { id: "capture", label: "Capture", icon: "◉" },
-  { id: "focus", label: "Focus", icon: "◎" },
-  { id: "mount", label: "Mount", icon: "✛" },
-  { id: "polar", label: "Align", icon: "⊕" },
-  { id: "guide", label: "Guide", icon: "❖" },
-  { id: "sequence", label: "Plan", icon: "≡" },
-  { id: "power", label: "Power", icon: "⏻" },
+// IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
+// a Settings header/nav entry. Batch 2 finalizes icons; nav icons resolve through
+// the single icons.tsx module (orchestrator override of Risk-6).
+const NAV: { id: ViewName; label: string; icon: IconName }[] = [
+  { id: "connect", label: "Rig", icon: "rig" },
+  { id: "polar", label: "Align", icon: "align" },
+  { id: "mount", label: "Mount", icon: "mount" },
+  { id: "focus", label: "Focus", icon: "focus" },
+  { id: "capture", label: "Capture", icon: "capture" },
+  { id: "guide", label: "Guide", icon: "guide" },
+  { id: "sequence", label: "Plan", icon: "plan" },
+  { id: "power", label: "Power", icon: "power" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];
 
+// Placeholder for views whose file has not landed yet (settings/monitor/atlas are
+// built in later batches). Guarding here keeps VIEWS a total Record<ViewName,…> so
+// the union stays exhaustive without importing a not-yet-present module.
+function PlaceholderView({ label }: { label: string }): JSX.Element {
+  return (
+    <div className="panel p-6 max-w-md mx-auto mt-10 text-center">
+      <h2 className="panel-title mb-2">{label}</h2>
+      <p className="text-dim text-sm">This view is coming in a later build.</p>
+    </div>
+  );
+}
+
 const VIEWS: Record<ViewName, () => JSX.Element> = {
-  connect: ConnectView, capture: CaptureView, focus: FocusView,
-  mount: MountView, polar: PolarView, guide: GuideView,
-  sequence: SequenceView, power: PowerView,
+  connect: ConnectView,
+  capture: CaptureView,
+  focus: FocusView,
+  mount: MountView,
+  polar: PolarView,
+  guide: GuideView,
+  sequence: SequenceView,
+  power: PowerView,
+  settings: () => <PlaceholderView label="Settings" />,
+  monitor: () => <PlaceholderView label="Monitor" />,
+  atlas: () => <PlaceholderView label="Sky Atlas" />,
 };
 
 export default function App() {
-  const { view, setView, night, toggleNight, wsConnected, status, sequence, toast } = useStore();
-  const [logsOpen, setLogsOpen] = useState(false);
-  const logs = useStore((s) => s.logs);
+  // Split selectors (reliability §13 / Risk-14 perf P0): each subscription is a
+  // single slice, so a guide tick (mutates only `guide`) no longer re-renders the
+  // whole tree. Chrome components self-subscribe to their own slices.
+  const view = useStore((s) => s.view);
+  const setView = useStore((s) => s.setView);
+  const night = useStore((s) => s.night);
+  const toggleNight = useStore((s) => s.toggleNight);
+  const sequence = useStore((s) => s.sequence);
+  const status = useStore((s) => s.status);
+  const linkDown = useStore((s) => s.wsPhase !== "up");
+  const telemetryStale = useStore((s) => s.telemetryStale);
+  const openLog = useStore((s) => s.openLog);
+  const unseenError = useStore((s) => s.unseenError);
 
-  useEffect(() => { connectWs(); }, []);
+  useEffect(() => {
+    connectWs();
+  }, []);
 
   const Active = VIEWS[view];
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
+  const seqError = sequence.state === "error";
+  const dim = linkDown || telemetryStale;
 
   return (
     <div className="h-full flex flex-col">
@@ -54,7 +98,8 @@ export default function App() {
             {status.mode === "nina" ? "NINA" : status.mode === "alpaca" ? "ALPACA" : "SIM"}
           </span>
         )}
-        <div className="hidden md:flex items-center gap-4 text-xs mono text-dim min-w-0 overflow-hidden">
+        <div className={`hidden md:flex items-center gap-4 text-xs mono text-dim min-w-0 overflow-hidden
+          ${dim ? "opacity-40 saturate-50 transition-opacity" : "transition-opacity"}`}>
           {status?.mount && (
             <>
               <span className="truncate">{status.mount.ra_str}</span>
@@ -80,20 +125,32 @@ export default function App() {
         </div>
         <div className="flex-1" />
         <button
-          className="btn !py-1 !px-2.5 text-[10px]"
+          className="btn !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
           onClick={toggleNight}
           title="Toggle red night vision mode"
         >
-          {night ? "◐ DAY" : "● NIGHT"}
+          <Icon name={night ? "sun" : "moon"} size={14} />
+          {night ? "DAY" : "NIGHT"}
         </button>
-        <button className="btn !py-1 !px-2.5 text-[10px]" onClick={() => setLogsOpen(!logsOpen)}>
+        <button
+          className="btn !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
+          onClick={openLog}
+          aria-label={unseenError > 0 ? `Open event log (${unseenError} unseen errors)` : "Open event log"}
+        >
+          <Icon name="alert" size={14} />
           LOG
+          {unseenError > 0 && (
+            <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1
+              rounded-full bg-bad text-[9px] font-bold leading-none text-black/90">
+              {unseenError > 99 ? "99+" : unseenError}
+            </span>
+          )}
         </button>
-        <div className="flex items-center gap-1.5" title={wsConnected ? "Link up" : "Link down"}>
-          <Led on={wsConnected} />
-          <span className="label hidden sm:inline">{wsConnected ? "LINK" : "NO LINK"}</span>
-        </div>
+        <HealthLeds />
       </header>
+
+      {/* ConnectionBanner renders null when the link is up and telemetry fresh. */}
+      <ConnectionBanner />
 
       <div className="flex flex-1 min-h-0">
         {/* ---------------------------------------------------- left rail */}
@@ -106,11 +163,14 @@ export default function App() {
                 ${view === n.id ? "text-accent" : "text-dim hover:text-ink"}`}
             >
               {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}
-              <span className="text-lg leading-none">{n.icon}</span>
+              <Icon name={n.icon} size={20} />
               <span className="text-[9px] tracking-[0.18em] font-display font-medium uppercase">{n.label}</span>
               {n.id === "capture" && camConnected && <span className="absolute top-2 right-3"><Led on /></span>}
               {n.id === "mount" && mountConnected && <span className="absolute top-2 right-3"><Led on /></span>}
-              {n.id === "sequence" && seqRunning && (
+              {n.id === "sequence" && seqError && (
+                <span className="absolute top-2 right-3 led led-bad blink-alert" />
+              )}
+              {n.id === "sequence" && !seqError && seqRunning && (
                 <span className="absolute top-2 right-3 blink"><Led on warn={sequence.state === "paused"} /></span>
               )}
             </button>
@@ -118,30 +178,18 @@ export default function App() {
         </nav>
 
         {/* ------------------------------------------------- main content */}
-        <main className="flex-1 overflow-y-auto p-4 pb-20 sm:pb-4" key={view}>
+        <main
+          className={`flex-1 overflow-y-auto p-4 pb-20 sm:pb-4 ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
+          key={view}
+        >
           <div className="view-enter max-w-[1500px] mx-auto">
             <Active />
           </div>
         </main>
 
-        {/* ------------------------------------------------- log drawer */}
-        {logsOpen && (
-          <aside className="w-[340px] border-l border-line bg-raise/60 backdrop-blur p-3 overflow-y-auto hidden lg:block shrink-0">
-            <h2 className="panel-title mb-2">Event Log</h2>
-            <div className="flex flex-col gap-1.5">
-              {[...logs].reverse().map((l, i) => (
-                <div key={i} className="text-[11px] mono leading-snug">
-                  <span className={
-                    l.data.level === "error" ? "text-bad" :
-                    l.data.level === "warning" ? "text-warn" : "text-accent2"
-                  }>[{l.data.source}]</span>{" "}
-                  <span className="text-ink/90">{l.data.message}</span>
-                </div>
-              ))}
-              {logs.length === 0 && <p className="text-dim text-xs">no events yet</p>}
-            </div>
-          </aside>
-        )}
+        {/* Log drawer: docked column lg+, bottom sheet below — self-manages via
+            store.logOpen; renders nothing when closed. */}
+        <LogDrawer />
       </div>
 
       {/* --------------------------------------------- mobile bottom nav */}
@@ -150,22 +198,14 @@ export default function App() {
           <button key={n.id} onClick={() => setView(n.id)}
             className={`flex-1 flex flex-col items-center gap-0.5 py-2
               ${view === n.id ? "text-accent" : "text-dim"}`}>
-            <span className="text-base leading-none">{n.icon}</span>
+            <Icon name={n.icon} size={18} />
             <span className="text-[8px] tracking-widest uppercase">{n.label}</span>
           </button>
         ))}
       </nav>
 
-      {/* ------------------------------------------------------- toast */}
-      {toast && (
-        <div key={toast.key}
-          className={`fixed bottom-16 sm:bottom-6 left-1/2 -translate-x-1/2 z-30 panel px-4 py-2 text-xs mono
-            ${toast.level === "error" ? "text-bad" : "text-warn"}`}
-          style={{ animation: "fade-up 0.2s ease both" }}
-        >
-          {toast.message}
-        </div>
-      )}
+      {/* Toasts: top-center on phone, bottom-right desktop — self-manages via store. */}
+      <Toasts />
     </div>
   );
 }

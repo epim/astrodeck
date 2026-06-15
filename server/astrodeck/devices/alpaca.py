@@ -8,7 +8,9 @@ protocol for fast image downloads with JSON fallback.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import re
 import socket
 import struct
 import time
@@ -81,10 +83,145 @@ async def discover(timeout: float = 2.0) -> list[dict[str, Any]]:
     return servers
 
 
+class AlpacaScanError(DeviceError):
+    """A manual Alpaca host/port scan failed in a differentiated way.
+
+    ``kind`` is one of ``"unreachable" | "not_alpaca" | "timeout"`` so the UI
+    can give a beginner who typo'd the IP a useful, specific message instead of
+    a generic "network error".
+    """
+
+    def __init__(self, kind: str, msg: str):
+        super().__init__(msg)
+        self.kind = kind
+
+
+# A bare hostname or IP literal only — no scheme, path, query, userinfo, or an
+# embedded ``:port``. Labels are RFC-952/1123-ish; IPv6 literals (which contain
+# ':') are intentionally not accepted by the manual scanner.
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
+)
+
+
+def _resolved_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """True if a *resolved* IP is one an unauthenticated scan must never reach.
+
+    Checking the resolved IP (not just the literal) is what defeats DNS
+    rebinding — ``evil.com`` resolving to ``127.0.0.1`` / ``169.254.169.254`` is
+    rejected here even though the literal looked public. ``169.254.0.0/16``
+    (link-local, incl. the cloud-metadata IP) is covered by ``is_link_local``.
+    """
+    return bool(
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def validate_scan_host(host: str, port: int) -> None:
+    """Validate a user-supplied Alpaca/NINA scan target before any network I/O.
+
+    Raises :class:`AlpacaScanError` (kind ``"invalid"``) if:
+
+    - ``host`` is not a bare hostname/IPv4 literal (blocks ``evil.com/x?``,
+      ``user@host``, an embedded ``host:port``, schemes, IPv6 brackets);
+    - ``port`` is not an integer in ``1..65535``;
+    - the host **resolves** to a loopback/private/link-local/reserved/metadata
+      address (SSRF guard that also defeats DNS rebinding).
+
+    Returns ``None`` on success. This is the single chokepoint shared by the
+    Alpaca and NINA manual-scan entry points.
+    """
+    host = (host or "").strip()
+    if not host:
+        raise AlpacaScanError("invalid", "no host given")
+
+    # Reject anything that is not a plain hostname/IPv4: catches user@, :port,
+    # path/query, scheme, IPv6 brackets — all in one shot.
+    try:
+        ip_literal: ipaddress._BaseAddress | None = ipaddress.ip_address(host)
+    except ValueError:
+        ip_literal = None
+    if ip_literal is None and not _HOSTNAME_RE.match(host):
+        raise AlpacaScanError(
+            "invalid", f"'{host}' is not a valid hostname or IP address")
+
+    # Port must be a real, in-range integer (rejects non-numeric/oversized).
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        raise AlpacaScanError("invalid", f"invalid port: {port!r}")
+    if not (1 <= port_i <= 65535):
+        raise AlpacaScanError("invalid", f"port out of range: {port_i}")
+
+    # Resolve and reject the resolved IP(s) — defeats DNS rebinding. A literal IP
+    # resolves to itself; a hostname is resolved via getaddrinfo.
+    resolved: list[str] = []
+    if ip_literal is not None:
+        resolved = [str(ip_literal)]
+    else:
+        try:
+            infos = socket.getaddrinfo(host, port_i, proto=socket.IPPROTO_TCP)
+        except OSError:
+            raise AlpacaScanError("unreachable", f"could not resolve host '{host}'")
+        resolved = [info[4][0] for info in infos]
+
+    for addr in resolved:
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if _resolved_ip_blocked(ip):
+            raise AlpacaScanError(
+                "invalid",
+                f"host '{host}' resolves to a blocked address ({addr}); "
+                f"only routable LAN/Internet hosts may be scanned")
+
+
+async def query_server(host: str, port: int) -> dict:
+    """Server-side fetch of an Alpaca server's configured devices.
+
+    The browser cannot do this scan directly (CORS); the backend proxies it.
+    Raises :class:`AlpacaScanError` with a differentiated ``kind`` so the UI can
+    tell "wrong IP" from "right IP but not an Alpaca server".
+    """
+    validate_scan_host(host, port)
+    url = f"http://{host}:{port}/management/v1/configureddevices"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(url)
+    except httpx.TimeoutException:
+        # Host reachable but the request (connect or read) timed out — distinct
+        # from "can't connect at all"; the copy must not say "device is on?".
+        raise AlpacaScanError("timeout", f"{host}:{port} did not respond in time")
+    except (httpx.ConnectError, httpx.TransportError):
+        raise AlpacaScanError(
+            "unreachable",
+            f"could not connect to {host}:{port} — check the IP, port and that "
+            f"the device is on")
+    if r.status_code != 200:
+        raise AlpacaScanError(
+            "not_alpaca",
+            f"{host}:{port} answered but is not an Alpaca server "
+            f"(HTTP {r.status_code})")
+    try:
+        devices = r.json().get("Value", [])
+    except ValueError:
+        raise AlpacaScanError(
+            "not_alpaca", f"{host}:{port} answered but did not return Alpaca JSON")
+    return {"address": host, "port": port, "devices": devices}
+
+
 class AlpacaConnection:
     """One Alpaca server endpoint; shared by its devices."""
 
     def __init__(self, host: str, port: int):
+        self.host = host
+        self.port = port
         self.base = f"http://{host}:{port}/api/v1"
         self.http = httpx.AsyncClient(timeout=30.0)
 
@@ -116,12 +253,30 @@ class _AlpacaDevice:
     """Mixin: shared connect/disconnect over the Alpaca 'connected' property."""
 
     dev_type: str
+    backend = "alpaca"
 
     def __init__(self, conn: AlpacaConnection, dev_num: int, name: str):
         self.conn = conn
         self.dev_num = dev_num
         self.name = name
         self.connected = False
+        # connection identity — lets Profiles replay host:port + which device
+        self.host = conn.host
+        self.port = conn.port
+        self.role = ""
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": getattr(self, "kind", "device"),
+            "connected": self.connected,
+            "host": self.host,
+            "port": self.port,
+            "dev_type": self.dev_type,
+            "dev_num": self.dev_num,
+            "role": self.role,
+            "backend": self.backend,
+        }
 
     async def _get(self, method: str, **params: Any) -> Any:
         return await self.conn.get(self.dev_type, self.dev_num, method, **params)
@@ -311,7 +466,14 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
             return PierSide.UNKNOWN
 
     async def stop(self) -> None:
+        # Emergency stop: abort any slew AND zero both manual-motion axes, so a
+        # mid-nudge STOP halts the mount rather than leaving an axis driving.
         await self._put("abortslew")
+        try:
+            await self.move_axis("ra", 0)
+            await self.move_axis("dec", 0)
+        except DeviceError:
+            pass
 
 
 class AlpacaFocuser(_AlpacaDevice, Focuser):
