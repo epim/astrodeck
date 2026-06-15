@@ -7,12 +7,14 @@ The hub is the single place that knows which physical device fills each role
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
 
 from .devices import alpaca as alpaca_backend
 from .devices.base import Camera, DeviceError, FilterWheel, Focuser, Switch, Telescope
+from .devices.nina import build_nina_rig, pick as nina_pick
 from .devices.sim import build_sim_rig
 from .events import bus
 from .guide import Guider, PHD2Guider, SimGuider
@@ -30,12 +32,15 @@ class Hub:
         self.devices: dict[str, Any] = {}     # role -> Device
         self.guider: Guider | None = None
         self.sim_rig = None                    # set when sim profile connected
+        self.nina_client = None                # set when bridged to NINA
+        self.mode = "none"                     # none | sim | alpaca | nina
         self.site = {"latitude": 37.77, "longitude": -122.42}
         self.preview_seq = 0
-        self.previews: dict[int, bytes] = {}   # ring buffer of PNG previews
+        self.previews: dict[int, tuple[bytes, str]] = {}  # id -> (bytes, mime)
         self.last_frame = None                  # most recent CameraFrame
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
+        self._nina_ws_task: asyncio.Task | None = None
         self._busy: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------ connection
@@ -52,8 +57,25 @@ class Hub:
         self.devices["guide_camera"] = guide_cam
         self.guider = SimGuider()
         await self.guider.connect()
+        self.mode = "sim"
         bus.log("info", "simulator rig connected", "hub")
         self.ensure_status_poller()
+        return self.summary()
+
+    async def connect_nina(self, host: str, port: int = 1888) -> dict:
+        """Bridge to a running NINA instance (Advanced API plugin)."""
+        await self.disconnect_all()
+        rig = await build_nina_rig(host, port)
+        self.nina_client = rig["client"]
+        self.mode = "nina"
+        for role, dev in rig["devices"].items():
+            self.devices[role] = dev
+        if rig["guider"]:
+            self.guider = rig["guider"]
+        roles = ", ".join(rig["devices"]) or "no equipment connected in NINA"
+        bus.log("info", f"bridged to NINA at {host}:{port} — {roles}", "nina")
+        self.ensure_status_poller()
+        self._start_nina_ws()
         return self.summary()
 
     async def connect_alpaca_device(self, role: str, host: str, port: int,
@@ -67,6 +89,7 @@ class Hub:
             except Exception:
                 pass
         self.devices[role] = dev
+        self.mode = "alpaca"
         bus.log("info", f"{role} connected: {name} (Alpaca {host}:{port})", "hub")
         self.ensure_status_poller()
         return dev.describe()
@@ -85,6 +108,9 @@ class Hub:
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
         self._status_task = None
+        if self._nina_ws_task and not self._nina_ws_task.done():
+            self._nina_ws_task.cancel()
+        self._nina_ws_task = None
         for task in self._busy.values():
             task.cancel()
         self._busy.clear()
@@ -100,7 +126,14 @@ class Hub:
             except Exception:
                 pass
             self.guider = None
+        if self.nina_client is not None:
+            try:
+                await self.nina_client.close()
+            except Exception:
+                pass
+            self.nina_client = None
         self.sim_rig = None
+        self.mode = "none"
         bus.log("info", "all equipment disconnected", "hub")
 
     def require(self, role: str):
@@ -115,6 +148,7 @@ class Hub:
             "guider": {"name": self.guider.name, "connected": self.guider.connected}
             if self.guider else None,
             "sim": self.sim_rig is not None,
+            "mode": self.mode,
             "site": self.site,
         }
 
@@ -124,10 +158,19 @@ class Hub:
                       binning: int = 1, save: bool = False, target: str = "",
                       frame_type: str = "Light") -> dict:
         cam: Camera = self.require("camera")
-        frame = await cam.expose(exposure_s, gain, offset, binning)
+        frame = await cam.expose(exposure_s, gain, offset, binning,
+                                 light=(frame_type.upper() != "DARK"),
+                                 save=save, target=target)
         self.last_frame = frame
         info = await self._publish_preview(frame)
-        if save:
+        if save and frame.rendered_bytes is not None:
+            # The backend (NINA) already saved the file on the imaging machine.
+            if frame.saved_path:
+                info["saved_path"] = frame.saved_path
+                bus.log("info", f"NINA saved {Path(frame.saved_path).name}", "capture")
+            else:
+                bus.log("info", "NINA saved the frame", "capture")
+        elif save:
             path = self._capture_path(target or "untargeted", frame_type)
             ra = dec = None
             tel = self.devices.get("telescope")
@@ -151,9 +194,15 @@ class Hub:
         return info
 
     async def _publish_preview(self, frame) -> dict:
-        png = await asyncio.to_thread(to_png, frame.data)
+        # NINA frames arrive pre-rendered (auto-stretched) — use them verbatim;
+        # raw frames (sim/Alpaca) get our screen stretch.
+        if getattr(frame, "rendered_bytes", None) is not None:
+            png, mime = frame.rendered_bytes, frame.rendered_mime
+        else:
+            png = await asyncio.to_thread(to_png, frame.data)
+            mime = "image/png"
         self.preview_seq += 1
-        self.previews[self.preview_seq] = png
+        self.previews[self.preview_seq] = (png, mime)
         for old in [k for k in self.previews if k <= self.preview_seq - 8]:
             del self.previews[old]
         info = {
@@ -166,6 +215,10 @@ class Hub:
             "width": int(frame.data.shape[1]),
             "height": int(frame.data.shape[0]),
         }
+        if getattr(frame, "hfr", None) is not None:
+            info["hfr"] = round(float(frame.hfr), 2)
+        if getattr(frame, "stars", None) is not None:
+            info["stars"] = int(frame.stars)
         bus.publish("preview", **info)
         return info
 
@@ -206,6 +259,8 @@ class Hub:
 
     async def solve_and_sync(self, exposure_s: float = 3.0) -> dict:
         """Plate-solve the current pointing and sync the mount to it."""
+        if self.nina_client is not None:
+            return await self._nina_solve_and_sync(exposure_s)
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
         ra_hint, dec_hint = await tel.get_position()
@@ -224,6 +279,29 @@ class Hub:
                         f"Dec {result.dec_deg:+.3f}°", "solve")
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
+
+    async def _nina_solve_and_sync(self, exposure_s: float) -> dict:
+        """Capture through NINA and let NINA plate-solve the prepared image,
+        then sync the mount to the solution."""
+        cam: Camera = self.require("camera")
+        tel: Telescope = self.require("telescope")
+        frame = await cam.expose(exposure_s, 200, 30, binning=2)
+        self.last_frame = frame
+        await self._publish_preview(frame)
+        bus.log("info", "plate solving with NINA…", "solve")
+        res = await self.nina_client.get("/prepared-image/solve") or {}
+        coords = nina_pick(res, "Coordinates", default=res)
+        ra = nina_pick(coords, "RA", "RAHours", "RightAscension")
+        dec = nina_pick(coords, "Dec", "Declination")
+        if ra is None and nina_pick(coords, "RADegrees") is not None:
+            ra = float(nina_pick(coords, "RADegrees")) / 15.0
+        if ra is None or dec is None:
+            raise DeviceError("NINA plate solve did not return coordinates")
+        ra, dec = float(ra), float(dec)
+        await tel.sync(ra, dec)
+        bus.log("info", f"solved & synced (NINA): RA {ra:.4f}h Dec {dec:+.3f}°", "solve")
+        return {"ra_hours": ra, "dec_deg": dec, "solver": "NINA",
+                "pixel_scale": float(nina_pick(res, "Pixscale", "PixelScale", default=0) or 0)}
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
@@ -248,6 +326,59 @@ class Hub:
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts}
 
+    # ------------------------------------------------------------ NINA events
+
+    def _start_nina_ws(self) -> None:
+        if self._nina_ws_task is None or self._nina_ws_task.done():
+            self._nina_ws_task = asyncio.create_task(self._nina_ws_loop())
+
+    async def _nina_ws_loop(self) -> None:
+        """Subscribe to NINA's event stream so AstroDeck reflects activity that
+        NINA itself initiates (e.g. its own sequence running) — surfaced as log
+        lines. Reconnects with backoff; never fatal."""
+        try:
+            import websockets
+        except ImportError:
+            return
+        backoff = 3.0
+        while self.nina_client is not None:
+            try:
+                async with websockets.connect(self.nina_client.ws_url,
+                                               ping_interval=20, open_timeout=10) as ws:
+                    bus.log("info", "subscribed to NINA event stream", "nina")
+                    backoff = 3.0
+                    async for raw in ws:
+                        try:
+                            self._handle_nina_event(json.loads(raw))
+                        except (ValueError, TypeError):
+                            continue
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 1.6, 30.0)
+
+    def _handle_nina_event(self, msg: dict) -> None:
+        resp = msg.get("Response", msg) if isinstance(msg, dict) else {}
+        event = nina_pick(resp, "Event", default="")
+        if not event:
+            return
+        if event == "IMAGE-SAVE":
+            s = nina_pick(resp, "ImageStatistics", default={}) or {}
+            bits = []
+            if nina_pick(s, "Filter"):
+                bits.append(str(nina_pick(s, "Filter")))
+            if nina_pick(s, "HFR") is not None:
+                bits.append(f"HFR {float(nina_pick(s, 'HFR')):.2f}")
+            if nina_pick(s, "Stars") is not None:
+                bits.append(f"{nina_pick(s, 'Stars')} stars")
+            bus.log("info", "NINA saved an image" + (f" ({', '.join(bits)})" if bits else ""),
+                    "nina")
+        elif event.endswith("-CONNECTED") or event.endswith("-DISCONNECTED"):
+            bus.log("info", f"NINA: {event.lower().replace('-', ' ')}", "nina")
+        elif event in ("AUTOFOCUS-FINISHED", "ERROR-AF"):
+            bus.log("info", f"NINA: {event.lower().replace('-', ' ')}", "nina")
+
     # ---------------------------------------------------------------- status
 
     def ensure_status_poller(self) -> None:
@@ -263,7 +394,8 @@ class Hub:
             await asyncio.sleep(2.0)
 
     async def poll_status(self) -> dict:
-        out: dict[str, Any] = {"connected": self.summary()["devices"], "looping": self.looping}
+        out: dict[str, Any] = {"connected": self.summary()["devices"],
+                               "looping": self.looping, "mode": self.mode}
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             try:

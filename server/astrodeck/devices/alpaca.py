@@ -169,7 +169,8 @@ class AlpacaCamera(_AlpacaDevice, Camera):
             self.bayer_pattern = None
 
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
-                     light: bool = True) -> CameraFrame:
+                     light: bool = True, save: bool = False,
+                     target: str = "") -> CameraFrame:
         if self.max_gain:
             await self._put("gain", Gain=gain)
         try:

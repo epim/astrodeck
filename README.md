@@ -31,6 +31,11 @@ vendor with ASCOM drivers (via ASCOM Remote).
   PWM, voltage/current telemetry
 - **Night mode** — one tap flips the entire UI to dark-adaptation red,
   including a red filter over image previews
+- **NINA bridge (transition mode)** — already running [NINA](https://nighttime-imaging.eu/)?
+  Point AstroDeck at NINA's Advanced API plugin and fly your existing rig with
+  no driver reconfiguration. AstroDeck delegates capture, autofocus,
+  plate-solving and guiding to NINA's own routines, then you migrate to direct
+  Alpaca device by device
 
 ## Quick start
 
@@ -57,21 +62,45 @@ with the drivers), then **Scan** on the Rig page and click devices to assign
 them. For guiding, start PHD2 with its event server enabled and hit
 **Connect PHD2**.
 
+### NINA transition mode
+
+If you already image with NINA, install the **Advanced API** plugin in NINA
+(enable it; default port 1888), then on the Rig page use **NINA Bridge** —
+enter the host/IP of the NINA machine and click **Bridge to NINA**. AstroDeck
+will reflect whatever equipment NINA has connected and drive it through NINA's
+API: captures show NINA's stretched frames with its measured HFR/star counts,
+the Focus page runs NINA's native autofocus and draws its real V-curve, and
+centering uses NINA's plate solver.
+
+To try NINA mode without a NINA install, run the bundled mock — it serves
+NINA-shaped responses backed by the simulator star-field:
+
+```powershell
+cd server
+.venv\Scripts\python -m tools.mock_nina     # mock NINA on :1888
+```
+
+Then bridge AstroDeck to `127.0.0.1:1888`.
+
 ## Architecture
 
 ```
 server/  Python · FastAPI       ui/  React · TypeScript · Tailwind v4
-  devices/   Alpaca + simulator backends behind one device abstraction
+  devices/   Alpaca + NINA + simulator backends behind one device abstraction
   imaging/   stretch · histogram · star detection/HFR · FITS
-  focus/     V-curve autofocus
-  solve/     ASTAP plugin · sim solver
-  guide/     PHD2 client · sim guider
+  focus/     V-curve autofocus (delegates to native AF when a backend has one)
+  solve/     ASTAP plugin · sim solver (NINA solves via its own API)
+  guide/     PHD2 client · NINA guider · sim guider
   sequence/  autonomous plan engine
   api/       REST + WebSocket event bus (serves the built UI)
+  tools/     mock_nina.py — a NINA API stand-in for tests and demos
 ```
 
 Everything above the device layer is vendor-agnostic. Adding INDI or a native
-SDK backend means implementing five small interfaces in `devices/base.py`.
+SDK backend means implementing the small interfaces in `devices/base.py`. The
+NINA backend additionally delegates the smart operations (autofocus, plate
+solve, guiding) to NINA via two clean seams: a `supports_native_autofocus`
+capability flag and a pre-rendered-frame path on `CameraFrame`.
 
 ## Development
 

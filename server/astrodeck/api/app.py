@@ -111,6 +111,11 @@ class PHD2Body(BaseModel):
     port: int = 4400
 
 
+class NinaConnectBody(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 1888
+
+
 class DitherBody(BaseModel):
     pixels: float = 3.0
 
@@ -149,6 +154,15 @@ def create_app() -> FastAPI:
             return {"connected": True}
         except Exception as e:
             raise _err(e)
+
+    @app.post("/api/connect/nina")
+    async def connect_nina(body: NinaConnectBody):
+        try:
+            return await hub.connect_nina(body.host, body.port)
+        except DeviceError as e:
+            raise _err(e)
+        except Exception as e:
+            raise HTTPException(502, f"NINA connection failed: {e}")
 
     @app.post("/api/disconnect")
     async def disconnect():
@@ -207,10 +221,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/preview/{preview_id}.png")
     async def preview(preview_id: int):
-        png = hub.previews.get(preview_id)
-        if png is None:
+        entry = hub.previews.get(preview_id)
+        if entry is None:
             raise HTTPException(404, "preview expired")
-        return Response(png, media_type="image/png",
+        png, mime = entry
+        return Response(png, media_type=mime,
                         headers={"Cache-Control": "max-age=3600"})
 
     @app.post("/api/camera/cooler")

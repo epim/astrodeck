@@ -60,6 +60,15 @@ export default function CaptureView() {
             <Stat label="σ" value={preview.stats.std} />
           </div>
         )}
+        {preview && (preview.hfr != null || preview.stars != null) && (
+          <div className="grid grid-cols-5 gap-3 mt-2 border-t border-line pt-2">
+            {preview.hfr != null && (
+              <Stat label="HFR" value={preview.hfr.toFixed(2)} unit="px"
+                tone={preview.hfr < 3 ? "good" : preview.hfr < 5 ? "warn" : "bad"} />
+            )}
+            {preview.stars != null && <Stat label="stars" value={preview.stars} />}
+          </div>
+        )}
       </Panel>
 
       <div className="flex flex-col gap-4">

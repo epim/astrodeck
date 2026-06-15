@@ -15,6 +15,8 @@ export default function ConnectView() {
   const [phd2Host, setPhd2Host] = useState("127.0.0.1");
   const [manualHost, setManualHost] = useState("");
   const [manualPort, setManualPort] = useState("11111");
+  const [ninaHost, setNinaHost] = useState("127.0.0.1");
+  const [ninaPort, setNinaPort] = useState("1888");
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -49,10 +51,19 @@ export default function ConnectView() {
   };
 
   const devices = status?.connected ?? {};
+  const mode = status?.mode ?? "none";
+  const MODE_LABEL: Record<string, string> = {
+    none: "offline", sim: "simulator", alpaca: "alpaca", nina: "nina bridge",
+  };
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Panel title="Equipment Rig">
+      <Panel title="Equipment Rig"
+        right={
+          <span className={`label ${mode === "none" ? "" : "text-accent"}`}>
+            {MODE_LABEL[mode]}
+          </span>
+        }>
         <div className="flex flex-col gap-2.5">
           {ROLES.concat("guide_camera").map((role) => {
             const d = devices[role];
@@ -135,6 +146,30 @@ export default function ConnectView() {
           <button className="btn" disabled={busy}
             onClick={() => run(() => api.post("/api/connect/phd2", { host: phd2Host, port: 4400 }))}>
             Connect PHD2
+          </button>
+        </div>
+      </Panel>
+
+      <Panel title="NINA Bridge — Transition Mode" className="lg:col-span-2"
+        right={mode === "nina" && <span className="label text-accent">● bridged</span>}>
+        <p className="text-xs text-dim mb-3 leading-relaxed max-w-3xl">
+          Already running <span className="text-ink">NINA</span> on the machine at your scope?
+          Point AstroDeck at NINA's <span className="text-ink">Advanced API</span> plugin and fly your
+          existing rig from here — no driver reconfiguration. AstroDeck delegates capture, autofocus,
+          plate-solving and guiding to NINA's own routines, then you can migrate to direct Alpaca
+          device by device. (Enable the Advanced API plugin in NINA; default port 1888.)
+        </p>
+        <div className="grid grid-cols-[1fr_110px_auto] gap-2 items-end max-w-xl">
+          <Field label="NINA host">
+            <input className="field" value={ninaHost} onChange={(e) => setNinaHost(e.target.value)} />
+          </Field>
+          <Field label="API port">
+            <input className="field" value={ninaPort} onChange={(e) => setNinaPort(e.target.value)} />
+          </Field>
+          <button className="btn btn-accent" disabled={busy || !ninaHost}
+            onClick={() => run(() => api.post("/api/connect/nina",
+              { host: ninaHost, port: Number(ninaPort) || 1888 }))}>
+            ◈ Bridge to NINA
           </button>
         </div>
       </Panel>

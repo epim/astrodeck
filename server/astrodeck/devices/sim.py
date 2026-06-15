@@ -77,7 +77,8 @@ class SimCamera(Camera):
         return self.rig.sensor_temp if self._cooler_on else 12.3
 
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
-                     light: bool = True) -> CameraFrame:
+                     light: bool = True, save: bool = False,
+                     target: str = "") -> CameraFrame:
         self._abort.clear()
         # Wait out the exposure in small slices so aborts are responsive.
         deadline = time.monotonic() + seconds

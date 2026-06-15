@@ -19,6 +19,7 @@ export interface MountStatus {
 export interface RigStatus {
   connected: Record<string, DeviceInfo>;
   looping: boolean;
+  mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
   filterwheel?: { position: number; names: string[] };
@@ -45,6 +46,8 @@ export interface PreviewInfo {
   width: number;
   height: number;
   saved_path?: string;
+  hfr?: number;
+  stars?: number;
 }
 
 export interface FocusPoint {

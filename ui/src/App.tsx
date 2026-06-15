@@ -44,6 +44,13 @@ export default function App() {
         <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
           ASTRO<span className="text-ink">DECK</span>
         </h1>
+        {status?.mode && status.mode !== "none" && (
+          <span className="hidden sm:inline px-2 py-0.5 border border-line2 text-[9px]
+            tracking-[0.18em] uppercase text-accent font-display font-medium"
+            title={`Backend: ${status.mode}`}>
+            {status.mode === "nina" ? "NINA" : status.mode === "alpaca" ? "ALPACA" : "SIM"}
+          </span>
+        )}
         <div className="hidden md:flex items-center gap-4 text-xs mono text-dim min-w-0 overflow-hidden">
           {status?.mount && (
             <>

@@ -29,7 +29,16 @@ class PierSide(enum.Enum):
 
 @dataclass
 class CameraFrame:
-    """A downloaded exposure."""
+    """A downloaded exposure.
+
+    Backends that return raw sensor data (sim, Alpaca) populate ``data`` and
+    leave the ``rendered_*`` fields empty — the hub stretches/encodes for
+    display. Backends that can only return a pre-rendered image (NINA, which
+    serves auto-stretched PNG/JPEG plus computed statistics) populate
+    ``rendered_bytes`` + ``rendered_mime`` (used verbatim for the preview) and
+    carry NINA's measured ``hfr``/``stars``; ``data`` then holds a decoded
+    grayscale copy used only for the histogram and stat readout.
+    """
 
     data: np.ndarray          # 2D uint16 (mono or bayered)
     exposure_s: float
@@ -39,6 +48,11 @@ class CameraFrame:
     bayer_pattern: str | None  # e.g. "RGGB", None for mono
     temperature_c: float | None
     timestamp: float
+    rendered_bytes: bytes | None = None   # pre-encoded preview (NINA)
+    rendered_mime: str = "image/png"
+    hfr: float | None = None              # backend-measured HFR, if any
+    stars: int | None = None              # backend-measured star count, if any
+    saved_path: str | None = None         # path if the backend saved the file
 
 
 class Device(ABC):
@@ -73,9 +87,14 @@ class Camera(Device):
 
     @abstractmethod
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
-                     light: bool = True) -> CameraFrame:
+                     light: bool = True, save: bool = False,
+                     target: str = "") -> CameraFrame:
         """Take one exposure and return the frame. Must be cancellable: on
-        asyncio.CancelledError implementations abort the exposure in-camera."""
+        asyncio.CancelledError implementations abort the exposure in-camera.
+
+        ``save``/``target`` are honored only by backends that save the file
+        themselves (NINA writes to the imaging machine). Backends that return
+        raw data ignore them; the hub saves their FITS."""
 
     @abstractmethod
     async def abort_exposure(self) -> None: ...
@@ -140,6 +159,10 @@ class Focuser(Device):
 
     max_position: int = 100_000
     step_size_um: float | None = None
+    #: backends that expose a native autofocus routine set this True and
+    #: implement ``async def native_autofocus(self) -> dict``; run_autofocus
+    #: then delegates instead of running its own V-curve sweep.
+    supports_native_autofocus: bool = False
 
     @abstractmethod
     async def get_position(self) -> int: ...

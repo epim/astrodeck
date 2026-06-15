@@ -29,6 +29,9 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         exposure_s: float = 2.0, gain: int = 120,
                         step: int = 350, steps_each_side: int = 4,
                         binning: int = 2) -> AutofocusResult:
+    if getattr(focuser, "supports_native_autofocus", False):
+        return await _run_native_autofocus(focuser)
+
     start_pos = await focuser.get_position()
     positions = [start_pos + step * i
                  for i in range(-steps_each_side, steps_each_side + 1)]
@@ -87,3 +90,34 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     bus.log("info", f"autofocus complete: position {best}, HFR {final_hfr:.2f}"
             if final_hfr else f"autofocus complete: position {best}", "focus")
     return AutofocusResult(True, best, final_hfr, points, "ok")
+
+
+async def _run_native_autofocus(focuser: Focuser) -> AutofocusResult:
+    """Delegate to a backend's own autofocus (NINA), rendering its V-curve
+    through the same ``focus`` events the UI already consumes."""
+    bus.publish("focus", state="running", points=[], best=None)
+    bus.log("info", "running native autofocus…", "focus")
+    try:
+        res = await focuser.native_autofocus()  # type: ignore[attr-defined]
+    except Exception as e:
+        bus.publish("focus", state="failed", points=[], best=None)
+        try:
+            pos = await focuser.get_position()
+        except Exception:
+            pos = 0
+        return AutofocusResult(False, pos, None, [], str(e))
+
+    points = [(int(p["position"]), float(p["hfr"])) for p in res.get("points", [])]
+    curve = [{"position": p, "hfr": h} for p, h in points]
+    if not res.get("success"):
+        bus.publish("focus", state="failed", points=curve, best=None)
+        return AutofocusResult(False, int(res.get("best_position", 0)), None,
+                               points, res.get("message", "autofocus failed"))
+
+    best = int(res["best_position"])
+    best_hfr = res.get("best_hfr")
+    bus.publish("focus", state="done", points=curve,
+                best={"position": best, "hfr": best_hfr})
+    bus.log("info", f"native autofocus complete: position {best}"
+            + (f", HFR {best_hfr:.2f}" if best_hfr else ""), "focus")
+    return AutofocusResult(True, best, best_hfr, points, "ok")
