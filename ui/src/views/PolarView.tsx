@@ -1,10 +1,12 @@
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useStatus, usePolar } from "../store";
 import { PolarReticle } from "../components/polar";
 import { Panel } from "../components/ui";
 
 export default function PolarView() {
-  const { polar, status, showToast } = useStore();
+  const polar = usePolar();
+  const status = useStatus();
+  const showToast = useStore((s) => s.showToast);
   const running = polar.state === "running" || polar.state === "paused";
 
   const act = async (fn: () => Promise<unknown>) => {

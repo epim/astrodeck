@@ -60,6 +60,18 @@ class Device(ABC):
 
     kind: str = "device"
 
+    #: connection identity — populated by backends that know where the device
+    #: lives (Alpaca sets host/port/dev_type/dev_num/backend; the hub sets
+    #: ``role`` after construction). These let Profiles replay a connection
+    #: intent (host:port + which device) without live handles. Defaults keep
+    #: backends that don't carry an address (sim, NINA) describe()-able.
+    host: str = ""
+    port: int = 0
+    dev_type: str = ""
+    dev_num: int = 0
+    role: str = ""
+    backend: str = ""
+
     def __init__(self, name: str):
         self.name = name
         self.connected = False
@@ -71,7 +83,17 @@ class Device(ABC):
     async def disconnect(self) -> None: ...
 
     def describe(self) -> dict[str, Any]:
-        return {"name": self.name, "kind": self.kind, "connected": self.connected}
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "connected": self.connected,
+            "host": self.host,
+            "port": self.port,
+            "dev_type": self.dev_type,
+            "dev_num": self.dev_num,
+            "role": self.role,
+            "backend": self.backend,
+        }
 
 
 class Camera(Device):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -15,12 +16,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..catalog import search_catalog
+from ..config import ConfigVersionConflict, Optics, Site, config_store
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import hub
+from ..plans import PLAN_SCHEMA, plan_library
+from ..profiles import Profile, profiles
 from ..sequence import SequenceEngine, SequencePlan
 
 engine = SequenceEngine(hub)
@@ -50,6 +54,36 @@ def _err(e: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail=str(e))
 
 
+def _place_hint(lat: float, lon: float) -> str:
+    """Coarse, offline hemisphere/longitude label — the novice sanity check that
+    catches a flipped sign without any network tile fetch. Used only if the
+    coords module doesn't ship its own (richer) place_hint."""
+    ns = "N hemisphere" if lat >= 0 else "S hemisphere"
+    ew = "E longitude" if lon >= 0 else "W longitude"
+    return f"{ns} · {ew}"
+
+
+def _profile_exists(profile_id: str) -> bool:
+    """True only if a stored profile with this id already exists. Any lookup
+    failure — missing file, or the FIX-A path-traversal guard raising — counts
+    as "does not exist", so a malicious id can never be honored as an upsert."""
+    try:
+        profiles.get(profile_id)
+        return True
+    except Exception:
+        return False
+
+
+def _plan_exists(plan_id: str) -> bool:
+    """True only if a stored plan with this id already exists (see
+    ``_profile_exists`` for the traversal-safe rationale)."""
+    try:
+        plan_library.get(plan_id)
+        return True
+    except Exception:
+        return False
+
+
 # ------------------------------------------------------------ request models
 
 class AlpacaConnectBody(BaseModel):
@@ -75,6 +109,7 @@ class GotoBody(BaseModel):
     ra_hours: float
     dec_deg: float
     center: bool = True
+    force: bool = False
 
 
 class MoveAxisBody(BaseModel):
@@ -125,9 +160,40 @@ class DitherBody(BaseModel):
     pixels: float = 3.0
 
 
-class SiteBody(BaseModel):
-    latitude: float
-    longitude: float
+class SiteSaveBody(BaseModel):
+    site: Site
+    version: int | None = None
+    # onboarding's per-site minimum-altitude horizon; persisted alongside site so
+    # below-horizon GOTO guarding has a real number. Optional for back-compat.
+    horizon_min_deg: float | None = None
+
+
+class OpticsSaveBody(BaseModel):
+    optics: Optics
+    version: int | None = None
+
+
+class ProfileCaptureBody(BaseModel):
+    name: str
+
+
+class ProfileRenameBody(BaseModel):
+    name: str
+
+
+class ProfileApplyBody(BaseModel):
+    force: bool = False
+
+
+class PlanSaveBody(BaseModel):
+    plan: SequencePlan
+    id: str | None = None
+    overwrite: bool = False
+
+
+class StartSequenceBody(BaseModel):
+    plan: SequencePlan
+    force: bool = False
 
 
 def create_app() -> FastAPI:
@@ -143,6 +209,34 @@ def create_app() -> FastAPI:
     async def discover_nina_instances(host: str = "", port: int = 1888):
         extra = [host] if host else None
         return await discover_nina(port=port, extra_hosts=extra)
+
+    @app.get("/api/discover/alpaca")
+    async def discover_alpaca_one(host: str, port: int = 11111):
+        """Server-side proxy for a manual Alpaca host/port scan (the browser
+        can't do this directly — CORS). 502 with a differentiated cause so a
+        beginner who typo'd the IP gets a useful message."""
+        # SSRF guard (FIX-A): reject loopback/private/link-local/metadata hosts,
+        # malformed host strings and bad ports before any outbound request. A
+        # rejected host raises AlpacaScanError, handled identically below.
+        try:
+            validate = getattr(alpaca_backend, "validate_scan_host", None)
+            if callable(validate):
+                validate(host, port)
+            return await alpaca_backend.query_server(host, port)
+        except alpaca_backend.AlpacaScanError as e:
+            # do NOT echo any upstream HTTP status here — that turned the 502
+            # into a port/host scan oracle. The differentiated message already
+            # lives in AlpacaScanError; surface only that.
+            raise HTTPException(502, str(e))
+
+    @app.get("/api/nina/health")
+    async def nina_health():
+        """Backend↔NINA link health (same shape as the ``nina_link`` block on
+        the status event). For tests + a future Rig-page readout."""
+        st = await hub.poll_status()
+        return st.get("nina_link", {"active": False, "last_ok_age_s": None,
+                                    "last_error": None, "healthy": False,
+                                    "warming_up": False})
 
     @app.post("/api/connect/sim")
     async def connect_sim():
@@ -189,10 +283,271 @@ def create_app() -> FastAPI:
     async def summary():
         return hub.summary()
 
+    # ------------------------------------------------------ config / site / optics
+
+    def _config_payload() -> dict:
+        """AppConfig dump + the server's computed optics readout (single source
+        of truth for image-scale / FOV the UI never re-derives as logic)."""
+        cfg = config_store.cfg()
+        return cfg.model_dump() | {"optics_computed": hub.effective_optics()}
+
+    def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
+        """Live altitude verdict for a target from the current site. Returns
+        ``unknown`` when the site is still the default (no trustworthy answer)."""
+        from ..catalog import altaz
+        site = hub.site
+        is_default = bool(site.get("is_default", True))
+        horizon_min = float(site.get("horizon_min_deg", 15.0))
+        alt, az = altaz(ra_hours, dec_deg, site["latitude"], site["longitude"])
+        if is_default:
+            verdict = "unknown"
+        elif alt < 0:
+            verdict = "below"
+        elif alt < horizon_min:
+            verdict = "low"
+        else:
+            verdict = "ok"
+        return {"alt": round(alt, 1), "az": round(az, 1), "verdict": verdict,
+                "horizon_min_deg": horizon_min, "site_is_default": is_default}
+
+    def _horizon_block(ra_hours: float, dec_deg: float) -> dict | None:
+        """Return a 409 detail dict if a GOTO should be blocked (configured site
+        AND the target is below the true horizon), else None. Default site never
+        blocks — we don't trust an un-set location to refuse a slew."""
+        # Prefer the hub's own check if it exists (keeps one source of truth).
+        check = getattr(hub, "_check_horizon", None)
+        if callable(check):
+            try:
+                verdict = check(ra_hours, dec_deg)
+            except (DeviceError, ValueError) as e:
+                return {"detail": str(e), "code": "below_horizon"}
+            # a falsy/None return means "ok"; a dict/str means blocked
+            if verdict:
+                if isinstance(verdict, dict):
+                    return verdict
+                return {"detail": str(verdict), "code": "below_horizon"}
+            return None
+        pf = _preflight_alt(ra_hours, dec_deg)
+        if pf["verdict"] == "below":
+            return {"detail": f"target is below the horizon (alt {pf['alt']}°)",
+                    "code": "below_horizon", "preflight": pf}
+        return None
+
+    @app.get("/api/config")
+    async def get_config():
+        return _config_payload()
+
+    @app.put("/api/site")
+    async def put_site(body: SiteSaveBody):
+        site = body.site
+        # onboarding: an optional per-site minimum-altitude horizon rides the
+        # save. The Site model carries the field; merge it in before persisting.
+        if body.horizon_min_deg is not None:
+            site = site.model_copy(update={"horizon_min_deg": body.horizon_min_deg})
+        else:
+            # P2-1: the round-tripped TS Site omits horizon_min_deg, so an echoed
+            # body would let pydantic default it back to 15.0 and silently wipe a
+            # custom minimum altitude. Preserve the stored value when the body
+            # carries no explicit override.
+            site = site.model_copy(update={
+                "horizon_min_deg": config_store.cfg().site.horizon_min_deg})
+        try:
+            # set_site flips is_default off (a user-saved site is, by definition,
+            # no longer the default) and bumps the version atomically.
+            cfg = await asyncio.to_thread(config_store.set_site, site, body.version)
+        except ConfigVersionConflict as e:
+            # optimistic-concurrency mismatch — hand back current so the UI can
+            # reconcile rather than silently clobber a co-user's field.
+            raise HTTPException(409, detail={
+                "detail": str(e),
+                "current": e.current.model_dump() | {
+                    "optics_computed": hub.effective_optics()}})
+        push = getattr(hub, "push_site_to_mount", None)
+        if callable(push):
+            try:
+                await push()
+            except Exception as e:
+                bus.log("warning", f"could not push site to mount: {e}", "config")
+        bus.publish("config", version=cfg.version)
+        return _config_payload()
+
+    # thin alias kept for backward compat (referenced nowhere in UI, cheap)
     @app.post("/api/site")
-    async def set_site(body: SiteBody):
-        hub.site = {"latitude": body.latitude, "longitude": body.longitude}
-        return hub.site
+    async def post_site(body: SiteSaveBody):
+        return await put_site(body)
+
+    @app.put("/api/optics")
+    async def put_optics(body: OpticsSaveBody):
+        try:
+            # P2-3: offload the blocking disk write off the event loop.
+            cfg = await asyncio.to_thread(
+                config_store.set_optics, body.optics, body.version)
+        except ConfigVersionConflict as e:
+            raise HTTPException(409, detail={
+                "detail": str(e),
+                "current": e.current.model_dump() | {
+                    "optics_computed": hub.effective_optics()}})
+        bus.publish("config", version=cfg.version)
+        return _config_payload()
+
+    # atlas alias: also seeds hub.optics (same persisted object)
+    @app.post("/api/optics")
+    async def post_optics(body: OpticsSaveBody):
+        return await put_optics(body)
+
+    @app.get("/api/site/sky")
+    async def site_sky(lat: float | None = None, lon: float | None = None):
+        from ..catalog import coords
+        s = config_store.cfg().site
+        latitude = s.latitude if lat is None else lat
+        longitude = s.longitude if lon is None else lon
+        sun = coords.sun_altaz(latitude, longitude)
+        sun_alt = sun[0] if isinstance(sun, (tuple, list)) else float(sun)
+        window = coords.dark_window(latitude, longitude)
+        place_fn = getattr(coords, "place_hint", None)
+        hint = place_fn(latitude, longitude) if callable(place_fn) \
+            else _place_hint(latitude, longitude)
+        return {
+            "sun_alt_deg": round(sun_alt, 1),
+            "dark_window": window,
+            "place_hint": hint,
+            "lst_str": coords.format_ra(coords.lst_hours(longitude)),
+        }
+
+    # ----------------------------------------------------------------- profiles
+
+    @app.get("/api/profiles")
+    async def list_profiles():
+        return profiles.list(config_store.cfg().active_profile_id)
+
+    @app.get("/api/profiles/{profile_id}")
+    async def get_profile(profile_id: str):
+        try:
+            return profiles.get(profile_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
+
+    @app.post("/api/profiles")
+    async def save_profile(profile: Profile):
+        # P0: never trust a client-supplied id for a NEW record (path-traversal
+        # / arbitrary-file-write vector). Only honor the id as an upsert when a
+        # file for it already exists; otherwise mint a fresh server-side uuid.
+        if not _profile_exists(profile.id):
+            profile = profile.model_copy(update={"id": str(uuid4())})
+        invalidate = getattr(hub, "invalidate_profile_cache", None)
+        row = await asyncio.to_thread(profiles.save, profile)
+        if callable(invalidate):
+            invalidate()
+        return row
+
+    @app.post("/api/profiles/capture")
+    async def capture_profile(body: ProfileCaptureBody):
+        if hub.mode == "none" or not hub.devices:
+            raise HTTPException(409, "connect a rig before saving a profile")
+        return await hub.capture_profile(body.name)
+
+    @app.patch("/api/profiles/{profile_id}")
+    async def rename_profile(profile_id: str, body: ProfileRenameBody):
+        try:
+            row = await asyncio.to_thread(profiles.rename, profile_id, body.name)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
+        invalidate = getattr(hub, "invalidate_profile_cache", None)
+        if callable(invalidate):
+            invalidate()
+        return row
+
+    @app.delete("/api/profiles/{profile_id}")
+    async def delete_profile(profile_id: str):
+        await asyncio.to_thread(profiles.delete, profile_id)
+        invalidate = getattr(hub, "invalidate_profile_cache", None)
+        if callable(invalidate):
+            invalidate()
+        return {"deleted": profile_id}
+
+    @app.post("/api/profiles/{profile_id}/apply")
+    async def apply_profile(profile_id: str, body: ProfileApplyBody | None = None):
+        force = bool(body and body.force)
+        try:
+            prof = profiles.get(profile_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
+        # Apply is destructive (disconnects the current rig). Refuse if anything
+        # is actively running unless forced; the engine is aborted app-side.
+        if (engine.running or hub.looping or hub.polar.running) and not force:
+            raise HTTPException(409, detail={
+                "detail": "a sequence, capture loop or polar alignment is running",
+                "code": "running"})
+        if force and engine.running:
+            await engine.abort()
+        return _spawn("profile", hub.apply_profile(prof))
+
+    # -------------------------------------------------------------------- plans
+
+    @app.get("/api/plans")
+    async def list_plans():
+        return plan_library.list()
+
+    @app.get("/api/plans/{plan_id}")
+    async def get_plan(plan_id: str):
+        try:
+            return plan_library.get(plan_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "plan not found")
+
+    @app.post("/api/plans")
+    async def save_plan(body: PlanSaveBody):
+        # P0: only honor a client id as an upsert when that plan already exists;
+        # otherwise mint the uuid server-side (None → library mints) so a crafted
+        # id can never write outside the plans dir or clobber an arbitrary file.
+        plan_id = body.id if (body.id is not None and _plan_exists(body.id)) else None
+        if plan_id is None and not body.overwrite and \
+                plan_library.name_exists(body.plan.name, None):
+            raise HTTPException(409, detail={
+                "detail": f"a plan named '{body.plan.name}' already exists",
+                "code": "name_collision"})
+        return await asyncio.to_thread(plan_library.save, body.plan, plan_id)
+
+    @app.delete("/api/plans/{plan_id}")
+    async def delete_plan(plan_id: str):
+        await asyncio.to_thread(plan_library.delete, plan_id)
+        return {"deleted": plan_id}
+
+    @app.get("/api/plans/{plan_id}/export")
+    async def export_plan(plan_id: str):
+        try:
+            raw = plan_library.export_bytes(plan_id)
+            name = plan_library.get(plan_id).name or plan_id
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "plan not found")
+        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip() or "plan"
+        return Response(raw, media_type="application/json", headers={
+            "Content-Disposition": f'attachment; filename="{safe}.astroplan.json"'})
+
+    @app.post("/api/plans/import")
+    async def import_plan(raw: dict):
+        # Distinguish "exported by a newer AstroDeck" from genuinely-invalid so
+        # the UI maps the two codes to different copy (C1-E19).
+        # P2-9: a malformed schema_version (string/list) must be a clean 422, not
+        # an uncaught 500 from the int() coercion below.
+        try:
+            ver = int(raw.get("schema_version", 1) or 1)
+        except (TypeError, ValueError):
+            raise HTTPException(422, detail={
+                "detail": "invalid schema_version", "code": "invalid"})
+        if ver > PLAN_SCHEMA:
+            raise HTTPException(422, detail={
+                "detail": "This plan was exported by a newer AstroDeck version",
+                "code": "version_too_new"})
+        try:
+            return await asyncio.to_thread(plan_library.import_plan, raw)
+        except HTTPException:
+            raise
+        except ValueError as e:
+            code = getattr(e, "code", "invalid")
+            raise HTTPException(422, detail={"detail": str(e), "code": code})
+        except Exception as e:
+            raise HTTPException(422, detail={"detail": str(e), "code": "invalid"})
 
     # -------------------------------------------------------------- capture
 
@@ -264,6 +619,13 @@ def create_app() -> FastAPI:
             hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # Below-horizon guard — only when the user actually configured a site
+        # (is_default off) and the target is below the horizon, and only at the
+        # GOTO entry (goto_and_center re-slews internally without re-checking).
+        if not body.force:
+            blocked = _horizon_block(body.ra_hours, body.dec_deg)
+            if blocked is not None:
+                raise HTTPException(409, detail=blocked)
         if body.center:
             return _spawn("goto", hub.goto_and_center(body.ra_hours, body.dec_deg))
 
@@ -419,9 +781,28 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------- sequence
 
     @app.post("/api/sequence/start")
-    async def sequence_start(plan: SequencePlan):
+    async def sequence_start(plan: SequencePlan, force: bool = False):
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
+        # Below-horizon pre-flight: refuse to start a run whose target can't be
+        # observed from a *configured* site, unless explicitly forced.
+        if not force:
+            for t in plan.targets:
+                # calibration targets (darks/bias/flats) carry mandatory dummy
+                # coords and never slew/center — the horizon check is meaningless
+                # for them, so a dark-library build at a configured site must not
+                # be 409'd just because (0,0) happens to be below the horizon.
+                if t.calibration:
+                    continue
+                ra = getattr(t, "ra_hours", None)
+                dec = getattr(t, "dec_deg", None)
+                if ra is None or dec is None:
+                    continue
+                blocked = _horizon_block(ra, dec)
+                if blocked is not None:
+                    blocked = dict(blocked)
+                    blocked["target"] = getattr(t, "name", "")
+                    raise HTTPException(409, detail=blocked)
         try:
             hub.require("camera")
             engine.start(plan)
@@ -447,6 +828,12 @@ def create_app() -> FastAPI:
     @app.get("/api/sequence/state")
     async def sequence_state():
         return engine.state | {"running": engine.running, "paused": engine.paused}
+
+    @app.get("/api/sequence/preflight")
+    async def sequence_preflight(ra_hours: float, dec_deg: float):
+        """Live single-target altitude verdict from the current site. Returns
+        ``unknown`` while the site is still the default (no trustworthy answer)."""
+        return _preflight_alt(ra_hours, dec_deg)
 
     @app.get("/api/sequence/recoverable")
     async def sequence_recoverable():
