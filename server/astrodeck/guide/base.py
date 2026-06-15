@@ -37,3 +37,8 @@ class Guider(ABC):
 
     @abstractmethod
     def stats(self) -> GuideStats: ...
+
+    async def is_active(self) -> bool:
+        """Whether the guider is really guiding right now (queries the backend
+        where possible, rather than a local flag) — used to detect a lost star."""
+        return self.stats().guiding

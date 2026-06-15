@@ -107,6 +107,10 @@ class CoolerBody(BaseModel):
     target_c: float | None = None
 
 
+class DewBody(BaseModel):
+    power: int = 0
+
+
 class PHD2Body(BaseModel):
     host: str = "127.0.0.1"
     port: int = 4400
@@ -239,6 +243,15 @@ def create_app() -> FastAPI:
         try:
             cam = hub.require("camera")
             await cam.set_cooler(body.on, body.target_c)
+            return {"ok": True}
+        except DeviceError as e:
+            raise _err(e)
+
+    @app.post("/api/camera/dew-heater")
+    async def dew_heater(body: DewBody):
+        try:
+            cam = hub.require("camera")
+            await cam.set_dew_heater(body.power)
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
@@ -434,6 +447,30 @@ def create_app() -> FastAPI:
     @app.get("/api/sequence/state")
     async def sequence_state():
         return engine.state | {"running": engine.running, "paused": engine.paused}
+
+    @app.get("/api/sequence/recoverable")
+    async def sequence_recoverable():
+        data = engine.load_resume()
+        if not data:
+            return {"recoverable": False}
+        plan = SequencePlan(**data["plan"])
+        done = sum(data.get("done", {}).values())
+        return {"recoverable": True, "name": plan.name, "frames_done": done,
+                "frames_total": plan.total_frames(), "ts": data.get("ts")}
+
+    @app.post("/api/sequence/recover")
+    async def sequence_recover():
+        data = engine.load_resume()
+        if not data:
+            raise HTTPException(404, "no resumable sequence found")
+        plan = SequencePlan(**data["plan"])
+        try:
+            hub.require("camera")
+            engine.start(plan, resume_done=data.get("done", {}))
+        except DeviceError as e:
+            raise _err(e)
+        done = sum(data.get("done", {}).values())
+        return {"resumed": True, "frames_remaining": plan.total_frames() - done}
 
     # -------------------------------------------------------------- polar align
 

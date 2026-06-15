@@ -53,7 +53,9 @@ class SimCamera(Camera):
         self.sensor_height = 912
         self.pixel_size_um = 3.76
         self.can_cool = True
+        self.has_dew_heater = True
         self.bayer_pattern = None
+        self._dew_power = 0
         self._cooler_on = False
         self._target_c = -10.0
         self._abort = asyncio.Event()
@@ -75,6 +77,9 @@ class SimCamera(Camera):
 
     async def get_temperature(self) -> float | None:
         return self.rig.sensor_temp if self._cooler_on else 12.3
+
+    async def set_dew_heater(self, power: int) -> None:
+        self._dew_power = max(0, min(100, int(power)))
 
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
                      light: bool = True, save: bool = False,
@@ -311,6 +316,7 @@ class SimFilterWheel(FilterWheel):
         super().__init__(name)
         self.rig = rig
         self.filter_names = ["L", "R", "G", "B", "Ha", "OIII", "SII"]
+        self.filter_offsets = [0, 12, 10, 15, 120, 110, 115]  # focuser steps
 
     async def connect(self) -> None:
         await asyncio.sleep(0.05)

@@ -93,3 +93,82 @@ async def test_goto_and_center_converges(sim_hub):
     assert result["centered"], result
     ra, dec = await sim_hub.require("telescope").get_position()
     assert abs(dec - 30.0) < 0.05
+
+
+# --------------------------------------------------- new autonomous-night features
+
+async def test_cooling_before_lights(sim_hub):
+    engine = SequenceEngine(sim_hub)
+    engine.start(small_plan(cool_to=-10.0))
+    assert await wait_for(lambda: engine.state.get("state") == "complete")
+    assert sim_hub.devices["camera"]._cooler_on
+
+
+async def test_calibration_target_darks(sim_hub, tmp_path):
+    engine = SequenceEngine(sim_hub)
+    plan = SequencePlan(name="cal", guide=False, targets=[Target(
+        name="darks", ra_hours=0.0, dec_deg=0.0, calibration=True,
+        steps=[ExposureStep(filter=None, exposure_s=0.05, count=3, frame_type="Dark")])])
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") == "complete")
+    assert len(list(tmp_path.rglob("Dark_*.fits"))) == 3
+    # calibration must not move the mount off its parked pole
+    assert not await sim_hub.require("telescope").is_slewing()
+
+
+async def test_filter_offsets_move_focuser(sim_hub):
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(apply_filter_offsets=True)
+    fw, foc = sim_hub.devices["filterwheel"], sim_hub.devices["focuser"]
+    start_pos = await foc.get_position()
+    start_slot = await fw.get_position()
+    await engine._apply_filter(ExposureStep(filter="Ha", exposure_s=0.05, count=1))
+    expected = fw.filter_offsets[fw.filter_names.index("Ha")] - fw.filter_offsets[start_slot]
+    assert (await foc.get_position()) - start_pos == expected
+
+
+async def test_refocus_on_temp_delta(sim_hub):
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(refocus_on_temp_delta_c=1.0)
+    engine._last_focus_temp = await sim_hub.devices["focuser"].get_temperature()
+    assert not await engine._refocus_due()       # no drift
+    engine._last_focus_temp += 5.0               # pretend last focus was 5°C warmer
+    assert await engine._refocus_due()
+
+
+async def test_guiding_recovery(sim_hub):
+    g = sim_hub.guider
+    await g.start_guiding()
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(guide=True, recover_guiding=True)
+    g._guiding = False                            # simulate lost star
+    await engine._maybe_recover_guiding()
+    assert g.stats().guiding                      # recovered
+
+
+async def test_dew_heater(sim_hub):
+    cam = sim_hub.devices["camera"]
+    await cam.set_dew_heater(60)
+    assert cam._dew_power == 60
+
+
+async def test_resume_after_abort(sim_hub, tmp_path):
+    plan = SequencePlan(name="r", guide=False, dither_every=0, autofocus_every=0,
+                        meridian_flip=False, targets=[Target(
+                            name="M42", ra_hours=5.5881, dec_deg=-5.3911, center=False,
+                            autofocus_first=False,
+                            steps=[ExposureStep(filter="L", exposure_s=0.05, count=6)])])
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    assert await wait_for(lambda: engine._frames_done >= 2)
+    await engine.abort()
+    data = SequenceEngine.load_resume()
+    assert data is not None
+    done_before = sum(data["done"].values())
+    assert 1 <= done_before < 6
+
+    engine2 = SequenceEngine(sim_hub)
+    engine2.start(plan, resume_done=data["done"])
+    assert await wait_for(lambda: engine2.state.get("state") == "complete")
+    assert engine2._frames_done == 6              # resumed, did not redo all 6
+    assert SequenceEngine.load_resume() is None   # cleared on completion

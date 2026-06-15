@@ -329,6 +329,28 @@ class Hub:
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts}
 
+    async def meridian_flip(self, ra_hours: float, dec_deg: float) -> dict:
+        """Flip a German equatorial mount across the meridian: stop guiding,
+        re-slew (the mount chooses the far side of the pier), plate-solve
+        re-center, and restart guiding."""
+        bus.publish("mount", action="meridian_flip")
+        bus.log("info", "meridian flip: stopping guiding and re-slewing", "sequence")
+        was_guiding = False
+        if self.guider and self.guider.connected:
+            try:
+                was_guiding = await self.guider.is_active()
+                await self.guider.stop_guiding()
+            except Exception:
+                pass
+        result = await self.goto_and_center(ra_hours, dec_deg)
+        if was_guiding:
+            try:
+                await self.guider.start_guiding()
+            except Exception as e:
+                bus.log("warning", f"meridian flip: guiding restart failed: {e}", "sequence")
+        bus.log("info", "meridian flip complete", "sequence")
+        return result
+
     # ------------------------------------------------------------ NINA events
 
     def _start_nina_ws(self) -> None:
@@ -440,6 +462,7 @@ class Hub:
                 out["camera"] = {
                     "temperature": await cam.get_temperature(),
                     "can_cool": cam.can_cool,
+                    "has_dew_heater": getattr(cam, "has_dew_heater", False),
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
                 }

@@ -83,6 +83,7 @@ class Camera(Device):
     pixel_size_um: float = 0.0
     max_gain: int = 600
     can_cool: bool = False
+    has_dew_heater: bool = False
     bayer_pattern: str | None = None
 
     @abstractmethod
@@ -104,6 +105,10 @@ class Camera(Device):
 
     async def get_temperature(self) -> float | None:
         return None
+
+    async def set_dew_heater(self, power: int) -> None:
+        """Set the camera's built-in dew heater (0-100%)."""
+        raise DeviceError(f"{self.name} has no dew heater")
 
 
 class Telescope(Device):
@@ -148,6 +153,11 @@ class Telescope(Device):
     async def pier_side(self) -> PierSide:
         return PierSide.UNKNOWN
 
+    async def time_to_meridian_flip(self) -> float | None:
+        """Hours until a meridian flip is due (<=0 means flip now), or None if
+        the mount doesn't report it / isn't a German equatorial."""
+        return None
+
     async def stop(self) -> None:
         """Emergency stop of any motion."""
         await self.move_axis("ra", 0)
@@ -182,6 +192,8 @@ class FilterWheel(Device):
     kind = "filterwheel"
 
     filter_names: list[str] = []
+    #: per-filter focuser offsets (steps), parallel to filter_names; empty = none
+    filter_offsets: list[int] = []
 
     @abstractmethod
     async def get_position(self) -> int: ...

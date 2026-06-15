@@ -10,13 +10,15 @@ const DEFAULT_STEP: ExposureStep = {
 
 const DEFAULT_PLAN: SequencePlan = {
   name: "Tonight", targets: [], guide: true, dither_every: 3, dither_pixels: 3,
-  autofocus_every: 0, park_when_done: false, warm_cooler_when_done: false,
+  autofocus_every: 0, cool_to: -10, cool_timeout_s: 600, apply_filter_offsets: true,
+  refocus_on_temp_delta_c: 1.5, meridian_flip: true, recover_guiding: true,
+  hfr_reject_factor: 0, park_when_done: false, warm_cooler_when_done: false,
 };
 
 function loadPlan(): SequencePlan {
   try {
     const raw = localStorage.getItem("astrodeck-plan");
-    if (raw) return JSON.parse(raw) as SequencePlan;
+    if (raw) return { ...DEFAULT_PLAN, ...JSON.parse(raw) } as SequencePlan;
   } catch { /* fall through */ }
   return DEFAULT_PLAN;
 }
@@ -26,6 +28,8 @@ export default function SequenceView() {
   const [plan, setPlan] = useState<SequencePlan>(loadPlan);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
+  const [recoverable, setRecoverable] =
+    useState<{ name: string; frames_done: number; frames_total: number } | null>(null);
 
   useEffect(() => {
     localStorage.setItem("astrodeck-plan", JSON.stringify(plan));
@@ -44,8 +48,18 @@ export default function SequenceView() {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
   };
 
-  const filters = status?.filterwheel?.names ?? [];
   const running = sequence.state === "running" || sequence.state === "paused";
+
+  useEffect(() => {
+    if (running) return;
+    api.get<{ recoverable: boolean; name?: string; frames_done?: number; frames_total?: number }>(
+      "/api/sequence/recoverable")
+      .then((r) => setRecoverable(r.recoverable
+        ? { name: r.name!, frames_done: r.frames_done!, frames_total: r.frames_total! } : null))
+      .catch(() => { /* server not up */ });
+  }, [running]);
+
+  const filters = status?.filterwheel?.names ?? [];
   const totalFrames = plan.targets.reduce((a, t) => a + t.steps.reduce((b, s) => b + s.count, 0), 0);
   const totalMinutes = plan.targets.reduce(
     (a, t) => a + t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0), 0) / 60;
@@ -55,7 +69,7 @@ export default function SequenceView() {
       ...plan,
       targets: [...plan.targets, {
         name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
-        center: true, autofocus_first: true, steps: [{ ...DEFAULT_STEP }],
+        center: true, autofocus_first: true, calibration: false, steps: [{ ...DEFAULT_STEP }],
       }],
     });
     setSearch("");
@@ -77,6 +91,21 @@ export default function SequenceView() {
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
       <div className="flex flex-col gap-4">
+        {/* ----------------------------------------------- recover banner */}
+        {recoverable && !running && (
+          <Panel title="Resume Interrupted Run">
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-dim flex-1">
+                “{recoverable.name}” stopped at {recoverable.frames_done}/{recoverable.frames_total} frames.
+                Resume picks up where it left off.
+              </span>
+              <button className="btn btn-accent !py-1" onClick={() =>
+                act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
+                ▸ Resume
+              </button>
+            </div>
+          </Panel>
+        )}
         {/* --------------------------------------------------- progress */}
         {(running || sequence.state === "complete") && sequence.progress && (
           <Panel title={`Sequence · ${sequence.plan_name ?? ""}`}
@@ -148,6 +177,10 @@ export default function SequenceView() {
                   </label>
                   <label className="flex items-center gap-1.5 text-[11px] text-dim">
                     <Toggle checked={t.autofocus_first} onChange={(v) => patchTarget(ti, { autofocus_first: v })} /> AF
+                  </label>
+                  <label className="flex items-center gap-1.5 text-[11px] text-dim"
+                    title="calibration frames (darks/bias) — no slew, focus or guiding">
+                    <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })} /> Cal
                   </label>
                   <div className="flex-1" />
                   <button className="btn !py-0.5 !px-2 !text-[10px]" disabled={running}
@@ -226,6 +259,34 @@ export default function SequenceView() {
               <span className="text-dim">refocus every N frames</span>
               <input className="field !w-16 !py-1" value={plan.autofocus_every}
                 onChange={(e) => setPlan({ ...plan, autofocus_every: Math.max(0, Math.round(num(e.target.value, plan.autofocus_every))) })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">refocus on temp Δ°C (0=off)</span>
+              <input className="field !w-16 !py-1" value={plan.refocus_on_temp_delta_c}
+                onChange={(e) => setPlan({ ...plan, refocus_on_temp_delta_c: Math.max(0, num(e.target.value, plan.refocus_on_temp_delta_c)) })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">apply filter focus offsets</span>
+              <Toggle checked={plan.apply_filter_offsets} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">meridian flip (German mount)</span>
+              <Toggle checked={plan.meridian_flip} onChange={(v) => setPlan({ ...plan, meridian_flip: v })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">recover guiding if lost</span>
+              <Toggle checked={plan.recover_guiding} onChange={(v) => setPlan({ ...plan, recover_guiding: v })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">cool sensor to °C (blank=off)</span>
+              <input className="field !w-16 !py-1" placeholder="off"
+                value={plan.cool_to ?? ""}
+                onChange={(e) => setPlan({ ...plan, cool_to: e.target.value === "" ? null : num(e.target.value, plan.cool_to ?? -10) })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">flag HFR spikes (× median, 0=off)</span>
+              <input className="field !w-16 !py-1" value={plan.hfr_reject_factor}
+                onChange={(e) => setPlan({ ...plan, hfr_reject_factor: Math.max(0, num(e.target.value, plan.hfr_reject_factor)) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">park mount when done</span>

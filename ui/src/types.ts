@@ -23,7 +23,7 @@ export interface RigStatus {
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
   filterwheel?: { position: number; names: string[] };
-  camera?: { temperature: number | null; can_cool: boolean; width: number; height: number; max_gain: number };
+  camera?: { temperature: number | null; can_cool: boolean; has_dew_heater?: boolean; width: number; height: number; max_gain: number };
   guider?: GuideStats & { name: string };
 }
 
@@ -140,6 +140,7 @@ export interface Target {
   dec_deg: number;
   center: boolean;
   autofocus_first: boolean;
+  calibration: boolean;
   steps: ExposureStep[];
 }
 
@@ -150,6 +151,13 @@ export interface SequencePlan {
   dither_every: number;
   dither_pixels: number;
   autofocus_every: number;
+  cool_to: number | null;
+  cool_timeout_s: number;
+  apply_filter_offsets: boolean;
+  refocus_on_temp_delta_c: number;
+  meridian_flip: boolean;
+  recover_guiding: boolean;
+  hfr_reject_factor: number;
   park_when_done: boolean;
   warm_cooler_when_done: boolean;
 }

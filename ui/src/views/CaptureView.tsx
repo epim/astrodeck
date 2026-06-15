@@ -13,6 +13,7 @@ export default function CaptureView() {
   const [save, setSave] = useState(false);
   const [target, setTarget] = useState("");
   const [coolerTarget, setCoolerTarget] = useState("-10");
+  const [dew, setDew] = useState(0);
 
   const cam = status?.camera;
   const looping = !!status?.looping;
@@ -161,6 +162,19 @@ export default function CaptureView() {
                 Warm
               </button>
             </div>
+            {cam.has_dew_heater && (
+              <div className="mt-4 border-t border-line pt-3">
+                <div className="flex justify-between mb-1.5">
+                  <span className="label">dew heater</span>
+                  <span className="mono text-xs text-accent">{dew}%</span>
+                </div>
+                <input type="range" min={0} max={100} value={dew}
+                  className="w-full accent-(--accent) cursor-pointer"
+                  onChange={(e) => { setDew(Number(e.target.value)); }}
+                  onMouseUp={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))}
+                  onTouchEnd={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))} />
+              </div>
+            )}
           </Panel>
         )}
       </div>

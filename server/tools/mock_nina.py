@@ -40,6 +40,10 @@ class MockNinaState:
         self.last_af = None
         self.af_counter = 0
         self.guiding = False
+        self.ttf = 12.0           # hours to meridian flip
+        self.pier = "pierEast"
+        self.flip_count = 0
+        self.dew_power = 0
 
 
 async def _ensure_connected(state: MockNinaState):
@@ -149,6 +153,11 @@ def create_mock_nina() -> tuple[FastAPI, MockNinaState]:
         await state.dev["camera"].set_cooler(False)
         return _env({})
 
+    @app.get(api + "/equipment/camera/dew-heater")
+    async def camera_dew(power: int = 0):
+        state.dew_power = int(power)
+        return _env({})
+
     # ---------------------------------------------------------------- mount
     @app.get(api + "/equipment/mount/info")
     async def mount_info():
@@ -158,11 +167,16 @@ def create_mock_nina() -> tuple[FastAPI, MockNinaState]:
             "Connected": tel.connected, "Name": tel.name,
             "RightAscension": ra, "Declination": dec,
             "Slewing": await tel.is_slewing(), "TrackingEnabled": await tel.get_tracking(),
-            "AtPark": await tel.is_parked(), "SideOfPier": "West",
+            "AtPark": await tel.is_parked(), "SideOfPier": state.pier,
+            "TimeToMeridianFlip": state.ttf,
         })
 
     @app.get(api + "/equipment/mount/slew")
     async def mount_slew(ra: float, dec: float, waitToFinish: str = "true"):
+        if state.ttf <= 0:  # past the meridian → German mount flips to the other pier
+            state.pier = "pierWest" if state.pier == "pierEast" else "pierEast"
+            state.ttf = 11.9
+            state.flip_count += 1
         await state.dev["telescope"].slew(ra, dec)
         return _env({})
 
@@ -248,7 +262,10 @@ def create_mock_nina() -> tuple[FastAPI, MockNinaState]:
         return _env({
             "Connected": fw.connected, "Name": fw.name,
             "SelectedFilter": {"Name": fw.filter_names[pos], "Id": pos},
-            "AvailableFilters": [{"Name": n, "Id": i} for i, n in enumerate(fw.filter_names)],
+            "AvailableFilters": [
+                {"Name": n, "Id": i,
+                 "FocusOffset": fw.filter_offsets[i] if i < len(fw.filter_offsets) else 0}
+                for i, n in enumerate(fw.filter_names)],
         })
 
     @app.get(api + "/equipment/filterwheel/change-filter")

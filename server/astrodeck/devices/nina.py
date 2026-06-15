@@ -197,6 +197,7 @@ class NinaCamera(_NinaDevice, Camera):
         self.max_gain = int(pick(info, "GainMax", "MaxGain", default=0) or 0)
         self.can_cool = bool(pick(info, "CanSetTemperature", "HasCooler",
                                   "CanCool", default=False))
+        self.has_dew_heater = bool(pick(info, "HasDewHeater", default=False))
         sensor = pick(info, "SensorType", default=None)
         self.bayer_pattern = None if sensor in (None, "Monochrome", "Mono") else sensor
 
@@ -269,6 +270,9 @@ class NinaCamera(_NinaDevice, Camera):
 
     async def get_temperature(self) -> float | None:
         return _maybe_float(pick(await self.info(), "Temperature"))
+
+    async def set_dew_heater(self, power: int) -> None:
+        await self.client.get("/equipment/camera/dew-heater", power=int(power))
 
 
 # ----------------------------------------------------------------------- mount
@@ -350,6 +354,14 @@ class NinaTelescope(_NinaDevice, Telescope):
         if "west" in side:
             return PierSide.WEST
         return PierSide.UNKNOWN
+
+    async def time_to_meridian_flip(self) -> float | None:
+        # force-fresh: a stale value here could miss/duplicate a flip
+        v = pick(await self.info(force=True), "TimeToMeridianFlip")
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
 
     async def stop(self) -> None:
         await self.client.get("/equipment/mount/slew-stop")
@@ -437,6 +449,8 @@ class NinaFilterWheel(_NinaDevice, FilterWheel):
         avail = pick(info, "AvailableFilters", "SelectableFilters", default=[]) or []
         self.filter_names = [pick(f, "Name", default=str(i)) for i, f in enumerate(avail)]
         self._filter_ids = [pick(f, "Id", "Position", default=i) for i, f in enumerate(avail)]
+        self.filter_offsets = [int(pick(f, "FocusOffset", "Offset", default=0) or 0)
+                               for f in avail]
 
     async def get_position(self) -> int:
         sel = pick(await self.info(), "SelectedFilter", default=None)
@@ -538,6 +552,13 @@ class NinaGuider(Guider):
         finally:
             self._guiding = False
             bus.publish("guide", **self.stats().__dict__)
+
+    async def is_active(self) -> bool:
+        try:
+            info = await self.client.get("/equipment/guider/info")
+            return str(pick(info, "State", default="")).lower().startswith("guid")
+        except DeviceError:
+            return self._guiding
 
     async def dither(self, pixels: float = 3.0) -> None:
         await self.client.get("/equipment/guider/dither", timeout=180.0)

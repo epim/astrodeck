@@ -9,6 +9,7 @@ import pytest
 import astrodeck.hub as hub_module
 from astrodeck.devices.nina import build_nina_rig, _sep_deg
 from astrodeck.focus import run_autofocus
+from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
 from tools.mock_nina import create_mock_nina
 
 
@@ -33,6 +34,55 @@ async def nina():
     rig = await build_nina_rig("nina.test", 1888, http=client)
     yield rig, state
     await client.aclose()
+
+
+@pytest.fixture
+async def nina_hub(monkeypatch):
+    client, state = _mock_client()
+    real_build = hub_module.build_nina_rig
+
+    async def patched(host, port=1888, http=None):
+        return await real_build(host, port, http=client)
+
+    monkeypatch.setattr(hub_module, "build_nina_rig", patched)
+    h = hub_module.Hub()
+    await h.connect_nina("nina.test", 1888)
+    yield h, state
+    await h.disconnect_all()
+    await client.aclose()
+
+
+async def test_nina_filter_offsets_loaded(nina_hub):
+    h, _ = nina_hub
+    fw = h.devices["filterwheel"]
+    assert fw.filter_offsets == [0, 12, 10, 15, 120, 110, 115]
+
+
+async def test_meridian_flip_mechanism(nina_hub):
+    h, state = nina_hub
+    state.ttf = -0.01                       # past the meridian
+    result = await h.meridian_flip(9.9258, 69.0653)
+    assert state.flip_count >= 1            # the mount flipped pier
+    assert result["centered"]              # re-centered via NINA solve
+
+
+async def test_engine_flip_only_when_due(nina_hub):
+    h, state = nina_hub
+    h.devices.pop("focuser", None)          # skip post-flip autofocus for speed
+    engine = SequenceEngine(h)
+    engine.plan = SequencePlan(meridian_flip=True)
+    target = Target(name="M81", ra_hours=9.9258, dec_deg=69.0653, steps=[])
+
+    state.ttf = 5.0                         # not due
+    await engine._maybe_meridian_flip(target)
+    assert state.flip_count == 0
+
+    state.ttf = -0.01                       # due
+    await engine._maybe_meridian_flip(target)
+    assert state.flip_count == 1
+    # ttf reset by the flip → no second flip
+    await engine._maybe_meridian_flip(target)
+    assert state.flip_count == 1
 
 
 async def test_build_registers_connected_devices(nina):
