@@ -86,13 +86,12 @@ def create_mock_nina() -> tuple[FastAPI, MockNinaState]:
         return _env({"binning": binning})
 
     @app.get(api + "/equipment/camera/capture")
-    async def camera_capture(request: Request):
-        q = request.query_params
-        duration = float(q.get("duration", 1))
-        gain = int(float(q.get("gain", 100)))
+    async def camera_capture():
+        # Render at robust params so the sim star field reliably yields HFR/star
+        # counts (as NINA's own pipeline would). The requested duration/gain ride
+        # on the AstroDeck-side CameraFrame metadata, not this mock render.
         cam = state.dev["camera"]
-        frame = await cam.expose(min(duration, 0.05), gain, 30, binning=1)
-        state.last_frame = frame
+        state.last_frame = await cam.expose(0.1, 200, 30, binning=2)
         return _env({})
 
     @app.get(api + "/equipment/camera/capture/statistics")

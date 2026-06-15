@@ -20,6 +20,7 @@ from .events import bus
 from .guide import Guider, PHD2Guider, SimGuider
 from .imaging import compute_histogram, save_fits, to_png
 from .imaging.processing import frame_stats
+from .polar import PolarAlignSession
 from .solve import get_solver
 
 ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch")
@@ -42,6 +43,7 @@ class Hub:
         self._status_task: asyncio.Task | None = None
         self._nina_ws_task: asyncio.Task | None = None
         self._busy: dict[str, asyncio.Task] = {}
+        self.polar = PolarAlignSession(self)
 
     # ------------------------------------------------------------ connection
 
@@ -105,6 +107,7 @@ class Hub:
 
     async def disconnect_all(self) -> None:
         self.stop_loop()
+        await self.polar.stop()
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
         self._status_task = None

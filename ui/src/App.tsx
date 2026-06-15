@@ -6,6 +6,7 @@ import ConnectView from "./views/ConnectView";
 import CaptureView from "./views/CaptureView";
 import FocusView from "./views/FocusView";
 import MountView from "./views/MountView";
+import PolarView from "./views/PolarView";
 import GuideView from "./views/GuideView";
 import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
@@ -15,6 +16,7 @@ const NAV: { id: ViewName; label: string; icon: string }[] = [
   { id: "capture", label: "Capture", icon: "◉" },
   { id: "focus", label: "Focus", icon: "◎" },
   { id: "mount", label: "Mount", icon: "✛" },
+  { id: "polar", label: "Align", icon: "⊕" },
   { id: "guide", label: "Guide", icon: "❖" },
   { id: "sequence", label: "Plan", icon: "≡" },
   { id: "power", label: "Power", icon: "⏻" },
@@ -22,7 +24,8 @@ const NAV: { id: ViewName; label: string; icon: string }[] = [
 
 const VIEWS: Record<ViewName, () => JSX.Element> = {
   connect: ConnectView, capture: CaptureView, focus: FocusView,
-  mount: MountView, guide: GuideView, sequence: SequenceView, power: PowerView,
+  mount: MountView, polar: PolarView, guide: GuideView,
+  sequence: SequenceView, power: PowerView,
 };
 
 export default function App() {

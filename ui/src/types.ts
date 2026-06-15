@@ -75,6 +75,16 @@ export interface LogLine {
   ts: number;
 }
 
+export interface PolarState {
+  state: "idle" | "running" | "paused" | "done" | "error";
+  az_error: number;   // signed arcmin
+  alt_error: number;  // signed arcmin
+  total_error: number;
+  progress: number;
+  message: string;
+  source: "nina" | "sim" | null;
+}
+
 export interface CatalogEntry {
   id: string;
   name: string;

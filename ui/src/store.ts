@@ -1,10 +1,10 @@
 import { create } from "zustand";
 import type {
-  FocusEvent, GuideStats, LogLine, PreviewInfo, RigStatus, SequenceState,
+  FocusEvent, GuideStats, LogLine, PolarState, PreviewInfo, RigStatus, SequenceState,
 } from "./types";
 
 export type ViewName =
-  | "connect" | "capture" | "focus" | "mount" | "guide" | "sequence" | "power";
+  | "connect" | "capture" | "focus" | "mount" | "polar" | "guide" | "sequence" | "power";
 
 interface AppState {
   view: ViewName;
@@ -15,6 +15,7 @@ interface AppState {
   focus: FocusEvent | null;
   guide: (GuideStats & { name?: string }) | null;
   sequence: SequenceState;
+  polar: PolarState;
   logs: LogLine[];
   toast: { level: string; message: string; key: number } | null;
 
@@ -36,6 +37,7 @@ export const useStore = create<AppState>((set, get) => ({
   focus: null,
   guide: null,
   sequence: { state: "idle" },
+  polar: { state: "idle", az_error: 0, alt_error: 0, total_error: 0, progress: 0, message: "", source: null },
   logs: [],
   toast: null,
 
@@ -69,6 +71,9 @@ export const useStore = create<AppState>((set, get) => ({
         break;
       case "sequence":
         set({ sequence: ev.data as unknown as SequenceState });
+        break;
+      case "polar":
+        set({ polar: ev.data as unknown as PolarState });
         break;
       case "log": {
         const line = ev as unknown as LogLine;

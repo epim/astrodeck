@@ -435,6 +435,35 @@ def create_app() -> FastAPI:
     async def sequence_state():
         return engine.state | {"running": engine.running, "paused": engine.paused}
 
+    # -------------------------------------------------------------- polar align
+
+    @app.post("/api/polar/start")
+    async def polar_start():
+        try:
+            await hub.polar.start()
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return {"started": True, "source": hub.polar.state["source"]}
+
+    @app.post("/api/polar/stop")
+    async def polar_stop():
+        await hub.polar.stop()
+        return {"ok": True}
+
+    @app.post("/api/polar/pause")
+    async def polar_pause():
+        await hub.polar.pause()
+        return {"ok": True}
+
+    @app.post("/api/polar/resume")
+    async def polar_resume():
+        await hub.polar.resume()
+        return {"ok": True}
+
+    @app.get("/api/polar/state")
+    async def polar_state():
+        return hub.polar.state | {"running": hub.polar.running}
+
     # -------------------------------------------------------------- catalog
 
     @app.get("/api/catalog")
