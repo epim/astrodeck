@@ -70,6 +70,12 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   monitor: MonitorView,
   settings: () => <PlaceholderView label="Settings" />,
   atlas: AtlasView,
+  // "report" is NOT a primary-nav entry (Batch-4b §2.5): the Session Report is
+  // reached from the run-complete "View session report →" link + the mobile
+  // overflow sheet in the NEXT (frontend) workflow. The placeholder keeps the
+  // VIEWS Record<ViewName,…> total so the union stays exhaustive until ReportView
+  // lands; ViewName already includes "report" (types.ts).
+  report: () => <PlaceholderView label="Session Report" />,
 };
 
 // Nav gating (onboarding §3b/§7b): equipment-dependent views show the

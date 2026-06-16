@@ -77,3 +77,29 @@ class SimGuider(Guider):
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=22.0, recent=recent[-120:],
         )
+
+    async def guide_frame(self) -> bytes | None:
+        """Synthesize a small fake guide-star frame so the guide-cam preview is
+        demoable offline. A single Gaussian star jittered by the live guide error
+        on a noisy background, auto-stretched and PNG-encoded — same pipeline as
+        the real (PHD2) path. Returns None only on an unexpected encode failure."""
+        try:
+            import numpy as np
+
+            from ..imaging.processing import to_png
+
+            size = 96
+            yy, xx = np.mgrid[0:size, 0:size].astype(np.float64)
+            # jitter the centroid by the most recent guide error (px), if any.
+            last = self._samples[-1] if self._samples else {"ra": 0.0, "dec": 0.0}
+            cx = size / 2 + float(last["ra"]) * 3.0
+            cy = size / 2 + float(last["dec"]) * 3.0
+            sigma = 2.4
+            star = np.exp(-(((xx - cx) ** 2 + (yy - cy) ** 2) / (2 * sigma ** 2)))
+            rng = np.random.default_rng()
+            bg = rng.normal(1200, 180, (size, size))
+            img = bg + star * 42000.0
+            data = np.clip(img, 0, 65535).astype(np.uint16)
+            return to_png(data, stretch=True, max_width=size)
+        except Exception:
+            return None

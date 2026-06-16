@@ -13,6 +13,9 @@ import type {
   PolarState,
   PreviewInfo,
   RigStatus,
+  SafetyReading,
+  SafetyState,
+  Schedule,
   SequencePlan,
   SequenceState,
   SiteInfo,
@@ -108,6 +111,27 @@ function loadPlan(): SequencePlan {
     /* fall through to default */
   }
   return defaultPlan();
+}
+
+// ----------------------------------------------------------- automation defaults
+// The per-target autorun schedule baseline (Batch-4b §2.4). Exported so the
+// frontend workflow's SequenceView can backfill `schedule` onto every target in
+// loadPlan()/addTarget() (resolves C1-27: a plan saved before 4b has no schedule,
+// and a missing schedule would crash the schedule sub-panel). The shape mirrors
+// backend sequence/models.Schedule's defaults exactly — "now" start, no gates, no
+// stop, wait-on-missed — so a backfilled target preserves today's run behavior.
+export function defaultSchedule(): Schedule {
+  return {
+    start_mode: "now",
+    start_offset_min: 0,
+    start_time: null,
+    min_altitude_deg: 0,
+    stop_mode: "none",
+    stop_offset_min: 0,
+    stop_time: null,
+    max_run_min: 0,
+    on_missed: "wait",
+  };
 }
 
 // ----------------------------------------------------------------- atlas/framing
@@ -336,6 +360,18 @@ interface AppState {
   // --- confirm host (onboarding) ---
   confirm: ConfirmRequest | null;
 
+  // --- automation / safety (Batch-4b; design spec §2.2) ---
+  // safety: latest SafetyMonitor snapshot (null until a `safety` event/hello). The
+  // UNSAFE path enqueues a STICKY toast (ttl:0) via the existing queued toast model
+  // — no second toast slot (C3-6c is satisfied by the queue that already shipped).
+  safety: SafetyState | null;
+  // alert: last outbound-alert delivery result; `key` bumps on each event so a UI
+  // effect can react to repeats with identical {sink,ok}. null until first `alert`.
+  alert: { sink: string; ok: boolean; error?: string; key: number } | null;
+  // lastReportId: id of the most recently finalized SessionReport (a `report`
+  // event). The run-complete panel + overflow deep-link to it in the next workflow.
+  lastReportId: string | null;
+
   // --- live-preview (Batch-2; master §A.2) ---
   previews: PreviewInfo[]; // newest last, cap 24 (client metadata ring)
   selectedPreviewId: number | null; // null => follow live
@@ -427,6 +463,9 @@ interface AppState {
 }
 
 let toastId = 0;
+// Monotonic key bumped on every `alert` event so a UI effect watching `alert.key`
+// re-fires even when two consecutive deliveries share the same {sink, ok} (§2.2).
+let alertKey = 0;
 let linkDownTimer: ReturnType<typeof setTimeout> | null = null;
 const LINK_DOWN_ALERT_MS = 30000;
 
@@ -478,6 +517,11 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- confirm ---
   confirm: null,
+
+  // --- automation / safety (Batch-4b) ---
+  safety: null,
+  alert: null,
+  lastReportId: null,
 
   // --- live-preview ---
   previews: [],
@@ -843,20 +887,64 @@ export const useStore = create<AppState>((set, get) => ({
       }
       case "hello": {
         // cold hydration snapshot — backend sends {"data": hub.summary()} with no
-        // wrapper, so treat data directly as the summary dict (may carry site / mode).
+        // wrapper, so treat data directly as the summary dict (may carry site / mode
+        // and, Batch-4b, a `safety` snapshot + redacted `config`).
         const summary = ev.data as unknown as Partial<RigStatus> & {
           site?: SiteInfo;
+          safety?: SafetyState;
+          config?: AppConfig;
         };
         if (summary.site) set({ site: summary.site });
         if (summary.mode !== undefined) {
           set({ equipConnected: summary.mode !== "none" });
         }
+        // Hydrate automation state on connect so the header safety chip + Settings
+        // render correctly without waiting for the first periodic event (§2.2).
+        if (summary.safety) set({ safety: summary.safety });
+        if (summary.config) set({ config: summary.config });
         break;
       }
       case "config":
         // re-GET, never partial-merge (settings spec C1-H28/C2-12)
         void get().loadConfig();
         break;
+      case "safety": {
+        // SafetyMonitor reading (engine §1.9-A / status §1.11). A `stale` read means
+        // the device dropped or the cached read timed out — treat as NOT connected.
+        const reading = ev.data as unknown as SafetyReading;
+        set((s) => ({
+          safety: {
+            streak: s.safety?.streak ?? 0,
+            reading,
+            connected: !reading.stale,
+          },
+        }));
+        // Unsafe OR stale → persistent (sticky) alert through the EXISTING queued
+        // toast model: enqueueToast({level,title,ttl:0}). ttl:0 = never auto-dismiss,
+        // so the UNSAFE notice can't be overwritten by a later transient toast (C3-6c).
+        if (reading.is_safe === false || reading.stale) {
+          get().enqueueToast({
+            level: "error",
+            title: `UNSAFE: ${reading.reason || (reading.stale ? "safety read stale" : "unsafe condition")}`,
+            ttl: 0,
+          });
+        }
+        break;
+      }
+      case "alert": {
+        // Outbound-alert delivery result (alerting.py publishes on every attempt).
+        // Bump the monotonic key so a UI effect re-fires for repeat {sink,ok} events.
+        const d = ev.data as unknown as { sink: string; ok: boolean; error?: string };
+        set({ alert: { sink: d.sink, ok: d.ok, error: d.error, key: ++alertKey } });
+        break;
+      }
+      case "report": {
+        // A SessionReport finalized — stash its id so the run-complete panel +
+        // overflow can deep-link to ReportView (lands in the next workflow).
+        const d = ev.data as unknown as { id: string | null };
+        if (d.id) set({ lastReportId: d.id });
+        break;
+      }
       case "preview": {
         const p = ev.data as unknown as PreviewInfo;
         // Keep the single-frame `preview` (existing consumers) AND push into the
@@ -1003,6 +1091,16 @@ export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending)
 export const useSite = () => useStore((s) => s.site);
 export const useEquipConnected = () => useStore((s) => s.equipConnected);
 export const useConfirm = () => useStore((s) => s.confirm);
+
+// ============================================================================
+// Automation / safety narrow hooks (Batch-4b §2.2). Each subscribes to a single
+// slice so a 2 s safety status refresh re-renders only the header chip, not the
+// whole tree. `safety`/`alert` are object slices replaced by reference on update,
+// so a primitive-returning consumer (e.g. is_safe) should derive from these.
+// ============================================================================
+export const useSafety = () => useStore((s) => s.safety);
+export const useAlert = () => useStore((s) => s.alert);
+export const useLastReportId = () => useStore((s) => s.lastReportId);
 
 // ============================================================================
 // Live-preview narrow hooks (live-preview spec §4.2). Each subscribes to one

@@ -1,0 +1,234 @@
+"""API tests for the Batch 4b automation surface (api/app.py §1.10).
+
+Covers the endpoints owned by the Api lane:
+
+* GET/POST ``/api/config`` round-trips the appended automation keys
+  (safety/escalation/alerts/deadman_url) and **blanks alert tokens** on the way
+  out (the Telegram bot token is the only at-rest secret).
+* ``/api/safety/simulate`` flips the simulated SafetyMonitor (sim-only — 404 off
+  sim) and ``/api/safety/state`` reflects the cached verdict.
+* ``/api/alerts`` upsert/delete/test: upsert resets ``verified`` on a url change,
+  delete removes by id, test reports the round-trip result.
+* POST ``/api/sequence/preflight`` warns for an always-below-floor target and is
+  distinct from the existing GET single-target verdict.
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+import astrodeck.api.app as app_module
+from astrodeck.config import ConfigStore, Site
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """Isolated app: config + reports redirected to tmp, no real rig touched."""
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    import astrodeck.config as config_mod
+    import astrodeck.hub as hub_mod
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    monkeypatch.setattr(hub_mod, "config_store", temp_store)
+    monkeypatch.setattr(app_module, "config_store", temp_store)
+    # reports land under tmp (report.py resolves hub.CAPTURE_DIR live)
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
+
+    app = app_module.create_app()
+    with TestClient(app) as c:
+        try:
+            yield c, temp_store
+        finally:
+            # the hub is a module singleton — disconnect so a sim connected in
+            # one test never leaks into the next.
+            try:
+                c.post("/api/disconnect")
+            except Exception:
+                pass
+
+
+# --------------------------------------------------------------- config round-trip
+
+def test_get_config_includes_automation_blocks(client):
+    c, _ = client
+    r = c.get("/api/config")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("safety", "escalation", "alerts", "deadman_url", "site",
+                "optics_computed"):
+        assert key in body, key
+    assert body["safety"]["preset"] == "backyard"
+    assert body["alerts"] == []
+
+
+def test_post_config_partial_merge_persists_and_blanks_tokens(client):
+    c, store = client
+    # POST only the alerts + deadman_url blocks; site/safety untouched.
+    patch = {
+        "deadman_url": "https://hc-ping.com/abc",
+        "alerts": [{
+            "id": "tg1", "kind": "telegram", "url": "",
+            "token": "SECRET-BOT-TOKEN", "chat_id": "42",
+            "events": ["safety", "run_end"],
+        }],
+    }
+    r = c.post("/api/config", json=patch)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # deadman persisted; token blanked in the returned (redacted) union.
+    assert body["deadman_url"] == "https://hc-ping.com/abc"
+    assert body["alerts"][0]["token"] == ""
+    # but the real token IS persisted server-side.
+    assert store.cfg().alerts[0].token == "SECRET-BOT-TOKEN"
+    assert store.cfg().deadman_url == "https://hc-ping.com/abc"
+    # a fresh GET still blanks it.
+    assert c.get("/api/config").json()["alerts"][0]["token"] == ""
+
+
+def test_post_config_safety_preset_round_trips(client):
+    c, store = client
+    patch = {"safety": {
+        "enabled": True, "preset": "remote", "min_alt_deg": 10.0,
+        "twilight_deg": -15.0, "on_unsafe": "abort_park_warm",
+        "unsafe_consecutive": 2, "resume_when_safe": False,
+        "resume_safe_consecutive": 3, "max_pause_min": 0,
+    }}
+    r = c.post("/api/config", json=patch)
+    assert r.status_code == 200, r.text
+    assert store.cfg().safety.preset == "remote"
+    assert store.cfg().safety.twilight_deg == -15.0
+    # version bumped (optimistic-concurrency token).
+    assert store.cfg().version >= 2
+
+
+# ------------------------------------------------------------------ safety (sim)
+
+def test_safety_simulate_flips_state_on_sim(client):
+    c, _ = client
+    assert c.post("/api/connect/sim").status_code == 200
+
+    # baseline: connected + safe.
+    st = c.get("/api/safety/state").json()
+    assert st["connected"] is True
+
+    # inject unsafe.
+    r = c.post("/api/safety/simulate", json={"unsafe": True, "reason": "clouds"})
+    assert r.status_code == 200, r.text
+    rd = r.json()["reading"]
+    assert rd["is_safe"] is False
+    assert "clouds" in rd["reason"]
+
+    # back to safe.
+    r2 = c.post("/api/safety/simulate", json={"unsafe": False})
+    assert r2.status_code == 200
+    assert r2.json()["reading"]["is_safe"] is True
+
+
+def test_safety_simulate_404_when_not_sim(client):
+    c, _ = client
+    # no rig connected => mode == "none" => 404.
+    r = c.post("/api/safety/simulate", json={"unsafe": True})
+    assert r.status_code == 404
+
+
+# ------------------------------------------------------------------------ alerts
+
+def test_alerts_upsert_delete_and_token_blanking(client):
+    c, store = client
+    # upsert a new ntfy sink.
+    sink = {"id": "ntfy1", "kind": "ntfy", "url": "https://ntfy.sh/mytopic",
+            "events": ["run_end", "safety"]}
+    r = c.post("/api/alerts", json=sink)
+    assert r.status_code == 200, r.text
+    listed = r.json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == "ntfy1"
+    assert listed[0]["token"] == ""           # always blanked outbound
+
+    # GET /api/alerts mirrors it.
+    g = c.get("/api/alerts").json()
+    assert g[0]["url"] == "https://ntfy.sh/mytopic"
+
+    # mark it verified server-side, then change the url -> verified resets.
+    store.cfg().alerts[0].verified = True
+    sink_moved = dict(sink, url="https://ntfy.sh/othertopic")
+    r2 = c.post("/api/alerts", json=sink_moved)
+    assert r2.status_code == 200
+    assert store.cfg().alerts[0].verified is False
+    assert store.cfg().alerts[0].url == "https://ntfy.sh/othertopic"
+
+    # delete by id.
+    d = c.delete("/api/alerts/ntfy1")
+    assert d.status_code == 200
+    assert d.json() == {"deleted": "ntfy1"}
+    assert c.get("/api/alerts").json() == []
+
+
+def test_alert_test_roundtrip(client, monkeypatch):
+    c, _ = client
+    c.post("/api/alerts", json={"id": "w1", "kind": "webhook",
+                                "url": "https://example.invalid/hook"})
+
+    # stub the dispatcher's real send so the test never hits the network.
+    async def fake_test(sink_id):
+        return {"ok": True, "error": None, "verified": True}
+    monkeypatch.setattr(app_module.dispatcher, "test", fake_test)
+
+    r = c.post("/api/alerts/w1/test")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "error": None, "verified": True}
+
+    # unknown id -> 404.
+    assert c.post("/api/alerts/nope/test").status_code == 404
+
+
+# --------------------------------------------------------------- plan preflight
+
+def _below_floor_plan() -> dict:
+    """A southern target invisible from a far-northern site, with a 10° gate."""
+    return {
+        "name": "preflight",
+        "targets": [{
+            "name": "FarSouth",
+            "ra_hours": 6.0, "dec_deg": -80.0,
+            "schedule": {"min_altitude_deg": 10.0},
+            "steps": [{"exposure_s": 60.0, "count": 5}],
+        }],
+    }
+
+
+def test_post_preflight_warns_for_always_below_floor_target(client):
+    c, store = client
+    # configure a far-northern site so the dec -80 target never clears 10°.
+    store.set_site(Site(name="Tromso", latitude=69.6, longitude=18.9))
+    assert store.cfg().site.is_default is False
+
+    r = c.post("/api/sequence/preflight", json=_below_floor_plan())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert len(body["warnings"]) == 1
+    w = body["warnings"][0]
+    assert w["target"] == "FarSouth"
+    assert w["kind"] == "never_rises"
+
+
+def test_post_preflight_no_warnings_on_default_site(client):
+    c, _ = client
+    # default (un-configured) site => never warn (we don't trust the location).
+    r = c.post("/api/sequence/preflight", json=_below_floor_plan())
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "warnings": []}
+
+
+def test_get_and_post_preflight_coexist(client):
+    """The 4a GET single-target verdict and the 4b POST plan-wide warnings share
+    the path but differ by verb — both must resolve."""
+    c, _ = client
+    g = c.get("/api/sequence/preflight",
+              params={"ra_hours": 5.5, "dec_deg": -5.4})
+    assert g.status_code == 200
+    assert "verdict" in g.json()
+
+    p = c.post("/api/sequence/preflight", json={"name": "x", "targets": []})
+    assert p.status_code == 200
+    assert p.json() == {"ok": True, "warnings": []}

@@ -55,3 +55,20 @@ def test_nina_tppa_status_progress():
     sess._handle_nina({"Response": {"Status": "measuring point 2/3", "Progress": 0.4}})
     assert sess.state["message"] == "measuring point 2/3"
     assert sess.state["progress"] == 0.4
+
+
+def test_nina_tppa_progress_never_negative():
+    """NINA reports Progress == -1 during indeterminate ("Solving…") phases.
+    We must never publish a negative progress (the UI hides the bar on it);
+    instead hold the last known progress and clamp to [0, 1]."""
+    h = Hub()
+    sess = h.polar
+    sess._handle_nina({"Response": {"Progress": 0.4}})
+    assert sess.state["progress"] == 0.4
+    # indeterminate solve → holds 0.4, not -1.0
+    sess._handle_nina({"Response": {"Status": "Solving…", "Progress": -1}})
+    assert sess.state["progress"] == 0.4
+    assert sess.state["message"] == "Solving…"
+    # an over-unity value clamps to 1.0
+    sess._handle_nina({"Response": {"Progress": 1.5}})
+    assert sess.state["progress"] == 1.0

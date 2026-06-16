@@ -10,8 +10,9 @@ cancellation-safe.
 from __future__ import annotations
 
 import enum
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -144,6 +145,12 @@ class Camera(Device):
 class Telescope(Device):
     kind = "telescope"
 
+    #: capability flag (Batch 4b) — set True only by backends that implement
+    #: ``destination_pier_side``. Drives whether the UI even offers pier-limit
+    #: enforcement (C1-11); default False keeps non-GEM / unsupported mounts
+    #: unaffected and the destination helper inert (returns UNKNOWN).
+    reports_destination_pier_side: bool = False
+
     @abstractmethod
     async def get_position(self) -> tuple[float, float]:
         """Return (ra_hours, dec_degrees), JNow."""
@@ -181,6 +188,15 @@ class Telescope(Device):
         raise DeviceError(f"{self.name} cannot pulse guide")
 
     async def pier_side(self) -> PierSide:
+        return PierSide.UNKNOWN
+
+    async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
+        """Which side of the pier the mount *would* land on after slewing to
+        (ra_hours, dec_deg) — the pre-slew pier-collision guard (Batch 4b).
+
+        Default returns UNKNOWN so mounts that don't report ``DestinationSideOfPier``
+        (and the capability flag stays False) are never gated. Backends override
+        this and set ``reports_destination_pier_side = True`` after a successful probe."""
         return PierSide.UNKNOWN
 
     async def time_to_meridian_flip(self) -> float | None:
@@ -255,3 +271,41 @@ class Switch(Device):
 
     @abstractmethod
     async def set_port(self, port_id: int, value: float) -> None: ...
+
+
+@dataclass
+class SafetyReading:
+    """A single observation-safety verdict (Batch 4b).
+
+    ``stale`` is set when the read timed out or the device disconnected: the
+    engine treats a stale reading as UNSAFE (fail-closed), never as safe (C1-12,
+    C1-15). ``detail`` carries optional backend specifics (cloud %, wind, etc.)."""
+
+    is_safe: bool
+    reason: str = ""              # human string when unsafe, e.g. "cloud sensor"
+    source: str = ""             # device name
+    detail: dict[str, Any] = field(default_factory=dict)
+    stale: bool = False          # set when the read timed out / device disconnected
+    ts: float = field(default_factory=time.time)
+
+
+class SafetyMonitor(Device):
+    """Observing-condition monitor (cloud/rain/wind sensor, roof switch, ...).
+
+    A backend implements ``is_safe()``; the default ``reading()`` wraps it into a
+    ``SafetyReading``. The engine polls ``reading()`` on its own cadence/task so a
+    slow sensor never blocks the status loop (C1-12)."""
+
+    kind = "safety"
+
+    @abstractmethod
+    async def is_safe(self) -> bool:
+        """True when conditions are safe to keep imaging."""
+
+    async def reading(self) -> SafetyReading:
+        safe = await self.is_safe()
+        return SafetyReading(
+            is_safe=safe,
+            source=self.name,
+            reason="" if safe else "unsafe condition reported",
+        )

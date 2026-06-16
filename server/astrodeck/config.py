@@ -62,11 +62,81 @@ class Optics(BaseModel):
     auto_from_camera: bool = True
 
 
+# ------------------------------------------------------- automation (Batch 4b)
+#
+# Unattended-safety + alerting config. APPENDED to the existing AppConfig — the
+# in-tree ``ConfigStore`` is reused verbatim (its ``_load`` already tolerates
+# missing keys, so old config files deserialize unchanged). Named presets are
+# the primary UX; the per-knob numerics are Advanced-only. The only secret kept
+# at rest is an optional Telegram bot token, which ``redacted()`` blanks before
+# the config is sent over WS/REST.
+
+# Named safety presets. ``preset == "custom"`` => user-edited numerics, no patch.
+SAFETY_PRESETS: dict[str, dict] = {
+    "backyard": dict(on_unsafe="pause", unsafe_consecutive=3,
+                     resume_when_safe=True, resume_safe_consecutive=3,
+                     max_pause_min=120),
+    "remote":   dict(on_unsafe="abort_park_warm", unsafe_consecutive=2,
+                     resume_when_safe=False, max_pause_min=0),
+}
+
+
+class SafetyConfig(BaseModel):
+    enabled: bool = True
+    preset: str = "backyard"               # backyard | remote | custom
+    poll_each_frame: bool = True
+    # floor is OFF until a SafetyMonitor or a custom horizon is configured (C1-4);
+    # 0 = disabled. The UI sets 10 when the user enables the floor.
+    min_alt_deg: float = 0.0
+    horizon: list[tuple[float, float]] | None = None  # sorted (az,alt) control pts
+    nogo_box: list[dict] | None = None     # optional [{az_min,az_max,alt_max}] pier guard
+    enforce_pier_limits: bool = False      # only settable if mount reports pier side
+    twilight_deg: float = -12.0            # nautical default (C1-26)
+    # advanced (driven by the active preset unless preset == "custom")
+    on_unsafe: str = "pause"               # abort_park_warm | park | pause | warn
+    unsafe_consecutive: int = 3
+    resume_when_safe: bool = True
+    resume_safe_consecutive: int = 3
+    max_pause_min: int = 120               # 0 = no cap; escalates to park on timeout
+
+
+class EscalationConfig(BaseModel):
+    # all default to the gentle "warn" — never silently downgrade, never abort by default
+    require_cooling: bool = False
+    cooling_action: str = "warn"           # warn | abort | skip
+    require_guiding: bool = False
+    guiding_action: str = "warn"           # warn | abort | skip
+    af_failure_action: str = "warn"        # warn | abort | skip
+    hfr_reject_action: str = "warn"        # warn | discard | retake (retake = Advanced)
+    hfr_retake_limit_per_target: int = 4   # cap per target (C1-7)
+    no_progress_watchdog_s: int = 0        # 0 = off
+    reconnect_resume: bool = False         # Alpaca-only; off by default (C2-15)
+    reconnect_retries: int = 1
+
+
+class AlertSink(BaseModel):
+    id: str
+    kind: str                              # ntfy | webhook | telegram
+    enabled: bool = True
+    url: str = ""                          # ntfy topic url / webhook url
+    token: str = ""                        # telegram bot token (the only secret we store)
+    chat_id: str = ""                      # telegram chat id
+    min_level: str = "warning"             # warning | error
+    events: list[str] = Field(default_factory=lambda: ["run_start", "run_end", "safety", "error"])
+    verified: bool = False                 # set True only by a successful round-trip test
+    heartbeat_min: int = 0                 # 0 = off; periodic progress ping
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
     optics: Optics = Field(default_factory=Optics)
     active_profile_id: str | None = None
+    # --- automation (Batch 4b; appended — old configs without these load fine) ---
+    safety: SafetyConfig = Field(default_factory=SafetyConfig)
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    alerts: list[AlertSink] = Field(default_factory=list)
+    deadman_url: str = ""              # external healthcheck ping URL (C2-9)
 
 
 # --------------------------------------------------------------------- pure math
@@ -240,6 +310,41 @@ class ConfigStore:
         cfg = self.cfg()
         cfg.active_profile_id = profile_id
         return self.bump_and_save()
+
+    # -- automation mutation (Batch 4b) ----------------------------------------
+
+    def set_safety(self, safety: SafetyConfig) -> AppConfig:
+        cfg = self.cfg()
+        cfg.safety = safety
+        return self.bump_and_save()
+
+    def set_escalation(self, escalation: EscalationConfig) -> AppConfig:
+        cfg = self.cfg()
+        cfg.escalation = escalation
+        return self.bump_and_save()
+
+    def set_alerts(self, alerts: list[AlertSink]) -> AppConfig:
+        cfg = self.cfg()
+        cfg.alerts = list(alerts)
+        return self.bump_and_save()
+
+    def set_deadman(self, url: str) -> AppConfig:
+        cfg = self.cfg()
+        cfg.deadman_url = url
+        return self.bump_and_save()
+
+
+def redacted(cfg: AppConfig) -> dict:
+    """Serialize ``cfg`` for WS/REST with every alert token blanked.
+
+    The Telegram bot token is the only secret kept at rest; it must never leave
+    the server. Returns a plain dict (``model_dump`` shape) safe to broadcast.
+    """
+    data = cfg.model_dump()
+    for sink in data.get("alerts", []):
+        if sink.get("token"):
+            sink["token"] = ""
+    return data
 
 
 config_store = ConfigStore()

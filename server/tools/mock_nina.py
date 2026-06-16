@@ -171,20 +171,26 @@ def create_mock_nina() -> tuple[FastAPI, MockNinaState]:
             "TimeToMeridianFlip": state.ttf,
         })
 
+    # Live NINA (v2.2.15.1) takes RA in DEGREES on slew/sync (the backend sends
+    # ra_hours*15). The underlying SimTelescope works in hours, so convert back.
     @app.get(api + "/equipment/mount/slew")
     async def mount_slew(ra: float, dec: float, waitToFinish: str = "true"):
         if state.ttf <= 0:  # past the meridian → German mount flips to the other pier
             state.pier = "pierWest" if state.pier == "pierEast" else "pierEast"
             state.ttf = 11.9
             state.flip_count += 1
-        await state.dev["telescope"].slew(ra, dec)
+        await state.dev["telescope"].slew(ra / 15.0, dec)
         return _env({})
 
     @app.get(api + "/equipment/mount/sync")
     async def mount_sync(ra: float, dec: float):
-        await state.dev["telescope"].sync(ra, dec)
+        await state.dev["telescope"].sync(ra / 15.0, dec)
         return _env({})
 
+    # Live NINA (v2.2.15.1) serves `/equipment/mount/tracking`; the older
+    # `set-tracking` path 404s. The backend uses the live path, so the mock must
+    # honor it too (kept additive: both routes work for older callers/tests).
+    @app.get(api + "/equipment/mount/tracking")
     @app.get(api + "/equipment/mount/set-tracking")
     async def mount_tracking(enabled: str = "true"):
         await state.dev["telescope"].set_tracking(enabled.lower() == "true")
