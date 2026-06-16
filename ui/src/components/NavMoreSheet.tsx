@@ -34,6 +34,8 @@ import {
 // both; this restores parity on mobile.
 export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "guide", label: "Guide", icon: "guide" },
+  // Atlas before Plan, mirroring the desktop rail IA (spec §8 mobile "More" overflow).
+  { id: "atlas", label: "Atlas", icon: "atlas" },
   { id: "sequence", label: "Plan", icon: "plan" },
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },

@@ -1,0 +1,641 @@
+// AtlasView — the Sky Atlas page shell (design spec §6). Owner E.
+//
+// Composes the feature-lane components around the store's FramingSession (the
+// SSOT seeded by store.openFraming): SkyCanvas (left), SurveyControls + a mosaic
+// control cluster + VisibilityPanel (right). The header carries the object name,
+// an inline focal-length field (defaults from config.optics; on change PUT
+// /api/optics then loadConfig), and a "calibrate from last solve" button.
+//
+// Layout (spec §6):
+//   • desktop ≥lg : grid lg:grid-cols-[1fr_380px] — canvas left, planners right.
+//   • phone       : PINNED canvas at the top, planners scroll beneath it so the
+//                   overlay updates live while a slider is dragged (never hide the
+//                   canvas behind tabs — spec §8 C3-A13).
+//
+// J2000 invariant: the session center is always J2000; we never mix the live
+// JNow mount RA into the overlay (spec §9). openFraming seeds center from the
+// catalog entry (J2000) or the mount's J2000 RA/Dec when free-roam.
+//
+// NOTE on the mosaic: the page owns rows/cols/overlap (they drive the live
+// FovOverlay grid via the FramingSession with the byte-identical client mirror
+// `mosaicGrid` from lib/framing.ts). "Send to Plan" now routes through the
+// server `POST /api/framing/mosaic` (Owner C) so the slew targets are identical
+// to the engine; on a network/500 failure it falls back to the client mirror so
+// Send still works offline. The live drag overlay stays on the client mirror.
+
+import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import {
+  useStore,
+  useFraming,
+  useConfig,
+  useSite,
+  usePreview,
+  useSequence,
+  useNight,
+  useStatus,
+} from "../store";
+import type { MosaicPanel, MosaicResult, Optics, Target, VisibilityNight } from "../types";
+import { ARCSEC_PER_RAD } from "../lib/optics";
+import {
+  fovFromOptics,
+  plausibilityHint,
+  mosaicGrid,
+  mosaicTotalFov,
+  deproject,
+  wrapRaHours,
+} from "../lib/framing";
+import { SkyCanvas } from "../components/atlas/SkyCanvas";
+import { SurveyControls } from "../components/atlas/SurveyControls";
+import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
+import { Panel, Stat, Stepper, EmptyState } from "../components/ui";
+import { Icon } from "../components/icons";
+import { confirmDialog } from "../components/ConfirmDialog";
+import { api } from "../api";
+
+// Per-image survey brightness (night-adaptation memory, spec §6) persists across
+// sessions. Clamp mirrors store.ts readBright/clampBright (0.08 floor) so a
+// stored value never blanks the canvas.
+const SURVEY_BRIGHT_KEY = "astrodeck-survey-bright";
+const clampSurveyBright = (v: number): number => Math.min(1, Math.max(0.08, v));
+function readSurveyBright(): number {
+  try {
+    const n = Number(localStorage.getItem(SURVEY_BRIGHT_KEY));
+    return Number.isFinite(n) && n > 0 ? clampSurveyBright(n) : 1;
+  } catch {
+    return 1;
+  }
+}
+
+// DEFAULT_STEP shape mirrors SequenceView's (a single light step). Kept local so
+// AtlasView doesn't import from a magnet view; the Plan accepts this as-is.
+const ATLAS_DEFAULT_STEP = {
+  filter: null,
+  exposure_s: 60,
+  gain: 100,
+  offset: 30,
+  binning: 1,
+  count: 20,
+  frame_type: "light",
+};
+
+function fmtAngle(deg: number): string {
+  if (!(deg > 0)) return "—";
+  if (deg < 1) return `${(deg * 60).toFixed(1)}′`;
+  return `${deg.toFixed(2)}°`;
+}
+
+// Empty-state shell when the Atlas is reached with no active session (e.g. direct
+// nav before picking an object). Free-roam opens centered on the mount/0,0.
+function AtlasEmpty({ onFreeRoam }: { onFreeRoam: () => void }): JSX.Element {
+  return (
+    <div className="grid place-items-center min-h-[60vh]">
+      <EmptyState
+        icon="atlas"
+        title="Frame a target"
+        hint="Pick an object from the Mount catalog's Frame button, or free-roam the sky from here. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
+        action={
+          <button type="button" className="btn btn-accent btn-touch" onClick={onFreeRoam}>
+            Free-roam the sky
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+export default function AtlasView(): JSX.Element {
+  const framing = useFraming();
+  const config = useConfig();
+  const site = useSite();
+  const preview = usePreview();
+  const sequence = useSequence();
+  const night = useNight();
+  const status = useStatus();
+
+  const setFraming = useStore((s) => s.setFraming);
+  const openFraming = useStore((s) => s.openFraming);
+  const addTargetsToPlan = useStore((s) => s.addTargetsToPlan);
+  const setView = useStore((s) => s.setView);
+  const loadConfig = useStore((s) => s.loadConfig);
+  const enqueueToast = useStore((s) => s.enqueueToast);
+
+  // Lifted visibility night (VisibilityPanel → here) so the mosaic reality-check
+  // can cross-reference best_window / set time (spec §6).
+  const [visNight, setVisNight] = useState<VisibilityNight | null>(null);
+
+  // Survey error → schematic mode (SkyCanvas fires onSurveyError on proxy 503).
+  const [surveyDown, setSurveyDown] = useState(false);
+  // Per-image brightness (night-adaptation memory) lives in the page; persisted to
+  // localStorage (clamped 0.08 floor) so the dark-adapted level survives a reload.
+  const [imageBrightness, setImageBrightness] = useState(readSurveyBright);
+  const [cameraFovLock, setCameraFovLock] = useState(false);
+
+  // Persist the survey brightness whenever it changes (clamped on write).
+  useEffect(() => {
+    try {
+      localStorage.setItem(SURVEY_BRIGHT_KEY, String(clampSurveyBright(imageBrightness)));
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+  }, [imageBrightness]);
+
+  // The inline focal-length field. Seeded from config optics; user-editable. We
+  // PUT on commit (blur / Enter), not per keystroke.
+  const optics: Optics | null = config?.optics ?? null;
+  const computed = config?.optics_computed ?? null;
+  const [focalDraft, setFocalDraft] = useState<string>("");
+  const [savingFocal, setSavingFocal] = useState(false);
+  // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
+  // single target (the server round-trip is async).
+  const [sending, setSending] = useState(false);
+
+  // Seed/refresh the focal draft whenever config optics changes.
+  useEffect(() => {
+    if (optics) setFocalDraft(String(optics.focal_length_mm || ""));
+  }, [optics?.focal_length_mm]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-arm schematic mode when the survey choice changes back to a real survey.
+  useEffect(() => {
+    if (framing?.survey === "schematic") return;
+    setSurveyDown(false);
+  }, [framing?.survey]);
+
+  // Effective focal override (the draft, when a positive number) feeds the FOV.
+  const focalOverride = useMemo(() => {
+    const n = Number(focalDraft);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }, [focalDraft]);
+
+  const fov = useMemo(
+    () => fovFromOptics(optics, focalOverride),
+    [optics, focalOverride],
+  );
+  const haveOptics = fov.fov_x_deg > 0 && fov.fov_y_deg > 0;
+  const plausibility = plausibilityHint(fov.pixel_scale_arcsec);
+  const frameFovDeg = Math.max(fov.fov_x_deg, fov.fov_y_deg);
+
+  // ---- focal-length commit: PUT /api/optics then re-GET config (spec §6) ----
+  // The value-taking committer is the real worker — calibrate passes the computed
+  // focal DIRECTLY (no setState→read round-trip, which closed over a stale draft
+  // and saved the old value). commitFocal() is the blur/Enter wrapper.
+  const commitFocalValue = useCallback(
+    async (n: number) => {
+      if (!optics) return;
+      if (!Number.isFinite(n) || n <= 0) {
+        setFocalDraft(String(optics.focal_length_mm || ""));
+        return;
+      }
+      if (n === optics.focal_length_mm) return;
+      setSavingFocal(true);
+      try {
+        const next: Optics = { ...optics, focal_length_mm: n };
+        await api.put("/api/optics", { optics: next, version: config?.version ?? null });
+        await loadConfig();
+      } catch (e) {
+        enqueueToast({
+          level: "error",
+          title: "Couldn't save focal length",
+          detail: (e as Error).message,
+        });
+        setFocalDraft(String(optics.focal_length_mm || ""));
+      } finally {
+        setSavingFocal(false);
+      }
+    },
+    [optics, config?.version, loadConfig, enqueueToast],
+  );
+
+  const commitFocal = useCallback(
+    () => commitFocalValue(Number(focalDraft)),
+    [commitFocalValue, focalDraft],
+  );
+
+  // ---- calibrate from last solve (spec §6, reducer/barlow-proof) ----
+  // fl_mm = ARCSEC_PER_RAD · pixel_size_um / last_solve_pixel_scale. The last
+  // solve's pixel scale rides on the live preview (PreviewInfo.pixel_scale_arcsec);
+  // the camera pixel size comes from the computed optics.
+  const lastSolveScale = preview?.pixel_scale_arcsec ?? null;
+  const pixelSizeUm = computed?.pixel_size_um ?? optics?.pixel_size_um ?? 0;
+  const canCalibrate = !!lastSolveScale && lastSolveScale > 0 && pixelSizeUm > 0;
+
+  const calibrateFromSolve = useCallback(() => {
+    if (!canCalibrate || !lastSolveScale) return;
+    const fl = (ARCSEC_PER_RAD * pixelSizeUm) / lastSolveScale;
+    if (fl > 0) {
+      // Reflect the field AND commit the computed value directly — no setState→
+      // read round-trip (that closed over the stale draft and saved nothing).
+      setFocalDraft(fl.toFixed(1));
+      void commitFocalValue(fl);
+    }
+  }, [canCalibrate, lastSolveScale, pixelSizeUm, commitFocalValue]);
+
+  // free-roam entry from the empty state
+  const onFreeRoam = useCallback(() => openFraming(undefined), [openFraming]);
+
+  if (!framing) {
+    return <AtlasEmpty onFreeRoam={onFreeRoam} />;
+  }
+
+  const { center, rotation_deg, survey, stretch, fovZoomDeg, mosaic, target } = framing;
+  const mode: "survey" | "schematic" =
+    survey === "schematic" || surveyDown ? "schematic" : "survey";
+
+  // ---- session patchers routed into setFraming ----
+  const setCenter = (ra_hours: number, dec_deg: number) =>
+    setFraming({ center: { ra_hours: wrapRaHours(ra_hours), dec_deg } });
+  const setRotation = (deg: number) => setFraming({ rotation_deg: deg });
+  const setZoom = (deg: number) => setFraming({ fovZoomDeg: deg });
+  const setSurvey = (s: string) => setFraming({ survey: s });
+  const setStretch = (s: "linear" | "asinh") => setFraming({ stretch: s });
+  const setMosaic = (patch: Partial<typeof mosaic>) =>
+    setFraming({ mosaic: { ...mosaic, ...patch } });
+
+  // Recenter on the origin object, or — in free-roam — on the live mount position
+  // (consistent with openFraming's free-roam seed). No-op only if free-roam AND
+  // the mount status isn't available yet.
+  const recenter = () => {
+    if (target) {
+      setCenter(target.ra_hours, target.dec_deg);
+      return;
+    }
+    const m = status?.mount;
+    if (m) setCenter(m.ra_hours, m.dec_deg);
+  };
+
+  // Center-nudge by ±1 frame (±0.05° when no optics). dx East, dy North (frames).
+  const nudge = (dxFrames: number, dyFrames: number) => {
+    const stepX = haveOptics ? fov.fov_x_deg : 0.05;
+    const stepY = haveOptics ? fov.fov_y_deg : 0.05;
+    const sky = deproject(
+      dxFrames * stepX,
+      dyFrames * stepY,
+      center.ra_hours,
+      center.dec_deg,
+    );
+    setCenter(sky.ra_hours, sky.dec_deg);
+  };
+
+  // "use camera FOV" lock — when on, snap zoom to the camera field on toggle.
+  const onCameraFovLock = (locked: boolean) => {
+    setCameraFovLock(locked);
+    if (locked && frameFovDeg > 0) setZoom(Math.min(10, Math.max(0.1, frameFovDeg * 1.6)));
+  };
+
+  // ---- mosaic panels (dual-path: Send POSTs /api/framing/mosaic; the client
+  // mirror `mosaicGrid` is both the live overlay source and the offline fallback) ----
+  const rows = mosaic.rows;
+  const cols = mosaic.cols;
+  const overlap = mosaic.overlap;
+  const panelCount = rows * cols;
+  const total = mosaicTotalFov(cols, rows, overlap, fov.fov_x_deg, fov.fov_y_deg);
+
+  const seqRunning = sequence.state === "running" || sequence.state === "paused";
+
+  // Below-limit / set-time advisory drives the Send override gate (spec §6).
+  const belowLimit = visNight?.never_rises_above_limit ?? false;
+  // Group id for mosaic dedupe: a catalog target groups by its id; a free-roam
+  // session groups by the stable per-session freeroamId (seeded in openFraming) so
+  // a multi-panel free-roam mosaic groups in the Plan and re-framing REPLACES its
+  // panels instead of appending duplicates (C1-C2).
+  const groupId = target?.id ?? framing.freeroamId;
+
+  // Map canonical panels (server or client-mirror) → Target[]. Naming/flags are
+  // identical on both paths so a server-vs-fallback Send is indistinguishable in
+  // the Plan (spec §5: the server is canonical; the mirror is the offline twin).
+  const panelsToTargets = (panels: MosaicPanel[]): Target[] => {
+    const baseName = target?.id ?? target?.name ?? "Sky";
+    return panels.map((p) => ({
+      name: panelCount > 1 ? `${baseName} ${p.row + 1}-${p.col + 1}` : baseName,
+      ra_hours: p.ra_hours, // already %24-wrapped (server emits ra % 24)
+      dec_deg: p.dec_deg,
+      center: true,
+      autofocus_first: p.row === 0 && p.col === 0,
+      calibration: false,
+      rotation_deg,
+      mosaic_group: panelCount > 1 ? groupId : undefined,
+      steps: [{ ...ATLAS_DEFAULT_STEP }],
+    }));
+  };
+
+  // Client-mirror panels — the offline fallback AND the live overlay source. Kept
+  // byte-identical to the server mosaic engine (lib/framing.ts mirrors framing.py).
+  const computePanelsLocal = (): MosaicPanel[] =>
+    mosaicGrid({
+      ra_hours: center.ra_hours,
+      dec_deg: center.dec_deg,
+      rows,
+      cols,
+      overlap,
+      rotation_deg,
+      fov_x_deg: fov.fov_x_deg,
+      fov_y_deg: fov.fov_y_deg,
+    });
+
+  // Send always re-runs the SERVER so the slew targets are byte-identical to the
+  // engine; on a network/500 failure we fall back to the client mirror so Send
+  // still works offline (spec §5). The live drag overlay never depends on this.
+  const computePanels = async (): Promise<Target[]> => {
+    try {
+      const res = await api.post<MosaicResult>("/api/framing/mosaic", {
+        ra_hours: center.ra_hours,
+        dec_deg: center.dec_deg,
+        rows,
+        cols,
+        overlap,
+        rotation_deg,
+        fov_x_deg: fov.fov_x_deg,
+        fov_y_deg: fov.fov_y_deg,
+      });
+      return panelsToTargets(res.panels);
+    } catch {
+      // offline / server error — the client mirror is canonical-equivalent.
+      return panelsToTargets(computePanelsLocal());
+    }
+  };
+
+  const sendToPlan = async () => {
+    if (!haveOptics || seqRunning || sending) return;
+    if (belowLimit) {
+      // App confirm dialog (night-safe, 44px, non-suppressible) — NOT window.confirm
+      // (a bright OS dialog destroys dark adaptation). Mirrors MountView.doGoto.
+      const ok = await confirmDialog({
+        title: "Below tonight's limit",
+        body: `${target?.name ?? "This target"} doesn't rise above ${Math.round(
+          visNight?.alt_limit_deg ?? 30,
+        )}° tonight (peaks ${(visNight?.transit_alt ?? 0).toFixed(0)}°). Add anyway?`,
+        tone: "warn",
+        mode: "confirm",
+        confirmLabel: "Add anyway",
+      });
+      if (!ok) return;
+    }
+    setSending(true);
+    try {
+      const targets = await computePanels();
+      addTargetsToPlan(targets, panelCount > 1 ? groupId : undefined);
+      enqueueToast({
+        level: "success",
+        title:
+          panelCount > 1
+            ? `${panelCount} panels added to Plan`
+            : "Target added to Plan",
+        detail:
+          rotation_deg > 0.5
+            ? `Set your camera to PA ${Math.round(rotation_deg)}° before this run.`
+            : undefined,
+      });
+      setView("sequence");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // crosses-the-meridian-ish hint: a wide mosaic near transit. We don't have a
+  // per-panel ephemeris here, so this stays advisory text only when a rotation is
+  // set on a multi-panel grid (the honest "expect a stitch seam" note, spec §6).
+  const headerName = target?.name ?? "Free roam";
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* ----------------------------------------------------------- header */}
+      <header className="flex flex-wrap items-end gap-x-4 gap-y-2">
+        <div className="min-w-0">
+          <h1 className="font-display text-lg text-accent tracking-wide truncate">
+            {headerName}
+          </h1>
+          <p className="text-[12px] text-dim mono">
+            {target ? target.type : "explore the sky"} ·{" "}
+            {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)} frame
+          </p>
+        </div>
+        <div className="flex-1" />
+        {/* inline focal-length field — self-contained optics (spec §6 C1-B1) */}
+        <label className="flex flex-col gap-1">
+          <span className="label">Focal length</span>
+          <span className="inline-flex items-stretch">
+            <input
+              type="number"
+              inputMode="decimal"
+              min={1}
+              step={1}
+              value={focalDraft}
+              disabled={!optics || savingFocal}
+              onChange={(e) => setFocalDraft(e.target.value)}
+              onBlur={() => void commitFocal()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Camera focal length in millimetres"
+              className="field btn-touch w-24 mono text-right"
+            />
+            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+              mm
+            </span>
+          </span>
+        </label>
+        <button
+          type="button"
+          className="btn btn-touch"
+          onClick={calibrateFromSolve}
+          disabled={!canCalibrate}
+          title={
+            canCalibrate
+              ? "Back-compute focal length from the last plate solve's pixel scale"
+              : "Plate-solve a frame first (Mount → Solve & Sync)"
+          }
+        >
+          <Icon name="refresh" size={14} />
+          <span className="ml-1">Calibrate from last solve</span>
+        </button>
+      </header>
+
+      {/* default-site nudge (ties to the hardcoded-SF P0; alt still computes) */}
+      {site?.is_default && (
+        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-black/20 px-2 py-1">
+          <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+          <span>
+            Using a default location — set yours in Settings for accurate
+            altitude and visibility.
+          </span>
+        </div>
+      )}
+
+      {/* no-optics CTA banner (FOV rectangle is dashed in the canvas) */}
+      {!haveOptics && (
+        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-black/20 px-2 py-1">
+          <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+          <span>
+            Set a focal length above to draw your camera's frame and plan a
+            mosaic.
+          </span>
+        </div>
+      )}
+
+      {/* -------------------------------------------- desktop split / phone stack */}
+      <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
+        {/* canvas — pinned at top on phone (first in DOM, sticky there) */}
+        <div className="lg:static sticky top-0 z-10 bg-bg/0">
+          <SkyCanvas
+            center={center}
+            rotationDeg={rotation_deg}
+            survey={survey}
+            stretch={stretch}
+            fovZoomDeg={fovZoomDeg}
+            optics={optics}
+            focalMmOverride={focalOverride}
+            mosaic={mosaic}
+            catalogTarget={target}
+            night={night}
+            mode={mode}
+            imageBrightness={imageBrightness}
+            onCenterChange={setCenter}
+            onRotate={setRotation}
+            onZoom={setZoom}
+            onSurveyError={() => setSurveyDown(true)}
+            onSurveyLoad={() => setSurveyDown(false)}
+          />
+        </div>
+
+        {/* planners — scroll beneath the pinned canvas on phone */}
+        <div className="flex flex-col gap-4 min-w-0">
+          <Panel title="Survey & framing">
+            <SurveyControls
+              survey={survey}
+              stretch={stretch}
+              fovZoomDeg={fovZoomDeg}
+              rotationDeg={rotation_deg}
+              imageBrightness={imageBrightness}
+              cameraFovLock={cameraFovLock}
+              frameFovDeg={frameFovDeg}
+              pixelScaleArcsec={fov.pixel_scale_arcsec}
+              plausibility={plausibility}
+              catalogTarget={target}
+              haveOptics={haveOptics}
+              onSurveyChange={setSurvey}
+              onStretchChange={setStretch}
+              onZoom={setZoom}
+              onRotate={setRotation}
+              onImageBrightness={setImageBrightness}
+              onCameraFovLock={onCameraFovLock}
+              onNudge={nudge}
+              onRecenter={recenter}
+            />
+          </Panel>
+
+          {/* ---------- mosaic cluster (MosaicPanel lane absent — inline shell) ---------- */}
+          <Panel title="Mosaic">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <Stepper
+                  label="Rows"
+                  value={rows}
+                  onChange={(v) => setMosaic({ rows: Math.round(v) })}
+                  min={1}
+                  max={10}
+                  disabled={!haveOptics}
+                />
+                <Stepper
+                  label="Cols"
+                  value={cols}
+                  onChange={(v) => setMosaic({ cols: Math.round(v) })}
+                  min={1}
+                  max={10}
+                  disabled={!haveOptics}
+                />
+                <Stepper
+                  label="Overlap"
+                  value={Math.round(overlap * 100)}
+                  onChange={(v) => setMosaic({ overlap: Math.min(0.5, Math.max(0, v / 100)) })}
+                  min={0}
+                  max={50}
+                  step={5}
+                  unit="%"
+                  disabled={!haveOptics}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                <Stat
+                  label="Total field"
+                  glyph={<Icon name="grid" size={12} />}
+                  value={
+                    haveOptics
+                      ? `${fmtAngle(total.total_fov_x_deg)}×${fmtAngle(total.total_fov_y_deg)}`
+                      : "—"
+                  }
+                  hint="Tangent-plane extent the deprojected panels cover (not raw degrees of RA)."
+                />
+                <Stat
+                  label="Panels"
+                  glyph={<span aria-hidden>#</span>}
+                  value={panelCount}
+                  unit={panelCount > 1 ? `${rows}×${cols}` : "single"}
+                />
+              </div>
+
+              {/* meridian / rotation honesty note (no rotator in rig) */}
+              {rotation_deg > 0.5 && (
+                <p className="text-[12px] text-dim leading-snug">
+                  Camera angle is manual — set your camera to PA{" "}
+                  {Math.round(rotation_deg)}° before the run; there is no rotator
+                  in the rig.
+                </p>
+              )}
+
+              {/* below-limit reality check from the lifted night */}
+              {belowLimit && (
+                <div className="flex items-start gap-1.5 text-[12px] text-warn">
+                  <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+                  <span>
+                    {headerName} stays below{" "}
+                    {Math.round(visNight?.alt_limit_deg ?? 30)}° tonight — Sending
+                    will ask you to confirm.
+                  </span>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="btn btn-accent btn-touch w-full"
+                disabled={!haveOptics || seqRunning || sending}
+                title={
+                  seqRunning
+                    ? "Stop the running sequence before adding targets"
+                    : !haveOptics
+                      ? "Set a focal length first"
+                      : undefined
+                }
+                onClick={() => void sendToPlan()}
+              >
+                {sending
+                  ? "Adding…"
+                  : panelCount > 1
+                    ? `Send ${panelCount} panels to Plan`
+                    : "Add target to Plan"}
+              </button>
+              {seqRunning && (
+                <p className="text-[12px] text-warn leading-snug">
+                  A sequence is running — the engine snapshots its plan at start,
+                  so additions won't be picked up mid-run.
+                </p>
+              )}
+            </div>
+          </Panel>
+
+          {/* ---------- visibility (lifts the night up for the reality check) ---------- */}
+          <VisibilityPanel
+            ra_hours={center.ra_hours}
+            dec_deg={center.dec_deg}
+            altLimit={site?.horizon_min_deg ?? 30}
+            onNight={setVisNight}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// keep the named export available too (parity with the other atlas components)
+export { AtlasView };

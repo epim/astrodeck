@@ -1,0 +1,204 @@
+"""Mosaic framing engine (Owner C — Sky Atlas).
+
+These exercise ``astrodeck.catalog.framing.compute_mosaic`` (the pure, importable
+canonical engine) + the ``POST /api/framing/mosaic`` route on a minimal app, and
+assert it is byte-compatible with the client mirror ``ui/src/lib/framing.ts``.
+
+Coverage (per the sub-batch brief / spec §5):
+  * M31 (ra_hours ~ 0.71) a 3x1 mosaic -> every panel ra in [0, 24) (the ``% 24``
+    wrap; an unwrapped RA 422s the plan because Target.ra_hours is
+    ``Field(ge=0, lt=24)``);
+  * a 1x1 at any center deprojects (rho -> 0) to exactly the center (no NaN);
+  * a high-dec center (+69 M81) -> finite panel coords + a sane tangent-plane
+    total FOV (NOT raw degrees of RA);
+  * boustrophedon (snake) panel order;
+  * a Target round-trips when built from a panel (ra_hours passes ge=0/lt=24).
+"""
+from __future__ import annotations
+
+import math
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from astrodeck.catalog import framing
+from astrodeck.sequence.models import Target
+
+
+# A representative single-frame FOV (a ~530mm scope on an APS-C-ish sensor).
+FOV_X = 1.6
+FOV_Y = 1.1
+
+
+# --------------------------------------------------------------- pure compute
+
+def test_m31_3x1_all_panel_ra_wrapped_into_range():
+    # M31 sits near RA 0h; framing a 3-wide mosaic centered just above the wrap
+    # (RA 0.05h) puts the leftmost panel below RA 0, which without the %24 wrap
+    # deprojects to a small negative and 422s the plan (Target.ra_hours
+    # Field(ge=0, lt=24)).
+    res = framing.compute_mosaic({
+        "ra_hours": 0.05, "dec_deg": 41.27,
+        "rows": 1, "cols": 3, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    panels = res["panels"]
+    assert len(panels) == 3
+    for p in panels:
+        assert 0.0 <= p["ra_hours"] < 24.0, f"unwrapped RA: {p}"
+        assert -90.0 <= p["dec_deg"] <= 90.0
+        assert math.isfinite(p["ra_hours"]) and math.isfinite(p["dec_deg"])
+    # the leftmost column (col 0) must have wrapped near the top of the range,
+    # i.e. it deprojected to just under 24h (proves the wrap actually fired).
+    left = next(p for p in panels if p["col"] == 0)
+    assert left["ra_hours"] > 23.0
+
+
+def test_1x1_rho_zero_returns_exact_center_no_nan():
+    # The common path: open on a target, hit Send. A 1x1 at the center has gx=gy=0
+    # so rho->0; the deproject must return the center verbatim (no divide-by-zero).
+    for ra0, dec0 in [(0.71, 41.27), (12.0, 0.0), (18.6, -22.0), (5.5, 89.0)]:
+        res = framing.compute_mosaic({
+            "ra_hours": ra0, "dec_deg": dec0,
+            "rows": 1, "cols": 1, "overlap": 0.25, "rotation_deg": 37.0,
+            "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        })
+        assert len(res["panels"]) == 1
+        p = res["panels"][0]
+        assert p["ra_hours"] == pytest.approx(ra0, abs=1e-12)
+        assert p["dec_deg"] == pytest.approx(dec0, abs=1e-12)
+        assert math.isfinite(p["ra_hours"]) and math.isfinite(p["dec_deg"])
+
+
+def test_high_dec_center_finite_coords_and_sane_total_fov():
+    # M81 at +69 dec: high-dec mosaics are where a "raw degrees of RA" total FOV
+    # would balloon. Total FOV is the tangent-plane extent, so it must stay close
+    # to cols*fov_x (minus overlap), independent of the cos(dec) RA stretch.
+    rows, cols, overlap = 2, 3, 0.25
+    res = framing.compute_mosaic({
+        "ra_hours": 9.93, "dec_deg": 69.07,
+        "rows": rows, "cols": cols, "overlap": overlap, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    for p in res["panels"]:
+        assert math.isfinite(p["ra_hours"]) and math.isfinite(p["dec_deg"])
+        assert 0.0 <= p["ra_hours"] < 24.0
+        assert -90.0 <= p["dec_deg"] <= 90.0
+
+    exp_x = (cols - (cols - 1) * overlap) * FOV_X
+    exp_y = (rows - (rows - 1) * overlap) * FOV_Y
+    assert res["total_fov_x_deg"] == pytest.approx(exp_x)
+    assert res["total_fov_y_deg"] == pytest.approx(exp_y)
+    # tangent-plane extent stays a few degrees — NOT the ~3deg/cos(69)=~9deg of RA.
+    assert res["total_fov_x_deg"] < 2 * cols * FOV_X
+    assert res["frame_fov_x_deg"] == pytest.approx(FOV_X)
+    assert res["frame_fov_y_deg"] == pytest.approx(FOV_Y)
+
+
+def test_boustrophedon_snake_order():
+    # Even rows scan left->right, odd rows right->left, to minimise slew travel.
+    rows, cols = 3, 4
+    res = framing.compute_mosaic({
+        "ra_hours": 5.0, "dec_deg": 0.0,
+        "rows": rows, "cols": cols, "overlap": 0.1, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    order = [(p["row"], p["col"]) for p in res["panels"]]
+    expected: list[tuple[int, int]] = []
+    for r in range(rows):
+        cols_iter = range(cols) if r % 2 == 0 else range(cols - 1, -1, -1)
+        for c in cols_iter:
+            expected.append((r, c))
+    assert order == expected
+    # every (row, col) appears exactly once.
+    assert sorted(order) == sorted((r, c) for r in range(rows) for c in range(cols))
+
+
+def test_panel_round_trips_into_target_validator():
+    # The downstream contract: each panel must build a Target without tripping the
+    # ra_hours Field(ge=0, lt=24) / dec_deg Field(ge=-90, le=90) validators — the
+    # exact thing the %24 wrap protects.
+    res = framing.compute_mosaic({
+        "ra_hours": 0.05, "dec_deg": 41.27,   # near RA 0 so a panel wraps below 0
+        "rows": 1, "cols": 3, "overlap": 0.0, "rotation_deg": 12.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    for p in res["panels"]:
+        t = Target(
+            name=f"M31 {p['row'] + 1}-{p['col'] + 1}",
+            ra_hours=p["ra_hours"], dec_deg=p["dec_deg"],
+            rotation_deg=p["rotation_deg"], mosaic_group="M31",
+            steps=[],
+        )
+        assert 0.0 <= t.ra_hours < 24.0
+        assert t.mosaic_group == "M31"
+        assert t.rotation_deg == pytest.approx(12.0)
+
+
+def test_rotation_offsets_panels_off_the_dec_axis():
+    # With a non-zero rotation, a horizontal (1-row) mosaic must NOT stay on a
+    # single dec; the PA tilts the row so off-center panels gain a dec offset.
+    res = framing.compute_mosaic({
+        "ra_hours": 5.0, "dec_deg": 0.0,
+        "rows": 1, "cols": 3, "overlap": 0.0, "rotation_deg": 30.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    decs = [p["dec_deg"] for p in res["panels"]]
+    assert max(decs) - min(decs) > 0.1   # the tilt produced a real dec spread
+
+
+# --------------------------------------------------------------- route
+
+@pytest.fixture
+def client():
+    app = FastAPI()
+    app.include_router(framing.router)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_mosaic_route_returns_result_shape(client):
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 2, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert {"panels", "total_fov_x_deg", "total_fov_y_deg",
+            "frame_fov_x_deg", "frame_fov_y_deg", "pixel_scale_arcsec"} <= set(body)
+    assert len(body["panels"]) == 4
+    for p in body["panels"]:
+        assert {"row", "col", "ra_hours", "dec_deg", "rotation_deg"} <= set(p)
+        assert 0.0 <= p["ra_hours"] < 24.0
+        # no transit_alt without a date
+        assert "transit_alt" not in p or p["transit_alt"] is None
+
+
+def test_mosaic_route_fills_transit_alt_with_date(client):
+    # With a date the route stamps each panel's peak altitude tonight (a finite
+    # number in [-90, 90]); this also exercises the visibility import path.
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "date": "2026-01-15",
+    })
+    assert r.status_code == 200, r.text
+    panels = r.json()["panels"]
+    assert len(panels) == 2
+    for p in panels:
+        assert "transit_alt" in p
+        assert -90.0 <= p["transit_alt"] <= 90.0
+
+
+def test_mosaic_route_rejects_unwrapped_center(client):
+    # The input center itself must satisfy ge=0/lt=24 (the spec mirror). An out-of
+    # -range center 422s at the model boundary.
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 25.0, "dec_deg": 41.27,
+        "rows": 1, "cols": 1, "overlap": 0.0, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    assert r.status_code == 422

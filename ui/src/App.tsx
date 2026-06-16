@@ -23,6 +23,7 @@ import GuideView from "./views/GuideView";
 import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
 import MonitorView from "./views/MonitorView";
+import AtlasView from "./views/AtlasView";
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
 // header/nav entries for Settings (placeholder) and Monitor (real this batch).
@@ -36,6 +37,8 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "focus", label: "Focus", icon: "focus" },
   { id: "capture", label: "Capture", icon: "capture" },
   { id: "guide", label: "Guide", icon: "guide" },
+  // Atlas slots immediately BEFORE Plan (spec §8 IA): …Guide → Atlas → Plan → Power.
+  { id: "atlas", label: "Atlas", icon: "atlas" },
   { id: "sequence", label: "Plan", icon: "plan" },
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
@@ -66,7 +69,7 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   power: PowerView,
   monitor: MonitorView,
   settings: () => <PlaceholderView label="Settings" />,
-  atlas: () => <PlaceholderView label="Sky Atlas" />,
+  atlas: AtlasView,
 };
 
 // Nav gating (onboarding §3b/§7b): equipment-dependent views show the
