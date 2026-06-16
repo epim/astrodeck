@@ -361,7 +361,11 @@ class NinaTelescope(_NinaDevice, Telescope):
         # drivers that report Slewing=true even when idle (observed on the ASI
         # Mount), which would hang NINA's server-side waitToFinish.
         try:
-            await self.client.get("/equipment/mount/slew", ra=ra_hours, dec=dec_deg,
+            # NINA's slew endpoint takes RA in DEGREES, not hours (verified live
+            # against v2.2.15.1: sending ra=15.265h landed the mount at RA 1.02h
+            # because the value was read as 15.265°). Dec is already in degrees.
+            # The convergence loop below reads RA back in hours from the mount.
+            await self.client.get("/equipment/mount/slew", ra=ra_hours * 15.0, dec=dec_deg,
                                   waitToFinish="false", timeout=30.0)
         except asyncio.CancelledError:
             await self.stop()
@@ -387,10 +391,14 @@ class NinaTelescope(_NinaDevice, Telescope):
             last = (ra, dec)
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        await self.client.get("/equipment/mount/sync", ra=ra_hours, dec=dec_deg)
+        # RA in DEGREES, same convention as the slew endpoint (see slew()).
+        await self.client.get("/equipment/mount/sync", ra=ra_hours * 15.0, dec=dec_deg)
 
     async def set_tracking(self, on: bool) -> None:
-        await self.client.get("/equipment/mount/set-tracking",
+        # NINA Advanced API exposes this as `/equipment/mount/tracking` (verified
+        # against v2.2.15.1 live); the older `set-tracking` path 404s. The bool is
+        # passed as `enabled=true|false`.
+        await self.client.get("/equipment/mount/tracking",
                               enabled=("true" if on else "false"))
 
     async def get_tracking(self) -> bool:
