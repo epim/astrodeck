@@ -19,7 +19,8 @@ export type ViewName =
   | "power"
   | "settings"
   | "monitor"
-  | "atlas";
+  | "atlas"
+  | "report";
 
 export interface MountStatus {
   ra_hours: number;
@@ -50,6 +51,12 @@ export interface RigStatus {
     cooler?: CoolerInfo; // monitor (Batch-2) — null/absent when no cooler
   };
   guider?: GuideStats & { name: string };
+  // --- guide-frame preview (SHARED lane; additive). Present only when the backend
+  // can surface a guide-camera frame (GET /api/guide/frame.png). In NINA mode the
+  // guider is PHD2 (status.guider) with no image; this optional field lets the UI
+  // know a live guide-cam frame is fetchable without reading the preview itself.
+  // The backend lane sets this (or extends status.guider) — coordinate the name. ---
+  guide_camera?: { name: string; connected: boolean };
   // --- monitor (Batch-2; server-computed from HA for sim/Alpaca, device value for NINA) ---
   meridian?: MeridianInfo;
   // --- reliability (additive; old clients ignore) ---
@@ -90,6 +97,16 @@ export interface GuideStats {
   rms_total: number;
   snr: number;
   recent: { t: number; ra: number; dec: number }[];
+}
+
+// SHARED lane (additive). Lightweight descriptor for the collapsible guide-cam
+// preview (GuideFramePreview). The component fetches GET /api/guide/frame.png
+// directly and self-manages its own loading/404 state, so this type is a small
+// optional contract for any future store/aggregator that wants to surface guide
+// frame availability without holding the image bytes. `ts` is server epoch seconds.
+export interface GuideFrameInfo {
+  available: boolean;
+  ts?: number;
 }
 
 // ============================================================================
@@ -205,6 +222,21 @@ export interface SequenceState {
   target_index?: number;
   plan_name?: string;
   progress?: SequenceProgress;
+  // --- automation (Batch-4b; additive — old clients ignore) ---
+  // Autorun scheduling state attached while the engine is waiting for / running a
+  // windowed target (schedule spec §1.9-C). `progress.rejected` already exists above.
+  schedule?: {
+    state: "waiting" | "ready" | "window_closed" | "never_rises";
+    reason: string;
+    eta_s: number;
+    start_ts?: number; // unix seconds (resolved window open)
+    stop_ts?: number;  // unix seconds (resolved window close)
+  };
+  // Live ETA chips (engine §1.9-E): meridian-flip ETA is SECONDS (ttf*3600); the
+  // sensor temp / guide RMS are echoed for the run-time chips without a status poll.
+  live?: { meridian_eta_s?: number; sensor_temp_c?: number; guide_rms?: number };
+  // Terminal reason — drives the run-complete Badge + Report end-reason icon.
+  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff";
 }
 
 export interface CoolerInfo {
@@ -315,6 +347,9 @@ export interface Target {
   // --- atlas (additive; nullable so existing plans deserialize unchanged) ---
   rotation_deg?: number;    // target camera angle (PA) — guidance only, no rotator in rig
   mosaic_group?: string;    // e.g. "M31" to group panels in the Plan UI
+  // --- automation (Batch-4b; additive — backfilled with defaultSchedule() so old
+  //     plans deserialize unchanged, see store.defaultSchedule / C1-27). ---
+  schedule?: Schedule;
 }
 
 export interface SequencePlan {
@@ -333,6 +368,10 @@ export interface SequencePlan {
   hfr_reject_factor: number;
   park_when_done: boolean;
   warm_cooler_when_done: boolean;
+  // --- automation (Batch-4b; additive — safety/escalation are GLOBAL in config,
+  //     the plan carries only the master toggle + a meridian-flip warning lead). ---
+  safety_check?: boolean;          // honor the configured SafetyMonitor + floor
+  meridian_flip_warn_min?: number; // lead time for the live meridian-flip ETA chip
 }
 
 // ============================================================================
@@ -400,8 +439,149 @@ export interface AppConfig {
   version: number;
   site: Site;
   optics: Optics;
-  optics_computed: OpticsComputed;
+  // Present on the REST GET/POST payload; OMITTED from the WS `hello` bootstrap
+  // (hub.summary() seeds config without it, refreshed by the first `config`
+  // event), so it must be optional to match the bootstrap reality.
+  optics_computed?: OpticsComputed;
   active_profile_id: string | null;
+  // --- automation (Batch-4b; additive — appended to the EXISTING config-backed
+  //     AppConfig. Global safety/escalation/alerts live here, NOT on the plan;
+  //     `deadman_url` is the external healthcheck ping target. Tokens are blanked
+  //     server-side via ConfigStore.redacted() before they reach the client. ---
+  safety: SafetyConfig;
+  escalation: EscalationConfig;
+  alerts: AlertSink[];
+  deadman_url: string;
+}
+
+// ============================================================================
+// AUTOMATION / SAFETY (Batch-4b; design spec §2.1). The one true shape —
+// downstream lanes (Settings, Sequence schedule sub-panel, Report) compile
+// against these. All additive; reuse the existing AppConfig/Target/SequenceState
+// which were EXTENDED above. Tokens (telegram bot token) are never sent to the
+// client — ConfigStore.redacted() blanks them, hence no `token` field on AlertSink.
+// ============================================================================
+
+// ---------------------------------------------------------------- safety device
+export interface SafetyReading {
+  is_safe: boolean;
+  reason: string;                       // human string when unsafe (e.g. "cloud sensor")
+  source: string;                       // device name
+  detail?: Record<string, number>;      // optional sensor readouts
+  stale: boolean;                       // true when the read timed out / device dropped
+  ts: number;                           // server epoch seconds
+}
+
+export interface SafetyState {
+  connected: boolean;
+  reading: SafetyReading | null;
+  streak: number;                       // consecutive unsafe reads (engine streak)
+}
+
+// ----------------------------------------------------------- per-target schedule
+// Structured controls only — NO token mini-language (C1-24). Backfilled onto every
+// Target with defaultSchedule() so old plans deserialize unchanged (C1-27).
+export interface Schedule {
+  start_mode: "now" | "dusk" | "dawn" | "time";
+  start_offset_min: number;             // ± minutes relative to dusk/dawn
+  start_time: string | null;            // "HH:MM" when start_mode === "time"
+  min_altitude_deg: number;             // per-target START gate (target-alt). 0 = none
+  stop_mode: "none" | "dawn" | "time";
+  stop_offset_min: number;
+  stop_time: string | null;
+  max_run_min: number;                  // 0 = no cap
+  on_missed: "wait" | "skip";           // default "wait" (C1-25)
+}
+
+// ------------------------------------------------------------ alerting / config
+// `token` is intentionally absent — the server blanks it; the client never holds it.
+export interface AlertSink {
+  id: string;
+  kind: "ntfy" | "webhook" | "telegram";
+  enabled: boolean;
+  url: string;                          // ntfy topic url / webhook url
+  chat_id?: string;                     // telegram chat id
+  min_level: "warning" | "error";
+  events: string[];                     // ["run_start","run_end","safety","error",...]
+  verified: boolean;                    // true only after a successful round-trip test
+  heartbeat_min: number;                // 0 = off; periodic progress ping cadence
+}
+
+export interface SafetyConfig {
+  enabled: boolean;
+  preset: "backyard" | "remote" | "custom";
+  min_alt_deg: number;                  // global pier-collision floor (mount-alt). 0 = off
+  horizon: [number, number][] | null;   // sorted (az,alt) control points
+  enforce_pier_limits: boolean;         // only settable when mount reports pier side
+  twilight_deg: number;                 // nautical −12 default (C1-26)
+  on_unsafe: "abort_park_warm" | "park" | "pause" | "warn";
+  unsafe_consecutive: number;
+  resume_when_safe: boolean;
+  resume_safe_consecutive: number;
+  max_pause_min: number;                // 0 = no cap; escalates to park on timeout
+}
+
+export interface EscalationConfig {
+  require_cooling: boolean;
+  cooling_action: "warn" | "abort" | "skip";
+  require_guiding: boolean;
+  guiding_action: "warn" | "abort" | "skip";
+  af_failure_action: "warn" | "abort" | "skip";
+  hfr_reject_action: "warn" | "discard" | "retake";  // retake = Advanced-only
+  hfr_retake_limit_per_target: number;               // cap per target (C1-7)
+  no_progress_watchdog_s: number;                     // 0 = off
+  reconnect_resume: boolean;                          // Alpaca-only; off by default
+  reconnect_retries: number;
+}
+
+// SiteConfig is the persisted lat/lon/elevation shape the automation config carries.
+// (Distinct from the existing Site interface, which is the settings-panel view, and
+// from SiteInfo, which is the live status view.) Mirrors backend config.SiteConfig.
+export interface SiteConfig {
+  latitude: number;
+  longitude: number;
+  elevation_m: number;
+}
+
+// ----------------------------------------------------------------- session report
+export interface FilterBreakdown {
+  filter: string;
+  frames: number;
+  rejected: number;
+  integration_s: number;
+  hfr_median: number | null;
+}
+
+export interface TargetBreakdown {
+  name: string;
+  frames: number;
+  rejected: number;
+  integration_s: number;
+  by_filter: FilterBreakdown[];
+}
+
+// List-row summary (GET /api/reports) — header fields only, no per-frame payload.
+export interface SessionReportSummary {
+  id: string;                           // "<plan>-<YYYYMMDD-HHMMSS>"
+  plan_name: string;
+  started_at: number;                   // unix seconds
+  ended_at: number | null;
+  end_reason: string | null;            // complete|aborted|error|unsafe|dawn_cutoff
+  frames_captured: number;
+  frames_rejected: number;
+  integration_s: number;
+}
+
+// Full detail (GET /api/reports/{id}) — trends DERIVED from frames at read time.
+export interface SessionReport extends SessionReportSummary {
+  by_filter: FilterBreakdown[];         // plan-wide per-filter totals (headline)
+  targets: TargetBreakdown[];
+  safety_events: { ts: number; reason: string; action: string }[];
+  trends: {
+    hfr: [number, number][];            // (ts, value) pairs
+    temp: [number, number][];
+    rms: [number, number][];
+  };
 }
 
 export interface SkyInfo {

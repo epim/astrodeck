@@ -10,15 +10,25 @@ import asyncio
 import json
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .config import config_store, fov_deg, image_scale_arcsec_px
+from .config import config_store, fov_deg, image_scale_arcsec_px, redacted
 from .devices import alpaca as alpaca_backend
-from .devices.base import Camera, DeviceError, FilterWheel, Focuser, PierSide, Switch, Telescope
+from .devices.base import (
+    Camera,
+    DeviceError,
+    FilterWheel,
+    Focuser,
+    PierSide,
+    SafetyMonitor,
+    SafetyReading,
+    Switch,
+    Telescope,
+)
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .devices.sim import build_sim_rig
 from .events import bus
@@ -39,7 +49,20 @@ from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
 from .solve import get_solver
 
-ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch")
+ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety")
+
+#: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
+#: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
+#: a read that exceeds SAFETY_READ_TIMEOUT_S is cached as a STALE reading, which
+#: the engine fail-closes to UNSAFE (devices/base.SafetyReading.stale, C1-12/C1-15).
+SAFETY_POLL_INTERVAL_S = 5.0
+SAFETY_READ_TIMEOUT_S = 8.0
+#: Age guard: if the cached reading is older than one poll cycle plus a read
+#: timeout plus this slack, the poller has stopped ticking — treat the cached
+#: reading as STALE (fail-closed to UNSAFE) instead of trusting it forever. This
+#: closes the fail-OPEN seam where a dead poller keeps returning the last SAFE
+#: reading all night (C1-12/C1-15).
+SAFETY_STALE_SLACK_S = 5.0
 
 CAPTURE_DIR = Path(__file__).resolve().parents[2] / "captures"
 
@@ -95,6 +118,16 @@ class Hub:
         self.last_meridian: dict | None = None
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
+        # --- safety monitor (Batch 4b) -----------------------------------------
+        # own-cadence poller task + the latest CACHED SafetyReading. safety_reading()
+        # always returns this cache (NEVER an inline is_safe()), so the 2s status
+        # loop and the engine gate read it for free. None until the first poll.
+        self._safety_task: asyncio.Task | None = None
+        self._safety_reading: SafetyReading | None = None
+        # connection-replay map: role -> dict the reconnect path needs to rebuild
+        # an Alpaca device (host/port/dev_type/dev_num/name). Populated in every
+        # connect path; consumed by reconnect_role() (escalation/reconnect_resume).
+        self._last_connect: dict[str, dict] = {}
         self._nina_ws_task: asyncio.Task | None = None
         self._nina_hb_task: asyncio.Task | None = None   # 5s NINA heartbeat
         self._bridge_ready = False              # false until first successful NINA poll
@@ -125,6 +158,7 @@ class Hub:
         for role, dev in rig.items():
             await dev.connect()
             self.devices[role] = dev
+            self._last_connect[role] = {"backend": "sim"}
         await guide_cam.connect()
         self.devices["guide_camera"] = guide_cam
         self.guider = SimGuider()
@@ -163,6 +197,10 @@ class Hub:
             except Exception:
                 pass
         self.devices[role] = dev
+        # record enough to replay this connection (reconnect_role / escalation).
+        self._last_connect[role] = {"backend": "alpaca", "host": host, "port": port,
+                                    "dev_type": dev_type, "dev_num": dev_num,
+                                    "name": name}
         self.mode = "alpaca"
         bus.log("info", f"{role} connected: {name} (Alpaca {host}:{port})", "hub")
         self.ensure_status_poller()
@@ -183,6 +221,11 @@ class Hub:
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
         self._status_task = None
+        if self._safety_task and not self._safety_task.done():
+            self._safety_task.cancel()
+        self._safety_task = None
+        self._safety_reading = None
+        self._last_connect.clear()
         if self._nina_ws_task and not self._nina_ws_task.done():
             self._nina_ws_task.cancel()
         self._nina_ws_task = None
@@ -226,16 +269,86 @@ class Hub:
             raise DeviceError(f"no {role} connected")
         return dev
 
+    @property
+    def safety(self) -> SafetyMonitor | None:
+        """The connected SafetyMonitor (cloud/rain/roof sensor), or None."""
+        return self.devices.get("safety")
+
+    async def reconnect_role(self, role: str) -> bool:
+        """Best-effort reconnect of one role from the recorded connection intent
+        (Batch 4b escalation ``reconnect_resume`` / a dropped Alpaca link). Only
+        Alpaca roles can be replayed from ``_last_connect``; sim/NINA roles return
+        False (nothing to replay). Never raises — returns success as a bool."""
+        info = self._last_connect.get(role)
+        if not info or info.get("backend") != "alpaca":
+            return False
+        try:
+            await self.connect_alpaca_device(
+                role, info["host"], info["port"], info["dev_type"],
+                info["dev_num"], info["name"])
+            bus.log("info", f"reconnected {role} ({info['host']}:{info['port']})", "hub")
+            return True
+        except Exception as e:
+            bus.log("warning", f"reconnect {role} failed: {e}", "hub")
+            return False
+
+    async def safety_reading(self) -> SafetyReading | None:
+        """The latest CACHED SafetyReading from the own-cadence poller — NEVER an
+        inline ``is_safe()`` (that could block the 2s status loop / engine gate,
+        C1-12). Returns None when no SafetyMonitor is connected or it hasn't been
+        polled yet. The engine fail-closes a ``stale`` reading to UNSAFE.
+
+        Age guard: if the poller has stopped ticking (so the cached reading is
+        older than ~2 poll cycles), mark the returned reading ``stale`` so the
+        engine fail-closes — never keep trusting an old SAFE reading forever."""
+        if self.safety is None:
+            return None
+        r = self._safety_reading
+        if r is not None and not r.stale:
+            age = time.time() - r.ts
+            if age > SAFETY_POLL_INTERVAL_S + SAFETY_READ_TIMEOUT_S + SAFETY_STALE_SLACK_S:
+                return replace(r, is_safe=False, stale=True,
+                               reason="safety reading stale (poller stopped)")
+        return r
+
+    def _guide_camera_info(self) -> dict | None:
+        """Vendor-neutral guide-camera descriptor for the UI's rig list.
+
+        AstroDeck only owns a dedicated ``guide_camera`` *device* in sim mode.
+        In NINA/Alpaca/PHD2 mode the guiding device is the guider itself (PHD2
+        driving e.g. an ASI220), so derive the guide-camera entry from the
+        connected guider — name + connected — rather than reporting "no guide
+        camera". Prefer a real ``guide_camera`` device when one exists; else fall
+        back to the guider. Returns None when neither is present."""
+        dev = self.devices.get("guide_camera")
+        if dev is not None:
+            return {"name": dev.name, "connected": dev.connected}
+        if self.guider is not None:
+            return {"name": self.guider.name, "connected": self.guider.connected}
+        return None
+
     def summary(self) -> dict:
+        sr = self._safety_reading
         return {
             "devices": {r: d.describe() for r, d in self.devices.items()},
             "guider": {"name": self.guider.name, "connected": self.guider.connected}
             if self.guider else None,
+            "guide_camera": self._guide_camera_info(),
             "sim": self.sim_rig is not None,
             "mode": self.mode,
             "site": self.site,
             "optics": self.effective_optics(),
+            # latest cached SafetyReading (None until the first poll / no monitor),
+            # and the redacted config snapshot (alert tokens blanked).
+            "safety": (self._safety_reading_dict(sr) if sr is not None else None),
+            "config": redacted(config_store.cfg()),
         }
+
+    @staticmethod
+    def _safety_reading_dict(r: SafetyReading) -> dict:
+        """Serialize a SafetyReading for WS/REST."""
+        return {"is_safe": r.is_safe, "reason": r.reason, "source": r.source,
+                "detail": r.detail, "stale": r.stale, "ts": r.ts}
 
     # ------------------------------------------------------------ site & optics
 
@@ -816,7 +929,13 @@ class Hub:
         self.last_frame = frame
         await self._publish_preview(frame)
         bus.log("info", "plate solving with NINA…", "solve")
-        res = await self.nina_client.get("/prepared-image/solve") or {}
+        # Bound the solve so a stuck NINA solver never hangs the event loop (live
+        # bug: this call had no timeout and wedged on the rig). The NinaClient
+        # forwards ``timeout=`` to httpx exactly like slew() does.
+        # TODO: /prepared-image/solve is the wrong endpoint (NINA's solver works
+        # for TPPA); switch to a capture-and-solve endpoint that actually returns
+        # a solution for an arbitrary frame.
+        res = await self.nina_client.get("/prepared-image/solve", timeout=90.0) or {}
         coords = nina_pick(res, "Coordinates", default=res)
         ra = nina_pick(coords, "RA", "RAHours", "RightAscension")
         dec = nina_pick(coords, "Dec", "Declination")
@@ -843,7 +962,19 @@ class Hub:
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
             await tel.slew(ra_hours, dec_deg)
-            solved = await self.solve_and_sync(solve_exposure_s)
+            # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
+            # hang or propagate (live bug): the mount has already slewed, so we
+            # return the un-centered result with a warning rather than aborting.
+            # CancelledError is re-raised so a user/engine abort still stops us.
+            try:
+                solved = await self.solve_and_sync(solve_exposure_s)
+            except asyncio.CancelledError:
+                raise
+            except (DeviceError, Exception) as e:
+                bus.log("warning",
+                        f"centering: plate solve failed ({e}); using raw GoTo", "solve")
+                return {"centered": False, "error_arcmin": None,
+                        "attempts": attempt, "solve_failed": True}
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             last_err = err
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
@@ -935,6 +1066,10 @@ class Hub:
             self._status_task = asyncio.create_task(self._status_loop())
         if self.mode == "nina" and (self._nina_hb_task is None or self._nina_hb_task.done()):
             self._nina_hb_task = asyncio.create_task(self._nina_heartbeat())
+        # safety monitor gets its OWN poller (separate from the 2s status loop) so
+        # a slow sensor never starves status (C1-12). Idempotent; bootstrapped here
+        # alongside the status poller from every connect path.
+        self.ensure_safety_poller()
 
     async def _status_loop(self) -> None:
         while True:
@@ -943,6 +1078,47 @@ class Hub:
             except Exception:
                 pass
             await asyncio.sleep(2.0)
+
+    # ------------------------------------------------------------ safety poller
+
+    def ensure_safety_poller(self) -> None:
+        """Spawn the own-cadence SafetyMonitor poller if not already running.
+        Idempotent — one task for the whole program (Batch 4b)."""
+        if self._safety_task is None or self._safety_task.done():
+            self._safety_task = asyncio.create_task(self._safety_loop())
+
+    async def _safety_loop(self) -> None:
+        """Poll the SafetyMonitor on its OWN cadence and cache a SafetyReading.
+
+        A read that exceeds ``SAFETY_READ_TIMEOUT_S`` (or raises) is cached as a
+        STALE reading — fail-closed: ``is_safe=False, stale=True`` — so the engine
+        treats a hung/disconnected sensor as UNSAFE, never as safe (C1-12/C1-15).
+        When no monitor is connected the cache is cleared (None) and the loop just
+        idles until one appears."""
+        while True:
+            mon = self.safety
+            if mon is None or not getattr(mon, "connected", False):
+                self._safety_reading = None
+            else:
+                prev = self._safety_reading
+                try:
+                    reading = await asyncio.wait_for(
+                        mon.reading(), timeout=SAFETY_READ_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    raise
+                except (asyncio.TimeoutError, Exception) as e:
+                    reason = ("safety read timed out"
+                              if isinstance(e, asyncio.TimeoutError)
+                              else f"safety read failed: {e}")
+                    reading = SafetyReading(
+                        is_safe=False, reason=reason, source=mon.name, stale=True)
+                self._safety_reading = reading
+                # emit a 'safety' event only on a verdict change (or first reading)
+                # so consumers (engine/UI/alerts) react without polling.
+                if (prev is None or prev.is_safe != reading.is_safe
+                        or prev.stale != reading.stale):
+                    bus.publish("safety", **self._safety_reading_dict(reading))
+            await asyncio.sleep(SAFETY_POLL_INTERVAL_S)
 
     # ----------------------------------------------------------- monitor telemetry
 
@@ -1047,6 +1223,10 @@ class Hub:
                            "low": free_gb < 10, "critical": free_gb < 1}
         except OSError:
             pass
+        # CHEAP safety block: the cached reading from the own-cadence poller (no
+        # device I/O here — the poller did it). None when no monitor / not yet read.
+        sr = self._safety_reading
+        out["safety"] = self._safety_reading_dict(sr) if sr is not None else None
         tel = self.devices.get("telescope")
         if tel and tel.connected:
             ra = dec = None
@@ -1124,6 +1304,12 @@ class Hub:
                 pass
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
+        # Additive guide-camera descriptor so ConnectView can show the guiding
+        # device with a name + connected state in every backend (not just sim's
+        # dedicated guide_camera device).
+        gc = self._guide_camera_info()
+        if gc is not None:
+            out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:
             c = self.nina_client
             age = (time.monotonic() - c.last_ok) if c.last_ok is not None else None

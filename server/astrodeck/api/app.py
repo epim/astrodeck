@@ -7,6 +7,8 @@ WebSocket — the UI is event-driven.
 from __future__ import annotations
 
 import asyncio
+import io
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -16,11 +18,13 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..alerting import AlertDispatcher
 from ..catalog import search_catalog
 from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
-from ..config import ConfigVersionConflict, Optics, Site, config_store
+from ..config import (AlertSink, ConfigVersionConflict, EscalationConfig,
+                      Optics, SafetyConfig, Site, config_store, redacted)
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
@@ -30,10 +34,38 @@ from ..hub import TOUCH_MAX_RATE_DEG_S, hub
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles
 from ..sequence import SequenceEngine, SequencePlan
+from ..sequence import schedule as schedule_mod
+from ..sequence.report import SessionReporter, _slug
 
 engine = SequenceEngine(hub)
 
+# Module-level outbound-alert dispatcher (Batch 4b §1.8). Reads the LIVE config
+# through ``config_store.cfg`` so an alert-sink edit is picked up without a
+# restart. Its long-running ``run()`` loop is launched in the app lifespan.
+dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
+# Inject the dispatcher into the engine so its per-frame loop can ping the
+# external dead-man's-switch + emit progress heartbeats (§1.8/§1.9-F). Done by
+# injection (not an import inside the engine) to avoid a circular import.
+engine.dispatcher = dispatcher
+
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
+
+
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    """App lifespan: start the AlertDispatcher subscriber on boot, cancel it on
+    shutdown. The dispatcher never raises out of its loop, so a flaky alert
+    endpoint can never take the server down (C1-16/C2-10)."""
+    task = asyncio.create_task(dispatcher.run())
+    try:
+        yield
+    finally:
+        await dispatcher.stop()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def _spawn(name: str, coro) -> dict:
@@ -91,7 +123,8 @@ def _plan_exists(plan_id: str) -> bool:
 # ------------------------------------------------------------ request models
 
 class AlpacaConnectBody(BaseModel):
-    role: str
+    role: Literal["camera", "telescope", "focuser", "filterwheel",
+                  "switch", "safety"]
     host: str
     port: int
     dev_type: str
@@ -207,8 +240,27 @@ class StartSequenceBody(SequencePlan):
     force: bool = False
 
 
+# ------------------------------------------------- automation request models (4b)
+
+class ConfigPatchBody(BaseModel):
+    """Partial-merge config update (§1.10 POST /api/config). Every block is
+    optional so the SettingsView can debounce-PUT only the panel that changed;
+    an omitted block is left untouched. ``site`` rides through ``set_site`` so it
+    still flips ``is_default`` off and re-reads onto the mount."""
+    site: Site | None = None
+    safety: SafetyConfig | None = None
+    escalation: EscalationConfig | None = None
+    alerts: list[AlertSink] | None = None
+    deadman_url: str | None = None
+
+
+class SafetySimulateBody(BaseModel):
+    unsafe: bool = True
+    reason: str = "simulated unsafe condition"
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="AstroDeck", version="0.1.0")
+    app = FastAPI(title="AstroDeck", version="0.1.0", lifespan=_lifespan)
 
     # --------------------------------------------------------- atlas routers
     # The Sky-Atlas feature lanes own these as separate APIRouter modules
@@ -264,6 +316,12 @@ def create_app() -> FastAPI:
 
     @app.post("/api/connect/alpaca")
     async def connect_alpaca(body: AlpacaConnectBody):
+        # The 'safety' role gates the fail-closed SafetyMonitor poller, so a
+        # non-safetymonitor device must not be allowed to occupy it (a wrong
+        # device there would poll as a permanent cryptic UNSAFE/stale read).
+        if body.role == "safety" and body.dev_type.lower() != "safetymonitor":
+            raise HTTPException(
+                422, "role 'safety' requires dev_type 'safetymonitor'")
         try:
             return await hub.connect_alpaca_device(
                 body.role, body.host, body.port, body.dev_type, body.dev_num,
@@ -306,10 +364,15 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------ config / site / optics
 
     def _config_payload() -> dict:
-        """AppConfig dump + the server's computed optics readout (single source
-        of truth for image-scale / FOV the UI never re-derives as logic)."""
+        """REDACTED AppConfig dump + the server's computed optics readout (single
+        source of truth for image-scale / FOV the UI never re-derives as logic).
+
+        ``redacted`` blanks every alert sink's Telegram bot token — the only
+        secret kept at rest — so the union sent over REST/WS never leaks it (4b
+        §1.10). The union also carries the automation blocks (safety/escalation/
+        alerts/deadman_url) appended to AppConfig."""
         cfg = config_store.cfg()
-        return cfg.model_dump() | {"optics_computed": hub.effective_optics()}
+        return redacted(cfg) | {"optics_computed": hub.effective_optics()}
 
     def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
         """Live altitude verdict for a target from the current site. Returns
@@ -353,8 +416,67 @@ def create_app() -> FastAPI:
                     "code": "below_horizon", "preflight": pf}
         return None
 
+    def _merge_alert_verified(incoming: list[AlertSink]) -> list[AlertSink]:
+        """Reset ``verified`` to False on any sink whose delivery identity
+        (url/token/chat_id/kind) changed vs. the stored copy, so a re-pointed
+        channel must be re-tested before its "verified" badge returns (C1-16).
+        A brand-new id keeps whatever ``verified`` it arrived with (False by the
+        model default)."""
+        existing = {s.id: s for s in config_store.cfg().alerts}
+        out: list[AlertSink] = []
+        for sink in incoming:
+            old = existing.get(sink.id)
+            # an empty (redacted) token on update means "unchanged" — never blank
+            # a stored secret just because the client echoed back the blanked
+            # token. Restore it BEFORE the identity-change check so an empty token
+            # also doesn't spuriously trip the verified reset.
+            if old is not None and not sink.token and old.token:
+                sink = sink.model_copy(update={"token": old.token})
+            if old is not None and (
+                    old.url != sink.url or old.token != sink.token
+                    or old.chat_id != sink.chat_id or old.kind != sink.kind):
+                sink = sink.model_copy(update={"verified": False})
+            out.append(sink)
+        return out
+
+    def _persist_config_patch(body: ConfigPatchBody) -> None:
+        """Apply a partial-merge config update through the typed ConfigStore
+        setters (each bumps version + writes atomically). Runs on a worker thread
+        — the disk writes must not block the event loop."""
+        if body.site is not None:
+            # set_site flips is_default off, persists elevation_m, and preserves
+            # the stored per-site horizon (the TS Site omits it).
+            site = body.site.model_copy(update={
+                "horizon_min_deg": config_store.cfg().site.horizon_min_deg})
+            config_store.set_site(site)
+        if body.safety is not None:
+            config_store.set_safety(body.safety)
+        if body.escalation is not None:
+            config_store.set_escalation(body.escalation)
+        if body.alerts is not None:
+            config_store.set_alerts(_merge_alert_verified(body.alerts))
+        if body.deadman_url is not None:
+            config_store.set_deadman(body.deadman_url)
+
     @app.get("/api/config")
     async def get_config():
+        return _config_payload()
+
+    @app.post("/api/config")
+    async def post_config(body: ConfigPatchBody):
+        """Partial-merge persist of any subset of the automation config (§1.10).
+        Re-reads ``hub.site`` (config-backed property) implicitly, pushes the
+        site to the mount when it changed, and broadcasts the redacted union."""
+        await asyncio.to_thread(_persist_config_patch, body)
+        if body.site is not None:
+            push = getattr(hub, "push_site_to_mount", None)
+            if callable(push):
+                try:
+                    await push()
+                except Exception as e:
+                    bus.log("warning", f"could not push site to mount: {e}",
+                            "config")
+        bus.publish("config", config=redacted(config_store.cfg()))
         return _config_payload()
 
     @app.put("/api/site")
@@ -433,6 +555,152 @@ def create_app() -> FastAPI:
             "place_hint": hint,
             "lst_str": coords.format_ra(coords.lst_hours(longitude)),
         }
+
+    # ------------------------------------------------------------------- safety
+
+    @app.get("/api/safety/state")
+    async def safety_state():
+        """``{connected, reading|null, streak, stale}`` for the Monitor/Settings
+        safety widget. ``reading`` is the hub's CACHED own-cadence read (never an
+        inline ``is_safe()`` — C1-12); ``streak`` is the engine's consecutive
+        same-verdict count (the gate's hysteresis), read defensively so this lane
+        stays decoupled from the engine lane landing its counters."""
+        reading = await hub.safety_reading()
+        reading_dict = hub._safety_reading_dict(reading) if reading else None
+        stale = bool(reading.stale) if reading else False
+        # The engine accumulates _unsafe_streak/_safe_streak as the gate's
+        # hysteresis; surface whichever matches the current verdict (0 if the
+        # engine isn't running / hasn't landed its counters yet).
+        if reading is not None and not reading.is_safe:
+            streak = int(getattr(engine, "_unsafe_streak", 0) or 0)
+        else:
+            streak = int(getattr(engine, "_safe_streak", 0) or 0)
+        return {
+            "connected": hub.safety is not None
+            and getattr(hub.safety, "connected", False),
+            "reading": reading_dict,
+            "streak": streak,
+            "stale": stale,
+        }
+
+    @app.post("/api/safety/simulate")
+    async def safety_simulate(body: SafetySimulateBody):
+        """Sim-only safety injection (404 unless ``mode == 'sim'``). Flips the
+        simulated SafetyMonitor so the unattended gate can be exercised end-to-end
+        without real weather. The own-cadence poller picks the new verdict up on
+        its next tick; we return the immediate reading for the test/UX."""
+        if hub.mode != "sim":
+            raise HTTPException(404, "safety simulation is sim-only")
+        mon = hub.safety
+        if mon is None:
+            raise HTTPException(409, "no safety monitor connected")
+        force_unsafe = getattr(mon, "force_unsafe", None)
+        force_safe = getattr(mon, "force_safe", None)
+        if not callable(force_unsafe) or not callable(force_safe):
+            raise HTTPException(409, "connected monitor is not simulatable")
+        if body.unsafe:
+            force_unsafe(body.reason)
+        else:
+            force_safe()
+        reading = await mon.reading()
+        return {"ok": True, "reading": hub._safety_reading_dict(reading)}
+
+    # ------------------------------------------------------------------- alerts
+
+    @app.get("/api/alerts")
+    async def list_alerts():
+        """Configured alert sinks with the Telegram token blanked (never sent to
+        the client — the only secret kept at rest)."""
+        return [
+            s.model_copy(update={"token": ""}).model_dump()
+            for s in config_store.cfg().alerts
+        ]
+
+    @app.post("/api/alerts")
+    async def upsert_alert(sink: AlertSink):
+        """Upsert one alert sink by id. ``verified`` is reset to False whenever the
+        delivery identity (url/token/chat_id/kind) changes vs. the stored copy, so
+        a re-pointed channel must be re-tested (C1-16). Returns the full sink list
+        (tokens blanked)."""
+        alerts = list(config_store.cfg().alerts)
+        idx = next((i for i, s in enumerate(alerts) if s.id == sink.id), None)
+        if idx is not None:
+            old = alerts[idx]
+            if (old.url != sink.url or old.token != sink.token
+                    or old.chat_id != sink.chat_id or old.kind != sink.kind):
+                sink = sink.model_copy(update={"verified": False})
+            # an empty token on update means "unchanged" — never blank a stored
+            # secret just because the redacted client echoed it back.
+            if not sink.token and old.token:
+                sink = sink.model_copy(update={"token": old.token})
+            alerts[idx] = sink
+        else:
+            alerts.append(sink)
+        await asyncio.to_thread(config_store.set_alerts, alerts)
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return [s.model_copy(update={"token": ""}).model_dump()
+                for s in config_store.cfg().alerts]
+
+    @app.delete("/api/alerts/{sink_id}")
+    async def delete_alert(sink_id: str):
+        alerts = [s for s in config_store.cfg().alerts if s.id != sink_id]
+        await asyncio.to_thread(config_store.set_alerts, alerts)
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return {"deleted": sink_id}
+
+    @app.post("/api/alerts/{sink_id}/test")
+    async def test_alert(sink_id: str):
+        """Real round-trip test of one sink (§1.8). On a genuine 2xx the sink's
+        ``verified`` flag flips True and is persisted; otherwise the error is
+        returned for the UI to surface. 404 when the id is unknown."""
+        if not any(s.id == sink_id for s in config_store.cfg().alerts):
+            raise HTTPException(404, "no such alert sink")
+        result = await dispatcher.test(sink_id)
+        # dispatcher.test set sink.verified on the live cfg object in memory; the
+        # caller persists it (and the redacted broadcast reflects the new badge).
+        await asyncio.to_thread(config_store.set_alerts,
+                                list(config_store.cfg().alerts))
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return result
+
+    # ------------------------------------------------------------------- reports
+
+    @app.get("/api/reports")
+    async def list_reports():
+        """Newest-first session-report summaries (no frame detail)."""
+        return await asyncio.to_thread(SessionReporter.list_reports)
+
+    @app.get("/api/reports/{report_id}")
+    async def get_report(report_id: str):
+        """One report + read-time-derived trend sparklines (404 if missing). The
+        trends are computed from the frame records on read, never stored as
+        parallel arrays that could drift (C1-19)."""
+        report = await asyncio.to_thread(SessionReporter.load, report_id)
+        if report is None:
+            raise HTTPException(404, "report not found")
+        trends = SessionReporter.trends(report)
+        return report.model_dump() | {"trends": trends}
+
+    @app.get("/api/reports/{report_id}/frames.csv")
+    async def report_frames_csv(report_id: str):
+        """Append-only frame list as CSV (power-user export). 404 if missing."""
+        report = await asyncio.to_thread(SessionReporter.load, report_id)
+        if report is None:
+            raise HTTPException(404, "report not found")
+        buf = io.StringIO()
+        cols = ["ts", "target", "filter", "frame_type", "exposure_s", "accepted",
+                "hfr", "sensor_temp_c", "guide_rms_total", "saved_path"]
+        import csv
+        w = csv.writer(buf)
+        w.writerow(cols)
+        for fr in report.frames:
+            d = fr.model_dump()
+            w.writerow(["" if d.get(c) is None else d.get(c) for c in cols])
+        # Use the sanitized slug (not the raw path param) so the response header
+        # can never carry CR/LF/quotes from attacker-controlled input.
+        fname = f"{_slug(report_id)}.frames.csv"
+        return Response(buf.getvalue(), media_type="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
 
     # ----------------------------------------------------------------- profiles
 
@@ -573,6 +841,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/capture")
     async def capture(body: CaptureBody):
+        if hub.polar.running:
+            raise HTTPException(409, "polar alignment in progress")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -583,6 +853,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/capture/loop")
     async def capture_loop(body: CaptureBody):
+        if hub.polar.running:
+            raise HTTPException(409, "polar alignment in progress")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -908,6 +1180,23 @@ def create_app() -> FastAPI:
             raise HTTPException(409, "no guider connected")
         return _spawn("dither", hub.guider.dither(body.pixels))
 
+    @app.get("/api/guide/frame.png")
+    async def guide_frame():
+        """Auto-stretched PNG thumbnail of the current guide star (PHD2
+        ``get_star_image`` in PHD2/NINA mode, a synthesized frame in sim). Cheap
+        and safe: 404 (never 500) when there is no guider or no current star
+        image, so the UI degrades to a 'guide camera unavailable' note."""
+        if not hub.guider or not hub.guider.connected:
+            raise HTTPException(404, "no guider connected")
+        try:
+            png = await hub.guider.guide_frame()
+        except Exception:
+            png = None
+        if not png:
+            raise HTTPException(404, "no guide frame available")
+        return Response(png, media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
     # ------------------------------------------------------------- sequence
 
     @app.post("/api/sequence/start")
@@ -987,6 +1276,52 @@ def create_app() -> FastAPI:
         ``unknown`` while the site is still the default (no trustworthy answer)."""
         return _preflight_alt(ra_hours, dec_deg)
 
+    @app.post("/api/sequence/preflight")
+    async def sequence_preflight_plan(plan: SequencePlan):
+        """Plan-wide, NON-BLOCKING pre-flight (§1.10 / C2-11). A DIFFERENT route
+        from the GET single-target verdict above (same path, different verb — no
+        collision). Resolves each non-calibration target's autorun window and
+        warns ONLY when a target never rises above the effective floor across its
+        whole window (``never_rises``). The UI shows a confirm dialog defaulting to
+        "Run anyway"; this endpoint never refuses a run on its own.
+
+        Floor = ``max(per-target start gate, site horizon_min, safety floor)`` —
+        the realistic altitude the target must clear to be worth slewing to. A
+        default (un-configured) site yields no warnings: we don't trust an un-set
+        location to call a target un-observable."""
+        import time as _time
+        site = hub.site
+        cfg = config_store.cfg()
+        twilight = float(cfg.safety.twilight_deg)
+        site_floor = float(site.get("horizon_min_deg", 0.0))
+        safety_floor = float(cfg.safety.min_alt_deg or 0.0)
+        is_default = bool(site.get("is_default", True))
+        lat = float(site["latitude"])
+        lon = float(site["longitude"])
+        now = _time.time()
+        warnings: list[dict] = []
+        if not is_default:
+            for t in plan.targets:
+                if t.calibration:
+                    continue
+                gate = float(getattr(t.schedule, "min_altitude_deg", 0.0) or 0.0)
+                floor = max(gate, site_floor, safety_floor)
+                if floor <= 0.0:
+                    continue
+                start_ts, stop_ts = schedule_mod.resolve_window(
+                    t.schedule, site, twilight, now)
+                peak = schedule_mod.target_max_altitude(
+                    t.ra_hours, t.dec_deg, lat, lon, start_ts, stop_ts)
+                if peak < floor:
+                    warnings.append({
+                        "target": t.name,
+                        "kind": "never_rises",
+                        "message": (f"{t.name or 'target'} never rises above "
+                                    f"{floor:g} deg during its window "
+                                    f"(peaks at {peak:.0f} deg)"),
+                    })
+        return {"ok": not warnings, "warnings": warnings}
+
     @app.get("/api/sequence/recoverable")
     async def sequence_recoverable():
         data = engine.load_resume()
@@ -1005,7 +1340,10 @@ def create_app() -> FastAPI:
         plan = SequencePlan(**data["plan"])
         try:
             hub.require("camera")
-            engine.start(plan, resume_done=data.get("done", {}))
+            # re-attach the persisted report so the resume keeps appending to the
+            # SAME report instead of forking a new one (C2-5).
+            engine.start(plan, resume_done=data.get("done", {}),
+                         report_id=data.get("report_id"))
         except DeviceError as e:
             raise _err(e)
         done = sum(data.get("done", {}).values())

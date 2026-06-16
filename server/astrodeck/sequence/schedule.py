@@ -1,0 +1,320 @@
+"""Pure autorun window resolution — no I/O, fully unit-testable (Batch 4b §1.6).
+
+Resolves a per-target :class:`~astrodeck.sequence.models.Schedule` into concrete
+start/stop unix timestamps for *tonight*, decides whether a target is ready /
+waiting / closed / never-rises, and computes the effective altitude floor with a
+wrap-interpolated horizon profile.
+
+Design constraints baked in here (from the adversarial UX critiques):
+
+* **Polar guard (C2-13):** ``next_sun_event`` walks a *bounded* loop (at most one
+  sidereal day of coarse samples) and returns ``None`` when the sun never reaches
+  the requested altitude at this latitude — never an infinite loop.
+* **Wrap interpolation (C2-3):** the horizon is a list of sorted ``(az, alt)``
+  control points; the effective floor at an azimuth is linearly interpolated
+  across the 0↔360 seam, so a point at az=350 and az=10 blend smoothly through
+  due-north.
+* **Two distinct altitude concepts (C1-28):** ``Schedule.min_altitude_deg`` is the
+  per-target *start gate* checked against the *target* altitude (here). The global
+  pier-collision floor (``SafetyConfig.min_alt_deg`` vs *mount* altitude) is the
+  engine's concern, not this module's.
+
+All math reuses :mod:`astrodeck.catalog.coords` (``lst_hours``/``altaz``/
+``sun_altaz``) so there is one source of sky-position truth.
+"""
+from __future__ import annotations
+
+import time
+from typing import TYPE_CHECKING, Any
+
+from ..catalog.coords import altaz, sun_altaz
+
+if TYPE_CHECKING:  # avoid an import cycle at runtime; only needed for typing
+    from .models import Schedule, Target
+
+# One sidereal day in seconds — the bound for the sun-event search (a real solar
+# day is ~86400 s; one sidereal day is a safe, slightly-longer upper bound that
+# still terminates at any latitude — C2-13).
+_SIDEREAL_DAY_S = 86164.0905
+# Coarse search step for the sun crossing (10 min). Matches ``coords.dark_window``
+# precision — the twilight clock readout never needs better than ~minutes.
+_SUN_STEP_S = 600.0
+# Fine bisection refinement passes once a coarse bracket is found.
+_REFINE_PASSES = 16
+
+# Coarse step for the target peak-altitude scan across a window.
+_PEAK_STEP_S = 600.0
+
+
+def _lat_lon(site: dict[str, Any]) -> tuple[float, float]:
+    """Extract (latitude, longitude) from a hub-style site dict."""
+    return float(site["latitude"]), float(site["longitude"])
+
+
+# --------------------------------------------------------------------- sun events
+
+def sun_altitude(lat: float, lon: float, t: float) -> float:
+    """The sun's altitude in degrees at unix time ``t`` for the site."""
+    alt, _ = sun_altaz(lat, lon, t)
+    return alt
+
+
+def next_sun_event(lat: float, lon: float, alt_deg: float, after_t: float,
+                   rising: bool) -> float | None:
+    """Unix ts the sun next crosses ``alt_deg`` after ``after_t``.
+
+    ``rising=True`` finds the next moment the sun climbs *through* ``alt_deg``
+    (altitude increasing); ``rising=False`` finds the next moment it sinks through
+    it (altitude decreasing). Used for dusk (sun *setting* through a twilight
+    angle => ``rising=False``) and dawn (sun *rising* through it => ``rising=True``).
+
+    **Returns ``None``** when the sun never reaches ``alt_deg`` in the crossing
+    direction within one sidereal day — i.e. polar day/night where the sun stays
+    permanently above or below the angle (C2-13). The loop is hard-bounded, so a
+    high-latitude summer night cannot hang the scheduler.
+    """
+    steps = int(_SIDEREAL_DAY_S / _SUN_STEP_S) + 2
+    prev_t = after_t
+    prev_alt = sun_altitude(lat, lon, prev_t)
+    for i in range(1, steps + 1):
+        cur_t = after_t + i * _SUN_STEP_S
+        cur_alt = sun_altitude(lat, lon, cur_t)
+        crossed_up = prev_alt < alt_deg <= cur_alt
+        crossed_down = prev_alt > alt_deg >= cur_alt
+        if (rising and crossed_up) or (not rising and crossed_down):
+            return _refine_crossing(lat, lon, alt_deg, prev_t, cur_t)
+        prev_t, prev_alt = cur_t, cur_alt
+    return None
+
+
+def _refine_crossing(lat: float, lon: float, alt_deg: float,
+                     lo_t: float, hi_t: float) -> float:
+    """Bisect a bracketed sun-altitude crossing to ~second precision."""
+    lo_alt = sun_altitude(lat, lon, lo_t)
+    for _ in range(_REFINE_PASSES):
+        mid_t = (lo_t + hi_t) / 2.0
+        mid_alt = sun_altitude(lat, lon, mid_t)
+        # keep the half-interval that still straddles alt_deg
+        if (lo_alt < alt_deg) == (mid_alt < alt_deg):
+            lo_t, lo_alt = mid_t, mid_alt
+        else:
+            hi_t = mid_t
+    return (lo_t + hi_t) / 2.0
+
+
+# --------------------------------------------------------------------- horizon
+
+def interp_wrap(horizon: list[tuple[float, float]] | None, az: float) -> float:
+    """Linearly-interpolated horizon altitude at azimuth ``az`` (degrees).
+
+    ``horizon`` is a list of ``(az, alt)`` control points. Interpolation wraps
+    across the 0↔360 seam: between the last point (e.g. az=350) and the first
+    (e.g. az=10) the floor blends through due-north (C2-3). Returns ``0.0`` for an
+    empty/None horizon (no profile => no extra floor).
+    """
+    if not horizon:
+        return 0.0
+    pts = sorted((float(a) % 360.0, float(h)) for a, h in horizon)
+    if len(pts) == 1:
+        return pts[0][1]
+    az = float(az) % 360.0
+    # find the bracketing pair, wrapping the last->first segment through 360.
+    for i in range(len(pts)):
+        a0, h0 = pts[i]
+        a1, h1 = pts[(i + 1) % len(pts)]
+        span = (a1 - a0) % 360.0
+        if span == 0:
+            continue
+        delta = (az - a0) % 360.0
+        if delta <= span:
+            frac = delta / span
+            return h0 + (h1 - h0) * frac
+    return pts[0][1]
+
+
+def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | None,
+                    az: float) -> float:
+    """``max(min_alt_deg, interp_wrap(horizon, az))`` — the floor a target must
+    clear at azimuth ``az`` (C2-3)."""
+    return max(float(min_alt_deg), interp_wrap(horizon, az))
+
+
+# --------------------------------------------------------------------- windows
+
+def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
+                      lat: float, lon: float, twilight_deg: float,
+                      now: float, *, dawn_rising: bool) -> float | None:
+    """Resolve one schedule boundary (dusk/dawn/time) to a unix ts.
+
+    ``dawn_rising`` picks the sun-crossing direction: dusk = sun setting through
+    the twilight angle (``rising=False``); dawn = sun rising through it
+    (``rising=True``). ``time`` parses ``"HH:MM"`` into the next occurrence at or
+    after ``now`` (UTC-naive wall clock via :func:`time.localtime`)."""
+    if mode == "now":
+        return now
+    if mode == "none":
+        return None
+    if mode in ("dusk", "dawn"):
+        rising = (mode == "dawn")
+        base = next_sun_event(lat, lon, twilight_deg, now, rising=rising)
+        if base is None:
+            return None
+        return base + offset_min * 60.0
+    if mode == "time":
+        return _next_clock_time(time_str, now)
+    return None
+
+
+def _next_clock_time(time_str: str | None, now: float) -> float | None:
+    """The unix ts of the next local ``HH:MM`` at or after ``now``."""
+    if not time_str:
+        return None
+    try:
+        hh, mm = (int(x) for x in time_str.split(":", 1))
+    except (ValueError, AttributeError):
+        return None
+    lt = time.localtime(now)
+    candidate = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, 0,
+                             0, 0, -1))
+    if candidate < now:
+        candidate += 86400.0
+    return candidate
+
+
+def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
+                   now: float) -> tuple[float | None, float | None]:
+    """``(start_ts, stop_ts)`` for tonight.
+
+    ``start_mode``: ``now`` => ``now``; ``dusk``/``dawn`` => the twilight crossing
+    + ``start_offset_min``; ``time`` => the next ``start_time``. ``stop_mode``:
+    ``none`` => no stop (``None``); ``dawn``/``time`` similarly. ``max_run_min``,
+    when set, also caps the stop to ``start + max_run_min`` (whichever is sooner).
+    A boundary that cannot be resolved (e.g. polar dusk) yields ``None`` there.
+    """
+    lat, lon = _lat_lon(site)
+    start = _resolve_event_ts(sched.start_mode, sched.start_offset_min,
+                              sched.start_time, lat, lon, twilight_deg, now,
+                              dawn_rising=False)
+    stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
+                             sched.stop_time, lat, lon, twilight_deg, now,
+                             dawn_rising=True)
+    # max_run_min caps the window relative to the resolved start.
+    if sched.max_run_min and start is not None:
+        cap = start + sched.max_run_min * 60.0
+        stop = cap if stop is None else min(stop, cap)
+    return start, stop
+
+
+# --------------------------------------------------------------------- target alt
+
+def target_altitude(ra_h: float, dec_deg: float, lat: float, lon: float,
+                    t: float) -> float:
+    """The target's altitude (degrees) at unix time ``t``."""
+    alt, _ = altaz(ra_h, dec_deg, lat, lon, t)
+    return alt
+
+
+def target_max_altitude(ra_h: float, dec_deg: float, lat: float, lon: float,
+                        start_ts: float | None, stop_ts: float | None) -> float:
+    """Peak target altitude across ``[start_ts, stop_ts]`` (the pre-flight
+    'never rises above floor' check — §1.6).
+
+    When ``start_ts`` is ``None`` the scan defaults to *now* (``time.time()``);
+    when ``stop_ts`` is ``None`` it scans one sidereal day forward so a transit is
+    always captured. Coarse 10-min sampling — fine enough for a 'never rises'
+    warning."""
+    t0 = start_ts if start_ts is not None else time.time()
+    t1 = stop_ts if stop_ts is not None else t0 + _SIDEREAL_DAY_S
+    if t1 < t0:
+        t0, t1 = t1, t0
+    peak = -90.0
+    steps = max(1, int((t1 - t0) / _PEAK_STEP_S))
+    for i in range(steps + 1):
+        t = t0 + (t1 - t0) * (i / steps)
+        peak = max(peak, target_altitude(ra_h, dec_deg, lat, lon, t))
+    return peak
+
+
+# --------------------------------------------------------------------- gating
+
+def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
+                  now: float, target_alt: float | None = None) -> dict[str, Any]:
+    """Decide whether ``target`` is runnable right now.
+
+    Returns ``{state, reason, eta_s, start_ts, stop_ts}`` where ``state`` is one
+    of:
+
+    * ``ready`` — window is open and the target is at/above its start gate now.
+    * ``waiting`` — window hasn't opened yet (``eta_s`` = seconds until start), or
+      the window is open but the target is still below its start altitude
+      (``eta_s`` = best-effort seconds to the gate, 0 if unknown).
+    * ``window_closed`` — the stop boundary is already in the past.
+    * ``never_rises`` — the target never clears its start gate across the whole
+      window (the pre-flight warning case, C2-11).
+
+    ``target_alt`` may be passed in (the engine already has a fresh altitude);
+    otherwise it is computed at ``now``.
+    """
+    lat, lon = _lat_lon(site)
+    sched = target.schedule
+    start_ts, stop_ts = resolve_window(sched, site, twilight_deg, now)
+    gate = float(sched.min_altitude_deg or 0.0)
+    if target_alt is None:
+        target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)
+
+    def out(state: str, reason: str, eta_s: float) -> dict[str, Any]:
+        return {"state": state, "reason": reason, "eta_s": max(0.0, eta_s),
+                "start_ts": start_ts, "stop_ts": stop_ts}
+
+    # 1. window already closed?
+    if stop_ts is not None and now >= stop_ts:
+        return out("window_closed", "observing window has closed", 0.0)
+
+    # 2. never clears the start gate across the window? (pre-flight warning)
+    if gate > 0.0:
+        peak = target_max_altitude(target.ra_hours, target.dec_deg, lat, lon,
+                                   start_ts, stop_ts)
+        if peak < gate:
+            return out("never_rises",
+                       f"never rises above {gate:g} deg tonight", 0.0)
+
+    # 3. window not open yet => waiting on the clock.
+    if start_ts is not None and now < start_ts:
+        return out("waiting", "waiting for start time", start_ts - now)
+
+    # 4. window open but target still below its start gate => waiting on altitude.
+    if gate > 0.0 and target_alt < gate:
+        eta = _time_to_gate(target, lat, lon, gate, now, stop_ts)
+        return out("waiting", f"below start altitude ({gate:g} deg)",
+                   eta if eta is not None else 0.0)
+
+    # 5. open and high enough.
+    return out("ready", "", 0.0)
+
+
+def _time_to_gate(target: "Target", lat: float, lon: float, gate: float,
+                  now: float, stop_ts: float | None) -> float | None:
+    """Best-effort seconds until the target first reaches ``gate`` after ``now``
+    (within the window / one sidereal day). ``None`` if it never does."""
+    horizon = stop_ts if stop_ts is not None else now + _SIDEREAL_DAY_S
+    steps = max(1, int((horizon - now) / _PEAK_STEP_S))
+    for i in range(1, steps + 1):
+        t = now + i * _PEAK_STEP_S
+        if target_altitude(target.ra_hours, target.dec_deg, lat, lon, t) >= gate:
+            return t - now
+    return None
+
+
+def schedule_order(targets: list["Target"], site: dict[str, Any],
+                   twilight_deg: float, now: float) -> list["Target"]:
+    """Targets sorted by resolved window start (C1-23 skip-ahead helper).
+
+    Targets whose start cannot be resolved (or have no start) sort last but keep
+    their relative order (stable sort). This is the order the engine walks when it
+    skips ahead to the first ready target instead of blocking on a waiting head.
+    """
+    def key(t: "Target") -> float:
+        start, _ = resolve_window(t.schedule, site, twilight_deg, now)
+        return start if start is not None else float("inf")
+
+    return sorted(targets, key=key)

@@ -42,3 +42,13 @@ class Guider(ABC):
         """Whether the guider is really guiding right now (queries the backend
         where possible, rather than a local flag) — used to detect a lost star."""
         return self.stats().guiding
+
+    async def guide_frame(self) -> bytes | None:
+        """A small auto-stretched PNG of the guide-star region for the live UI,
+        or ``None`` when no frame is available (no guider, no current star image,
+        backend doesn't expose one). Vendor-neutral: every guider implements this
+        against whatever its backend can surface (PHD2 ``get_star_image`` RPC,
+        a synthesized sim frame, ...). Implementations must be cheap and must
+        NEVER raise — they return ``None`` on any failure so the endpoint can
+        answer 404 instead of 500."""
+        return None

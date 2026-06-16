@@ -7,6 +7,8 @@ AstroDeck event bus for the live guide graph.
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import itertools
 import json
 import math
@@ -18,6 +20,36 @@ from ..events import bus
 from .base import Guider, GuideStats
 
 SETTLE = {"pixels": 1.5, "time": 8, "timeout": 60}
+
+
+def star_image_to_png(result: dict) -> bytes | None:
+    """Decode a PHD2 ``get_star_image`` result into an auto-stretched PNG.
+
+    PHD2 returns ``{width, height, pixels: <base64 16-bit little-endian>,
+    star_pos: [x, y]}``. We decode the raw 16-bit pixels, auto-stretch them
+    (reusing the main display pipeline so the guide thumbnail matches the rest
+    of the UI), and encode a small PNG. Returns ``None`` on any malformed
+    payload rather than raising — the caller answers 404 on None."""
+    try:
+        import numpy as np
+
+        from ..imaging.processing import to_png
+
+        w = int(result.get("width") or 0)
+        h = int(result.get("height") or 0)
+        b64 = result.get("pixels")
+        if w <= 0 or h <= 0 or not b64:
+            return None
+        raw = base64.b64decode(b64)
+        arr = np.frombuffer(raw, dtype="<u2")
+        if arr.size < w * h:
+            return None
+        img = arr[: w * h].reshape((h, w)).astype(np.uint16)
+        # to_png auto-stretches; cap the width so a 15px star tile still scales
+        # up to a visible thumbnail but a larger subframe stays modest.
+        return to_png(img, stretch=True, max_width=max(w, 256))
+    except Exception:
+        return None
 
 
 class PHD2Guider(Guider):
@@ -146,3 +178,18 @@ class PHD2Guider(Guider):
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=self._snr, recent=recent[-120:],
         )
+
+    async def guide_frame(self) -> bytes | None:
+        """Auto-stretched PNG of the current guide star via PHD2's
+        ``get_star_image`` RPC. Returns None if not connected, no star is
+        selected, or the RPC errors — never raises."""
+        if not self.connected or self._writer is None:
+            return None
+        try:
+            # size 15 = PHD2's default star-image subframe edge (px).
+            result = await self._rpc("get_star_image", [15], timeout=5)
+        except Exception:
+            return None
+        if not isinstance(result, dict):
+            return None
+        return star_image_to_png(result)
