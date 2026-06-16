@@ -43,6 +43,14 @@ ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch")
 
 CAPTURE_DIR = Path(__file__).resolve().parents[2] / "captures"
 
+#: Touch-safety motion constants (master plan §A.7 / §C-Risk-5). The manual-move
+#: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
+#: move-axis deadman window. Defined ONCE here so the touch surface and the
+#: Batch-4 safety surface share one source of truth — both reuse the single
+#: ``_move_watchdog`` task below; neither re-creates these values.
+TOUCH_MAX_RATE_DEG_S = 0.6
+MOVE_DEADMAN_MS = 1200
+
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
@@ -90,6 +98,15 @@ class Hub:
         self._nina_ws_task: asyncio.Task | None = None
         self._nina_hb_task: asyncio.Task | None = None   # 5s NINA heartbeat
         self._bridge_ready = False              # false until first successful NINA poll
+        # --- move-axis deadman (touch safety §C-Risk-5; safety surface reuses) ---
+        # last_move_ts is the monotonic timestamp of the most recent manual
+        # move/keepalive; _move_rates_seen is the last commanded rate per axis.
+        # A dedicated 250ms watchdog task auto-halts both axes when a non-zero
+        # move goes un-refreshed for longer than MOVE_DEADMAN_MS — the single
+        # deadman the whole program shares.
+        self.last_move_ts: float | None = None
+        self._move_rates_seen: dict[str, float] = {"ra": 0.0, "dec": 0.0}
+        self._move_watchdog_task: asyncio.Task | None = None
         self._busy: dict[str, asyncio.Task] = {}
         self.polar = PolarAlignSession(self)
         # cache of the active Profile, keyed by its id, so the 2s status poll's
@@ -172,6 +189,11 @@ class Hub:
         if self._nina_hb_task and not self._nina_hb_task.done():
             self._nina_hb_task.cancel()
         self._nina_hb_task = None
+        if self._move_watchdog_task and not self._move_watchdog_task.done():
+            self._move_watchdog_task.cancel()
+        self._move_watchdog_task = None
+        self.last_move_ts = None
+        self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
         self._bridge_ready = False
         for task in self._busy.values():
             task.cancel()
@@ -362,6 +384,70 @@ class Hub:
             except Exception:
                 pass
             await asyncio.sleep(5.0)
+
+    # ----------------------------------------------------- move-axis deadman
+
+    def note_move(self, axis: str, rate: float) -> None:
+        """Stamp a manual move (or its 1Hz keepalive). Records the per-axis rate
+        and the time, and arms the deadman task. Called by ``/api/mount/move``
+        after every (clamped) manual move and by the client keepalive. This is
+        the single arming primitive the touch surface AND the Batch-4 safety
+        surface both call — neither re-creates the watchdog task."""
+        if axis in self._move_rates_seen:
+            self._move_rates_seen[axis] = rate
+        self.last_move_ts = time.monotonic()
+        self.ensure_move_watchdog()
+
+    def ensure_move_watchdog(self) -> None:
+        """Spawn the move-axis watchdog if it isn't already running. Idempotent —
+        the single deadman task (master plan §C-Risk-5)."""
+        if self._move_watchdog_task is None or self._move_watchdog_task.done():
+            self._move_watchdog_task = asyncio.create_task(self._move_watchdog())
+
+    async def _move_watchdog(self) -> None:
+        """Dedicated 250ms deadman, NOT the 2.0s status loop (which is far too
+        slow to bound uncommanded travel). If a non-zero manual move was issued
+        and no refresh/keepalive arrived within ``MOVE_DEADMAN_MS``, halt both
+        axes via ``tel.stop()`` (which zeroes MoveAxis) and clear the seen rates.
+        A dropped network mid-hold therefore auto-stops within ≤1.2s — worst case
+        ≤0.72° travel at the 0.6°/s touch cap."""
+        while True:
+            await asyncio.sleep(0.25)
+            if self.last_move_ts is None:
+                continue
+            moving = any(r != 0 for r in self._move_rates_seen.values())
+            if not moving:
+                continue
+            stale_ms = (time.monotonic() - self.last_move_ts) * 1000.0
+            if stale_ms <= MOVE_DEADMAN_MS:
+                continue
+            tel = self.devices.get("telescope")
+            if tel is None:
+                # No mount to halt — nothing can be moving. Disarm so a
+                # reconnect doesn't fire against stale state.
+                self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
+                self.last_move_ts = None
+                continue
+            # F-A3 (DURABLE HALT — the most dangerous fail-UNSAFE path): only
+            # disarm AFTER tel.stop() actually succeeds. On failure (the dropped
+            # keepalive that tripped the deadman is exactly the network condition
+            # that makes the stop HTTP call fail) leave the seen-rates non-zero
+            # and last_move_ts stale, so the next 250ms tick RETRIES the halt
+            # rather than silently giving up while an axis may still be driving.
+            try:
+                await tel.stop()              # zeroes both axes (alpaca/base)
+            except Exception as e:
+                bus.log("error",
+                        f"manual slew watchdog: auto-halt FAILED, retrying: {e}",
+                        "safety")
+                continue
+            # F-watchdog-disarm: stop succeeded — return to a clean disarmed
+            # state (zero rates AND clear last_move_ts) so the watchdog idles
+            # instead of being "correct by luck" on the next tick.
+            self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
+            self.last_move_ts = None
+            bus.log("warning",
+                    "manual slew watchdog: auto-halt (stale keepalive)", "safety")
 
     # --------------------------------------------------------------- profiles
 

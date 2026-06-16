@@ -23,9 +23,33 @@ class MemStorage {
     this.m.clear();
   }
 }
-const g = globalThis as unknown as { localStorage?: Storage };
+const g = globalThis as unknown as {
+  localStorage?: Storage;
+  document?: unknown;
+};
 if (typeof g.localStorage === "undefined") {
   g.localStorage = new MemStorage() as unknown as Storage;
+}
+
+// The store touches `document` at import time (applyTouchSizing on the root class +
+// applyBrightnessVars on the root style). Install a minimal stub so the module
+// loads under tsx/node where there is no DOM — mirrors the localStorage stub above.
+if (typeof g.document === "undefined") {
+  const classList = {
+    toggle(_c: string, _on?: boolean): void {},
+    add(_c: string): void {},
+    remove(_c: string): void {},
+    contains(_c: string): boolean {
+      return false;
+    },
+  };
+  const style = {
+    setProperty(_k: string, _v: string): void {},
+    getPropertyValue(_k: string): string {
+      return "";
+    },
+  };
+  g.document = { documentElement: { classList, style } };
 }
 
 // Import AFTER the stub is installed so the store's top-level loadPlan() succeeds.
@@ -329,6 +353,72 @@ test("monitor: setAutoMonitor persists to localStorage", () => {
   eq(useStore.getState().autoMonitor, true, "store updated");
   useStore.getState().setAutoMonitor(false);
   eq(localStorage.getItem("astrodeck-monitor-auto"), "0", "persisted off");
+});
+
+// ====================================================================
+// BATCH-3 (lane FIX-C) — safety/regression tests
+// ====================================================================
+
+// --------------------------------- F-B2: lockAvailable enabled from init
+// The screen-lock / TouchGuard feature is gated on `lockAvailable`. Its unblock
+// precondition (the reliability sequence-error render) shipped in Batch 1, so the
+// flag MUST initialize true — otherwise the lock UI is permanently inert and
+// setLocked(true)'s /api/mount/stop backstop can never fire from the lock control.
+test("F-B2: lockAvailable initializes true (screen-lock feature enabled)", () => {
+  eq(useStore.getState().lockAvailable, true, "lockAvailable true at init");
+});
+
+// --------------------------------- F-D1: pushConfirm resolves a stale pending false
+// Only one confirm can be live at a time. If a new confirm arrives while one is
+// pending, the stale one MUST resolve false (cancel) so its awaiter never hangs —
+// a leaked pending promise on a GOTO/abort guard would wedge that call site forever.
+test("F-D1: pushConfirm resolves the previous pending confirm false before replacing", async () => {
+  useStore.setState({ confirm: null });
+  const firstResolved: { value: boolean | "pending" } = { value: "pending" };
+  // First request — left pending (no user response).
+  const p1 = useStore.getState().pushConfirm({ title: "First" });
+  void p1.then((ok) => {
+    firstResolved.value = ok;
+  });
+  // Second request arrives before the first is answered.
+  const p2 = useStore.getState().pushConfirm({ title: "Second" });
+  void p2.then(() => {});
+  // Let the microtask for p1's resolution flush.
+  await Promise.resolve();
+  assert(firstResolved.value === false, "stale pending confirm resolved false");
+  // The live confirm is now the second request.
+  eq(useStore.getState().confirm?.title, "Second", "second confirm is live");
+  // Cleanup: answer the live one.
+  useStore.getState().resolveConfirm(true);
+  eq(await p2, true, "second confirm resolves on user response");
+});
+
+// --------------------------------- F-dimmer: store-owned dimmer single source
+// Day/night brightness lives in the store; setBrightness writes the ACTIVE mode's
+// value + persists; resetBrightness returns the active mode to 1.0. (CSS-var
+// application is exercised by the app at runtime; here we assert the state + the
+// persisted localStorage key, the parts the test harness can observe.)
+test("F-dimmer: setBrightness/resetBrightness write the active mode's slice + persist", () => {
+  // Day mode.
+  useStore.setState({ night: false });
+  useStore.getState().setBrightness(0.5);
+  eq(useStore.getState().brightDay, 0.5, "day brightness set");
+  eq(localStorage.getItem("astrodeck-bright-day"), "0.5", "day persisted");
+
+  // Clamp floor (0.08).
+  useStore.getState().setBrightness(0.01);
+  eq(useStore.getState().brightDay, 0.08, "clamped to floor 0.08");
+
+  // Night mode is a separate memory.
+  useStore.setState({ night: true });
+  useStore.getState().setBrightness(0.3);
+  eq(useStore.getState().brightNight, 0.3, "night brightness set");
+  eq(useStore.getState().brightDay, 0.08, "day memory untouched by night change");
+
+  // Reset hatch returns the ACTIVE mode to 1.0.
+  useStore.getState().resetBrightness();
+  eq(useStore.getState().brightNight, 1, "reset night → 1");
+  eq(localStorage.getItem("astrodeck-bright-night"), "1", "reset persisted");
 });
 
 // ---------------------------------------------------------------- report
