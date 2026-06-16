@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore } from "../store";
-import { Field, Panel, Stat, Toggle } from "../components/ui";
+import { Field, HoldButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
-import type { CatalogEntry, ExposureStep, Target } from "../types";
+import { HELP } from "../help";
+import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
+import { PreflightModal } from "../components/PreflightModal";
+import type { CatalogEntry, ExposureStep, SequencePlan, Target } from "../types";
 
 const DEFAULT_STEP: ExposureStep = {
   filter: null, exposure_s: 120, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light",
@@ -38,10 +41,43 @@ export default function SequenceView() {
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
   const setPlan = useStore((s) => s.setPlan);
+  // Pre-flight gate (F-P0.1): one shared verdict drives BOTH the strip and the
+  // Run button. `verdict==='blocked'` disables Run and routes it through the
+  // modal (Review) instead of starting. `force` is threaded into the start body
+  // for the accepted low-horizon path (FIX-A reads it server-side).
+  const { items: preflightItems, verdict } = usePreflight(plan);
+  // `force` is needed only when a low-horizon warning is being accepted at Run:
+  // the server's horizon guard would otherwise re-block (409) an accepted low run.
+  // Mirrors MountView.doGoto's `force: pf.verdict === 'low'` convention.
+  const forceLowHorizon = preflightItems.some(
+    (i) => i.id === "horizon" && i.status === "warn",
+  );
+  const [preflightOpen, setPreflightOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [recoverable, setRecoverable] =
     useState<{ name: string; frames_done: number; frames_total: number } | null>(null);
+
+  // Reversible deletes use instant-remove + a 5s undo affordance, NOT a hold (R28).
+  // Local to this view per touch §2.2 (no global store field required for v1).
+  const [pendingUndo, setPendingUndo] =
+    useState<{ label: string; prev: SequencePlan } | null>(null);
+  const undoTimer = useRef<number | null>(null);
+
+  // Remove `next` from the plan but stash the pre-delete plan so a 5s toast can
+  // restore it. A second delete supersedes the first (its snapshot is the latest).
+  const deleteWithUndo = (label: string, next: SequencePlan) => {
+    if (undoTimer.current != null) clearTimeout(undoTimer.current);
+    setPendingUndo({ label, prev: plan });
+    setPlan(next);
+    undoTimer.current = window.setTimeout(() => setPendingUndo(null), 5000);
+  };
+  const doUndo = () => {
+    if (undoTimer.current != null) { clearTimeout(undoTimer.current); undoTimer.current = null; }
+    if (pendingUndo) setPlan(pendingUndo.prev);
+    setPendingUndo(null);
+  };
+  useEffect(() => () => { if (undoTimer.current != null) clearTimeout(undoTimer.current); }, []);
 
   useEffect(() => {
     if (!search) { setResults([]); return; }
@@ -54,6 +90,14 @@ export default function SequenceView() {
 
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+  };
+
+  // Single writer of POST /api/sequence/start. `force` is threaded into the BODY
+  // (FIX-A makes the server read body.force) so an accepted low/below-horizon run
+  // isn't re-409'd. Closes the modal on success.
+  const startSequence = (force: boolean) => {
+    setPreflightOpen(false);
+    return act(() => api.post("/api/sequence/start", { ...plan, force }));
   };
 
   const running = sequence.state === "running" || sequence.state === "paused";
@@ -104,7 +148,7 @@ export default function SequenceView() {
   };
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
+    <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
         {/* -------------------------------- recover banner (no live panel) */}
         {recoverable && !showPanel && (
@@ -169,18 +213,46 @@ export default function SequenceView() {
             {/* Actions by state. Stop-type (Abort) is never disabled. */}
             <div className="flex flex-wrap gap-2 mt-3">
               {sequence.state === "running" && (
-                <button className="btn" onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
+                <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
               )}
               {sequence.state === "paused" && (
-                <button className="btn btn-accent" onClick={() => act(() => api.post("/api/sequence/resume"))}>Resume</button>
+                <button className="btn btn-accent tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/resume"))}>Resume</button>
               )}
               {running && (
-                <button className="btn btn-danger" onClick={() => act(() => api.post("/api/sequence/abort"))}>Abort</button>
+                // Abort stops an unattended multi-hour run — non-urgent destructive,
+                // so it's a hold-to-confirm (spec §1c). Motion stops (STOP/Halt) stay
+                // single-tap; Abort is not a motion stop.
+                <HoldButton label="Abort sequence" onConfirm={() => act(() => api.post("/api/sequence/abort"))}>
+                  {(bind) => (
+                    <button
+                      type="button"
+                      className="btn btn-danger tap min-h-[44px] relative overflow-hidden select-none"
+                      style={{ touchAction: "none" }}
+                      aria-label={bind["aria-label"]}
+                      onPointerDown={bind.onPointerDown}
+                      onPointerUp={bind.onPointerUp}
+                      onPointerCancel={bind.onPointerUp}
+                      onKeyDown={bind.onKeyDown}
+                      onKeyUp={bind.onKeyUp}
+                    >
+                      <span
+                        aria-hidden
+                        className="absolute inset-y-0 left-0 confirmhold-fill pointer-events-none"
+                        style={{
+                          width: `${Math.round(bind.progress * 100)}%`,
+                          background: "color-mix(in srgb, var(--text) 70%, transparent)",
+                          transition: "width 80ms linear",
+                        }}
+                      />
+                      <span className="relative">{bind.armed ? bind.hintLabel : "Abort"}</span>
+                    </button>
+                  )}
+                </HoldButton>
               )}
               {failed && (
                 <>
                   <button className="btn btn-accent" disabled={totalFrames === 0}
-                    onClick={() => act(() => api.post("/api/sequence/start", plan))}>
+                    onClick={() => setPreflightOpen(true)}>
                     <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Re-run plan
                   </button>
                   <button className="btn" onClick={() => {
@@ -247,13 +319,23 @@ export default function SequenceView() {
                     <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })} /> Cal
                   </label>
                   <div className="flex-1" />
-                  <button className="btn !py-0.5 !px-2 !text-[10px]" disabled={running}
+                  <button className="btn tap min-h-[44px] !px-3 !text-[11px]" disabled={running}
                     onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP }] })}>
                     + step
                   </button>
-                  <button className="btn btn-danger !py-0.5 !px-2 !text-[10px]" disabled={running}
-                    onClick={() => setPlan({ ...plan, targets: plan.targets.filter((_, i) => i !== ti) })}>
-                    ✕
+                  {/* Target delete: trash-style affordance with a ring (R28), >=44px,
+                      instant + 5s undo (reversible -> NOT a hold). */}
+                  <button
+                    className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
+                      border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
+                    disabled={running}
+                    aria-label={`Delete target ${t.name}`}
+                    title={`Delete ${t.name}`}
+                    onClick={() => deleteWithUndo(
+                      `Deleted ${t.name}`,
+                      { ...plan, targets: plan.targets.filter((_, i) => i !== ti) },
+                    )}>
+                    <Icon name="x" size={18} />
                   </button>
                 </div>
                 <div className="mt-2 flex flex-col gap-1.5">
@@ -278,9 +360,19 @@ export default function SequenceView() {
                         <span className="mono text-[10px] text-dim whitespace-nowrap">
                           {((s.count * s.exposure_s) / 60).toFixed(0)}m
                         </span>
-                        <button className="text-dim hover:text-bad text-xs cursor-pointer" disabled={running}
-                          onClick={() => patchTarget(ti, { steps: t.steps.filter((_, i) => i !== si) })}>
-                          ✕
+                        {/* Step remove: >=44px minus-icon, instant + 5s undo (R28). */}
+                        <button
+                          className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
+                            text-dim hover:text-bad disabled:opacity-40"
+                          disabled={running}
+                          aria-label="Remove step"
+                          title="Remove step"
+                          onClick={() => deleteWithUndo(
+                            "Removed step",
+                            { ...plan, targets: plan.targets.map((tt, i) =>
+                              i === ti ? { ...tt, steps: tt.steps.filter((_, j) => j !== si) } : tt) },
+                          )}>
+                          <span aria-hidden className="text-xl leading-none">−</span>
                         </button>
                       </div>
                     </div>
@@ -315,9 +407,17 @@ export default function SequenceView() {
               <Toggle checked={plan.guide} onChange={(v) => setPlan({ ...plan, guide: v })} />
             </label>
             <label className="flex items-center justify-between gap-2">
-              <span className="text-dim">dither every N frames</span>
+              <span className="text-dim inline-flex items-center gap-1">
+                dither every N frames
+                <InfoDot content={HELP.dither} label="About dither" />
+              </span>
               <input className="field !w-16 !py-1" value={plan.dither_every}
                 onChange={(e) => setPlan({ ...plan, dither_every: Math.max(0, Math.round(num(e.target.value, plan.dither_every))) })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim">dither size (pixels)</span>
+              <input className="field !w-16 !py-1" value={plan.dither_pixels}
+                onChange={(e) => setPlan({ ...plan, dither_pixels: Math.max(0, Math.round(num(e.target.value, plan.dither_pixels))) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">refocus every N frames</span>
@@ -330,11 +430,17 @@ export default function SequenceView() {
                 onChange={(e) => setPlan({ ...plan, refocus_on_temp_delta_c: Math.max(0, num(e.target.value, plan.refocus_on_temp_delta_c)) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
-              <span className="text-dim">apply filter focus offsets</span>
+              <span className="text-dim inline-flex items-center gap-1">
+                apply filter focus offsets
+                <InfoDot content={HELP.filterOffset} label="About filter focus offsets" />
+              </span>
               <Toggle checked={plan.apply_filter_offsets} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })} />
             </label>
             <label className="flex items-center justify-between gap-2">
-              <span className="text-dim">meridian flip (German mount)</span>
+              <span className="text-dim inline-flex items-center gap-1">
+                meridian flip (German mount)
+                <InfoDot content={HELP.meridianFlip} label="About meridian flip" />
+              </span>
               <Toggle checked={plan.meridian_flip} onChange={(v) => setPlan({ ...plan, meridian_flip: v })} />
             </label>
             <label className="flex items-center justify-between gap-2">
@@ -348,7 +454,10 @@ export default function SequenceView() {
                 onChange={(e) => setPlan({ ...plan, cool_to: e.target.value === "" ? null : num(e.target.value, plan.cool_to ?? -10) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
-              <span className="text-dim">flag HFR spikes (× median, 0=off)</span>
+              <span className="text-dim inline-flex items-center gap-1">
+                flag HFR spikes (× median, 0=off)
+                <InfoDot content={HELP.hfrReject} label="About HFR spike rejection" />
+              </span>
               <input className="field !w-16 !py-1" value={plan.hfr_reject_factor}
                 onChange={(e) => setPlan({ ...plan, hfr_reject_factor: Math.max(0, num(e.target.value, plan.hfr_reject_factor)) })} />
             </label>
@@ -363,14 +472,50 @@ export default function SequenceView() {
           </div>
         </Panel>
 
-        <button className="btn btn-accent !py-3 !text-sm" disabled={running || totalFrames === 0}
-          onClick={() => act(() => api.post("/api/sequence/start", plan))}>
+        {/* Pre-flight gate (F-P0.1): the strip is always visible once the plan has
+            frames; Review opens the modal. Run is disabled when blocked and only
+            ever starts via the modal's onProceed (which threads `force`). */}
+        <PreflightStrip plan={plan} onReview={() => setPreflightOpen(true)} />
+
+        <button className="btn btn-accent !py-3 !text-sm"
+          disabled={running || totalFrames === 0 || verdict === "blocked"}
+          onClick={() => setPreflightOpen(true)}>
           ≡ Run Sequence
         </button>
         {totalFrames === 0 && (
           <p className="text-[11px] text-dim text-center">add targets and steps first</p>
         )}
+        {totalFrames > 0 && verdict === "blocked" && (
+          <p className="text-[11px] text-bad text-center">fix the blocked items above to run</p>
+        )}
       </div>
+
+      {/* Undo affordance for reversible deletes (R28). Fixed, deterministic,
+          auto-dismisses after 5s; tapping Undo restores the pre-delete plan. */}
+      {pendingUndo && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 panel
+            flex items-center gap-3 px-4 py-2 shadow-lg"
+        >
+          <span className="text-sm text-ink">{pendingUndo.label}</span>
+          <button className="btn btn-accent tap min-h-[44px] !px-4" onClick={doUndo}>
+            Undo
+          </button>
+        </div>
+      )}
+
+      {/* Pre-flight gate (F-P0.1). onProceed threads `force` into the start body.
+          Used by both the Run and Re-run paths; `preflightResume` only relaxes the
+          strip wording downstream — the modal's blocker gate stays fail-safe. */}
+      <PreflightModal
+        plan={plan}
+        open={preflightOpen}
+        force={forceLowHorizon}
+        onClose={() => setPreflightOpen(false)}
+        onProceed={(force) => { void startSequence(force); }}
+      />
     </div>
   );
 }

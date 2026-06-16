@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import type { ReactNode } from "react";
 import type {
   AppConfig,
   FocusEvent,
@@ -16,6 +17,7 @@ import type {
   StretchParams,
   Toast,
   ToastLevel,
+  TouchSettings,
   ViewName,
   Viewport,
   WsPhase,
@@ -23,6 +25,7 @@ import type {
 import { deriveNinaHealth } from "./lib/health";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
+import { haptics } from "./lib/haptics";
 import { api } from "./api";
 
 // Re-export ViewName from its canonical home (types.ts) so existing imports
@@ -51,7 +54,7 @@ export type EnqueueInput = {
 // --------------------------------------------------------------- confirm host
 export interface ConfirmRequest {
   title: string;
-  body?: string;
+  body?: ReactNode; // ConfirmHost renders {req.body} as-is — rich bodies survive (F-D1)
   confirmLabel?: string;
   cancelLabel?: string;
   tone?: "warn" | "danger";
@@ -190,6 +193,77 @@ type RunBanner = { active: boolean; plan_name?: string; percent?: number } | nul
 // states the engine sits in when NOT actively running (rising-edge detection).
 const RUN_RISING_FROM = new Set(["idle", "complete", "aborted", "error", "nina_native"]);
 
+// ------------------------------------------------------------------- touch state
+// Touch-ergonomics slice (touch spec §2.2). localStorage keys per master §A.2:
+//   astrodeck-haptics / -touch-size / -rev-ra / -rev-dec / -autolock.
+// `locked` is NEVER persisted (a lock must not survive reload). `lockAvailable`
+// is TRUE from init: its unblock precondition (the reliability sequence-error
+// render — TouchGuard reads sequence.state==='error', StatusChip renders it)
+// shipped in Batch 1, so the screen-lock feature is enabled (gate, R11).
+const HAPTICS_KEY = "astrodeck-haptics";
+const TOUCH_SIZE_KEY = "astrodeck-touch-size";
+const REV_RA_KEY = "astrodeck-rev-ra";
+const REV_DEC_KEY = "astrodeck-rev-dec";
+const AUTOLOCK_KEY = "astrodeck-autolock";
+
+function loadTouch(): TouchSettings {
+  let hapticsEnabled = true;
+  let touchSizing: TouchSettings["touchSizing"] = "auto";
+  let reverseRa = false;
+  let reverseDec = false;
+  let autoLockMs: TouchSettings["autoLockMs"] = null;
+  try {
+    hapticsEnabled = localStorage.getItem(HAPTICS_KEY) !== "0";
+    const sz = localStorage.getItem(TOUCH_SIZE_KEY);
+    if (sz === "auto" || sz === "on" || sz === "off") touchSizing = sz;
+    reverseRa = localStorage.getItem(REV_RA_KEY) === "1";
+    reverseDec = localStorage.getItem(REV_DEC_KEY) === "1";
+    const al = Number(localStorage.getItem(AUTOLOCK_KEY));
+    autoLockMs = al === 180000 || al === 300000 ? al : null;
+  } catch {
+    /* unavailable — keep safe defaults */
+  }
+  return { hapticsEnabled, touchSizing, reverseRa, reverseDec, autoLockMs };
+}
+
+/** Reflect touchSizing onto the <html> class so the coarse-pointer size bumps can
+ *  be forced on/off regardless of the inferred pointer (touch §3, R17). */
+function applyTouchSizing(sizing: TouchSettings["touchSizing"]): void {
+  const c = document.documentElement.classList;
+  c.toggle("touch-ui", sizing === "on");
+  c.toggle("no-touch-ui", sizing === "off");
+}
+
+// ----------------------------------------------------------------- dimmer state
+// Global brightness dimmer — STORE-OWNED single source (F-dimmer). Day and night
+// each remember their own brightness; toggling mode swaps to the other memory
+// (design-system §7.5). The store applies the CSS vars (`--screen-brightness` +
+// `--scrim-opacity`) on every change and at init, so App and HeaderControls both
+// just subscribe to the slice — no MutationObserver/getComputedStyle round-trip.
+// Mirrors index.html's pre-paint script so first paint never flashes.
+const BRIGHT_DAY_KEY = "astrodeck-bright-day";
+const BRIGHT_NIGHT_KEY = "astrodeck-bright-night";
+
+const clampBright = (v: number): number => Math.min(1, Math.max(0.08, v));
+
+function readBright(key: string, def: number): number {
+  try {
+    const n = Number(localStorage.getItem(key));
+    return Number.isFinite(n) && n > 0 ? clampBright(n) : def;
+  } catch {
+    return def;
+  }
+}
+
+/** Write the dimmer CSS vars onto <html>. Scrim deepens past what filter:brightness
+ *  can do (OLED black-pixel safe). The single writer of these vars (DIMMER CONTRACT). */
+function applyBrightnessVars(v: number): void {
+  const b = clampBright(v);
+  const d = document.documentElement;
+  d.style.setProperty("--screen-brightness", String(b));
+  d.style.setProperty("--scrim-opacity", String(Math.min(0.92, Math.max(0, 1 - b * 1.05))));
+}
+
 interface AppState {
   // --- core view/session ---
   view: ViewName;
@@ -242,6 +316,18 @@ interface AppState {
   autoMonitor: boolean; // localStorage pref, default false (auto-SELECT only)
   runBanner: RunBanner; // persistent "Sequence running — open Live" banner
 
+  // --- touch ergonomics (Batch-3 3B; master §A.2 / touch §2.2) ---
+  locked: boolean; // touch-guard engaged; NEVER persisted
+  lockAvailable: boolean; // true: reliability sequence-error render shipped (R11)
+  monitorAwake: boolean; // explicit wake-lock-as-monitor toggle (decoupled from locked, R13)
+  touch: TouchSettings; // haptics / sizing / reverse-axis / auto-lock prefs
+
+  // --- dimmer (Batch-3 F-dimmer; design-system §7.5) ---
+  brightDay: number; // remembered day brightness (0.08..1), persisted
+  brightNight: number; // remembered night brightness (0.08..1), persisted
+  // The ACTIVE brightness is derived from `night` via useBrightness(); the store
+  // applies the CSS vars whenever either value or `night` changes (single source).
+
   // --- backward-compat shims ---
   wsConnected: boolean; // = wsPhase === "up"
 
@@ -284,6 +370,15 @@ interface AppState {
   setAutoMonitor: (v: boolean) => void;
   dismissRunBanner: () => void;
 
+  // --- actions: touch ---
+  setLocked: (v: boolean) => void; // setting true MUST stop any active slew (R11/§4.6)
+  setMonitorAwake: (v: boolean) => void;
+  setTouch: (patch: Partial<TouchSettings>) => void; // persists each key + mirrors side effects
+
+  // --- actions: dimmer ---
+  setBrightness: (v: number) => void; // sets ACTIVE mode's brightness, persists, applies CSS vars
+  resetBrightness: () => void; // active mode → 1.0 (the always-reachable escape hatch)
+
   // --- actions: compat shims ---
   setWsConnected: (ok: boolean) => void;
   showToast: (level: string, message: string) => void;
@@ -295,6 +390,11 @@ const LINK_DOWN_ALERT_MS = 30000;
 
 // Hydrate the persisted preview toggles once at module load (mirrors loadPlan()).
 const PREVIEW_PERSISTED = loadPreviewPersisted();
+
+// Hydrate the touch prefs once at module load; mirror haptics.enabled + the root
+// touch-sizing class so first paint matches the persisted prefs (touch §2.2).
+const TOUCH_INIT = loadTouch();
+haptics.enabled = TOUCH_INIT.hapticsEnabled;
 
 export const useStore = create<AppState>((set, get) => ({
   // --- core ---
@@ -348,6 +448,16 @@ export const useStore = create<AppState>((set, get) => ({
   autoMonitor: localStorage.getItem(AUTO_MONITOR_KEY) === "1",
   runBanner: null,
 
+  // --- touch ---
+  locked: false, // never persisted
+  lockAvailable: true, // reliability sequence-error render shipped (R11) → lock enabled
+  monitorAwake: false,
+  touch: TOUCH_INIT,
+
+  // --- dimmer (F-dimmer) ---
+  brightDay: readBright(BRIGHT_DAY_KEY, 1),
+  brightNight: readBright(BRIGHT_NIGHT_KEY, 0.45),
+
   // --- compat ---
   wsConnected: false,
 
@@ -359,6 +469,9 @@ export const useStore = create<AppState>((set, get) => ({
     localStorage.setItem("astrodeck-night", night ? "1" : "0");
     document.documentElement.classList.toggle("night", night);
     set({ night });
+    // Re-assert the now-active mode's remembered brightness (F-dimmer: the store is
+    // the single writer of the dimmer vars — no MutationObserver round-trip).
+    applyBrightnessVars(night ? get().brightNight : get().brightDay);
   },
 
   // --------------------------------------------------------- config/plan/site
@@ -487,8 +600,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   // -------------------------------------------------------------- confirm host
+  // Only one confirm can be live at a time. If a request is already pending when a
+  // new one arrives, resolve the stale one `false` (cancel) BEFORE replacing it so
+  // its awaiter never hangs — a leaked pending promise on a GOTO/abort guard would
+  // wedge that call site forever (F-D1).
   pushConfirm: (req) =>
     new Promise<boolean>((resolve) => {
+      const prev = get().confirm;
+      if (prev) prev.resolve(false);
       set({ confirm: { ...req, resolve } });
     }),
 
@@ -535,6 +654,71 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   dismissRunBanner: () => set({ runBanner: null }),
+
+  // -------------------------------------------------------------------- touch
+  // Engaging the lock MUST stop any active slew (R11/§4.6). The SlewPad's own
+  // controller also forceStops on the `locked` flag, but we POST rate 0 here as
+  // an authoritative backstop so locking halts the mount even with no pad mounted.
+  setLocked: (v) => {
+    if (v && !get().locked) {
+      void api.post("/api/mount/stop").catch(() => {
+        /* best-effort; the SlewPad controller + server deadman are the backstops */
+      });
+    }
+    set({ locked: v });
+  },
+
+  setMonitorAwake: (v) => set({ monitorAwake: v }),
+
+  // Persist each changed key, mirror hapticsEnabled to the haptics singleton, and
+  // reflect touchSizing onto the root class (touch §2.2 / §3, R17).
+  setTouch: (patch) => {
+    const touch = { ...get().touch, ...patch };
+    try {
+      if (patch.hapticsEnabled !== undefined)
+        localStorage.setItem(HAPTICS_KEY, patch.hapticsEnabled ? "1" : "0");
+      if (patch.touchSizing !== undefined) localStorage.setItem(TOUCH_SIZE_KEY, patch.touchSizing);
+      if (patch.reverseRa !== undefined)
+        localStorage.setItem(REV_RA_KEY, patch.reverseRa ? "1" : "0");
+      if (patch.reverseDec !== undefined)
+        localStorage.setItem(REV_DEC_KEY, patch.reverseDec ? "1" : "0");
+      if (patch.autoLockMs !== undefined)
+        localStorage.setItem(AUTOLOCK_KEY, patch.autoLockMs ? String(patch.autoLockMs) : "0");
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+    if (patch.hapticsEnabled !== undefined) haptics.enabled = patch.hapticsEnabled;
+    if (patch.touchSizing !== undefined) applyTouchSizing(patch.touchSizing);
+    set({ touch });
+  },
+
+  // -------------------------------------------------------------------- dimmer
+  // Single source for the brightness dimmer (F-dimmer). Writes the ACTIVE mode's
+  // remembered value + its localStorage key, then applies the CSS vars itself —
+  // App + HeaderControls just subscribe to the slice via useBrightness().
+  setBrightness: (v) => {
+    const b = clampBright(v);
+    const isNight = get().night;
+    try {
+      localStorage.setItem(isNight ? BRIGHT_NIGHT_KEY : BRIGHT_DAY_KEY, String(b));
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+    applyBrightnessVars(b);
+    set(isNight ? { brightNight: b } : { brightDay: b });
+  },
+
+  // Always-reachable escape hatch (§7.2): reset the ACTIVE mode to 1.0.
+  resetBrightness: () => {
+    const isNight = get().night;
+    try {
+      localStorage.setItem(isNight ? BRIGHT_NIGHT_KEY : BRIGHT_DAY_KEY, "1");
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+    applyBrightnessVars(1);
+    set(isNight ? { brightNight: 1 } : { brightDay: 1 });
+  },
 
   // -------------------------------------------------------------- compat shims
   setWsConnected: (ok) => get().setWsPhase(ok ? "up" : "down"),
@@ -670,6 +854,19 @@ if (localStorage.getItem("astrodeck-night") === "1") {
   document.documentElement.classList.add("night");
 }
 
+// Reflect the persisted touch-sizing override onto the root class at load so the
+// coarse-pointer size bumps honor an explicit on/off before first interaction.
+applyTouchSizing(TOUCH_INIT.touchSizing);
+
+// Apply the active mode's remembered brightness at load (F-dimmer single source).
+// index.html's pre-paint script already set these so this is a no-op on first paint
+// but guarantees the store and CSS vars agree if the pre-paint script is absent.
+applyBrightnessVars(
+  (localStorage.getItem("astrodeck-night") === "1"
+    ? readBright(BRIGHT_NIGHT_KEY, 0.45)
+    : readBright(BRIGHT_DAY_KEY, 1)),
+);
+
 // ============================================================================
 // Narrow selector hooks (reliability §13). Subscribing to a single slice means a
 // guide tick (which mutates only `guide`) re-renders only guide consumers, not
@@ -742,3 +939,11 @@ export const useLiveness = () =>
   useStore(useShallow((s) => ({ frame: s.lastFrameAtMs, guide: s.lastGuideAtMs })));
 export const useRunBanner = () => useStore(useShallow((s) => s.runBanner));
 export const useAutoMonitor = () => useStore((s) => s.autoMonitor);
+
+// ============================================================================
+// Dimmer narrow hook (F-dimmer). Returns the ACTIVE mode's brightness — the store
+// is the single writer of the CSS vars, so consumers (App reset hatch + Header
+// steppers/slider) just read this and call setBrightness/resetBrightness.
+// ============================================================================
+export const useBrightness = (): number =>
+  useStore((s) => (s.night ? s.brightNight : s.brightDay));

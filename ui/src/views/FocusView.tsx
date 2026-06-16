@@ -20,6 +20,7 @@ import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict } from "../components/preview/FocusVerdict";
 import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Panel, Stat } from "../components/ui";
+import { HELP } from "../help";
 
 export default function FocusView() {
   const status = useStatus();
@@ -63,7 +64,7 @@ export default function FocusView() {
   const moveTo = (p: number) => act(() => api.post("/api/focuser/move", { position: Math.round(p) }));
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+    <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
         {/* live preview so manual focus is not blind (spec §10) */}
         <Panel title="Live Preview" right={<FocusVerdict preview={shown} prev={prevFrame} hfrGood={hfrGood} hfrWarn={hfrWarn} />}>
@@ -117,7 +118,7 @@ export default function FocusView() {
           </div>
           <div className="grid grid-cols-3 gap-2 mb-3">
             {[-1000, -100, -10, 10, 100, 1000].map((d) => (
-              <button key={d} className="btn mono !normal-case" disabled={!foc || running}
+              <button key={d} className="btn tap min-h-[44px] mono !normal-case" disabled={!foc || running}
                 onClick={() => moveTo(pos + d)}>
                 {d > 0 ? `+${d}` : d}
               </button>
@@ -128,9 +129,10 @@ export default function FocusView() {
               <input className="field" placeholder={String(pos)} value={absTarget}
                 onChange={(e) => setAbsTarget(e.target.value)} />
             </Field>
-            <button className="btn" disabled={!foc || !absTarget || running}
+            <button className="btn tap min-h-[44px]" disabled={!foc || !absTarget || running}
               onClick={() => moveTo(Number(absTarget))}>Go</button>
-            <button className="btn btn-danger"
+            {/* Halt is urgent motion-stop -> stays 1-tap (R9). */}
+            <button className="btn btn-danger tap min-h-[44px]"
               onClick={() => act(() => api.post("/api/focuser/halt"))}>Halt</button>
           </div>
         </Panel>
@@ -140,11 +142,11 @@ export default function FocusView() {
             <Field label="Exposure (s)">
               <input className="field" value={afExposure} onChange={(e) => setAfExposure(e.target.value)} />
             </Field>
-            <Field label="Step size">
+            <Field label="Step size" hint={HELP.stepSize}>
               <input className="field" value={afStep} onChange={(e) => setAfStep(e.target.value)} />
             </Field>
           </div>
-          <button className="btn btn-accent w-full" disabled={!foc || running}
+          <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!foc || running}
             onClick={() => act(() => api.post("/api/focuser/autofocus", {
               exposure_s: Number(afExposure) || 2,
               step: Number(afStep) || 350,

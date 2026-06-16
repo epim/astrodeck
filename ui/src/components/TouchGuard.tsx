@@ -1,0 +1,381 @@
+// TouchGuard.tsx — monitor-safe screen lock (touch spec §8, R11/R12/R13).
+//
+// NOT a translucent scrim (the draft's wash could hide the one alert you must
+// see). This is a full-viewport INPUT BLOCKER with a SOLID `bg-panel` status chip
+// (full contrast, deterministic) carrying the live readout. Critical-alert
+// passthrough is GATED: while `lockAvailable` is false (reliability's sequence-
+// error render not yet shipped) the lock simply does not exist, so it can never
+// mask an alert. The Lock control elsewhere is disabled-with-tooltip until then.
+//
+// Behaviors:
+//   - rendered once at App root with a NARROW selector (useLocked) — no widening.
+//   - slide-to-unlock (~60% of a 200px track), NOT an 800ms cold-glove hold (R12).
+//   - auto-lock: off / 3min / 5min (1-min removed — R12); never within 30s of a
+//     manual control interaction; a dismissible "locking in 5s" countdown precedes
+//     engage (its own element, NOT the error-toast slot).
+//   - setLocked(true) forceStops the slew (store does it; we also fire on engage).
+//   - WakeLock is NOT coupled here (R13) — locking lets the screen sleep.
+//   - the ONE animation kept in night mode is the safety alert pulse (R22).
+//
+// `monitorAwake` (the explicit wake-as-monitor toggle) lives in the More sheet;
+// this component only handles the lock overlay + the auto-lock idle timer.
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { PointerEvent as RPointerEvent, KeyboardEvent as RKeyboardEvent } from "react";
+import { api } from "../api";
+import { useStore } from "../store";
+import { Icon } from "./icons";
+import { haptics } from "../lib/haptics";
+import {
+  useLocked,
+  useLockAvailable,
+  useTouchSettings,
+  useSetLocked,
+} from "../lib/touchStore";
+
+const SLIDE_TRACK_PX = 200;
+const SLIDE_THRESHOLD = 0.6; // 60% of the track
+const MANUAL_GRACE_MS = 30000; // never auto-lock within 30s of an interaction (R12)
+const COUNTDOWN_MS = 5000; // dismissible "locking in 5s" pre-engage
+
+// ----------------------------------------------------------------- status chip
+function StatusChip({ alert }: { alert: boolean }) {
+  // Narrow selectors so the chip re-renders on telemetry but the rest of the app
+  // (already input-blocked) doesn't care.
+  const mount = useStore((s) => s.status?.mount ?? null);
+  const guider = useStore((s) => s.status?.guider ?? null);
+  const seq = useStore((s) => s.sequence);
+  const camTemp = useStore((s) => s.status?.camera?.temperature ?? null);
+
+  const state = mount
+    ? mount.parked
+      ? "PARKED"
+      : mount.slewing
+        ? "SLEWING"
+        : mount.tracking
+          ? "TRACKING"
+          : "IDLE"
+    : "—";
+
+  return (
+    <div
+      className={`panel bg-panel px-4 py-3 mono text-sm text-ink flex flex-col gap-1.5 min-w-[260px]
+        ${alert ? "border-bad alert-pulse" : ""}`}
+    >
+      {alert && (
+        <div className="flex items-center gap-2 text-bad font-display tracking-wider">
+          <Icon name="alert" size={16} /> SEQUENCE ERROR
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-6">
+        <span className="text-dim text-xs">STATE</span>
+        <span className={mount?.tracking ? "text-good" : "text-warn"}>{state}</span>
+      </div>
+      {mount && (
+        <>
+          <div className="flex items-center justify-between gap-6">
+            <span className="text-dim text-xs">RA / DEC</span>
+            <span>
+              {mount.ra_str} {mount.dec_str}
+            </span>
+          </div>
+        </>
+      )}
+      {guider?.guiding && (
+        <div className="flex items-center justify-between gap-6">
+          <span className="text-dim text-xs">RMS</span>
+          <span className="text-good">{guider.rms_total.toFixed(2)}&quot;</span>
+        </div>
+      )}
+      {seq.progress && (
+        <div className="flex items-center justify-between gap-6">
+          <span className="text-dim text-xs">SEQ</span>
+          <span>
+            {seq.progress.frames_done}/{seq.progress.frames_total}
+          </span>
+        </div>
+      )}
+      {camTemp != null && (
+        <div className="flex items-center justify-between gap-6">
+          <span className="text-dim text-xs">SENSOR</span>
+          <span>{camTemp.toFixed(1)}°C</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------- slide unlock
+// Pointer users slide the handle (~60% of the track). Keyboard / switch / AT users
+// get an explicit focusable Unlock <button> beside the track (F-A6) — a single
+// activation unlocks (unlocking is non-destructive). The slide is now a pointer
+// affordance only; the false role="slider" (no keyboard model) is GONE (F-A6).
+function SlideToUnlock({
+  onUnlock,
+  buttonRef,
+}: {
+  onUnlock: () => void;
+  buttonRef?: (el: HTMLButtonElement | null) => void;
+}) {
+  const [pct, setPct] = useState(0);
+  const startX = useRef<number | null>(null);
+  // F-A5: bind the slide to ONE pointer; ignore any other pointer's move/up/cancel.
+  const slidePointerId = useRef<number | null>(null);
+
+  const reset = () => {
+    setPct(0);
+    startX.current = null;
+    slidePointerId.current = null;
+  };
+
+  const onDown = (e: RPointerEvent) => {
+    if (slidePointerId.current != null) return; // a slide already owns the handle
+    slidePointerId.current = e.pointerId;
+    startX.current = e.clientX;
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* ok */
+    }
+  };
+  const onMove = (e: RPointerEvent) => {
+    if (startX.current == null || slidePointerId.current !== e.pointerId) return;
+    const dx = e.clientX - startX.current;
+    setPct(Math.max(0, Math.min(1, dx / SLIDE_TRACK_PX)));
+  };
+  // A real, completed slide gesture: only here do we evaluate the threshold.
+  const onUp = (e: RPointerEvent) => {
+    if (slidePointerId.current !== e.pointerId) return;
+    const reached = pct >= SLIDE_THRESHOLD;
+    reset();
+    if (reached) onUnlock();
+  };
+  // F-A5 / S10: pointercancel is an OS-RECLAIMED gesture (scroll / palm-reject /
+  // backgrounding), NOT a deliberate unlock. It must reset state WITHOUT ever
+  // evaluating the threshold — an interrupted slide at pct≥0.6 must NOT unlock the
+  // safety lock guarding live mount motion.
+  const onCancel = (e: RPointerEvent) => {
+    if (slidePointerId.current !== e.pointerId) return;
+    reset();
+  };
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div
+        className="relative h-12 rounded-full border border-line2 bg-raise overflow-hidden select-none"
+        style={{ width: SLIDE_TRACK_PX, touchAction: "none" }}
+        aria-hidden /* pointer affordance only; the Unlock button below is the a11y path */
+      >
+        <div
+          className="absolute inset-y-0 left-0 bg-accent/20"
+          style={{ width: `${pct * 100}%` }}
+        />
+        <span className="absolute inset-0 flex items-center justify-center text-[11px] tracking-[0.25em] text-dim pointer-events-none font-display">
+          SLIDE TO UNLOCK
+        </span>
+        <button
+          type="button"
+          tabIndex={-1} /* keyboard reaches the explicit Unlock button below */
+          onPointerDown={onDown}
+          onPointerMove={onMove}
+          onPointerUp={onUp}
+          onPointerCancel={onCancel}
+          onLostPointerCapture={onCancel}
+          className="absolute top-1 bottom-1 left-1 aspect-square rounded-full bg-accent
+            flex items-center justify-center text-black/90 cursor-grab active:cursor-grabbing"
+          style={{ transform: `translateX(${pct * (SLIDE_TRACK_PX - 48)}px)` }}
+        >
+          <Icon name="unlock" size={18} className="!text-black/90" />
+        </button>
+      </div>
+      {/* F-A6: keyboard-operable unlock — focusable, single activation, non-destructive. */}
+      <button
+        type="button"
+        ref={buttonRef}
+        onClick={onUnlock}
+        className="btn tap min-h-[44px] px-5 inline-flex items-center gap-2 font-display tracking-wider"
+      >
+        <Icon name="unlock" size={16} /> UNLOCK
+      </button>
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------- TouchGuard
+export default function TouchGuard() {
+  const locked = useLocked();
+  const lockAvailable = useLockAvailable();
+  const setLocked = useSetLocked();
+  const { autoLockMs } = useTouchSettings();
+  const seqError = useStore((s) => s.sequence.state === "error");
+
+  // --- auto-lock idle timer (R12) ----------------------------------------------
+  // Watches pointerdown/keydown; never engages within MANUAL_GRACE_MS of one. A
+  // dismissible countdown precedes the actual lock.
+  const [countdown, setCountdown] = useState(false);
+  const lastInteractRef = useRef(Date.now());
+  const idleTimer = useRef<number | null>(null);
+  const countdownTimer = useRef<number | null>(null);
+
+  const setLockedRef = useRef(setLocked);
+  setLockedRef.current = setLocked;
+  const lockNow = useCallback(() => {
+    haptics.warn();
+    setLockedRef.current(true); // store forceStops the slew; overlay gates on `locked`
+    setCountdown(false);
+  }, []);
+
+  useEffect(() => {
+    // disabled when no auto-lock configured, gate not available, or already locked.
+    if (!autoLockMs || !lockAvailable || locked) {
+      setCountdown(false);
+      return;
+    }
+    const bump = () => {
+      lastInteractRef.current = Date.now();
+      setCountdown(false);
+      if (countdownTimer.current != null) {
+        clearTimeout(countdownTimer.current);
+        countdownTimer.current = null;
+      }
+    };
+    window.addEventListener("pointerdown", bump);
+    window.addEventListener("keydown", bump);
+
+    const check = () => {
+      const idle = Date.now() - lastInteractRef.current;
+      // require the full grace AND the configured idle window before counting down.
+      if (idle >= Math.max(autoLockMs, MANUAL_GRACE_MS) && !countdown) {
+        setCountdown(true);
+        countdownTimer.current = window.setTimeout(lockNow, COUNTDOWN_MS);
+      }
+    };
+    idleTimer.current = window.setInterval(check, 1000);
+
+    return () => {
+      window.removeEventListener("pointerdown", bump);
+      window.removeEventListener("keydown", bump);
+      if (idleTimer.current != null) clearInterval(idleTimer.current);
+      if (countdownTimer.current != null) clearTimeout(countdownTimer.current);
+    };
+  }, [autoLockMs, lockAvailable, locked, countdown, lockNow]);
+
+  const cancelCountdown = () => {
+    setCountdown(false);
+    lastInteractRef.current = Date.now();
+    if (countdownTimer.current != null) {
+      clearTimeout(countdownTimer.current);
+      countdownTimer.current = null;
+    }
+  };
+
+  // The pre-engage "locking in 5s" affordance (its own element, NOT the toast slot).
+  const countdownEl =
+    countdown && !locked ? (
+      <div
+        className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 panel bg-panel px-4 py-2 flex items-center gap-3 text-xs"
+        role="alert"
+        aria-live="assertive"
+      >
+        <span className="text-warn font-display tracking-wider">LOCKING SCREEN…</span>
+        <button
+          className="btn !py-1 !px-3 min-h-[44px]"
+          onClick={cancelCountdown}
+          ref={(el) => el?.focus()}
+        >
+          Keep awake
+        </button>
+      </div>
+    ) : null;
+
+  if (!locked) return countdownEl;
+
+  return <LockedOverlay seqError={seqError} onUnlock={() => setLocked(false)} />;
+}
+
+// ----------------------------------------------------------------- locked overlay
+// Split out so the focus-trap / ESC / initial-focus hooks (F-A6) only mount while
+// the lock is up. Full-viewport input blocker + opaque chip + keyboard-operable
+// unlock + an always-reachable emergency STOP (F-S9).
+function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: () => void }) {
+  const showToast = useStore((s) => s.showToast);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const unlockBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  // F-A6: set initial focus to the unlock control so a keyboard/switch user lands
+  // somewhere actionable the instant the lock engages.
+  useEffect(() => {
+    unlockBtnRef.current?.focus();
+  }, []);
+
+  // F-A6: ESC unlocks (non-destructive) + focus trap. Keeps Tab inside the overlay
+  // so a keyboard user can never tab out into the input-blocked app behind.
+  const onKeyDown = (e: RKeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onUnlock();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const root = overlayRef.current;
+    if (!root) return;
+    const focusables = Array.from(
+      root.querySelectorAll<HTMLElement>(
+        'button:not([tabindex="-1"]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter((el) => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && active === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  // F-S9: authoritative emergency stop — abort the sequence AND zero both axes.
+  const emergencyStop = () => {
+    haptics.stop();
+    api.post("/api/mount/stop").catch((err) => showToast("error", (err as Error).message));
+    api.post("/api/sequence/abort").catch((err) => showToast("error", (err as Error).message));
+  };
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 bg-bg/40"
+      style={{ pointerEvents: "auto" }}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Screen locked"
+      onKeyDown={onKeyDown}
+      // swallow every tap to the app beneath (input blocker — not a visual scrim)
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <div className="font-display tracking-[0.3em] text-dim text-sm flex items-center gap-2">
+        <Icon name="lock" size={16} /> SCREEN LOCKED
+      </div>
+      <StatusChip alert={seqError} />
+
+      {/* F-S9: always-visible emergency STOP — reachable WITHOUT completing the
+          unlock gesture. ≥56px, authoritative /api/mount/stop + /api/sequence/abort. */}
+      <button
+        type="button"
+        onClick={emergencyStop}
+        aria-label="Emergency stop all motion and abort sequence"
+        className="w-[260px] min-h-[56px] flex items-center justify-center gap-2
+          font-display tracking-[0.2em] text-[14px] text-black/90
+          bg-bad border border-bad active:translate-y-px"
+      >
+        <Icon name="stop" size={18} className="!text-black/90" />
+        EMERGENCY STOP
+      </button>
+
+      <SlideToUnlock onUnlock={onUnlock} buttonRef={(el) => (unlockBtnRef.current = el)} />
+    </div>
+  );
+}

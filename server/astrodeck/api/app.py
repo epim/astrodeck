@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -22,7 +23,7 @@ from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
-from ..hub import hub
+from ..hub import TOUCH_MAX_RATE_DEG_S, hub
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles
 from ..sequence import SequenceEngine, SequencePlan
@@ -113,7 +114,10 @@ class GotoBody(BaseModel):
 
 
 class MoveAxisBody(BaseModel):
-    axis: str
+    # F-S6 (safety-of-motion): constrain to the two real axes. A mistyped axis
+    # must 422 here — never silently command Alpaca DEC (axis!='ra' → 1) while
+    # arming the deadman against a name the watchdog can't zero.
+    axis: Literal["ra", "dec"]
     rate_deg_s: float
 
 
@@ -191,8 +195,12 @@ class PlanSaveBody(BaseModel):
     overwrite: bool = False
 
 
-class StartSequenceBody(BaseModel):
-    plan: SequencePlan
+class StartSequenceBody(SequencePlan):
+    # F-P1.6: the run body is the plan fields PLUS a force flag, FLAT (the UI
+    # posts `{ ...plan, force }`, matching the flat GOTO body convention where
+    # ra_hours/dec_deg/force all sit at the top level). Subclassing SequencePlan
+    # keeps every plan field bindable while adding `force`; an old bare-plan body
+    # (no force) still binds with force defaulting False.
     force: bool = False
 
 
@@ -741,7 +749,20 @@ def create_app() -> FastAPI:
     async def move_axis(body: MoveAxisBody):
         try:
             tel = hub.require("telescope")
-            await tel.move_axis(body.axis, body.rate_deg_s)
+            # Touch-safety rate clamp: manual slew is capped at ±TOUCH_MAX_RATE
+            # (worst-case ≤0.72° uncommanded travel at the 1.2s deadman). Gross
+            # repositioning is GOTO's job; no 2-4°/s manual band exists.
+            rate = max(-TOUCH_MAX_RATE_DEG_S,
+                       min(TOUCH_MAX_RATE_DEG_S, body.rate_deg_s))
+            # F-A1 (safety-of-motion): arm the deadman with the actual (clamped)
+            # rate BEFORE the move await, so the watchdog already covers the axis
+            # if move_axis is cancelled/raises mid-flight (no uncovered moving
+            # axis), and the keepalive cadence never inherits driver RTT. Arming
+            # first is safe: if move_axis raises, the next tick issues a redundant
+            # tel.stop() on a non-moving axis (harmless), and a rate-0 stop leaves
+            # the deadman idle so there is no spurious halt.
+            hub.note_move(body.axis, rate)
+            await tel.move_axis(body.axis, rate)
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
@@ -757,6 +778,12 @@ def create_app() -> FastAPI:
             if t and not t.done():
                 t.cancel()
         await tel.stop()
+        # F-S5b (safety hygiene): an explicit/lock STOP just zeroed both axes, so
+        # disarm the deadman cleanly. Without this the seen-rates stay stale and
+        # the next watchdog tick fires a redundant tel.stop()+warning log against
+        # an already-stopped mount.
+        hub.note_move("ra", 0.0)
+        hub.note_move("dec", 0.0)
         return {"ok": True}
 
     @app.post("/api/mount/tracking")
@@ -872,7 +899,17 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------- sequence
 
     @app.post("/api/sequence/start")
-    async def sequence_start(plan: SequencePlan, force: bool = False):
+    async def sequence_start(body: StartSequenceBody):
+        # F-P1.6: read plan/force from the JSON BODY (matches the GOTO body
+        # convention and the UI's api.post `{ ...plan, force }`, which only ever
+        # sends a body). The body IS the plan (StartSequenceBody subclasses
+        # SequencePlan) plus a force flag; rebuild a plain plan so engine.start
+        # and total_frames never see the extra field. A forced run (operator
+        # accepted a low/below-horizon target via the pre-flight gate) must
+        # actually bypass the horizon 409 here.
+        force = body.force
+        plan = SequencePlan.model_validate(
+            body.model_dump(exclude={"force"}))
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
         # Below-horizon pre-flight: refuse to start a run whose target can't be
