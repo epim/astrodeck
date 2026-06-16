@@ -138,9 +138,18 @@ class PolarAlignSession:
             kw["message"] = str(status)
         if progress is not None:
             try:
-                kw["progress"] = float(progress)
+                p = float(progress)
             except (TypeError, ValueError):
-                pass
+                p = None
+            if p is not None:
+                # NINA reports Progress as -1 while a phase is indeterminate
+                # (e.g. "Solving…"). Never emit a negative progress — the UI
+                # hides the bar on negatives. Hold the last known progress
+                # through an indeterminate phase, and clamp to [0, 1] otherwise.
+                if p < 0:
+                    kw["progress"] = float(self.state.get("progress", 0.0))
+                else:
+                    kw["progress"] = max(0.0, min(1.0, p))
         if kw:
             self._publish(**kw)
 

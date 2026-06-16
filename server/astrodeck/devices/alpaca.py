@@ -26,6 +26,7 @@ from .base import (
     FilterWheel,
     Focuser,
     PierSide,
+    SafetyMonitor,
     Switch,
     SwitchPort,
     Telescope,
@@ -470,6 +471,19 @@ _PULSE_DIRS = {"north": 0, "south": 1, "east": 2, "west": 3}
 class AlpacaTelescope(_AlpacaDevice, Telescope):
     dev_type = "telescope"
 
+    async def connect(self) -> None:
+        await _AlpacaDevice.connect(self)
+        # Probe DestinationSideOfPier ONCE at connect so the pier-collision
+        # capability flag is set before the FIRST slew — the engine's pier guard
+        # gates on the flag, so a lazy first-call probe would leave it inert on
+        # slew #1. Best-effort: a mount that doesn't support the call (or any
+        # transport error) leaves the flag False and stays correctly ungated.
+        try:
+            ra, dec = await self.get_position()
+            await self.destination_pier_side(ra, dec)
+        except Exception:
+            pass
+
     async def get_position(self) -> tuple[float, float]:
         ra = await self._get("rightascension")
         dec = await self._get("declination")
@@ -519,6 +533,19 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
             return {0: PierSide.EAST, 1: PierSide.WEST}.get(side, PierSide.UNKNOWN)
         except DeviceError:
             return PierSide.UNKNOWN
+
+    async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
+        """Probe the mount's ``DestinationSideOfPier`` for the pre-slew pier guard
+        (Batch 4b). On the first successful probe set the capability flag True so
+        the UI offers pier-limit enforcement; any failure (driver doesn't support
+        the call, transport error) returns UNKNOWN and leaves the flag untouched."""
+        try:
+            side = await self._get("destinationsideofpier",
+                                   RightAscension=ra_hours, Declination=dec_deg)
+        except (DeviceError, httpx.HTTPError, OSError):
+            return PierSide.UNKNOWN
+        self.reports_destination_pier_side = True
+        return {0: PierSide.EAST, 1: PierSide.WEST}.get(side, PierSide.UNKNOWN)
 
     async def stop(self) -> None:
         # Emergency stop: abort any slew AND zero both manual-motion axes, so a
@@ -618,12 +645,24 @@ class AlpacaSwitch(_AlpacaDevice, Switch):
         await self._put("setswitchvalue", Id=port_id, Value=value)
 
 
+class AlpacaSafetyMonitor(_AlpacaDevice, SafetyMonitor):
+    """ASCOM SafetyMonitor — a cloud/rain/roof sensor exposing a single
+    ``IsSafe`` boolean (Batch 4b). The base ``reading()`` wraps this into a
+    ``SafetyReading``; the hub polls it on its own cadence."""
+
+    dev_type = "safetymonitor"
+
+    async def is_safe(self) -> bool:
+        return bool(await self._get("issafe"))
+
+
 DEVICE_CLASSES = {
     "camera": AlpacaCamera,
     "telescope": AlpacaTelescope,
     "focuser": AlpacaFocuser,
     "filterwheel": AlpacaFilterWheel,
     "switch": AlpacaSwitch,
+    "safetymonitor": AlpacaSafetyMonitor,
 }
 
 

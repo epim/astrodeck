@@ -20,6 +20,8 @@ from .base import (
     FilterWheel,
     Focuser,
     PierSide,
+    SafetyMonitor,
+    SafetyReading,
     Switch,
     SwitchPort,
     Telescope,
@@ -225,6 +227,11 @@ TOUCH_MAX_RATE_DEG_S = 0.6
 class SimTelescope(Telescope):
     SLEW_RATE_DEG_S = 4.0
 
+    #: the sim mount is a German equatorial that reports DestinationSideOfPier,
+    #: so the pre-slew pier guard + pier-limit enforcement are exercisable out of
+    #: the box (Batch 4b).
+    reports_destination_pier_side = True
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig
@@ -294,6 +301,12 @@ class SimTelescope(Telescope):
 
     async def pier_side(self) -> PierSide:
         return PierSide.WEST
+
+    async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
+        """Deterministic pre-slew side: targets in the eastern RA half land EAST,
+        the western half WEST. Lets the pier-limit guard be exercised without a
+        live mount (Batch 4b)."""
+        return PierSide.EAST if (ra_hours % 24.0) < 12.0 else PierSide.WEST
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         nudge = ms / 1000.0 * 0.0002
@@ -420,6 +433,47 @@ class SimSwitch(Switch):
         port.value = max(port.min, min(port.max, value))
 
 
+class SimSafetyMonitor(SafetyMonitor):
+    """A toggleable observing-condition sensor (Batch 4b).
+
+    Default SAFE so the dev rig images normally; a test/engine flips it via
+    ``force_unsafe(reason)`` to drive the safety state machine, and
+    ``force_safe()`` clears it again. ``reading()`` (inherited) wraps ``is_safe``;
+    we override it only to carry the injected ``reason``."""
+
+    def __init__(self, name: str = "Sim Safety Monitor"):
+        super().__init__(name)
+        self._safe = True
+        self._reason = ""
+
+    async def connect(self) -> None:
+        await asyncio.sleep(0.05)
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    def force_unsafe(self, reason: str = "simulated unsafe condition") -> None:
+        """Make the monitor report UNSAFE with ``reason`` until ``force_safe``."""
+        self._safe = False
+        self._reason = reason
+
+    def force_safe(self) -> None:
+        """Clear a forced-unsafe condition; the monitor reports SAFE again."""
+        self._safe = True
+        self._reason = ""
+
+    async def is_safe(self) -> bool:
+        return self._safe
+
+    async def reading(self) -> SafetyReading:
+        return SafetyReading(
+            is_safe=self._safe,
+            source=self.name,
+            reason="" if self._safe else (self._reason or "unsafe condition reported"),
+        )
+
+
 def build_sim_rig() -> dict[str, object]:
     """One coherent simulated observatory."""
     rig = SimRig()
@@ -430,5 +484,6 @@ def build_sim_rig() -> dict[str, object]:
         "focuser": SimFocuser(rig),
         "filterwheel": SimFilterWheel(rig),
         "switch": SimSwitch(),
+        "safety": SimSafetyMonitor(),
         "_rig": rig,
     }

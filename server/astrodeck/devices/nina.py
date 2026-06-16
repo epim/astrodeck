@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import socket
 import time
 from typing import Any
@@ -605,16 +606,41 @@ class NinaGuider(Guider):
         self._poll_task = None
 
     async def start_guiding(self) -> None:
-        await self.client.get("/equipment/guider/start", calibrate="false", timeout=180.0)
+        # Surface NINA's/PHD2's actual failure reason. NINA's guider/start can
+        # return Success:false with an EMPTY Error string (live bug: the failure
+        # then logged "guide failed:" with no reason) — when that happens, fall
+        # back to the guider info's State/last-message for a real explanation.
+        try:
+            await self.client.get("/equipment/guider/start",
+                                  calibrate="false", timeout=180.0)
+        except DeviceError as e:
+            raise DeviceError(f"NINA guider start failed: {self._fail_reason(str(e))}")
+        state = ""
         for _ in range(120):
             info = await self.client.get("/equipment/guider/info")
-            if str(pick(info, "State", default="")).lower().startswith("guid"):
+            state = str(pick(info, "State", default=""))
+            if state.lower().startswith("guid"):
                 break
             await asyncio.sleep(1.0)
+        else:
+            # Never reached the guiding state — report why instead of pretending
+            # it started (prior code silently set _guiding=True here).
+            raise DeviceError(
+                f"NINA guider did not start (state: {state or 'unknown'}); "
+                "check that PHD2 has a star selected and is calibrated")
         self._guiding = True
         if self._poll_task is None or self._poll_task.done():
             self._poll_task = asyncio.create_task(self._poll_graph())
         bus.log("info", "NINA guider started", "guide")
+
+    def _fail_reason(self, raw: str) -> str:
+        """Best-effort human reason for a guide-start failure, robust to NINA
+        returning an empty Error string."""
+        raw = (raw or "").strip()
+        if raw and raw.lower() not in ("nina error on /equipment/guider/start",):
+            return raw
+        return ("no reason reported by NINA — is PHD2 connected with a guide "
+                "star selected?")
 
     async def stop_guiding(self) -> None:
         try:
@@ -669,6 +695,51 @@ class NinaGuider(Guider):
             rms_ra=round(rms_ra, 2), rms_dec=round(rms_dec, 2),
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=0.0, recent=recent[-120:])
+
+    async def guide_frame(self) -> bytes | None:
+        """Guide-star thumbnail. NINA itself doesn't serve a raw star image over
+        HTTP, but in NINA mode the guider IS PHD2 running on the same bridge
+        host — so we reach PHD2's JSON event server directly at
+        ``<bridge-host>:4400`` for one ``get_star_image`` RPC. Short-lived
+        connection (open → request → close); isolated here so the rest of the
+        NINA backend stays HTTP-only. Returns None (never raises) on any failure
+        so the endpoint answers 404."""
+        host = getattr(self.client, "host", None)
+        if not host:
+            return None
+        reader = writer = None
+        try:
+            from ..guide.phd2 import star_image_to_png
+
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, 4400), timeout=3)
+            req = {"method": "get_star_image", "params": [15], "id": 1}
+            writer.write((json.dumps(req) + "\r\n").encode())
+            await writer.drain()
+            # Read newline-delimited JSON until we see our id (skip async events).
+            deadline = asyncio.get_running_loop().time() + 5
+            while asyncio.get_running_loop().time() < deadline:
+                line = await asyncio.wait_for(reader.readline(), timeout=5)
+                if not line:
+                    return None
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("id") == 1:
+                    if "error" in msg:
+                        return None
+                    result = msg.get("result")
+                    return star_image_to_png(result) if isinstance(result, dict) else None
+            return None
+        except Exception:
+            return None
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
 
 
 # ------------------------------------------------------------------ rig builder
