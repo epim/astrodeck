@@ -214,6 +214,14 @@ class SimCamera(Camera):
         field[y0:y1, x0:x1] += flux * psf / (2 * math.pi * sigma**2)
 
 
+#: Defensive mirror of ``hub.TOUCH_MAX_RATE_DEG_S`` (the authoritative server
+#: clamp lives in the ``/api/mount/move`` endpoint). The sim previously stored
+#: the raw rate unclamped; clamping here means even a direct ``move_axis`` call
+#: that bypasses the endpoint can never drive the sim mount faster than the
+#: touch cap. Kept as a literal (not imported) to avoid a hub↔sim import cycle.
+TOUCH_MAX_RATE_DEG_S = 0.6
+
+
 class SimTelescope(Telescope):
     SLEW_RATE_DEG_S = 4.0
 
@@ -253,7 +261,11 @@ class SimTelescope(Telescope):
             for i in range(1, steps + 1):
                 await asyncio.sleep(duration / steps)
                 f = i / steps
-                self.rig.ra_hours = ra0 + (tgt_ra - ra0) * f
+                # F-sim: keep ra_hours wrapped into [0, 24) so the sim's RA never
+                # accumulates an out-of-range value (sim-fidelity only — altaz and
+                # meridian consumers are wrap-invariant; this just keeps the value
+                # sane). The Target model also requires 0 <= ra_hours < 24.
+                self.rig.ra_hours = (ra0 + (tgt_ra - ra0) * f) % 24.0
                 self.rig.dec_deg = dec0 + (tgt_dec - dec0) * f
         finally:
             self._slewing = False
@@ -286,12 +298,22 @@ class SimTelescope(Telescope):
     async def pulse_guide(self, direction: str, ms: int) -> None:
         nudge = ms / 1000.0 * 0.0002
         if direction in ("east", "west"):
-            self.rig.ra_hours += nudge if direction == "east" else -nudge
+            # F-sim: wrap RA into [0, 24) (sim-fidelity; consumers are
+            # wrap-invariant — keep just the wrap).
+            self.rig.ra_hours = (self.rig.ra_hours
+                                 + (nudge if direction == "east" else -nudge)) % 24.0
         else:
             self.rig.dec_deg += nudge if direction == "north" else -nudge
         await asyncio.sleep(ms / 1000.0)
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
+        # Defensive clamp to the touch cap (the real clamp is server-side in the
+        # /api/mount/move endpoint; this guards direct/bypass callers). NOTE:
+        # SimTelescope deliberately does NOT override stop() — it inherits
+        # Telescope.stop() which zeroes both axes, so the deadman/STOP path
+        # clears _move_rates and _move_loop exits.
+        rate_deg_s = max(-TOUCH_MAX_RATE_DEG_S,
+                         min(TOUCH_MAX_RATE_DEG_S, rate_deg_s))
         self._move_rates[axis] = rate_deg_s
         if rate_deg_s != 0 and (self._move_task is None or self._move_task.done()):
             self._move_task = asyncio.create_task(self._move_loop())

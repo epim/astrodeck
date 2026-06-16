@@ -523,12 +523,27 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
     async def stop(self) -> None:
         # Emergency stop: abort any slew AND zero both manual-motion axes, so a
         # mid-nudge STOP halts the mount rather than leaving an axis driving.
-        await self._put("abortslew")
+        #
+        # F-A3 (DURABLE HALT): a failed abortslew must NOT skip the MoveAxis
+        # zeroing — on real drivers AbortSlew alone does not reliably stop a
+        # MoveAxis-driven manual slew, and the deadman fires precisely when the
+        # network is flaky. Catch the httpx transport family (not just
+        # DeviceError) around abortslew so we always still attempt the 0/0 zero.
+        # Re-raise the original error afterward so the hub watchdog sees the
+        # failure and RETRIES on its next tick rather than disarming.
+        abort_err: Exception | None = None
+        try:
+            await self._put("abortslew")
+        except (DeviceError, httpx.HTTPError, OSError) as e:
+            abort_err = e
         try:
             await self.move_axis("ra", 0)
             await self.move_axis("dec", 0)
-        except DeviceError:
-            pass
+        except (DeviceError, httpx.HTTPError, OSError) as e:
+            # Zeroing failed too — surface it so the watchdog retries.
+            raise e if abort_err is None else abort_err
+        if abort_err is not None:
+            raise abort_err
 
 
 class AlpacaFocuser(_AlpacaDevice, Focuser):

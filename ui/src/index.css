@@ -325,6 +325,64 @@ select.field { appearance: none; }
 .blink-alert { animation: blink-alert 0.7s steps(2, end) infinite; }
 .blink { animation: pulse-glow 1.6s ease-in-out infinite; }
 
+/* ===================================================================== CSS-ALERT
+   Safety alert pulse — the ONE animation kept even in night mode (touch §8, R22):
+   the locked-screen StatusChip + below-horizon SlewPad readout pulse a --bad glow
+   so an unattended mount halt is impossible to miss. The pulse rides on top of the
+   element's own `border-bad` (the chip) / `text-bad` (the readout), so the static
+   state is already a double cue (shape/word + red) before any motion.
+   prefers-reduced-motion: drop the pulse to a STATIC outline cue mirroring .led-bad
+   (see the reduced-motion block below) — the alert is never lost, only stilled. */
+@keyframes alert-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bad) 55%, transparent); }
+  50%      { box-shadow: 0 0 10px 2px color-mix(in srgb, var(--bad) 70%, transparent); }
+}
+.alert-pulse { animation: alert-pulse 1.1s ease-in-out infinite; }
+
+/* ===================================================================== CSS-SHEET
+   Mobile "More" overflow sheet slide-up (touch §5.2). Mirrors .sheet-enter but
+   named so NavMoreSheet's class has a real definition (Tailwind v4 won't invent it). */
+@keyframes more-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
+.more-sheet-in { animation: more-sheet-in 0.2s ease both; }
+
+/* ===================================================================== CSS-TAP
+   Touch-target sizing override (touch §3, R17). `.tap` / `.tap-lg` mark gloved
+   controls; the actual min-size lives on the element's own min-h-[44/56px] utility.
+   These rules let the user FORCE the coarse-pointer bump on/off regardless of the
+   inferred pointer, via the root .touch-ui / .no-touch-ui class store.applyTouchSizing
+   toggles. `--tap-gap` is the shared pad spacing token (SlewPad reads it inline).
+     - auto (no root class): coarse pointers get the bump from the media query below.
+     - .touch-ui  (forced ON):  always bump, even on a mouse.
+     - .no-touch-ui (forced OFF): never bump, even on a touchscreen. */
+:root { --tap-gap: 8px; }
+
+.tap    { min-height: 44px; }
+.tap-lg { min-height: 56px; }
+
+/* forced ON — bump every tap target + widen the pad gap regardless of pointer */
+.touch-ui .tap    { min-height: 48px; }
+.touch-ui .tap-lg { min-height: 60px; }
+.touch-ui { --tap-gap: 12px; }
+
+/* forced OFF — compact targets even on a touchscreen (desktop-on-tablet use) */
+.no-touch-ui .tap    { min-height: 36px; }
+.no-touch-ui .tap-lg { min-height: 44px; }
+.no-touch-ui { --tap-gap: 6px; }
+
+/* auto — a genuine coarse pointer (no forced override) gets the comfortable bump */
+@media (hover: none) and (pointer: coarse) {
+  :root:not(.no-touch-ui) { --tap-gap: 12px; }
+  :root:not(.no-touch-ui) .tap    { min-height: 48px; }
+  :root:not(.no-touch-ui) .tap-lg { min-height: 60px; }
+}
+
+/* confirmhold-fill — parity only. The HoldButton progress fill geometry is drawn
+   entirely by an inline style (width/background/transition); this class is a hook
+   so the bare className resolves (the guard test asserts every component class has
+   a definition). The one harmless declaration below keeps the rule non-empty so a
+   CSS minifier can't strip it — it never fights the inline fill geometry. */
+.confirmhold-fill { pointer-events: none; }
+
 /* ------------------------------------------------------------------- misc */
 
 .progress-track { background: var(--bg); border: 1px solid var(--line); height: 14px; position: relative; overflow: hidden; }
@@ -339,11 +397,13 @@ select.field { appearance: none; }
 .view-enter { animation: view-fade 0.22s ease both; }
 
 @media (prefers-reduced-motion: reduce) {
-  .view-enter, .blink, .blink-alert, .sheet-enter, .empty-ghost,
-  .led-bad, .led-busy { animation: none !important; }
+  .view-enter, .blink, .blink-alert, .sheet-enter, .empty-ghost, .more-sheet-in,
+  .led-bad, .led-busy, .alert-pulse { animation: none !important; }
   .dim-content, .dim-scrim { transition: none !important; }
-  /* reduced-motion users still get the state: bad keeps a static double cue. */
-  .led-bad  { outline: 1.5px solid var(--bad); outline-offset: 2px; }
+  /* reduced-motion users still get the state: bad keeps a static double cue. The
+     safety alert-pulse is KEPT as a static outline (mirroring .led-bad) — the
+     alert is never silently dropped, only stilled. */
+  .led-bad, .alert-pulse { outline: 1.5px solid var(--bad); outline-offset: 2px; }
 }
 
 /* ===================================================================== CSS-FLEX

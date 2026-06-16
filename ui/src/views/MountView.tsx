@@ -2,16 +2,22 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle } from "../components/ui";
-import type { CatalogEntry } from "../types";
+import { confirmDialog } from "../components/ConfirmDialog";
+import SlewPad from "../components/SlewPad";
+import type { CatalogEntry, PreflightAlt } from "../types";
 
-const RATES = [0.05, 0.5, 2.0];
+/** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7). */
+function AltGlyph({ alt }: { alt: number }) {
+  if (alt < 0) return <span className="text-bad" aria-label="below horizon" title="below the visible horizon">⚠</span>;
+  if (alt < 20) return <span className="text-warn" aria-label="low on the horizon" title="low on the horizon">↓</span>;
+  return null;
+}
 
 export default function MountView() {
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
-  const [rateIdx, setRateIdx] = useState(1);
   const [center, setCenter] = useState(true);
 
   const m = status?.mount;
@@ -28,14 +34,63 @@ export default function MountView() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const nudge = (axis: "ra" | "dec", dir: number) => ({
-    onPointerDown: () => act(() => api.post("/api/mount/move", { axis, rate_deg_s: dir * RATES[rateIdx] })),
-    onPointerUp: () => act(() => api.post("/api/mount/move", { axis, rate_deg_s: 0 })),
-    onPointerLeave: () => act(() => api.post("/api/mount/move", { axis, rate_deg_s: 0 })),
-  });
+  // GOTO re-queries LIVE altitude at the tap (never trusts the stale catalog row,
+  // critique2 #6) and guards by verdict (spec §5):
+  //   below  -> single-OK dialog, NO slew, NO hold (critique3 #12)
+  //   low    -> OK/Cancel "slew anyway", threads force=true so the server guard
+  //             doesn't re-block an accepted low slew
+  //   unknown-> default site / fetch issue: OK/Cancel "slew anyway"
+  const doGoto = async (r: CatalogEntry) => {
+    let pf: PreflightAlt | null = null;
+    try {
+      pf = await api.get<PreflightAlt>(
+        `/api/sequence/preflight?ra_hours=${r.ra_hours}&dec_deg=${r.dec_deg}`,
+      );
+    } catch {
+      // preflight fetch failed — treat as unknown (the server horizon guard is the net)
+      pf = null;
+    }
+
+    if (!pf || pf.verdict === "unknown") {
+      const ok = await confirmDialog({
+        title: "Location not set",
+        body: "Altitude can't be checked until you set your location in Settings. Slew anyway?",
+        tone: "warn",
+        mode: "confirm",
+        confirmLabel: "Slew anyway",
+      });
+      if (!ok) return;
+    } else if (pf.verdict === "below") {
+      await confirmDialog({
+        title: "Below the visible horizon",
+        body: pf.alt != null
+          ? `${r.id} is at ${pf.alt}° — below the horizon, so it isn't visible now.`
+          : `${r.id} is below the horizon, so it isn't visible now.`,
+        tone: "danger",
+        mode: "ok", // single dismiss, no slew, NO hold
+      });
+      return;
+    } else if (pf.verdict === "low") {
+      const ok = await confirmDialog({
+        title: "Low on the horizon",
+        body: pf.alt != null
+          ? `${r.id} is only ${pf.alt}° up — expect heavy atmosphere and possible obstructions. Slew anyway?`
+          : `${r.id} is low on the horizon — expect heavy atmosphere and possible obstructions. Slew anyway?`,
+        tone: "warn",
+        mode: "confirm",
+        confirmLabel: "Slew anyway",
+      });
+      if (!ok) return;
+    }
+
+    await act(() => api.post("/api/mount/goto", {
+      ra_hours: r.ra_hours, dec_deg: r.dec_deg, center,
+      force: pf?.verdict === "low",
+    }));
+  };
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
+    <div className="grid gap-4 md:grid-cols-[minmax(290px,340px)_1fr]">
       <div className="flex flex-col gap-4">
         <Panel title="Pointing">
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -54,38 +109,24 @@ export default function MountView() {
             <span className="text-xs text-dim">sidereal tracking</span>
             <div className="flex-1" />
             {m?.parked ? (
-              <button className="btn" onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
+              <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
             ) : (
-              <button className="btn" onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
+              <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
             )}
           </div>
         </Panel>
 
         <Panel title="Slew Pad">
-          <div className="grid grid-cols-3 gap-2 w-44 mx-auto select-none">
-            <span />
-            <button className="btn !text-base" {...nudge("dec", 1)}>▲</button>
-            <span />
-            <button className="btn !text-base" {...nudge("ra", -1)}>◀</button>
-            <button className="btn btn-danger !text-[10px]"
-              onClick={() => act(() => api.post("/api/mount/stop"))}>STOP</button>
-            <button className="btn !text-base" {...nudge("ra", 1)}>▶</button>
-            <span />
-            <button className="btn !text-base" {...nudge("dec", -1)}>▼</button>
-            <span />
-          </div>
-          <div className="flex justify-center gap-1.5 mt-3">
-            {["slow", "med", "fast"].map((r, i) => (
-              <button key={r} className={`btn !py-1 !px-3 !text-[10px] ${i === rateIdx ? "btn-accent" : ""}`}
-                onClick={() => setRateIdx(i)}>{r}</button>
-            ))}
-          </div>
+          {/* 3B predictable fixed-rate slew + tap-to-pulse pad (replaces the old
+              slow/med/fast 3-chip pad). Owns rate selector, STOP bar, reverse
+              toggles, alt-guard, NINA mode. */}
+          <SlewPad />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
-            <button className="btn" onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
-              ✛ Solve & Sync
+            <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
+              ✛ Solve &amp; Sync
             </button>
           </div>
-          <p className="text-[10px] text-dim text-center mt-2">
+          <p className="text-[12px] text-[color:var(--text-dim2,var(--text-dim))] text-center mt-2">
             plate-solves current frame, syncs mount model
           </p>
         </Panel>
@@ -116,14 +157,14 @@ export default function MountView() {
                   <td className="pr-3">{r.name}</td>
                   <td className="pr-3 text-dim">{r.type}</td>
                   <td className="mono pr-3">{r.mag.toFixed(1)}</td>
-                  <td className={`mono pr-3 ${r.alt < 20 ? "text-warn" : r.alt > 40 ? "text-good" : ""}`}>
-                    {r.alt.toFixed(0)}°
+                  <td className={`mono pr-3 whitespace-nowrap ${r.alt < 20 ? "text-warn" : r.alt > 40 ? "text-good" : ""}`}>
+                    <span className="inline-flex items-center gap-1">
+                      {r.alt.toFixed(0)}°<AltGlyph alt={r.alt} />
+                    </span>
                   </td>
                   <td className="text-right">
-                    <button className="btn !py-1 !px-3 !text-[10px]" disabled={!m}
-                      onClick={() => act(() => api.post("/api/mount/goto", {
-                        ra_hours: r.ra_hours, dec_deg: r.dec_deg, center,
-                      }))}>
+                    <button className="btn tap min-h-[44px] !px-3" disabled={!m}
+                      onClick={() => doGoto(r)}>
                       GOTO
                     </button>
                   </td>

@@ -1,13 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect } from "react";
 import type { JSX } from "react";
-import { useStore, type ViewName } from "./store";
+import { useStore, useBrightness, type ViewName } from "./store";
 import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
-import { HoldButton, Led } from "./components/ui";
+import { Led } from "./components/ui";
 import ConnectionBanner from "./components/ConnectionBanner";
 import HealthLeds from "./components/HealthLeds";
 import Toasts from "./components/Toasts";
 import LogDrawer from "./components/LogDrawer";
+import HeaderControls from "./components/HeaderControls";
+import BottomNav from "./components/BottomNav";
+import TouchGuard from "./components/TouchGuard";
+import { ConfirmHost } from "./components/ConfirmDialog";
+import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
+import { useMonitorWakeLock } from "./lib/useWakeLock";
 import ConnectView from "./views/ConnectView";
 import CaptureView from "./views/CaptureView";
 import FocusView from "./views/FocusView";
@@ -63,51 +69,31 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   atlas: () => <PlaceholderView label="Sky Atlas" />,
 };
 
+// Nav gating (onboarding §3b/§7b): equipment-dependent views show the
+// NotConnectedInterstitial when !equipConnected (the sticky flag, NOT wsConnected —
+// a WS drop shows the reconnecting banner, never this). Rig is never gated; Plan is
+// only partially gated (the builder stays usable offline, just Run is disabled —
+// that nuance lives inside SequenceView, so `sequence` is NOT gated here). Settings/
+// Atlas/Monitor are informational shells — not equipment-gated at the route level.
+const GATED: Partial<Record<ViewName, boolean>> = {
+  capture: true,
+  focus: true,
+  mount: true,
+  polar: true,
+  guide: true,
+  power: true,
+};
+
 // ============================================================================
-// Global brightness dimmer — APP-OWNED state (store owner 2A did not land the
-// display slice this wave, so the dimmer lives here per the DIMMER CONTRACT:
-// App.tsx sets documentElement --screen-brightness (clamp 0.08..1) +
-// --scrim-opacity (= clamp(0, 1 - brightness*1.05, 0.92)) on every change and at
-// init; index.css consumes them; the values mirror index.html's pre-paint script
-// so first paint never flashes). Separate day/night brightness memory persists to
-// localStorage; toggling mode swaps to the other memory (design-system §7.5).
+// Global brightness dimmer — STORE-OWNED (F-dimmer). The store holds day/night
+// brightness, persists localStorage, and is the single writer of the
+// --screen-brightness / --scrim-opacity CSS vars (index.css consumes them; the
+// values mirror index.html's pre-paint script so first paint never flashes).
+// App retains ONLY the always-reachable reset affordance + the Shift+B keybind,
+// both routed through store.resetBrightness — no MutationObserver/getComputedStyle
+// round-trip, no private brightness copy that could drift from HeaderControls.
 // `locked` is NEVER persisted (a lock must not survive reload, design-system §3.3).
 // ============================================================================
-const BRIGHT_DAY_KEY = "astrodeck-bright-day";
-const BRIGHT_NIGHT_KEY = "astrodeck-bright-night";
-
-const clampB = (v: number): number => Math.min(1, Math.max(0.08, v));
-
-function readBright(key: string, def: number): number {
-  try {
-    const n = Number(localStorage.getItem(key));
-    return Number.isFinite(n) && n > 0 ? clampB(n) : def;
-  } catch {
-    return def;
-  }
-}
-
-function applyBrightness(v: number): void {
-  const b = clampB(v);
-  const d = document.documentElement;
-  d.style.setProperty("--screen-brightness", String(b));
-  // scrim deepens past what filter:brightness can do (OLED black-pixel safe).
-  d.style.setProperty("--scrim-opacity", String(Math.min(0.92, Math.max(0, 1 - b * 1.05))));
-}
-
-/** Lock / touch-guard placeholder hook (Batch-3 3B fills in slew-forceStop +
- *  wake-lock + unlock gesture). Today it is a no-op carrier so the lock button +
- *  overlay exist and App.tsx owns the affordance; `lockAvailable` stays false
- *  until reliability's error-render ships (master Risk-6), so the control is a
- *  visible-but-inert placeholder, never trapping the user. */
-function useTouchGuard(): { locked: boolean; lock: () => void; unlock: () => void } {
-  const [locked, setLocked] = useState(false);
-  return {
-    locked,
-    lock: useCallback(() => setLocked(true), []),
-    unlock: useCallback(() => setLocked(false), []),
-  };
-}
 
 export default function App() {
   // Split selectors (reliability §13 / Risk-14 perf P0): each subscription is a
@@ -115,63 +101,25 @@ export default function App() {
   // whole tree. Chrome components self-subscribe to their own slices.
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
-  const night = useStore((s) => s.night);
-  const toggleNight = useStore((s) => s.toggleNight);
   const sequence = useStore((s) => s.sequence);
   const status = useStore((s) => s.status);
   const linkDown = useStore((s) => s.wsPhase !== "up");
   const telemetryStale = useStore((s) => s.telemetryStale);
-  const openLog = useStore((s) => s.openLog);
-  const unseenError = useStore((s) => s.unseenError);
+  const equipConnected = useStore((s) => s.equipConnected);
   const runBanner = useStore((s) => s.runBanner);
   const dismissRunBanner = useStore((s) => s.dismissRunBanner);
 
-  // --- brightness dimmer state (app-owned; see header comment) -----------------
-  const [dayBrightness, setDayBrightness] = useState(() => readBright(BRIGHT_DAY_KEY, 1));
-  const [nightBrightness, setNightBrightness] = useState(() => readBright(BRIGHT_NIGHT_KEY, 0.45));
-  const brightness = night ? nightBrightness : dayBrightness;
-  // Brief mode-change announce pill ("Night · 45%"), aria-live polite (§7.6).
-  const [announce, setAnnounce] = useState<string | null>(null);
-  const announceTimer = useRef<number | null>(null);
-  const guard = useTouchGuard();
+  // Hold a screen wake lock while a sequence is running OR monitorAwake is on —
+  // NOT while locked (touch §8.3, R13). Reads its own narrow selectors.
+  useMonitorWakeLock();
 
-  const setBrightness = useCallback(
-    (raw: number) => {
-      const v = clampB(raw);
-      applyBrightness(v);
-      const isNight = useStore.getState().night;
-      try {
-        localStorage.setItem(isNight ? BRIGHT_NIGHT_KEY : BRIGHT_DAY_KEY, String(v));
-      } catch {
-        /* quota / unavailable — keep in-memory */
-      }
-      if (isNight) setNightBrightness(v);
-      else setDayBrightness(v);
-    },
-    [],
-  );
-
-  const resetBrightness = useCallback(() => setBrightness(1), [setBrightness]);
-
-  // Mode toggle: flip night via the store (it owns the .night class + persistence),
-  // then swap the applied brightness to the new mode's remembered value + announce.
-  const onToggleNight = useCallback(() => {
-    toggleNight();
-    const isNight = useStore.getState().night;
-    const b = isNight ? nightBrightness : dayBrightness;
-    applyBrightness(b);
-    setAnnounce(`${isNight ? "Night" : "Day"} · ${Math.round(b * 100)}%`);
-    if (announceTimer.current != null) clearTimeout(announceTimer.current);
-    announceTimer.current = window.setTimeout(() => setAnnounce(null), 1200);
-  }, [toggleNight, nightBrightness, dayBrightness]);
-
-  // Apply the correct brightness for the active mode on mount and whenever the
-  // active value changes (keeps the CSS var in lockstep with React state; the
-  // index.html pre-paint already set a correct first-paint value, this re-asserts
-  // after hydration and on every adjustment).
-  useEffect(() => {
-    applyBrightness(brightness);
-  }, [brightness]);
+  // --- brightness reset hatch (app-owned escape hatch; see header comment) ------
+  // HeaderControls (3B) owns the in-header dimmer UI; App retains ONLY the
+  // always-reachable reset affordance + Shift+B keybind. Both route through the
+  // store-owned dimmer slice (F-dimmer), so the reset hatch reads the same live
+  // value HeaderControls writes — one source, no MutationObserver round-trip.
+  const brightness = useBrightness();
+  const resetBrightness = useStore((s) => s.resetBrightness);
 
   // Always-reachable escape hatch: Shift+B resets brightness to 1.0 (§7.2). Never
   // trapped behind a dimmed-out thumb.
@@ -192,15 +140,15 @@ export default function App() {
     connectWs();
   }, []);
 
-  useEffect(() => () => { if (announceTimer.current != null) clearTimeout(announceTimer.current); }, []);
-
   const Active = VIEWS[view];
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
   const seqError = sequence.state === "error";
   const dim = linkDown || telemetryStale;
-  const brightPct = Math.round(brightness * 100);
+  // Route-level gating (onboarding §3b): show the interstitial on equipment-gated
+  // views while !equipConnected. The view's content is otherwise rendered.
+  const gatedOut = !equipConnected && !!GATED[view];
   // Surface the run banner only when a run is active and the user is NOT already on
   // the Monitor (no point nagging while they watch it). Auto-SELECT is handled in
   // the store's guarded rising-edge logic (monitor §3.2) — the banner is the
@@ -253,63 +201,13 @@ export default function App() {
           </div>
           <div className="flex-1" />
 
-          {/* dimmer cluster: slider + numeric % + glove steppers (each >=44px hit
-              area). The reset affordance lives in .overlay-top so it is NEVER
-              dimmed (the always-reachable escape hatch). On phones (<640px) the
-              slider + % readout collapse to save header width, but the two glove
-              steppers STAY visible so a one-handed field user can still DIM with
-              one tap (resolves P1-6 — the dimmer was previously hidden sm:flex,
-              leaving no way to reduce brightness on the primary form factor). */}
-          <div className="flex items-center gap-1.5">
-            <input
-              type="range" min={0.08} max={1} step={0.02} value={brightness}
-              aria-label="Screen brightness"
-              aria-valuetext={`${brightPct} percent`}
-              onChange={(e) => setBrightness(Number(e.target.value))}
-              className="dimmer w-20 hidden sm:block"
-            />
-            <span className="hidden sm:inline mono text-[10px] text-dim w-8 text-right tabular-nums">{brightPct}%</span>
-            <button className="step-btn" aria-label={`Dim screen (currently ${brightPct}%)`}
-              onClick={() => setBrightness(brightness - 0.06)}>−</button>
-            <button className="step-btn" aria-label={`Brighten screen (currently ${brightPct}%)`}
-              onClick={() => setBrightness(brightness + 0.06)}>+</button>
-          </div>
-
-          {/* single mode indicator: shows the TARGET state (night?sun:moon) */}
-          <button
-            className="btn !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
-            onClick={onToggleNight}
-            aria-label={night ? "Switch to day mode" : "Switch to night mode"}
-            title={night ? "Switch to day mode" : "Switch to red night-vision mode"}
-          >
-            <Icon name={night ? "sun" : "moon"} size={14} />
-            <span className="hidden sm:inline">{night ? "DAY" : "NIGHT"}</span>
-          </button>
-
-          {/* lock / touch-guard (Batch-3 placeholder; inert today, never traps) */}
-          <button
-            className="btn !py-1 !px-2.5 min-h-[44px] sm:min-h-0 inline-flex items-center"
-            onClick={guard.lock}
-            aria-label="Lock screen (touch guard)"
-            title="Lock screen (touch guard)"
-          >
-            <Icon name="lock" size={14} />
-          </button>
-
-          <button
-            className="btn !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
-            onClick={openLog}
-            aria-label={unseenError > 0 ? `Open event log (${unseenError} unseen errors)` : "Open event log"}
-          >
-            <Icon name="alert" size={14} />
-            <span className="hidden sm:inline">LOG</span>
-            {unseenError > 0 && (
-              <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1
-                rounded-full bg-bad text-[9px] font-bold leading-none text-black/90">
-                {unseenError > 99 ? "99+" : unseenError}
-              </span>
-            )}
-          </button>
+          {/* Header controls (touch §11, R16/R27): a narrow-selector child that owns
+              the in-header dimmer steppers/slider, the NIGHT 44px icon toggle (shows
+              the TARGET state; header-only per R16), and the LOG button with an
+              outline-ring error badge. Mounting it does NOT widen App's subscription.
+              NIGHT's verb-shaped text button is gone — the icon + state-describing
+              aria-label is the affordance (onboarding §6 / C10/C11). */}
+          <HeaderControls />
           <HealthLeds />
         </header>
 
@@ -349,29 +247,51 @@ export default function App() {
 
         <div className="flex flex-1 min-h-0">
           {/* -------------------------------------------------- left rail */}
-          <nav className="hidden sm:flex flex-col w-[72px] border-r border-line bg-raise/40 py-2 shrink-0 overflow-y-auto">
-            {NAV.map((n) => (
-              <button
-                key={n.id}
-                onClick={() => setView(n.id)}
-                className={`flex flex-col items-center gap-1 py-3 transition-colors relative cursor-pointer
-                  ${view === n.id ? "text-accent" : "text-dim hover:text-ink"}`}
-              >
-                {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}
-                <Icon name={n.icon} size={20} />
-                <span className="text-[9px] tracking-[0.18em] font-display font-medium uppercase">{n.label}</span>
-                {n.id === "capture" && camConnected && <span className="absolute top-2 right-3"><Led state="on" /></span>}
-                {n.id === "mount" && mountConnected && <span className="absolute top-2 right-3"><Led state="on" /></span>}
-                {n.id === "sequence" && seqError && (
-                  <span className="absolute top-2 right-3 led led-bad blink-alert" />
-                )}
-                {n.id === "sequence" && !seqError && seqRunning && (
-                  <span className="absolute top-2 right-3 blink">
-                    <Led state={sequence.state === "paused" ? "warn" : "busy"} />
-                  </span>
-                )}
-              </button>
-            ))}
+          {/* Gating model (onboarding §3b/E16; unified per F-D3): ONE model across
+              desktop + mobile — equipment-dependent tabs are always TAPPABLE; an
+              equipment-gated tab navigates and the main pane shows the
+              NotConnectedInterstitial (route-level `gatedOut`). The rail no longer
+              hard-disables (no aria-disabled / no-op onClick); instead a small lock
+              icon REPLACES the connected-Led slot as a passive "needs connection"
+              hint. This matches BottomNav/NavMoreSheet, which never hard-disabled. */}
+          <nav className="hidden sm:flex flex-col w-[72px] border-r border-line bg-raise/40 py-2 shrink-0 overflow-y-auto" aria-label="Primary">
+            {NAV.map((n) => {
+              const gated = !equipConnected && !!GATED[n.id];
+              return (
+                <button
+                  key={n.id}
+                  onClick={() => setView(n.id)}
+                  aria-current={view === n.id ? "page" : undefined}
+                  title={gated ? "Connect equipment to use this" : undefined}
+                  className={`flex flex-col items-center gap-1 py-3 transition-colors relative cursor-pointer
+                    ${view === n.id ? "text-accent" : gated ? "text-dim/60 hover:text-ink" : "text-dim hover:text-ink"}`}
+                >
+                  {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}
+                  <Icon name={n.icon} size={20} />
+                  <span className="text-[9px] tracking-[0.18em] font-display font-medium uppercase">{n.label}</span>
+                  {/* lock icon REPLACES the connected-Led when gated — a passive hint,
+                      NOT a disabled state (the tab still navigates to the interstitial). */}
+                  {gated ? (
+                    <span className="absolute top-2 right-2.5 text-dim/50" aria-hidden>
+                      <Icon name="lock" size={11} />
+                    </span>
+                  ) : (
+                    <>
+                      {n.id === "capture" && camConnected && <span className="absolute top-2 right-3"><Led state="on" /></span>}
+                      {n.id === "mount" && mountConnected && <span className="absolute top-2 right-3"><Led state="on" /></span>}
+                      {n.id === "sequence" && seqError && (
+                        <span className="absolute top-2 right-3 led led-bad blink-alert" />
+                      )}
+                      {n.id === "sequence" && !seqError && seqRunning && (
+                        <span className="absolute top-2 right-3 blink">
+                          <Led state={sequence.state === "paused" ? "warn" : "busy"} />
+                        </span>
+                      )}
+                    </>
+                  )}
+                </button>
+              );
+            })}
           </nav>
 
           {/* ----------------------------------------------- main content */}
@@ -380,7 +300,7 @@ export default function App() {
             key={view}
           >
             <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">
-              <Active />
+              {gatedOut ? <NotConnectedInterstitial view={view} /> : <Active />}
             </div>
           </main>
 
@@ -389,17 +309,9 @@ export default function App() {
           <LogDrawer />
         </div>
 
-        {/* ------------------------------------------- mobile bottom nav */}
-        <nav className="sm:hidden flex border-t border-line bg-raise shrink-0 fixed bottom-0 inset-x-0 z-20 overflow-x-auto">
-          {NAV.map((n) => (
-            <button key={n.id} onClick={() => setView(n.id)}
-              className={`flex-1 min-w-[44px] flex flex-col items-center gap-0.5 py-2 min-h-[52px]
-                ${view === n.id ? "text-accent" : "text-dim"}`}>
-              <Icon name={n.icon} size={20} />
-              <span className="text-[8px] tracking-widest uppercase">{n.label}</span>
-            </button>
-          ))}
-        </nav>
+        {/* mobile bottom nav: 5 primary + More (touch §5). BottomNav is a narrow-
+            selector child (R27) and renders its own NavMoreSheet; App only mounts it. */}
+        <BottomNav />
       </div>
 
       {/* ================================================================ .dim-scrim
@@ -408,14 +320,16 @@ export default function App() {
       <div className="dim-scrim" aria-hidden />
 
       {/* ================================================================ .overlay-top
-          fixed z-50, NEVER dimmed: toasts, lock overlay, brightness reset, the
-          mode-change announce pill. pointer-events gated to children via CSS. */}
+          fixed z-50, NEVER dimmed: toasts, the lock overlay, the brightness reset.
+          pointer-events gated to children via CSS. */}
       <div className="overlay-top">
         {/* Toasts: top-center on phone, bottom-right desktop — self-manages. */}
         <Toasts />
 
         {/* Always-reachable brightness reset (the escape hatch, never dimmed). Only
-            offered while the screen is meaningfully dimmed so it isn't chrome. */}
+            offered while the screen is meaningfully dimmed so it isn't chrome. The
+            brightness value comes from the store-owned dimmer slice (F-dimmer), the
+            same source HeaderControls writes — so it stays correct as it adjusts. */}
         {brightness < 0.95 && (
           <button
             className="fixed bottom-3 left-1/2 -translate-x-1/2 sm:left-auto sm:right-3 sm:translate-x-0
@@ -427,45 +341,18 @@ export default function App() {
           </button>
         )}
 
-        {/* Mode-change announce pill (1.2s, aria-live polite). */}
-        {announce && (
-          <div
-            className="fixed top-14 left-1/2 -translate-x-1/2 panel px-3 py-1.5 text-[11px] mono text-ink z-50"
-            aria-live="polite"
-          >
-            {announce}
-          </div>
-        )}
-
-        {/* Lock / touch-guard overlay (Batch-3 placeholder). Full-screen scrim with
-            a hold-to-unlock; long-press unlock also a future brightness-restore
-            hook. Renders nothing until locked. */}
-        {guard.locked && (
-          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4
-            bg-bg/85 backdrop-blur-sm">
-            <div className="panel-title">SCREEN LOCKED</div>
-            <p className="text-dim text-xs max-w-[28ch] text-center">
-              Touch guard active. Hold to unlock.
-            </p>
-            <HoldButton onConfirm={guard.unlock} label="Unlock screen">
-              {(b) => (
-                <button
-                  {...b}
-                  className="btn btn-accent relative overflow-hidden min-h-[48px] !px-6 inline-flex items-center gap-2"
-                >
-                  <span
-                    className="absolute inset-y-0 left-0 bg-accent/25"
-                    style={{ width: `${b.progress * 100}%` }}
-                    aria-hidden
-                  />
-                  <Icon name="unlock" size={16} />
-                  {b.armed ? "PRESS AGAIN" : b.hintLabel}
-                </button>
-              )}
-            </HoldButton>
-          </div>
-        )}
+        {/* Touch-guard / screen-lock overlay (touch §8). Self-manages off the store's
+            `locked` flag via a narrow selector; renders the monitor-safe opaque
+            status chip + slide-to-unlock when engaged, plus the auto-lock countdown.
+            lockAvailable is true (reliability's sequence-error render shipped), so the
+            lock feature is live. */}
+        <TouchGuard />
       </div>
+
+      {/* Promise-modal host (onboarding §1e): renders the active confirmDialog()
+          request with focus-trap/Escape/restore. Mounted once near the root so any
+          call site (MountView GOTO guard, etc.) can `await confirmDialog({...})`. */}
+      <ConfirmHost />
     </div>
   );
 }
