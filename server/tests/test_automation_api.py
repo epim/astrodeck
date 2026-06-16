@@ -74,14 +74,22 @@ def test_post_config_partial_merge_persists_and_blanks_tokens(client):
     r = c.post("/api/config", json=patch)
     assert r.status_code == 200, r.text
     body = r.json()
-    # deadman persisted; token blanked in the returned (redacted) union.
-    assert body["deadman_url"] == "https://hc-ping.com/abc"
+    # deadman persisted server-side but REDACTED outbound (P2-12): the url can
+    # carry a per-ping secret, so the redacted union exposes only a boolean marker.
+    assert body["deadman_url"] == ""
+    assert body["deadman_configured"] is True
+    # token + chat_id blanked in the returned (redacted) union.
     assert body["alerts"][0]["token"] == ""
-    # but the real token IS persisted server-side.
+    assert body["alerts"][0]["chat_id"] == ""
+    # but the real secrets ARE persisted server-side.
     assert store.cfg().alerts[0].token == "SECRET-BOT-TOKEN"
+    assert store.cfg().alerts[0].chat_id == "42"
     assert store.cfg().deadman_url == "https://hc-ping.com/abc"
     # a fresh GET still blanks it.
     assert c.get("/api/config").json()["alerts"][0]["token"] == ""
+    # echoing the redacted (empty) deadman_url back must NOT wipe the stored one.
+    c.post("/api/config", json={"deadman_url": ""})
+    assert store.cfg().deadman_url == "https://hc-ping.com/abc"
 
 
 def test_post_config_safety_preset_round_trips(client):
