@@ -39,6 +39,7 @@ from ..devices.base import DeviceError, PierSide
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import Hub
+from ..persist import write_json_atomic
 from . import schedule
 from .models import SequencePlan, Target
 from .report import FrameRecord, SessionReporter
@@ -64,6 +65,37 @@ SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
+
+# --- device-I/O timeout bounds (P0-2) --------------------------------------
+# Every engine await on a device call is bounded so a wedged Alpaca/NINA/PHD2
+# transport can never hang the night on an unbounded await (review §8d: "the
+# single most likely overnight-hang source"). A timeout escalates through the
+# normal abort+park path (SafetyAbort → shielded wind-down), never a silent hang.
+#
+# CAPTURE budget is exposure-relative: the exposure itself plus a generous fixed
+# margin for download/save/solve. SLEW/GOTO/PARK get a few minutes (a long meridian
+# slew + plate-solve loop, or a harmonic-mount park, can legitimately take minutes).
+CAPTURE_MARGIN_S = 120.0        # added to the exposure for download/save/detect
+SLEW_TIMEOUT_S = 300.0          # plain slew (+settle)
+GOTO_TIMEOUT_S = 420.0          # slew + iterated solve→sync→re-slew centering
+PARK_TIMEOUT_S = 240.0          # park / unpark
+FLIP_TIMEOUT_S = 420.0          # meridian flip = re-slew + solve + restart guiding
+GUIDE_START_TIMEOUT_S = 180.0   # start_guiding incl. settle
+GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
+COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
+MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
+
+
+async def _bounded(awaitable, timeout_s: float, what: str):
+    """Await ``awaitable`` under ``asyncio.wait_for`` (P0-2). On timeout, raise a
+    ``SafetyAbort`` so the run tears down through the existing shielded park/warm
+    wind-down instead of hanging on an unbounded await. ``CancelledError`` (a real
+    user/engine abort) propagates untouched."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout_s)
+    except asyncio.TimeoutError:
+        bus.log("error", f"{what} timed out after {timeout_s:.0f}s — aborting", "sequence")
+        raise SafetyAbort(f"{what} timed out after {timeout_s:.0f}s")
 
 
 def _resume_file() -> Path:
@@ -335,8 +367,11 @@ class SequenceEngine:
 
     @staticmethod
     def load_resume() -> dict | None:
+        # read UTF-8 to match write_json_atomic's encoding (a target name with a
+        # non-ascii char would otherwise mis-decode under the Windows cp1252
+        # default). Missing/corrupt → None (caller starts fresh).
         try:
-            return json.loads(_resume_file().read_text())
+            return json.loads(_resume_file().read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
 
@@ -404,12 +439,21 @@ class SequenceEngine:
     def _persist(self) -> None:
         if not self.plan:
             return
+        # ATOMIC write (P0-5): a plain write_text could be interrupted by a power
+        # cut mid-write and leave a half-written, unparseable .sequence_resume.json
+        # — a crash-resume would then silently fork a NEW report and lose night
+        # continuity. Reuse the same temp-file + fsync + os.replace helper config
+        # uses (persist.write_json_atomic), so the resume file is never observed
+        # half-written. The .bak is suppressed: the resume file churns every frame
+        # and a stale .bak is worthless for resume (the live file is the only
+        # truth), so we skip the per-frame copy.
         try:
-            f = _resume_file()
-            f.parent.mkdir(parents=True, exist_ok=True)
-            f.write_text(json.dumps(
-                {"plan": self.plan.model_dump(), "done": self._done, "ts": time.time(),
-                 "report_id": self.reporter.id if self.reporter else None}))
+            write_json_atomic(
+                _resume_file(),
+                {"plan": self.plan.model_dump(), "done": self._done,
+                 "ts": time.time(),
+                 "report_id": self.reporter.id if self.reporter else None},
+                backup=False)
         except OSError:
             pass
 
@@ -462,7 +506,22 @@ class SequenceEngine:
             self._start_watchdog()
 
             if plan.cool_to is not None:
-                await self._cool_and_wait(plan.cool_to, plan.cool_timeout_s)
+                cooled = await self._cool_and_wait(plan.cool_to, plan.cool_timeout_s)
+                # P1-7: require_cooling + cooling_action == "skip" → don't shoot
+                # warm lights. (abort raised SafetyAbort inside _cool_and_wait;
+                # warn/not-required returned and we proceed as before.)
+                cfg = self._cfg
+                if (not cooled and cfg and cfg.escalation.require_cooling
+                        and cfg.escalation.cooling_action == "skip"):
+                    self._set_state(state="complete",
+                                    detail="skipped: camera did not reach target temp",
+                                    end_reason="cooling_skip")
+                    bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
+                                       "required but not reached", "sequence")
+                    self._clear_resume()
+                    self._finalize_report("cooling_skip")
+                    await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
+                    return
 
             await self._run_scheduled(plan)
 
@@ -661,26 +720,64 @@ class SequenceEngine:
 
         if "telescope" in self.hub.devices:
             if target.center:
-                result = await self.hub.goto_and_center(target.ra_hours, target.dec_deg)
+                # GOTO+center is the slew + iterated solve→sync→re-slew loop —
+                # bounded so a hung solve/slew can't stall the night (P0-2).
+                result = await _bounded(
+                    self.hub.goto_and_center(target.ra_hours, target.dec_deg),
+                    GOTO_TIMEOUT_S, f"goto+center {target.name}")
                 if not result["centered"]:
                     bus.log("warning", f"{target.name}: centering converged to "
                                        f"{result['error_arcmin']:.1f}' — continuing", "sequence")
             else:
                 tel = self.hub.require("telescope")
-                if await tel.is_parked():
-                    await tel.unpark()
-                await tel.set_tracking(True)
-                await tel.slew(target.ra_hours, target.dec_deg)
+                if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
+                                  "mount is_parked query"):
+                    await _bounded(tel.unpark(), PARK_TIMEOUT_S, "mount unpark")
+                await _bounded(tel.set_tracking(True), MOUNT_QUERY_TIMEOUT_S,
+                               "mount set_tracking")
+                await _bounded(tel.slew(target.ra_hours, target.dec_deg),
+                               SLEW_TIMEOUT_S, f"slew to {target.name}")
 
         if target.autofocus_first and "focuser" in self.hub.devices:
             await self._autofocus("initial autofocus")
 
         if self.plan.guide and self.hub.guider and self.hub.guider.connected:
             self._set_state(detail="starting guiding")
+            # P1-7: honor escalation.require_guiding / guiding_action. The
+            # start is bounded (P0-2) so a guider that never settles can't hang
+            # the night. The default action is "warn" → log + continue unguided
+            # (legacy behavior unchanged). "abort" → SafetyAbort (no all-night
+            # trailed run). "skip" → skip this target's guiding-dependent run.
+            cfg = self._cfg
+            require_guiding = bool(cfg and cfg.escalation.require_guiding)
+            action = (cfg.escalation.guiding_action if cfg else "warn")
             try:
-                await self.hub.guider.start_guiding()
+                await _bounded(self.hub.guider.start_guiding(),
+                               GUIDE_START_TIMEOUT_S, "start guiding")
+            except SafetyAbort:
+                raise
             except Exception as e:
-                bus.log("warning", f"guiding failed to start: {e} — continuing unguided", "sequence")
+                if require_guiding and action == "abort":
+                    bus.log("error", f"guiding required but failed to start: {e}",
+                            "sequence")
+                    raise SafetyAbort(f"guiding required but failed to start: {e}")
+                if require_guiding and action == "skip":
+                    bus.log("warning", f"guiding required but failed to start: {e}"
+                                       f" — skipping {target.name}", "sequence")
+                    raise StopTarget("guiding required but could not start")
+                bus.log("warning", f"guiding failed to start: {e} — continuing unguided",
+                        "sequence")
+
+    async def _capture(self, step, target: Target) -> dict:
+        """Bounded ``hub.capture`` (P0-2). The timeout is exposure-relative: the
+        exposure itself plus a generous fixed margin for download/save/detect, so
+        a wedged camera/transport can never hang on an unbounded await — it
+        escalates through the abort+park path like any other stuck device I/O."""
+        budget = float(step.exposure_s) + CAPTURE_MARGIN_S
+        return await _bounded(
+            self.hub.capture(step.exposure_s, step.gain, step.offset, step.binning,
+                             save=True, target=target.name, frame_type=step.frame_type),
+            budget, f"capture {step.exposure_s:g}s")
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
         self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}")
@@ -695,8 +792,7 @@ class SequenceEngine:
                 self._set_state(state="running",
                                 detail=f"{target.name}: {step.frame_type} {step.exposure_s:g}s "
                                        f"[{i + 1}/{step.count}]")
-                info = await self.hub.capture(step.exposure_s, step.gain, step.offset, step.binning,
-                                              save=True, target=target.name, frame_type=step.frame_type)
+                info = await self._capture(step, target)
                 # calibration frames always record + advance (no quality gate on
                 # darks/bias/flats) — but they still go in the report.
                 accepted = self._check_quality(info)
@@ -728,10 +824,13 @@ class SequenceEngine:
                 self._set_state(detail="dithering")
                 _t0 = time.time()
                 try:
-                    await self.hub.guider.dither(plan.dither_pixels)
+                    await _bounded(self.hub.guider.dither(plan.dither_pixels),
+                                   GUIDE_OP_TIMEOUT_S, "dither")
                     self._frames_since_dither = 0
                     self._record_event_cost("dither", time.time() - _t0)
                     self._frame_had_event = True
+                except SafetyAbort:
+                    raise
                 except Exception as e:
                     bus.log("warning", f"dither failed: {e}", "sequence")
 
@@ -743,8 +842,7 @@ class SequenceEngine:
             self._set_state(state="running",
                             detail=f"{target.name}: {step.filter or 'no filter'} "
                                    f"{step.exposure_s:g}s  [{i + 1}/{step.count}]")
-            info = await self.hub.capture(step.exposure_s, step.gain, step.offset, step.binning,
-                                          save=True, target=target.name, frame_type=step.frame_type)
+            info = await self._capture(step, target)
             self._frames_since_dither += 1
             self._frames_since_focus += 1
             # quality-before-record (§1.9-D, C2-8): decide accept BEFORE _done
@@ -838,9 +936,7 @@ class SequenceEngine:
                                f"({spent + 1}/{cap or 'unlimited'})", "sequence")
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
             self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
-            new_info = await self.hub.capture(step.exposure_s, step.gain, step.offset,
-                                              step.binning, save=True, target=target.name,
-                                              frame_type=step.frame_type)
+            new_info = await self._capture(step, target)
             # the rejected original already appended its HFR to the running window;
             # don't double-append the retake's sample (P3-17).
             accepted = self._check_quality(new_info, record=False)
@@ -1009,17 +1105,20 @@ class SequenceEngine:
 
     async def _park_hold(self) -> None:
         """Stop tracking (park-hold) when pausing for safety so the mount isn't
-        left tracking a target into the pier (C2-6). Best-effort; never raises."""
+        left tracking a target into the pier (C2-6). Best-effort; never raises.
+        Both calls are bounded (P0-2) so a wedged guider/mount can't hang the
+        safety-pause hold; a timeout here is swallowed like any other failure."""
         try:
             if self.hub.guider and self.hub.guider.connected:
-                await self.hub.guider.stop_guiding()
-        except Exception:
+                await asyncio.wait_for(self.hub.guider.stop_guiding(),
+                                       GUIDE_OP_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception):
             pass
         try:
             tel = self.hub.devices.get("telescope")
             if tel and tel.connected:
-                await tel.set_tracking(False)
-        except Exception:
+                await asyncio.wait_for(tel.set_tracking(False), MOUNT_QUERY_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception):
             pass
 
     async def _enforce_mount_floor(self, *, projected: bool, target: Target) -> None:
@@ -1180,28 +1279,65 @@ class SequenceEngine:
 
     # ----------------------------------------------------------- sub-routines
 
-    async def _cool_and_wait(self, target_c: float, timeout_s: int) -> None:
+    async def _cool_and_wait(self, target_c: float, timeout_s: int) -> bool:
+        """Cool the camera to ``target_c`` and wait for it to stabilize.
+
+        Returns ``True`` when the cooler reached the band (or there is no
+        coolable camera — nothing to wait on), ``False`` on a cool-timeout / a
+        failed cooler command.
+
+        P1-7 escalation (``cfg.escalation.require_cooling`` + ``cooling_action``):
+        the default ``cooling_action == "warn"`` keeps the historical fail-open
+        behavior (log + continue, shoot whatever the temp is). When cooling is
+        REQUIRED, a cool-timeout no longer silently shoots warm lights:
+        ``abort`` → ``SafetyAbort`` (tear the night down through the wind-down);
+        ``skip`` → return ``False`` so the caller skips the light run. All cooler
+        device calls are bounded (P0-2)."""
+        cfg = self._cfg
+        require = bool(cfg and cfg.escalation.require_cooling)
+        action = (cfg.escalation.cooling_action if cfg else "warn")
+
         cam = self.hub.devices.get("camera")
         if not cam or not cam.connected or not getattr(cam, "can_cool", False):
-            return
+            return True
         self._set_state(state="running", detail=f"cooling to {target_c:g}°C")
         bus.log("info", f"cooling camera to {target_c:g}°C", "sequence")
         try:
-            await cam.set_cooler(True, target_c)
-        except Exception as e:
+            await asyncio.wait_for(cam.set_cooler(True, target_c), COOLER_CMD_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception) as e:
             bus.log("warning", f"cooler command failed: {e}", "sequence")
-            return
+            return self._cooling_failed(require, action,
+                                        f"cooler command failed: {e}")
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             await self._checkpoint()
-            t = await cam.get_temperature()
+            try:
+                t = await asyncio.wait_for(cam.get_temperature(), COOLER_CMD_TIMEOUT_S)
+            except (asyncio.TimeoutError, Exception):
+                t = None
             if t is not None and abs(t - target_c) <= COOLER_AT_TARGET_C:
                 bus.log("info", f"cooler stable at {t:.1f}°C", "sequence")
-                return
+                return True
             self._set_state(detail=f"cooling: {t:.1f}°C → {target_c:g}°C" if t is not None
                             else "cooling…")
             await asyncio.sleep(5.0)
-        bus.log("warning", "cooler did not stabilize in time — continuing", "sequence")
+        return self._cooling_failed(require, action,
+                                    "cooler did not stabilize in time")
+
+    def _cooling_failed(self, require: bool, action: str, reason: str) -> bool:
+        """Apply ``cfg.escalation.cooling_action`` on a cooling failure (P1-7).
+        Returns ``False`` (cooling did not succeed). ``abort`` raises SafetyAbort;
+        ``warn`` (default) and a non-required failure just log + continue."""
+        if require and action == "abort":
+            bus.log("error", f"cooling required but {reason} — aborting", "sequence")
+            raise SafetyAbort(f"cooling required but {reason}")
+        if require and action == "skip":
+            bus.log("warning", f"cooling required but {reason} — skipping lights",
+                    "sequence")
+        else:
+            # warn / not-required: legacy fail-open (shoot whatever temp we have).
+            bus.log("warning", f"{reason} — continuing", "sequence")
+        return False
 
     async def _apply_filter(self, step) -> None:
         if not step.filter or "filterwheel" not in self.hub.devices:
@@ -1235,7 +1371,10 @@ class SequenceEngine:
         if not tel or not tel.connected:
             return
         try:
-            ttf = await tel.time_to_meridian_flip()
+            ttf = await _bounded(tel.time_to_meridian_flip(),
+                                 MOUNT_QUERY_TIMEOUT_S, "meridian-flip query")
+        except SafetyAbort:
+            raise
         except Exception:
             return
         if ttf is None or ttf > 0:
@@ -1244,7 +1383,10 @@ class SequenceEngine:
         await self._safety_gate(context="slew", target=target)
         self._set_state(detail="meridian flip")
         _t0 = time.time()
-        await self.hub.meridian_flip(target.ra_hours, target.dec_deg)
+        # the flip = stop-guide + re-slew + solve + restart-guide; bound it (P0-2)
+        # so a wedged flip can't hang the night mid-slew across the meridian.
+        await _bounded(self.hub.meridian_flip(target.ra_hours, target.dec_deg),
+                       FLIP_TIMEOUT_S, "meridian flip")
         self._record_event_cost("flip", time.time() - _t0)
         # the flip wall-time is accounted analytically (events_cost_s), so flag
         # this frame to exclude it from the per-frame overhead EMA — matching the
@@ -1325,54 +1467,85 @@ class SequenceEngine:
     async def _autofocus(self, label: str) -> None:
         self._set_state(detail=label)
         _t0 = time.time()
+        failed_reason: str | None = None
         try:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
             result = await run_autofocus(cam, foc)
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
+                failed_reason = result.message or "autofocus failed"
             self._frames_since_focus = 0
             self._record_event_cost("autofocus", time.time() - _t0)
             try:
                 self._last_focus_temp = await foc.get_temperature()
             except Exception:
                 pass
+        except SafetyAbort:
+            raise
         except Exception as e:
             bus.log("warning", f"{label} error: {e}", "sequence")
+            failed_reason = str(e)
+        # P1-7: honor cfg.escalation.af_failure_action on a failed/errored focus.
+        # Default "warn" is the legacy behavior (log above + continue). "abort"
+        # tears the night down; "skip" advances the scheduler past this target
+        # rather than shooting it out of focus.
+        if failed_reason is not None:
+            cfg = self._cfg
+            action = (cfg.escalation.af_failure_action if cfg else "warn")
+            if action == "abort":
+                raise SafetyAbort(f"autofocus failed: {failed_reason}")
+            if action == "skip":
+                raise StopTarget(f"autofocus failed: {failed_reason}")
 
     async def _safe_stop(self) -> None:
-        """Leave the rig in a safe state after abort/error."""
+        """Leave the rig in a safe state after abort/error. Bounded (P0-2): a
+        wedged camera/guider can't hang the abort/error teardown."""
         try:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected:
-                await cam.abort_exposure()
-        except Exception:
+                await asyncio.wait_for(cam.abort_exposure(), COOLER_CMD_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception):
             pass
         try:
             if self.hub.guider and self.hub.guider.connected:
-                await self.hub.guider.stop_guiding()
+                await asyncio.wait_for(self.hub.guider.stop_guiding(),
+                                       GUIDE_OP_TIMEOUT_S)
         except Exception:
             pass
 
     async def _wind_down(self, park: bool, warm: bool) -> None:
+        # NB: every device call here is BOUNDED (P0-2) but a timeout is handled
+        # LOCALLY (log + continue), never re-raised as SafetyAbort — we are
+        # already tearing down, and a hung park must not stop the cooler from
+        # warming (or orphan the shielded teardown with an unretrieved exception).
         try:
             if self.hub.guider and self.hub.guider.connected:
-                await self.hub.guider.stop_guiding()
-        except Exception:
+                await asyncio.wait_for(self.hub.guider.stop_guiding(),
+                                       GUIDE_OP_TIMEOUT_S)
+        except (asyncio.TimeoutError, Exception):
             pass
         if park:
             tel = self.hub.devices.get("telescope")
             if tel and tel.connected:
                 bus.log("info", "parking mount", "sequence")
-                # a park failure must NOT abort the wind-down (else the cooler
-                # would never warm and, on an orphaned shielded teardown, this
-                # would surface as an 'exception never retrieved') — log + continue.
+                # a park failure/timeout must NOT abort the wind-down (else the
+                # cooler would never warm and, on an orphaned shielded teardown,
+                # this would surface as an 'exception never retrieved') — log +
+                # continue.
                 try:
-                    await tel.park()
+                    await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s "
+                                       "during wind-down — continuing", "sequence")
                 except Exception as e:
                     bus.log("warning", f"park failed during wind-down: {e}", "sequence")
         if warm:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected and getattr(cam, "can_cool", False):
                 bus.log("info", "warming camera", "sequence")
-                await cam.set_cooler(False)
+                try:
+                    await asyncio.wait_for(cam.set_cooler(False), COOLER_CMD_TIMEOUT_S)
+                except asyncio.TimeoutError:
+                    bus.log("warning", "warm-cooler command timed out during "
+                                       "wind-down — continuing", "sequence")

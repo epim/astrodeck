@@ -147,7 +147,18 @@ class SimCamera(Camera):
     def _render(self, seconds: float, gain: int, offset: int, binning: int,
                 light: bool) -> np.ndarray:
         h, w = self.sensor_height // binning, self.sensor_width // binning
-        rng = np.random.default_rng()
+        # DETERMINISTIC render: seed the per-exposure RNG from the rig + exposure
+        # state. Two exposures with the same focuser position / pointing / params
+        # produce byte-identical frames, so the autofocus V-curve is repeatable
+        # and its parabola fit doesn't ride per-frame seeing noise (the source of
+        # the historically flaky test_autofocus_converges). The frame still varies
+        # realistically with every input (focus, pointing, gain, offset, filter).
+        seed = abs(hash((
+            int(self.rig.focuser_pos), round(self.rig.ra_hours, 6),
+            round(self.rig.dec_deg, 6), self.rig.filter_slot, int(self.rig.parked),
+            round(float(seconds), 4), int(gain), int(offset), int(binning),
+            bool(light)))) % (2**32)
+        rng = np.random.default_rng(seed)
         bias = 100.0 + offset * 2.0
         read_noise = 3.0 + gain / 80.0
         img = rng.normal(bias, read_noise, (h, w))

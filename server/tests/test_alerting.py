@@ -6,6 +6,8 @@ queued (never raised) and later flushed; the round-trip ``test`` sets
 ``verified`` only on a real 2xx; the dead-man's-switch pings its URL."""
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -184,3 +186,152 @@ async def test_deadman_ping_no_url_is_noop():
     await disp.deadman_ping()      # must not raise / must not need the client
     if disp._client:
         await disp._client.aclose()
+
+
+# ----------------------------------------------- deadman: LAN allow + loud warn
+
+async def test_deadman_allows_private_lan_host():
+    """P0-3: a self-hosted Uptime-Kuma / healthchecks on 192.168.x.x is the
+    user's OWN monitor — the deadman url MUST be allowed to be a private/LAN host
+    (only the deadman gets allow_private; ntfy/webhook keep the SSRF block)."""
+    hits = []
+
+    def handler(req):
+        hits.append(str(req.url))
+        return httpx.Response(200)
+
+    cfg = AppConfig(deadman_url="http://192.168.1.50:3001/api/push/abc")
+    disp, _bus = _dispatcher(cfg, handler)
+    await disp.deadman_ping()
+    assert hits == ["http://192.168.1.50:3001/api/push/abc"]
+    await disp._client.aclose()
+
+
+async def test_outbound_webhook_still_blocks_lan_host():
+    """The SSRF block must REMAIN on outbound alert sinks — only the deadman is
+    exempt. A webhook pointed at a LAN host is refused, not delivered."""
+    sent = []
+
+    def handler(req):
+        sent.append(str(req.url))
+        return httpx.Response(200)
+
+    cfg = AppConfig(alerts=[AlertSink(id="w", kind="webhook",
+                                      url="http://192.168.1.50/hook",
+                                      events=["run_end"], min_level="warning")])
+    disp, _bus = _dispatcher(cfg, handler)
+    ok, err = await disp._send(cfg.alerts[0], AlertEvent("run_end", "error", "x"))
+    assert ok is False
+    assert "blocked" in (err or "")
+    assert sent == []          # never left the box
+    await disp._client.aclose()
+
+
+async def test_deadman_blocked_url_warns_loudly_once():
+    """P0-3: a deadman url that can never be a monitor (e.g. an unspecified
+    0.0.0.0 target) must LOG A LOUD WARNING — never silently skip — so the user
+    isn't lulled into a false sense of monitoring. The warning is one-shot per url."""
+    cfg = AppConfig(deadman_url="http://0.0.0.0/ping")
+    disp, bus = _dispatcher(cfg, lambda req: httpx.Response(200))
+    q = bus.subscribe()
+    await disp.deadman_ping()
+    await disp.deadman_ping()       # second call: must NOT warn again (one-shot)
+    warns = []
+    while not q.empty():
+        ev = q.get_nowait()
+        if ev.type == "log" and ev.data.get("level") == "warning":
+            warns.append(ev.data.get("message", ""))
+    assert len(warns) == 1
+    assert "dead-man" in warns[0].lower() or "deadman" in warns[0].lower()
+    await disp._client.aclose()
+
+
+async def test_deadman_unreachable_warns_then_recovers():
+    """An unreachable monitor warns once; once a ping succeeds the warn latch
+    clears so a later outage re-warns (not permanently silenced)."""
+    state = {"fail": True}
+
+    def handler(req):
+        if state["fail"]:
+            raise httpx.ConnectError("no route to host")
+        return httpx.Response(200)
+
+    cfg = AppConfig(deadman_url="http://monitor.local/ping")
+    disp, bus = _dispatcher(cfg, handler)
+    q = bus.subscribe()
+    await disp.deadman_ping()       # fails -> warns once
+    await disp.deadman_ping()       # still failing -> no repeat warn
+    warns = []
+    while not q.empty():
+        ev = q.get_nowait()
+        if ev.type == "log" and ev.data.get("level") == "warning":
+            warns.append(ev.data["message"])
+    assert len(warns) == 1
+    # monitor comes back -> a healthy ping clears the latch.
+    state["fail"] = False
+    await disp.deadman_ping()
+    assert disp._deadman_warned is None
+    await disp._client.aclose()
+
+
+async def test_deadman_url_scrubbed_in_warning_log():
+    """A deadman url's userinfo + query (which can hold a ping secret) must be
+    scrubbed out of the warning log line."""
+    def handler(req):
+        raise httpx.ConnectError("x")
+
+    cfg = AppConfig(deadman_url="http://user:pw@monitor.local/ping?token=SEKRET")
+    disp, bus = _dispatcher(cfg, handler)
+    q = bus.subscribe()
+    await disp.deadman_ping()
+    msgs = []
+    while not q.empty():
+        ev = q.get_nowait()
+        if ev.type == "log":
+            msgs.append(ev.data.get("message", ""))
+    blob = " ".join(msgs)
+    assert "SEKRET" not in blob
+    assert "user:pw" not in blob
+    await disp._client.aclose()
+
+
+# ----------------------------------------------- wall-clock deadman (P0-3 core)
+
+async def test_wallclock_pings_deadman_through_a_pause():
+    """THE P0-3 fix: the deadman keeps pinging from the WALL-CLOCK task even when
+    the engine produces NO frames (a legitimate multi-hour safety pause). We drive
+    the wall-clock loop directly with the interval shrunk so the test is fast, and
+    assert it pings repeatedly without any engine/frame activity."""
+    import astrodeck.alerting as alerting_mod
+
+    hits = []
+
+    def handler(req):
+        hits.append(str(req.url))
+        return httpx.Response(200)
+
+    cfg = AppConfig(deadman_url="https://hc-ping.com/abc")
+    disp, _bus = _dispatcher(cfg, handler)
+
+    # Shrink the wall-clock cadence so several "intervals" elapse in a tick.
+    monkey_interval = 0.0   # every wake is "due"
+    monkey_tick = 0.01
+    orig_i, orig_t = alerting_mod.DEADMAN_INTERVAL_S, alerting_mod._WALLCLOCK_TICK_S
+    alerting_mod.DEADMAN_INTERVAL_S = monkey_interval
+    alerting_mod._WALLCLOCK_TICK_S = monkey_tick
+    try:
+        task = asyncio.create_task(disp._wallclock_loop())
+        # Let it tick several times with ZERO frame-loop involvement (the engine
+        # never runs here — this is purely the wall-clock driver).
+        for _ in range(50):
+            if len(hits) >= 3:
+                break
+            await asyncio.sleep(0.01)
+        await disp.stop()
+        await task
+    finally:
+        alerting_mod.DEADMAN_INTERVAL_S = orig_i
+        alerting_mod._WALLCLOCK_TICK_S = orig_t
+    assert len(hits) >= 3, f"wall-clock deadman did not keep pinging: {hits}"
+    assert all(u == "https://hc-ping.com/abc" for u in hits)
+    await disp._client.aclose()

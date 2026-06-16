@@ -62,14 +62,33 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
 
     xs = np.array([p for p, _ in points], dtype=np.float64)
     ys = np.array([h for _, h in points], dtype=np.float64)
+    # Sort by position so "neighbours" are sweep-adjacent (the sweep already runs
+    # in order, but a skipped point or a refit must not assume that).
+    order = np.argsort(xs)
+    xs, ys = xs[order], ys[order]
+
     a, b, c = np.polyfit(xs, ys, 2)
-    if a > 0 and len(points) >= 6:
+    if a > 0 and len(points) >= 5:
         # Refine: V-curves are hyperbolic, so a parabola fit over the full
-        # (often asymmetric) sweep biases the vertex. Refit on the points
-        # nearest the coarse minimum, where a parabola is a good local model.
-        vertex = -b / (2 * a)
-        nearest = np.argsort(np.abs(xs - vertex))[:5]
-        a, b, c = np.polyfit(xs[nearest], ys[nearest], 2)
+        # (often asymmetric) sweep biases the vertex. Refit a *local* parabola
+        # anchored on the measured minimum (the lowest-HFR sample), taking a
+        # symmetric window of neighbours around it where a parabola is a good
+        # local model. Anchoring on the measured minimum — not the coarse-fit
+        # vertex, which can itself be biased by the asymmetric tails — keeps the
+        # refit stable (it was the wide-window bias that made the old fit
+        # occasionally land hundreds of units off).
+        lo = int(np.argmin(ys))
+        half = 2  # ±2 → up to 5 local points, centred on the measured minimum
+        i0, i1 = max(0, lo - half), min(len(xs), lo + half + 1)
+        xl, yl = xs[i0:i1], ys[i0:i1]
+        # Only accept the local refit when the minimum is actually BRACKETED —
+        # at least one measured point on each side of the anchor. A minimum at a
+        # window edge is unbracketed; keep the global fit and let the bracket
+        # guard below reject it rather than refitting off a one-sided slope.
+        if lo > i0 and lo < i1 - 1 and len(xl) >= 3:
+            al, bl, cl = np.polyfit(xl, yl, 2)
+            if al > 0:
+                a, b, c = al, bl, cl
     if a <= 0:
         await focuser.move_to(start_pos)
         bus.publish("focus", state="failed",
@@ -77,7 +96,23 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         return AutofocusResult(False, start_pos, None, points,
                                "no V-curve minimum found (flat or inverted fit)")
 
-    best = int(np.clip(-b / (2 * a), xs.min(), xs.max()))
+    vertex = -b / (2 * a)
+    # "Minimum not bracketed" guard (review 4d): if the fitted vertex falls at or
+    # outside the measured sweep range, the true focus is beyond the window we
+    # explored — clipping to the edge and reporting success would silently park
+    # the focuser at a boundary that is NOT in focus. Fail loudly instead so the
+    # caller can widen / recentre the sweep.
+    lo_edge, hi_edge = float(xs.min()), float(xs.max())
+    if not (lo_edge < vertex < hi_edge):
+        await focuser.move_to(start_pos)
+        bus.publish("focus", state="failed",
+                    points=[{"position": p, "hfr": h} for p, h in points], best=None)
+        return AutofocusResult(
+            False, start_pos, None, points,
+            "minimum not bracketed — true focus is outside the swept range "
+            "(widen the sweep or recentre)")
+
+    best = int(np.clip(vertex, lo_edge, hi_edge))
     # Final move from below for backlash consistency
     await focuser.move_to(max(0, best - step))
     await focuser.move_to(best)

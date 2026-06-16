@@ -54,6 +54,11 @@ def star_image_to_png(result: dict) -> bytes | None:
 
 class PHD2Guider(Guider):
     name = "PHD2"
+    #: PHD2 can flip its calibration for a meridian flip (P1-6).
+    can_flip_calibration = True
+
+    # Reconnect backoff schedule (seconds) after an unexpected socket drop.
+    _RECONNECT_BACKOFF = (1, 2, 5, 10, 20, 30)
 
     def __init__(self, host: str = "127.0.0.1", port: int = 4400,
                  pixel_scale_arcsec: float = 2.0):
@@ -69,45 +74,117 @@ class PHD2Guider(Guider):
         self._app_state = "Stopped"
         self._samples: deque[dict] = deque(maxlen=300)
         self._snr = 0.0
+        # Set True by disconnect() so a deliberate close does NOT trigger the
+        # auto-reconnect loop (only an unexpected EOF/error does).
+        self._closing = False
 
     # ------------------------------------------------------------- transport
 
-    async def connect(self) -> None:
+    async def _open(self) -> None:
+        """Open the socket (no listener). Shared by connect() and reconnect."""
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port), timeout=5
         )
+
+    async def connect(self) -> None:
+        self._closing = False
+        await self._open()
         self._listen_task = asyncio.create_task(self._listen())
         self.connected = True
         bus.log("info", f"connected to PHD2 at {self.host}:{self.port}", "guide")
 
     async def disconnect(self) -> None:
+        self._closing = True
         self.connected = False
-        if self._listen_task:
-            self._listen_task.cancel()
+        task = self._listen_task
+        self._listen_task = None
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self._writer:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+        self._fail_pending("PHD2 disconnected")
+
+    def _fail_pending(self, reason: str) -> None:
+        """Fail every in-flight RPC future so a caller awaiting a response after a
+        socket drop fails fast instead of hanging until its own timeout, and the
+        ``_pending`` map never leaks (P1-6). Also unblock any settle waiter so a
+        ``start_guiding``/``dither`` in progress raises a clear error."""
+        pending, self._pending = self._pending, {}
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(ConnectionError(reason))
+        # A drop mid-settle is a failed settle, not a 90s hang.
+        if not self._settle_done.is_set():
+            self._settle_error = self._settle_error or reason
+            self._settle_done.set()
 
     async def _listen(self) -> None:
-        assert self._reader is not None
-        while True:
-            line = await self._reader.readline()
-            if not line:
-                self.connected = False
-                bus.log("error", "PHD2 connection lost", "guide")
+        """Read+demux the PHD2 stream. On an unexpected EOF/error, fail pending
+        RPCs, mark not-guiding, and (unless deliberately closing) hand off to the
+        reconnect loop so a dropped socket self-heals instead of leaving the
+        guider permanently stuck reporting stale "Guiding" (P1-6)."""
+        try:
+            assert self._reader is not None
+            while True:
+                line = await self._reader.readline()
+                if not line:
+                    raise ConnectionError("PHD2 connection closed (EOF)")
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if "jsonrpc" in msg and "id" in msg:
+                    fut = self._pending.pop(msg["id"], None)
+                    if fut and not fut.done():
+                        if "error" in msg:
+                            fut.set_exception(RuntimeError(
+                                msg["error"].get("message", "PHD2 error")))
+                        else:
+                            fut.set_result(msg.get("result"))
+                else:
+                    self._handle_event(msg)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Unexpected drop. Mark not-connected/not-guiding and fail pending so
+            # stats() stops claiming "Guiding" and no future leaks.
+            self.connected = False
+            self._app_state = "Stopped"
+            self._fail_pending(f"PHD2 connection lost: {e}")
+            bus.publish("guide", **self.stats().__dict__)
+            if self._closing:
+                return
+            bus.log("error", f"PHD2 connection lost: {e}; reconnecting", "guide")
+            asyncio.create_task(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        """Re-open the socket with capped exponential backoff and restart the
+        listener. Runs until reconnected or until disconnect() flips _closing."""
+        for i in range(1000):
+            if self._closing:
+                return
+            delay = self._RECONNECT_BACKOFF[min(i, len(self._RECONNECT_BACKOFF) - 1)]
+            await asyncio.sleep(delay)
+            if self._closing:
                 return
             try:
-                msg = json.loads(line)
-            except ValueError:
+                await self._open()
+            except Exception as e:
+                bus.log("warning",
+                        f"PHD2 reconnect attempt {i + 1} failed: {e}", "guide")
                 continue
-            if "jsonrpc" in msg and "id" in msg:
-                fut = self._pending.pop(msg["id"], None)
-                if fut and not fut.done():
-                    if "error" in msg:
-                        fut.set_exception(RuntimeError(msg["error"].get("message", "PHD2 error")))
-                    else:
-                        fut.set_result(msg.get("result"))
-            else:
-                self._handle_event(msg)
+            self._listen_task = asyncio.create_task(self._listen())
+            self.connected = True
+            bus.log("info", f"reconnected to PHD2 at {self.host}:{self.port}",
+                    "guide")
+            return
 
     def _handle_event(self, ev: dict[str, Any]) -> None:
         kind = ev.get("Event")
@@ -125,7 +202,29 @@ class PHD2Guider(Guider):
             if ev.get("Status", 0) != 0 and not self._settle_error:
                 self._settle_error = "settle failed"
             self._settle_done.set()
+        elif kind == "CalibrationFailed":
+            # P1-6: surface a calibration failure immediately as a friendly
+            # message instead of letting start_guiding sit out its ~90s settle
+            # timeout. Unblock any settle waiter with the reason.
+            reason = ev.get("Reason") or "calibration failed"
+            self._settle_error = f"calibration failed: {reason}"
+            bus.log("error", f"PHD2 {self._settle_error}", "guide")
+            self._settle_done.set()
+        elif kind == "Alert":
+            # P1-6: PHD2 raises Alert for many operational problems (calibration
+            # could not start, star saturated, etc.). An error/warning Alert
+            # arriving while we're waiting to settle is treated as a settle
+            # failure so the caller gets the real reason, not a timeout.
+            msg = ev.get("Msg") or "PHD2 alert"
+            atype = str(ev.get("Type", "info")).lower()
+            level = "error" if atype in ("error", "alert") else "warning"
+            bus.log(level, f"PHD2 alert: {msg}", "guide")
+            if level == "error" and not self._settle_done.is_set():
+                self._settle_error = msg
+                self._settle_done.set()
         elif kind in ("GuidingStopped", "StarLost"):
+            if kind == "GuidingStopped":
+                self._app_state = "Stopped"
             bus.publish("guide", **self.stats().__dict__)
             if kind == "StarLost":
                 bus.log("warning", "PHD2 lost the guide star", "guide")
@@ -154,6 +253,34 @@ class PHD2Guider(Guider):
 
     async def stop_guiding(self) -> None:
         await self._rpc("stop_capture")
+
+    async def flip_calibration(self) -> bool:
+        """Flip PHD2's calibration data for a meridian flip (P1-6).
+
+        After a GEM flips to the far side of the pier the guide directions are
+        reversed; PHD2's ``flip_calibration`` RPC mirrors the stored calibration
+        so guiding does not run the mount away from the star. ``hub.meridian_flip``
+        calls this between stopping and restarting guiding.
+
+        Returns True on success. A guider not connected, or a PHD2 with no usable
+        calibration to flip, is a logged NO-OP returning False (never raises) so
+        the meridian flip still completes — guiding then re-calibrates on restart.
+        """
+        if not self.connected or self._writer is None:
+            bus.log("warning", "PHD2 not connected; cannot flip calibration; "
+                    "will rely on a fresh calibration after the flip", "guide")
+            return False
+        try:
+            await self._rpc("flip_calibration", timeout=30)
+            bus.log("info", "PHD2 calibration flipped for the meridian flip",
+                    "guide")
+            return True
+        except Exception as e:
+            # e.g. PHD2 has no calibration to flip, or is mid-calibration. Warn
+            # and let the flip proceed; a fresh calibration on restart is safe.
+            bus.log("warning", f"PHD2 flip_calibration failed ({e}); will rely "
+                    "on a fresh calibration after the flip", "guide")
+            return False
 
     async def dither(self, pixels: float = 3.0) -> None:
         self._settle_done.clear()

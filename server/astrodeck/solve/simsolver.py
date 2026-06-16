@@ -3,6 +3,13 @@
 This makes the full goto→solve→sync→re-slew centering loop work end to end
 with the simulated rig, including the deliberate pointing error the sim
 mount introduces.
+
+SAFETY (review 5d): this solver is a *fallback* when ASTAP isn't installed.
+On a real rig that would be a false-solve hazard — with a hint it would echo
+the hint straight back as a "successful solve" and fake-center the mount on a
+discovery miss. So it REFUSES (returns failure) whenever it is asked to solve
+for a real (``mode == "nina"`` / ``"alpaca"``) rig: only an explicit sim rig
+or an explicitly-sim mode may receive a synthetic solution.
 """
 from __future__ import annotations
 
@@ -11,16 +18,32 @@ from pathlib import Path
 
 from .base import PlateSolver, SolveResult
 
+#: Real-hardware hub modes the sim solver must never fake-solve for (review 5d).
+#: A discovery miss that falls back here on a live rig must FAIL loudly rather
+#: than echo the pointing hint as a centered solve.
+_REAL_MODES = ("nina", "alpaca")
+
 
 class SimSolver(PlateSolver):
     name = "Simulator"
 
-    def __init__(self, sim_rig=None):
+    def __init__(self, sim_rig=None, mode: str | None = None):
         self.sim_rig = sim_rig
+        #: the hub mode this solver was built for, so it can refuse to invent a
+        #: solution for a real rig (review 5d). None / "sim" / "none" are safe.
+        self.mode = mode
 
     async def solve(self, fits_path: Path, *, ra_hint: float | None = None,
                     dec_hint: float | None = None,
                     fov_deg_hint: float | None = None) -> SolveResult:
+        # Refuse on a real rig: a SimSolver only ever reaches a live rig as the
+        # ASTAP-not-found fallback, and faking a solve there would silently
+        # fake-center a real mount (review 5d). Fail loudly instead.
+        if self.mode in _REAL_MODES:
+            return SolveResult(
+                False,
+                message=("ASTAP not found — refusing to fake a plate solve on a "
+                         f"real ({self.mode}) rig. Install ASTAP or set ASTAP_PATH."))
         await asyncio.sleep(1.2)  # pretend to work
         if self.sim_rig is not None:
             return SolveResult(True, ra_hours=self.sim_rig.ra_hours,

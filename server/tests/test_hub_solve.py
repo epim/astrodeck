@@ -59,7 +59,8 @@ async def test_solve_uses_vertical_fov_hint(sim_hub, monkeypatch):
     assert opt["fov_h_deg"] != opt["fov_diag_deg"]   # the bug-distinguishing gap
 
     solver = _CapturingSolver()
-    monkeypatch.setattr(hub_module, "get_solver", lambda sim_rig=None: solver)
+    monkeypatch.setattr(hub_module, "get_solver",
+                        lambda sim_rig=None, mode=None: solver)
 
     await h.solve_and_sync(exposure_s=0.05)
 
