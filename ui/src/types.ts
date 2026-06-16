@@ -312,6 +312,9 @@ export interface Target {
   autofocus_first: boolean;
   calibration: boolean;
   steps: ExposureStep[];
+  // --- atlas (additive; nullable so existing plans deserialize unchanged) ---
+  rotation_deg?: number;    // target camera angle (PA) — guidance only, no rotator in rig
+  mosaic_group?: string;    // e.g. "M31" to group panels in the Plan UI
 }
 
 export interface SequencePlan {
@@ -406,6 +409,104 @@ export interface SkyInfo {
   dark_window: { start_iso: string; end_iso: string } | null;
   place_hint: string;
   lst_str: string;
+}
+
+// ============================================================================
+// ATLAS — Sky Atlas + Framing + Mosaic + Visibility (design spec §4.1).
+// Owner A freezes these; lanes B–E compile against them. All additive.
+// NOTE: `Optics` is the EXISTING px-suffixed interface above (sensor_width_px /
+// sensor_height_px) — these types reference it, they do NOT redefine it.
+// ============================================================================
+
+export interface FovRect {                 // single sensor footprint
+  ra_hours: number;
+  dec_deg: number;
+  fov_x_deg: number;
+  fov_y_deg: number;
+  rotation_deg: number;                    // position angle, N-up E-left
+}
+
+export interface MosaicSpec {
+  ra_hours: number;
+  dec_deg: number;
+  rows: number;                            // 1..10
+  cols: number;                            // 1..10
+  overlap: number;                         // 0..0.5 (default 0.25)
+  rotation_deg: number;                    // PA applied to whole mosaic
+  fov_x_deg: number;                       // single-frame FOV at bin 1
+  fov_y_deg: number;
+}
+
+export interface MosaicPanel {
+  row: number;
+  col: number;
+  ra_hours: number;                        // server returns ra already %24-wrapped
+  dec_deg: number;
+  rotation_deg: number;
+  transit_alt?: number;                    // peak alt tonight (NOT instantaneous "now" alt)
+}
+
+export interface MosaicResult {
+  panels: MosaicPanel[];
+  total_fov_x_deg: number;                 // tangent-plane extent
+  total_fov_y_deg: number;
+  frame_fov_x_deg: number;
+  frame_fov_y_deg: number;
+  pixel_scale_arcsec: number;
+}
+
+export interface FramingSession {
+  target?: CatalogEntry;                   // origin object (undefined = free-roam)
+  center: { ra_hours: number; dec_deg: number };
+  rotation_deg: number;
+  survey: string;                          // "CDS/P/DSS2/color" | "CDS/P/DSS2/red" | "CDS/P/2MASS/color"
+  stretch: "linear" | "asinh";
+  fovZoomDeg: number;                      // survey crop angular width
+  mosaic: { rows: number; cols: number; overlap: number };
+  panels: MosaicPanel[];                   // generated; length 1 when 1x1
+  freeroamId?: string;                     // stable mosaic-group id for free-roam (no target) sends
+}
+
+export interface MoonInfo {
+  illumination: number;                    // 0..1
+  phase_name: string;                      // "Waning Gibbous"
+  alt: number;
+  az: number;                              // at session time
+  separation_deg: number;                  // from target
+  rise_unix: number | null;                // tonight, null if always up/down
+  set_unix: number | null;
+}
+
+export interface VisibilitySample {
+  t_unix: number;
+  alt: number;
+  moon_alt: number;
+  sun_alt: number;
+}
+
+export interface VisibilityNight {
+  date: string;
+  transit_unix: number;
+  transit_alt: number;                                 // peak within dark window (see §9)
+  transit_in_daylight: boolean;                        // true if geometric transit is in daylight
+  dark_start_unix: number | null;                      // astro-dark start (null if none)
+  dark_end_unix: number | null;
+  darkness_kind: "astronomical" | "nautical" | "none"; // fallback ladder
+  samples: VisibilitySample[];
+  moon: MoonInfo;
+  best_window: { start_unix: number; end_unix: number; mean_alt: number } | null;
+  alt_limit_deg: number;                               // horizon limit (default 30)
+  never_rises_above_limit: boolean;
+}
+
+export interface VisibilityTarget {
+  name: string;
+  ra_hours: number;
+  dec_deg: number;
+  transit_unix: number;
+  max_alt: number;
+  best_window: { start_unix: number; end_unix: number } | null;
+  moon_sep_deg: number;
 }
 
 // ---------------------------------------------------- onboarding: site + checks

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
-import { Panel, Stat, Toggle } from "../components/ui";
+import { Panel, Stat, Toggle, IconButton } from "../components/ui";
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
 import type { CatalogEntry, PreflightAlt } from "../types";
@@ -16,6 +16,7 @@ function AltGlyph({ alt }: { alt: number }) {
 export default function MountView() {
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
+  const openFraming = useStore((s) => s.openFraming);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [center, setCenter] = useState(true);
@@ -163,10 +164,20 @@ export default function MountView() {
                     </span>
                   </td>
                   <td className="text-right">
-                    <button className="btn tap min-h-[44px] !px-3" disabled={!m}
-                      onClick={() => doGoto(r)}>
-                      GOTO
-                    </button>
+                    <div className="inline-flex items-center gap-1.5 justify-end">
+                      {/* Frame this object in the Atlas (telescope/frame glyph, NOT
+                          the Align ⊕ — spec §6 / C3-A10). Works offline; no mount
+                          needed, so it is never disabled. */}
+                      <IconButton
+                        icon="frame"
+                        label={`Frame ${r.id} in the Sky Atlas`}
+                        onClick={() => openFraming(r)}
+                      />
+                      <button className="btn tap min-h-[44px] !px-3" disabled={!m}
+                        onClick={() => doGoto(r)}>
+                        GOTO
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

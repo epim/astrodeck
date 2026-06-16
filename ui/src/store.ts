@@ -3,7 +3,9 @@ import { useShallow } from "zustand/react/shallow";
 import type { ReactNode } from "react";
 import type {
   AppConfig,
+  CatalogEntry,
   FocusEvent,
+  FramingSession,
   GuideStats,
   LogLine,
   NinaHealth,
@@ -15,6 +17,7 @@ import type {
   SequenceState,
   SiteInfo,
   StretchParams,
+  Target,
   Toast,
   ToastLevel,
   TouchSettings,
@@ -105,6 +108,27 @@ function loadPlan(): SequencePlan {
     /* fall through to default */
   }
   return defaultPlan();
+}
+
+// ----------------------------------------------------------------- atlas/framing
+// The framing session's initial survey crop width. Seed it from the persisted
+// optics' computed FOV (the camera's own field, padded ~1.6×) so the camera
+// rectangle lands at a sensible size; fall back to ~1.5° when optics are unset.
+const FRAMING_DEFAULT_FOV_DEG = 1.5;
+const FRAMING_DEFAULT_SURVEY = "CDS/P/DSS2/color";
+// Night seeds the monochrome red survey (spec §8): full-color DSS2 is a
+// dark-adaptation killer, so a fresh night session opens on the red HiPS.
+const FRAMING_NIGHT_SURVEY = "CDS/P/DSS2/red";
+
+function seedFovZoomDeg(config: AppConfig | null): number {
+  const oc = config?.optics_computed;
+  if (oc && oc.have_optics) {
+    const diag = oc.fov_diag_deg ?? null;
+    const w = oc.fov_w_deg ?? null;
+    const base = diag ?? w ?? null;
+    if (base && base > 0) return Math.min(10, Math.max(0.1, base * 1.6));
+  }
+  return FRAMING_DEFAULT_FOV_DEG;
 }
 
 // ----------------------------------------------------------- live-preview state
@@ -283,6 +307,18 @@ interface AppState {
   siteDirty: boolean;
   opticsDirty: boolean;
 
+  // --- atlas / framing (design spec §4.2) ---
+  // The active framing session (null until openFraming). Optics are read from
+  // `config.optics_computed`; site from `site` — NO separate settings slice.
+  framing: FramingSession | null;
+  atlasHandoff: number; // bump flashes the "added to plan" banner in SequenceView
+  // One-shot Atlas→Plan hand-off banner. addTargetsToPlan sets it to the panel
+  // count of the latest Send; SequenceView renders "N panels added from Atlas"
+  // and clears it via dismissAtlasBanner. Store-held so it survives SequenceView's
+  // remount on navigation (App's single-slot <main key={view}>) — a useRef seed
+  // would miss the already-bumped signal.
+  atlasBannerPending: number | null;
+
   // --- site (onboarding) ---
   site: SiteInfo | null;
   equipConnected: boolean; // sticky equipment flag, NOT wsConnected
@@ -342,6 +378,12 @@ interface AppState {
   setSiteDirty: (b: boolean) => void;
   setOpticsDirty: (b: boolean) => void;
   setSite: (s: SiteInfo) => void;
+
+  // --- actions: atlas / framing ---
+  openFraming: (e?: CatalogEntry) => void; // view="atlas"; seed center+FOV from entry/optics
+  setFraming: (patch: Partial<FramingSession>) => void;
+  addTargetsToPlan: (targets: Target[], group?: string) => void; // replace-by-group then append
+  dismissAtlasBanner: () => void; // clears the one-shot Atlas→Plan hand-off banner
 
   // --- actions: reliability ---
   setWsPhase: (p: WsPhase) => void;
@@ -414,6 +456,11 @@ export const useStore = create<AppState>((set, get) => ({
   editorDirty: false,
   siteDirty: false,
   opticsDirty: false,
+
+  // --- atlas / framing ---
+  framing: null,
+  atlasHandoff: 0,
+  atlasBannerPending: null,
 
   // --- site ---
   site: null,
@@ -496,6 +543,62 @@ export const useStore = create<AppState>((set, get) => ({
   setSiteDirty: (b) => set({ siteDirty: b }),
   setOpticsDirty: (b) => set({ opticsDirty: b }),
   setSite: (s) => set({ site: s }),
+
+  // ----------------------------------------------------------- atlas / framing
+  // Open the Atlas on `e` (or free-roam when no entry). Switches the view, seeds
+  // the session center from the entry (or current mount/0,0 when free-roam), and
+  // seeds the survey crop width from the persisted optics FOV (fallback ~1.5°).
+  // Defaults: 1×1 mosaic, 25% overlap, DSS2 color, linear stretch, empty panels.
+  openFraming: (e) => {
+    const config = get().config;
+    const center = e
+      ? { ra_hours: e.ra_hours, dec_deg: e.dec_deg }
+      : { ra_hours: get().status?.mount?.ra_hours ?? 0, dec_deg: get().status?.mount?.dec_deg ?? 0 };
+    // Free-roam sends have no catalog id to group panels by; synthesize a stable
+    // per-session group id from the rounded center so a multi-panel mosaic groups
+    // in the Plan and re-framing REPLACES (not duplicates) its panels (C1-C2).
+    const freeroamId = e
+      ? undefined
+      : `Sky ${center.ra_hours.toFixed(2)}h ${center.dec_deg >= 0 ? "+" : ""}${center.dec_deg.toFixed(1)}°`;
+    const framing: FramingSession = {
+      target: e,
+      center,
+      rotation_deg: 0,
+      // Night seeds the monochrome red survey (spec §8) so a fresh session never
+      // flashes a full-color JPEG at a dark-adapted eye.
+      survey: get().night ? FRAMING_NIGHT_SURVEY : FRAMING_DEFAULT_SURVEY,
+      stretch: "linear",
+      fovZoomDeg: seedFovZoomDeg(config),
+      mosaic: { rows: 1, cols: 1, overlap: 0.25 },
+      panels: [],
+      freeroamId,
+    };
+    set({ framing, view: "atlas" });
+  },
+
+  setFraming: (patch) =>
+    set((s) => (s.framing ? { framing: { ...s.framing, ...patch } } : {})),
+
+  // Replace-by-group then append (resolves dedupe critique C1-C2). If any incoming
+  // target carries mosaic_group===group, every existing target with that group is
+  // removed first, so re-framing the same object REPLACES its panels instead of
+  // silently no-op'ing. Single (no group) frames append. Routes through setPlan so
+  // the existing persist-in-setter writes localStorage; then bumps atlasHandoff.
+  addTargetsToPlan: (targets, group) => {
+    const plan = get().plan;
+    const groupHit =
+      group != null && targets.some((t) => t.mosaic_group === group);
+    const kept = groupHit
+      ? plan.targets.filter((t) => t.mosaic_group !== group)
+      : plan.targets;
+    const nextPlan: SequencePlan = { ...plan, targets: [...kept, ...targets] };
+    get().setPlan(nextPlan);
+    // Bump the hand-off signal AND record the panel count so SequenceView shows
+    // "N panels added from Atlas" exactly once, surviving its remount-on-nav.
+    set((s) => ({ atlasHandoff: s.atlasHandoff + 1, atlasBannerPending: targets.length }));
+  },
+
+  dismissAtlasBanner: () => set({ atlasBannerPending: null }),
 
   // ----------------------------------------------------------- reliability
   setWsPhase: (p) => {
@@ -894,6 +997,9 @@ export const useNotifyEnabled = () => useStore((s) => s.notifyEnabled);
 
 export const useConfig = () => useStore((s) => s.config);
 export const usePlan = () => useStore((s) => s.plan);
+export const useFraming = () => useStore((s) => s.framing);
+export const useAtlasHandoff = () => useStore((s) => s.atlasHandoff);
+export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending);
 export const useSite = () => useStore((s) => s.site);
 export const useEquipConnected = () => useStore((s) => s.equipConnected);
 export const useConfirm = () => useStore((s) => s.confirm);

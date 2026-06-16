@@ -7,12 +7,14 @@ import type { JSX } from "react";
 export type IconName =
   // nav
   | "rig" | "capture" | "focus" | "mount" | "align" | "guide" | "plan" | "power"
-  | "settings" | "monitor"
+  | "settings" | "monitor" | "atlas"
   // actions
   | "play" | "stop" | "pause" | "refresh" | "bridge" | "link"
-  | "sun" | "moon" | "lock" | "unlock"
+  | "sun" | "moon" | "lock" | "unlock" | "frame"
   // status
   | "alert" | "check" | "info" | "x"
+  // misc
+  | "grid"
   // directional
   | "arrow-up" | "arrow-down" | "arrow-left" | "arrow-right";
 
@@ -35,6 +37,10 @@ const PATHS: Record<IconName, JSX.Element> = {
   power: <><path d="M12 3v9" /><path d="M7 6a8 8 0 1010 0" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></>,
   monitor: <><rect x="3" y="4" width="18" height="12" rx="1" /><path d="M8 20h8M12 16v4" /><path d="M6 11l3-3 2 2 4-4" /></>,
+  // atlas — a telescope tube on a tripod, reads as "point at the sky" (nav glyph)
+  atlas: <><path d="M3 14l11.5-4 1.6 4.4L4.6 18.4z" /><path d="M14.5 10l2.6-4.6 3.5 1.6L18 11.6" /><path d="M9 16.5L7 22M11 17.5L13 22M6 22h9" /></>,
+  // frame — a viewfinder rectangle with corner ticks (per-row Frame action, NOT align)
+  frame: <><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3" /><rect x="9" y="9" width="6" height="6" rx="0.5" /></>,
   play: <><path d="M7 5l11 7-11 7z" /></>,
   stop: <><rect x="6" y="6" width="12" height="12" rx="1" /></>,
   pause: <><rect x="7" y="5" width="3" height="14" rx="1" /><rect x="14" y="5" width="3" height="14" rx="1" /></>,
@@ -49,6 +55,8 @@ const PATHS: Record<IconName, JSX.Element> = {
   check: <><path d="M5 13l4 4L19 7" /></>,
   info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5" /><circle cx="12" cy="8" r="0.8" /></>,
   x: <><path d="M6 6l12 12M18 6L6 18" /></>,
+  // grid — 2x2 cells (mosaic / total-field glyph), Lucide-style
+  grid: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
   "arrow-up": <><path d="M12 19V5M6 11l6-6 6 6" /></>,
   "arrow-down": <><path d="M12 5v14M6 13l6 6 6-6" /></>,
   "arrow-left": <><path d="M19 12H5M11 6l-6 6 6 6" /></>,

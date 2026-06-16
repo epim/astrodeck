@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore } from "../store";
+import { useStore, useAtlasBannerPending } from "../store";
 import { Field, HoldButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
@@ -41,6 +41,13 @@ export default function SequenceView() {
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
   const setPlan = useStore((s) => s.setPlan);
+  // Atlas hand-off: the store holds `atlasBannerPending` (the panel count of the
+  // latest Send) so the one-shot "N panels added from Atlas" banner survives this
+  // view's remount-on-nav. Dismiss clears the store flag. Store-held (not a useRef
+  // seeded from an already-bumped counter) is what lets the freshly-mounted view
+  // see the signal at all.
+  const atlasBannerPending = useAtlasBannerPending();
+  const dismissAtlasBanner = useStore((s) => s.dismissAtlasBanner);
   // Pre-flight gate (F-P0.1): one shared verdict drives BOTH the strip and the
   // Run button. `verdict==='blocked'` disables Run and routes it through the
   // modal (Review) instead of starting. `force` is threaded into the start body
@@ -119,9 +126,38 @@ export default function SequenceView() {
   }, [running]);
 
   const filters = status?.filterwheel?.names ?? [];
-  const totalFrames = plan.targets.reduce((a, t) => a + t.steps.reduce((b, s) => b + s.count, 0), 0);
-  const totalMinutes = plan.targets.reduce(
-    (a, t) => a + t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0), 0) / 60;
+  // Per-target frame/minute rollup (the same reducer the plan totals use, scoped
+  // to one target) — reused for mosaic-group headers.
+  const targetFrames = (t: Target) => t.steps.reduce((b, s) => b + s.count, 0);
+  const targetSeconds = (t: Target) => t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0);
+  const totalFrames = plan.targets.reduce((a, t) => a + targetFrames(t), 0);
+  const totalMinutes = plan.targets.reduce((a, t) => a + targetSeconds(t), 0) / 60;
+
+  // Delete every target sharing a mosaic_group (the whole mosaic), reversibly.
+  const deleteGroup = (group: string) =>
+    deleteWithUndo(
+      `Deleted mosaic ${group}`,
+      { ...plan, targets: plan.targets.filter((t) => t.mosaic_group !== group) },
+    );
+
+  // Partition the (ordered) plan into render blocks: each block is either a single
+  // ungrouped target or a run of CONSECUTIVE targets sharing one mosaic_group.
+  // Original indices are carried so the existing per-target editors stay correct.
+  type Block =
+    | { kind: "single"; ti: number }
+    | { kind: "group"; group: string; members: number[] };
+  const blocks: Block[] = [];
+  plan.targets.forEach((t, ti) => {
+    const g = t.mosaic_group;
+    const prev = blocks[blocks.length - 1];
+    if (g && prev && prev.kind === "group" && prev.group === g) {
+      prev.members.push(ti);
+    } else if (g) {
+      blocks.push({ kind: "group", group: g, members: [ti] });
+    } else {
+      blocks.push({ kind: "single", ti });
+    }
+  });
 
   const addTarget = (e: CatalogEntry) => {
     setPlan({
@@ -150,6 +186,26 @@ export default function SequenceView() {
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
+        {/* ----------- one-shot Atlas hand-off banner (panels added from Atlas) */}
+        {atlasBannerPending != null && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex items-center gap-3 border border-accent/50 bg-accent/5 px-3 py-2"
+          >
+            <Icon name="check" size={16} className="text-good shrink-0" />
+            <span className="text-sm text-ink flex-1">
+              {atlasBannerPending} {atlasBannerPending === 1 ? "target" : "panels"} added from Atlas
+            </span>
+            <button
+              className="btn tap min-h-[44px] !px-3 !text-[11px]"
+              aria-label="Dismiss Atlas banner"
+              onClick={dismissAtlasBanner}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {/* -------------------------------- recover banner (no live panel) */}
         {recoverable && !showPanel && (
           <Panel title="Resume Interrupted Run">
@@ -301,13 +357,22 @@ export default function SequenceView() {
             </p>
           )}
           <div className="flex flex-col gap-4">
-            {plan.targets.map((t, ti) => (
+            {(() => {
+              const renderTarget = (t: Target, ti: number) => (
               <div key={ti} className="border border-line bg-bg/50 p-3">
                 <div className="flex items-center gap-3 flex-wrap">
                   <span className="font-display font-semibold text-accent tracking-wider">{t.name}</span>
                   <span className="mono text-[11px] text-dim">
                     {t.ra_hours.toFixed(3)}h {t.dec_deg >= 0 ? "+" : ""}{t.dec_deg.toFixed(2)}°
                   </span>
+                  {t.rotation_deg != null && t.rotation_deg > 0.5 && (
+                    <span
+                      className="mono text-[10px] text-accent border border-line2 px-1.5 py-0.5"
+                      title="Set your camera to this position angle before the run (no rotator in rig)"
+                    >
+                      PA {Math.round(t.rotation_deg)}°
+                    </span>
+                  )}
                   <label className="flex items-center gap-1.5 text-[11px] text-dim">
                     <Toggle checked={t.center} onChange={(v) => patchTarget(ti, { center: v })} /> center
                   </label>
@@ -382,7 +447,47 @@ export default function SequenceView() {
                   </div>
                 </div>
               </div>
-            ))}
+              );
+
+              return blocks.map((blk, bi) => {
+                if (blk.kind === "single") {
+                  return renderTarget(plan.targets[blk.ti], blk.ti);
+                }
+                // mosaic-group block: one header (name · N panels · Σ time) +
+                // a delete-group control, with the per-panel editors nested below.
+                const members = blk.members.map((i) => plan.targets[i]);
+                const gFrames = members.reduce((a, t) => a + targetFrames(t), 0);
+                const gMin = members.reduce((a, t) => a + targetSeconds(t), 0) / 60;
+                return (
+                  <div key={`g-${blk.group}-${bi}`} className="border border-accent/40 bg-accent/[0.03] p-2">
+                    <div className="flex items-center gap-3 flex-wrap px-1 pb-2">
+                      <span className="font-display font-semibold text-accent tracking-wider">
+                        {blk.group}
+                      </span>
+                      <span className="mono text-[11px] text-dim">
+                        {blk.members.length} panel{blk.members.length === 1 ? "" : "s"} ·{" "}
+                        {gFrames} frame{gFrames === 1 ? "" : "s"} ·{" "}
+                        {Math.floor(gMin / 60)}h {Math.round(gMin % 60)}m
+                      </span>
+                      <div className="flex-1" />
+                      <button
+                        className="tap min-h-[44px] inline-flex items-center justify-center gap-1 !px-3 !text-[11px]
+                          border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
+                        disabled={running}
+                        aria-label={`Delete mosaic group ${blk.group}`}
+                        title={`Delete all ${blk.members.length} panels in ${blk.group}`}
+                        onClick={() => deleteGroup(blk.group)}
+                      >
+                        <Icon name="x" size={16} /> delete group
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-4">
+                      {blk.members.map((ti) => renderTarget(plan.targets[ti], ti))}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </Panel>
       </div>

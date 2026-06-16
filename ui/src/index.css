@@ -41,7 +41,10 @@
   /* live-preview / atlas surface tokens (consumed by those surfaces; defined
      here so the canonical pass owns them). */
   --halo: #00000099;          /* contrast halo behind preview labels/reticle */
-  --survey-filter: none;      /* survey-cutout image filter (red-tinted at night) */
+  /* survey-cutout image filter (red-tinted at night). Day is a COMPOSABLE no-op
+     (grayscale(0), NOT `none`) so `.survey { filter: var(--survey-filter) ... }`
+     stays valid CSS when the per-image brightness is appended. */
+  --survey-filter: grayscale(0);
 
   /* global dimmer — store sets --screen-brightness (0.08..1) + --scrim-opacity
      at runtime (clamp-on-read in store). Floor defaults so first paint is sane. */
@@ -75,7 +78,11 @@
 
   --glow: #ff5d5d44;
   --halo: #1a000099;
-  --survey-filter: sepia(0.6) saturate(1.4) hue-rotate(-12deg) brightness(0.85);
+  /* atlas survey cutout — a true low-luminance red (spec §8): monochrome HiPS
+     pushed deep red so the brightest survey element on screen never destroys
+     dark adaptation. Separate from --img-filter (which preserves luminance for
+     focus judgment); the survey is decorative backdrop, not a focus target. */
+  --survey-filter: grayscale(1) brightness(0.55) sepia(1) hue-rotate(-25deg) saturate(1.3);
 
   /* Night image filter — PRESERVES luminance/contrast so a defocused vs sharp
      star still differ. No grayscale/saturate(6)/brightness(0.55). Focus judgment
@@ -479,3 +486,41 @@ select.field { appearance: none; }
    already redshift via their tokens.) */
 :root.night .preview-label { color: var(--text); }
 :root.night .preview-scalebar { stroke: var(--accent); }
+
+/* ===================================================================== CSS-ATLAS
+   Sky-Atlas surface utilities (consumed by views/AtlasView + components/atlas/*).
+   Defined in the canonical pass; the Atlas components only reference them. */
+
+/* survey — the double-buffered HiPS cutout <img>. The night `--survey-filter`
+   (deep-red monochrome, dark-adaptation safe) composes with the per-image
+   brightness var SkyCanvas sets inline. Day `--survey-filter` is grayscale(0)
+   (a no-op) so `var(--survey-filter) brightness(x)` is always valid in BOTH
+   modes (spec §6/§8 C3-A7). */
+.survey { filter: var(--survey-filter) brightness(var(--survey-bright, 1)); }
+
+/* svg-halo — black halo so an --accent overlay (rectangle / grid / compass ticks)
+   never collapses into a same-hue red survey in night mode (spec §6/§8 C3-A1).
+   The halo is a black drop-shadow, NOT a stroke override: an author `.svg-halo`
+   stroke would beat each element's `stroke="var(--accent)"` PRESENTATION attribute
+   and paint everything solid black. With drop-shadow the element keeps its own
+   accent stroke + width and gains a 1px black outline on top. */
+.svg-halo { paint-order: stroke; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+
+/* .btn-touch / .stepper — every Atlas control is >=44px (spec §8 / review touch
+   P0). .btn-touch is a generic >=44px tap target; .stepper is the +/- numeric
+   bump button. They set min-size only; visual chrome comes from .btn/.field etc.
+   (mirrors .step-btn, which predates the Atlas surface). */
+.btn-touch { min-height: 44px; min-width: 44px; }
+.stepper {
+  min-width: 44px; min-height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line-bright);
+  background: var(--bg-raise);
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 16px; line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+.stepper:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.stepper:disabled { opacity: 0.35; cursor: not-allowed; }

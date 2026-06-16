@@ -57,19 +57,31 @@ export function Field({ label, hint, children }: {
 }
 
 /* ============================================================ UI-STAT
-   Optional tone glyph (warn/bad only — never good), distinct per tone, placed in
-   a non-flowing leading slot so the value never loses truncation budget. `hint`
-   wraps the value in a Tooltip. `glyph={false}` opts out for hero readouts.
+   Status by SHAPE + text, never color alone (night palette collapses good/warn/bad
+   toward coral — spec §8 C3-A4). The leading glyph slot is non-flowing so the value
+   never loses truncation budget. `hint` wraps the value in a Tooltip.
+
+   `glyph` channel:
+     - `true`  (default): auto tone glyph for warn/bad (alert/x icon).
+     - `false`: opt out (hero readouts).
+     - a ReactNode: a CUSTOM leading glyph (e.g. ↑/↓/☾ for the Atlas visibility
+       chips `↑68°`, `☾ 71°`) — rendered regardless of tone, so a status reads in
+       night mode by its glyph + text even where no tone color survives.
    null/loading value renders an em-dash in --text-faint, never throws. */
 export function Stat({ label, value, unit, tone, hint, glyph = true }: {
   label: string; value: string | number | null | undefined; unit?: string;
-  tone?: Tone; hint?: ReactNode; glyph?: boolean;
+  tone?: Tone; hint?: ReactNode; glyph?: boolean | ReactNode;
 }) {
   const empty = value == null || value === "";
   const color = empty ? "text-faint"
     : tone === "good" ? "text-good" : tone === "warn" ? "text-warn"
     : tone === "bad" ? "text-bad" : "text-ink";
-  const showGlyph = !empty && glyph && (tone === "warn" || tone === "bad");
+
+  // A custom glyph node (anything that isn't a boolean) renders verbatim; the
+  // boolean form keeps the legacy auto-tone-icon behavior (warn/bad only).
+  const customGlyph = typeof glyph !== "boolean";
+  const autoGlyph = glyph === true && (tone === "warn" || tone === "bad");
+  const showGlyph = !empty && (customGlyph || autoGlyph);
   const glyphName: IconName = tone === "bad" ? "x" : "alert";
 
   const valueEl = (
@@ -87,8 +99,11 @@ export function Stat({ label, value, unit, tone, hint, glyph = true }: {
       </span>
       <span className="inline-flex items-center gap-1 min-w-0">
         {showGlyph && (
-          <span className={`shrink-0 ${tone === "bad" ? "text-bad" : "text-warn"}`} aria-hidden>
-            <Icon name={glyphName} size={12} />
+          <span
+            className={`shrink-0 ${tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : tone === "good" ? "text-good" : "text-dim"}`}
+            aria-hidden
+          >
+            {customGlyph ? (glyph as ReactNode) : <Icon name={glyphName} size={12} />}
           </span>
         )}
         {hint != null && !empty ? <Tooltip content={hint}>{valueEl}</Tooltip> : valueEl}
@@ -121,6 +136,80 @@ export function Toggle({ checked, onChange, disabled = false, label, showState =
         <span className="label ml-2" aria-hidden>{checked ? "ON" : "OFF"}</span>
       )}
     </span>
+  );
+}
+
+/* ============================================================ UI-ICONBUTTON
+   A square, icon-only button with a guaranteed >=44px hit area (spec §8 / review
+   touch P0). Use for per-row affordances (Mount/Plan "Frame", recenter, nudge).
+   The icon stays small; the tap target is the whole 44px box. `label` is required
+   (aria) since there is no visible text. `tone` themes the chrome via the same
+   .btn variants. */
+export function IconButton({
+  icon, label, onClick, disabled = false, tone, size = 16, active = false,
+  className = "", title,
+}: {
+  icon: IconName; label: string; onClick?: () => void; disabled?: boolean;
+  tone?: "accent" | "danger"; size?: number; active?: boolean;
+  className?: string; title?: string;
+}) {
+  const variant = tone === "accent" ? "btn-accent" : tone === "danger" ? "btn-danger" : "";
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={active || undefined}
+      title={title ?? label}
+      disabled={disabled}
+      onClick={onClick}
+      className={`btn btn-touch inline-flex items-center justify-center p-0 ${variant}
+        ${active ? "border-accent text-accent" : ""} ${className}`}
+    >
+      <Icon name={icon} size={size} />
+    </button>
+  );
+}
+
+/* ============================================================ UI-STEPPER
+   Numeric stepper with >=44px +/- bump buttons (spec §6/§8 — mosaic rows/cols,
+   overlap, FOV). Clamps to [min,max] and steps by `step`. The center shows the
+   current value (mono); `format` overrides the display (e.g. "25%"). Pure
+   controlled — parent owns the value. Buttons disable at the bounds so the
+   clamp is also a visible affordance. */
+export function Stepper({
+  value, onChange, min = 0, max = 99, step = 1, label, unit,
+  format, disabled = false,
+}: {
+  value: number; onChange: (v: number) => void;
+  min?: number; max?: number; step?: number;
+  label?: string; unit?: string;
+  format?: (v: number) => string; disabled?: boolean;
+}) {
+  const clamp = (v: number) => Math.min(max, Math.max(min, v));
+  const dec = () => onChange(clamp(value - step));
+  const inc = () => onChange(clamp(value + step));
+  const display = format ? format(value) : String(value);
+  return (
+    <div className="inline-flex flex-col gap-1">
+      {label && <span className="label">{label}</span>}
+      <div className="inline-flex items-stretch" role="group" aria-label={label}>
+        <button
+          type="button" className="stepper" aria-label={`Decrease ${label ?? "value"}`}
+          onClick={dec} disabled={disabled || value <= min}
+        >−</button>
+        <span
+          className="mono text-sm text-ink inline-flex items-center justify-center px-2 min-w-12
+            border-y border-line2 bg-bg"
+          aria-live="polite"
+        >
+          {display}{unit && <span className="text-dim text-xs ml-0.5">{unit}</span>}
+        </span>
+        <button
+          type="button" className="stepper" aria-label={`Increase ${label ?? "value"}`}
+          onClick={inc} disabled={disabled || value >= max}
+        >+</button>
+      </div>
+    </div>
   );
 }
 

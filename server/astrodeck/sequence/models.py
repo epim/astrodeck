@@ -22,6 +22,9 @@ class Target(BaseModel):
     autofocus_first: bool = True
     calibration: bool = False          # darks/bias/flats — skip slew/center/AF/guide
     steps: list[ExposureStep] = []
+    # --- atlas (additive; both nullable — existing plans deserialize unchanged) ---
+    rotation_deg: float | None = None  # target camera angle (PA) — guidance only, no rotator
+    mosaic_group: str | None = None    # groups mosaic panels in the Plan UI
 
 
 class SequencePlan(BaseModel):
