@@ -889,17 +889,37 @@ class Hub:
     # -------------------------------------------------------- solve & center
 
     async def solve_and_sync(self, exposure_s: float = 3.0) -> dict:
-        """Plate-solve the current pointing and sync the mount to it."""
-        if self.nina_client is not None:
-            return await self._nina_solve_and_sync(exposure_s)
+        """Plate-solve the current pointing and sync the mount to it.
+
+        ONE real-solver path for every backend (P0-1). The old NINA branch called
+        NINA's ``/prepared-image/solve``, which HANGS on the live rig and left the
+        working ``AstapSolver`` orphaned (review 5/5d). Now NINA mode captures a
+        frame exactly like sim/Alpaca, writes it to a temp FITS via ``save_fits``,
+        and hands it to the real local solver (ASTAP) with ra/dec/fov hints. If
+        ASTAP isn't installed the solver is a ``SimSolver`` that REFUSES on a real
+        rig (see ``get_solver``/``SimSolver``) -- so a discovery miss surfaces a
+        clear error instead of silently fake-centering the mount."""
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
-        ra_hint, dec_hint = await tel.get_position()
+        # Pointing hint from the mount -- drives ASTAP's near search and lets a
+        # refusing SimSolver fail without inventing a centered solution.
+        try:
+            ra_hint, dec_hint = await tel.get_position()
+        except Exception:
+            ra_hint = dec_hint = None
         frame = await cam.expose(exposure_s, 200, 30, binning=2)
+        self.last_frame = frame
         await self._publish_preview(frame)
+        # Save the captured frame to a temp FITS for the local solver. Works for
+        # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
+        # which is enough for ASTAP star detection, and save_fits writes the
+        # RA/Dec hints into the header. Offloaded so the disk write never freezes
+        # the event loop on the Windows target.
         tmp = CAPTURE_DIR / "_solve" / "solve.fits"
-        save_fits(frame, tmp)
-        solver = get_solver(self.sim_rig)
+        await asyncio.to_thread(
+            save_fits, frame, tmp,
+            ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+        solver = get_solver(self.sim_rig, mode=self.mode)
         # FOV hint from the configured optics (bin-1, bin-independent — correct
         # even though the solve frame is binned 2×). None → ASTAP radius search,
         # preserving the old behavior when optics aren't known.
@@ -919,35 +939,6 @@ class Hub:
                         f"Dec {result.dec_deg:+.3f}°", "solve")
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
-
-    async def _nina_solve_and_sync(self, exposure_s: float) -> dict:
-        """Capture through NINA and let NINA plate-solve the prepared image,
-        then sync the mount to the solution."""
-        cam: Camera = self.require("camera")
-        tel: Telescope = self.require("telescope")
-        frame = await cam.expose(exposure_s, 200, 30, binning=2)
-        self.last_frame = frame
-        await self._publish_preview(frame)
-        bus.log("info", "plate solving with NINA…", "solve")
-        # Bound the solve so a stuck NINA solver never hangs the event loop (live
-        # bug: this call had no timeout and wedged on the rig). The NinaClient
-        # forwards ``timeout=`` to httpx exactly like slew() does.
-        # TODO: /prepared-image/solve is the wrong endpoint (NINA's solver works
-        # for TPPA); switch to a capture-and-solve endpoint that actually returns
-        # a solution for an arbitrary frame.
-        res = await self.nina_client.get("/prepared-image/solve", timeout=90.0) or {}
-        coords = nina_pick(res, "Coordinates", default=res)
-        ra = nina_pick(coords, "RA", "RAHours", "RightAscension")
-        dec = nina_pick(coords, "Dec", "Declination")
-        if ra is None and nina_pick(coords, "RADegrees") is not None:
-            ra = float(nina_pick(coords, "RADegrees")) / 15.0
-        if ra is None or dec is None:
-            raise DeviceError("NINA plate solve did not return coordinates")
-        ra, dec = float(ra), float(dec)
-        await tel.sync(ra, dec)
-        bus.log("info", f"solved & synced (NINA): RA {ra:.4f}h Dec {dec:+.3f}°", "solve")
-        return {"ra_hours": ra, "dec_deg": dec, "solver": "NINA",
-                "pixel_scale": float(nina_pick(res, "Pixscale", "PixelScale", default=0) or 0)}
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
@@ -998,6 +989,22 @@ class Hub:
             except Exception:
                 pass
         result = await self.goto_and_center(ra_hours, dec_deg)
+        # Flip the guider's calibration for the far side of the pier BEFORE
+        # restarting guiding (review 7d). On a real GEM the RA/Dec sense reverses
+        # across the meridian, so guiding with the pre-flip calibration runs
+        # BACKWARDS (runaway). Best-effort + guarded: a guider that can't flip
+        # (sim) or errors must not abort the flip. The guider method itself logs
+        # its own success/failure; this call is guarded only so a missing method
+        # or an unexpected raise can never break the flip.
+        if self.guider and self.guider.connected:
+            flip_cal = getattr(self.guider, "flip_calibration", None)
+            if callable(flip_cal):
+                try:
+                    await flip_cal()
+                except Exception as e:
+                    bus.log("warning",
+                            f"meridian flip: guider calibration flip failed: {e}",
+                            "sequence")
         if was_guiding:
             try:
                 await self.guider.start_guiding()

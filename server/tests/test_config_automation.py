@@ -91,10 +91,48 @@ def test_redacted_blanks_alert_tokens():
     ])
     out = redacted(cfg)
     assert out["alerts"][0]["token"] == ""        # secret blanked
-    assert out["alerts"][0]["chat_id"] == "123"   # non-secret kept
-    assert out["alerts"][1]["url"] == "https://ntfy.sh/x"
+    assert out["alerts"][0]["chat_id"] == ""      # chat_id now redacted (P2-12)
+    assert out["alerts"][1]["url"] == "https://ntfy.sh/x"   # no userinfo — kept
     # the source config object is NOT mutated by redaction
     assert cfg.alerts[0].token == "secret-bot-token"
+    assert cfg.alerts[0].chat_id == "123"
+
+
+def test_redacted_strips_url_userinfo_and_deadman(tmp_path):
+    """P2-12 fail-safe redaction: url-embedded basic-auth creds are stripped,
+    chat_id is blanked, and the deadman_url (which can carry a per-ping secret in
+    its path/query) is fully redacted to a boolean marker — none broadcast verbatim."""
+    cfg = AppConfig(
+        alerts=[
+            # webhook with user:pass@ creds embedded in the url
+            AlertSink(id="wh", kind="webhook",
+                      url="https://alice:s3cr3t@hooks.example.com/path?q=1"),
+            # ntfy with a basic-auth ntfy topic
+            AlertSink(id="nt", kind="ntfy",
+                      url="http://user:pw@192.168.1.50:8080/topic"),
+        ],
+        deadman_url="https://hc-ping.com/9f8e7d6c-secret-uuid",
+    )
+    out = redacted(cfg)
+    # userinfo stripped, host/path preserved; the secret is gone.
+    assert out["alerts"][0]["url"] == "https://hooks.example.com/path?q=1"
+    assert "s3cr3t" not in out["alerts"][0]["url"]
+    assert out["alerts"][1]["url"] == "http://192.168.1.50:8080/topic"
+    assert "user:pw" not in out["alerts"][1]["url"]
+    # deadman fully redacted to a boolean marker — the secret uuid never leaves.
+    assert out["deadman_url"] == ""
+    assert out["deadman_configured"] is True
+    assert "secret-uuid" not in str(out)
+    # source cfg untouched (redaction is non-mutating / fail-safe).
+    assert cfg.deadman_url == "https://hc-ping.com/9f8e7d6c-secret-uuid"
+    assert cfg.alerts[0].url == "https://alice:s3cr3t@hooks.example.com/path?q=1"
+
+
+def test_redacted_empty_deadman_marks_not_configured():
+    cfg = AppConfig(deadman_url="")
+    out = redacted(cfg)
+    assert out["deadman_url"] == ""
+    assert out["deadman_configured"] is False
 
 
 # ----------------------------------------------------- sequence model additions

@@ -43,6 +43,28 @@ class Guider(ABC):
         where possible, rather than a local flag) — used to detect a lost star."""
         return self.stats().guiding
 
+    #: Whether this guider can flip its calibration for a meridian flip. Backends
+    #: that support it (PHD2) override to True; the default is a safe no-op.
+    can_flip_calibration: bool = False
+
+    async def flip_calibration(self) -> bool:
+        """Flip the guider's calibration across a meridian flip (P1-6).
+
+        On a German equatorial mount, after the mount flips to the far side of
+        the pier the guide directions are reversed; guiding the OLD calibration
+        runs the mount away from the star (runaway). ``hub.meridian_flip`` calls
+        this between stopping and restarting guiding.
+
+        Vendor-neutral default: a guider that cannot flip its calibration is a
+        clear, logged NO-OP returning ``False`` (never an error), so the meridian
+        flip still completes — it just relies on a fresh calibration on restart.
+        Backends that can flip override this and return ``True`` on success."""
+        from ..events import bus
+        bus.log("warning",
+                f"{self.name}: cannot flip guider calibration for the meridian "
+                "flip; will rely on a fresh calibration after the flip", "guide")
+        return False
+
     async def guide_frame(self) -> bytes | None:
         """A small auto-stretched PNG of the guide-star region for the live UI,
         or ``None`` when no frame is available (no guider, no current star image,

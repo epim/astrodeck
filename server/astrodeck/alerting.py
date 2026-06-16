@@ -48,12 +48,25 @@ _UNDELIVERED_MAX = 200
 _DEDUPE_MAX = 512
 _HTTP_TIMEOUT_S = 10.0
 
+# Wall-clock dead-man's-switch cadence (P0-3). The deadman ping and the
+# wall-clock heartbeat are driven from a timer in run() — NOT from the engine
+# frame loop — so they keep firing through a legitimate safety pause or a
+# scheduler wait. Pinging on the engine frame loop falsely pages "rig dead" the
+# moment a multi-hour cloud-pause stops producing frames.
+#   * the deadman is GET-pinged every DEADMAN_INTERVAL_S; pick a value comfortably
+#     under a typical healthchecks/Uptime-Kuma grace window.
+#   * the wall-clock task wakes on the GCD-ish tick below and fires whatever is due.
+DEADMAN_INTERVAL_S = 60.0
+# How often the wall-clock task wakes to check what is due. Small relative to the
+# deadman interval and the (minutes-granularity) heartbeat cadence.
+_WALLCLOCK_TICK_S = 5.0
+
 # Source tag on the dispatcher's own diagnostic logs so they are NOT routed back
 # through the alert pipeline (would otherwise self-feed a failure loop).
 _ALERT_LOG_SOURCE = "alert"
 
 
-def _url_is_safe(url: str) -> bool:
+def _url_is_safe(url: str, *, allow_private: bool = False) -> bool:
     """Pragmatic SSRF guard for a user-configured outbound URL (ntfy / webhook /
     deadman). Requires an http(s) scheme with a host, and rejects an *IP literal*
     host that is loopback/private/link-local (incl. the cloud-metadata address)/
@@ -64,6 +77,12 @@ def _url_is_safe(url: str) -> bool:
     hostnames here (which would add a network round-trip / break offline tests).
     The literal-IP + scheme checks block the obvious internal targets; a hostname
     that resolves to an internal IP is out of scope for this pragmatic guard.
+
+    ``allow_private=True`` (used only for the DEAD-MAN's-SWITCH url) permits a
+    loopback/private/link-local host: a self-hosted Uptime-Kuma / healthchecks on
+    ``192.168.x.x`` is the *user's own* monitor and an extremely common setup
+    (P0-3). The unspecified/multicast/reserved guards still apply — those are
+    never a legitimate monitor target.
     """
     try:
         parts = urlsplit(url)
@@ -78,14 +97,10 @@ def _url_is_safe(url: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return True  # a (non-literal) hostname — allowed under the pragmatic guard
-    return not (
-        ip.is_loopback
-        or ip.is_private
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    blocked = ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    if not allow_private:
+        blocked = blocked or ip.is_loopback or ip.is_private or ip.is_link_local
+    return not blocked
 
 # ntfy priority mapping by level.
 _NTFY_PRIORITY = {"error": "urgent", "warning": "high", "info": "default"}
@@ -132,6 +147,14 @@ class AlertDispatcher:
         self._last_safe: bool | None = None          # safety transition tracker
         self._last_heartbeat: dict[str, float] = {}  # sink id -> last send ts
         self._stop = asyncio.Event()
+        # Wall-clock dead-man's-switch state (P0-3). ``_last_deadman`` is the
+        # monotonic ts of the last attempted ping; the wall-clock loop fires the
+        # next ping once DEADMAN_INTERVAL_S has elapsed, independent of the engine.
+        self._last_deadman: float = 0.0
+        # One-shot loud warning when a configured deadman url is blocked/unreachable
+        # so the user is not lulled into a false sense of monitoring. Keyed by the
+        # url so a *changed* url re-warns; reset when a ping succeeds.
+        self._deadman_warned: str | None = None
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -143,9 +166,15 @@ class AlertDispatcher:
     async def run(self) -> None:
         """Long-running subscriber loop. Cancellable; closes the HTTP client on
         exit. Never raises out of the per-event handler (failures are logged +
-        queued)."""
+        queued).
+
+        Also owns a WALL-CLOCK dead-man's-switch + heartbeat task (P0-3) so those
+        pings keep firing through a legitimate safety pause / scheduler wait —
+        driving them from the engine frame loop falsely pages "rig dead" the
+        moment a multi-hour cloud-pause stops producing frames."""
         await self._ensure_client()
         q = self.bus.subscribe()
+        wallclock = asyncio.create_task(self._wallclock_loop())
         try:
             while not self._stop.is_set():
                 try:
@@ -160,10 +189,41 @@ class AlertDispatcher:
         except asyncio.CancelledError:
             raise
         finally:
+            wallclock.cancel()
+            try:
+                await wallclock
+            except (asyncio.CancelledError, Exception):
+                pass
             self.bus.unsubscribe(q)
             if self._client is not None:
                 await self._client.aclose()
                 self._client = None
+
+    async def _wallclock_loop(self) -> None:
+        """Independent wall-clock driver for the dead-man's-switch + heartbeat
+        (P0-3). Wakes every ``_WALLCLOCK_TICK_S`` and fires whatever is due,
+        regardless of whether the engine is producing frames — so a paused or
+        waiting (but alive) rig keeps its monitor green. Never raises out of the
+        loop; both helpers are hardened, but guard anyway."""
+        try:
+            while not self._stop.is_set():
+                now = time.monotonic()
+                if now - self._last_deadman >= DEADMAN_INTERVAL_S:
+                    self._last_deadman = now
+                    try:
+                        await self.deadman_ping()
+                    except Exception:
+                        pass
+                try:
+                    await self.emit_heartbeat("rig alive (wall-clock)")
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=_WALLCLOCK_TICK_S)
+                except asyncio.TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            raise
 
     async def stop(self) -> None:
         self._stop.set()
@@ -378,21 +438,83 @@ class AlertDispatcher:
     # -- dead-man's-switch -----------------------------------------------------
 
     async def deadman_ping(self) -> None:
-        """GET the configured external healthcheck URL (each frame). Absence of
-        these pings is what triggers *their* alert (C2-9). Failures are silent —
-        a missed ping is the signal, not an error to surface."""
+        """GET the configured external healthcheck URL. Absence of these pings is
+        what triggers *their* alert (C2-9). A transport failure is not surfaced —
+        a missed ping is the signal, not an error to page on.
+
+        Two P0-3 fixes vs. the original silent path:
+
+        * the deadman url is allowed to be a LAN/private host — a self-hosted
+          Uptime-Kuma / healthchecks on ``192.168.x.x`` is the user's OWN monitor
+          and the common case; only this url gets ``allow_private`` (ntfy/webhook
+          outbound alerts keep the full SSRF block).
+        * if the url is *blocked* (e.g. a literal ``0.0.0.0``/multicast/reserved
+          target that can never be a monitor), we LOG A LOUD ONE-SHOT WARNING so
+          the user is not lulled into a false sense of monitoring. Without this,
+          a user who configured a deadman believes they are covered when nothing
+          is ever pinged."""
         url = getattr(self.get_config(), "deadman_url", "") or ""
         if not url:
             return
-        if not _url_is_safe(url):
-            # A misconfigured/internal deadman URL is silently skipped (a missed
-            # ping is the signal); never surface it / never reach an internal host.
+        if not _url_is_safe(url, allow_private=True):
+            # Cannot ever be a legitimate monitor (unspecified/multicast/reserved/
+            # bad scheme). Warn ONCE per distinct url so the user knows their
+            # deadman is doing nothing — never silently skip (P0-3).
+            if self._deadman_warned != url:
+                self._deadman_warned = url
+                self.bus.log(
+                    "warning",
+                    "dead-man's-switch url is not a valid http(s) monitor target "
+                    "and is being SKIPPED — no pings are being sent",
+                    _ALERT_LOG_SOURCE,
+                )
             return
         try:
             client = await self._ensure_client()
-            await client.get(url)
-        except (httpx.HTTPError, OSError):
-            pass
+            r = await client.get(url)
+        except (httpx.HTTPError, OSError) as e:
+            # Unreachable monitor: the missed ping IS the signal to the external
+            # service, but warn ONCE locally so a user who set up a monitor we
+            # can't reach (typo'd host, monitor down, no LAN route) finds out.
+            if self._deadman_warned != url:
+                self._deadman_warned = url
+                self.bus.log(
+                    "warning",
+                    f"dead-man's-switch url unreachable ({self._scrub_url(url)}): "
+                    f"{type(e).__name__} — the external monitor will see a missed "
+                    f"ping; verify the url/host is reachable",
+                    _ALERT_LOG_SOURCE,
+                )
+            return
+        # A reachable-but-error status (e.g. 404 from a deleted healthcheck) also
+        # warrants a one-shot warning: the user thinks they have a deadman, but
+        # the monitor is rejecting the ping.
+        if not (200 <= r.status_code < 400):
+            if self._deadman_warned != url:
+                self._deadman_warned = url
+                self.bus.log(
+                    "warning",
+                    f"dead-man's-switch url returned HTTP {r.status_code} "
+                    f"({self._scrub_url(url)}) — check the monitor still exists",
+                    _ALERT_LOG_SOURCE,
+                )
+            return
+        # Healthy ping: clear the warn latch so a later failure re-warns.
+        self._deadman_warned = None
+
+    @staticmethod
+    def _scrub_url(url: str) -> str:
+        """Drop any ``user:pass@`` userinfo and query string from a url before it
+        goes into a log line (a deadman url can carry a ping secret in the path or
+        query — keep scheme+host+path only, sans userinfo)."""
+        try:
+            parts = urlsplit(url)
+        except (ValueError, TypeError):
+            return "<url>"
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return f"{parts.scheme}://{host}{parts.path}"
 
     # -- test ------------------------------------------------------------------
 

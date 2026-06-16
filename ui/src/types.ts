@@ -451,7 +451,12 @@ export interface AppConfig {
   safety: SafetyConfig;
   escalation: EscalationConfig;
   alerts: AlertSink[];
+  // REDACTED outbound (P2-12): the deadman url can carry a per-ping secret in its
+  // path/query, so the server blanks it and exposes only `deadman_configured`.
+  // POST an empty `deadman_url` to leave the stored value unchanged (mirrors the
+  // alert-token "empty means unchanged" contract); POST a non-empty url to set it.
   deadman_url: string;
+  deadman_configured?: boolean;
 }
 
 // ============================================================================

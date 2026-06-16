@@ -7,14 +7,16 @@ WebSocket — the UI is event-driven.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import io
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -259,8 +261,104 @@ class SafetySimulateBody(BaseModel):
     reason: str = "simulated unsafe condition"
 
 
+# ------------------------------------------------------------ optional auth (P0-4)
+# OPTIONAL shared-token auth, OFF BY DEFAULT. The token is read from the
+# ``ASTRODECK_TOKEN`` env var. When it is UNSET (or empty), the server behaves
+# EXACTLY as before — fully open — so the live LAN tablet keeps working with no
+# change. When a token IS set, every REST request and the WebSocket must present
+# it (``X-Auth-Token`` header, ``Authorization: Bearer <token>``, or ``?token=``
+# query) or get a 401. This is deliberately a single shared secret, not a user
+# system: it is the minimum bar to keep a remote/untrusted-network deployment
+# from being wide open. For a real remote observatory, ALSO put AstroDeck behind
+# a TLS reverse proxy (see docs/SECURITY.md).
+#
+# Endpoints intentionally left open even when a token is set: none of the control
+# surface. Only the SPA shell + static assets are served openly so a browser can
+# load the login-less UI and then attach the token to its API/WS calls.
+
+AUTH_ENV_VAR = "ASTRODECK_TOKEN"
+
+# Path prefixes that stay open even when a token is configured, so the browser can
+# fetch the UI bundle before it knows the token. The API + WS are NEVER in here.
+_AUTH_OPEN_PREFIXES = ("/assets",)
+_AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json"}
+
+
+def auth_token() -> str:
+    """The configured shared token, or '' when auth is disabled (the default).
+
+    Read live from the environment so a token set before launch is honored and
+    tests can monkeypatch ``os.environ`` per-app. Whitespace is stripped so a
+    stray newline in a launcher script can't create a token nobody can type."""
+    return (os.environ.get(AUTH_ENV_VAR) or "").strip()
+
+
+def auth_enabled() -> bool:
+    return bool(auth_token())
+
+
+def _present_token(*, header: str | None, authorization: str | None,
+                   query: str | None) -> str | None:
+    """Pull the caller-supplied token from any of the accepted carriers."""
+    if header:
+        return header
+    if authorization:
+        parts = authorization.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return parts[1].strip()
+        return authorization.strip()
+    if query:
+        return query
+    return None
+
+
+def _token_ok(supplied: str | None) -> bool:
+    """Constant-time compare of a supplied token against the configured one.
+
+    When auth is disabled this always returns True (open). When enabled, a
+    missing/empty supplied token fails closed."""
+    expected = auth_token()
+    if not expected:
+        return True
+    if not supplied:
+        return False
+    return hmac.compare_digest(supplied, expected)
+
+
+def _path_is_open(path: str) -> bool:
+    """A REST/static path that is reachable WITHOUT a token even when auth is on
+    (the UI shell + static assets only — never /api or /ws). SPA client-side
+    routes (no file extension, not under /api) also fall through to index.html,
+    so they are treated as open shell loads too."""
+    if path in _AUTH_OPEN_EXACT:
+        return True
+    if any(path == p or path.startswith(p + "/") for p in _AUTH_OPEN_PREFIXES):
+        return True
+    if path.startswith("/api") or path.startswith("/ws"):
+        return False
+    # A non-API path with no extension is an SPA deep link → index.html shell.
+    last = path.rsplit("/", 1)[-1]
+    if "." not in last:
+        return True
+    return False
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="AstroDeck", version="0.1.0", lifespan=_lifespan)
+
+    # Optional shared-token gate (P0-4). A pure pass-through when ASTRODECK_TOKEN
+    # is unset, so default LAN behavior is byte-for-byte unchanged.
+    @app.middleware("http")
+    async def _auth_mw(request, call_next):
+        if auth_enabled() and not _path_is_open(request.url.path):
+            supplied = _present_token(
+                header=request.headers.get("x-auth-token"),
+                authorization=request.headers.get("authorization"),
+                query=request.query_params.get("token"))
+            if not _token_ok(supplied):
+                return JSONResponse(
+                    {"detail": "missing or invalid auth token"}, status_code=401)
+        return await call_next(request)
 
     # --------------------------------------------------------- atlas routers
     # The Sky-Atlas feature lanes own these as separate APIRouter modules
@@ -456,7 +554,14 @@ def create_app() -> FastAPI:
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
         if body.deadman_url is not None:
-            config_store.set_deadman(body.deadman_url)
+            # The deadman url is now REDACTED outbound (P2-12) — it can carry a
+            # per-ping secret in its path/query. So an empty string on update means
+            # "unchanged" (the client echoed back the blanked value), exactly like
+            # the alert-token guard above: never wipe a stored deadman just because
+            # the redacted client round-tripped it. To truly clear it the UI POSTs
+            # a dedicated clear (handled at the /api/config layer if needed).
+            if body.deadman_url or not config_store.cfg().deadman_url:
+                config_store.set_deadman(body.deadman_url)
 
     @app.get("/api/config")
     async def get_config():
@@ -1399,6 +1504,20 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
+        # Optional shared-token gate (P0-4). The middleware does not cover the WS
+        # upgrade, so check here. When auth is disabled this is a no-op. The
+        # browser can't set custom headers on a WebSocket, so the token is taken
+        # from the ``?token=`` query (it may also arrive as X-Auth-Token for
+        # non-browser clients). On failure close BEFORE accept with 1008
+        # (policy violation) so an unauthenticated client never joins the bus.
+        if auth_enabled():
+            supplied = _present_token(
+                header=websocket.headers.get("x-auth-token"),
+                authorization=websocket.headers.get("authorization"),
+                query=websocket.query_params.get("token"))
+            if not _token_ok(supplied):
+                await websocket.close(code=1008)
+                return
         await websocket.accept()
         q = bus.subscribe()
         try:

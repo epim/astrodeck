@@ -656,6 +656,69 @@ class NinaGuider(Guider):
         except DeviceError:
             return self._guiding
 
+    #: In NINA mode the actual guider IS PHD2 on the bridge host, and PHD2 can
+    #: flip its calibration for a meridian flip (review 7d) — so advertise the
+    #: capability and reach PHD2 directly to perform it.
+    can_flip_calibration = True
+
+    async def flip_calibration(self) -> bool:
+        """Flip the guider's calibration for the far side of the pier (review 7d).
+
+        NINA's Advanced API does not expose a guider calibration-flip endpoint,
+        but in NINA mode the guider IS PHD2 running on the same bridge host — so
+        we reach PHD2's JSON event server directly at ``<bridge-host>:4400`` for a
+        single ``flip_calibration`` RPC, exactly as ``guide_frame`` reaches it for
+        a star image. Short-lived connection (open -> request -> close).
+
+        Returns True on success. Any failure (no PHD2, no usable calibration,
+        unreachable port) is a logged NO-OP returning False (never raises) so the
+        meridian flip still completes — guiding then re-calibrates on restart."""
+        host = getattr(self.client, "host", None)
+        if not host:
+            bus.log("warning", "no PHD2 host known; cannot flip guider calibration; "
+                    "will rely on a fresh calibration after the flip", "guide")
+            return False
+        reader = writer = None
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, 4400), timeout=3)
+            req = {"method": "flip_calibration", "id": 1}
+            writer.write((json.dumps(req) + "\r\n").encode())
+            await writer.drain()
+            # Read newline-delimited JSON until our id replies (skip async events).
+            deadline = asyncio.get_running_loop().time() + 30
+            while asyncio.get_running_loop().time() < deadline:
+                line = await asyncio.wait_for(reader.readline(), timeout=30)
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("id") == 1:
+                    if "error" in msg:
+                        bus.log("warning",
+                                "PHD2 flip_calibration failed "
+                                f"({msg['error'].get('message', 'error')}); will rely "
+                                "on a fresh calibration after the flip", "guide")
+                        return False
+                    bus.log("info",
+                            "PHD2 calibration flipped for the meridian flip", "guide")
+                    return True
+            bus.log("warning", "PHD2 flip_calibration did not reply; will rely on a "
+                    "fresh calibration after the flip", "guide")
+            return False
+        except Exception as e:
+            bus.log("warning", f"PHD2 flip_calibration failed ({e}); will rely on a "
+                    "fresh calibration after the flip", "guide")
+            return False
+        finally:
+            if writer is not None:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
     async def dither(self, pixels: float = 3.0) -> None:
         await self.client.get("/equipment/guider/dither", timeout=180.0)
         await asyncio.sleep(2.0)  # NINA performs its own settle

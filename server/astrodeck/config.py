@@ -18,6 +18,7 @@ Longitude sign convention — load-bearing:
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
@@ -334,16 +335,60 @@ class ConfigStore:
         return self.bump_and_save()
 
 
-def redacted(cfg: AppConfig) -> dict:
-    """Serialize ``cfg`` for WS/REST with every alert token blanked.
+def _strip_url_userinfo(url: str) -> str:
+    """Strip a ``user:pass@`` userinfo component from a url before broadcast.
 
-    The Telegram bot token is the only secret kept at rest; it must never leave
-    the server. Returns a plain dict (``model_dump`` shape) safe to broadcast.
+    A webhook/ntfy url can embed Basic-auth creds (``https://user:pass@host/...``)
+    that are just as secret as a Telegram token — they must never leave the
+    server (P2-12). Fail-safe: any parse failure on a *non-empty* url returns a
+    placeholder rather than echoing the raw (possibly secret-bearing) string.
+    Empty stays empty; a url with no userinfo is returned unchanged.
+    """
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except (ValueError, TypeError):
+        return "<redacted-url>"
+    if "@" not in (parts.netloc or ""):
+        return url  # no userinfo — nothing to strip
+    # Rebuild netloc as host[:port], dropping the userinfo entirely.
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def redacted(cfg: AppConfig) -> dict:
+    """Serialize ``cfg`` for WS/REST with every secret scrubbed (P2-12).
+
+    Redaction must be FAIL-SAFE: it previously blanked only the Telegram
+    ``token`` and broadcast ``chat_id``, url-embedded ``user:pass@`` creds, and
+    the ``deadman_url`` verbatim. Now every secret-bearing field is scrubbed, and
+    the structure is rebuilt defensively (a malformed sink dict can't slip a
+    secret through). Returns a plain dict (``model_dump`` shape) safe to
+    broadcast; the source ``cfg`` is never mutated.
     """
     data = cfg.model_dump()
     for sink in data.get("alerts", []):
+        if not isinstance(sink, dict):
+            continue
+        # Telegram bot token — the at-rest secret. Always blanked.
         if sink.get("token"):
             sink["token"] = ""
+        # Telegram chat id can be a private/identifying value — redact it but keep
+        # a boolean-ish marker so the UI can still show "configured".
+        if sink.get("chat_id"):
+            sink["chat_id"] = ""
+        # ntfy/webhook url can carry Basic-auth creds in the userinfo. Strip them
+        # (keep the host/path so the UI still shows where it points).
+        if sink.get("url"):
+            sink["url"] = _strip_url_userinfo(sink["url"])
+    # The deadman url can carry a per-ping secret in its path/query (healthchecks
+    # uuids, Uptime-Kuma push tokens) AND userinfo creds. Surface only a boolean
+    # "configured" marker over the wire — never the url itself.
+    dm = data.get("deadman_url") or ""
+    data["deadman_url"] = ""
+    data["deadman_configured"] = bool(dm)
     return data
 
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -49,6 +50,19 @@ _WIDTH_MAX = 1200
 
 # Disk cache lives beside the captures so it shares the device's writable volume.
 _SURVEY_CACHE_DIR = CAPTURE_DIR / "_survey"
+
+# ------------------------------------------------------------ cache bound (P2-13)
+#
+# The disk cache shares the capture volume — on a small Pi SD card an unbounded
+# pile of cutouts competes with FITS storage and can fill the card. Cap it by
+# BOTH age (TTL) and total size; evict on every write (cheap: a single dir scan
+# of small jpegs). The cache is purely an optimization, so eviction is best-effort
+# and never raises into the request path.
+_CACHE_TTL_S = 7 * 86400          # 7 days — a cutout of a fixed field is reusable
+                                  # for a long while, but not forever (HiPS surveys
+                                  # do get re-released; staleness here is harmless).
+_CACHE_MAX_BYTES = 200 * 1024 * 1024   # 200 MB total cap (a few thousand cutouts).
+_CACHE_MAX_FILES = 2000           # hard file-count cap (inode pressure on the SD).
 
 # Cache-key quantization (spec §4.3): finer than the draft so a fine-framing
 # nudge doesn't return a stale image while the overlay moves (critique C2-#15).
@@ -125,8 +139,74 @@ async def _fetch_cutout(params: dict[str, str]) -> bytes:
     raise RuntimeError(f"survey upstream failed: {last_exc}")
 
 
+def _evict_cache(
+    cache_dir: Path,
+    *,
+    ttl_s: float = _CACHE_TTL_S,
+    max_bytes: int = _CACHE_MAX_BYTES,
+    max_files: int = _CACHE_MAX_FILES,
+    now: float | None = None,
+) -> None:
+    """Bound the survey disk cache by age + total size + file count (P2-13).
+
+    Best-effort, off the event loop, never raises: the cache is an optimization,
+    so any I/O hiccup just leaves the cache as-is. Eviction policy:
+
+      1. delete any ``*.jpg`` older than ``ttl_s`` (mtime-based TTL);
+      2. if the surviving set still exceeds ``max_bytes`` or ``max_files``, delete
+         oldest-first (LRU-ish by mtime) until both caps are satisfied.
+
+    Only ``*.jpg`` cache files are considered — a stray ``*.tmp`` from an
+    interrupted write is left for the writer to overwrite/clean and never counts
+    against the caps (it is unlinked opportunistically if clearly stale).
+    """
+    now = time.time() if now is None else now
+    try:
+        entries: list[tuple[float, int, Path]] = []
+        for p in cache_dir.glob("*.jpg"):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            entries.append((st.st_mtime, st.st_size, p))
+        # 1) TTL pass — drop anything older than the window.
+        survivors: list[tuple[float, int, Path]] = []
+        for mtime, size, p in entries:
+            if now - mtime > ttl_s:
+                try:
+                    p.unlink()
+                except OSError:
+                    survivors.append((mtime, size, p))  # couldn't remove — still counts
+            else:
+                survivors.append((mtime, size, p))
+        # 2) size/count pass — evict oldest-first until under both caps.
+        survivors.sort(key=lambda e: e[0])  # oldest mtime first
+        total = sum(size for _m, size, _p in survivors)
+        count = len(survivors)
+        i = 0
+        while (total > max_bytes or count > max_files) and i < len(survivors):
+            _m, size, p = survivors[i]
+            i += 1
+            try:
+                p.unlink()
+                total -= size
+                count -= 1
+            except OSError:
+                pass  # leave it; move on so we never spin
+        # 3) opportunistically reap clearly-stale temp files from crashed writes.
+        for tmp in cache_dir.glob("*.tmp"):
+            try:
+                if now - tmp.stat().st_mtime > ttl_s:
+                    tmp.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass  # cache eviction is best-effort; never a hard dependency
+
+
 def _write_cache(path: Path, body: bytes) -> None:
-    """Write the JPEG to the disk cache (best-effort; off the event loop)."""
+    """Write the JPEG to the disk cache (best-effort; off the event loop), then
+    bound the cache (P2-13) so it cannot fill a small Pi SD card."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
@@ -134,6 +214,9 @@ def _write_cache(path: Path, body: bytes) -> None:
         tmp.replace(path)  # atomic publish so a partial write is never served
     except OSError:
         pass  # cache is an optimization, never a hard dependency
+    # Enforce the cache bound after each write. Cheap (one dir scan of small
+    # jpegs) and off the event loop (this runs under asyncio.to_thread).
+    _evict_cache(path.parent)
 
 
 @router.get("/api/survey/cutout.jpg")
