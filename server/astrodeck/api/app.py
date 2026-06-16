@@ -17,6 +17,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..catalog import search_catalog
+from ..catalog.survey import router as survey_router
+from ..catalog.framing import router as framing_router
+from ..catalog.visibility import router as visibility_router
 from ..config import ConfigVersionConflict, Optics, Site, config_store
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
@@ -206,6 +209,15 @@ class StartSequenceBody(SequencePlan):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="AstroDeck", version="0.1.0")
+
+    # --------------------------------------------------------- atlas routers
+    # The Sky-Atlas feature lanes own these as separate APIRouter modules
+    # (survey cutout proxy / mosaic compute / visibility ephemeris). Registered
+    # here so no two owners edit the same function; /api/optics already exists
+    # below (not duplicated here).
+    app.include_router(survey_router)
+    app.include_router(framing_router)
+    app.include_router(visibility_router)
 
     # ------------------------------------------------------------ equipment
 
