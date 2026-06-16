@@ -1,6 +1,7 @@
 import { api } from "../api";
 import { useStore, useStatus, usePolar } from "../store";
 import { PolarReticle } from "../components/polar";
+import GuideFramePreview from "../components/GuideFramePreview";
 import { Panel } from "../components/ui";
 
 export default function PolarView() {
@@ -104,6 +105,9 @@ export default function PolarView() {
             <p className="text-good text-xs mono mt-3">✓ aligned to {total.toFixed(1)}' total error</p>
           )}
         </Panel>
+
+        {/* Guide view so the user can watch the field during alignment. */}
+        <GuideFramePreview compact />
       </div>
     </div>
   );

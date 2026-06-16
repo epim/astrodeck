@@ -32,9 +32,18 @@ type StageControls = { fit: () => void; hundred: () => void; zoomIn: () => void;
 
 export function LivePreview() {
   const previews = usePreviews();
-  const shown = useLivePreview();
+  const live = useLivePreview();
   const selectedId = useSelectedPreviewId();
   const liveId = useLivePreviewId();
+
+  // Lane B — never show a broken/empty stage. Precedence for what to render:
+  //  (1) the pinned/live frame (`live`) if the store has one;
+  //  (2) else, if ANY capture happened this session, the MOST RECENT ring entry
+  //      (the store can briefly have a populated `previews` ring but a null
+  //      live/selected id — e.g. right after a reconnect or before the first
+  //      livePreviewId latches);
+  //  (3) else null → the stage paints the AstroDeck logo empty state.
+  const shown = live ?? (previews.length ? previews[previews.length - 1] : null);
   const viewport = useViewport();
   const stretch = useStretch();
   const overlays = useOverlays();

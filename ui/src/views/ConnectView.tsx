@@ -80,7 +80,7 @@ export default function ConnectView() {
           </span>
         }>
         <div className="flex flex-col gap-2.5">
-          {ROLES.concat("guide_camera").map((role) => {
+          {ROLES.map((role) => {
             const d = devices[role];
             return (
               <div key={role} className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
@@ -92,6 +92,26 @@ export default function ConnectView() {
               </div>
             );
           })}
+          {/* Guide camera: vendor-neutral. A dedicated guide_camera device only
+              exists in sim; in NINA/Alpaca/PHD2 mode the guiding device IS the
+              guider (PHD2 driving e.g. an ASI220). Treat "guiding present" as the
+              backend-derived status.guide_camera OR a connected status.guider, so
+              we never show "no guide camera" when guiding is actually wired. */}
+          {(() => {
+            const gc = status?.guide_camera;
+            const guider = status?.guider;
+            const connected = !!gc?.connected || !!guider;
+            const name = gc?.name ?? guider?.name ?? "guide camera";
+            return (
+              <div className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
+                <Led on={connected} />
+                <span className="label w-24 shrink-0">guide cam</span>
+                <span className="mono text-xs truncate flex-1 text-ink/90">
+                  {connected ? name : <span className="text-dim">— not connected —</span>}
+                </span>
+              </div>
+            );
+          })()}
           <div className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
             <Led on={!!status?.guider} />
             <span className="label w-24 shrink-0">guider</span>

@@ -95,6 +95,7 @@ const COMPONENT_CLASSES = [
   // progress
   "progress-track",
   "progress-fill",
+  "progress-stripes",
   // ---- Batch-3 touch tokens (F-C1 — the classes this test was written for) ----
   "alert-pulse",
   "more-sheet-in",

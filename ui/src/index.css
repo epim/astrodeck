@@ -395,6 +395,28 @@ select.field { appearance: none; }
 .progress-track { background: var(--bg); border: 1px solid var(--line); height: 14px; position: relative; overflow: hidden; }
 .progress-fill { background: linear-gradient(90deg, var(--accent-dim), var(--accent)); height: 100%; transition: width 0.6s ease; }
 
+/* progress-stripes — the indeterminate "downloading…" fill for the capture bar
+   (CaptureView). A diagonal accent hatch that scrolls left→right so the bar reads
+   as "busy, no known ETA" (frame is being read out / transferred) without faking a
+   percentage. Pairs with .progress-track; the fill spans full width. The capture
+   bar's deterministic exposure phase drives .progress-fill width by inline style and
+   kills the 0.6s width-transition (it's stepped every ~100ms), so the two phases
+   never fight. Stilled under prefers-reduced-motion (kept as a static hatch). */
+.progress-stripes {
+  width: 100%; height: 100%;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--accent) 0, var(--accent) 8px,
+    var(--accent-dim) 8px, var(--accent-dim) 16px
+  );
+  background-size: 22px 100%;
+  animation: progress-stripes-move 0.7s linear infinite;
+}
+@keyframes progress-stripes-move { from { background-position: 0 0; } to { background-position: 22px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .progress-stripes { animation: none; }
+}
+
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: none; } }
 .sheet-enter { animation: slide-up 0.2s ease both; }
 

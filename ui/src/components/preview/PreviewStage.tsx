@@ -20,6 +20,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo, StarMark, StretchParams, Viewport } from "../../types";
 import { Icon } from "../icons";
+import Logo from "../Logo";
 import { usePreviewGestures } from "./usePreviewGestures";
 import { useImageRemap } from "./useImageRemap";
 import { Reticle } from "./Reticle";
@@ -181,6 +182,15 @@ export function PreviewStage(props: Props) {
   const [fadeOn, setFadeOn] = useState(true);
   const fadeTimer = useRef<number | null>(null);
 
+  // Lane B — track the frame URL whose <img> failed to decode (404 / corrupt /
+  // pruned on the server). When the ACTIVE frame's url is the broken one we render
+  // the logo empty state instead of the browser's broken-image glyph. Reset on
+  // every new frame so a later good frame recovers automatically.
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setBrokenUrl(null);
+  }, [displayUrl]);
+
   useEffect(() => {
     if (!displayUrl) return;
     if (displayUrl === frontUrl || displayUrl === backUrl) return;
@@ -239,19 +249,28 @@ export function PreviewStage(props: Props) {
 
   const transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
 
-  // ----- empty state -----
-  if (!preview) {
+  // The <img> path can fail to decode (404 / pruned / corrupt). When the frame the
+  // stage is currently trying to paint is the broken one, treat it like "no frame"
+  // so we show the logo placeholder instead of a broken-image glyph.
+  const imgPath = !preview || isNina || !preview.data_is_linear;
+  const activeImgUrl = frontUrl ?? displayUrl;
+  const imgBroken = imgPath && brokenUrl != null && brokenUrl === activeImgUrl;
+
+  // ----- empty / placeholder state -----
+  // Shown when there is no frame at all, or the only frame we have cannot be
+  // displayed. Always renders the AstroDeck logo centered on the dark stage — never
+  // a broken-image icon (Lane B).
+  if (!preview || imgBroken) {
+    const caption = !preview ? "No capture yet" : "Capture unavailable";
     return (
       <div
         ref={stageRef}
         className="preview-stage astro-surface relative w-full overflow-hidden flex items-center justify-center"
         style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: compact ? undefined : 380 }}
       >
-        <div className="text-dim text-xs tracking-[0.3em] uppercase text-center">
-          <div className="opacity-40 mb-3 flex justify-center">
-            <Icon name="capture" size={48} strokeWidth={1} />
-          </div>
-          No frame yet — take an exposure
+        <div className="flex flex-col items-center text-center">
+          <Logo size={compact ? 56 : 80} className="text-dim opacity-60" />
+          <div className="mt-3 text-dim text-xs tracking-[0.3em] uppercase">{caption}</div>
         </div>
       </div>
     );
@@ -286,6 +305,7 @@ export function PreviewStage(props: Props) {
             <img
               src={frontUrl ?? displayUrl ?? undefined}
               alt={`frame ${preview.id}`}
+              onError={() => setBrokenUrl(frontUrl ?? displayUrl ?? null)}
               className="astro absolute top-0 left-0"
               style={{ width: dispW, height: dispH, filter: ninaFilter }}
             />
@@ -297,6 +317,12 @@ export function PreviewStage(props: Props) {
                 src={backUrl}
                 alt=""
                 onLoad={onBackLoaded}
+                onError={() => {
+                  // a broken incoming frame must not blank the (good) front buffer
+                  // or get promoted; just drop the back buffer and keep the front.
+                  setBackUrl(null);
+                  setBackVisible(false);
+                }}
                 className="astro absolute top-0 left-0"
                 style={{
                   width: dispW,
