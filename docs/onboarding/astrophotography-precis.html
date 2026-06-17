@@ -1,0 +1,2720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck — Field Reference</title>
+<meta name="description" content="A compact reference card for the astrophotography concepts behind AstroDeck — one crisp topic block at a time.">
+
+<!-- Same brand family as the primer: Fraunces (display) + Newsreader (body) + IBM Plex Mono (data/labels) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN SYSTEM — tokens (same brand language as the primer)
+     The whole document inherits from here. Authors reference
+     these with var(--name) and invent nothing global.
+     ============================================================ */
+  :root {
+    /* --- color: deep-space canvas, warm amber lamp --- */
+    --c-bg:          #0a0d16;   /* near-black, faint blue — the night */
+    --c-bg-raised:   #11151f;   /* cards, panels, topic blocks */
+    --c-bg-sunk:     #070910;   /* wells, code, fact insets */
+    --c-ink:         #ece7df;   /* primary text — warm paper white */
+    --c-ink-soft:    #b3ada3;   /* secondary text */
+    --c-ink-faint:   #6d6a64;   /* hairline decoration, the quiet non-text stuff */
+    --c-caption:     #8a857c;   /* faint TEXT meant to be read — AA on bg */
+    --c-line:        #232838;   /* hairlines and borders */
+    --c-accent:      #e8a849;   /* amber — THE accent, one moment per block */
+    --c-accent-soft: #f0c483;   /* lighter amber for hovers / glints */
+    --c-accent-deep: #b8791f;   /* pressed / underlines */
+    --c-cool:        #6f9bd8;   /* cool counter-accent (sky, links), sparingly */
+    --c-good:        #74c69d;   /* "this is fine" green, rarely needed */
+    --c-warn:        #d98b6a;   /* warm "what breaks" rust, used on risk lines */
+
+    /* --- type --- */
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body:    "Newsreader", Georgia, serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* a confident modular scale (~1.25) */
+    --t-xs:   0.78rem;
+    --t-sm:   0.92rem;
+    --t-base: 1.05rem;     /* slightly tighter than the primer — this is a reference, not an essay */
+    --t-lg:   1.32rem;
+    --t-xl:   1.75rem;
+    --t-2xl:  2.3rem;
+    --t-3xl:  3rem;
+    --t-4xl:  clamp(2.6rem, 6vw, 4.5rem);
+
+    --leading-tight: 1.12;
+    --leading-snug:  1.3;
+    --leading-body:  1.55;
+
+    /* --- space: an 8px-ish rhythm, trimmed for a compact card feel --- */
+    --s-1: 0.5rem;
+    --s-2: 1rem;
+    --s-3: 1.5rem;
+    --s-4: 2rem;
+    --s-5: 3rem;
+    --s-6: 4.5rem;
+    --s-7: 6.5rem;
+    --s-8: 9rem;
+
+    /* --- layout --- */
+    --measure:      40rem;    /* reading width inside a block */
+    --measure-wide: 64rem;    /* the reference grid / wide figures */
+    --gutter:       clamp(1.1rem, 4vw, 3rem);
+
+    /* --- depth + edges --- */
+    --radius:    14px;
+    --radius-sm: 9px;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.75);
+    --ring:      0 0 0 1px var(--c-line);
+
+    /* --- motion --- */
+    --ease:      cubic-bezier(0.22, 1, 0.36, 1);   /* gentle, overshoot-free */
+    --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur:       0.6s;
+    --dur-fast:  0.3s;
+  }
+
+  /* ============================================================
+     RESET + GLOBAL ELEMENTS
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: var(--font-body);
+    font-size: var(--t-base);
+    line-height: var(--leading-body);
+    font-weight: 400;
+    letter-spacing: 0.002em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* faint star-dust gradient so the dark never reads as flat #000 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 800px at 82% -10%, rgba(232,168,73,0.07), transparent 60%),
+      radial-gradient(900px 700px at 6% 14%, rgba(111,155,216,0.05), transparent 55%),
+      radial-gradient(1100px 900px at 50% 118%, rgba(111,155,216,0.045), transparent 60%);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.015em;
+    margin: 0 0 var(--s-2);
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--t-4xl); font-weight: 500; }
+  h2 { font-size: var(--t-2xl); }
+  h3 { font-size: var(--t-lg); }
+  h4 { font-size: var(--t-base); }
+
+  p { margin: 0 0 var(--s-2); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--c-cool);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-cool) 35%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  a:hover { color: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  strong, b { font-weight: 600; color: var(--c-ink); }
+  em { font-style: italic; }
+
+  code, kbd, samp {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+    color: var(--c-accent-soft);
+  }
+
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--c-line);
+    margin: var(--s-4) 0;
+  }
+
+  ::selection { background: var(--c-accent); color: #1a1206; }
+
+  img, svg, canvas { max-width: 100%; display: block; }
+
+  /* ============================================================
+     LAYOUT — the reference card
+     Each topic is a .precis-topic block: compact, lifted off the
+     page, with a hairline edge. Blocks sit on a wide centered
+     column and breathe with efficient whitespace.
+     ============================================================ */
+  main { display: block; }
+
+  /* The outer band for one topic. Holds vertical rhythm + the wide column. */
+  .precis-topic {
+    position: relative;
+    padding: var(--s-5) var(--gutter);
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    scroll-margin-top: var(--s-4);
+  }
+
+  /* The lifted card the topic actually lives in. */
+  .precis-card {
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--c-bg-raised) 92%, var(--c-accent) 2%),
+      var(--c-bg-raised));
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: clamp(1.4rem, 3.5vw, var(--s-5));
+    overflow: clip;
+  }
+
+  /* ---- the masthead: one card-height intro before topic 01 ---- */
+  .precis-masthead {
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    padding: var(--s-6) var(--gutter) var(--s-3);
+  }
+  .precis-masthead .precis-eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin: 0 0 var(--s-2);
+  }
+  .precis-masthead h1 { max-width: 16ch; margin-bottom: var(--s-3); }
+  .precis-masthead .precis-standfirst {
+    font-family: var(--font-body);
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin: 0;
+  }
+  /* the "how to read a card" legend: def -> facts -> BREAKS -> UI */
+  .precis-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em 0.8em;
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-faint);
+  }
+  .precis-legend b { color: var(--c-ink-soft); font-weight: 500; }
+  .precis-legend .precis-legend-arrow { color: var(--c-ink-faint); opacity: 0.7; }
+  .precis-legend .precis-legend-breaks { color: var(--c-warn); }
+  .precis-legend .precis-legend-ui { color: var(--c-accent); }
+
+  /* ---- shared topic furniture ---- */
+
+  /* mono label above a topic title */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: var(--s-1);
+    display: flex;
+    align-items: baseline;
+    gap: 0.7em;
+  }
+  /* optional running number in the kicker (e.g. "03 / Polar Alignment") */
+  .kicker .num { color: var(--c-ink-faint); }
+
+  /* the crisp one-line definition under the title */
+  .def {
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin-bottom: var(--s-3);
+  }
+  .def b, .def strong { color: var(--c-ink); font-weight: 500; }
+
+  .caption {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+
+  /* ---- the labeled-facts list: the workhorse of a reference card ---- */
+  /* A definition list rendered as a tidy two-column "label : value" grid. */
+  .facts {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: 0.55rem var(--s-3);
+    margin: 0 0 var(--s-3);
+    font-size: var(--t-base);
+  }
+  .facts dt {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    line-height: var(--leading-body);
+    padding-top: 0.15em;
+  }
+  .facts dd {
+    margin: 0;
+    color: var(--c-ink);
+    line-height: var(--leading-snug);
+  }
+  @media (max-width: 540px) {
+    .facts { grid-template-columns: 1fr; gap: 0.2rem var(--s-2); }
+    .facts dt { padding-top: var(--s-1); }
+    .facts dt:first-of-type { padding-top: 0; }
+  }
+
+  /* a single key number you want to pop (e.g. a focal ratio, an exposure) */
+  .stat {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    color: var(--c-accent-soft);
+    white-space: nowrap;
+  }
+
+  /* the one-line "why it matters / what breaks if wrong" */
+  .stakes {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .stakes::before {
+    content: "BREAKS";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-warn);
+    line-height: 1.5;
+  }
+  .stakes b, .stakes strong { color: var(--c-ink); font-weight: 500; }
+
+  /* the AstroDeck UI hook — a small amber-flagged footer line */
+  .hook {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .hook::before {
+    content: "UI";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-accent);
+    line-height: 1.5;
+  }
+  .hook b, .hook strong { color: var(--c-ink); font-weight: 500; }
+  .hook code { color: var(--c-accent-soft); }
+
+  /* a dry one-line aside, set apart, never load-bearing */
+  .aside {
+    margin-top: var(--s-2);
+    font-style: italic;
+    color: var(--c-caption);
+    font-size: var(--t-sm);
+  }
+
+  /* opt-out widths for a figure that needs room inside a card */
+  .precis-card > .bleed-wide { margin-inline: calc(-1 * clamp(1.4rem, 3.5vw, var(--s-5))); }
+
+  @media (max-width: 640px) {
+    .precis-topic { padding: var(--s-4) var(--gutter); }
+  }
+
+  /* ============================================================
+     .reveal — shared scroll-in utility (REPLAYABLE here)
+     Unlike the primer, the precis observer adds .is-in on enter
+     and REMOVES it on exit, so reveals replay every time. The
+     transition handles both directions on its own.
+     ============================================================ */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+    will-change: opacity, transform;
+  }
+  .precis-topic.in .reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ============================================================
+     CHROME — scroll-progress bar + section nav
+     ============================================================ */
+  .progress-track {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent), var(--c-accent-soft));
+    box-shadow: 0 0 12px rgba(232,168,73,0.5);
+  }
+
+  /* a compact labeled section nav rail (right side, desktop) */
+  .topic-nav {
+    position: fixed;
+    top: 50%;
+    right: clamp(0.6rem, 1.6vw, 1.4rem);
+    transform: translateY(-50%);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.4rem;
+    max-height: 80vh;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+  .topic-nav::-webkit-scrollbar { display: none; }
+  .topic-nav a {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.2rem 0.35rem;
+    border: 0;
+    color: var(--c-ink-faint);
+    border-radius: 6px;
+    transition: color var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a .tick {
+    width: 16px;
+    height: 1px;
+    background: currentColor;
+    transition: width var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease-soft);
+    flex: none;
+  }
+  .topic-nav a .tn-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width var(--dur) var(--ease), opacity var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a:hover { color: var(--c-ink-soft); }
+  .topic-nav a:hover .tick { width: 22px; }
+  .topic-nav a:hover .tn-label,
+  .topic-nav a:focus-visible .tn-label { max-width: 16rem; opacity: 1; }
+  .topic-nav a.is-active { color: var(--c-accent); }
+  .topic-nav a.is-active .tick { width: 28px; background: var(--c-accent); }
+  .topic-nav a.is-active .tn-label { max-width: 16rem; opacity: 1; }
+  @media (max-width: 860px) {
+    .topic-nav { display: none; }
+  }
+
+  /* visible focus for keyboard users, everywhere */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* skip link */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--c-accent);
+    color: #1a1206;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============================================================
+     REDUCED MOTION — honor the system preference fully.
+     CSS transitions are zeroed; reveals are simply present.
+     The JS framework paints final state and skips replay (below).
+     ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+    /* ===== injected styles: 01-train.html ===== */
+  /* slug: train */
+  .train-rig {
+    margin-top: var(--s-3);
+    padding: var(--s-3) var(--s-2);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+  }
+  .train-track {
+    display: flex;
+    align-items: stretch;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .train-box {
+    flex: 0 1 auto;
+    min-width: 5.5rem;
+    text-align: center;
+    padding: 0.55rem 0.5rem;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--c-bg-raised) 90%, transparent);
+    /* resting / reduced-motion-safe state: assembled and visible */
+    opacity: 1;
+    transform: none;
+  }
+  .train-box .train-tag {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-ink);
+    line-height: 1.25;
+  }
+  .train-box .train-role {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.03em;
+    color: var(--c-ink-faint);
+    margin-top: 0.15rem;
+  }
+  .train-box.train-core {
+    border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-line));
+    background: color-mix(in srgb, var(--c-bg-raised) 80%, var(--c-accent) 6%);
+  }
+  .train-box.train-core .train-tag { color: var(--c-accent-soft); }
+  .train-arrow {
+    align-self: center;
+    font-family: var(--font-mono);
+    color: var(--c-ink-faint);
+    font-size: var(--t-sm);
+  }
+
+  /* the exploded-then-assembled animation: each box slides up and
+     fades in, staggered down the train. Gated on .in so it REPLAYS
+     on every re-entry; backwards fill holds frame 0 before delay. */
+  @keyframes train-snap {
+    from { opacity: 0; transform: translateY(16px) scale(0.93); }
+    to   { opacity: 1; transform: none; }
+  }
+  .precis-topic.in .train-box {
+    animation: train-snap var(--dur) var(--ease) backwards;
+    animation-delay: var(--train-i, 0s);
+  }
+
+  /* ===== injected styles: 02-tracking.html ===== */
+  /* slug: tracking */
+  .tracking-fig {
+    margin-top: var(--s-3);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  #tracking-canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .tracking-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    align-items: center;
+    padding: 0.55rem var(--s-2);
+    border-top: 1px solid var(--c-line);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-faint);
+  }
+  .tracking-legend .tracking-state {
+    color: var(--c-accent);
+    text-transform: uppercase;
+  }
+  .tracking-dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--c-accent);
+    vertical-align: middle;
+    margin-right: 0.4em;
+    box-shadow: 0 0 6px var(--c-accent);
+  }
+
+  /* ===== injected styles: 03-polar.html ===== */
+  /* slug: polar */
+  .polar-fig {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  @media (max-width: 540px) { .polar-fig { grid-template-columns: 1fr; } }
+
+  .polar-panel {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  .polar-panel .polar-cap {
+    position: absolute;
+    left: 0.55rem; top: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    z-index: 2;
+  }
+
+  /* ---- left panel: misaligned vs aligned star path ---- */
+  .polar-orbit {
+    position: absolute;
+    inset: 0;
+  }
+  .polar-svg { width: 100%; height: 100%; display: block; }
+  .polar-arc {
+    fill: none;
+    stroke: var(--c-warn);
+    stroke-width: 2;
+    stroke-linecap: round;
+    /* draw-on of the smeared arc; resting state = fully drawn */
+    stroke-dasharray: 1 0;
+  }
+  .polar-star-bad {
+    fill: var(--c-warn);
+  }
+  /* the aligned, locked pinpoint */
+  .polar-star-good {
+    fill: var(--c-accent);
+    opacity: 1;
+  }
+
+  /* ---- right panel: a bullseye + error dot converging ---- */
+  .polar-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid var(--c-line);
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+  }
+  .polar-ring.polar-r1 { width: 78%; height: 78%; }
+  .polar-ring.polar-r2 { width: 50%; height: 50%; }
+  .polar-ring.polar-r3 { width: 22%; height: 22%; border-color: color-mix(in srgb, var(--c-accent) 50%, var(--c-line)); }
+  .polar-cross::before, .polar-cross::after {
+    content: "";
+    position: absolute;
+    background: var(--c-line);
+    left: 50%; top: 50%;
+  }
+  .polar-cross::before { width: 1px; height: 70%; transform: translate(-50%, -50%); }
+  .polar-cross::after  { width: 70%; height: 1px; transform: translate(-50%, -50%); }
+
+  .polar-err {
+    position: absolute;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    box-shadow: 0 0 8px var(--c-accent);
+    left: 50%; top: 50%;
+    /* resting / reduced-motion-safe: converged at center */
+    transform: translate(-50%, -50%);
+  }
+
+  /* ---- the convergence animation, gated on .in so it REPLAYS ---- */
+  @keyframes polar-converge {
+    0%   { transform: translate(calc(-50% + 64px), calc(-50% - 48px)); }
+    55%  { transform: translate(calc(-50% - 30px), calc(-50% + 22px)); }
+    100% { transform: translate(-50%, -50%); }
+  }
+  .precis-topic.in .polar-err {
+    animation: polar-converge calc(var(--dur) * 2.2) var(--ease) both;
+  }
+
+  /* the smeared arc draws on as the error shows; the locked dot
+     blinks in once at the end. Both gated on .in. */
+  @keyframes polar-draw {
+    from { stroke-dasharray: 0 160; }
+    to   { stroke-dasharray: 160 0; }
+  }
+  .precis-topic.in .polar-arc {
+    animation: polar-draw var(--dur) var(--ease) both;
+  }
+  @keyframes polar-pop {
+    0%, 60% { opacity: 0; transform: scale(0.2); }
+    100%    { opacity: 1; transform: scale(1); }
+  }
+  .precis-topic.in .polar-lock {
+    transform-origin: center;
+    animation: polar-pop calc(var(--dur) * 1.6) var(--ease) both;
+  }
+
+  /* ===== injected styles: 04-focus.html ===== */
+  /* slug: focus */
+  .focus-fig {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  @media (max-width: 540px) { .focus-fig { grid-template-columns: 1fr; } }
+
+  .focus-panel {
+    position: relative;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  .focus-panel canvas { width: 100%; height: auto; display: block; }
+  .focus-panel .focus-cap {
+    position: absolute;
+    left: 0.55rem; top: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    z-index: 2;
+    pointer-events: none;
+  }
+
+  /* ===== injected styles: 05-cooling.html ===== */
+  /* ---- TOPIC: Sensor cooling (slug: cooling) ---- */
+  .cooling-fig {
+    display: grid;
+    grid-template-columns: 1fr minmax(8rem, 12rem);
+    gap: var(--s-3);
+    align-items: center;
+    margin: var(--s-2) 0 var(--s-3);
+    padding: var(--s-3);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+  }
+  @media (max-width: 540px) {
+    .cooling-fig { grid-template-columns: 1fr; }
+  }
+
+  /* the noisy frame that de-speckles as it cools */
+  .cooling-frame {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(60% 70% at 50% 45%, color-mix(in srgb, var(--c-cool) 22%, transparent), transparent 70%),
+      var(--c-bg);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* speckle layer = simulated dark-current grain */
+  .cooling-speckle {
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 12% 22%, var(--c-accent-soft), transparent 60%),
+      radial-gradient(1px 1px at 78% 18%, var(--c-warn), transparent 60%),
+      radial-gradient(1px 1px at 34% 62%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 88% 71%, var(--c-accent), transparent 60%),
+      radial-gradient(1px 1px at 55% 38%, var(--c-cool), transparent 60%),
+      radial-gradient(1px 1px at 22% 82%, var(--c-warn), transparent 60%),
+      radial-gradient(1px 1px at 67% 88%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 44% 12%, var(--c-accent-soft), transparent 60%),
+      radial-gradient(1px 1px at 91% 44%, var(--c-cool), transparent 60%),
+      radial-gradient(1px 1px at 8% 55%, var(--c-warn), transparent 60%);
+    opacity: 0.9;
+  }
+  .precis-topic.in .cooling-speckle {
+    animation: cooling-clear var(--dur) var(--ease) forwards;
+  }
+  @keyframes cooling-clear {
+    from { opacity: 0.9; }
+    to   { opacity: 0.12; }
+  }
+
+  /* thermometer column */
+  .cooling-therm {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    gap: var(--s-2);
+    justify-items: center;
+  }
+  .cooling-tube {
+    position: relative;
+    width: 10px;
+    height: 7.5rem;
+    border-radius: 999px;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* the falling mercury — height shrinks toward the set-point */
+  .cooling-merc {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--c-warn), var(--c-accent));
+    height: 92%;
+  }
+  .precis-topic.in .cooling-merc {
+    animation: cooling-fall var(--dur) var(--ease) forwards;
+  }
+  @keyframes cooling-fall {
+    from { height: 92%; background: linear-gradient(180deg, var(--c-warn), var(--c-accent)); }
+    to   { height: 34%; background: linear-gradient(180deg, var(--c-accent), var(--c-cool)); }
+  }
+  /* set-point marker line */
+  .cooling-mark {
+    position: absolute;
+    left: -5px; right: -5px;
+    bottom: 34%;
+    height: 1px;
+    background: var(--c-cool);
+  }
+  .cooling-mark::after {
+    content: "-10\00B0";
+    position: absolute;
+    right: 14px;
+    top: -0.7em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-cool);
+    white-space: nowrap;
+  }
+
+  /* the cooler-state pill that flips to LOCKED */
+  .cooling-pill {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    padding: 0.25em 0.7em;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    color: var(--c-ink-faint);
+    background: var(--c-bg-sunk);
+  }
+  .precis-topic.in .cooling-pill {
+    animation: cooling-lock var(--dur) var(--ease) forwards;
+    animation-delay: calc(var(--dur) * 0.7);
+  }
+  @keyframes cooling-lock {
+    from { color: var(--c-ink-faint); border-color: var(--c-line); }
+    to   { color: var(--c-cool); border-color: color-mix(in srgb, var(--c-cool) 55%, transparent); }
+  }
+  /* swap the label text via two stacked spans */
+  .cooling-pill .cooling-cooling { display: inline; }
+  .cooling-pill .cooling-locked  { display: none; }
+  .precis-topic.in .cooling-pill .cooling-cooling { display: none; }
+  .precis-topic.in .cooling-pill .cooling-locked  { display: inline; }
+
+  /* ===== injected styles: 06-framing.html ===== */
+  /* ---- TOPIC: Framing + FOV (slug: framing) ---- */
+  .framing-stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    margin: var(--s-2) 0 var(--s-2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(40% 55% at 58% 42%, color-mix(in srgb, var(--c-cool) 30%, transparent), transparent 70%),
+      radial-gradient(26% 40% at 40% 60%, color-mix(in srgb, var(--c-warn) 26%, transparent), transparent 72%),
+      radial-gradient(70% 90% at 50% 50%, color-mix(in srgb, var(--c-cool) 8%, transparent), transparent 75%),
+      var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* faint star field */
+  .framing-stage::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 18% 30%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 72% 22%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 44% 70%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 84% 64%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 30% 84%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 60% 50%, var(--c-ink), transparent 60%);
+    opacity: 0.7;
+  }
+
+  /* the FOV rectangle — size is driven by the slider (JS sets --framing-size);
+     longer focal length -> smaller box. Width transitions smoothly on drag. */
+  .framing-fov {
+    position: absolute;
+    border: 1.5px solid var(--c-accent);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 30%, transparent),
+                0 0 18px -4px var(--c-accent);
+    /* resting (final-safe) state: centered, sized from the slider default */
+    width: var(--framing-size, 34%); height: var(--framing-size, 34%);
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    transition: width var(--dur) var(--ease), height var(--dur) var(--ease);
+  }
+  .framing-fov::after {
+    content: "FOV";
+    position: absolute;
+    top: -1.35em; left: 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-accent);
+  }
+  /* corner crosshair at target center */
+  .framing-cross {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 14px; height: 14px;
+    transform: translate(-50%, -50%);
+    opacity: 0.8;
+  }
+  .framing-cross::before,
+  .framing-cross::after {
+    content: "";
+    position: absolute;
+    background: var(--c-accent-soft);
+  }
+  .framing-cross::before { left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%); }
+  .framing-cross::after  { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
+
+  /* on entry, the border glints amber so the box reads as "live" without
+     fighting the slider-driven size. Gated on .in so it replays. */
+  @keyframes framing-glint {
+    0%   { border-color: var(--c-cool); }
+    60%  { border-color: var(--c-accent-soft); }
+    100% { border-color: var(--c-accent); }
+  }
+  .precis-topic.in .framing-fov {
+    animation: framing-glint calc(var(--dur) * 1.4) var(--ease) both;
+  }
+
+  /* the focal-length slider readout */
+  .framing-slider {
+    display: grid;
+    grid-template-columns: max-content 1fr max-content;
+    gap: var(--s-2);
+    align-items: center;
+    margin-bottom: var(--s-3);
+    padding: var(--s-2);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-ink-faint);
+  }
+  .framing-slider input[type="range"] { width: 100%; accent-color: var(--c-accent); }
+  .framing-slider .framing-fl { color: var(--c-accent-soft); }
+
+  /* ===== injected styles: 07-angle.html ===== */
+  /* ---- TOPIC: Camera angle (slug: angle) ---- */
+  .angle-stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    margin: var(--s-2) 0 var(--s-2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(70% 90% at 50% 50%, color-mix(in srgb, var(--c-cool) 7%, transparent), transparent 75%),
+      var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* an edge-on galaxy: a thin lens lying along the horizontal */
+  .angle-galaxy {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 46%; height: 5%;
+    transform: translate(-50%, -50%) rotate(34deg);
+    border-radius: 999px;
+    background: linear-gradient(90deg,
+      transparent, color-mix(in srgb, var(--c-warn) 55%, transparent) 30%,
+      var(--c-accent-soft) 50%,
+      color-mix(in srgb, var(--c-warn) 55%, transparent) 70%, transparent);
+    box-shadow: 0 0 22px -2px color-mix(in srgb, var(--c-accent) 45%, transparent);
+  }
+  /* the FOV rectangle that rotates to seat the galaxy on its diagonal */
+  .angle-fov {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 52%; height: 38%;
+    transform: translate(-50%, -50%) rotate(34deg); /* resting/final = aligned */
+    border: 1.5px solid var(--c-accent);
+    border-radius: 2px;
+    box-shadow: 0 0 16px -4px var(--c-accent);
+  }
+  .angle-fov::after {
+    content: "FOV";
+    position: absolute;
+    top: -1.35em; left: 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-accent);
+  }
+  .precis-topic.in .angle-fov {
+    animation: angle-rotate calc(var(--dur) * 2.4) var(--ease) both;
+  }
+  @keyframes angle-rotate {
+    from { transform: translate(-50%, -50%) rotate(-12deg); }
+    to   { transform: translate(-50%, -50%) rotate(34deg); }
+  }
+
+  /* PA readout pill */
+  .angle-readout {
+    position: absolute;
+    left: var(--s-2); bottom: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.06em;
+    color: var(--c-accent-soft);
+    background: color-mix(in srgb, var(--c-bg-sunk) 80%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.3em 0.65em;
+  }
+  .angle-readout .angle-label { color: var(--c-ink-faint); }
+
+  /* ===== injected styles: 08-guiding.html ===== */
+  /* ---- TOPIC: Guiding + dithering (slug: guiding) ---- */
+  .guiding-fig {
+    display: grid;
+    grid-template-columns: minmax(7rem, 9rem) 1fr;
+    gap: var(--s-3);
+    align-items: stretch;
+    margin: var(--s-2) 0 var(--s-2);
+  }
+  @media (max-width: 540px) {
+    .guiding-fig { grid-template-columns: 1fr; }
+  }
+  .guiding-panel {
+    position: relative;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* the guide-star box keeps a square-ish aspect */
+  .guiding-box { aspect-ratio: 1 / 1; }
+  .guiding-graph { aspect-ratio: 16 / 7; }
+  .guiding-canvas { width: 100%; height: 100%; display: block; }
+
+  .guiding-tag {
+    position: absolute;
+    top: 0.5em; left: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    color: var(--c-ink-faint);
+  }
+  .guiding-rms {
+    position: absolute;
+    top: 0.5em; right: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-good);
+  }
+
+  /* ===== injected styles: 09-solve.html ===== */
+  /* ===== Topic 09 — plate solving (slug: solve) ===== */
+  .solve-stage {
+    position: relative;
+    margin-top: var(--s-2);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+    overflow: hidden;
+  }
+  .solve-stage svg { width: 100%; height: auto; }
+
+  /* mono status chip, top-left: solving -> solved */
+  .solve-chip {
+    position: absolute;
+    top: var(--s-2);
+    left: var(--s-2);
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    background: var(--c-bg-raised);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+  }
+  .solve-led { width: 6px; height: 6px; border-radius: 50%; background: var(--c-ink-faint); }
+  .solve-stage.solve-working .solve-chip { color: var(--c-accent); border-color: color-mix(in srgb, var(--c-accent) 40%, transparent); }
+  .solve-stage.solve-working .solve-led { background: var(--c-accent); }
+  .solve-stage.solve-done .solve-chip { color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent); }
+  .solve-stage.solve-done .solve-led { background: var(--c-good); }
+
+  /* faint background stars stay dim; matchable ones light amber on cue */
+  .solve-star { fill: var(--c-ink-soft); }
+  .solve-match {
+    fill: var(--c-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft);
+  }
+  .solve-match.solve-on { opacity: 1; }
+  .solve-ring {
+    stroke: var(--c-accent); fill: none; stroke-width: 1.4;
+    transform-box: fill-box; transform-origin: center;
+    opacity: 0; transform: scale(0.4);
+    transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  }
+  .solve-ring.solve-on { opacity: 0.85; transform: scale(1); }
+
+  /* dashed catalog overlay connecting the recognized pattern */
+  .solve-catalog {
+    stroke: var(--c-cool); fill: none; stroke-width: 1.25; stroke-dasharray: 4 4;
+    opacity: 0; transition: opacity var(--dur) var(--ease-soft);
+  }
+  .solve-catalog.solve-on { opacity: 0.6; }
+
+  /* crosshair + name that snap onto the target */
+  .solve-cross {
+    transform-box: fill-box; transform-origin: center;
+    opacity: 0; transform: scale(1.8);
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+  }
+  .solve-cross.solve-on { opacity: 1; transform: scale(1); }
+  .solve-name {
+    font-family: var(--font-mono); font-size: 11px; fill: var(--c-accent); letter-spacing: 0.06em;
+    opacity: 0; transition: opacity var(--dur) var(--ease-soft) 0.15s;
+  }
+  .solve-name.solve-on { opacity: 1; }
+
+  /* ===== injected styles: 10-stack.html ===== */
+  /* ===== Topic 10 — exposure + calibration (slug: stack) ===== */
+  .stack-stage {
+    position: relative;
+    margin-top: var(--s-2);
+    aspect-ratio: 16 / 8;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+    overflow: hidden;
+  }
+  .stack-stage svg { width: 100%; height: 100%; display: block; }
+
+  /* grain layer fades out as N climbs; the faint nebula fades in */
+  .stack-grain  { transition: opacity var(--dur) var(--ease-soft); }
+  .stack-signal { opacity: 0; transition: opacity var(--dur) var(--ease); }
+
+  /* readout: frame count + noise %, mono + tabular */
+  .stack-readout {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: var(--s-2); margin-top: var(--s-2);
+    font-family: var(--font-mono); font-size: var(--t-sm); color: var(--c-ink-soft);
+  }
+  .stack-count {
+    color: var(--c-accent); font-size: var(--t-lg); font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .stack-noise { color: var(--c-caption); font-variant-numeric: tabular-nums; }
+
+  /* skinny bar that shrinks as noise falls */
+  .stack-bar {
+    margin-top: var(--s-1); height: 6px; border-radius: 99px;
+    background: var(--c-bg-sunk); box-shadow: inset 0 0 0 1px var(--c-line); overflow: hidden;
+  }
+  .stack-bar > i {
+    display: block; height: 100%; width: 100%; border-radius: 99px;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent));
+    transform-origin: left; transition: transform var(--dur) var(--ease);
+  }
+
+  /* ===== injected styles: 11-sequence.html ===== */
+  /* ===== Topic 11 — sequencing + safety (slug: sequence) ===== */
+  .sequence-stage {
+    margin-top: var(--s-2);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+  }
+  .sequence-stage svg { width: 100%; height: auto; display: block; }
+
+  /* the night timeline: a track with a sweeping play-head */
+  .sequence-track  { stroke: var(--c-line); stroke-width: 2; }
+  .sequence-tick   { stroke: var(--c-ink-faint); stroke-width: 1; }
+  .sequence-tlabel {
+    font-family: var(--font-mono); font-size: 9px; fill: var(--c-caption);
+    letter-spacing: 0.04em; text-anchor: middle;
+  }
+  /* meridian marker, dead center */
+  .sequence-meridian { stroke: var(--c-cool); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; }
+  .sequence-mlabel   { font-family: var(--font-mono); font-size: 9px; fill: var(--c-cool); text-anchor: middle; }
+
+  /* the play-head + the little scope tube that flips at the meridian */
+  .sequence-head { stroke: var(--c-accent); stroke-width: 2; }
+  .sequence-dot  { fill: var(--c-accent); }
+  .sequence-tube {
+    stroke: var(--c-accent); stroke-width: 3; stroke-linecap: round;
+    transform-box: fill-box; transform-origin: center;
+    transition: transform var(--dur) var(--ease);
+  }
+  .sequence-tube.sequence-flipped { transform: rotate(180deg); }
+
+  /* stage labels above the timeline (focus / subs / flip / subs / park) */
+  .sequence-phase {
+    font-family: var(--font-mono); font-size: 10px; fill: var(--c-ink-faint);
+    text-anchor: middle; letter-spacing: 0.04em;
+    transition: fill var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-phase.sequence-active { fill: var(--c-accent); }
+
+  /* the safety guard chip */
+  .sequence-guard {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    margin-top: var(--s-3);
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    font-family: var(--font-mono); font-size: var(--t-xs);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-guard .sequence-gled {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--c-good);
+    transition: background var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-guard.sequence-unsafe { color: var(--c-warn); border-color: color-mix(in srgb, var(--c-warn) 45%, transparent); }
+  .sequence-guard.sequence-unsafe .sequence-gled { background: var(--c-warn); }
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#precis">Skip to content</a>
+
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <nav class="topic-nav" id="topicNav" aria-label="Topic navigation"></nav>
+
+  <!-- ================================================================
+       ASTRODECK PRECIS — animation framework (defined FIRST)
+       This runs before the injected section scripts so that any
+       AstroAnim.register(...) call inside a section finds the API
+       already present. _start() is invoked later, after the sections
+       and their register() calls have all executed.
+
+       The earlier docs fired each animation once, the instant a
+       section's top edge appeared, and never replayed. This fixes
+       both faults: a topic counts as "in" only when it is properly
+       on screen (its center near the viewport center), and it RE-ARMS
+       on exit so every animation replays on every re-entry.
+       ================================================================ -->
+  <script>
+  window.AstroAnim = (function () {
+    "use strict";
+
+    var reduceMotion = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---- JS animation registry --------------------------------
+       Authors register an element with { play, reset } callbacks.
+       The observer calls play() when the element's topic enters
+       and reset() when it leaves. Both are optional.
+       For reduced motion we call play() once (to paint the final
+       frame) and never reset — no motion, no replay loop.        */
+    var registry = new Map();    // el -> { play, reset, playing }
+
+    function register(el, handlers) {
+      if (!el) return;
+      handlers = handlers || {};
+      registry.set(el, {
+        play: typeof handlers.play === "function" ? handlers.play : null,
+        reset: typeof handlers.reset === "function" ? handlers.reset : null,
+        playing: false
+      });
+      if (reduceMotion) {
+        // Paint the final state immediately; never animate, never reset.
+        if (registry.get(el).play) {
+          try { registry.get(el).play(); } catch (e) {}
+        }
+        registry.get(el).playing = true;
+      }
+    }
+
+    function unregister(el) { registry.delete(el); }
+
+    // Fire play/reset for every registered element inside a topic.
+    function driveTopic(topic, entering) {
+      if (reduceMotion) return; // handled once at register time
+      registry.forEach(function (h, el) {
+        if (!topic.contains(el)) return;
+        if (entering && !h.playing) {
+          h.playing = true;
+          if (h.play) { try { h.play(); } catch (e) {} }
+        } else if (!entering && h.playing) {
+          h.playing = false;
+          if (h.reset) { try { h.reset(); } catch (e) {} }
+        }
+      });
+    }
+
+    /* ---- CSS path: restart .in-gated animations ---------------
+       Adding .in lets `.precis-topic.in .thing { animation: ... }`
+       run. Removing .in resets it. To make a CSS animation REPLAY
+       on re-entry we force a reflow between remove and add so the
+       browser actually restarts it rather than treating it as a
+       no-op.                                                       */
+    function setTopicIn(topic, on) {
+      if (on) {
+        topic.classList.add("in");
+      } else {
+        topic.classList.remove("in");
+        // Force reflow so the next add() restarts CSS animations.
+        void topic.offsetWidth;
+      }
+    }
+
+    /* ---- the shared, threshold-gated, RE-ARMING observer -------
+       A topic is "in" only when it is PROPERLY on screen. Two ways
+       to qualify: ratio >= 0.5 (a short card sitting mostly on
+       screen) OR its center band straddling the viewport center (a
+       tall card that can never reach half-visible). The rootMargin
+       trims the top and bottom 15% so the trigger sits at center,
+       not the top edge. On exit we remove .in and call reset() —
+       the section is re-armed and replays the next time it returns. */
+    var topics = [];
+
+    function observe(topic) {
+      if (topics.indexOf(topic) === -1) topics.push(topic);
+    }
+
+    function start() {
+      topics = Array.prototype.slice.call(
+        document.querySelectorAll("#precis .precis-topic")
+      );
+
+      if (reduceMotion || !("IntersectionObserver" in window)) {
+        // No motion (or no observer): everything is simply present.
+        topics.forEach(function (t) { t.classList.add("in"); });
+        return;
+      }
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          var topic = entry.target;
+          // A tall card (h2 + def + facts + 16:9 figure + caption + stakes
+          // + hook + aside) can exceed the viewport, so it never reaches
+          // intersectionRatio >= 0.5 — the old gate was unreachable and the
+          // card never played. Treat a topic as "in" when its CENTER band
+          // straddles the viewport center: top above 60% AND bottom below
+          // 40% of the viewport height. The ratio gate still catches the
+          // short cards that fit comfortably on screen.
+          var r = entry.boundingClientRect;
+          var vh = window.innerHeight;
+          var centerInView = r.top < vh * 0.6 && r.bottom > vh * 0.4;
+          var inView = entry.isIntersecting &&
+            (entry.intersectionRatio >= 0.5 || centerInView);
+          var already = topic.classList.contains("in");
+          if (inView && !already) {
+            setTopicIn(topic, true);     // CSS path: replay
+            driveTopic(topic, true);     // JS path: play()
+          } else if (!inView && already) {
+            setTopicIn(topic, false);    // CSS path: reset + reflow
+            driveTopic(topic, false);    // JS path: reset()
+          }
+        });
+      }, {
+        root: null,
+        // trim top + bottom 15% so the trigger band sits at center
+        rootMargin: "-15% 0px -15% 0px",
+        // multi-stop so the callback fires across the whole scroll, letting
+        // the center-band test re-evaluate as a tall card passes through
+        threshold: [0, 0.25, 0.5, 0.75, 1]
+      });
+
+      topics.forEach(function (t) { io.observe(t); });
+    }
+
+    return {
+      register: register,
+      unregister: unregister,
+      observe: observe,
+      _start: start,
+      reduceMotion: reduceMotion
+    };
+  })();
+  </script>
+
+  <header class="precis-masthead">
+    <p class="precis-eyebrow">AstroDeck · Field Reference</p>
+    <h1>The astrophotography behind the buttons</h1>
+    <p class="precis-standfirst">Eleven cards, one concept each — enough to look at an
+      AstroDeck screen and have an opinion, and not one paragraph more. The physics is
+      somebody else's problem.</p>
+    <p class="precis-legend" aria-label="How to read a card">
+      <span>Read each card</span>
+      <b>def</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b>facts</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-breaks">BREAKS</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-ui">UI</b>
+      <span>— what it is, the numbers, what breaks if you get it wrong, what AstroDeck does about it.</span>
+    </p>
+  </header>
+
+  <main id="precis">
+      <!-- ===== section: 01-train.html ===== -->
+<section class="precis-topic" id="train" data-nav="The Rig">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">01</span> The Hardware</p>
+    <h2>The rig</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">The <b>imaging train</b>: a
+      chain of devices that aim, hold focus, and record light, bolted nose to tail.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Core 3</dt><dd><b>Mount</b> (aims + tracks), <b>OTA</b> (the telescope, i.e. the
+        lens), <b>main camera</b> (the sensor).</dd>
+      <dt>Helpers</dt><dd>Guide scope + guide camera, motorized focuser, filter wheel,
+        sometimes a rotator.</dd>
+      <dt>Count</dt><dd><span class="stat">4–7</span> separate boxes on a typical setup,
+        each its own driver.</dd>
+    </dl>
+
+    <div class="train-rig bleed-wide reveal" style="--reveal-delay: .24s" aria-hidden="true">
+      <div class="train-track">
+        <div class="train-box train-core" style="--train-i: 0s">
+          <span class="train-tag">Mount</span><span class="train-role">aims + tracks</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box train-core" style="--train-i: .09s">
+          <span class="train-tag">OTA</span><span class="train-role">the lens</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box train-core" style="--train-i: .18s">
+          <span class="train-tag">Camera</span><span class="train-role">the sensor</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box" style="--train-i: .27s">
+          <span class="train-tag">Focuser</span><span class="train-role">keeps sharp</span>
+        </div>
+        <div class="train-box" style="--train-i: .33s">
+          <span class="train-tag">Filters</span><span class="train-role">color wheel</span>
+        </div>
+        <div class="train-box" style="--train-i: .39s">
+          <span class="train-tag">Guider</span><span class="train-role">scope + cam</span>
+        </div>
+      </div>
+    </div>
+    <p class="caption reveal" style="--reveal-delay: .3s">Amber = the core three. The rest
+      are helpers that earn their place on a long night.</p>
+
+    <p class="stakes reveal">One loose connection or a flexing joint and every frame in the
+      train inherits the wobble.</p>
+    <p class="hook reveal">AstroDeck drives all of them from <b>one control surface</b> — one
+      screen, one connection list, every box.</p>
+    <p class="aside">Six gadgets, one cable nest, and you, in the dark, hoping none of
+      them blink out.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 02-tracking.html ===== -->
+<section class="precis-topic" id="tracking" data-nav="Mount + Tracking">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">02</span> Pointing the Mount</p>
+    <h2>Mount + tracking</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">A motor spins one tilted axis at
+      the sky's own rate, so a chosen star stays pinned while the Earth turns under it.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Drift</dt><dd>Earth rotates <span class="stat">~15&deg;/hr</span>; uncorrected,
+        every star slides across the frame.</dd>
+      <dt>Fix</dt><dd>An <b>equatorial mount</b> tilts one axis parallel to Earth's; a
+        motor turns it at <b>sidereal rate</b> to cancel the drift.</dd>
+      <dt>Coords</dt><dd><b>RA</b> = sky longitude, <b>Dec</b> = sky latitude. A go-to maps
+        a target to a mount move.</dd>
+      <dt>Reality</dt><dd>Tracking is close but imperfect — good for short subs, not
+        flawless for long ones.</dd>
+    </dl>
+
+    <div class="tracking-fig bleed-wide reveal" style="--reveal-delay: .24s">
+      <canvas id="tracking-canvas" width="900" height="280"
+        role="img"
+        aria-label="A drifting starfield; when tracking switches on, one star locks to the
+          center while the rest stop sliding."></canvas>
+      <div class="tracking-legend" aria-hidden="true">
+        <span><span class="tracking-dot"></span>locked target</span>
+        <span>tracking: <span class="tracking-state" id="tracking-label">off</span></span>
+      </div>
+    </div>
+
+    <p class="stakes reveal">Without tracking a multi-second exposure smears every star into a
+      streak; the longer the sub, the worse the trail.</p>
+    <p class="hook reveal">AstroDeck's mount panel: <b>slew</b> (move now), <b>track</b> (hold
+      sidereal), <b>go-to</b> (point at a named target).</p>
+    <p class="aside">You are bolting a camera to a clock and asking it to undo the
+      planet.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 03-polar.html ===== -->
+<section class="precis-topic" id="polar" data-nav="Polar Alignment">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">03</span> Aiming the Axis</p>
+    <h2>Polar alignment</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">Pointing the mount's spin axis at
+      the <b>celestial pole</b> (near Polaris, north) so tracking actually cancels the
+      drift.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Target</dt><dd>The celestial pole — within a degree of <b>Polaris</b> in the
+        north.</dd>
+      <dt>Goal</dt><dd>Dial alt/az to a bullseye until error <span class="stat">&lt; ~30
+        arcsec</span>.</dd>
+      <dt>Method</dt><dd>A routine <b>plate-solves</b> the sky to measure the error; you
+        turn two knobs to zero it.</dd>
+    </dl>
+
+    <div class="polar-fig bleed-wide reveal" style="--reveal-delay: .24s" aria-hidden="true">
+      <div class="polar-panel">
+        <span class="polar-cap">misaligned &rarr; aligned</span>
+        <div class="polar-orbit">
+          <svg class="polar-svg" viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet">
+            <!-- smeared arc: a star tracing an arc because of pole error -->
+            <path class="polar-arc" d="M 30 86 A 46 46 0 0 1 96 44" />
+            <circle class="polar-star-bad" cx="96" cy="44" r="3.2" />
+            <!-- the aligned, locked pinpoint near center -->
+            <g class="polar-lock">
+              <circle class="polar-star-good" cx="60" cy="62" r="3.4" />
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="polar-panel polar-cross">
+        <span class="polar-cap">bullseye error</span>
+        <div class="polar-ring polar-r1"></div>
+        <div class="polar-ring polar-r2"></div>
+        <div class="polar-ring polar-r3"></div>
+        <div class="polar-err"></div>
+      </div>
+    </div>
+    <p class="caption reveal" style="--reveal-delay: .3s">Left: an arc means error — the
+      pinpoint is what aligned looks like. Right: nudge the dot into the center ring.</p>
+
+    <p class="stakes reveal">Error <b>rotates the whole field</b> around the pole; stars smear
+      into arcs that no later processing can salvage.</p>
+    <p class="hook reveal">AstroDeck's <b>polar bullseye</b> screen: an amber error-dot, rings
+      that tighten as the error drops, and live alt/az nudge cues until you hit center.</p>
+    <p class="aside">You are aiming at a hinge you cannot see, by adjusting two screws you
+      can barely reach.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 04-focus.html ===== -->
+<section class="precis-topic" id="focus" data-nav="Focusing">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">04</span> Getting Sharp</p>
+    <h2>Focusing</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">In focus = the tightest star dot,
+      judged by a <b>number</b> (HFR / FWHM, smaller is sharper), never by eye.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Metric</dt><dd><b>HFR</b> / <b>FWHM</b> — the star's width in pixels.
+        <span class="stat">Smaller = sharper</span>.</dd>
+      <dt>Drift</dt><dd>As the night cools, metal contracts and focus wanders — refocus
+        periodically.</dd>
+      <dt>Bahtinov</dt><dd>A mask throws <span class="stat">3</span> diffraction spikes;
+        the center spike sits dead-center when focused.</dd>
+      <dt>V-curve</dt><dd>Autofocus steps the focuser, plots HFR vs position, and drives
+        to the <b>minimum</b>.</dd>
+    </dl>
+
+    <div class="focus-fig bleed-wide reveal" style="--reveal-delay: .24s">
+      <div class="focus-panel">
+        <span class="focus-cap">blur &rarr; Bahtinov lock</span>
+        <canvas id="focus-star" width="440" height="300"
+          role="img"
+          aria-label="A blurred star sharpens to a pinpoint as the Bahtinov mask's
+            center diffraction spike slides into the middle."></canvas>
+      </div>
+      <div class="focus-panel">
+        <span class="focus-cap">V-curve autofocus</span>
+        <canvas id="focus-vcurve" width="440" height="300"
+          role="img"
+          aria-label="An HFR-versus-focuser-position plot fills in as a V, then snaps a
+            marker to the lowest point — best focus."></canvas>
+      </div>
+    </div>
+
+    <p class="stakes reveal">Soft focus is unrecoverable — bloated stars and lost faint detail
+      bake into every frame and no later step sharpens them back.</p>
+    <p class="hook reveal">AstroDeck's focus panel: live <b>HFR readout</b>, a V-curve run, and a
+      Bahtinov auto-focus flow that reads the spikes for you.</p>
+    <p class="aside">The sharpest moment of your night is decided by a number you can't
+      see and a wrench you keep forgetting.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 05-cooling.html ===== -->
+<section class="precis-topic" id="cooling" data-nav="Sensor Cooling">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">05</span> Quieting the Sensor</p>
+    <h2>Sensor cooling</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">A thermoelectric cooler holds the
+      sensor at a fixed cold temperature, keeping dark-current noise low and calibration
+      frames repeatable.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Noise source</dt><dd>Dark current — self-generated; roughly <b>doubles every ~6&deg;C</b>, grows with exposure time.</dd>
+      <dt>Set-point</dt><dd>A stable target like <span class="stat">-10&deg;C</span>; lower and steady beats merely cold.</dd>
+      <dt>Floor</dt><dd>TEC reaches roughly <span class="stat">30-40&deg;C</span> below ambient.</dd>
+      <dt>Ramp</dt><dd>Cool and warm <b>gradually</b> to avoid condensation and thermal shock.</dd>
+    </dl>
+
+    <div class="cooling-fig reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="cooling-frame">
+        <div class="cooling-speckle"></div>
+      </div>
+      <div class="cooling-therm">
+        <div class="cooling-tube">
+          <div class="cooling-merc"></div>
+          <div class="cooling-mark"></div>
+        </div>
+        <span class="cooling-pill">
+          <span class="cooling-cooling">COOLING</span><span class="cooling-locked">LOCKED -10&deg;</span>
+        </span>
+      </div>
+    </div>
+    <p class="caption">Grain clears as the sensor falls to its set-point and the cooler locks.</p>
+
+    <p class="stakes reveal">Drift the temperature between subs and your library of dark frames
+      no longer matches, so calibration leaves noise it was meant to subtract.</p>
+    <p class="hook reveal">AstroDeck's <b>cooler box</b> shows target vs. actual with a
+      cooling-state indicator that reads <b>LOCKED</b> once it holds.</p>
+    <p class="aside">It is a tiny fridge bolted to a camera, sulking at physics.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 06-framing.html ===== -->
+<section class="precis-topic" id="framing" data-nav="Framing + FOV">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">06</span> Composing the Shot</p>
+    <h2>Framing + FOV</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">How much sky lands on the sensor,
+      and where the target sits inside it.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>FOV</dt><dd>Scales as <b>sensor size / focal length</b> — long FL gives a tight crop.</dd>
+      <dt>Pixel scale</dt><dd><span class="stat">206 &times; pixel&micro;m / FL&#8202;mm</span> arcsec per pixel.</dd>
+      <dt>Sampling</dt><dd>Match pixel scale to <b>seeing</b>; off either way wastes the data.</dd>
+      <dt>Big targets</dt><dd>Tile multiple panels into a <b>mosaic</b>.</dd>
+    </dl>
+
+    <figure class="framing-stage reveal bleed-wide" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="framing-cross"></div>
+      <div class="framing-fov"></div>
+    </figure>
+    <p class="caption">A longer focal length tightens the crop; a plate-solve snaps the frame onto the target.</p>
+
+    <div class="framing-slider reveal" style="--reveal-delay: .2s">
+      <label for="framing-fl-input">FOCAL LENGTH</label>
+      <input id="framing-fl-input" type="range" min="200" max="1200" value="600" step="10" aria-label="Focal length, demonstration only">
+      <span class="framing-fl" id="framing-fl-out">600&nbsp;mm</span>
+    </div>
+
+    <p class="stakes reveal">Guess the FOV and the target spills past the sensor edge, or sits
+      lost in a sea of empty sky you can't recover in processing.</p>
+    <p class="hook reveal">AstroDeck's <b>sky-atlas</b> overlays the live FOV box on the target
+      and lays out mosaic panels with overlap.</p>
+    <p class="aside">It is a viewfinder for a camera pointed at things you can't see yet.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 07-angle.html ===== -->
+<section class="precis-topic" id="angle" data-nav="Camera Angle">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">07</span> Rotating the Frame</p>
+    <h2>Camera angle</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Turning the camera in its holder
+      sets the <b>position angle</b> — the rotation of the frame on the sky.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Sets</dt><dd>Composition — orientation of the target within the frame.</dd>
+      <dt>By hand</dt><dd>Twist the camera and <b>lock</b> the holder.</dd>
+      <dt>Motorized</dt><dd>A <b>rotator</b> drives PA to a commanded angle.</dd>
+      <dt>Truth</dt><dd>Plate-solving reports the <b>actual PA</b>, in degrees.</dd>
+    </dl>
+
+    <figure class="angle-stage reveal bleed-wide" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="angle-galaxy"></div>
+      <div class="angle-fov"></div>
+      <div class="angle-readout"><span class="angle-label">PA</span> <span id="angle-pa">214&deg;</span></div>
+    </figure>
+    <p class="caption">The frame rotates until the edge-on galaxy lies along the diagonal; PA settles on the plan.</p>
+
+    <p class="stakes reveal">Skip the angle and a mosaic's panels meet at mismatched rotations,
+      so the seams never line up and the stitch fails.</p>
+    <p class="hook reveal">AstroDeck shows a <b>rotation control</b> with planned vs. actual PA,
+      nudging until the error closes.</p>
+    <p class="aside">It is a Dutch angle you have to justify to a plate solver.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 08-guiding.html ===== -->
+<section class="precis-topic" id="guiding" data-nav="Guiding + Dithering">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">08</span> Holding the Star</p>
+    <h2>Guiding + dithering</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">A second camera watches one star and
+      pulse-corrects the mount many times a minute to hold a long exposure steady.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Why drift</dt><dd>Imperfect gears plus atmosphere pull tracking off over minutes.</dd>
+      <dt>Rate</dt><dd>Corrections fire <b>many times per minute</b> from the guide frames.</dd>
+      <dt>Target</dt><dd>Hold error to <span class="stat">&lt; 1&Prime;</span> RMS for clean stars.</dd>
+      <dt>Dither</dt><dd>Shift a <b>few pixels</b> between subs so stacking rejects hot pixels and patterns.</dd>
+    </dl>
+
+    <div class="guiding-fig reveal bleed-wide" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="guiding-panel guiding-box">
+        <span class="guiding-tag">GUIDE STAR</span>
+        <canvas class="guiding-canvas" id="guiding-star" width="320" height="320"></canvas>
+      </div>
+      <div class="guiding-panel guiding-graph">
+        <span class="guiding-tag">RMS ERROR</span>
+        <span class="guiding-rms" id="guiding-rms">0.6"</span>
+        <canvas class="guiding-canvas" id="guiding-trace" width="640" height="280"></canvas>
+      </div>
+    </div>
+    <p class="caption">The star jitters and gets nudged back to center; the error trace rides near zero, then a dither hop offsets the next sub.</p>
+
+    <p class="stakes reveal">Let the error climb past an arcsecond and round stars stretch into
+      little commas across every sub in the stack.</p>
+    <p class="hook reveal">AstroDeck's <b>guiding graph</b> plots live RA/Dec error and RMS,
+      with one-click <b>dither</b> between subs.</p>
+    <p class="aside">A robot playing the world's slowest game of keep-the-dot-centered.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 09-solve.html ===== -->
+<section class="precis-topic" id="solve" data-nav="Plate Solving">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">09</span> Knowing Where You Are</p>
+    <h2>Plate solving</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">Match a frame's star pattern to a
+      catalog to get exact <b>RA/Dec, rotation, and image scale</b> — GPS for the scope, built
+      from the picture it just took.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Input</dt><dd>One quick exposure; the detected star geometry is hashed and looked up all-sky.</dd>
+      <dt>Output</dt><dd>Where it points, how the camera is rotated, and <span class="stat">arcsec/px</span> scale.</dd>
+      <dt>With mount</dt><dd><b>Go-to-and-center</b>: shoot, solve, correct, repeat — centered in 2–3 passes.</dd>
+      <dt>Underpins</dt><dd>Polar-align routines, framing, and post-flip target recovery.</dd>
+    </dl>
+
+    <figure class="solve-stage bleed-wide reveal" style="--reveal-delay: .16s" aria-labelledby="solve-cap">
+      <div class="solve-chip" role="status">
+        <span class="solve-led" aria-hidden="true"></span>
+        <span id="solve-chip-text">ready</span>
+      </div>
+      <svg viewBox="0 0 640 300" role="img"
+           aria-label="A star field; matchable stars light up and connect to a dashed catalog shape, then a crosshair locks onto the named target M31.">
+        <g aria-hidden="true">
+          <circle class="solve-star" cx="58"  cy="50"  r="1.3" opacity="0.5"/>
+          <circle class="solve-star" cx="120" cy="250" r="1.1" opacity="0.4"/>
+          <circle class="solve-star" cx="510" cy="36"  r="1.4" opacity="0.5"/>
+          <circle class="solve-star" cx="600" cy="170" r="1.2" opacity="0.45"/>
+          <circle class="solve-star" cx="300" cy="270" r="1.0" opacity="0.4"/>
+          <circle class="solve-star" cx="40"  cy="170" r="1.5" opacity="0.55"/>
+          <circle class="solve-star" cx="560" cy="265" r="1.1" opacity="0.4"/>
+          <circle class="solve-star" cx="210" cy="36"  r="1.2" opacity="0.45"/>
+          <circle class="solve-star" cx="395" cy="52"  r="1.0" opacity="0.4"/>
+          <circle class="solve-star" cx="90"  cy="110" r="1.1" opacity="0.4"/>
+          <circle class="solve-star" cx="630" cy="90"  r="1.0" opacity="0.4"/>
+          <circle class="solve-star" cx="150" cy="190" r="1.0" opacity="0.4"/>
+        </g>
+
+        <polyline class="solve-catalog" id="solve-catalog"
+                  points="170,170 260,130 350,160 430,110 500,150"/>
+
+        <g id="solve-matches">
+          <g><circle class="solve-star" cx="170" cy="170" r="2.6"/><circle class="solve-match" cx="170" cy="170" r="2.6"/><circle class="solve-ring" cx="170" cy="170" r="9"/></g>
+          <g><circle class="solve-star" cx="260" cy="130" r="3.0"/><circle class="solve-match" cx="260" cy="130" r="3.0"/><circle class="solve-ring" cx="260" cy="130" r="10"/></g>
+          <g><circle class="solve-star" cx="350" cy="160" r="2.4"/><circle class="solve-match" cx="350" cy="160" r="2.4"/><circle class="solve-ring" cx="350" cy="160" r="9"/></g>
+          <g><circle class="solve-star" cx="430" cy="110" r="2.8"/><circle class="solve-match" cx="430" cy="110" r="2.8"/><circle class="solve-ring" cx="430" cy="110" r="10"/></g>
+          <g><circle class="solve-star" cx="500" cy="150" r="2.5"/><circle class="solve-match" cx="500" cy="150" r="2.5"/><circle class="solve-ring" cx="500" cy="150" r="9"/></g>
+        </g>
+
+        <g class="solve-cross" id="solve-cross">
+          <circle cx="350" cy="160" r="24" fill="none" stroke="var(--c-accent)" stroke-width="1.5"/>
+          <line x1="350" y1="126" x2="350" y2="142" stroke="var(--c-accent)" stroke-width="1.5"/>
+          <line x1="350" y1="178" x2="350" y2="194" stroke="var(--c-accent)" stroke-width="1.5"/>
+          <line x1="316" y1="160" x2="332" y2="160" stroke="var(--c-accent)" stroke-width="1.5"/>
+          <line x1="368" y1="160" x2="384" y2="160" stroke="var(--c-accent)" stroke-width="1.5"/>
+        </g>
+        <text class="solve-name" id="solve-name" x="380" y="196">M31 — Andromeda</text>
+      </svg>
+      <figcaption class="caption" id="solve-cap" style="padding: var(--s-2);">
+        Stars match the catalog one by one, the shape lights blue, then the solver locks a crosshair on the named target.
+      </figcaption>
+    </figure>
+
+    <p class="stakes reveal">A solve fails on cloud, a smeared frame, or the wrong image
+      scale — and a solver that gives up <b>in silence</b> reads as a hang, blocking the
+      whole night.</p>
+    <p class="hook reveal">AstroDeck shows live <b>solve</b> and <b>go-to-and-center</b>
+      feedback, and names the failure plus the next thing to try.</p>
+    <p class="aside">It finds itself by looking at the photo it just took.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 10-stack.html ===== -->
+<section class="precis-topic" id="stack" data-nav="Exposure + Calibration">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">10</span> Stacking &amp; Calibration</p>
+    <h2>Exposure + calibration</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">One sub is mostly noise. Stack many
+      and the random grain averages away while real detail accumulates.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Why stack</dt><dd>Noise drops as <span class="stat">~&radic;N</span> — 4&times; the subs halves it, 100&times; cuts it tenfold.</dd>
+      <dt>Integration</dt><dd>Sub length &times; count. <span class="stat">5min &times; 60 = 5h</span> total.</dd>
+      <dt>Darks</dt><dd>Lens capped (no light), same exposure + temp — maps the sensor's thermal pattern (dark current, amp glow, hot pixels).</dd>
+      <dt>Flats</dt><dd>Even-lit blank field — divides out dust shadows + vignetting.</dd>
+      <dt>Bias / dark-flats</dt><dd>Very short, capped frames — capture the sensor's fixed bias offset / read pattern.</dd>
+    </dl>
+
+    <figure class="bleed-wide reveal" style="--reveal-delay: .16s" aria-labelledby="stack-cap">
+      <div class="stack-stage">
+        <svg viewBox="0 0 320 160" role="img" aria-label="A noisy frame of a nebula that grows cleaner and reveals faint detail as more frames stack in.">
+          <defs>
+            <radialGradient id="stack-neb" cx="50%" cy="50%" r="60%">
+              <stop offset="0%"  stop-color="#e8a849" stop-opacity="0.55"/>
+              <stop offset="38%" stop-color="#b8791f" stop-opacity="0.28"/>
+              <stop offset="100%" stop-color="#6f9bd8" stop-opacity="0"/>
+            </radialGradient>
+            <filter id="stack-soft"><feGaussianBlur stdDeviation="2.8"/></filter>
+          </defs>
+          <g class="stack-signal">
+            <ellipse cx="160" cy="80" rx="86" ry="46" fill="url(#stack-neb)" filter="url(#stack-soft)"/>
+            <ellipse cx="138" cy="72" rx="30" ry="18" fill="#f0c483" opacity="0.5" filter="url(#stack-soft)"/>
+            <circle cx="206" cy="98" r="2.0" fill="#ece7df"/>
+            <circle cx="96"  cy="58" r="1.5" fill="#ece7df"/>
+            <circle cx="232" cy="44" r="1.7" fill="#f0c483"/>
+          </g>
+          <g class="stack-grain" id="stack-grain" aria-hidden="true"></g>
+        </svg>
+      </div>
+      <div class="stack-readout">
+        <span>frames <span class="stack-count" id="stack-count">1</span></span>
+        <span class="stack-noise">noise <span id="stack-noise">100</span>%</span>
+      </div>
+      <div class="stack-bar" aria-hidden="true"><i id="stack-bar"></i></div>
+      <figcaption class="caption" id="stack-cap" style="margin-top: var(--s-2);">
+        Same sky, same exposure; grain falls and faint nebula emerges as the frame count climbs.
+      </figcaption>
+    </figure>
+
+    <p class="stakes reveal">Skip calibration and the fixed errors survive stacking:
+      <b>amp glow, dust donuts, and vignetting</b> bake straight into the final image.</p>
+    <p class="hook reveal">AstroDeck's sequence settings set sub length and count, and the
+      <b>calibration plan</b> schedules darks/flats or pulls a matched library.</p>
+    <p class="aside">It is averaging your way out of a bad photo, sixty times over.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 11-sequence.html ===== -->
+<section class="precis-topic" id="sequence" data-nav="Sequencing + Safety">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">11</span> Running the Night</p>
+    <h2>Sequencing + safety</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">A sequence runs the whole night
+      unattended — acquire, focus, dithered subs, filter swaps — then parks at dawn.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Meridian flip</dt><dd>On a German equatorial, when the target crosses <b>the meridian (the overhead line)</b> the tube must swing to the mount's other side, then <b>re-solve, re-center, re-calibrate</b>.</dd>
+      <dt>Dithering</dt><dd>Nudge a few pixels between subs so fixed sensor specks don't stack into streaks.</dd>
+      <dt>Safety monitor</dt><dd>Watches cloud, dawn, dome close — pauses or aborts on <span class="stat">unsafe</span>.</dd>
+      <dt>Hard rule</dt><dd>Never slew at the Sun. Park the mount at the end.</dd>
+    </dl>
+
+    <figure class="sequence-stage bleed-wide reveal" style="--reveal-delay: .16s" aria-labelledby="sequence-cap">
+      <svg viewBox="0 0 600 150" role="img"
+           aria-label="A night timeline ticking through focus, subs, a meridian flip, more subs, and park; a scope tube flips as it crosses the meridian; a safety guard toggles between safe and unsafe.">
+        <!-- phase labels -->
+        <text class="sequence-phase" id="sequence-p0" x="70"  y="22">focus</text>
+        <text class="sequence-phase" id="sequence-p1" x="200" y="22">subs</text>
+        <text class="sequence-phase" id="sequence-p2" x="300" y="22">flip</text>
+        <text class="sequence-phase" id="sequence-p3" x="430" y="22">subs</text>
+        <text class="sequence-phase" id="sequence-p4" x="555" y="22">park</text>
+
+        <!-- the timeline track -->
+        <line class="sequence-track" x1="40" y1="70" x2="560" y2="70"/>
+        <g aria-hidden="true">
+          <line class="sequence-tick" x1="40"  y1="64" x2="40"  y2="76"/>
+          <line class="sequence-tick" x1="160" y1="64" x2="160" y2="76"/>
+          <line class="sequence-tick" x1="280" y1="64" x2="280" y2="76"/>
+          <line class="sequence-tick" x1="400" y1="64" x2="400" y2="76"/>
+          <line class="sequence-tick" x1="520" y1="64" x2="520" y2="76"/>
+          <line class="sequence-tick" x1="560" y1="64" x2="560" y2="76"/>
+        </g>
+        <text class="sequence-tlabel" x="40"  y="92">22h</text>
+        <text class="sequence-tlabel" x="280" y="92">01h</text>
+        <text class="sequence-tlabel" x="560" y="92">05h</text>
+
+        <!-- meridian, dead center -->
+        <line class="sequence-meridian" x1="300" y1="44" x2="300" y2="120"/>
+        <text class="sequence-mlabel" x="300" y="134">meridian</text>
+
+        <!-- the scope tube on the play-head, flips across the meridian -->
+        <g class="sequence-head" id="sequence-head" transform="translate(40,70)">
+          <line class="sequence-tube" id="sequence-tube" x1="-13" y1="0" x2="13" y2="0"/>
+          <circle class="sequence-dot" cx="0" cy="0" r="3.5"/>
+        </g>
+      </svg>
+      <figcaption class="caption" id="sequence-cap" style="margin-top: var(--s-2);">
+        The play-head ticks across the night; at the meridian the tube flips sides, then imaging resumes and the mount parks.
+      </figcaption>
+    </figure>
+
+    <div class="sequence-guard" id="sequence-guard" role="status">
+      <span class="sequence-gled" aria-hidden="true"></span>
+      <span id="sequence-guard-text">safe · imaging</span>
+    </div>
+
+    <p class="stakes reveal">Miss the flip and the scope drives into the tripod, or
+      tracking reverses and every sub after it <b>trails</b> — the second half of the
+      night is scrap.</p>
+    <p class="hook reveal">AstroDeck's sequencer chains the night; the
+      <b>safety monitor</b> pauses on unsafe and the run ends at <b>park</b>.</p>
+    <p class="aside">Software that babysits a robot pointing a glass tube at the sky, all night, alone.</p>
+  </article>
+</section>
+  </main>
+
+    <!-- ===== script: 02-tracking.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var cv = document.querySelector("#tracking-canvas");
+  if (!cv || !window.AstroAnim) return;
+  var ctx = cv.getContext("2d");
+  var label = document.querySelector("#tracking-label");
+
+  var W = cv.width, H = cv.height;
+  var AMBER = "#e8a849", INK = "#b3ada3", FAINT = "#6d6a64", LINE = "#232838";
+
+  // Build a stable starfield. One star is the "target".
+  var stars = [];
+  var i;
+  for (i = 0; i < 70; i++) {
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.6 + Math.random() * 1.6,
+      a: 0.3 + Math.random() * 0.6
+    });
+  }
+  var target = { x: W * 0.5, y: H * 0.5, r: 2.6 };
+
+  var raf = 0;
+  var t0 = 0;
+  // drift speed in px/sec (the sky sliding left)
+  var SPEED = 26;
+  // phase: 0..1 drifting (off), then locks
+  var TRACK_AT = 2.4;   // seconds: tracking switches on
+  var LOOP_AT = 5.0;    // seconds: re-arm the demo loop
+
+  function paint(elapsed) {
+    var tracking = elapsed >= TRACK_AT;
+    // offset: accumulates until tracking engages, then frozen at the
+    // value it had the instant tracking turned on.
+    var off = tracking ? SPEED * TRACK_AT : SPEED * elapsed;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#070910";
+    ctx.fillRect(0, 0, W, H);
+
+    // faint center crosshair where the target should sit
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(target.x - 14, target.y); ctx.lineTo(target.x + 14, target.y);
+    ctx.moveTo(target.x, target.y - 14); ctx.lineTo(target.x, target.y + 14);
+    ctx.stroke();
+
+    // background stars: wrap horizontally as they drift
+    for (var k = 0; k < stars.length; k++) {
+      var s = stars[k];
+      var x = ((s.x - off) % W + W) % W;
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = INK;
+      ctx.beginPath();
+      ctx.arc(x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // the target star: drifts off-center while untracked, snaps and
+    // holds center once tracking is on.
+    var tx;
+    if (tracking) {
+      // ease toward center over ~0.5s after lock
+      var p = Math.min(1, (elapsed - TRACK_AT) / 0.5);
+      var drifted = ((target.x - SPEED * TRACK_AT) % W + W) % W;
+      tx = drifted + (target.x - drifted) * (p * p * (3 - 2 * p));
+    } else {
+      tx = ((target.x - off) % W + W) % W;
+    }
+    // glow
+    var glow = ctx.createRadialGradient(tx, target.y, 0, tx, target.y, 12);
+    glow.addColorStop(0, "rgba(232,168,73,0.55)");
+    glow.addColorStop(1, "rgba(232,168,73,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(tx, target.y, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = AMBER;
+    ctx.beginPath();
+    ctx.arc(tx, target.y, target.r, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (label) label.textContent = tracking ? "on — locked" : "off — drifting";
+  }
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var elapsed = (now - t0) / 1000;
+    if (elapsed > LOOP_AT) { t0 = now; elapsed = 0; }  // loop the demo
+    paint(elapsed);
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.AstroAnim.register(cv, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) {
+        // Reduced motion: paint the meaningful final frame (locked).
+        paint(LOOP_AT - 0.01);
+        return;
+      }
+      t0 = 0;
+      raf = requestAnimationFrame(frame);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      paint(0);  // back to frame zero: drifting, target off start
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 04-focus.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var starCv = document.querySelector("#focus-star");
+  var vCv = document.querySelector("#focus-vcurve");
+  if (!window.AstroAnim) return;
+
+  var AMBER = "#e8a849", INK = "#b3ada3", FAINT = "#6d6a64", LINE = "#232838";
+  var BG = "#070910";
+
+  /* =============== panel A: blur -> Bahtinov lock =============== */
+  var sctx = starCv && starCv.getContext("2d");
+  var SW = starCv ? starCv.width : 0, SH = starCv ? starCv.height : 0;
+  var cx = SW / 2, cy = SH / 2;
+
+  // p: 0 = fully blurred / center spike off to the side,
+  //    1 = pinpoint / center spike dead-center.
+  function paintStar(p) {
+    if (!sctx) return;
+    sctx.fillStyle = BG;
+    sctx.fillRect(0, 0, SW, SH);
+
+    var blur = (1 - p);             // 1 -> 0
+    var coreR = 3 + blur * 26;      // fat blob -> tight dot
+    var spikeLen = 70 + p * 30;
+
+    // soft halo
+    var halo = sctx.createRadialGradient(cx, cy, 0, cx, cy, coreR + 10);
+    halo.addColorStop(0, "rgba(236,231,223," + (0.5 + p * 0.4) + ")");
+    halo.addColorStop(1, "rgba(236,231,223,0)");
+    sctx.fillStyle = halo;
+    sctx.beginPath();
+    sctx.arc(cx, cy, coreR + 12, 0, Math.PI * 2);
+    sctx.fill();
+
+    // core
+    sctx.fillStyle = "#ece7df";
+    sctx.beginPath();
+    sctx.arc(cx, cy, Math.max(1.5, coreR * 0.5), 0, Math.PI * 2);
+    sctx.fill();
+
+    // three Bahtinov spikes: two fixed diagonals (an X) + one center
+    // bar that slides from offset into the middle as p -> 1.
+    sctx.lineWidth = 1.4;
+    sctx.strokeStyle = "rgba(179,173,163," + (0.35 + p * 0.5) + ")";
+    drawSpike(cx, cy, Math.PI * 0.25, spikeLen);
+    drawSpike(cx, cy, -Math.PI * 0.25, spikeLen);
+
+    // center spike: horizontal, but its midpoint is offset by (1-p)
+    var off = (1 - p) * 34;
+    sctx.strokeStyle = AMBER;
+    sctx.lineWidth = 2;
+    sctx.beginPath();
+    sctx.moveTo(cx - spikeLen + off, cy);
+    sctx.lineTo(cx + spikeLen + off, cy);
+    sctx.stroke();
+
+    // a faint center reference tick so "centered" reads clearly
+    sctx.strokeStyle = LINE;
+    sctx.lineWidth = 1;
+    sctx.beginPath();
+    sctx.moveTo(cx, cy - 10); sctx.lineTo(cx, cy + 10);
+    sctx.stroke();
+  }
+  function drawSpike(x, y, ang, len) {
+    sctx.beginPath();
+    sctx.moveTo(x - Math.cos(ang) * len, y - Math.sin(ang) * len);
+    sctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    sctx.stroke();
+  }
+
+  /* =============== panel B: V-curve plotting + snap =============== */
+  var vctx = vCv && vCv.getContext("2d");
+  var VW = vCv ? vCv.width : 0, VH = vCv ? vCv.height : 0;
+  var padL = 36, padR = 20, padT = 26, padB = 30;
+  var x0 = padL, x1 = VW - padR, y0 = padT, y1 = VH - padB;
+  var minX = 0.5;     // position of the V's minimum (normalized 0..1)
+  var minHFR = 0.16;  // normalized HFR at the bottom
+
+  function hfrAt(t) { // t in 0..1 across the focuser sweep
+    var d = Math.abs(t - minX);
+    return minHFR + d * 1.7;   // a clean V
+  }
+  function px(t) { return x0 + t * (x1 - x0); }
+  // HFR maps to screen Y so that a larger HFR sits LOWER (down the V
+  // arms) and the minimum sits near the bottom — a clean visual V.
+  function plotY(h) { return y0 + h * (y1 - y0); }
+
+  // progress: 0..1 draw the curve left->right, then snap marker.
+  function paintV(prog) {
+    if (!vctx) return;
+    vctx.fillStyle = BG;
+    vctx.fillRect(0, 0, VW, VH);
+
+    // axes
+    vctx.strokeStyle = LINE;
+    vctx.lineWidth = 1;
+    vctx.beginPath();
+    vctx.moveTo(x0, y0); vctx.lineTo(x0, y1); vctx.lineTo(x1, y1);
+    vctx.stroke();
+
+    // axis labels
+    vctx.fillStyle = FAINT;
+    vctx.font = "11px IBM Plex Mono, monospace";
+    vctx.fillText("HFR", x0 - 30, y0 + 8);
+    vctx.fillText("focuser pos", x1 - 76, y1 + 20);
+
+    // the V, drawn up to prog along the sweep
+    var drawT = Math.min(1, prog * 1.15);
+    vctx.strokeStyle = INK;
+    vctx.lineWidth = 2;
+    vctx.beginPath();
+    var first = true;
+    for (var t = 0; t <= drawT + 1e-6; t += 0.02) {
+      var h = hfrAt(t);          // 0..~1
+      var X = px(t);
+      var Y = plotY(h);          // bigger HFR -> lower on screen (down)
+      if (first) { vctx.moveTo(X, Y); first = false; }
+      else vctx.lineTo(X, Y);
+    }
+    vctx.stroke();
+
+    // sampled measurement dots along what's drawn
+    vctx.fillStyle = "rgba(179,173,163,0.7)";
+    for (var s = 0; s <= drawT + 1e-6; s += 0.1) {
+      var hh = hfrAt(s);
+      vctx.beginPath();
+      vctx.arc(px(s), plotY(hh), 2.2, 0, Math.PI * 2);
+      vctx.fill();
+    }
+
+    // once the sweep is complete, snap an amber marker to the minimum
+    if (prog >= 0.92) {
+      var snap = Math.min(1, (prog - 0.92) / 0.08); // 0..1 ease
+      var mX = px(minX);
+      var mY = plotY(minHFR);
+      // dashed guide to the bottom
+      vctx.strokeStyle = "rgba(232,168,73,0.4)";
+      vctx.setLineDash([3, 4]);
+      vctx.beginPath();
+      vctx.moveTo(mX, mY); vctx.lineTo(mX, y1);
+      vctx.stroke();
+      vctx.setLineDash([]);
+      // glow + marker
+      var g = vctx.createRadialGradient(mX, mY, 0, mX, mY, 12);
+      g.addColorStop(0, "rgba(232,168,73," + (0.6 * snap) + ")");
+      g.addColorStop(1, "rgba(232,168,73,0)");
+      vctx.fillStyle = g;
+      vctx.beginPath(); vctx.arc(mX, mY, 12, 0, Math.PI * 2); vctx.fill();
+      vctx.fillStyle = AMBER;
+      vctx.beginPath();
+      vctx.arc(mX, mY, 3 + 2 * snap, 0, Math.PI * 2);
+      vctx.fill();
+      vctx.fillStyle = AMBER;
+      vctx.font = "11px IBM Plex Mono, monospace";
+      vctx.globalAlpha = snap;
+      vctx.fillText("best focus", mX + 8, mY - 6);
+      vctx.globalAlpha = 1;
+    }
+  }
+
+  /* =============== drive both with one rAF loop =============== */
+  var raf = 0, t0 = 0;
+  var DUR = 3.0;   // seconds for one full run
+  var HOLD = 1.1;  // hold the locked state, then loop
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var e = (now - t0) / 1000;
+    var cycle = DUR + HOLD;
+    if (e > cycle) { t0 = now; e = 0; }
+    var prog = Math.min(1, e / DUR);
+    var eased = prog * prog * (3 - 2 * prog); // smoothstep
+    paintStar(eased);
+    paintV(eased);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function paintFinal() {
+    paintStar(1);
+    paintV(1);
+  }
+
+  // Register each canvas. Both callbacks drive the shared loop; the
+  // loop is idempotent (cancel before start), so registering twice
+  // is harmless.
+  function makeHandlers() {
+    return {
+      play: function () {
+        cancelAnimationFrame(raf);
+        if (window.AstroAnim.reduceMotion) { paintFinal(); return; }
+        t0 = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      reset: function () {
+        cancelAnimationFrame(raf);
+        t0 = 0;
+        paintStar(0);
+        paintV(0);
+      }
+    };
+  }
+  if (starCv) window.AstroAnim.register(starCv, makeHandlers());
+  if (vCv) window.AstroAnim.register(vCv, makeHandlers());
+})();
+  </script>
+
+  <!-- ===== script: 06-framing.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  // Make the focal-length slider live: the readout AND the FOV box track it.
+  // FOV scales as ~1/focal-length, so a longer FL shrinks the box on the sky.
+  var input = document.getElementById("framing-fl-input");
+  var out = document.getElementById("framing-fl-out");
+  var fov = document.querySelector("#framing .framing-fov");
+  if (!input || !out) return;
+
+  var MIN = 200, MAX = 1200;   // slider range, mm
+  var BIG = 58, SMALL = 16;    // box size at MIN / MAX focal length, %
+
+  function sync() {
+    var fl = +input.value;
+    out.innerHTML = fl + "&nbsp;mm";
+    if (fov) {
+      // inverse map: shortest FL -> widest crop, longest FL -> tightest
+      var size = BIG * (MIN / fl);
+      if (size > BIG) size = BIG;
+      if (size < SMALL) size = SMALL;
+      fov.style.setProperty("--framing-size", size.toFixed(1) + "%");
+    }
+  }
+  input.addEventListener("input", sync);
+  sync();
+})();
+  </script>
+
+  <!-- ===== script: 07-angle.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var el = document.getElementById("angle-pa");
+  if (!el || !window.AstroAnim) return;
+
+  // PA ticks from start toward the planned angle, mirroring the FOV rotation.
+  var FROM = 168, TO = 214, DUR = 1440; // ms; ~matches the CSS rotate duration
+  var raf = 0, t0 = 0;
+
+  function ease(p) { return 1 - Math.pow(1 - p, 3); } // cubic-out, house feel
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var p = Math.min(1, (now - t0) / DUR);
+    var v = Math.round(FROM + (TO - FROM) * ease(p));
+    el.textContent = v + "°";
+    if (p < 1) { raf = requestAnimationFrame(frame); }
+  }
+
+  window.AstroAnim.register(el, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      // Reduced motion calls play() once: paint the final PA, no loop needed.
+      if (window.AstroAnim.reduceMotion) { el.textContent = TO + "°"; return; }
+      raf = requestAnimationFrame(frame);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      el.textContent = FROM + "°"; // re-arm to the starting angle
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 08-guiding.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  if (!window.AstroAnim) return;
+
+  var starC = document.getElementById("guiding-star");
+  var traceC = document.getElementById("guiding-trace");
+  var rmsEl = document.getElementById("guiding-rms");
+  if (!starC || !traceC) return;
+
+  var sx = starC.getContext("2d");
+  var tx = traceC.getContext("2d");
+
+  // --- palette pulled from the shell tokens (read once) ---
+  var css = getComputedStyle(document.documentElement);
+  function tok(n, fb) { var v = css.getPropertyValue(n); return (v && v.trim()) || fb; }
+  var C_ACCENT = tok("--c-accent", "#e8a849");
+  var C_ACCENT_SOFT = tok("--c-accent-soft", "#f0c483");
+  var C_COOL = tok("--c-cool", "#6f9bd8");
+  var C_GOOD = tok("--c-good", "#74c69d");
+  var C_LINE = tok("--c-line", "#232838");
+  var C_FAINT = tok("--c-ink-faint", "#6d6a64");
+
+  var raf = 0, t = 0, ditherAt = 0, history = [];
+  var SW = starC.width, SH = starC.height, TW = traceC.width, TH = traceC.height;
+
+  function rnd() { return Math.random() * 2 - 1; }
+
+  function drawStar(offx, offy, nudge) {
+    sx.clearRect(0, 0, SW, SH);
+    // crosshair box
+    sx.strokeStyle = C_LINE; sx.lineWidth = 1;
+    sx.strokeRect(SW * 0.18, SH * 0.18, SW * 0.64, SH * 0.64);
+    sx.beginPath();
+    sx.moveTo(SW / 2, SH * 0.18); sx.lineTo(SW / 2, SH * 0.82);
+    sx.moveTo(SW * 0.18, SH / 2); sx.lineTo(SW * 0.82, SH / 2);
+    sx.strokeStyle = "rgba(111,155,216,0.25)"; sx.stroke();
+
+    var cx = SW / 2 + offx, cy = SH / 2 + offy;
+    // star glow
+    var g = sx.createRadialGradient(cx, cy, 0, cx, cy, 26);
+    g.addColorStop(0, C_ACCENT_SOFT);
+    g.addColorStop(0.4, C_ACCENT);
+    g.addColorStop(1, "rgba(232,168,73,0)");
+    sx.fillStyle = g;
+    sx.beginPath(); sx.arc(cx, cy, 26, 0, Math.PI * 2); sx.fill();
+
+    // correction nudge arrow back toward center
+    if (nudge) {
+      sx.strokeStyle = C_COOL; sx.lineWidth = 2;
+      sx.beginPath(); sx.moveTo(cx, cy);
+      sx.lineTo(cx - offx * 0.55, cy - offy * 0.55); sx.stroke();
+    }
+  }
+
+  function drawTrace() {
+    tx.clearRect(0, 0, TW, TH);
+    var mid = TH / 2;
+    // zero line + tolerance band (the "near zero" target)
+    tx.fillStyle = "rgba(116,198,157,0.08)";
+    tx.fillRect(0, mid - TH * 0.12, TW, TH * 0.24);
+    tx.strokeStyle = C_LINE; tx.lineWidth = 1;
+    tx.beginPath(); tx.moveTo(0, mid); tx.lineTo(TW, mid); tx.stroke();
+
+    tx.strokeStyle = C_ACCENT; tx.lineWidth = 1.5;
+    tx.beginPath();
+    for (var i = 0; i < history.length; i++) {
+      var x = (i / (history.length - 1 || 1)) * TW;
+      var y = mid - history[i] * (TH * 0.34);
+      if (i === 0) tx.moveTo(x, y); else tx.lineTo(x, y);
+    }
+    tx.stroke();
+  }
+
+  function paintStatic() {
+    // a calm, sensible final frame for reduced motion / reset
+    history = [];
+    for (var i = 0; i < 120; i++) history.push(rnd() * 0.18);
+    drawStar(2, -1, false);
+    drawTrace();
+    if (rmsEl) rmsEl.textContent = '0.5"';
+  }
+
+  function loop() {
+    t += 1;
+    var settle = Math.min(1, t / 90);          // error shrinks as guiding "locks"
+    var amp = 9 * (1 - settle) + 2.5;          // px jitter, decreasing
+    var offx = rnd() * amp, offy = rnd() * amp;
+    var nudge = Math.abs(offx) + Math.abs(offy) > 6;
+
+    // dither hop: every ~260 frames, kick the trace + star, then resettle
+    if (t - ditherAt > 260) { ditherAt = t; t = 30; offx += 18; }
+
+    drawStar(offx, offy, nudge);
+
+    var err = (Math.abs(offx) + Math.abs(offy)) / 22; // ~arcsec proxy
+    history.push((offx + offy) / 22);
+    if (history.length > 140) history.shift();
+    drawTrace();
+    if (rmsEl) rmsEl.textContent = (0.4 + err).toFixed(1) + '"';
+
+    raf = requestAnimationFrame(loop);
+  }
+
+  window.AstroAnim.register(starC, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) { paintStatic(); return; }
+      t = 0; ditherAt = 0; history = [];
+      raf = requestAnimationFrame(loop);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      paintStatic(); // re-arm to a clean, near-zero frame
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 09-solve.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var stage = document.querySelector("#solve .solve-stage");
+  if (!stage || !window.AstroAnim) return;
+
+  var chipText = stage.querySelector("#solve-chip-text");
+  var groups   = Array.prototype.slice.call(stage.querySelectorAll("#solve-matches g"));
+  var catalog  = stage.querySelector("#solve-catalog");
+  var cross    = stage.querySelector("#solve-cross");
+  var name     = stage.querySelector("#solve-name");
+  var timers   = [];
+
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  function markGroup(g, on) {
+    var m = g.querySelector(".solve-match"), r = g.querySelector(".solve-ring");
+    if (m) m.classList.toggle("solve-on", on);
+    if (r) r.classList.toggle("solve-on", on);
+  }
+  function solved(on) {
+    catalog.classList.toggle("solve-on", on);
+    cross.classList.toggle("solve-on", on);
+    name.classList.toggle("solve-on", on);
+    stage.classList.toggle("solve-done", on);
+    stage.classList.remove("solve-working");
+    chipText.textContent = on ? "solved · M31" : "ready";
+  }
+
+  // Paint the fully-solved frame (also the reduced-motion final state).
+  function paintSolved() {
+    clearTimers();
+    groups.forEach(function (g) { markGroup(g, true); });
+    solved(true);
+  }
+
+  window.AstroAnim.register(stage, {
+    play: function () {
+      clearTimers();
+      if (window.AstroAnim.reduceMotion) { paintSolved(); return; }
+      // run the solve sequence: matches light up, then the target locks
+      stage.classList.remove("solve-done");
+      stage.classList.add("solve-working");
+      chipText.textContent = "solving…";
+      groups.forEach(function (g, i) {
+        timers.push(setTimeout(function () { markGroup(g, true); }, 220 + i * 200));
+      });
+      timers.push(setTimeout(function () { solved(true); }, 220 + groups.length * 200 + 220));
+    },
+    reset: function () {
+      clearTimers();
+      groups.forEach(function (g) { markGroup(g, false); });
+      solved(false);
+      stage.classList.remove("solve-working", "solve-done");
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 10-stack.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var stage = document.querySelector("#stack .stack-stage");
+  if (!stage || !window.AstroAnim) return;
+
+  var topic   = document.querySelector("#stack");
+  var grainG  = stage.querySelector("#stack-grain");
+  var grain   = stage.querySelector(".stack-grain");
+  var signal  = stage.querySelector(".stack-signal");
+  var countEl = topic.querySelector("#stack-count");
+  var noiseEl = topic.querySelector("#stack-noise");
+  var barEl   = topic.querySelector("#stack-bar");
+  var timers  = [];
+
+  // Build a fixed speckle field once so the grain is stable across replays.
+  var NS = "http://www.w3.org/2000/svg";
+  for (var i = 0; i < 220; i++) {
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", (Math.random() * 320).toFixed(1));
+    c.setAttribute("cy", (Math.random() * 160).toFixed(1));
+    c.setAttribute("r", (0.5 + Math.random() * 1.0).toFixed(2));
+    var roll = Math.random();
+    c.setAttribute("fill", roll < 0.6 ? "#b3ada3" : (roll < 0.8 ? "#e8a849" : "#6f9bd8"));
+    c.setAttribute("opacity", (0.25 + Math.random() * 0.5).toFixed(2));
+    grainG.appendChild(c);
+  }
+
+  // Render the stack at a given frame count: noise ~ 1/sqrt(N).
+  function render(n) {
+    var noiseFrac = 1 / Math.sqrt(n);
+    countEl.textContent = n;
+    noiseEl.textContent = Math.round(noiseFrac * 100);
+    grain.style.opacity  = noiseFrac.toFixed(3);
+    signal.style.opacity = (1 - noiseFrac * 0.92).toFixed(3);
+    barEl.style.transform = "scaleX(" + noiseFrac.toFixed(3) + ")";
+  }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+  window.AstroAnim.register(stage, {
+    play: function () {
+      clearTimers();
+      if (window.AstroAnim.reduceMotion) { render(64); return; }  // final clean frame
+      render(1);
+      [2, 4, 8, 16, 32, 64].forEach(function (n, k) {
+        timers.push(setTimeout(function () { render(n); }, 420 + k * 480));
+      });
+    },
+    reset: function () {
+      clearTimers();
+      render(1);
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 11-sequence.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var topic = document.querySelector("#sequence");
+  if (!topic || !window.AstroAnim) return;
+
+  var head   = topic.querySelector("#sequence-head");
+  var tube   = topic.querySelector("#sequence-tube");
+  var guard  = topic.querySelector("#sequence-guard");
+  var gText  = topic.querySelector("#sequence-guard-text");
+  var phases = ["sequence-p0","sequence-p1","sequence-p2","sequence-p3","sequence-p4"]
+                 .map(function (id) { return topic.querySelector("#" + id); });
+
+  // play-head x positions for each phase (matches the phase label x's)
+  var X = [70, 200, 300, 430, 555];
+  var Y = 70;
+  var timers = [];
+
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  function activate(i) {
+    phases.forEach(function (p, k) { if (p) p.classList.toggle("sequence-active", k === i); });
+  }
+  function moveTo(i) { head.setAttribute("transform", "translate(" + X[i] + "," + Y + ")"); }
+  function setFlipped(on) { tube.classList.toggle("sequence-flipped", on); }
+  function setGuard(safe, label) {
+    guard.classList.toggle("sequence-unsafe", !safe);
+    gText.textContent = label;
+  }
+
+  // Paint a sensible static end-state: parked, post-flip, safe.
+  function paintFinal() {
+    clearTimers();
+    moveTo(4); activate(4); setFlipped(true); setGuard(true, "safe · parked");
+  }
+
+  window.AstroAnim.register(topic, {
+    play: function () {
+      clearTimers();
+      if (window.AstroAnim.reduceMotion) { paintFinal(); return; }
+      // step the night: focus -> subs -> flip -> subs -> park,
+      // with a brief "unsafe" blip (a cloud) partway through the first subs run.
+      moveTo(0); activate(0); setFlipped(false); setGuard(true, "safe · imaging");
+      var t = 0, step = 760;
+      timers.push(setTimeout(function () { moveTo(1); activate(1); }, t += step));
+      timers.push(setTimeout(function () { setGuard(false, "unsafe · cloud · paused"); }, t += step));
+      timers.push(setTimeout(function () { setGuard(true, "safe · imaging"); }, t += step));
+      timers.push(setTimeout(function () { moveTo(2); activate(2); setFlipped(true); }, t += step));
+      timers.push(setTimeout(function () { moveTo(3); activate(3); }, t += step));
+      timers.push(setTimeout(function () { moveTo(4); activate(4); setGuard(true, "safe · parked"); }, t += step));
+    },
+    reset: function () {
+      clearTimers();
+      moveTo(0); activate(0); setFlipped(false); setGuard(true, "safe · imaging");
+    }
+  });
+})();
+  </script>
+
+  <!-- ================================================================
+       CHROME + kickoff — runs AFTER the sections and their register()
+       calls, so the registry is fully populated before _start().
+       ================================================================ -->
+  <script>
+  /* ---- progress bar + topic nav (independent of the framework) ---- */
+  (function () {
+    "use strict";
+
+    /* ---------- scroll progress bar ---------------------------- */
+    var fill = document.getElementById("progressFill");
+    var ticking = false;
+    function updateProgress() {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - doc.clientHeight;
+      var pct = scrollable > 0 ? (doc.scrollTop || document.body.scrollTop) / scrollable : 0;
+      fill.style.width = (Math.max(0, Math.min(1, pct)) * 100).toFixed(2) + "%";
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) { window.requestAnimationFrame(updateProgress); ticking = true; }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    updateProgress();
+
+    /* ---------- topic nav, built from the topic blocks --------- */
+    var nav = document.getElementById("topicNav");
+    var topics = Array.prototype.slice.call(
+      document.querySelectorAll("#precis .precis-topic[id]")
+    );
+    var linkFor = {};
+    topics.forEach(function (t) {
+      var a = document.createElement("a");
+      a.href = "#" + t.id;
+      var label = t.getAttribute("data-nav") || t.id;
+      a.setAttribute("aria-label", "Go to topic: " + label);
+      var tick = document.createElement("span");
+      tick.className = "tick";
+      tick.setAttribute("aria-hidden", "true");
+      var txt = document.createElement("span");
+      txt.className = "tn-label";
+      txt.textContent = label;
+      a.appendChild(tick);
+      a.appendChild(txt);
+      nav.appendChild(a);
+      linkFor[t.id] = a;
+    });
+
+    if ("IntersectionObserver" in window && topics.length) {
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            topics.forEach(function (t) {
+              if (linkFor[t.id]) linkFor[t.id].classList.remove("is-active");
+            });
+            if (linkFor[entry.target.id]) linkFor[entry.target.id].classList.add("is-active");
+          }
+        });
+      }, { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+      topics.forEach(function (t) { navObserver.observe(t); });
+    }
+  })();
+
+  /* Kick off the animation framework after sections + their
+     register() calls have run (their scripts are injected above
+     this point, so the registry is already populated). */
+  window.AstroAnim._start();
+  </script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!--STYLE-->
+  /* ---- TOPIC: Framing + FOV (slug: framing) ---- */
+  .framing-stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    margin: var(--s-2) 0 var(--s-2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(40% 55% at 58% 42%, color-mix(in srgb, var(--c-cool) 30%, transparent), transparent 70%),
+      radial-gradient(26% 40% at 40% 60%, color-mix(in srgb, var(--c-warn) 26%, transparent), transparent 72%),
+      radial-gradient(70% 90% at 50% 50%, color-mix(in srgb, var(--c-cool) 8%, transparent), transparent 75%),
+      var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* faint star field */
+  .framing-stage::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 18% 30%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 72% 22%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 44% 70%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 84% 64%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 30% 84%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 60% 50%, var(--c-ink), transparent 60%);
+    opacity: 0.7;
+  }
+
+  /* the FOV rectangle — size is driven by the slider (JS sets --framing-size);
+     longer focal length -> smaller box. Width transitions smoothly on drag. */
+  .framing-fov {
+    position: absolute;
+    border: 1.5px solid var(--c-accent);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 30%, transparent),
+                0 0 18px -4px var(--c-accent);
+    /* resting (final-safe) state: centered, sized from the slider default */
+    width: var(--framing-size, 34%); height: var(--framing-size, 34%);
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    transition: width var(--dur) var(--ease), height var(--dur) var(--ease);
+  }
+  .framing-fov::after {
+    content: "FOV";
+    position: absolute;
+    top: -1.35em; left: 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-accent);
+  }
+  /* corner crosshair at target center */
+  .framing-cross {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 14px; height: 14px;
+    transform: translate(-50%, -50%);
+    opacity: 0.8;
+  }
+  .framing-cross::before,
+  .framing-cross::after {
+    content: "";
+    position: absolute;
+    background: var(--c-accent-soft);
+  }
+  .framing-cross::before { left: 50%; top: 0; width: 1px; height: 100%; transform: translateX(-50%); }
+  .framing-cross::after  { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
+
+  /* on entry, the border glints amber so the box reads as "live" without
+     fighting the slider-driven size. Gated on .in so it replays. */
+  @keyframes framing-glint {
+    0%   { border-color: var(--c-cool); }
+    60%  { border-color: var(--c-accent-soft); }
+    100% { border-color: var(--c-accent); }
+  }
+  .precis-topic.in .framing-fov {
+    animation: framing-glint calc(var(--dur) * 1.4) var(--ease) both;
+  }
+
+  /* the focal-length slider readout */
+  .framing-slider {
+    display: grid;
+    grid-template-columns: max-content 1fr max-content;
+    gap: var(--s-2);
+    align-items: center;
+    margin-bottom: var(--s-3);
+    padding: var(--s-2);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-ink-faint);
+  }
+  .framing-slider input[type="range"] { width: 100%; accent-color: var(--c-accent); }
+  .framing-slider .framing-fl { color: var(--c-accent-soft); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="framing" data-nav="Framing + FOV">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">06</span> Composing the Shot</p>
+    <h2>Framing + FOV</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">How much sky lands on the sensor,
+      and where the target sits inside it.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>FOV</dt><dd>Scales as <b>sensor size / focal length</b> — long FL gives a tight crop.</dd>
+      <dt>Pixel scale</dt><dd><span class="stat">206 &times; pixel&micro;m / FL&#8202;mm</span> arcsec per pixel.</dd>
+      <dt>Sampling</dt><dd>Match pixel scale to <b>seeing</b>; off either way wastes the data.</dd>
+      <dt>Big targets</dt><dd>Tile multiple panels into a <b>mosaic</b>.</dd>
+    </dl>
+
+    <figure class="framing-stage reveal bleed-wide" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="framing-cross"></div>
+      <div class="framing-fov"></div>
+    </figure>
+    <p class="caption">A longer focal length tightens the crop; a plate-solve snaps the frame onto the target.</p>
+
+    <div class="framing-slider reveal" style="--reveal-delay: .2s">
+      <label for="framing-fl-input">FOCAL LENGTH</label>
+      <input id="framing-fl-input" type="range" min="200" max="1200" value="600" step="10" aria-label="Focal length, demonstration only">
+      <span class="framing-fl" id="framing-fl-out">600&nbsp;mm</span>
+    </div>
+
+    <p class="stakes reveal">Guess the FOV and the target spills past the sensor edge, or sits
+      lost in a sea of empty sky you can't recover in processing.</p>
+    <p class="hook reveal">AstroDeck's <b>sky-atlas</b> overlays the live FOV box on the target
+      and lays out mosaic panels with overlap.</p>
+    <p class="aside">It is a viewfinder for a camera pointed at things you can't see yet.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  // Make the focal-length slider live: the readout AND the FOV box track it.
+  // FOV scales as ~1/focal-length, so a longer FL shrinks the box on the sky.
+  var input = document.getElementById("framing-fl-input");
+  var out = document.getElementById("framing-fl-out");
+  var fov = document.querySelector("#framing .framing-fov");
+  if (!input || !out) return;
+
+  var MIN = 200, MAX = 1200;   // slider range, mm
+  var BIG = 58, SMALL = 16;    // box size at MIN / MAX focal length, %
+
+  function sync() {
+    var fl = +input.value;
+    out.innerHTML = fl + "&nbsp;mm";
+    if (fov) {
+      // inverse map: shortest FL -> widest crop, longest FL -> tightest
+      var size = BIG * (MIN / fl);
+      if (size > BIG) size = BIG;
+      if (size < SMALL) size = SMALL;
+      fov.style.setProperty("--framing-size", size.toFixed(1) + "%");
+    }
+  }
+  input.addEventListener("input", sync);
+  sync();
+})();
+<!--/SCRIPT-->

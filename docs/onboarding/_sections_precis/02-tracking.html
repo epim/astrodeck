@@ -1,0 +1,198 @@
+<!--STYLE-->
+  /* slug: tracking */
+  .tracking-fig {
+    margin-top: var(--s-3);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  #tracking-canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .tracking-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    align-items: center;
+    padding: 0.55rem var(--s-2);
+    border-top: 1px solid var(--c-line);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-faint);
+  }
+  .tracking-legend .tracking-state {
+    color: var(--c-accent);
+    text-transform: uppercase;
+  }
+  .tracking-dot {
+    display: inline-block;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--c-accent);
+    vertical-align: middle;
+    margin-right: 0.4em;
+    box-shadow: 0 0 6px var(--c-accent);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="tracking" data-nav="Mount + Tracking">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">02</span> Pointing the Mount</p>
+    <h2>Mount + tracking</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">A motor spins one tilted axis at
+      the sky's own rate, so a chosen star stays pinned while the Earth turns under it.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Drift</dt><dd>Earth rotates <span class="stat">~15&deg;/hr</span>; uncorrected,
+        every star slides across the frame.</dd>
+      <dt>Fix</dt><dd>An <b>equatorial mount</b> tilts one axis parallel to Earth's; a
+        motor turns it at <b>sidereal rate</b> to cancel the drift.</dd>
+      <dt>Coords</dt><dd><b>RA</b> = sky longitude, <b>Dec</b> = sky latitude. A go-to maps
+        a target to a mount move.</dd>
+      <dt>Reality</dt><dd>Tracking is close but imperfect — good for short subs, not
+        flawless for long ones.</dd>
+    </dl>
+
+    <div class="tracking-fig bleed-wide reveal" style="--reveal-delay: .24s">
+      <canvas id="tracking-canvas" width="900" height="280"
+        role="img"
+        aria-label="A drifting starfield; when tracking switches on, one star locks to the
+          center while the rest stop sliding."></canvas>
+      <div class="tracking-legend" aria-hidden="true">
+        <span><span class="tracking-dot"></span>locked target</span>
+        <span>tracking: <span class="tracking-state" id="tracking-label">off</span></span>
+      </div>
+    </div>
+
+    <p class="stakes reveal">Without tracking a multi-second exposure smears every star into a
+      streak; the longer the sub, the worse the trail.</p>
+    <p class="hook reveal">AstroDeck's mount panel: <b>slew</b> (move now), <b>track</b> (hold
+      sidereal), <b>go-to</b> (point at a named target).</p>
+    <p class="aside">You are bolting a camera to a clock and asking it to undo the
+      planet.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var cv = document.querySelector("#tracking-canvas");
+  if (!cv || !window.AstroAnim) return;
+  var ctx = cv.getContext("2d");
+  var label = document.querySelector("#tracking-label");
+
+  var W = cv.width, H = cv.height;
+  var AMBER = "#e8a849", INK = "#b3ada3", FAINT = "#6d6a64", LINE = "#232838";
+
+  // Build a stable starfield. One star is the "target".
+  var stars = [];
+  var i;
+  for (i = 0; i < 70; i++) {
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.6 + Math.random() * 1.6,
+      a: 0.3 + Math.random() * 0.6
+    });
+  }
+  var target = { x: W * 0.5, y: H * 0.5, r: 2.6 };
+
+  var raf = 0;
+  var t0 = 0;
+  // drift speed in px/sec (the sky sliding left)
+  var SPEED = 26;
+  // phase: 0..1 drifting (off), then locks
+  var TRACK_AT = 2.4;   // seconds: tracking switches on
+  var LOOP_AT = 5.0;    // seconds: re-arm the demo loop
+
+  function paint(elapsed) {
+    var tracking = elapsed >= TRACK_AT;
+    // offset: accumulates until tracking engages, then frozen at the
+    // value it had the instant tracking turned on.
+    var off = tracking ? SPEED * TRACK_AT : SPEED * elapsed;
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#070910";
+    ctx.fillRect(0, 0, W, H);
+
+    // faint center crosshair where the target should sit
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(target.x - 14, target.y); ctx.lineTo(target.x + 14, target.y);
+    ctx.moveTo(target.x, target.y - 14); ctx.lineTo(target.x, target.y + 14);
+    ctx.stroke();
+
+    // background stars: wrap horizontally as they drift
+    for (var k = 0; k < stars.length; k++) {
+      var s = stars[k];
+      var x = ((s.x - off) % W + W) % W;
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = INK;
+      ctx.beginPath();
+      ctx.arc(x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // the target star: drifts off-center while untracked, snaps and
+    // holds center once tracking is on.
+    var tx;
+    if (tracking) {
+      // ease toward center over ~0.5s after lock
+      var p = Math.min(1, (elapsed - TRACK_AT) / 0.5);
+      var drifted = ((target.x - SPEED * TRACK_AT) % W + W) % W;
+      tx = drifted + (target.x - drifted) * (p * p * (3 - 2 * p));
+    } else {
+      tx = ((target.x - off) % W + W) % W;
+    }
+    // glow
+    var glow = ctx.createRadialGradient(tx, target.y, 0, tx, target.y, 12);
+    glow.addColorStop(0, "rgba(232,168,73,0.55)");
+    glow.addColorStop(1, "rgba(232,168,73,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(tx, target.y, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = AMBER;
+    ctx.beginPath();
+    ctx.arc(tx, target.y, target.r, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (label) label.textContent = tracking ? "on — locked" : "off — drifting";
+  }
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var elapsed = (now - t0) / 1000;
+    if (elapsed > LOOP_AT) { t0 = now; elapsed = 0; }  // loop the demo
+    paint(elapsed);
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.AstroAnim.register(cv, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) {
+        // Reduced motion: paint the meaningful final frame (locked).
+        paint(LOOP_AT - 0.01);
+        return;
+      }
+      t0 = 0;
+      raf = requestAnimationFrame(frame);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      paint(0);  // back to frame zero: drifting, target off start
+    }
+  });
+})();
+<!--/SCRIPT-->

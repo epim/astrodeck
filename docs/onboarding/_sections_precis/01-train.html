@@ -1,0 +1,127 @@
+<!--STYLE-->
+  /* slug: train */
+  .train-rig {
+    margin-top: var(--s-3);
+    padding: var(--s-3) var(--s-2);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+  }
+  .train-track {
+    display: flex;
+    align-items: stretch;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .train-box {
+    flex: 0 1 auto;
+    min-width: 5.5rem;
+    text-align: center;
+    padding: 0.55rem 0.5rem;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--c-bg-raised) 90%, transparent);
+    /* resting / reduced-motion-safe state: assembled and visible */
+    opacity: 1;
+    transform: none;
+  }
+  .train-box .train-tag {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-ink);
+    line-height: 1.25;
+  }
+  .train-box .train-role {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.03em;
+    color: var(--c-ink-faint);
+    margin-top: 0.15rem;
+  }
+  .train-box.train-core {
+    border-color: color-mix(in srgb, var(--c-accent) 45%, var(--c-line));
+    background: color-mix(in srgb, var(--c-bg-raised) 80%, var(--c-accent) 6%);
+  }
+  .train-box.train-core .train-tag { color: var(--c-accent-soft); }
+  .train-arrow {
+    align-self: center;
+    font-family: var(--font-mono);
+    color: var(--c-ink-faint);
+    font-size: var(--t-sm);
+  }
+
+  /* the exploded-then-assembled animation: each box slides up and
+     fades in, staggered down the train. Gated on .in so it REPLAYS
+     on every re-entry; backwards fill holds frame 0 before delay. */
+  @keyframes train-snap {
+    from { opacity: 0; transform: translateY(16px) scale(0.93); }
+    to   { opacity: 1; transform: none; }
+  }
+  .precis-topic.in .train-box {
+    animation: train-snap var(--dur) var(--ease) backwards;
+    animation-delay: var(--train-i, 0s);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="train" data-nav="The Rig">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">01</span> The Hardware</p>
+    <h2>The rig</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">The <b>imaging train</b>: a
+      chain of devices that aim, hold focus, and record light, bolted nose to tail.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Core 3</dt><dd><b>Mount</b> (aims + tracks), <b>OTA</b> (the telescope, i.e. the
+        lens), <b>main camera</b> (the sensor).</dd>
+      <dt>Helpers</dt><dd>Guide scope + guide camera, motorized focuser, filter wheel,
+        sometimes a rotator.</dd>
+      <dt>Count</dt><dd><span class="stat">4–7</span> separate boxes on a typical setup,
+        each its own driver.</dd>
+    </dl>
+
+    <div class="train-rig bleed-wide reveal" style="--reveal-delay: .24s" aria-hidden="true">
+      <div class="train-track">
+        <div class="train-box train-core" style="--train-i: 0s">
+          <span class="train-tag">Mount</span><span class="train-role">aims + tracks</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box train-core" style="--train-i: .09s">
+          <span class="train-tag">OTA</span><span class="train-role">the lens</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box train-core" style="--train-i: .18s">
+          <span class="train-tag">Camera</span><span class="train-role">the sensor</span>
+        </div>
+        <span class="train-arrow">+</span>
+        <div class="train-box" style="--train-i: .27s">
+          <span class="train-tag">Focuser</span><span class="train-role">keeps sharp</span>
+        </div>
+        <div class="train-box" style="--train-i: .33s">
+          <span class="train-tag">Filters</span><span class="train-role">color wheel</span>
+        </div>
+        <div class="train-box" style="--train-i: .39s">
+          <span class="train-tag">Guider</span><span class="train-role">scope + cam</span>
+        </div>
+      </div>
+    </div>
+    <p class="caption reveal" style="--reveal-delay: .3s">Amber = the core three. The rest
+      are helpers that earn their place on a long night.</p>
+
+    <p class="stakes reveal">One loose connection or a flexing joint and every frame in the
+      train inherits the wobble.</p>
+    <p class="hook reveal">AstroDeck drives all of them from <b>one control surface</b> — one
+      screen, one connection list, every box.</p>
+    <p class="aside">Six gadgets, one cable nest, and you, in the dark, hoping none of
+      them blink out.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+<!--/SCRIPT-->
