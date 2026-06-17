@@ -1298,28 +1298,19 @@
     background: var(--c-bg-sunk);
     isolation: isolate;
   }
-  /* the faint nebula base — always present under the channel layers */
+  /* the faint dust the channels paint onto — always present, never enough on its own */
   .filt-base {
     position: absolute;
     inset: 0;
     background:
-      radial-gradient(60% 70% at 38% 46%, rgba(150,150,170,0.30), rgba(0,0,0,0) 70%),
-      radial-gradient(40% 55% at 64% 58%, rgba(120,130,150,0.22), rgba(0,0,0,0) 72%),
-      radial-gradient(90% 90% at 50% 50%, rgba(90,95,115,0.10), rgba(0,0,0,0) 80%);
+      radial-gradient(70% 90% at 48% 52%, rgba(70,76,96,0.22), rgba(0,0,0,0) 78%),
+      radial-gradient(40% 50% at 64% 36%, rgba(60,70,92,0.16), rgba(0,0,0,0) 74%);
   }
-  /* sparse stars so toggling channels reads as color shifts on real structure */
-  .filt-stars {
-    position: absolute;
-    inset: 0;
-    background-image:
-      radial-gradient(1.4px 1.4px at 18% 30%, rgba(255,255,255,0.9), transparent),
-      radial-gradient(1.2px 1.2px at 72% 22%, rgba(255,255,255,0.8), transparent),
-      radial-gradient(1.6px 1.6px at 44% 70%, rgba(255,255,255,0.85), transparent),
-      radial-gradient(1px 1px at 86% 64%, rgba(255,255,255,0.7), transparent),
-      radial-gradient(1.2px 1.2px at 30% 84%, rgba(255,255,255,0.75), transparent),
-      radial-gradient(1px 1px at 58% 40%, rgba(255,255,255,0.65), transparent);
-  }
-  /* one layer per channel; opacity toggled from JS. screen = additive feel */
+
+  /* One layer per channel. Each channel lights up its OWN structure in its own
+     hue, so adding channels brings out more color rather than washing to white.
+     Color channels use `screen` (light adds → real secondary colors where they
+     overlap). The opacity is toggled from JS. */
   .filt-layer {
     position: absolute;
     inset: 0;
@@ -1327,15 +1318,64 @@
     mix-blend-mode: screen;
     transition: opacity var(--dur) var(--ease);
   }
-  /* overall dim wash used for narrowband-only composites (little light) */
-  .filt-dim {
+
+  /* ---- broadband: R/G/B build a natural-color target ---- */
+  .filt-layer[data-ch="R"] {
+    background:
+      radial-gradient(46% 62% at 38% 60%, rgba(228,72,68,0.62), transparent 70%),
+      radial-gradient(26% 36% at 58% 48%, rgba(224,96,84,0.34), transparent 72%);
+  }
+  .filt-layer[data-ch="G"] {
+    background:
+      radial-gradient(66% 80% at 48% 52%, rgba(86,196,116,0.22), transparent 76%);
+  }
+  .filt-layer[data-ch="B"] {
+    background:
+      radial-gradient(52% 56% at 62% 34%, rgba(82,124,232,0.54), transparent 72%),
+      radial-gradient(28% 30% at 30% 32%, rgba(96,144,236,0.30), transparent 70%);
+  }
+  /* Luminance: not a color. It sits ABOVE the color (z-index) and blends with
+     `overlay`, so it lifts the bright structure and deepens the voids — detail
+     and dynamic range, not a white fog. */
+  .filt-layer[data-ch="L"] {
+    z-index: 1;
+    mix-blend-mode: overlay;
+    background:
+      radial-gradient(40% 52% at 44% 52%, rgba(255,255,255,0.92), transparent 64%),
+      radial-gradient(20% 26% at 63% 42%, rgba(255,255,255,0.72), transparent 60%),
+      radial-gradient(120% 120% at 50% 50%, transparent 52%, rgba(0,0,0,0.55));
+  }
+
+  /* ---- narrowband mapped to SHO positions (SII→R, Ha→G, OIII→B). Each lights a
+         different region, so the three together pop into the gold/teal palette. ---- */
+  .filt-layer[data-ch="SII"] {
+    background:
+      radial-gradient(58% 70% at 40% 62%, rgba(236,62,58,0.62), transparent 72%),
+      radial-gradient(30% 30% at 70% 66%, rgba(232,86,60,0.34), transparent 70%);
+  }
+  .filt-layer[data-ch="Ha"] {
+    background:
+      radial-gradient(44% 56% at 48% 50%, rgba(74,212,104,0.66), transparent 66%),
+      radial-gradient(22% 30% at 64% 44%, rgba(84,216,114,0.40), transparent 64%);
+  }
+  .filt-layer[data-ch="OIII"] {
+    background:
+      radial-gradient(50% 52% at 62% 36%, rgba(46,206,210,0.62), transparent 70%),
+      radial-gradient(28% 30% at 34% 42%, rgba(52,202,206,0.34), transparent 68%);
+  }
+
+  /* sparse stars sit on top so the composite reads as a real frame */
+  .filt-stars {
     position: absolute;
     inset: 0;
-    background: var(--c-bg);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--dur) var(--ease);
     z-index: 2;
+    background-image:
+      radial-gradient(1.4px 1.4px at 18% 30%, rgba(255,255,255,0.9), transparent),
+      radial-gradient(1.2px 1.2px at 72% 22%, rgba(255,255,255,0.8), transparent),
+      radial-gradient(1.6px 1.6px at 44% 70%, rgba(255,255,255,0.85), transparent),
+      radial-gradient(1px 1px at 86% 64%, rgba(255,255,255,0.7), transparent),
+      radial-gradient(1.2px 1.2px at 30% 84%, rgba(255,255,255,0.75), transparent),
+      radial-gradient(1px 1px at 58% 40%, rgba(255,255,255,0.65), transparent);
   }
 
   .filt-controls {
@@ -1367,7 +1407,7 @@
     border-color: color-mix(in srgb, var(--c-accent) 55%, var(--c-line));
     background: color-mix(in srgb, var(--c-accent) 10%, var(--c-bg-raised));
   }
-  /* a small color swatch echoing the channel tint */
+  /* a small color swatch echoing how that channel lands in the composite */
   .filt-btn::before {
     content: "";
     display: inline-block;
@@ -2010,8 +2050,8 @@
     <dl class="facts reveal" style="--reveal-delay: .12s">
       <dt>Wheel</dt><dd>A motorized wheel rotates filters in front of the sensor (sim: a
         <span class="stat">7×36 mm</span> wheel).</dd>
-      <dt>Broadband</dt><dd><b>L R G B</b>: luminance plus red/green/blue make a
-        natural-color image.</dd>
+      <dt>Broadband</dt><dd><b>L R G B</b>: red/green/blue build natural color, and
+        luminance adds brightness and detail.</dd>
       <dt>Narrowband</dt><dd><b>Ha OIII SII</b> isolate single emission lines; they reject
         light pollution and moonlight but pass little light, so subs run long.</dd>
       <dt>False color</dt><dd>Narrowband channels are assigned to RGB by choice; the "Hubble
@@ -2021,15 +2061,14 @@
     <figure class="filt-figure bleed-wide reveal" style="--reveal-delay: .16s">
       <div class="filt-preview" aria-hidden="true">
         <div class="filt-base"></div>
-        <div class="filt-layer" data-ch="L"></div>
         <div class="filt-layer" data-ch="R"></div>
         <div class="filt-layer" data-ch="G"></div>
         <div class="filt-layer" data-ch="B"></div>
+        <div class="filt-layer" data-ch="SII"></div>
         <div class="filt-layer" data-ch="Ha"></div>
         <div class="filt-layer" data-ch="OIII"></div>
-        <div class="filt-layer" data-ch="SII"></div>
+        <div class="filt-layer" data-ch="L"></div>
         <div class="filt-stars"></div>
-        <div class="filt-dim" id="filt-dim"></div>
       </div>
 
       <div class="filt-controls" role="group" aria-label="Filter channels">
@@ -2048,8 +2087,8 @@
         <span class="filt-note" id="filt-note"></span>
       </div>
     </figure>
-    <p class="caption">Toggle channels — broadband makes natural color, narrowband maps
-      emission lines to a false-color palette.</p>
+    <p class="caption">Toggle channels — RGB build natural color and L adds the punch;
+      the SHO trio each lights different structure into a false-color palette.</p>
 
     <p class="stakes reveal">Forget to refocus per filter or to match each filter's exposure
       to its throughput and a channel comes back soft or starved — the composite is
@@ -2490,39 +2529,34 @@
   if (!root) return;
 
   var preview = root.querySelector(".filt-preview");
-  var dim = root.querySelector("#filt-dim");
   var nameEl = root.querySelector("#filt-name");
   var noteEl = root.querySelector("#filt-note");
   var buttons = Array.prototype.slice.call(root.querySelectorAll(".filt-btn"));
   if (!preview || !nameEl || buttons.length === 0) return;
 
-  // Channel tints. Broadband RGB do their job; narrowband are mapped to
-  // SHO RGB positions (SII->red, Ha->green, OIII->blue) so the composite
-  // reads as the Hubble palette when those three are on.
-  // [tint css, swatch css, default-on, base opacity]
+  // Each channel's structure + hue lives in CSS (keyed by [data-ch]); JS only
+  // toggles it on/off. The swatch echoes how the channel lands in the composite,
+  // so narrowband shows its SHO-mapped color (SII red, Ha green, OIII teal).
+  // [swatch css, default-on]
   var CH = {
-    L:    { layer: "linear-gradient(rgba(235,235,240,0.30), rgba(235,235,240,0.30))", swatch: "rgba(235,235,240,0.95)", on: true,  op: 0.30 },
-    R:    { layer: "linear-gradient(rgba(225,70,70,0.55), rgba(225,70,70,0.55))",     swatch: "rgba(225,70,70,1)",      on: true,  op: 0.55 },
-    G:    { layer: "linear-gradient(rgba(70,200,90,0.50), rgba(70,200,90,0.50))",     swatch: "rgba(70,200,90,1)",      on: true,  op: 0.50 },
-    B:    { layer: "linear-gradient(rgba(80,120,230,0.55), rgba(80,120,230,0.55))",   swatch: "rgba(80,120,230,1)",     on: true,  op: 0.55 },
-    // narrowband mapped to SHO positions:
-    SII:  { layer: "linear-gradient(rgba(210,55,45,0.60), rgba(210,55,45,0.60))",     swatch: "rgba(210,55,45,1)",      on: false, op: 0.60 }, // -> red
-    Ha:   { layer: "linear-gradient(rgba(70,205,95,0.55), rgba(70,205,95,0.55))",     swatch: "rgba(150,40,40,1)",      on: false, op: 0.55 }, // -> green (deep-red light)
-    OIII: { layer: "linear-gradient(rgba(45,200,210,0.55), rgba(45,200,210,0.55))",   swatch: "rgba(45,200,210,1)",     on: false, op: 0.55 }  // -> blue (teal/cyan)
+    L:    { swatch: "rgba(235,235,240,0.95)", on: true  },
+    R:    { swatch: "rgba(228,72,68,1)",      on: true  },
+    G:    { swatch: "rgba(86,196,116,1)",     on: true  },
+    B:    { swatch: "rgba(82,124,232,1)",     on: true  },
+    SII:  { swatch: "rgba(236,62,58,1)",      on: false }, // -> red
+    Ha:   { swatch: "rgba(74,212,104,1)",     on: false }, // -> green
+    OIII: { swatch: "rgba(46,206,210,1)",     on: false }  // -> blue/teal
   };
 
   var BROAD = ["L", "R", "G", "B"];
   var NARROW = ["Ha", "OIII", "SII"];
 
-  // state: which channels are on
   var state = {};
   Object.keys(CH).forEach(function (k) { state[k] = !!CH[k].on; });
 
   var layers = {};
   Array.prototype.forEach.call(preview.querySelectorAll(".filt-layer"), function (el) {
-    var ch = el.getAttribute("data-ch");
-    layers[ch] = el;
-    el.style.backgroundImage = CH[ch].layer;
+    layers[el.getAttribute("data-ch")] = el;
   });
 
   // paint swatches on buttons
@@ -2532,8 +2566,6 @@
   });
 
   function any(list) { return list.some(function (k) { return state[k]; }); }
-  function all(list) { return list.every(function (k) { return state[k]; }); }
-  function countNarrow() { return NARROW.filter(function (k) { return state[k]; }).length; }
 
   function describe() {
     var hasBroad = any(BROAD);
@@ -2543,60 +2575,36 @@
       var lum = state.L;
       var rgb = state.R && state.G && state.B;
       var label = (lum && rgb) ? "LRGB" : (rgb ? "RGB" : "broadband");
-      return { name: label + " · natural color", note: "", narrowOnly: false };
+      return { name: label + " · natural color", note: "" };
     }
-
     if (hasNarrow && !hasBroad) {
       var sho = state.SII && state.Ha && state.OIII;
       var hoo = state.Ha && state.OIII && !state.SII;
-      var label2;
-      if (sho) label2 = "SHO · narrowband (false color)";
-      else if (hoo) label2 = "HOO · narrowband (gold/teal)";
-      else label2 = "narrowband (false color)";
-      return { name: label2, note: "long subs — little light passes", narrowOnly: true };
+      var label2 = sho ? "SHO · narrowband (false color)"
+                 : hoo ? "HOO · narrowband (gold/teal)"
+                 : "narrowband (false color)";
+      return { name: label2, note: "long subs — little light passes" };
     }
-
     if (hasBroad && hasNarrow) {
-      return { name: "mixed", note: "", narrowOnly: false };
+      return { name: "mixed", note: "" };
     }
-
-    return { name: "no channels", note: "", narrowOnly: false };
+    return { name: "no channels", note: "" };
   }
 
   function render() {
-    // layer opacities
     Object.keys(CH).forEach(function (ch) {
-      var el = layers[ch];
-      if (!el) return;
-      el.style.opacity = state[ch] ? String(CH[ch].op) : "0";
+      if (layers[ch]) layers[ch].style.opacity = state[ch] ? "1" : "0";
     });
-
-    // button visual + a11y state
     buttons.forEach(function (b) {
       var ch = b.getAttribute("data-ch");
       var on = !!state[ch];
       b.classList.toggle("filt-on", on);
       b.setAttribute("aria-pressed", on ? "true" : "false");
     });
-
-    // palette readout
     var d = describe();
     nameEl.textContent = d.name;
     noteEl.textContent = d.note;
-
-    // narrowband passes little light -> render narrowband-only a touch dimmer.
-    // scale dimness so a single weak channel is dimmer than a full SHO trio.
-    if (dim) {
-      if (d.narrowOnly) {
-        var n = countNarrow();
-        dim.style.opacity = String(n >= 3 ? 0.18 : n === 2 ? 0.26 : 0.34);
-      } else {
-        dim.style.opacity = "0";
-      }
-    }
   }
-
-  function sync() { render(); }
 
   buttons.forEach(function (b) {
     b.addEventListener("click", function () {
@@ -2607,7 +2615,7 @@
   });
 
   // initialise with L+R+G+B ON
-  sync();
+  render();
 })();
   </script>
 
