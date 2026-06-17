@@ -8,6 +8,8 @@ import { humanizeSeqError } from "../lib/humanize";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
+import { useCanControlCapture } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { CatalogEntry, ExposureStep, SequencePlan, Target } from "../types";
 
 const DEFAULT_STEP: ExposureStep = {
@@ -48,6 +50,10 @@ export default function SequenceView() {
   // see the signal at all.
   const atlasBannerPending = useAtlasBannerPending();
   const dismissAtlasBanner = useStore((s) => s.dismissAtlasBanner);
+  // VIEWER-READ-ONLY (W2.5): running/aborting a sequence drives devices, so it
+  // needs control.capture. The plan BUILDER stays usable for everyone (it's local
+  // state + localStorage, not a device write) — only the run-control buttons gate.
+  const canRun = useCanControlCapture();
   // Pre-flight gate (F-P0.1): one shared verdict drives BOTH the strip and the
   // Run button. `verdict==='blocked'` disables Run and routes it through the
   // modal (Review) instead of starting. `force` is threaded into the start body
@@ -266,15 +272,18 @@ export default function SequenceView() {
               </>
             )}
 
-            {/* Actions by state. Stop-type (Abort) is never disabled. */}
+            {/* Actions by state. Stop-type (Abort) is never disabled for a
+                controller; the whole action row is read-only for a viewer (they
+                can't have started a run). */}
             <div className="flex flex-wrap gap-2 mt-3">
-              {sequence.state === "running" && (
+              {!canRun && running && <ReadOnlyBadge />}
+              {canRun && sequence.state === "running" && (
                 <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
               )}
-              {sequence.state === "paused" && (
+              {canRun && sequence.state === "paused" && (
                 <button className="btn btn-accent tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/resume"))}>Resume</button>
               )}
-              {running && (
+              {canRun && running && (
                 // Abort stops an unattended multi-hour run — non-urgent destructive,
                 // so it's a hold-to-confirm (spec §1c). Motion stops (STOP/Halt) stay
                 // single-tap; Abort is not a motion stop.
@@ -307,17 +316,19 @@ export default function SequenceView() {
               )}
               {failed && (
                 <>
-                  <button className="btn btn-accent" disabled={totalFrames === 0}
-                    onClick={() => setPreflightOpen(true)}>
-                    <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Re-run plan
-                  </button>
+                  {canRun && (
+                    <button className="btn btn-accent" disabled={totalFrames === 0}
+                      onClick={() => setPreflightOpen(true)}>
+                      <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Re-run plan
+                    </button>
+                  )}
                   <button className="btn" onClick={() => {
                     document.getElementById("seq-targets")?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }}>
-                    Edit plan
+                    {canRun ? "Edit plan" : "View plan"}
                   </button>
                   <button className="btn" onClick={openLog}>View log</button>
-                  {resumable && recoverable && (
+                  {canRun && resumable && recoverable && (
                     <button className="btn" onClick={() =>
                       act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
                       Resume from frame {recoverable.frames_done}
@@ -582,12 +593,20 @@ export default function SequenceView() {
             ever starts via the modal's onProceed (which threads `force`). */}
         <PreflightStrip plan={plan} onReview={() => setPreflightOpen(true)} />
 
-        <button className="btn btn-accent !py-3 !text-sm"
-          disabled={running || totalFrames === 0 || verdict === "blocked"}
-          onClick={() => setPreflightOpen(true)}>
-          ≡ Run Sequence
-        </button>
-        {totalFrames === 0 && (
+        {canRun ? (
+          <button className="btn btn-accent !py-3 !text-sm"
+            disabled={running || totalFrames === 0 || verdict === "blocked"}
+            onClick={() => setPreflightOpen(true)}>
+            ≡ Run Sequence
+          </button>
+        ) : (
+          // Viewer: no run control — a passive read-only note, never a 403-on-tap.
+          <p className="text-[11px] text-warn text-center inline-flex items-center justify-center gap-2 py-2">
+            <ReadOnlyBadge label="View only" reason="Running a sequence needs operator or admin access." />
+            Running a sequence needs operator or admin access.
+          </p>
+        )}
+        {canRun && totalFrames === 0 && (
           <p className="text-[11px] text-dim text-center">add targets and steps first</p>
         )}
         {totalFrames > 0 && verdict === "blocked" && (

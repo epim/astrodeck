@@ -25,6 +25,10 @@ export function connectWs(): void {
     // Hydrate config at boot (and re-hydrate after reconnect) so settings-derived
     // UI isn't blank/defaults until a config mutation. Fire-and-forget.
     void st.loadConfig();
+    // Resolve the RBAC principal alongside config (W2.5). Fail-closed: until this
+    // lands the cap gates treat the caller as a viewer; under the `none` provider
+    // it resolves to admin + ALL caps, so the default LAN UI is unchanged.
+    void st.loadPrincipal();
     // Reconcile after any gap: the bus drops frames under backpressure, so the
     // drawer/badge could be missing log lines that arrived while we were away.
     try {

@@ -338,10 +338,17 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
   };
 
   // F-S9: authoritative emergency stop — abort the sequence AND zero both axes.
+  // A viewer (W2.5) lacks control caps, so the server 403s these; swallow that
+  // SILENTLY (a read-only user has nothing of their own to stop, and an error
+  // toast on an emergency-stop tap would be alarming + useless). Any other failure
+  // still surfaces so an operator sees a genuinely-failed stop.
   const emergencyStop = () => {
     haptics.stop();
-    api.post("/api/mount/stop").catch((err) => showToast("error", (err as Error).message));
-    api.post("/api/sequence/abort").catch((err) => showToast("error", (err as Error).message));
+    const swallow403 = (err: unknown) => {
+      if ((err as { status?: number })?.status !== 403) showToast("error", (err as Error).message);
+    };
+    api.post("/api/mount/stop").catch(swallow403);
+    api.post("/api/sequence/abort").catch(swallow403);
   };
 
   return (

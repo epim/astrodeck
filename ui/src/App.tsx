@@ -6,6 +6,8 @@ import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
 import ConnectionBanner from "./components/ConnectionBanner";
 import HealthLeds from "./components/HealthLeds";
+import RoleBadge from "./components/RoleBadge";
+import SignInButton from "./components/SignInButton";
 import Toasts from "./components/Toasts";
 import LogDrawer from "./components/LogDrawer";
 import HeaderControls from "./components/HeaderControls";
@@ -24,6 +26,7 @@ import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
 import MonitorView from "./views/MonitorView";
 import AtlasView from "./views/AtlasView";
+import SettingsView from "./components/settings/SettingsView";
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
 // header/nav entries for Settings (placeholder) and Monitor (real this batch).
@@ -68,7 +71,7 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   sequence: SequenceView,
   power: PowerView,
   monitor: MonitorView,
-  settings: () => <PlaceholderView label="Settings" />,
+  settings: SettingsView,
   atlas: AtlasView,
   // "report" is NOT a primary-nav entry (Batch-4b §2.5): the Session Report is
   // reached from the run-complete "View session report →" link + the mobile
@@ -183,6 +186,10 @@ export default function App() {
               {status.mode === "nina" ? "NINA" : status.mode === "alpaca" ? "ALPACA" : "SIM"}
             </span>
           )}
+          {/* Unobtrusive current-role chip (W2.5). Silent for admin (the default
+              `none`-provider LAN posture), a small VIEW ONLY / OPERATOR badge
+              otherwise — read by glyph + text, never color alone. */}
+          <RoleBadge />
           <div className={`hidden md:flex items-center gap-4 text-xs mono text-dim min-w-0 overflow-hidden
             ${dim ? "opacity-40 saturate-50 transition-opacity" : "transition-opacity"}`}>
             {status?.mount && (
@@ -216,6 +223,11 @@ export default function App() {
               outline-ring error badge. Mounting it does NOT widen App's subscription.
               NIGHT's verb-shaped text button is gone — the icon + state-describing
               aria-label is the affordance (onboarding §6 / C10/C11). */}
+          {/* Google sign-in / signed-in email + sign-out (W2.5). Renders NOTHING
+              unless a Google provider is configured, so the LAN tablet is
+              unchanged. Hidden on the narrowest widths to protect the dimmer/log
+              controls; the full affordance also lives in Settings → Account. */}
+          <span className="hidden md:inline-flex"><SignInButton /></span>
           <HeaderControls />
           <HealthLeds />
         </header>

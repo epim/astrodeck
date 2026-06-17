@@ -68,6 +68,11 @@ export interface RigStatus {
     healthy: boolean;               // backend verdict (warming_up or age<=threshold)
     warming_up: boolean;            // true until first successful poll after bridge
   };
+  // --- pluggable backends (W1.6; additive — old clients ignore). Present on
+  //     every poll AND `hello`. `backend_links` is [] until a RigSpec/profile
+  //     connect happened (the legacy connect_* paths leave it empty). ---
+  backend_links?: BackendLink[];
+  boot_connect_failed?: boolean;
   // --- onboarding (additive) ---
   disk?: DiskInfo;
   // --- settings (additive; survives the 2s wholesale status replace) ---
@@ -457,6 +462,10 @@ export interface AppConfig {
   // alert-token "empty means unchanged" contract); POST a non-empty url to set it.
   deadman_url: string;
   deadman_configured?: boolean;
+  // --- RBAC (W2.5; additive). The redacted auth state block — non-secret
+  //     booleans + role allowlist. Optional: the WS `hello` bootstrap config may
+  //     omit it; the first `config` event / REST GET carries it. ---
+  auth?: AuthState;
 }
 
 // ============================================================================
@@ -729,19 +738,28 @@ export type LedState = "off" | "on" | "warn" | "bad" | "busy";
 export type Tone = "good" | "warn" | "bad";
 
 // -------------------------------------------------------- profiles / plans (frozen)
+// `backend` is a free string (registry name): the server allows "native", "sim",
+// "nina", "alpaca" (legacy alias for "native"), etc. — NOT a closed union. `extra`
+// carries backend-specific options (e.g. the managed-PHD2 toggle writes
+// extra.managed) and is persisted verbatim; mirrors server profiles.ProfileDevice.
 export interface ProfileDevice {
   role: string;
-  backend: "alpaca" | "nina";
+  backend: string;
   host: string;
   port: number;
   dev_type: string;
   dev_num: number;
   name: string;
+  extra: Record<string, unknown>;
 }
 
 export interface Profile {
   id: string;
   name: string;
+  // The RigSpec primary (default backend for any role with no explicit per-device
+  // override). Server defaults to "sim"; the picker writes the primary selection
+  // here. Mirrors server profiles.Profile.primary_backend.
+  primary_backend: string;
   devices: ProfileDevice[];
   nina_host: string | null;
   nina_port: number;
@@ -765,6 +783,117 @@ export interface ApplyResult {
   results: { role: string; ok: boolean; error?: string }[];
   connected: number;
   total: number;
+}
+
+// ============================================================================
+// PLUGGABLE BACKENDS + RBAC (W1.C / W1.6 / W2.x). The one true client shape,
+// verified against server: devices/backend.list_backends (BackendInfo),
+// devices/orchestrator.RoleResult (RoleResult), hub.backend_links (BackendLink),
+// devices.backend.RigSpec/ConnSpec (RigSpec/ConnSpec), hub.connect_rigspec
+// (ConnectRigResult), auth/principal.Principal.to_public (Principal), and
+// auth/capabilities (Capability). All additive — old code ignores them.
+// ============================================================================
+
+// GET /api/backends row — devices.backend.list_backends().
+export interface BackendInfo {
+  name: string;          // registry key, stored in ConnSpec.backend ("sim"|"nina"|"native"|...)
+  label: string;         // human name for the UI
+  roles: string[];       // subset of ROLES this backend can fill
+  discoverable: boolean; // true => discover() does real network work
+}
+
+// One per-role connection override in a RigSpec (mirrors server ConnSpecBody /
+// devices.backend.ConnSpec). Only `backend` is required; the rest carry the
+// addressing a given backend needs (native: host/port/dev_*; nina: host/port;
+// sim/phd2: nothing). `extra` carries backend options (e.g. {managed:true}).
+export interface ConnSpec {
+  backend: string;
+  host?: string | null;
+  port?: number | null;
+  dev_type?: string | null;
+  dev_num?: number | null;
+  role?: string | null;
+  extra?: Record<string, unknown>;
+}
+
+// POST /api/connect/rig body (mirrors server RigSpecBody / devices.backend.RigSpec):
+// a `primary` backend that fills every ROLE it can + optional per-role overrides.
+export interface RigSpec {
+  primary: string;
+  roles: Record<string, ConnSpec>;
+}
+
+// The tri-state outcome for ONE requested role, as returned in
+// /api/connect/rig.results (devices.orchestrator.RoleResult — no live `connected`).
+// attempted=false => never tried (unfillable / not requested) => NOT a red LED.
+// attempted=true, ok=true => connected. attempted=true, ok=false => failed (error).
+export interface RoleResult {
+  role: string;
+  ok: boolean;
+  error: string | null;
+  attempted: boolean;
+}
+
+// The per-role boot-LED surface (hub.backend_links): a retained RoleResult joined
+// with the role's LIVE `connected` state. Present on every `status` poll AND
+// `hello`, plus inside ConnectRigResult. `[]` until a RigSpec/profile connect
+// happened (the legacy connect_* paths leave it empty).
+export interface BackendLink {
+  role: string;
+  ok: boolean;
+  error: string | null;
+  attempted: boolean;
+  connected: boolean;
+}
+
+// POST /api/connect/rig response (hub.connect_rigspec).
+export interface ConnectRigResult {
+  summary: RigStatus;
+  results: RoleResult[];
+  backend_links: BackendLink[];
+}
+
+// The 14 capability strings (auth/capabilities.py). view.* read; control.* device
+// motion/imaging; config.* settings writes; admin.* auth/remote admin.
+export type Capability =
+  | "view.status"
+  | "view.preview"
+  | "view.media"
+  | "view.site_precise"
+  | "control.capture"
+  | "control.mount"
+  | "control.guide"
+  | "control.power"
+  | "config.safety"
+  | "config.solar_override"
+  | "config.backend"
+  | "config.site_optics"
+  | "config.alerts"
+  | "admin.users";
+
+export type PrincipalRole = "viewer" | "operator" | "admin";
+
+// GET /api/me — auth/principal.Principal.to_public(). FAIL-CLOSED on the server:
+// 401 on any resolution failure (never default-admin). Under provider="none"
+// every caller resolves to admin + ALL caps, so the default LAN UI is unchanged.
+export interface Principal {
+  role: PrincipalRole;
+  email: string | null;
+  caps: Capability[];
+}
+
+// Non-secret auth state on the REDACTED GET /api/config (config.redacted()). Only
+// present when the server has an `auth` block; *_configured booleans replace the
+// scrubbed secrets. Show the Google sign-in affordance only when
+// provider==="google" && google_configured. `auth` is optional on AppConfig
+// because the WS `hello` bootstrap config may omit it.
+export interface AuthState {
+  provider: "none" | "google";
+  google_configured: boolean;
+  admin_token_configured: boolean;
+  session_signing_configured: boolean;
+  role_allowlist: Record<string, string>; // email -> role
+  default_role: string | null;
 }
 
 export interface PlanRow {

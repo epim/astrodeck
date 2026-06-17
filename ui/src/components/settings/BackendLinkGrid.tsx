@@ -1,0 +1,116 @@
+// BackendLinkGrid.tsx — the tri-state per-role connection readout (W1.6 boot-LED
+// grid). Reads `backend_links` (hub.backend_links): a retained RoleResult joined
+// with the role's LIVE `connected` state. Present on every status poll + hello,
+// and inside ConnectRigResult. `[]` until a RigSpec/profile connect happened
+// (legacy connect_* paths leave it empty), so this grid renders an empty-state
+// hint then, NOT a wall of red.
+//
+// Tri-state mapping (NEVER color alone — night mode collapses good/warn/bad toward
+// red, so each cell reads by Led SHAPE + glyph + word):
+//   attempted=false                  → "not requested"  → led "off"  (a dash, not red)
+//   attempted=true,  connected=true  → "connected"      → led "on"
+//   attempted=true,  ok=true, !conn  → "degraded"       → led "warn" (attached, link dropped)
+//   attempted=true,  ok=false        → "failed"         → led "bad"  (+ inline error)
+
+import type { JSX } from "react";
+import type { BackendLink, LedState } from "../../types";
+import { Led, EmptyState } from "../ui";
+
+// The canonical role order for the grid (mirrors server devices.backend.ROLES).
+const ROLE_ORDER = [
+  "camera",
+  "telescope",
+  "focuser",
+  "guider",
+  "filterwheel",
+  "switch",
+  "safety",
+] as const;
+
+const ROLE_LABEL: Record<string, string> = {
+  camera: "Camera",
+  telescope: "Mount",
+  focuser: "Focuser",
+  guider: "Guider",
+  filterwheel: "Filter wheel",
+  switch: "Power / switch",
+  safety: "Safety monitor",
+};
+
+type TriState = "connected" | "degraded" | "failed" | "skipped";
+
+export function linkTriState(link: BackendLink): TriState {
+  if (!link.attempted) return "skipped";
+  if (link.connected) return "connected";
+  if (link.ok) return "degraded"; // attached at connect but the live link is down
+  return "failed";
+}
+
+const TRI_META: Record<
+  TriState,
+  { led: LedState; word: string; tone: string }
+> = {
+  connected: { led: "on", word: "CONNECTED", tone: "text-good" },
+  degraded: { led: "warn", word: "DEGRADED", tone: "text-warn" },
+  failed: { led: "bad", word: "FAILED", tone: "text-bad" },
+  skipped: { led: "off", word: "NOT REQUESTED", tone: "text-faint" },
+};
+
+/** One tri-state row. `dense` drops the description column for tight side panels. */
+function LinkRow({ link, dense }: { link: BackendLink; dense?: boolean }): JSX.Element {
+  const tri = linkTriState(link);
+  const meta = TRI_META[tri];
+  const label = ROLE_LABEL[link.role] ?? link.role;
+  return (
+    <div className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
+      <Led state={meta.led} label={`${label}: ${meta.word.toLowerCase()}`} />
+      <span className="label w-28 shrink-0">{label}</span>
+      <div className="min-w-0 flex-1">
+        <span className={`mono text-[11px] tracking-wider ${meta.tone}`}>{meta.word}</span>
+        {/* The inline failure/degraded reason — the WHOLE point of the tri-state:
+            a viewer can see WHY a role didn't come up without opening the log. */}
+        {!dense && link.error && (
+          <div className="text-[10px] text-dim truncate mt-0.5" title={link.error}>
+            {link.error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function BackendLinkGrid({
+  links,
+  dense = false,
+  emptyHint = "Connect a rig from the picker or activate a profile to see per-role link status here.",
+}: {
+  links: BackendLink[];
+  dense?: boolean;
+  emptyHint?: string;
+}): JSX.Element {
+  if (links.length === 0) {
+    return (
+      <EmptyState
+        icon="link"
+        title="No rig connected yet"
+        hint={emptyHint}
+        size={dense ? "inline" : "hero"}
+      />
+    );
+  }
+
+  // Order canonically (camera→safety); any unknown trailing role keeps its order.
+  const ordered = [...links].sort((a, b) => {
+    const ia = ROLE_ORDER.indexOf(a.role as (typeof ROLE_ORDER)[number]);
+    const ib = ROLE_ORDER.indexOf(b.role as (typeof ROLE_ORDER)[number]);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+
+  return (
+    <div className="flex flex-col gap-2">
+      {ordered.map((l) => (
+        <LinkRow key={l.role} link={l} dense={dense} />
+      ))}
+    </div>
+  );
+}

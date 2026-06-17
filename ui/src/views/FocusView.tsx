@@ -20,12 +20,15 @@ import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict } from "../components/preview/FocusVerdict";
 import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Panel, Stat } from "../components/ui";
+import { useCanControlCapture } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 
 export default function FocusView() {
   const status = useStatus();
   const focus = useFocus();
   const showToast = useStore((s) => s.showToast);
+  const canFocus = useCanControlCapture(); // focuser/autofocus is imaging-control class
 
   // Live preview so manual focus is not blind (spec §10). Read-only here: zoom/pan
   // + verdict, no stretch/overlay controls (those are the Capture surface).
@@ -110,7 +113,7 @@ export default function FocusView() {
       </div>
 
       <div className="flex flex-col gap-4">
-        <Panel title="Focuser">
+        <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
           <div className="flex items-end justify-between mb-4">
             <Stat label="position" value={foc ? pos : "—"} />
             <Stat label="max" value={foc?.max ?? "—"} />
@@ -118,7 +121,7 @@ export default function FocusView() {
           </div>
           <div className="grid grid-cols-3 gap-2 mb-3">
             {[-1000, -100, -10, 10, 100, 1000].map((d) => (
-              <button key={d} className="btn tap min-h-[44px] mono !normal-case" disabled={!foc || running}
+              <button key={d} className="btn tap min-h-[44px] mono !normal-case" disabled={!canFocus || !foc || running}
                 onClick={() => moveTo(pos + d)}>
                 {d > 0 ? `+${d}` : d}
               </button>
@@ -126,27 +129,28 @@ export default function FocusView() {
           </div>
           <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
             <Field label="Go to position">
-              <input className="field" placeholder={String(pos)} value={absTarget}
+              <input className="field" placeholder={String(pos)} value={absTarget} disabled={!canFocus}
                 onChange={(e) => setAbsTarget(e.target.value)} />
             </Field>
-            <button className="btn tap min-h-[44px]" disabled={!foc || !absTarget || running}
+            <button className="btn tap min-h-[44px]" disabled={!canFocus || !foc || !absTarget || running}
               onClick={() => moveTo(Number(absTarget))}>Go</button>
-            {/* Halt is urgent motion-stop -> stays 1-tap (R9). */}
-            <button className="btn btn-danger tap min-h-[44px]"
+            {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
+                (they can't have a focuser move in flight to halt). */}
+            <button className="btn btn-danger tap min-h-[44px]" disabled={!canFocus}
               onClick={() => act(() => api.post("/api/focuser/halt"))}>Halt</button>
           </div>
         </Panel>
 
-        <Panel title="Autofocus">
+        <Panel title="Autofocus" right={!canFocus && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-3 mb-4">
             <Field label="Exposure (s)">
-              <input className="field" value={afExposure} onChange={(e) => setAfExposure(e.target.value)} />
+              <input className="field" value={afExposure} disabled={!canFocus} onChange={(e) => setAfExposure(e.target.value)} />
             </Field>
             <Field label="Step size" hint={HELP.stepSize}>
-              <input className="field" value={afStep} onChange={(e) => setAfStep(e.target.value)} />
+              <input className="field" value={afStep} disabled={!canFocus} onChange={(e) => setAfStep(e.target.value)} />
             </Field>
           </div>
-          <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!foc || running}
+          <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!canFocus || !foc || running}
             onClick={() => act(() => api.post("/api/focuser/autofocus", {
               exposure_s: Number(afExposure) || 2,
               step: Number(afStep) || 350,

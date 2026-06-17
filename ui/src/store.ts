@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { ReactNode } from "react";
 import type {
   AppConfig,
+  BackendLink,
   CatalogEntry,
   FocusEvent,
   FramingSession,
@@ -12,6 +13,7 @@ import type {
   OverlayToggles,
   PolarState,
   PreviewInfo,
+  Principal,
   RigStatus,
   SafetyReading,
   SafetyState,
@@ -32,7 +34,8 @@ import { deriveNinaHealth } from "./lib/health";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
-import { api } from "./api";
+import { api, ApiError } from "./api";
+import { getMe } from "./api/backends";
 
 // Re-export ViewName from its canonical home (types.ts) so existing imports
 // `import type { ViewName } from "./store"` keep working.
@@ -326,6 +329,11 @@ interface AppState {
 
   // --- config / plan (settings + atlas, reconciled) ---
   config: AppConfig | null;
+  // RBAC principal (W2.5). null = UNRESOLVED → treat as viewer (fail-closed) until
+  // loadPrincipal() lands. Under the `none` provider this resolves to admin +
+  // ALL caps, so the default LAN UI is unchanged. The cap-gate hooks (lib/caps.ts)
+  // read this slice.
+  principal: Principal | null;
   plan: SequencePlan; // atlas SSOT; setPlan persists localStorage in the setter
   editorDirty: boolean;
   siteDirty: boolean;
@@ -410,6 +418,11 @@ interface AppState {
 
   // --- actions: config / plan / site ---
   loadConfig: () => Promise<void>;
+  // GET /api/me → principal. On ApiError 401 (fail-closed server resolution) set a
+  // viewer sentinel {role:"viewer",email:null,caps:[]} so the UI degrades to
+  // read-only instead of hanging unresolved. Call from ws.ts onopen next to
+  // loadConfig(), and re-call after sign-in / sign-out.
+  loadPrincipal: () => Promise<void>;
   setPlan: (p: SequencePlan, dirty?: boolean) => void;
   setSiteDirty: (b: boolean) => void;
   setOpticsDirty: (b: boolean) => void;
@@ -491,6 +504,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- config / plan ---
   config: null,
+  principal: null, // unresolved → fail-closed viewer until loadPrincipal()
   plan: loadPlan(),
   editorDirty: false,
   siteDirty: false,
@@ -572,6 +586,23 @@ export const useStore = create<AppState>((set, get) => ({
       set({ config });
     } catch {
       /* leave config as-is; UI shows loading/defaults */
+    }
+  },
+
+  // Resolve the caller identity (W2.5). A 401 is the server's FAIL-CLOSED signal
+  // (auth couldn't resolve a principal) — pin a viewer sentinel so cap gates deny
+  // controls rather than hang unresolved. Any other failure (network/timeout)
+  // leaves `principal` as-is so a transient blip doesn't strip an already-resolved
+  // admin back to viewer mid-session.
+  loadPrincipal: async () => {
+    try {
+      const principal = await getMe();
+      set({ principal });
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        set({ principal: { role: "viewer", email: null, caps: [] } });
+      }
+      /* else: keep the prior principal; transport blip, not a deauth */
     }
   },
 
@@ -1085,6 +1116,22 @@ export const useNotifyEnabled = () => useStore((s) => s.notifyEnabled);
 
 export const useConfig = () => useStore((s) => s.config);
 export const usePlan = () => useStore((s) => s.plan);
+
+// ============================================================================
+// RBAC / pluggable-backend narrow hooks (W1.6 / W2.5). The principal slice is a
+// stable reference between polls (only loadPrincipal replaces it), so usePrincipal
+// needs no useShallow. backend_links/boot_connect_failed live on the `status`
+// object which is replaced wholesale every 2s — useBackendLinks uses useShallow so
+// a poll that leaves the per-role tri-state unchanged doesn't re-render the grid.
+// The cap-gate hooks themselves live in lib/caps.ts (useCan/useCapability).
+// ============================================================================
+export const usePrincipal = () => useStore((s) => s.principal);
+export const useCaps = () =>
+  useStore(useShallow((s) => s.principal?.caps ?? []));
+export const useBackendLinks = (): BackendLink[] =>
+  useStore(useShallow((s) => s.status?.backend_links ?? []));
+export const useBootConnectFailed = (): boolean =>
+  useStore((s) => s.status?.boot_connect_failed ?? false);
 export const useFraming = () => useStore((s) => s.framing);
 export const useAtlasHandoff = () => useStore((s) => s.atlasHandoff);
 export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending);

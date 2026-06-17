@@ -30,6 +30,7 @@ import {
 } from "../store";
 import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
+import { useCanControlCapture } from "../lib/caps";
 import {
   CountdownTile,
   HoldButton,
@@ -100,6 +101,10 @@ export default function MonitorView() {
   const night = useNight();
   const logs = useLogs();
   const setView = useStore((s) => s.setView);
+  // VIEWER-READ-ONLY (W2.5): the Monitor is a glance dashboard; its only writes are
+  // Pause/Resume/Abort (sequence run-control = control.capture). A viewer sees the
+  // dashboard fully but not the controls row.
+  const canRun = useCanControlCapture();
 
   const reducedMotion = useReducedMotion();
   const now = useCoarseTick();
@@ -291,8 +296,9 @@ export default function MonitorView() {
             )}
           </div>
 
-          {/* controls row — only when run-related (idle/complete/nina show none) */}
-          {runActive && (
+          {/* controls row — only when run-related (idle/complete/nina show none).
+              Hidden for viewers (W2.5: run-control is control.capture). */}
+          {runActive && canRun && (
             <div className="flex items-center gap-2 mt-3">
               <PauseButton
                 paused={paused}
