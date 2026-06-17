@@ -389,6 +389,12 @@ def redacted(cfg: AppConfig) -> dict:
     dm = data.get("deadman_url") or ""
     data["deadman_url"] = ""
     data["deadman_configured"] = bool(dm)
+    # Stage B: AppConfig holds only the active-profile POINTER (no profile records
+    # — those live in ProfileLibrary), so there is no profile-borne secret to
+    # scrub here today. A profile's only at-rest secret-capable field is a
+    # backend's ``ConnSpec.extra``, which carries no credential in Stage B.
+    # TODO(W2): redact ConnSpec.extra secrets in serialized Profile records when a
+    # future backend persists a credential there.
     return data
 
 

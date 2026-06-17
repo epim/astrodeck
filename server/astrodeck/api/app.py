@@ -53,12 +53,42 @@ engine.dispatcher = dispatcher
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
 
+# Boot auto-connect opt-out (W1.6 test seam). When ``ASTRODECK_NO_AUTOCONNECT``
+# is set to a truthy value, the lifespan does NOT auto-connect the active profile
+# on startup. Default (unset) is ENABLED - production always auto-connects.
+NO_AUTOCONNECT_ENV_VAR = "ASTRODECK_NO_AUTOCONNECT"
+
+
+def _boot_autoconnect_disabled() -> bool:
+    """True when boot auto-connect is turned off via env (test seam). Any of
+    ``1/true/yes/on`` (case-insensitive) disables it; everything else enables."""
+    val = (os.environ.get(NO_AUTOCONNECT_ENV_VAR) or "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
     """App lifespan: start the AlertDispatcher subscriber on boot, cancel it on
     shutdown. The dispatcher never raises out of its loop, so a flaky alert
-    endpoint can never take the server down (C1-16/C2-10)."""
+    endpoint can never take the server down (C1-16/C2-10).
+
+    Boot auto-connect (W1.6): ALWAYS connect the active profile on startup so a
+    rebooted Pi comes back to its rig with no operator action. This is wrapped so
+    it can NEVER raise out of the lifespan - an unreachable device degrades into
+    the disconnected/retrying state (surfaced via ``backend_links`` /
+    ``boot_connect_failed`` on the status poll) instead of bricking the UI. It
+    NEVER initiates motion: ``connect_active`` only opens device connections (no
+    unpark/slew/track). A persisted in-progress sequence is NOT auto-resumed here
+    (W1.6 PAUSED-PENDING-ACK) - the boot path deliberately does not call
+    engine.start/resume."""
     task = asyncio.create_task(dispatcher.run())
+    # Boot auto-connect the active profile (no-op on first run / no active
+    # profile). MUST swallow every failure - a raise here bricks the whole UI.
+    if not _boot_autoconnect_disabled():
+        try:
+            await hub.connect_active()
+        except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+            bus.log("error", f"boot auto-connect failed: {e}", "hub")
     try:
         yield
     finally:
@@ -67,6 +97,11 @@ async def _lifespan(app: "FastAPI"):
         try:
             await task
         except (asyncio.CancelledError, Exception):
+            pass
+        # Clean teardown of an auto-connected rig (best-effort; never raises).
+        try:
+            await hub.disconnect_all()
+        except Exception:
             pass
 
 
@@ -86,6 +121,42 @@ def _spawn(name: str, coro) -> dict:
 
     hub._busy[name] = asyncio.create_task(wrapped())
     return {"started": name}
+
+
+# In-flight connect-by-profile/rig driver task (see _spawn_connect). Tracked here
+# rather than in ``hub._busy`` so ``hub.disconnect_all()`` (called inside the
+# connect to tear the old rig down) can't cancel the very task driving it.
+_connect_task: "asyncio.Task | None" = None
+
+
+def _spawn_connect(coro) -> dict:
+    """Spawn a connect-by-profile/rig as a detached background task that streams
+    over the WS but is NOT in ``hub._busy``.
+
+    Rationale: a connect-by-profile tears the current rig down first via
+    ``hub.disconnect_all()``, which cancels every task in ``hub._busy``. If this
+    driver task lived in ``_busy`` it would cancel itself the instant
+    ``disconnect_all`` ran (the same self-cancel the legacy ``apply`` path
+    exhibits for a non-empty rig, where the connect happens AFTER the teardown).
+    So we keep it out of ``_busy`` entirely and guard concurrency with a
+    dedicated module handle. It still shares the ``profile`` lane intent: a
+    pending connect blocks another connect/apply from stomping it."""
+    global _connect_task
+    if _connect_task is not None and not _connect_task.done():
+        raise HTTPException(409, "'profile' is already running")
+    if (t := hub._busy.get("profile")) and not t.done():
+        raise HTTPException(409, "'profile' is already running")
+
+    async def wrapped():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            bus.log("warning", "profile cancelled", "profile")
+        except (DeviceError, Exception) as e:
+            bus.log("error", f"profile failed: {e}", "profile")
+
+    _connect_task = asyncio.create_task(wrapped())
+    return {"started": "profile"}
 
 
 def _err(e: Exception) -> HTTPException:
@@ -196,6 +267,28 @@ class PHD2Body(BaseModel):
 class NinaConnectBody(BaseModel):
     host: str = "127.0.0.1"
     port: int = 1888
+
+
+class ConnSpecBody(BaseModel):
+    """One per-role connection override in a /api/connect/rig request (mirrors
+    ``devices.backend.ConnSpec``). Only ``backend`` is required; the rest carry
+    the addressing a given backend needs (Alpaca/native: host/port/dev_*; nina:
+    host/port; sim/phd2: nothing)."""
+    backend: str
+    host: str | None = None
+    port: int | None = None
+    dev_type: str | None = None
+    dev_num: int | None = None
+    role: str | None = None
+    extra: dict = {}
+
+
+class RigSpecBody(BaseModel):
+    """A whole-rig connection plan posted to /api/connect/rig (mirrors
+    ``devices.backend.RigSpec``): a ``primary`` backend that fills every ROLE it
+    can, plus optional per-role ``roles`` overrides."""
+    primary: str
+    roles: dict[str, ConnSpecBody] = {}
 
 
 class DitherBody(BaseModel):
@@ -399,6 +492,30 @@ def create_app() -> FastAPI:
             # lives in AlpacaScanError; surface only that.
             raise HTTPException(502, str(e))
 
+    @app.get("/api/backends")
+    async def backends():
+        """Every registered backend, JSON-able: ``[{name, label, roles,
+        discoverable}, ...]`` ordered by name (the connect UI's backend picker).
+        Imports the backends package for its self-registration side effect so the
+        registry is populated even on a cold first call."""
+        from ..devices import backends as _b  # noqa: F401 - registration side-effect
+        from ..devices.backend import list_backends
+        return list_backends()
+
+    @app.get("/api/discover/{backend}")
+    async def discover_backend(backend: str):
+        """Delegate discovery to a named backend's ``discover()`` (unknown backend
+        -> 404). A more general sibling of the legacy ``/api/discover``,
+        ``/api/discover/nina``, ``/api/discover/alpaca`` routes (distinct paths -
+        no collision); those stay as-is for the live UI."""
+        from ..devices import backends as _b  # noqa: F401 - registration side-effect
+        from ..devices.backend import get_backend
+        try:
+            b = get_backend(backend)
+        except KeyError:
+            raise HTTPException(404, f"unknown backend {backend!r}")
+        return await b.discover()
+
     @app.get("/api/nina/health")
     async def nina_health():
         """Backend↔NINA link health (same shape as the ``nina_link`` block on
@@ -443,6 +560,44 @@ def create_app() -> FastAPI:
             raise _err(e)
         except Exception as e:
             raise HTTPException(502, f"NINA connection failed: {e}")
+
+    @app.post("/api/connect/rig")
+    async def connect_rig(body: RigSpecBody):
+        """Connect a whole rig by RigSpec (the pluggable-backend connect path,
+        W1.6). The ``primary`` backend fills every ROLE it can; ``roles`` carry
+        explicit per-role overrides.
+
+        Server-side reject rule (422): an EXPLICIT override whose role is not in
+        the target backend's ``roles`` is refused (e.g. ``safety``->``nina``, the
+        one role NINA can't fill). Primary-DERIVED resolution is NOT subject to
+        this (switching the whole rig to a ``nina`` primary that resolves
+        ``switch`` is fine). Connection itself degrades per-role gracefully via
+        the orchestrator - a single unreachable device does not fail the request.
+        """
+        from ..devices import backends as _b  # noqa: F401 - registration side-effect
+        from ..devices.backend import RigSpec, ConnSpec, get_backend
+        try:
+            get_backend(body.primary)
+        except KeyError:
+            raise HTTPException(422, f"unknown primary backend {body.primary!r}")
+        for role, cs in body.roles.items():
+            try:
+                allowed = get_backend(cs.backend).roles
+            except KeyError:
+                raise HTTPException(
+                    422, f"unknown backend {cs.backend!r} for role {role!r}")
+            if role not in allowed:
+                raise HTTPException(
+                    422, f"backend {cs.backend!r} cannot fill role {role!r}")
+        spec = RigSpec(
+            primary=body.primary,
+            roles={r: ConnSpec(**cs.model_dump()) for r, cs in body.roles.items()})
+        try:
+            return await hub.connect_rigspec(spec)
+        except DeviceError as e:
+            raise _err(e)
+        except Exception as e:
+            raise HTTPException(502, f"rig connection failed: {e}")
 
     @app.post("/api/disconnect")
     async def disconnect():
@@ -874,6 +1029,30 @@ def create_app() -> FastAPI:
         if force and engine.running:
             await engine.abort()
         return _spawn("profile", hub.apply_profile(prof))
+
+    @app.post("/api/profiles/{profile_id}/activate")
+    async def activate_profile(profile_id: str,
+                               body: ProfileApplyBody | None = None):
+        """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
+        ``_spawn_connect`` convention so it can't run concurrently with ``apply``
+        and streams progress over the WS. The active pointer is set INSIDE
+        ``connect_profile_id`` only after a successful connect, so activating a
+        rig that can't come up doesn't strand the pointer (boot will still
+        degrade-connect it - intended).
+
+        404 when the id is unknown; 409 when a sequence / capture loop / polar
+        alignment is running and ``force`` is not set (the connect is destructive
+        - it disconnects the current rig)."""
+        force = bool(body and body.force)
+        if not _profile_exists(profile_id):
+            raise HTTPException(404, "profile not found")
+        if (engine.running or hub.looping or hub.polar.running) and not force:
+            raise HTTPException(409, detail={
+                "detail": "a sequence, capture loop or polar alignment is running",
+                "code": "running"})
+        if force and engine.running:
+            await engine.abort()
+        return _spawn_connect(hub.connect_profile_id(profile_id))
 
     # -------------------------------------------------------------------- plans
 
