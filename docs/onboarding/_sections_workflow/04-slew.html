@@ -1,0 +1,167 @@
+<!--STYLE-->
+.slew-stage {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.slew-field {
+  position: absolute;
+  inset: 0;
+}
+.slew-star-bg {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+  opacity: .5;
+}
+.slew-fov {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46%;
+  aspect-ratio: 16 / 9;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+}
+.slew-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  opacity: .8;
+}
+.slew-crosshair::before,
+.slew-crosshair::after {
+  content: "";
+  position: absolute;
+  background: var(--c-ink-soft);
+}
+.slew-crosshair::before {
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+.slew-crosshair::after {
+  left: 50%;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+/* resting / final state: star near-centred with small residual */
+.slew-target {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c-ink);
+  box-shadow: 0 0 8px 2px var(--c-ink-faint);
+  transform: translate(calc(-50% + 7px), calc(-50% - 4px));
+}
+.slew-lock {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius-sm);
+  transform: translate(calc(-50% + 7px), calc(-50% - 4px));
+  opacity: .9;
+}
+.slew-solve {
+  position: absolute;
+  inset: 0;
+  background: var(--c-accent-soft);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes slew-fly {
+  0% { transform: translate(calc(-50% + 240px), calc(-50% - 120px)); opacity: 0; }
+  18% { opacity: 1; }
+  55% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 1; }
+  70% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 1; }
+  100% { transform: translate(calc(-50% + 7px), calc(-50% - 4px)); opacity: 1; }
+}
+@keyframes slew-pulse {
+  0%, 64% { opacity: 0; }
+  72% { opacity: .55; }
+  100% { opacity: 0; }
+}
+@keyframes slew-snap {
+  0%, 70% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 0; }
+  78% { opacity: .9; }
+  100% { transform: translate(calc(-50% + 7px), calc(-50% - 4px)); opacity: .9; }
+}
+
+.precis-topic.in .slew-target {
+  animation: slew-fly 2.4s var(--ease) both;
+}
+.precis-topic.in .slew-solve {
+  animation: slew-pulse 2.4s var(--ease) both;
+}
+.precis-topic.in .slew-lock {
+  animation: slew-snap 2.4s var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .slew-target,
+  .precis-topic.in .slew-solve,
+  .precis-topic.in .slew-lock {
+    animation: none;
+  }
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="slew" data-nav="Slew + Sync">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">04</span> First Slew</p>
+    <h2 class="reveal">Slew to a bright star</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Send the mount to a known bright star — often Polaris or another northern object — to check pointing and give focus something to work on.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>GoTo</dt>
+      <dd>The mount slews using its internal pointing model.</dd>
+      <dt>The miss</dt>
+      <dd>An uncalibrated model lands the star off-centre, sometimes outside the frame entirely.</dd>
+      <dt>Plate-solve + sync</dt>
+      <dd>Image the field, solve where the scope actually points, and sync the model to truth.</dd>
+      <dt>Park</dt>
+      <dd>A known home reference (the sim parks near the pole at Dec <span class="stat">+89.5°</span>).</dd>
+    </dl>
+    <figure class="slew-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="slew-stage">
+        <div class="slew-field">
+          <span class="slew-star-bg" style="top:18%; left:22%"></span>
+          <span class="slew-star-bg" style="top:30%; left:74%"></span>
+          <span class="slew-star-bg" style="top:62%; left:14%"></span>
+          <span class="slew-star-bg" style="top:78%; left:58%"></span>
+          <span class="slew-star-bg" style="top:44%; left:88%"></span>
+          <span class="slew-star-bg" style="top:70%; left:40%"></span>
+          <span class="slew-star-bg" style="top:12%; left:54%"></span>
+        </div>
+        <div class="slew-fov"></div>
+        <div class="slew-crosshair"></div>
+        <div class="slew-solve"></div>
+        <div class="slew-lock"></div>
+        <div class="slew-target"></div>
+      </div>
+    </figure>
+    <p class="caption">First GoTo lands close, not centred; the plate-solve fixes the rest.</p>
+    <p class="stakes reveal">Trust an unsynced model and the target sits outside the sensor — you expose empty sky and never notice.</p>
+    <p class="hook reveal">MountView has a <code>Slew Pad</code>, a <code>Pointing</code> panel (RA / Dec / Alt / Az / State) and a <code>Target Catalog</code>; a plate-solve syncs the model to where it truly points.</p>
+    <p class="aside">The mount is confident and wrong; the camera is how it learns.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+<!--/SCRIPT-->

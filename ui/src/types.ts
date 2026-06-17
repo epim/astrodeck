@@ -884,16 +884,55 @@ export interface Principal {
 
 // Non-secret auth state on the REDACTED GET /api/config (config.redacted()). Only
 // present when the server has an `auth` block; *_configured booleans replace the
-// scrubbed secrets. Show the Google sign-in affordance only when
-// provider==="google" && google_configured. `auth` is optional on AppConfig
-// because the WS `hello` bootstrap config may omit it.
+// scrubbed secrets. `auth` is optional on AppConfig because the WS `hello`
+// bootstrap config may omit it.
+//
+// MULTI-METHOD (W2.3-bis/W2.6): `methods` is the source of truth — a subset of
+// {"local","google"}. EMPTY ⇒ OPEN/admin-for-all (today's LAN default; NO login
+// screen). `provider` is the LEGACY single-provider field, kept for read-time
+// migration only. Both `local` and `google` can be enabled at once. The redacted
+// block is a full model_dump of the server AuthConfig with secrets scrubbed, so it
+// also carries google_client_id/redirect (non-secret), session_ttl_s, and the
+// first-run flag.
 export interface AuthState {
+  // Source of truth for enabled login methods. [] ⇒ open/admin (no login).
+  methods: string[];
+  // LEGACY single-provider field (migrate-only; methods wins when non-empty).
   provider: "none" | "google";
   google_configured: boolean;
   admin_token_configured: boolean;
   session_signing_configured: boolean;
   role_allowlist: Record<string, string>; // email -> role
   default_role: string | null;
+  // Session lifetime (seconds) for BOTH local + google logins.
+  session_ttl_s?: number;
+  // First-run create-admin path is allowed while the user store is empty.
+  local_enabled_first_run?: boolean;
+  // Non-secret google fields pass through redaction (the client_secret is blanked).
+  google_client_id?: string;
+  google_redirect_uri?: string;
+  google_hd?: string;
+}
+
+// GET /api/auth/methods — the tiny UNAUTHENTICATED "what login UI do I render?"
+// signal (auth/local_routes.py). Read by the Login screen BEFORE any session
+// exists. `methods == []` ⇒ no login at all (open LAN). `first_run` is true only
+// while local is enabled, the first-run flag is on, AND the user store is empty.
+export interface AuthMethods {
+  methods: string[]; // subset of {"local","google"}
+  google_configured: boolean;
+  first_run: boolean;
+}
+
+// A local user record as returned by the admin user-management routes
+// (User.to_public() — auth/users.py). `password_hash` is structurally ABSENT.
+export interface User {
+  id: string;
+  username: string;
+  email: string | null;
+  role: PrincipalRole;
+  enabled: boolean;
+  created: number; // epoch seconds
 }
 
 export interface PlanRow {

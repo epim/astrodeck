@@ -41,8 +41,23 @@ SECRET_ENV_VAR = "ASTRODECK_SECRET"
 # this default is still in force (mirrors app.py's 0.0.0.0-without-token warn).
 DEV_DEFAULT_SECRET = "astrodeck-dev-insecure-secret-change-me"  # noqa: S105 (intentional dev default)
 
+# Filename of the auto-generated persisted secret (under ``config.CONFIG_DIR``).
+# When a real auth method is enabled and ``ASTRODECK_SECRET`` is NOT set, the
+# boot/enable path generates a random secret here so sessions are never signed
+# with the public dev sentinel (see ``ensure_real_secret``). Read live so a
+# freshly-written file is honored without a restart.
+SECRET_FILE_NAME = "session_secret"  # noqa: S105 (a path, not a secret value)
+
 _HEADER = {"alg": "HS256", "typ": "ADSESS"}
 _ALG = "HS256"
+
+# Fail-closed interlock (critical fix): when a real auth method is enabled the
+# boot/enable path ARMS this. While armed AND the effective secret is still the
+# public dev default, ``sign_session`` raises and ``decode_session`` refuses --
+# so an operator who enables local/google auth without ``ASTRODECK_SECRET`` (and
+# whose secret somehow did not get persisted) cannot silently run on the public
+# dev key and have an attacker mint a valid admin cookie.
+_require_real_secret = False
 
 
 class SessionError(ValueError):
@@ -50,21 +65,111 @@ class SessionError(ValueError):
     default ``verify_session`` swallows everything and returns None."""
 
 
-def session_secret() -> bytes:
-    """The active signing secret as bytes, read live from the environment.
+class InsecureSessionSecretError(RuntimeError):
+    """Raised by ``sign_session`` (and surfaced by the boot guard) when a real
+    auth method is enabled but the signing secret is still the public dev
+    default. Minting a session on the public key would be a full auth bypass."""
 
-    Falls back to the LOUD dev default when ``ASTRODECK_SECRET`` is unset/blank
-    so local use never breaks. Production must set the env var."""
+
+def _secret_dir():
+    """The directory the auto-persisted secret lives in: the ACTIVE config
+    store's directory (so a test pointing ``config_store`` at a temp path keeps
+    the secret out of the real ``server/config``), falling back to the static
+    ``CONFIG_DIR``. Resolved lazily so this module stays import-light."""
+    try:
+        from ..config import CONFIG_DIR, config_store
+        store_path = getattr(config_store, "_path", None)
+        if store_path is not None:
+            return store_path.parent
+        return CONFIG_DIR
+    except Exception:  # noqa: BLE001 - any import/attr issue -> no persisted secret
+        return None
+
+
+def _persisted_secret() -> str:
+    """The auto-generated secret persisted next to the active config, or "".
+
+    Read live + lazily so this module stays import-light and a file written at
+    first-enable is honored at once."""
+    directory = _secret_dir()
+    if directory is None:
+        return ""
+    try:
+        raw = (directory / SECRET_FILE_NAME).read_text(encoding="utf-8").strip()
+        return raw
+    except (OSError, ValueError):
+        return ""
+
+
+def session_secret() -> bytes:
+    """The active signing secret as bytes, resolved live.
+
+    Resolution order: ``ASTRODECK_SECRET`` env var -> the auto-persisted
+    ``CONFIG_DIR/session_secret`` file -> the LOUD dev default. The persisted
+    file is written by ``ensure_real_secret`` when a method is enabled without
+    the env var, so a method-enabled rig never signs on the dev sentinel. Local
+    open-default use (no method) keeps working out of the box on the default."""
     raw = (os.environ.get(SECRET_ENV_VAR) or "").strip()
+    if not raw:
+        raw = _persisted_secret()
     if not raw:
         raw = DEV_DEFAULT_SECRET
     return raw.encode("utf-8")
 
 
 def secret_is_default() -> bool:
-    """True when no real ``ASTRODECK_SECRET`` is configured (still the dev
-    sentinel). The boot path warns if a session provider runs on the default."""
-    return (os.environ.get(SECRET_ENV_VAR) or "").strip() == ""
+    """True when NO real signing secret is configured (env var unset/blank AND
+    no auto-persisted secret), so sessions would be signed with the PUBLIC dev
+    sentinel. The boot/enable path treats this + an enabled method as a fatal
+    misconfiguration (see ``ensure_real_secret`` / the boot guard)."""
+    if (os.environ.get(SECRET_ENV_VAR) or "").strip():
+        return False
+    return _persisted_secret() == ""
+
+
+def ensure_real_secret() -> bool:
+    """Guarantee a NON-default signing secret exists, generating one if needed.
+
+    If ``ASTRODECK_SECRET`` is set, use it (return True). Otherwise, if a secret
+    has already been persisted, use it (return True). Otherwise generate a random
+    256-bit secret and persist it atomically to ``CONFIG_DIR/session_secret``
+    (return True). Returns False only if it could not establish a real secret
+    (e.g. the file could not be written) -- in which case the caller must treat
+    the rig as misconfigured and arm the fail-closed guard.
+
+    Called by the boot/enable path whenever a real auth method is enabled, so
+    enabling local/google auth without the env var can never silently fall back
+    to the public dev key."""
+    if not secret_is_default():
+        return True
+    import secrets as _secrets
+
+    from ..persist import ensure_dir
+    directory = _secret_dir()
+    if directory is None:
+        return False
+    new_secret = _secrets.token_urlsafe(32)
+    try:
+        ensure_dir(directory)
+        path = directory / SECRET_FILE_NAME
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_secret, encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return not secret_is_default()
+
+
+def set_require_real_secret(value: bool) -> None:
+    """Arm/disarm the fail-closed interlock. ARMED => ``sign_session`` raises and
+    ``decode_session`` refuses while the secret is still the public dev default."""
+    global _require_real_secret
+    _require_real_secret = bool(value)
+
+
+def require_real_secret() -> bool:
+    """True iff the fail-closed interlock is armed (a real method is enabled)."""
+    return _require_real_secret
 
 
 # --------------------------------------------------------------- base64url glue
@@ -93,8 +198,17 @@ def sign_session(role: str, email: str | None = None, *,
 
     ``ttl_s`` (seconds) sets an ``exp`` claim; None => no expiry claim (the
     token never times out -- use only for long-lived dev sessions). ``secret``
-    overrides the env secret (tests). Returns the compact ``h.p.s`` string."""
+    overrides the env secret (tests). Returns the compact ``h.p.s`` string.
+
+    FAIL-CLOSED: if the interlock is armed (a real auth method is enabled) and no
+    explicit ``secret`` is supplied while the effective secret is still the
+    public dev default, raise ``InsecureSessionSecretError`` rather than mint a
+    forgeable admin cookie on a publicly-known key."""
     if secret is None:
+        if _require_real_secret and secret_is_default():
+            raise InsecureSessionSecretError(
+                "refusing to sign a session on the public dev secret; set "
+                f"{SECRET_ENV_VAR} (a real method is enabled)")
         secret = session_secret()
     if now is None:
         now = time.time()
@@ -129,6 +243,11 @@ def decode_session(token: str, *, secret: bytes | None = None,
         return None
 
     if secret is None:
+        # FAIL-CLOSED: while the interlock is armed (a real method is enabled)
+        # and the secret is still the public dev default, accept NO session --
+        # an attacker who knows the public key could otherwise forge any role.
+        if _require_real_secret and secret_is_default():
+            return _fail("insecure default session secret (method enabled)")
         secret = session_secret()
     if now is None:
         now = time.time()

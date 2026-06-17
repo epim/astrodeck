@@ -8,12 +8,13 @@
 // google_configured). Under the default `none` provider every caller is admin and
 // SignInButton renders nothing — this panel then explains the open-LAN posture.
 
-import { type JSX } from "react";
-import { usePrincipal, useConfig } from "../../store";
+import { useState, type JSX } from "react";
+import { usePrincipal, useConfig, useStore } from "../../store";
 import { useIsViewer, usePrincipalRole } from "../../lib/caps";
 import { Panel, EmptyState } from "../ui";
 import { Icon } from "../icons";
 import SignInButton from "../SignInButton";
+import { logout } from "../../api/backends";
 
 const ROLE_BLURB: Record<string, string> = {
   admin: "Full control — connect rigs, configure safety, drive the mount and power.",
@@ -28,10 +29,12 @@ export default function AccountPanel(): JSX.Element {
   const isViewer = useIsViewer();
 
   const auth = config?.auth;
-  const googleReady = auth?.provider === "google" && auth.google_configured;
-  // Under the `none` provider (or before config lands) every caller is admin on the
-  // LAN — no sign-in to show.
-  const openLan = !auth || auth.provider === "none";
+  // Multi-method aware (W2.6): the source of truth is `methods`. Empty ⇒ open LAN.
+  const methods = auth?.methods ?? [];
+  const googleReady = methods.includes("google") && !!auth?.google_configured;
+  const localReady = methods.includes("local");
+  // No method enabled (or before config lands) ⇒ every caller is admin on the LAN.
+  const openLan = !auth || methods.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -66,21 +69,26 @@ export default function AccountPanel(): JSX.Element {
           {ROLE_BLURB[role] ?? ""}
         </p>
 
-        {/* The shared sign-in/out affordance (renders nothing unless Google is
-            configured), plus the open-LAN explainer when there's no provider. */}
+        {/* The shared Google sign-in/out affordance (renders nothing unless Google
+            is configured), a generic sign-out for a signed-in local user, plus the
+            open-LAN explainer when no method is enabled. */}
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <SignInButton />
+          {/* Local accounts mint the SAME ad_session cookie as Google; the Google
+              SignInButton only shows its sign-out for google. Offer a generic
+              sign-out when a local user is signed in (has an identity, local-on). */}
+          {!googleReady && localReady && !!principal?.email && <LocalSignOut />}
           {openLan && (
             <p className="text-[11px] text-faint max-w-xl">
               Sign-in is disabled — this server trusts the local network and grants
-              every client admin. Configure a Google provider on the server to gate
-              by account.
+              every client admin. Enable a sign-in method under Settings → Auth to
+              gate by account.
             </p>
           )}
-          {!openLan && !googleReady && (
+          {!openLan && !googleReady && !localReady && (
             <p className="text-[11px] text-warn">
-              A provider is set but Google isn't fully configured on the server, so
-              sign-in is unavailable.
+              A sign-in method is selected but isn't fully configured on the server,
+              so sign-in is unavailable.
             </p>
           )}
         </div>
@@ -98,5 +106,37 @@ export default function AccountPanel(): JSX.Element {
         </Panel>
       )}
     </div>
+  );
+}
+
+// Generic sign-out for a signed-in LOCAL user (the Google SignInButton owns its
+// own sign-out). POST /auth/logout clears the cookie + revokes the jti; we then
+// re-resolve identity + the login signal so the role chip flips and (if a method
+// is enabled) App re-raises the Login gate.
+function LocalSignOut(): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const showToast = useStore((s) => s.showToast);
+  const onSignOut = async () => {
+    setBusy(true);
+    try {
+      await logout();
+      const st = useStore.getState();
+      await Promise.all([st.loadPrincipal(), st.loadAuthMethods(), st.loadConfig()]);
+    } catch (e) {
+      showToast("error", (e as Error).message || "Sign-out failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="btn !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
+      onClick={onSignOut}
+      disabled={busy}
+    >
+      <Icon name="logout" size={14} />
+      <span>{busy ? "Signing out…" : "Sign out"}</span>
+    </button>
   );
 }

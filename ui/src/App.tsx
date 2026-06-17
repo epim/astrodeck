@@ -16,6 +16,8 @@ import TouchGuard from "./components/TouchGuard";
 import { ConfirmHost } from "./components/ConfirmDialog";
 import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
+import { useShouldShowLogin } from "./lib/caps";
+import Login from "./views/Login";
 import ConnectView from "./views/ConnectView";
 import CaptureView from "./views/CaptureView";
 import FocusView from "./views/FocusView";
@@ -121,6 +123,11 @@ export default function App() {
   const runBanner = useStore((s) => s.runBanner);
   const dismissRunBanner = useStore((s) => s.dismissRunBanner);
 
+  // Login gate (W2.6). True ONLY when a login method is enabled AND the caller is
+  // unauthenticated (or a first admin still needs creating). When no method is
+  // enabled this is ALWAYS false, so the open LAN UI is byte-for-byte unchanged.
+  const showLogin = useShouldShowLogin();
+
   // Hold a screen wake lock while a sequence is running OR monitorAwake is on —
   // NOT while locked (touch §8.3, R13). Reads its own narrow selectors.
   useMonitorWakeLock();
@@ -166,6 +173,25 @@ export default function App() {
   // the store's guarded rising-edge logic (monitor §3.2) — the banner is the
   // never-forced, always-dismissible affordance (resolves A3/B6).
   const showRunBanner = !!runBanner?.active && view !== "monitor";
+
+  // Auth gate (W2.6): when a method is enabled and the caller is unauthenticated,
+  // the whole app is replaced by the full-screen Login. The WS effect above still
+  // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
+  // and the gate dissolves the moment a session is minted — no reload. Toasts +
+  // the confirm host stay mounted so login errors and dialogs still surface.
+  if (showLogin) {
+    return (
+      <div className="h-full">
+        <div className="dim-content h-full">
+          <Login />
+        </div>
+        <div className="overlay-top">
+          <Toasts />
+        </div>
+        <ConfirmHost />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full">

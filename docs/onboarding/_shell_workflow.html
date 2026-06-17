@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck — A Night, Step by Step</title>
+<meta name="description" content="The order of operations an astrophotographer runs on an average night, and what AstroDeck does at each step — for developers new to the domain.">
+
+<!-- Same brand family as the primer: Fraunces (display) + Newsreader (body) + IBM Plex Mono (data/labels) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN SYSTEM — tokens (same brand language as the primer)
+     The whole document inherits from here. Authors reference
+     these with var(--name) and invent nothing global.
+     ============================================================ */
+  :root {
+    /* --- color: deep-space canvas, warm amber lamp --- */
+    --c-bg:          #0a0d16;   /* near-black, faint blue — the night */
+    --c-bg-raised:   #11151f;   /* cards, panels, topic blocks */
+    --c-bg-sunk:     #070910;   /* wells, code, fact insets */
+    --c-ink:         #ece7df;   /* primary text — warm paper white */
+    --c-ink-soft:    #b3ada3;   /* secondary text */
+    --c-ink-faint:   #6d6a64;   /* hairline decoration, the quiet non-text stuff */
+    --c-caption:     #8a857c;   /* faint TEXT meant to be read — AA on bg */
+    --c-line:        #232838;   /* hairlines and borders */
+    --c-accent:      #e8a849;   /* amber — THE accent, one moment per block */
+    --c-accent-soft: #f0c483;   /* lighter amber for hovers / glints */
+    --c-accent-deep: #b8791f;   /* pressed / underlines */
+    --c-cool:        #6f9bd8;   /* cool counter-accent (sky, links), sparingly */
+    --c-good:        #74c69d;   /* "this is fine" green, rarely needed */
+    --c-warn:        #d98b6a;   /* warm "what breaks" rust, used on risk lines */
+
+    /* --- type --- */
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body:    "Newsreader", Georgia, serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* a confident modular scale (~1.25) */
+    --t-xs:   0.78rem;
+    --t-sm:   0.92rem;
+    --t-base: 1.05rem;     /* slightly tighter than the primer — this is a reference, not an essay */
+    --t-lg:   1.32rem;
+    --t-xl:   1.75rem;
+    --t-2xl:  2.3rem;
+    --t-3xl:  3rem;
+    --t-4xl:  clamp(2.6rem, 6vw, 4.5rem);
+
+    --leading-tight: 1.12;
+    --leading-snug:  1.3;
+    --leading-body:  1.55;
+
+    /* --- space: an 8px-ish rhythm, trimmed for a compact card feel --- */
+    --s-1: 0.5rem;
+    --s-2: 1rem;
+    --s-3: 1.5rem;
+    --s-4: 2rem;
+    --s-5: 3rem;
+    --s-6: 4.5rem;
+    --s-7: 6.5rem;
+    --s-8: 9rem;
+
+    /* --- layout --- */
+    --measure:      40rem;    /* reading width inside a block */
+    --measure-wide: 64rem;    /* the reference grid / wide figures */
+    --gutter:       clamp(1.1rem, 4vw, 3rem);
+
+    /* --- depth + edges --- */
+    --radius:    14px;
+    --radius-sm: 9px;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.75);
+    --ring:      0 0 0 1px var(--c-line);
+
+    /* --- motion --- */
+    --ease:      cubic-bezier(0.22, 1, 0.36, 1);   /* gentle, overshoot-free */
+    --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur:       0.6s;
+    --dur-fast:  0.3s;
+  }
+
+  /* ============================================================
+     RESET + GLOBAL ELEMENTS
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: var(--font-body);
+    font-size: var(--t-base);
+    line-height: var(--leading-body);
+    font-weight: 400;
+    letter-spacing: 0.002em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* faint star-dust gradient so the dark never reads as flat #000 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 800px at 82% -10%, rgba(232,168,73,0.07), transparent 60%),
+      radial-gradient(900px 700px at 6% 14%, rgba(111,155,216,0.05), transparent 55%),
+      radial-gradient(1100px 900px at 50% 118%, rgba(111,155,216,0.045), transparent 60%);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.015em;
+    margin: 0 0 var(--s-2);
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--t-4xl); font-weight: 500; }
+  h2 { font-size: var(--t-2xl); }
+  h3 { font-size: var(--t-lg); }
+  h4 { font-size: var(--t-base); }
+
+  p { margin: 0 0 var(--s-2); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--c-cool);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-cool) 35%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  a:hover { color: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  strong, b { font-weight: 600; color: var(--c-ink); }
+  em { font-style: italic; }
+
+  code, kbd, samp {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+    color: var(--c-accent-soft);
+  }
+
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--c-line);
+    margin: var(--s-4) 0;
+  }
+
+  ::selection { background: var(--c-accent); color: #1a1206; }
+
+  img, svg, canvas { max-width: 100%; display: block; }
+
+  /* ============================================================
+     LAYOUT — the reference card
+     Each topic is a .precis-topic block: compact, lifted off the
+     page, with a hairline edge. Blocks sit on a wide centered
+     column and breathe with efficient whitespace.
+     ============================================================ */
+  main { display: block; }
+
+  /* The outer band for one topic. Holds vertical rhythm + the wide column. */
+  .precis-topic {
+    position: relative;
+    padding: var(--s-5) var(--gutter);
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    scroll-margin-top: var(--s-4);
+  }
+
+  /* The lifted card the topic actually lives in. */
+  .precis-card {
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--c-bg-raised) 92%, var(--c-accent) 2%),
+      var(--c-bg-raised));
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: clamp(1.4rem, 3.5vw, var(--s-5));
+    overflow: clip;
+  }
+
+  /* ---- the masthead: one card-height intro before topic 01 ---- */
+  .precis-masthead {
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    padding: var(--s-6) var(--gutter) var(--s-3);
+  }
+  .precis-masthead .precis-eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin: 0 0 var(--s-2);
+  }
+  .precis-masthead h1 { max-width: 16ch; margin-bottom: var(--s-3); }
+  .precis-masthead .precis-standfirst {
+    font-family: var(--font-body);
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin: 0;
+  }
+  /* the "how to read a card" legend: def -> facts -> BREAKS -> UI */
+  .precis-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em 0.8em;
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-faint);
+  }
+  .precis-legend b { color: var(--c-ink-soft); font-weight: 500; }
+  .precis-legend .precis-legend-arrow { color: var(--c-ink-faint); opacity: 0.7; }
+  .precis-legend .precis-legend-breaks { color: var(--c-warn); }
+  .precis-legend .precis-legend-ui { color: var(--c-accent); }
+
+  /* ---- shared topic furniture ---- */
+
+  /* mono label above a topic title */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: var(--s-1);
+    display: flex;
+    align-items: baseline;
+    gap: 0.7em;
+  }
+  /* optional running number in the kicker (e.g. "03 / Polar Alignment") */
+  .kicker .num { color: var(--c-ink-faint); }
+
+  /* the crisp one-line definition under the title */
+  .def {
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin-bottom: var(--s-3);
+  }
+  .def b, .def strong { color: var(--c-ink); font-weight: 500; }
+
+  .caption {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+
+  /* ---- the labeled-facts list: the workhorse of a reference card ---- */
+  /* A definition list rendered as a tidy two-column "label : value" grid. */
+  .facts {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: 0.55rem var(--s-3);
+    margin: 0 0 var(--s-3);
+    font-size: var(--t-base);
+  }
+  .facts dt {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    line-height: var(--leading-body);
+    padding-top: 0.15em;
+  }
+  .facts dd {
+    margin: 0;
+    color: var(--c-ink);
+    line-height: var(--leading-snug);
+  }
+  @media (max-width: 540px) {
+    .facts { grid-template-columns: 1fr; gap: 0.2rem var(--s-2); }
+    .facts dt { padding-top: var(--s-1); }
+    .facts dt:first-of-type { padding-top: 0; }
+  }
+
+  /* a single key number you want to pop (e.g. a focal ratio, an exposure) */
+  .stat {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    color: var(--c-accent-soft);
+    white-space: nowrap;
+  }
+
+  /* the one-line "why it matters / what breaks if wrong" */
+  .stakes {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .stakes::before {
+    content: "BREAKS";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-warn);
+    line-height: 1.5;
+  }
+  .stakes b, .stakes strong { color: var(--c-ink); font-weight: 500; }
+
+  /* the AstroDeck UI hook — a small amber-flagged footer line */
+  .hook {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .hook::before {
+    content: "UI";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-accent);
+    line-height: 1.5;
+  }
+  .hook b, .hook strong { color: var(--c-ink); font-weight: 500; }
+  .hook code { color: var(--c-accent-soft); }
+
+  /* a dry one-line aside, set apart, never load-bearing */
+  .aside {
+    margin-top: var(--s-2);
+    font-style: italic;
+    color: var(--c-caption);
+    font-size: var(--t-sm);
+  }
+
+  /* opt-out widths for a figure that needs room inside a card */
+  .precis-card > .bleed-wide { margin-inline: calc(-1 * clamp(1.4rem, 3.5vw, var(--s-5))); }
+
+  @media (max-width: 640px) {
+    .precis-topic { padding: var(--s-4) var(--gutter); }
+  }
+
+  /* ============================================================
+     .reveal — shared scroll-in utility (REPLAYABLE here)
+     Unlike the primer, the precis observer adds .is-in on enter
+     and REMOVES it on exit, so reveals replay every time. The
+     transition handles both directions on its own.
+     ============================================================ */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+    will-change: opacity, transform;
+  }
+  .precis-topic.in .reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ============================================================
+     CHROME — scroll-progress bar + section nav
+     ============================================================ */
+  .progress-track {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent), var(--c-accent-soft));
+    box-shadow: 0 0 12px rgba(232,168,73,0.5);
+  }
+
+  /* a compact labeled section nav rail (right side, desktop) */
+  .topic-nav {
+    position: fixed;
+    top: 50%;
+    right: clamp(0.6rem, 1.6vw, 1.4rem);
+    transform: translateY(-50%);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.4rem;
+    max-height: 80vh;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+  .topic-nav::-webkit-scrollbar { display: none; }
+  .topic-nav a {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.2rem 0.35rem;
+    border: 0;
+    color: var(--c-ink-faint);
+    border-radius: 6px;
+    transition: color var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a .tick {
+    width: 16px;
+    height: 1px;
+    background: currentColor;
+    transition: width var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease-soft);
+    flex: none;
+  }
+  .topic-nav a .tn-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width var(--dur) var(--ease), opacity var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a:hover { color: var(--c-ink-soft); }
+  .topic-nav a:hover .tick { width: 22px; }
+  .topic-nav a:hover .tn-label,
+  .topic-nav a:focus-visible .tn-label { max-width: 16rem; opacity: 1; }
+  .topic-nav a.is-active { color: var(--c-accent); }
+  .topic-nav a.is-active .tick { width: 28px; background: var(--c-accent); }
+  .topic-nav a.is-active .tn-label { max-width: 16rem; opacity: 1; }
+  @media (max-width: 860px) {
+    .topic-nav { display: none; }
+  }
+
+  /* visible focus for keyboard users, everywhere */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* skip link */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--c-accent);
+    color: #1a1206;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============================================================
+     REDUCED MOTION — honor the system preference fully.
+     CSS transitions are zeroed; reveals are simply present.
+     The JS framework paints final state and skips replay (below).
+     ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+  <!--INJECT:STYLES-->
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#precis">Skip to content</a>
+
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <nav class="topic-nav" id="topicNav" aria-label="Topic navigation"></nav>
+
+  <!-- ================================================================
+       ASTRODECK PRECIS — animation framework (defined FIRST)
+       This runs before the injected section scripts so that any
+       AstroAnim.register(...) call inside a section finds the API
+       already present. _start() is invoked later, after the sections
+       and their register() calls have all executed.
+
+       The earlier docs fired each animation once, the instant a
+       section's top edge appeared, and never replayed. This fixes
+       both faults: a topic counts as "in" only when it is properly
+       on screen (its center near the viewport center), and it RE-ARMS
+       on exit so every animation replays on every re-entry.
+       ================================================================ -->
+  <script>
+  window.AstroAnim = (function () {
+    "use strict";
+
+    var reduceMotion = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---- JS animation registry --------------------------------
+       Authors register an element with { play, reset } callbacks.
+       The observer calls play() when the element's topic enters
+       and reset() when it leaves. Both are optional.
+       For reduced motion we call play() once (to paint the final
+       frame) and never reset — no motion, no replay loop.        */
+    var registry = new Map();    // el -> { play, reset, playing }
+
+    function register(el, handlers) {
+      if (!el) return;
+      handlers = handlers || {};
+      registry.set(el, {
+        play: typeof handlers.play === "function" ? handlers.play : null,
+        reset: typeof handlers.reset === "function" ? handlers.reset : null,
+        playing: false
+      });
+      if (reduceMotion) {
+        // Paint the final state immediately; never animate, never reset.
+        if (registry.get(el).play) {
+          try { registry.get(el).play(); } catch (e) {}
+        }
+        registry.get(el).playing = true;
+      }
+    }
+
+    function unregister(el) { registry.delete(el); }
+
+    // Fire play/reset for every registered element inside a topic.
+    function driveTopic(topic, entering) {
+      if (reduceMotion) return; // handled once at register time
+      registry.forEach(function (h, el) {
+        if (!topic.contains(el)) return;
+        if (entering && !h.playing) {
+          h.playing = true;
+          if (h.play) { try { h.play(); } catch (e) {} }
+        } else if (!entering && h.playing) {
+          h.playing = false;
+          if (h.reset) { try { h.reset(); } catch (e) {} }
+        }
+      });
+    }
+
+    /* ---- CSS path: restart .in-gated animations ---------------
+       Adding .in lets `.precis-topic.in .thing { animation: ... }`
+       run. Removing .in resets it. To make a CSS animation REPLAY
+       on re-entry we force a reflow between remove and add so the
+       browser actually restarts it rather than treating it as a
+       no-op.                                                       */
+    function setTopicIn(topic, on) {
+      if (on) {
+        topic.classList.add("in");
+      } else {
+        topic.classList.remove("in");
+        // Force reflow so the next add() restarts CSS animations.
+        void topic.offsetWidth;
+      }
+    }
+
+    /* ---- the shared, threshold-gated, RE-ARMING observer -------
+       A topic is "in" only when it is PROPERLY on screen. Two ways
+       to qualify: ratio >= 0.5 (a short card sitting mostly on
+       screen) OR its center band straddling the viewport center (a
+       tall card that can never reach half-visible). The rootMargin
+       trims the top and bottom 15% so the trigger sits at center,
+       not the top edge. On exit we remove .in and call reset() —
+       the section is re-armed and replays the next time it returns. */
+    var topics = [];
+
+    function observe(topic) {
+      if (topics.indexOf(topic) === -1) topics.push(topic);
+    }
+
+    function start() {
+      topics = Array.prototype.slice.call(
+        document.querySelectorAll("#precis .precis-topic")
+      );
+
+      if (reduceMotion || !("IntersectionObserver" in window)) {
+        // No motion (or no observer): everything is simply present.
+        topics.forEach(function (t) { t.classList.add("in"); });
+        return;
+      }
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          var topic = entry.target;
+          // A tall card (h2 + def + facts + 16:9 figure + caption + stakes
+          // + hook + aside) can exceed the viewport, so it never reaches
+          // intersectionRatio >= 0.5 — the old gate was unreachable and the
+          // card never played. Treat a topic as "in" when its CENTER band
+          // straddles the viewport center: top above 60% AND bottom below
+          // 40% of the viewport height. The ratio gate still catches the
+          // short cards that fit comfortably on screen.
+          var r = entry.boundingClientRect;
+          var vh = window.innerHeight;
+          var centerInView = r.top < vh * 0.6 && r.bottom > vh * 0.4;
+          var inView = entry.isIntersecting &&
+            (entry.intersectionRatio >= 0.5 || centerInView);
+          var already = topic.classList.contains("in");
+          if (inView && !already) {
+            setTopicIn(topic, true);     // CSS path: replay
+            driveTopic(topic, true);     // JS path: play()
+          } else if (!inView && already) {
+            setTopicIn(topic, false);    // CSS path: reset + reflow
+            driveTopic(topic, false);    // JS path: reset()
+          }
+        });
+      }, {
+        root: null,
+        // trim top + bottom 15% so the trigger band sits at center
+        rootMargin: "-15% 0px -15% 0px",
+        // multi-stop so the callback fires across the whole scroll, letting
+        // the center-band test re-evaluate as a tall card passes through
+        threshold: [0, 0.25, 0.5, 0.75, 1]
+      });
+
+      topics.forEach(function (t) { io.observe(t); });
+    }
+
+    return {
+      register: register,
+      unregister: unregister,
+      observe: observe,
+      _start: start,
+      reduceMotion: reduceMotion
+    };
+  })();
+  </script>
+
+  <header class="precis-masthead">
+    <p class="precis-eyebrow">AstroDeck · Onboarding</p>
+    <h1>A night, step by step</h1>
+    <p class="precis-standfirst">You write the software that runs the telescope. You have
+      never run one. This is the night an astrophotographer actually has — ten steps
+      in the order they happen — and what AstroDeck is doing at each. Scroll; the diagrams
+      replay as you go.</p>
+    <p class="precis-legend" aria-label="How to read a card">
+      <span>Each step</span>
+      <b>does</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b>facts</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-breaks">BREAKS</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-ui">UI</b>
+      <span>— what you do, the numbers that matter, what goes wrong if you skip it, and where it lives in AstroDeck.</span>
+    </p>
+  </header>
+
+  <main id="precis">
+    <!--INJECT:SECTIONS-->
+  </main>
+
+  <!--INJECT:SCRIPTS-->
+
+  <!-- ================================================================
+       CHROME + kickoff — runs AFTER the sections and their register()
+       calls, so the registry is fully populated before _start().
+       ================================================================ -->
+  <script>
+  /* ---- progress bar + topic nav (independent of the framework) ---- */
+  (function () {
+    "use strict";
+
+    /* ---------- scroll progress bar ---------------------------- */
+    var fill = document.getElementById("progressFill");
+    var ticking = false;
+    function updateProgress() {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - doc.clientHeight;
+      var pct = scrollable > 0 ? (doc.scrollTop || document.body.scrollTop) / scrollable : 0;
+      fill.style.width = (Math.max(0, Math.min(1, pct)) * 100).toFixed(2) + "%";
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) { window.requestAnimationFrame(updateProgress); ticking = true; }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    updateProgress();
+
+    /* ---------- topic nav, built from the topic blocks --------- */
+    var nav = document.getElementById("topicNav");
+    var topics = Array.prototype.slice.call(
+      document.querySelectorAll("#precis .precis-topic[id]")
+    );
+    var linkFor = {};
+    topics.forEach(function (t) {
+      var a = document.createElement("a");
+      a.href = "#" + t.id;
+      var label = t.getAttribute("data-nav") || t.id;
+      a.setAttribute("aria-label", "Go to topic: " + label);
+      var tick = document.createElement("span");
+      tick.className = "tick";
+      tick.setAttribute("aria-hidden", "true");
+      var txt = document.createElement("span");
+      txt.className = "tn-label";
+      txt.textContent = label;
+      a.appendChild(tick);
+      a.appendChild(txt);
+      nav.appendChild(a);
+      linkFor[t.id] = a;
+    });
+
+    if ("IntersectionObserver" in window && topics.length) {
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            topics.forEach(function (t) {
+              if (linkFor[t.id]) linkFor[t.id].classList.remove("is-active");
+            });
+            if (linkFor[entry.target.id]) linkFor[entry.target.id].classList.add("is-active");
+          }
+        });
+      }, { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+      topics.forEach(function (t) { navObserver.observe(t); });
+    }
+  })();
+
+  /* Kick off the animation framework after sections + their
+     register() calls have run (their scripts are injected above
+     this point, so the registry is already populated). */
+  window.AstroAnim._start();
+  </script>
+</body>
+</html>

@@ -1,0 +1,211 @@
+<!--STYLE-->
+.tppa-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.tppa-arc-panel,
+.tppa-reticle-panel {
+  position: relative;
+}
+.tppa-arc-panel {
+  border-right: 1px solid var(--c-line);
+}
+.tppa-star-bg {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+  opacity: .5;
+}
+/* faint RA arc the three points sit on */
+.tppa-arc {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+  border: 1px dashed var(--c-line);
+  border-radius: 50%;
+  clip-path: polygon(0 0, 100% 0, 100% 60%, 0 60%);
+  opacity: .7;
+}
+.tppa-pt {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--c-ink-soft);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 6px 1px var(--c-ink-faint);
+}
+.tppa-pt-1 { top: 30%; left: 22%; }
+.tppa-pt-2 { top: 16%; left: 50%; }
+.tppa-pt-3 { top: 30%; left: 78%; }
+.tppa-pt-3 {
+  background: var(--c-accent);
+  box-shadow: 0 0 10px 2px var(--c-accent-soft);
+}
+
+/* reticle: concentric bullseye + crosshair */
+.tppa-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 58%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+}
+.tppa-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  border: 1px solid var(--c-line);
+  transform: translate(-50%, -50%);
+}
+.tppa-ring-1 { width: 100%; height: 100%; }
+.tppa-ring-2 { width: 62%; height: 62%; }
+.tppa-ring-3 { width: 26%; height: 26%; border-color: var(--c-ink-faint); }
+.tppa-cross::before,
+.tppa-cross::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--c-line);
+}
+.tppa-cross::before {
+  width: 100%;
+  height: 1px;
+  transform: translate(-50%, -50%);
+}
+.tppa-cross::after {
+  height: 100%;
+  width: 1px;
+  transform: translate(-50%, -50%);
+}
+/* resting / final state: dot near centre, low error */
+.tppa-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 10px 2px var(--c-accent-soft);
+  transform: translate(calc(-50% + 6px), calc(-50% - 4px));
+}
+.tppa-readout {
+  position: absolute;
+  bottom: var(--s-2);
+  right: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--c-accent);
+  letter-spacing: .04em;
+}
+
+@keyframes tppa-light {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.4); }
+  60% { opacity: 1; transform: translate(-50%, -50%) scale(1.25); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes tppa-reticle-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes tppa-converge {
+  0% { transform: translate(calc(-50% + 78px), calc(-50% - 52px)); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: translate(calc(-50% + 6px), calc(-50% - 4px)); opacity: 1; }
+}
+@keyframes tppa-count {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+.precis-topic.in .tppa-pt {
+  opacity: 0;
+  animation: tppa-light .5s var(--ease) both;
+  animation-delay: calc(.2s + var(--tppa-i) * .45s);
+}
+.precis-topic.in .tppa-reticle {
+  opacity: 0;
+  animation: tppa-reticle-in .5s var(--ease) both;
+  animation-delay: 1.7s;
+}
+.precis-topic.in .tppa-dot {
+  animation: tppa-converge 1.6s var(--ease-soft) both;
+  animation-delay: 1.9s;
+}
+.precis-topic.in .tppa-readout {
+  opacity: 0;
+  animation: tppa-count 1.6s var(--ease) both;
+  animation-delay: 1.9s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .tppa-pt,
+  .precis-topic.in .tppa-reticle,
+  .precis-topic.in .tppa-dot,
+  .precis-topic.in .tppa-readout {
+    animation: none;
+    opacity: 1;
+  }
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="tppa" data-nav="Polar Align">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">06</span> Polar Alignment</p>
+    <h2 class="reveal">Three-point polar alignment</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Refine the mount-axis-to-pole error by plate-solving three points along a slow rotation in RA — no need to actually see the pole star.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Why</dt>
+      <dd>Tracking spins one axis; if that axis isn't on the true pole, the field slowly rotates and stars trail.</dd>
+      <dt>Three points</dt>
+      <dd>Solving the sky at three RA positions fixes the rotation axis relative to the true celestial pole.</dd>
+      <dt>No Polaris needed</dt>
+      <dd>It's computed from any solvable star field, not a sight line to Polaris.</dd>
+      <dt>Result</dt>
+      <dd>Azimuth and altitude error in arcminutes; you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
+    </dl>
+    <figure class="tppa-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="tppa-stage">
+        <div class="tppa-arc-panel">
+          <span class="tppa-star-bg" style="top:20%; left:30%"></span>
+          <span class="tppa-star-bg" style="top:46%; left:64%"></span>
+          <span class="tppa-star-bg" style="top:68%; left:24%"></span>
+          <span class="tppa-star-bg" style="top:74%; left:70%"></span>
+          <span class="tppa-star-bg" style="top:54%; left:44%"></span>
+          <div class="tppa-arc"></div>
+          <div class="tppa-pt tppa-pt-1" style="--tppa-i:0"></div>
+          <div class="tppa-pt tppa-pt-2" style="--tppa-i:1"></div>
+          <div class="tppa-pt tppa-pt-3" style="--tppa-i:2"></div>
+        </div>
+        <div class="tppa-reticle-panel">
+          <div class="tppa-reticle tppa-cross">
+            <div class="tppa-ring tppa-ring-1"></div>
+            <div class="tppa-ring tppa-ring-2"></div>
+            <div class="tppa-ring tppa-ring-3"></div>
+          </div>
+          <div class="tppa-dot"></div>
+          <div class="tppa-readout">0.4'</div>
+        </div>
+      </div>
+    </figure>
+    <p class="caption">Three solved points define the spin axis; the reticle shows how far it misses the pole.</p>
+    <p class="stakes reveal">Skip it and long exposures show field rotation — stars trail in little arcs even with guiding running perfectly.</p>
+    <p class="hook reveal">AstroDeck drives a TPPA routine (via NINA) and publishes one <code>polar</code> reading — az / alt / total error in arcmin — to a live reticle, with pause/resume.</p>
+    <p class="aside">The old way needed a clear sightline to Polaris; plate-solving doesn't — good news for everyone south of the equator, behind a tree, or otherwise invited to check their privilege.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+<!--/SCRIPT-->

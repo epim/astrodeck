@@ -16,26 +16,42 @@ import { Segmented } from "../Segmented";
 import { Panel } from "../ui";
 import { Icon } from "../icons";
 import { useBackendLinks, useBootConnectFailed } from "../../store";
-import { useCanConfigBackend, useIsViewer } from "../../lib/caps";
+import { useCanConfigBackend, useCanAdminUsers, useIsViewer } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import BackendPicker from "./BackendPicker";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
+import UsersPanel from "./UsersPanel";
+import AuthMethodPanel from "./AuthMethodPanel";
 
-type Tab = "connect" | "profiles" | "account";
-
-const TABS: { value: Tab; label: string }[] = [
-  { value: "connect", label: "Connect" },
-  { value: "profiles", label: "Profiles" },
-  { value: "account", label: "Account" },
-];
+type Tab = "connect" | "profiles" | "account" | "users" | "auth";
 
 export default function SettingsView(): JSX.Element {
   const [tab, setTab] = useState<Tab>("connect");
   const links = useBackendLinks();
   const bootFailed = useBootConnectFailed();
   const canConfig = useCanConfigBackend();
+  const canAdminUsers = useCanAdminUsers();
   const isViewer = useIsViewer();
+
+  // Admin-only tabs (W2.6) appear ONLY for the `admin.users` capability. Under the
+  // open `none`/no-method default every caller is admin, so an offline LAN admin
+  // still sees them; a viewer/operator never does.
+  const TABS: { value: Tab; label: string }[] = [
+    { value: "connect", label: "Connect" },
+    { value: "profiles", label: "Profiles" },
+    { value: "account", label: "Account" },
+    ...(canAdminUsers
+      ? ([
+          { value: "users", label: "Users" },
+          { value: "auth", label: "Auth" },
+        ] as { value: Tab; label: string }[])
+      : []),
+  ];
+
+  // If the cap is lost while sitting on an admin tab (e.g. signed out), fall back.
+  const activeTab: Tab =
+    (tab === "users" || tab === "auth") && !canAdminUsers ? "connect" : tab;
 
   return (
     <div className="flex flex-col gap-4 w-full">
@@ -46,7 +62,7 @@ export default function SettingsView(): JSX.Element {
         </h1>
         <Segmented
           options={TABS}
-          value={tab}
+          value={activeTab}
           onChange={(t) => setTab(t)}
           ariaLabel="Settings section"
         />
@@ -64,8 +80,9 @@ export default function SettingsView(): JSX.Element {
         </div>
       )}
 
-      {/* read-only banner for viewers (W2.5: passive copy, not 403-on-tap). */}
-      {!canConfig && (
+      {/* read-only banner for viewers (W2.5: passive copy, not 403-on-tap). Hidden
+          on the admin-only Users/Auth tabs (those are admin-gated already). */}
+      {!canConfig && activeTab !== "users" && activeTab !== "auth" && (
         <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs">
           <Icon name="lock" size={14} className="text-dim shrink-0" />
           <span className="text-dim">
@@ -77,10 +94,16 @@ export default function SettingsView(): JSX.Element {
       )}
 
       {/* ------------------------------------------------------------ ACCOUNT */}
-      {tab === "account" && <AccountPanel />}
+      {activeTab === "account" && <AccountPanel />}
+
+      {/* -------------------------------------------------------------- USERS */}
+      {activeTab === "users" && canAdminUsers && <UsersPanel />}
+
+      {/* --------------------------------------------------------------- AUTH */}
+      {activeTab === "auth" && canAdminUsers && <AuthMethodPanel />}
 
       {/* ------------------------------------------------------------ CONNECT */}
-      {tab === "connect" && (
+      {activeTab === "connect" && (
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="order-2 lg:order-1 min-w-0">
             {canConfig ? (
@@ -103,7 +126,7 @@ export default function SettingsView(): JSX.Element {
       )}
 
       {/* ----------------------------------------------------------- PROFILES */}
-      {tab === "profiles" && (
+      {activeTab === "profiles" && (
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="order-2 lg:order-1 min-w-0">
             {canConfig ? (

@@ -8,12 +8,16 @@
 
 import { api } from "../api";
 import type {
+  AuthMethods,
+  AuthState,
   BackendInfo,
   ConnectRigResult,
   Principal,
+  PrincipalRole,
   Profile,
   ProfileRow,
   RigSpec,
+  User,
 } from "../types";
 
 // ----------------------------------------------------------------- backends
@@ -98,3 +102,74 @@ export const getMe = (): Promise<Principal> => api.get<Principal>("/api/me");
  *  Re-fetch /api/me after this. Sign-IN is a browser redirect, NOT a fetch
  *  (window.location.href = "/auth/login"), so it is intentionally not here. */
 export const logout = (): Promise<unknown> => api.post<unknown>("/auth/logout");
+
+// ------------------------------------------------------ local auth + setup
+/** GET /api/auth/methods → the UNAUTHENTICATED "what login UI do I show?" signal
+ *  (open, leaks no secret). The Login screen reads this before any session
+ *  exists. `methods == []` ⇒ no login at all (open LAN). */
+export const getAuthMethods = (): Promise<AuthMethods> =>
+  api.get<AuthMethods>("/api/auth/methods");
+
+/** POST /auth/local {username,password} → verify + mint the ad_session cookie.
+ *  200 {role,email} on success; generic 401 on any failure (no enumeration
+ *  oracle); 404 when local auth is not enabled. After this, re-fetch /api/me. */
+export const localLogin = (
+  username: string,
+  password: string,
+): Promise<{ role: PrincipalRole; email: string | null }> =>
+  api.post<{ role: PrincipalRole; email: string | null }>("/auth/local", {
+    username,
+    password,
+  });
+
+/** POST /auth/setup/local {username,password,email?} → FIRST-RUN create the first
+ *  admin (and log in). 409 once any user exists (auto-closed); 404 when local is
+ *  off / the first-run flag is off; 422 too-long password; 400 blank/dup. */
+export const setupLocalAdmin = (body: {
+  username: string;
+  password: string;
+  email?: string | null;
+}): Promise<User & { role: PrincipalRole }> =>
+  api.post<User & { role: PrincipalRole }>("/auth/setup/local", body);
+
+// ----------------------------------------------------- user management (admin)
+/** GET /api/users → {users:[to_public()]}. All user routes need admin.users. */
+export const listUsers = (): Promise<User[]> =>
+  api.get<{ users: User[] }>("/api/users").then((r) => r.users);
+
+/** POST /api/users → create a user (201). 409 dup username, 422 too-long pw,
+ *  400 unknown role. Returns to_public(). */
+export const createUser = (body: {
+  username: string;
+  password: string;
+  role: PrincipalRole;
+  email?: string | null;
+  enabled?: boolean;
+}): Promise<User> => api.post<User>("/api/users", body);
+
+/** PATCH /api/users/{id} → set role / enabled / username / email (only the
+ *  provided fields). 409 "last admin" or dup; 400 unknown role; 404 unknown. */
+export const patchUser = (
+  id: string,
+  patch: {
+    role?: PrincipalRole;
+    enabled?: boolean;
+    username?: string;
+    email?: string | null;
+  },
+): Promise<User> => api.patch<User>(`/api/users/${encodeURIComponent(id)}`, patch);
+
+/** POST /api/users/{id}/password → reset a password. 404 unknown, 422 too-long. */
+export const resetUserPassword = (id: string, password: string): Promise<User> =>
+  api.post<User>(`/api/users/${encodeURIComponent(id)}/password`, { password });
+
+/** DELETE /api/users/{id} → {ok:true}. 404 unknown, 409 last admin. */
+export const deleteUser = (id: string): Promise<{ ok: boolean }> =>
+  api.del<{ ok: boolean }>(`/api/users/${encodeURIComponent(id)}`);
+
+// --------------------------------------------------- auth-method config (admin)
+/** POST /api/auth/config → persist a new AuthConfig (admin.users-gated). Returns
+ *  the REDACTED auth block. We send a partial that the server merges/validates;
+ *  the toggle panel sends the full set of fields it owns. */
+export const setAuthConfig = (auth: Partial<AuthState> & Record<string, unknown>):
+  Promise<AuthState> => api.post<AuthState>("/api/auth/config", auth);

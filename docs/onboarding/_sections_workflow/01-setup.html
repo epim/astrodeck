@@ -1,0 +1,174 @@
+<!--STYLE-->
+.setup-fig {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-5);
+}
+.setup-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+}
+.setup-pane-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--c-ink-faint);
+}
+/* Bubble level vial */
+.setup-vial {
+  position: relative;
+  width: 78%;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--c-bg-raised);
+  border: 1px solid var(--c-line);
+  box-shadow: inset 0 1px 2px var(--c-bg-sunk);
+  overflow: hidden;
+}
+.setup-vial-marks {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 30%;
+}
+.setup-tick {
+  width: 1px;
+  height: 60%;
+  background: var(--c-line);
+}
+.setup-bubble {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border-radius: 50%;
+  background: var(--c-cool);
+  opacity: .85;
+  /* resting state: centered */
+  transform: translateX(0);
+}
+/* Compass dial */
+.setup-dial {
+  position: relative;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: var(--c-bg-raised);
+  border: 1px solid var(--c-line);
+  box-shadow: inset 0 0 0 6px var(--c-bg-sunk);
+}
+.setup-n {
+  position: absolute;
+  top: var(--s-1);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--c-accent);
+}
+.setup-needle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 44%;
+  background: var(--c-ink-soft);
+  transform-origin: bottom center;
+  transform: translate(-50%, -100%) rotate(0deg);
+  border-radius: 2px;
+}
+.setup-needle::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid var(--c-warn);
+}
+.setup-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+}
+
+@keyframes setup-settle {
+  0%   { transform: translateX(-150%); }
+  70%  { transform: translateX(18%); }
+  100% { transform: translateX(0); }
+}
+@keyframes setup-swing {
+  0%   { transform: translate(-50%, -100%) rotate(118deg); }
+  75%  { transform: translate(-50%, -100%) rotate(-9deg); }
+  100% { transform: translate(-50%, -100%) rotate(0deg); }
+}
+.precis-topic.in .setup-bubble {
+  animation: setup-settle var(--dur) var(--ease-soft) both;
+}
+.precis-topic.in .setup-needle {
+  animation: setup-swing var(--dur) var(--ease-soft) both;
+}
+@media (max-width: 540px) {
+  .setup-fig { grid-template-columns: 1fr; gap: var(--s-4); }
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="setup" data-nav="Set Up + Level">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">01</span> Setting Up</p>
+    <h2 class="reveal">Level it, point it north</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Plant the tripod on firm ground, level it, and aim the mount's rotation axis at true (geographic) north.</p>
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Level</dt><dd>A bubble level on the mount head; off-level skews everything downstream.</dd>
+      <dt>North</dt><dd>TRUE north, not magnetic — they differ by the local magnetic declination, up to <span class="stat">tens of degrees</span>.</dd>
+      <dt>Latitude</dt><dd>Set the altitude wedge to your site latitude so the axis tilts up toward the pole.</dd>
+      <dt>Why north</dt><dd>An equatorial mount tracks by spinning <span class="stat">one</span> axis; that axis must point at the celestial pole, which sits due north in the northern hemisphere.</dd>
+    </dl>
+    <figure class="setup-fig reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="setup-pane">
+        <div class="setup-vial">
+          <div class="setup-vial-marks">
+            <span class="setup-tick"></span>
+            <span class="setup-tick"></span>
+          </div>
+          <div class="setup-bubble"></div>
+        </div>
+        <span class="setup-pane-label">Level</span>
+      </div>
+      <div class="setup-pane">
+        <div class="setup-dial">
+          <span class="setup-n">N</span>
+          <span class="setup-needle"></span>
+          <span class="setup-hub"></span>
+        </div>
+        <span class="setup-pane-label">North</span>
+      </div>
+    </figure>
+    <p class="caption">Coarse setup by hand; the software refines it later.</p>
+    <p class="stakes reveal">A tilted or mis-aimed mount makes polar alignment and every GoTo start from a bad reference — you fight it the rest of the night.</p>
+    <p class="hook reveal">AstroDeck assumes a roughly polar-aligned mount and reads your site latitude/longitude from config (<code>site</code>) to compute where everything is in the sky.</p>
+    <p class="aside">This is the one step no API call can do for you.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+<!--/SCRIPT-->

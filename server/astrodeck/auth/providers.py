@@ -141,6 +141,82 @@ class SessionCookieProvider:
                          caps=caps, jti=jti if isinstance(jti, str) else None)
 
 
+class LocalAuthProvider:
+    """Local username+password method. Resolves an already-minted session cookie.
+
+    Local LOGIN (``POST /auth/local``) verifies a username/password against the
+    ``UserStore`` and mints the SAME ``ad_session`` cookie every other method
+    uses (via ``sign_session``); there is NO separate local resolution path. So
+    on a normal request this provider simply delegates to ``SessionCookieProvider``
+    -- a local-minted and a google-minted cookie resolve identically. Fail-closed:
+    no/invalid/revoked cookie -> None (never admin).
+
+    The username/password verification + cookie minting live in the local login
+    route (``auth/users_routes.py``); this provider only carries the per-request
+    *resolution* under the ``MultiAuthProvider`` composition.
+    """
+
+    name = "local"
+
+    def __init__(self, *, revoked_jti: frozenset[str] | None = None):
+        self._session = SessionCookieProvider(revoked_jti=revoked_jti)
+
+    async def resolve(self, request: "Request") -> Principal | None:
+        return await self._session.resolve(request)
+
+
+class MultiAuthProvider:
+    """Compose the local + google methods into ONE resolution seam.
+
+    The pinned chain (first non-None wins, else fail-closed):
+      1. break-glass ``admin_token``/``ASTRODECK_TOKEN`` -> admin (ALWAYS, method
+         independent) -- only present when a token is configured;
+      2. the ``ad_session`` cookie via ``SessionCookieProvider`` (resolves BOTH
+         local- and google-minted cookies, since both call ``sign_session``);
+      3. none -> None (401) when at least one method is enabled.
+
+    ``name`` is ``"local"`` / ``"google"`` / ``"local+google"`` (the enabled
+    methods joined) -- NEVER ``"none"``, so the W3 ``remote && name=="none"``
+    hard-deny interlock keeps treating a multi-method server as a real (not
+    open-default) provider. When ``methods`` is empty the caller builds a
+    ``NoneAuthProvider`` instead, NOT this one.
+    """
+
+    def __init__(self, methods: list[str], *,
+                 admin_token: str = "",
+                 role_allowlist: dict[str, str] | None = None,
+                 default_role: str | None = None, hd: str = "",
+                 revoked_jti: frozenset[str] | None = None):
+        # Preserve a stable, deduped method order: local before google.
+        ordered = [m for m in ("local", "google") if m in (methods or [])]
+        self._methods = ordered
+        self.name = "+".join(ordered) if ordered else "multi"
+        self._revoked = frozenset(revoked_jti or ())
+        # Step 1: break-glass token (only if configured).
+        token = (admin_token or "").strip()
+        self._token_provider = TokenAdminProvider(token) if token else None
+        # Step 2: the shared session-cookie resolver (local + google cookies).
+        self._session = SessionCookieProvider(revoked_jti=self._revoked)
+        # Google metadata retained so the login route / allowlist mapping can
+        # read it back off the active provider (re-evaluated per request there).
+        self.role_allowlist = dict(role_allowlist or {})
+        self.default_role = default_role
+        self.hd = hd or ""
+
+    @property
+    def methods(self) -> list[str]:
+        return list(self._methods)
+
+    async def resolve(self, request: "Request") -> Principal | None:
+        # 1) break-glass token -> admin (always wins when present)
+        if self._token_provider is not None:
+            p = await self._token_provider.resolve(request)
+            if p is not None:
+                return p
+        # 2) signed session cookie (local- or google-minted)
+        return await self._session.resolve(request)
+
+
 class GoogleAuthProvider:
     """Google OIDC provider (W2.4 Stage C). SEAM pinned now, NOT built here.
 
