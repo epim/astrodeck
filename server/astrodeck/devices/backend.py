@@ -102,6 +102,15 @@ class BackendSession(Protocol):
         pick a guider (PHD2 / sim)."""
         ...
 
+    def guide_camera(self) -> object | None:
+        """The backend's dedicated guide-camera device, or None.
+
+        A non-ROLE pseudo-device (the sim exposes one; nina/native/phd2 default to
+        None). The orchestrator calls this on the CAMERA role's session and
+        surfaces the result as ``ConnectResult.guide_camera`` so the hub never
+        reaches the ``SimSession``-only property. SYNC by contract."""
+        ...
+
     def native_solver(self) -> object | None:
         """The backend's own plate solver (duck-typed; avoids a solve import
         cycle), or None to let the hub choose via ``solve.get_solver``."""
@@ -131,6 +140,11 @@ class Backend(Protocol):
     label: str
     roles: tuple[str, ...]
     discoverable: bool
+    #: Endpoint-less backend: the orchestrator's ``_group`` normalizes host/port
+    #: to None in the grouping key so all of this backend's roles coalesce into
+    #: ONE session regardless of stray addressing. True on ``SimBackend`` /
+    #: ``Phd2Backend`` (one shared SimRig / one local PHD2 socket); default False.
+    hostless: bool = False
 
     async def open(self, conn: "ConnSpec") -> BackendSession:
         """Open a live session for this backend (wraps the existing factory)."""

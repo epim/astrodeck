@@ -1,20 +1,27 @@
-"""Rig assembly from a ``RigSpec`` (Stage A).
+"""Connect a live rig from a ``RigSpec`` (Stage A).
 
 Turns a declarative ``RigSpec`` (primary backend + per-role overrides) into a
 live rig: a ``role -> device`` dict, the backend sessions that produced it, the
-chosen guider, an optional native solver source, and a ``role -> error`` map of
-roles that failed to come up.
+chosen guider, the dedicated guide camera, an optional solver source, and a
+per-role ``RoleResult`` covering EVERY role the rig requested.
 
 Design points:
-  - Each DISTINCT backend instance (keyed by backend name + host + port) is
-    opened exactly ONCE, so roles sharing a backend share one session (and thus
-    one underlying connection / shared state -- e.g. the whole sim rig).
-  - Assembly is graceful: a role that fails to open or hand out a device is
-    recorded in ``failures`` and SKIPPED, never raised. The rest of the rig
-    still comes up.
+  - Only the roles the ``RigSpec`` actually REQUESTS are worked (the primary
+    backend's fillable roles UNION the explicit overrides) -- NOT all of
+    ``ROLES``. So an unfillable role on a given rig never shows a red LED (W1.6);
+    a role that was never requested gets no ``RoleResult`` at all.
+  - Each DISTINCT backend ENDPOINT (keyed by the ``(backend, host, port)`` tuple)
+    is opened exactly ONCE, so roles sharing an endpoint share one session (and
+    thus one underlying connection / shared state -- e.g. the whole sim rig).
+    Hostless backends (sim, phd2-local) normalize host/port -> None so all their
+    roles coalesce into one session regardless of stray addressing.
+  - Connection is graceful: a role that fails to open or hand out a device is
+    recorded as a not-ok ``RoleResult`` and SKIPPED, never raised. The rest of
+    the rig still comes up. An unexpected raise tears down any sessions already
+    opened (no transport leak) before propagating.
   - Import-light: this module imports only ``backend`` (registry + specs). It
-    does NOT import ``hub`` or ``solve`` (no cycle). The native solver is
-    returned as a duck-typed object for the caller to use or ignore.
+    does NOT import ``hub`` or ``solve`` at module scope (no cycle). The native
+    solver fallback is reached via a deferred ``solve.get_solver`` import.
 """
 from __future__ import annotations
 
@@ -22,112 +29,268 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .backend import (
-    ROLES,
     BackendSession,
     ConnSpec,
     RigSpec,
     get_backend,
 )
 
+#: An endpoint grouping key: (backend name, host|None, port|None). Hostless
+#: backends normalize host/port to None so all their roles share one key.
+EndpointKey = tuple[str, "str | None", "int | None"]
+
 
 @dataclass
-class AssembledRig:
-    """The result of :func:`assemble`.
+class RoleResult:
+    """The tri-state outcome for ONE requested role.
 
-    ``rig``           : role -> connected device object (only roles that came up).
-    ``sessions``      : session-key -> the open ``BackendSession`` behind it.
-    ``guider``        : the guider-role session's ``native_guider()`` (or None).
-    ``solver_source`` : the camera-role session's ``native_solver()`` (or None ->
-                        caller falls back to ``solve.get_solver``).
-    ``failures``      : role -> error string for roles that failed (graceful).
+    ``attempted=False`` => never tried (unfillable / not requested) -- NOT a red
+    LED. ``attempted=True, ok=True`` => connected. ``attempted=True, ok=False``
+    => failed (carries ``error``). ``connect_profile`` emits exactly ONE per
+    REQUESTED role (W1.3/W1.6)."""
+
+    role: str
+    ok: bool = False
+    error: str | None = None
+    attempted: bool = False
+
+
+@dataclass
+class ConnectResult:
+    """The result of :func:`connect_profile`.
+
+    ``rig``          : role -> connected device object (only roles that came up).
+    ``sessions``     : ``(backend, host, port)`` tuple -> the open session behind it.
+    ``guider``       : the guider-role session's ``native_guider()`` (or None).
+    ``guide_camera`` : the camera-role session's ``guide_camera()`` (or None).
+    ``solver``       : the camera-role session's ``native_solver()`` (or None ->
+                       caller falls back to ``solve.get_solver``).
+    ``results``      : one ``RoleResult`` per REQUESTED role (tri-state for the
+                       W1.6 LED grid). The old ``failures`` dict is a DERIVED
+                       back-compat alias in :func:`to_dict`.
     """
 
     rig: dict[str, object] = field(default_factory=dict)
-    sessions: dict[str, BackendSession] = field(default_factory=dict)
+    sessions: dict[EndpointKey, BackendSession] = field(default_factory=dict)
     guider: object | None = None
-    solver_source: object | None = None
-    failures: dict[str, str] = field(default_factory=dict)
+    guide_camera: object | None = None
+    solver: object | None = None
+    results: list[RoleResult] = field(default_factory=list)
 
 
-def _session_key(name: str, conn: ConnSpec) -> str:
-    """A stable key identifying one distinct backend INSTANCE.
+def _normalize(conn: ConnSpec) -> EndpointKey:
+    """The endpoint grouping key for ``conn``: ``(backend, host, port)``, with
+    host/port normalized to None for a hostless backend.
 
-    Roles that resolve to the same backend name at the same host:port share one
-    session (and thus one live connection). Different addresses on the same
-    backend get separate sessions."""
-    return f"{name}@{conn.host or ''}:{conn.port if conn.port is not None else ''}"
+    Normalizing off ``get_backend(name).hostless`` (NOT a literal ``{sim, phd2}``
+    name set) means all sim roles always collapse to ``("sim", None, None)`` and
+    a stray host on a sim/phd2-local override can never split the shared state."""
+    name = conn.backend
+    try:
+        hostless = bool(getattr(get_backend(name), "hostless", False))
+    except KeyError:
+        # Unknown backend: keep its raw addressing; open() will surface the error.
+        hostless = False
+    if hostless:
+        return (name, None, None)
+    return (name, conn.host, conn.port)
 
 
-async def assemble(spec: RigSpec) -> AssembledRig:
-    """Assemble a live rig from ``spec``.
+def _requested_roles(spec: RigSpec) -> set[str]:
+    """The roles this rig "asks for": every role the PRIMARY backend can fill
+    (``get_backend(spec.primary).roles``) UNION every role with an explicit
+    override (``set(spec.roles)``).
 
-    For every canonical role, resolve its ``ConnSpec`` (an explicit override in
-    ``spec.roles`` wins; otherwise it defaults to ``spec.primary``), open the
-    owning backend session ONCE per distinct instance, and hand out the device.
-    Per-role failures are recorded in ``result.failures`` and skipped.
+    ``RigSpec`` carries only ``primary: str`` + ``roles: dict``, so the primary's
+    fillable set MUST be read from the registry -- it cannot be derived from
+    ``RigSpec`` alone. An explicit override for a role NOT in that backend's
+    ``roles`` is STILL requested (so it surfaces a FAILED ``RoleResult`` rather
+    than vanishing); the apply-time reject-rule (W1.C) handles the override."""
+    return set(spec.roles) | set(get_backend(spec.primary).roles)
 
-    After devices are placed, the guider is taken from the guider-role session's
-    ``native_guider()`` and the solver source from the camera-role session's
-    ``native_solver()`` (each may be absent/None)."""
-    result = AssembledRig()
-    # session-key -> open BackendSession (deduped so each instance opens once).
-    sessions: dict[str, BackendSession] = {}
-    # role -> (session-key, ConnSpec) for the post-assembly guider/solver lookup.
-    role_session: dict[str, str] = {}
 
-    for role in ROLES:
-        conn = spec.resolve(role)
-        name = conn.backend
-        key = _session_key(name, conn)
-        try:
-            session = sessions.get(key)
-            if session is None:
-                backend = get_backend(name)
-                session = await backend.open(conn)
-                sessions[key] = session
-            # The guider is NOT a get_device() role: it is sourced from the
-            # session's native_guider() after assembly (the sim, NINA, etc. own
-            # their guider object directly). Opening the session above is enough
-            # to make native_guider() reachable; we just record the binding.
-            if role == "guider":
-                role_session[role] = key
+def _group(resolved: dict[str, ConnSpec]) -> dict[EndpointKey, list[tuple[str, ConnSpec]]]:
+    """Group resolved roles by normalized endpoint key so each ENDPOINT opens
+    EXACTLY ONE session. Hostless backends coalesce to ``(name, None, None)``."""
+    by_endpoint: dict[EndpointKey, list[tuple[str, ConnSpec]]] = {}
+    for role, conn in resolved.items():
+        by_endpoint.setdefault(_normalize(conn), []).append((role, conn))
+    return by_endpoint
+
+
+def _pick_guider(resolved: dict[str, ConnSpec],
+                 sessions: dict[EndpointKey, BackendSession]) -> object | None:
+    """Return the guider from the GUIDER ROLE's session ``native_guider()``.
+
+    The guider session is located via the SAME normalized grouping key ``_group``
+    produces (hostless host/port -> None applied to ``resolved['guider']`` BEFORE
+    keying into ``sessions``), so a stray-addressed sim/phd2-local guider override
+    still finds its session instead of emitting a spurious "no guider"."""
+    guider_conn = resolved.get("guider")
+    if guider_conn is None:
+        return None
+    session = sessions.get(_normalize(guider_conn))
+    if session is None:
+        return None
+    return session.native_guider()
+
+
+def _pick_solver(camera_conn: ConnSpec | None, camera_dev: object | None,
+                 sessions: dict[EndpointKey, BackendSession]) -> object | None:
+    """Return the active solver for the camera that produced the frame.
+
+    Precedence has ONE owner: return the CAMERA role's session
+    ``native_solver()`` if non-None (the sim session yields a guarded
+    ``SimSolver`` carrying its provenance), else delegate to ``solve.get_solver``
+    -- the single owner of ASTAP-vs-guarded-sim precedence (do NOT re-derive
+    "ASTAP else sim" here). The literal ``mode`` passed to ``get_solver`` is
+    derived from the CAMERA SESSION's ``name`` (NOT a hub-wide mode), so the
+    per-role SimSolver guard refuses to sync a real mount (W1.5)."""
+    if camera_conn is None:
+        return None
+    session = sessions.get(_normalize(camera_conn))
+    if session is None:
+        return None
+    native = session.native_solver()
+    if native is not None:
+        return native
+    # Fallback: the single owner of ASTAP-vs-guarded-sim precedence. Deferred
+    # import keeps this module cycle-free. ``mode`` from the camera session name.
+    from ..solve import get_solver
+
+    mode = _solver_mode(session.name)
+    return get_solver(None, mode=mode)
+
+
+def _solver_mode(session_name: str | None) -> str | None:
+    """Map a camera session name to the literal solver mode ``get_solver``/
+    ``SimSolver`` keys on ('sim' / 'nina' / 'alpaca'). The native backend solves
+    as the real 'alpaca' rig; anything else passes through unchanged."""
+    if session_name == "native":
+        return "alpaca"
+    return session_name
+
+
+async def connect_profile(spec: RigSpec) -> ConnectResult:
+    """Bring a ``RigSpec`` online.
+
+    Resolve ONLY the roles the spec requests (primary's fillable roles + explicit
+    overrides), group them by endpoint, open each endpoint's session ONCE, and
+    hand out each role's device (graceful per-role degrade). Every requested role
+    yields exactly one ``RoleResult``. The guider is taken from the guider-role
+    session's ``native_guider()`` and the guide camera + solver from the camera
+    role's session. Any session opened before an unexpected raise is closed so no
+    transport leaks."""
+    requested: set[str] = _requested_roles(spec)
+    resolved: dict[str, ConnSpec] = {r: spec.resolve(r) for r in requested}
+    by_endpoint = _group(resolved)
+
+    sessions: dict[EndpointKey, BackendSession] = {}
+    rig: dict[str, object] = {}
+    # every REQUESTED role starts attempted=False ("never tried"); flipped below.
+    results: dict[str, RoleResult] = {r: RoleResult(r) for r in requested}
+    opened: list[BackendSession] = []           # for teardown-on-unexpected-raise
+
+    try:
+        for key, role_conns in by_endpoint.items():
+            backend_name = key[0]
+            rep_conn = role_conns[0][1]         # endpoint's representative ConnSpec
+            try:
+                session = await get_backend(backend_name).open(rep_conn)
+            except Exception as exc:  # noqa: BLE001 - whole endpoint down -> roles fail
+                for role, _ in role_conns:
+                    if role != "guider":
+                        results[role] = RoleResult(
+                            role, ok=False, error=str(exc), attempted=True)
                 continue
-            device = await session.get_device(role, conn)
-        except Exception as exc:  # noqa: BLE001 - graceful degrade per role
-            result.failures[role] = str(exc)
-            continue
-        result.rig[role] = device
-        role_session[role] = key
+            sessions[key] = session
+            opened.append(session)
+            for role, conn in role_conns:
+                # The guider is NOT a get_device() role: it is sourced from the
+                # session's native_guider() after assembly (step below). A
+                # guider-only backend (PHD2) must NOT emit a device RoleResult.
+                if role == "guider":
+                    continue
+                try:
+                    device = await session.get_device(role, conn)
+                except Exception as exc:  # noqa: BLE001 - per-role degrade, never crash
+                    results[role] = RoleResult(
+                        role, ok=False, error=str(exc), attempted=True)
+                    continue
+                if device is not None:
+                    rig[role] = device
+                results[role] = RoleResult(
+                    role, ok=device is not None, attempted=True,
+                    error=None if device is not None else "role unavailable")
+    except BaseException:
+        # An unexpected raise must not leak transports.
+        for s in opened:
+            try:
+                await s.close()
+            except Exception:  # noqa: BLE001
+                pass
+        raise
 
-    result.sessions = sessions
+    # guider: the guider-role session's native guider (resolved via the SAME
+    # normalized key, never raw addressing). Only requested roles get a result.
+    guider = _pick_guider(resolved, sessions)
+    if "guider" in requested:
+        results["guider"] = RoleResult(
+            "guider", ok=guider is not None, attempted=True,
+            error=None if guider is not None else "no guider")
 
-    # guider: the guider-role session's native guider, if that role came up.
-    guider_key = role_session.get("guider")
-    if guider_key is not None:
-        try:
-            result.guider = sessions[guider_key].native_guider()
-        except Exception as exc:  # noqa: BLE001
-            result.failures.setdefault("guider", str(exc))
+    # guide camera: the camera-role session's dedicated guide-camera pseudo-device
+    # (sim only), via the contracted Protocol accessor -- NOT a SimSession-only
+    # property. None for nina/native/phd2.
+    guide_camera = _pick_guide_camera(resolved.get("camera"), sessions)
 
-    # solver source: the camera-role session's native solver (may be None ->
-    # the caller falls back to solve.get_solver).
-    camera_key = role_session.get("camera")
-    if camera_key is not None:
-        try:
-            result.solver_source = sessions[camera_key].native_solver()
-        except Exception:  # noqa: BLE001 - solver is optional; never fatal
-            result.solver_source = None
+    # solver source: the camera-role session's native solver (or the get_solver
+    # fallback -- the single owner of ASTAP-vs-guarded-sim precedence).
+    solver = _pick_solver(resolved.get("camera"), rig.get("camera"), sessions)
 
-    return result
+    return ConnectResult(rig=rig, sessions=sessions, guider=guider,
+                         guide_camera=guide_camera, solver=solver,
+                         results=list(results.values()))
 
 
-def to_dict(result: AssembledRig) -> dict[str, Any]:
-    """A small JSON-able summary (for diagnostics / API), without the live
-    device objects themselves."""
+def _pick_guide_camera(camera_conn: ConnSpec | None,
+                       sessions: dict[EndpointKey, BackendSession]) -> object | None:
+    """Return the camera-role session's ``guide_camera()`` (the contracted
+    Protocol accessor), located via the SAME normalized grouping key. None when
+    there is no camera session or the backend exposes no guide camera."""
+    if camera_conn is None:
+        return None
+    session = sessions.get(_normalize(camera_conn))
+    if session is None:
+        return None
+    return session.guide_camera()
+
+
+def to_dict(result: ConnectResult) -> dict[str, Any]:
+    """A small JSON-able summary (for diagnostics / API), without the live device
+    objects themselves.
+
+    The legacy keys ``{roles, sessions, has_guider, has_native_solver, failures}``
+    are kept as a back-compat superset (``failures`` DERIVED from the not-ok
+    ``results``, ``has_native_solver`` reading the renamed ``solver``), and
+    ``results`` is added alongside. The ``sessions`` summary stringifies the
+    tuple keys and sorts None-safely so partial-port multi-endpoint rigs neither
+    raise a ``TypeError`` (``int`` vs ``None``) nor emit non-JSON-able tuples."""
+    failures = {
+        rr.role: rr.error or "role unavailable"
+        for rr in result.results if not rr.ok and rr.attempted
+    }
     return {
         "roles": sorted(result.rig),
-        "sessions": sorted(result.sessions),
+        # stringify each tuple key (JSON-able) and sort the strings (total order,
+        # None-safe) -- do NOT sort the raw tuples (TypeError on int vs None).
+        "sessions": sorted(str(k) for k in result.sessions),
         "has_guider": result.guider is not None,
-        "has_native_solver": result.solver_source is not None,
-        "failures": dict(result.failures),
+        "has_native_solver": result.solver is not None,
+        "failures": failures,
+        "results": [
+            {"role": rr.role, "ok": rr.ok, "error": rr.error,
+             "attempted": rr.attempted}
+            for rr in result.results
+        ],
     }

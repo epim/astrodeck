@@ -323,6 +323,30 @@ async def test_hub_goto_and_center_through_nina(monkeypatch, tmp_path):
         await client.aclose()
 
 
+async def test_connect_nina_unreachable_reraises_deviceerror(monkeypatch):
+    """W1.3.0/T2(12) fail-fast: when build_nina_rig raises (NINA unreachable),
+    connect_profile opens NO nina session, so the thin connect_nina builder
+    detects total-primary-failure (no key[0]=='nina' in sessions) and re-raises
+    the recorded RoleResult.error as a DeviceError -- NOT a silent partial connect
+    or an opaque StopIteration. ``failures`` is now a derived alias; the reason is
+    read from the not-ok ``results``."""
+    from astrodeck.devices.base import DeviceError
+
+    async def boom(host, port=1888, http=None):
+        raise DeviceError(f"cannot reach NINA at {host}:{port}")
+
+    monkeypatch.setattr(hub_module, "build_nina_rig", boom)
+    h = hub_module.Hub()
+    try:
+        with pytest.raises(DeviceError) as ei:
+            await h.connect_nina("nina.test", 1888)
+        assert "cannot reach NINA" in str(ei.value)
+        # nothing partially connected.
+        assert h.devices == {}
+    finally:
+        await h.disconnect_all()
+
+
 async def test_nina_solve_refuses_without_astap(monkeypatch, tmp_path):
     """No ASTAP installed in NINA mode → the SimSolver fallback REFUSES (review
     5d): solve_and_sync raises a clear error instead of silently fake-centering

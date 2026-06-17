@@ -63,6 +63,11 @@ class Phd2Session:
         """The PHD2 guider itself. SYNC by contract."""
         return self._guider
 
+    def guide_camera(self) -> object | None:
+        """PHD2 owns no dedicated guide-camera device (it guides via its own
+        socket); None per the Protocol default. SYNC by contract."""
+        return None
+
     def native_solver(self) -> object | None:
         """PHD2 has no plate solver -- the hub chooses one via
         ``solve.get_solver``. SYNC by contract."""
@@ -119,6 +124,11 @@ class Phd2Backend:
     label = "PHD2"
     roles = ("guider",)
     discoverable = False
+    #: Endpoint-less in unmanaged-local mode: the PHD2 socket is a fixed local
+    #: endpoint, so the orchestrator normalizes host/port -> None and a
+    #: stray-addressed phd2-local guider override still resolves to its session
+    #: under ``("phd2", None, None)`` (W1.3).
+    hostless = True
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Connect a ``PHD2Guider`` and return a session over it.

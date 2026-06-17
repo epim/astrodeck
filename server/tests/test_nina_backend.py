@@ -87,8 +87,12 @@ def test_backend_metadata_and_protocol():
     assert isinstance(b, Backend)
     assert b.name == "nina"
     assert b.label == "NINA"
-    assert b.roles == ("camera", "telescope", "focuser", "filterwheel", "guider")
+    # ``switch`` is fillable (NINA's switch hub); only ``safety`` stays unfillable.
+    assert b.roles == ("camera", "telescope", "focuser", "filterwheel",
+                       "switch", "guider")
+    assert "safety" not in b.roles
     assert b.discoverable is True
+    assert b.hostless is False
 
 
 def test_self_registered_under_nina():
@@ -148,6 +152,12 @@ def test_native_guider_none_when_absent():
 def test_native_solver_is_none():
     session = NinaSession(_fake_rig())
     assert session.native_solver() is None
+
+
+def test_guide_camera_is_none():
+    # NINA exposes no dedicated guide-camera pseudo-device to AstroDeck.
+    session = NinaSession(_fake_rig())
+    assert session.guide_camera() is None
 
 
 # ----------------------------------------------------------------- health
