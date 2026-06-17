@@ -1,0 +1,295 @@
+<!--STYLE-->
+  /* ===== cold-open: starfield drift + imaging-train assembly ===== */
+  .co-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--c-cool) 8%, transparent), transparent 60%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 16 / 9;
+  }
+  .co-sky {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .co-twinkle { fill: var(--c-ink); }
+  /* the slow Earth-rotation drift — a long, almost-imperceptible pan */
+  .co-driftgroup {
+    transform-box: fill-box;
+    transform-origin: 50% 130%;
+  }
+  .co-stage.co-running .co-driftgroup {
+    animation: co-drift 90s linear infinite;
+  }
+  @keyframes co-drift {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(-6deg); }
+  }
+  .co-stage.co-static .co-driftgroup { animation: none; }
+
+  /* caption strip inside the stage */
+  .co-tag {
+    position: absolute;
+    left: var(--s-3);
+    bottom: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    background: color-mix(in srgb, var(--c-bg) 70%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.6rem;
+    backdrop-filter: blur(3px);
+  }
+
+  /* ----- the imaging train: a row of labeled parts that assemble ----- */
+  .co-train {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--s-2);
+    align-items: stretch;
+  }
+  @media (max-width: 720px) {
+    .co-train { grid-template-columns: repeat(2, 1fr); }
+  }
+  .co-part {
+    position: relative;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2) var(--s-2) var(--s-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .co-part.co-helper {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--c-line) 80%, var(--c-cool));
+  }
+  .co-icon { width: 100%; height: 56px; }
+  .co-icon [stroke] { stroke: var(--c-accent); }
+  .co-helper .co-icon [stroke] { stroke: var(--c-cool); }
+  .co-name {
+    font-family: var(--font-display);
+    font-size: var(--t-base);
+    color: var(--c-ink);
+    line-height: var(--leading-snug);
+  }
+  .co-role {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+  .co-badge {
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 0.12rem 0.4rem;
+    border-radius: 4px;
+    margin-bottom: var(--s-1);
+  }
+  .co-badge.co-core   { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 14%, transparent); }
+  .co-badge.co-helps  { color: var(--c-cool);   background: color-mix(in srgb, var(--c-cool) 14%, transparent); }
+
+  /* assemble-in: each part slides up + settles, staggered via --co-i */
+  .co-train .co-part {
+    opacity: 0;
+    transform: translateY(26px) scale(0.97);
+  }
+  .co-train.co-built .co-part {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: calc(var(--co-i) * 0.11s);
+  }
+
+  .co-legend {
+    margin-top: var(--s-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+  }
+  .co-legend span {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-ink-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .co-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .co-swatch.co-s-core  { background: var(--c-accent); }
+  .co-swatch.co-s-helps { background: var(--c-cool); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="cold-open" data-nav="The Premise">
+  <p class="kicker">The Premise</p>
+  <h2 class="reveal">You are about to photograph a faint smudge from a spinning rock</h2>
+  <p class="lede reveal">
+    The thing you want a picture of is dim, absurdly far away, and was last
+    interesting to the universe a few million years ago. To capture it, you hold the
+    shutter open for minutes — sometimes hours — and let the light dribble in. The
+    catch is that you are standing on a planet that refuses to stop turning, so your
+    target is sliding across the sky the entire time you're trying to hold still on it.
+  </p>
+
+  <figure class="co-stage bleed-wide reveal" id="co-stage" aria-labelledby="co-skycap">
+    <svg class="co-sky" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img"
+         aria-label="A field of stars drifting slowly, the way the night sky moves while the Earth rotates.">
+      <g class="co-driftgroup" id="co-drift"></g>
+    </svg>
+    <figcaption class="co-tag" id="co-skycap">Real-time. The sky is not posing for you.</figcaption>
+  </figure>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    That drift is the whole problem in one image. Everything that follows is built to cancel it.
+  </p>
+
+  <p class="reveal">
+    So most of the craft is a quiet fight against three things: <strong>motion</strong>
+    (the sky won't sit still), <strong>noise</strong> (faint signal buried in sensor static),
+    and <strong>focus</strong> (a star is a point, and points are unforgiving). To win those
+    fights you bolt together a stack of boxes called the <em>imaging train</em>. Here it is
+    at a glance — the three that do the work, and two helpers you'll meet later.
+  </p>
+
+  <div class="co-train bleed-wide reveal" id="co-train" role="list" aria-label="The imaging train, part by part">
+    <div class="co-part" role="listitem" style="--co-i:0">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M14 48 L32 18 M32 18 L50 48 M22 48 H42" stroke-linecap="round"/>
+        <circle cx="32" cy="14" r="5" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Mount</span>
+      <span class="co-role">The robot arm. Aims at the target and tracks it as the sky slides.</span>
+    </div>
+    <div class="co-part" role="listitem" style="--co-i:1">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M10 22 L46 14 L46 42 L10 34 Z" stroke-linejoin="round"/>
+        <path fill="none" stroke-width="2.5" d="M46 20 L56 17 L56 39 L46 36"/>
+      </svg>
+      <span class="co-name">Telescope</span>
+      <span class="co-role">The lens, called an OTA. A very long, very patient camera lens.</span>
+    </div>
+    <div class="co-part" role="listitem" style="--co-i:2">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <rect x="12" y="16" width="40" height="28" rx="4" fill="none" stroke-width="2.5"/>
+        <circle cx="32" cy="30" r="8" fill="none" stroke-width="2.5"/>
+        <path d="M44 16 V12 H50 V16" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Main camera</span>
+      <span class="co-role">The sensor that actually collects the photons. The whole point.</span>
+    </div>
+    <div class="co-part co-helper" role="listitem" style="--co-i:3">
+      <span class="co-badge co-helps">Helper</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M12 24 L40 18 L40 38 L12 32 Z" stroke-linejoin="round"/>
+        <rect x="40" y="22" width="12" height="12" rx="2" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Guide scope + cam</span>
+      <span class="co-role">A tiny second eye that watches one star and nudges the mount.</span>
+    </div>
+    <div class="co-part co-helper" role="listitem" style="--co-i:4">
+      <span class="co-badge co-helps">Helper</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <circle cx="32" cy="28" r="13" fill="none" stroke-width="2.5"/>
+        <circle cx="32" cy="28" r="4" fill="none" stroke-width="2.5"/>
+        <path fill="none" stroke-width="2.5" d="M32 8 V14 M32 42 V48 M12 28 H18 M46 28 H52"/>
+      </svg>
+      <span class="co-name">Focuser + filters</span>
+      <span class="co-role">Pulls focus to a hair, and swaps color filters in front of the sensor.</span>
+    </div>
+  </div>
+
+  <div class="co-legend bleed-wide reveal" aria-hidden="true">
+    <span><i class="co-swatch co-s-core"></i> Does the work</span>
+    <span><i class="co-swatch co-s-helps"></i> Makes the work better</span>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    None of these boxes were designed to talk to each other. Historically you'd run a
+    different app for each one, alt-tabbing between five programs at two in the morning
+    in the cold. <strong>AstroDeck is the brain that drives the whole train from one
+    screen</strong> — so the rest of this guide is really a tour of the things that
+    brain has to coordinate, and a chance for you to decide where its controls belong.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  var stage = document.getElementById("co-stage");
+  var driftG = document.getElementById("co-drift");
+  var train = document.getElementById("co-train");
+  if (!stage || !driftG || !train) return;
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // --- build a deterministic-ish starfield once (oversized so the slow pan never shows an edge) ---
+  var svgNS = "http://www.w3.org/2000/svg";
+  var seed = 1337;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var count = 220;
+  for (var i = 0; i < count; i++) {
+    var c = document.createElementNS(svgNS, "circle");
+    var x = -200 + rnd() * 2000;   // overscan beyond the 1600 viewBox
+    var y = -150 + rnd() * 1100;
+    var mag = rnd();
+    var r = 0.5 + mag * mag * 2.4;  // a few bright, many faint
+    c.setAttribute("cx", x.toFixed(1));
+    c.setAttribute("cy", y.toFixed(1));
+    c.setAttribute("r", r.toFixed(2));
+    c.setAttribute("class", "co-twinkle");
+    c.setAttribute("opacity", (0.25 + mag * 0.7).toFixed(2));
+    driftG.appendChild(c);
+  }
+
+  // --- a couple of accent "named" stars so the eye has anchors ---
+  var anchors = [[520, 300], [1080, 470], [780, 640]];
+  anchors.forEach(function (p) {
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("cx", p[0]); c.setAttribute("cy", p[1]); c.setAttribute("r", "3.4");
+    c.setAttribute("fill", "var(--c-accent)");
+    c.setAttribute("opacity", "0.9");
+    driftG.appendChild(c);
+  });
+
+  if (reduce) {
+    stage.classList.add("co-static");      // present, but never moving
+  }
+
+  // --- start the drift + assemble the train only when scrolled into view ---
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        if (e.target === stage && !reduce) stage.classList.add("co-running");
+        if (e.target === train) train.classList.add("co-built");
+        io.unobserve(e.target);
+      });
+    }, { threshold: 0.2 });
+    io.observe(stage);
+    io.observe(train);
+  } else {
+    if (!reduce) stage.classList.add("co-running");
+    train.classList.add("co-built");
+  }
+})();
+<!--/SCRIPT-->
