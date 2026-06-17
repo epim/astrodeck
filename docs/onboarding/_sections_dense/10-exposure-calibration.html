@@ -1,0 +1,305 @@
+<!--STYLE-->
+  /* ===== Section 10: Exposure + calibration (slug: ec) ===== */
+  .ec-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  .ec-stage {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+
+  .ec-stage svg { width: 100%; height: 100%; }
+
+  /* The grain layer fades out as the stack count climbs. */
+  .ec-grain {
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  /* The faint nebula fades in as the stack count climbs. */
+  .ec-signal {
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+  }
+
+  .ec-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .ec-count {
+    color: var(--c-accent);
+    font-size: var(--t-lg);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .ec-noise-label {
+    color: var(--c-caption);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A skinny bar that shrinks to show noise dropping. */
+  .ec-noisebar {
+    margin-top: var(--s-2);
+    height: 6px;
+    border-radius: 99px;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+  }
+  .ec-noisebar > i {
+    display: block;
+    height: 100%;
+    width: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent));
+    transform-origin: left;
+    transition: transform var(--dur) var(--ease);
+  }
+
+  .ec-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  .ec-btn {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.95rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+  }
+  .ec-btn:hover { border-color: var(--c-accent); color: var(--c-accent-soft); }
+  .ec-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* lights / darks / flats legend */
+  .ec-legend {
+    margin-top: var(--s-4);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2);
+    list-style: none;
+    padding: 0;
+  }
+  .ec-legend li {
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2);
+  }
+  .ec-legend dt {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: 0.35rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ec-legend dt::before {
+    content: "";
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 3px;
+    background: currentColor;
+    flex: none;
+  }
+  .ec-legend dd {
+    margin: 0;
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+    line-height: var(--leading-snug);
+  }
+  @media (max-width: 560px) {
+    .ec-legend { grid-template-columns: 1fr; }
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="ec" data-nav="Calibration">
+  <p class="kicker">Stacking &amp; Calibration</p>
+  <h2 class="reveal">Signal is shy. You coax it out with arithmetic.</h2>
+  <p class="lede reveal">A single frame of a galaxy is mostly a portrait of your sensor having a bad night. The target sits buried in grain, a hair above it. The fix isn't a better exposure — it's many exposures, averaged with care.</p>
+
+  <p class="reveal">Noise is random, so it lands in a different place every frame and averages toward zero. The galaxy's light hits the same pixels every time and accumulates. Signal-to-noise scales with the square root of the frame count: 4× the frames halves the noise, 100× drops it tenfold, and detail you couldn't see at all surfaces like a print coming up in the developer tray.</p>
+
+  <figure class="ec-figure bleed-wide reveal" aria-labelledby="ec-cap">
+    <div class="ec-stage">
+      <svg viewBox="0 0 320 200" role="img" aria-label="A noisy frame of a nebula that grows cleaner and reveals faint detail as more frames are stacked.">
+        <defs>
+          <radialGradient id="ec-neb" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#e8a849" stop-opacity="0.55"/>
+            <stop offset="38%" stop-color="#b8791f" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="#6f9bd8" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="ec-soft"><feGaussianBlur stdDeviation="3.2"/></filter>
+        </defs>
+
+        <!-- the real, faint target: hidden at first, revealed by stacking -->
+        <g class="ec-signal">
+          <ellipse cx="160" cy="100" rx="92" ry="58" fill="url(#ec-neb)" filter="url(#ec-soft)"/>
+          <ellipse cx="138" cy="92" rx="34" ry="22" fill="#f0c483" opacity="0.5" filter="url(#ec-soft)"/>
+          <circle cx="206" cy="120" r="2.2" fill="#ece7df"/>
+          <circle cx="96"  cy="74"  r="1.6" fill="#ece7df"/>
+          <circle cx="232" cy="58"  r="1.8" fill="#f0c483"/>
+          <circle cx="70"  cy="140" r="1.4" fill="#ece7df"/>
+        </g>
+
+        <!-- the grain layer, drawn once by JS, fading as the count climbs -->
+        <g class="ec-grain" id="ec-grain"></g>
+      </svg>
+    </div>
+
+    <div class="ec-readout">
+      <span>frames stacked <span class="ec-count" id="ec-count">1</span></span>
+      <span class="ec-noise-label">noise <span id="ec-noise">100</span>%</span>
+    </div>
+    <div class="ec-noisebar" aria-hidden="true"><i id="ec-bar"></i></div>
+
+    <div class="ec-controls">
+      <button class="ec-btn" id="ec-add" type="button">Stack more frames</button>
+      <button class="ec-btn" id="ec-reset" type="button">Back to one</button>
+    </div>
+
+    <figcaption class="caption" id="ec-cap" style="margin-top: var(--s-3)">
+      Same sky, same exposure, more frames. The detail was always there — you were hearing it through static.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">Averaging kills the random component. It does nothing about errors that repeat identically in every frame, and three of those have names. The fix: photograph the sensor's predictable mistakes and subtract them. These are <strong>calibration frames</strong>.</p>
+
+  <dl class="ec-legend">
+    <li class="reveal" style="--reveal-delay: .05s">
+      <dt>Lights</dt>
+      <dd>The actual sky frames. Everything else exists to clean these up.</dd>
+    </li>
+    <li class="reveal" style="--reveal-delay: .12s">
+      <dt>Darks</dt>
+      <dd>Same exposure and temperature, shutter closed. Maps the sensor's own thermal glow so you can subtract it.</dd>
+    </li>
+    <li class="reveal" style="--reveal-delay: .19s">
+      <dt>Flats</dt>
+      <dd>A shot of an evenly lit blank field. It records the optics' falloff — brighter center, darker edges (vignetting) — and the soft donuts from dust on the glass. Dividing it out flattens the frame.</dd>
+    </li>
+  </dl>
+
+  <p class="reveal" style="margin-top: var(--s-4)">It's bookkeeping, not glamour. It's also the entire gap between a brown smudge and a clean image, and exactly the kind of thing software should run for you instead of making you memorize it.</p>
+
+  <p class="reveal"><strong>Where this lands in AstroDeck:</strong> exposure and sequence settings decide sub length and frame count; the calibration plan schedules darks and flats or pulls them from a matched library. If someone has to hold that math in their head at 2am, the UI is doing too little. The good version surfaces the trade live — more frames, less noise, here's where you are on the curve.</p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var stage   = document.querySelector("#ec");
+  if (!stage) return;
+
+  var grainG  = stage.querySelector("#ec-grain");
+  var signal  = stage.querySelector(".ec-signal");
+  var grain   = stage.querySelector(".ec-grain");
+  var countEl = stage.querySelector("#ec-count");
+  var noiseEl = stage.querySelector("#ec-noise");
+  var barEl   = stage.querySelector("#ec-bar");
+  var addBtn  = stage.querySelector("#ec-add");
+  var resetBtn= stage.querySelector("#ec-reset");
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a fixed field of speckle dots once (SVG namespace).
+  var NS = "http://www.w3.org/2000/svg";
+  var DOTS = 320;
+  for (var i = 0; i < DOTS; i++) {
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", (Math.random() * 320).toFixed(1));
+    c.setAttribute("cy", (Math.random() * 200).toFixed(1));
+    c.setAttribute("r", (0.5 + Math.random() * 1.1).toFixed(2));
+    // a warm/cool/white scatter so it reads as sensor noise, not polka dots
+    var roll = Math.random();
+    c.setAttribute("fill", roll < 0.6 ? "#b3ada3" : (roll < 0.8 ? "#e8a849" : "#6f9bd8"));
+    c.setAttribute("opacity", (0.25 + Math.random() * 0.55).toFixed(2));
+    grainG.appendChild(c);
+  }
+
+  var count = 1;
+
+  // noise ~ 1/sqrt(N): the headline intuition of stacking.
+  function render(animate) {
+    var noiseFrac = 1 / Math.sqrt(count);          // 1.0 down toward 0
+    var pct = Math.round(noiseFrac * 100);
+    countEl.textContent = count;
+    noiseEl.textContent = pct;
+    // grain opacity tracks the noise; signal emerges as noise falls
+    grain.style.opacity  = noiseFrac.toFixed(3);
+    signal.style.opacity = (1 - noiseFrac * 0.92).toFixed(3);
+    barEl.style.transform = "scaleX(" + noiseFrac.toFixed(3) + ")";
+  }
+
+  // Reduced motion: jump straight to a clean, stacked result and stop.
+  if (reduce) {
+    count = 64;
+    // disable transitions so it's just instantly the final state
+    grain.style.transition = "none";
+    signal.style.transition = "none";
+    barEl.style.transition = "none";
+    render(false);
+  } else {
+    render(false);
+    // First time the figure scrolls into view, auto-stack a little so the
+    // idea demonstrates itself even if nobody clicks.
+    var seen = false;
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting && !seen) {
+            seen = true;
+            var steps = [2, 4, 8, 16];
+            steps.forEach(function (n, k) {
+              setTimeout(function () { count = n; render(true); }, 450 + k * 520);
+            });
+            io.unobserve(e.target);
+          }
+        });
+      }, { threshold: 0.4 });
+      io.observe(stage.querySelector(".ec-figure"));
+    }
+  }
+
+  addBtn.addEventListener("click", function () {
+    count = Math.min(count * 2, 256);
+    if (count >= 256) addBtn.disabled = true;
+    render(true);
+  });
+  resetBtn.addEventListener("click", function () {
+    count = 1;
+    addBtn.disabled = false;
+    render(true);
+  });
+})();
+<!--/SCRIPT-->
