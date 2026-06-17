@@ -128,6 +128,33 @@ class AlertSink(BaseModel):
     heartbeat_min: int = 0                 # 0 = off; periodic progress ping
 
 
+# ------------------------------------------------------- auth / RBAC (W2.3)
+#
+# Pluggable-auth + role config. APPENDED to AppConfig (additive — old config
+# files without an ``auth`` block load fine; pydantic fills the default). The
+# secrets here (``admin_token``, ``google_client_secret``, ``session_private_key``)
+# are scrubbed by ``redacted()`` before the config goes over WS/REST, exactly
+# like the Telegram token. With ``provider == "none"`` and no ``admin_token``
+# the server is fully open (today's behavior); enforcement only turns on when an
+# admin token or a Google provider is explicitly configured.
+
+class AuthConfig(BaseModel):
+    provider: str = "none"               # "none" | "google"
+    admin_token: str = ""                # OPTIONAL: generalizes ASTRODECK_TOKEN; bearer => admin (secret)
+    google_client_id: str = ""
+    google_client_secret: str = ""       # secret
+    google_redirect_uri: str = ""
+    google_hd: str = ""                  # optional Workspace hosted-domain pin
+    role_allowlist: dict[str, str] = Field(default_factory=dict)  # email -> role; re-evaluated EVERY request
+    default_role: str | None = None      # role for any authenticated user, or None=deny
+    session_signing_alg: str = "EdDSA"   # asymmetric (W3 seam); the home session today is HMAC (see auth/session.py)
+    session_private_key: str = ""        # secret (home is the JWT issuer)
+    session_public_key: str = ""         # home verifies its own sessions
+    relay_pubkey: str = ""               # verify relay-forwarded principal (W3 seam)
+    viewer_link_pubkey: str = ""         # SEPARATE key for viewer links (W3 seam)
+    revoked_jti: list[str] = Field(default_factory=list)  # append-only deny registry; admin.users-gated ONLY
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -138,6 +165,8 @@ class AppConfig(BaseModel):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     alerts: list[AlertSink] = Field(default_factory=list)
     deadman_url: str = ""              # external healthcheck ping URL (C2-9)
+    # --- auth / RBAC (W2; appended — old configs load fine) ---
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -334,6 +363,64 @@ class ConfigStore:
         cfg.deadman_url = url
         return self.bump_and_save()
 
+    # -- auth / RBAC mutation (W2) ---------------------------------------------
+
+    def set_auth(self, auth: AuthConfig) -> AppConfig:
+        """Persist a new ``AuthConfig`` (admin.users-gated at the API layer).
+
+        Enforces the pinned ``default_role`` ceiling: a non-null ``default_role``
+        must be at most ``viewer`` UNLESS a Workspace hosted-domain (``google_hd``)
+        is pinned — otherwise the entire Google population could be auto-elevated
+        to a control/config-bearing role over the WAN. Also rejects an unknown
+        provider, an unknown default_role/allowlist role, and any attempt to
+        SHRINK the append-only ``revoked_jti`` registry.
+        """
+        validate_auth_config(auth, current=self.cfg().auth)
+        cfg = self.cfg()
+        cfg.auth = auth
+        return self.bump_and_save()
+
+
+def validate_auth_config(auth: AuthConfig, current: AuthConfig | None = None) -> None:
+    """Validate an ``AuthConfig`` before persistence. Raises ``ValueError`` (→ 400
+    at the API) on any violation. Pinned rules:
+
+    1. ``provider`` ∈ {"none", "google"}.
+    2. Every role used (``default_role`` + every value in ``role_allowlist``) is
+       a known role.
+    3. ``default_role`` ceiling: if non-null it must be at most ``viewer`` UNLESS
+       ``google_hd`` is non-empty (prevents WAN-wide auto-elevation).
+    4. ``revoked_jti`` is APPEND-ONLY: a save may add jtis but never drop one
+       that ``current`` already had (the deny registry cannot be shrunk).
+
+    Lazy-imports the auth role table so config.py stays import-light (no auth
+    package import at module load — avoids any import cycle)."""
+    from .auth.capabilities import ROLES, role_rank  # lazy: keep config import-light
+
+    if auth.provider not in ("none", "google"):
+        raise ValueError(f"unknown auth provider: {auth.provider!r}")
+
+    roles_in_use = list(auth.role_allowlist.values())
+    if auth.default_role is not None:
+        roles_in_use.append(auth.default_role)
+    for r in roles_in_use:
+        if r not in ROLES:
+            raise ValueError(f"unknown role: {r!r}")
+
+    if auth.default_role is not None:
+        # at most "viewer" unless a hosted-domain is pinned
+        if role_rank(auth.default_role) > role_rank("viewer") and not auth.google_hd.strip():
+            raise ValueError(
+                "default_role above 'viewer' requires a pinned google_hd "
+                "(refusing to auto-elevate the whole Google population)")
+
+    if current is not None:
+        missing = set(current.revoked_jti) - set(auth.revoked_jti)
+        if missing:
+            raise ValueError(
+                "revoked_jti is append-only and cannot be shrunk "
+                f"(missing: {sorted(missing)})")
+
 
 def _strip_url_userinfo(url: str) -> str:
     """Strip a ``user:pass@`` userinfo component from a url before broadcast.
@@ -395,6 +482,25 @@ def redacted(cfg: AppConfig) -> dict:
     # backend's ``ConnSpec.extra``, which carries no credential in Stage B.
     # TODO(W2): redact ConnSpec.extra secrets in serialized Profile records when a
     # future backend persists a credential there.
+    #
+    # W2 auth block: scrub every secret-bearing field, surface "configured"
+    # booleans so the UI can show state without the secret. Non-secret fields
+    # (role_allowlist, revoked_jti, public keys, provider, default_role, hd)
+    # pass through. Rebuilt defensively — a missing/malformed auth dict can't
+    # slip a secret through, and the source cfg is never mutated.
+    auth = data.get("auth")
+    if isinstance(auth, dict):
+        admin_tok = auth.get("admin_token") or ""
+        gclient_secret = auth.get("google_client_secret") or ""
+        sess_priv = auth.get("session_private_key") or ""
+        auth["admin_token"] = ""
+        auth["google_client_secret"] = ""
+        auth["session_private_key"] = ""
+        auth["admin_token_configured"] = bool(admin_tok)
+        auth["google_configured"] = bool(
+            auth.get("google_client_id") and gclient_secret)
+        auth["session_signing_configured"] = bool(sess_priv)
+        data["auth"] = auth
     return data
 
 
