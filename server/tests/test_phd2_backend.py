@@ -75,8 +75,17 @@ def test_backend_is_registered_and_shape():
     assert b.label == "PHD2"
     assert b.roles == ("guider",)
     assert b.discoverable is False
+    # endpoint-less in unmanaged-local mode: the orchestrator normalizes its
+    # host/port -> None so a stray-addressed phd2-local guider override resolves.
+    assert b.hostless is True
     # listed in the registry summary too
     assert "phd2" in BACKENDS
+
+
+@pytest.mark.asyncio
+async def test_guide_camera_is_none(fake_phd2):
+    session = await get_backend("phd2").open(ConnSpec(backend="phd2"))
+    assert session.guide_camera() is None
 
 
 @pytest.mark.asyncio
