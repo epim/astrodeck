@@ -41,6 +41,7 @@ import {
 } from "../lib/slewController";
 import { haptics } from "../lib/haptics";
 import { useTouchSettings, useSetTouch, useLocked } from "../lib/touchStore";
+import { useCanControlMount } from "../lib/caps";
 
 const axisLabelText: Record<string, string> = {
   "dec:1": "north",
@@ -71,6 +72,11 @@ export default function SlewPad() {
   const touch = useTouchSettings();
   const setTouch = useSetTouch();
   const locked = useLocked();
+  // VIEWER-READ-ONLY (W2.5): a viewer lacks control.mount, so the pad is inert for
+  // them — folded into padDisabled below so every press handler no-ops and the
+  // arrows render dimmed. Any stray /api/mount/* 403 is swallowed by the existing
+  // best-effort .catch() on the panic/stop posts (never toasts at the viewer).
+  const canMount = useCanControlMount();
 
   const [rateIdx, setRateIdx] = useState(1); // local UI state (transient, not global)
   const [slewState, setSlewState] = useState<SlewState>({
@@ -91,7 +97,8 @@ export default function SlewPad() {
   const isNina = mode === "nina";
   const noMount = !m;
   const parked = !!m?.parked;
-  const padDisabled = noMount || parked;
+  // !canMount makes the pad read-only for viewers (controls inert, not 403-on-tap).
+  const padDisabled = noMount || parked || !canMount;
 
   // Keep mutable refs the controller closures read so we never rebuild it per render.
   const rateIdxRef = useRef(rateIdx);
@@ -314,8 +321,11 @@ export default function SlewPad() {
           </p>
           <button
             className="btn tap min-h-[44px]"
+            disabled={!canMount}
             onClick={() =>
-              api.post("/api/mount/unpark").catch((e) => showToast("error", (e as Error).message))
+              api.post("/api/mount/unpark").catch((e) => {
+                if ((e as { status?: number })?.status !== 403) showToast("error", (e as Error).message);
+              })
             }
           >
             Unpark
@@ -323,6 +333,13 @@ export default function SlewPad() {
         </div>
       ) : (
         <>
+          {/* viewer read-only note: the pad below renders but every control is
+              inert (W2.5 — disabled, never 403-on-tap). */}
+          {!canMount && (
+            <p className="text-[12px] text-warn text-center mb-2 tracking-wide">
+              View only — slewing needs operator or admin access.
+            </p>
+          )}
           {/* ---- pad grid: N on top, W [rate] E, S on bottom (R-§4.4) ---- */}
           <div
             className="grid grid-cols-3 mx-auto max-w-[260px] place-items-center"
@@ -396,7 +413,9 @@ export default function SlewPad() {
 
           {/* ---- STOP bar: full-width, solid, ■ motif, 1-tap (R9/R10) ---- */}
           <button
+            disabled={!canMount}
             onClick={() => {
+              if (!canMount) return; // viewer: nothing to stop, control is read-only
               haptics.stop();
               ctrl.forceStop();
               activePointerId.current = null;
@@ -404,12 +423,16 @@ export default function SlewPad() {
               // press (clear then set) so a second STOP still re-announces.
               setStopAnnounce("");
               requestAnimationFrame(() => setStopAnnounce("All motion stopped"));
-              api.post("/api/mount/stop").catch((e) => showToast("error", (e as Error).message));
+              // Best-effort: a viewer can never reach here, but a 403 from any
+              // race is swallowed silently (never a toast at a read-only user).
+              api.post("/api/mount/stop").catch((e) => {
+                if ((e as { status?: number })?.status !== 403) showToast("error", (e as Error).message);
+              });
             }}
             aria-label="Stop all mount motion"
-            className="mt-3 w-full min-h-[56px] flex items-center justify-center gap-2
+            className={`mt-3 w-full min-h-[56px] flex items-center justify-center gap-2
               font-display tracking-[0.2em] text-[14px] text-black/90
-              bg-bad border border-bad active:translate-y-px"
+              bg-bad border border-bad active:translate-y-px ${!canMount ? "opacity-40" : ""}`}
           >
             <Icon name="stop" size={18} className="!text-black/90" />
             STOP

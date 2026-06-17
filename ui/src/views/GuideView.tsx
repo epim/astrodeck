@@ -3,11 +3,14 @@ import { api } from "../api";
 import { useStore, useStatus, useGuide } from "../store";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Panel, Stat } from "../components/ui";
+import { useCanControlGuide } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 
 export default function GuideView() {
   const status = useStatus();
   const guide = useGuide();
   const showToast = useStore((s) => s.showToast);
+  const canGuide = useCanControlGuide(); // viewer => graph visible, controls read-only
   const [ditherPx, setDitherPx] = useState("3");
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;
@@ -39,27 +42,28 @@ export default function GuideView() {
           </div>
         </Panel>
 
-        <Panel title="Control">
+        <Panel title="Control" right={!canGuide && <ReadOnlyBadge />}>
           {!connected && (
             <p className="text-xs text-warn mb-3">
               no guider — connect PHD2 or the simulator rig on the Rig page
             </p>
           )}
           <div className="flex flex-col gap-2">
-            <button className="btn btn-accent" disabled={!connected || stats?.guiding}
+            <button className="btn btn-accent" disabled={!canGuide || !connected || stats?.guiding}
               onClick={() => act(() => api.post("/api/guide/start"))}>
               ❖ Start Guiding
             </button>
-            <button className="btn" disabled={!connected || !stats?.guiding}
+            <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
               onClick={() => act(() => api.post("/api/guide/stop"))}>
               Stop
             </button>
             <div className="grid grid-cols-[1fr_auto] gap-2 items-end mt-2">
               <label className="flex flex-col gap-1">
                 <span className="label">Dither (px)</span>
-                <input className="field" value={ditherPx} onChange={(e) => setDitherPx(e.target.value)} />
+                <input className="field" value={ditherPx} disabled={!canGuide}
+                  onChange={(e) => setDitherPx(e.target.value)} />
               </label>
-              <button className="btn" disabled={!connected || !stats?.guiding}
+              <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
                 onClick={() => act(() => api.post("/api/guide/dither", { pixels: Number(ditherPx) || 3 }))}>
                 Dither
               </button>

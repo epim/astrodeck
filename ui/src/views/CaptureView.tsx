@@ -4,6 +4,8 @@ import { useStore, useStatus, usePolar, useLivePreviewId } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Field, Led, Panel, Stat, Toggle } from "../components/ui";
+import { useCanControlCapture } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 
 // ---------------------------------------------------------------- capture phase
@@ -26,6 +28,7 @@ export default function CaptureView() {
   const polar = usePolar();
   const liveId = useLivePreviewId();
   const showToast = useStore((s) => s.showToast);
+  const canCapture = useCanControlCapture(); // viewer => preview visible, controls read-only
 
   const [exposure, setExposure] = useState("2");
   const [gain, setGain] = useState("120");
@@ -141,16 +144,17 @@ export default function CaptureView() {
   );
 
   const onSingle = () => {
-    if (captureBlocked) return;
+    if (captureBlocked || !canCapture) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture", body));
   };
   const onLoop = () => {
-    if (captureBlocked) return;
+    if (captureBlocked || !canCapture) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture/loop", body));
   };
   const onStop = () => {
+    if (!canCapture) return;
     setStopPressed(true);
     window.setTimeout(() => setStopPressed(false), 220);
     setPhase("idle");
@@ -170,31 +174,31 @@ export default function CaptureView() {
 
       <div className="flex flex-col gap-4">
         {/* ------------------------------------------------- exposure ctl */}
-        <Panel title="Exposure">
+        <Panel title="Exposure" right={!canCapture && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Exposure (s)">
-              <input className="field" value={exposure} onChange={(e) => setExposure(e.target.value)} />
+              <input className="field" value={exposure} disabled={!canCapture} onChange={(e) => setExposure(e.target.value)} />
             </Field>
             <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`}>
-              <input className="field" value={gain} onChange={(e) => setGain(e.target.value)} />
+              <input className="field" value={gain} disabled={!canCapture} onChange={(e) => setGain(e.target.value)} />
             </Field>
             <Field label="Offset" hint={HELP.offset}>
-              <input className="field" value={offset} onChange={(e) => setOffset(e.target.value)} />
+              <input className="field" value={offset} disabled={!canCapture} onChange={(e) => setOffset(e.target.value)} />
             </Field>
             <Field label="Binning" hint={HELP.binning}>
-              <select className="field" value={binning} onChange={(e) => setBinning(e.target.value)}>
+              <select className="field" value={binning} disabled={!canCapture} onChange={(e) => setBinning(e.target.value)}>
                 {[1, 2, 4].map((b) => <option key={b} value={b}>{b}×{b}</option>)}
               </select>
             </Field>
           </div>
           <div className="flex items-center gap-3 mt-3">
-            <Toggle checked={save} onChange={setSave} />
+            <Toggle checked={save} onChange={setSave} disabled={!canCapture} />
             <span className="text-xs text-dim">save FITS to library</span>
           </div>
           {save && (
             <div className="mt-2">
               <Field label="Target name">
-                <input className="field" placeholder="M42" value={target}
+                <input className="field" placeholder="M42" value={target} disabled={!canCapture}
                   onChange={(e) => setTarget(e.target.value)} />
               </Field>
             </div>
@@ -206,7 +210,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${phase === "exposing" || phase === "downloading" ? "btn-accent border-accent" : "btn-accent"}`}
               aria-pressed={inFlight && !looping}
-              disabled={looping || captureBlocked}
+              disabled={!canCapture || looping || captureBlocked}
               onClick={onSingle}>
               {inFlight && !looping
                 ? (phase === "downloading" ? "Reading…" : "Exposing…")
@@ -215,14 +219,16 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${looping ? "btn-accent border-accent" : ""}`}
               aria-pressed={looping}
-              disabled={looping || captureBlocked}
+              disabled={!canCapture || looping || captureBlocked}
               onClick={onLoop}>
               {looping ? "Looping…" : "Loop"}
             </button>
-            {/* Stop is urgent -> stays 1-tap (R9), enlarged for touch. */}
+            {/* Stop is urgent -> stays 1-tap (R9), enlarged for touch. Disabled for
+                viewers (no capture to stop — they can't have started one). */}
             <button
               className={`btn btn-danger tap-lg min-h-[56px] ${stopPressed ? "scale-95 brightness-110" : ""}`}
               aria-pressed={stopPressed}
+              disabled={!canCapture}
               onClick={onStop}>
               Stop
             </button>
@@ -286,10 +292,11 @@ export default function CaptureView() {
 
         {/* ------------------------------------------------------- filter */}
         {status?.filterwheel && (
-          <Panel title="Filter Wheel">
+          <Panel title="Filter Wheel" right={!canCapture && <ReadOnlyBadge />}>
             <div className="flex flex-wrap gap-2">
               {status.filterwheel.names.map((name, i) => (
                 <button key={name}
+                  disabled={!canCapture}
                   className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}
                   onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
                   {name}
@@ -301,7 +308,7 @@ export default function CaptureView() {
 
         {/* ------------------------------------------------------- cooler */}
         {cam?.can_cool && (
-          <Panel title="Cooler">
+          <Panel title="Cooler" right={!canCapture && <ReadOnlyBadge />}>
             {/* ---- cooling state indicator (item 3). LED+badge encode ON/OFF by
                  shape+text (night palette collapses color), with live power% and an
                  "at target" chip. Gracefully degrades when cooler is absent. ---- */}
@@ -331,19 +338,19 @@ export default function CaptureView() {
                 <Stat label="target" value={cooler.target_c.toFixed(1)} unit="°C" />
               )}
               <Field label="Target °C" hint={HELP.coolTo}>
-                <input className="field !w-20" value={coolerTarget}
+                <input className="field !w-20" value={coolerTarget} disabled={!canCapture}
                   onChange={(e) => setCoolerTarget(e.target.value)} />
               </Field>
               <button
                 className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
                 aria-pressed={!!cooler?.on}
-                disabled={!!cooler?.on}
+                disabled={!canCapture || !!cooler?.on}
                 onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: Number(coolerTarget) }))}>
                 {cooler?.on ? "Cooling" : "Cool"}
               </button>
               <button
                 className="btn tap min-h-[44px]"
-                disabled={cooler != null && !cooler.on}
+                disabled={!canCapture || (cooler != null && !cooler.on)}
                 onClick={() => act(() => api.post("/api/camera/cooler", { on: false }))}>
                 Warm
               </button>
@@ -357,7 +364,8 @@ export default function CaptureView() {
                 </div>
                 <input type="range" min={0} max={100} value={dew}
                   aria-label="dew heater power"
-                  className="w-full h-11 accent-(--accent) cursor-pointer touch-none"
+                  disabled={!canCapture}
+                  className={`w-full h-11 accent-(--accent) touch-none ${canCapture ? "cursor-pointer" : "opacity-50 cursor-default"}`}
                   onChange={(e) => { setDew(Number(e.target.value)); }}
                   onMouseUp={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))}
                   onTouchEnd={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))} />
