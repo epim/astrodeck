@@ -1,0 +1,99 @@
+"""Capability taxonomy + role->capabilities map (W2.1).
+
+This is the SINGLE SOURCE OF TRUTH for the capability strings and the role
+table. There is deliberately NO monolithic ``view`` capability and NO
+``config.mount_limits`` (both retired in W2.1) -- the boot-time route
+assertion (auth/rbac wiring, owned elsewhere) rejects any route tagged with
+either retired string.
+
+Import-light by design: this module imports NOTHING from the package (no
+``api.app``, no ``hub``, no ``config``) so it can be pulled into the boot
+assertion and into tests without an import cycle.
+"""
+from __future__ import annotations
+
+# --------------------------------------------------------------- capability set
+# view.* = read surfaces; control.* = device motion/imaging; config.* = settings
+# writes; admin.* = auth/remote administration.
+
+CAP_VIEW_STATUS = "view.status"            # read-only status + WS subscribe
+CAP_VIEW_PREVIEW = "view.preview"          # downsized preview frames (NOT raw FITS)
+CAP_VIEW_MEDIA = "view.media"              # raw FITS / full-res science (bulk)
+CAP_VIEW_SITE_PRECISE = "view.site_precise"  # precise lat/lon in hello/config frames
+
+CAP_CONTROL_CAPTURE = "control.capture"    # imaging: capture/loop/AF, cooler, dew, focuser, filter
+CAP_CONTROL_MOUNT = "control.mount"        # ALL mount MOTION (motion-boundary derived)
+CAP_CONTROL_GUIDE = "control.guide"        # start/stop/dither guiding
+CAP_CONTROL_POWER = "control.power"        # switch/set (can brown out the rig)
+
+CAP_CONFIG_SAFETY = "config.safety"            # DESTRUCTIVE: pier/horizon floors + safety/simulate
+CAP_CONFIG_SOLAR_OVERRIDE = "config.solar_override"  # daytime/sun-cone + force-bypass (seam)
+CAP_CONFIG_BACKEND = "config.backend"          # backend/profile connect & apply + managed-PHD2 spawn
+CAP_CONFIG_SITE_OPTICS = "config.site_optics"  # site coords + optics
+CAP_CONFIG_ALERTS = "config.alerts"            # alert sinks, escalation, deadman_url (SSRF/exfil sink)
+CAP_ADMIN_USERS = "admin.users"                # auth/remote config, role allowlist, jti revoke
+
+ALL_CAPS = frozenset({
+    CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_MEDIA, CAP_VIEW_SITE_PRECISE,
+    CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT, CAP_CONTROL_GUIDE, CAP_CONTROL_POWER,
+    CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONFIG_BACKEND,
+    CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS,
+})
+
+# DESTRUCTIVE group (UI double-confirms even for admin; W2.4/W2.5). Pinned here
+# so the future viewer/operator UI reads it from one place.
+DESTRUCTIVE_CAPS = frozenset({
+    CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE,
+    CAP_CONTROL_MOUNT, CAP_CONTROL_POWER, CAP_ADMIN_USERS,
+})
+
+# Retired capability strings. The boot-time route assertion fails create_app()
+# if any route is tagged with one of these (they guarded empty/merged surfaces).
+RETIRED_CAPS = frozenset({"view", "config.mount_limits"})
+
+# ---------------------------------------------------------------- role -> caps
+# The DEFAULT viewer set: live-watch only. EXCLUDES view.media + view.site_precise.
+# A future relay viewer-LINK carries this same default set (W2.5/W3.3), so the
+# local viewer role and the remote viewer link never drift apart.
+VIEWER_LINK_CAPS = frozenset({CAP_VIEW_STATUS, CAP_VIEW_PREVIEW})
+
+ROLES_CAP: dict[str, frozenset[str]] = {
+    # NO raw FITS, NO precise site.
+    "viewer": VIEWER_LINK_CAPS,
+    # imaging + guiding; NOT mount/power/config/media. An operator can run a
+    # single capture/loop + guiding (dither's bounded pulse_guide is the ONE
+    # accepted motion exception) but CANNOT start a slewing sequence.
+    "operator": frozenset({
+        CAP_VIEW_STATUS, CAP_VIEW_PREVIEW,
+        CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE,
+    }),
+    # everything incl. view.media, view.site_precise.
+    "admin": ALL_CAPS,
+}
+
+# Ordering = privilege rank (viewer is the ceiling for an untrusted default_role).
+ROLES = ("viewer", "operator", "admin")
+
+
+def caps_for_role(role: str) -> frozenset[str]:
+    """Resolve a role name -> its capability set. Unknown role -> empty set
+    (fail-closed: an unrecognized role holds NOTHING, never admin)."""
+    return ROLES_CAP.get(role, frozenset())
+
+
+def has_capability(role: str, cap: str) -> bool:
+    """True iff ``role`` (by the role->caps map) holds ``cap``.
+
+    Fail-closed for unknown roles and unknown capabilities."""
+    return cap in caps_for_role(role)
+
+
+def role_rank(role: str) -> int:
+    """Privilege rank of a role (index in ROLES); -1 for an unknown role.
+
+    Used to validate a default_role ceiling (e.g. a WAN default must be at most
+    ``viewer`` unless a Workspace hosted-domain is pinned)."""
+    try:
+        return ROLES.index(role)
+    except ValueError:
+        return -1

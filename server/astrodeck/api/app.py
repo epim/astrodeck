@@ -15,18 +15,27 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ..alerting import AlertDispatcher
+from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
+                    CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
+                    CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
+                    CAP_CONTROL_POWER, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
+                    CAP_VIEW_STATUS, Principal, configure_provider_from_auth,
+                    get_principal, require, resolve_principal)
+from ..auth.rbac import assert_route_capabilities, declare
 from ..catalog import search_catalog
 from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
-from ..config import (AlertSink, ConfigVersionConflict, EscalationConfig,
-                      Optics, SafetyConfig, Site, config_store, redacted)
+from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
+                      EscalationConfig, Optics, SafetyConfig, Site,
+                      config_store, redacted)
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
@@ -81,6 +90,14 @@ async def _lifespan(app: "FastAPI"):
     unpark/slew/track). A persisted in-progress sequence is NOT auto-resumed here
     (W1.6 PAUSED-PENDING-ACK) - the boot path deliberately does not call
     engine.start/resume."""
+    # Install the configured auth provider from persisted AuthConfig (W2.3). With
+    # the default ``provider="none"`` and no ``admin_token`` this is the open
+    # NoneAuthProvider, so behavior stays byte-for-byte today. Never raises out of
+    # boot: a bad provider config degrades to open-default rather than bricking.
+    try:
+        configure_provider_from_auth(config_store.cfg().auth)
+    except Exception as e:  # noqa: BLE001 - degrade to open-default, never crash boot
+        bus.log("error", f"auth provider init failed (open-default): {e}", "auth")
     task = asyncio.create_task(dispatcher.run())
     # Boot auto-connect the active profile (no-op on first run / no active
     # profile). MUST swallow every failure - a raise here bricks the whole UI.
@@ -341,7 +358,13 @@ class ConfigPatchBody(BaseModel):
     """Partial-merge config update (§1.10 POST /api/config). Every block is
     optional so the SettingsView can debounce-PUT only the panel that changed;
     an omitted block is left untouched. ``site`` rides through ``set_site`` so it
-    still flips ``is_default`` off and re-reads onto the mount."""
+    still flips ``is_default`` off and re-reads onto the mount.
+
+    RBAC fail-closed (W2.2 T-RBAC-8): ``extra="forbid"`` so a stray ``auth`` /
+    ``remote`` / unknown block is REJECTED at binding (422, merge NOTHING) instead
+    of being silently dropped. Auth/remote writes go through the dedicated
+    ``admin.users``-gated routes (``/api/auth/config`` etc.), NEVER this merge."""
+    model_config = ConfigDict(extra="forbid")
     site: Site | None = None
     safety: SafetyConfig | None = None
     escalation: EscalationConfig | None = None
@@ -352,6 +375,12 @@ class ConfigPatchBody(BaseModel):
 class SafetySimulateBody(BaseModel):
     unsafe: bool = True
     reason: str = "simulated unsafe condition"
+
+
+class JtiBody(BaseModel):
+    """A single session/link id to (un)revoke (POST /api/auth/revoke). The revoke
+    registry is append-only and ``admin.users``-gated."""
+    jti: str
 
 
 # ------------------------------------------------------------ optional auth (P0-4)
@@ -373,7 +402,10 @@ AUTH_ENV_VAR = "ASTRODECK_TOKEN"
 
 # Path prefixes that stay open even when a token is configured, so the browser can
 # fetch the UI bundle before it knows the token. The API + WS are NEVER in here.
-_AUTH_OPEN_PREFIXES = ("/assets",)
+# ``/auth/login`` + ``/auth/google/callback`` are the OIDC login dance (W2.4-C)
+# and must be reachable pre-session; ``/auth/logout`` is NOT here (it needs a
+# session). The RBAC boot assertion exempts these same auth-login paths.
+_AUTH_OPEN_PREFIXES = ("/assets", "/auth/login", "/auth/google/callback")
 _AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json"}
 
 
@@ -427,7 +459,9 @@ def _path_is_open(path: str) -> bool:
         return True
     if any(path == p or path.startswith(p + "/") for p in _AUTH_OPEN_PREFIXES):
         return True
-    if path.startswith("/api") or path.startswith("/ws"):
+    # /api, /ws and /auth (the auth surface — only the login dance above is open;
+    # /auth/logout + /api/auth/* are gated) are NEVER treated as an open SPA link.
+    if path.startswith("/api") or path.startswith("/ws") or path.startswith("/auth"):
         return False
     # A non-API path with no extension is an SPA deep link → index.html shell.
     last = path.rsplit("/", 1)[-1]
@@ -464,16 +498,19 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------ equipment
 
-    @app.get("/api/discover")
+    @app.get("/api/discover", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def discover():
         return await alpaca_backend.discover()
 
-    @app.get("/api/discover/nina")
+    @app.get("/api/discover/nina", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def discover_nina_instances(host: str = "", port: int = 1888):
         extra = [host] if host else None
         return await discover_nina(port=port, extra_hosts=extra)
 
-    @app.get("/api/discover/alpaca")
+    @app.get("/api/discover/alpaca", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def discover_alpaca_one(host: str, port: int = 11111):
         """Server-side proxy for a manual Alpaca host/port scan (the browser
         can't do this directly — CORS). 502 with a differentiated cause so a
@@ -492,7 +529,8 @@ def create_app() -> FastAPI:
             # lives in AlpacaScanError; surface only that.
             raise HTTPException(502, str(e))
 
-    @app.get("/api/backends")
+    @app.get("/api/backends", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def backends():
         """Every registered backend, JSON-able: ``[{name, label, roles,
         discoverable}, ...]`` ordered by name (the connect UI's backend picker).
@@ -502,7 +540,8 @@ def create_app() -> FastAPI:
         from ..devices.backend import list_backends
         return list_backends()
 
-    @app.get("/api/discover/{backend}")
+    @app.get("/api/discover/{backend}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def discover_backend(backend: str):
         """Delegate discovery to a named backend's ``discover()`` (unknown backend
         -> 404). A more general sibling of the legacy ``/api/discover``,
@@ -516,7 +555,8 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"unknown backend {backend!r}")
         return await b.discover()
 
-    @app.get("/api/nina/health")
+    @app.get("/api/nina/health", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def nina_health():
         """Backend↔NINA link health (same shape as the ``nina_link`` block on
         the status event). For tests + a future Rig-page readout."""
@@ -525,11 +565,13 @@ def create_app() -> FastAPI:
                                     "last_error": None, "healthy": False,
                                     "warming_up": False})
 
-    @app.post("/api/connect/sim")
+    @app.post("/api/connect/sim", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def connect_sim():
         return await hub.connect_sim()
 
-    @app.post("/api/connect/alpaca")
+    @app.post("/api/connect/alpaca", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def connect_alpaca(body: AlpacaConnectBody):
         # The 'safety' role gates the fail-closed SafetyMonitor poller, so a
         # non-safetymonitor device must not be allowed to occupy it (a wrong
@@ -544,7 +586,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
-    @app.post("/api/connect/phd2")
+    @app.post("/api/connect/phd2", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def connect_phd2(body: PHD2Body):
         try:
             await hub.connect_phd2(body.host, body.port)
@@ -552,7 +595,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise _err(e)
 
-    @app.post("/api/connect/nina")
+    @app.post("/api/connect/nina", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def connect_nina(body: NinaConnectBody):
         try:
             return await hub.connect_nina(body.host, body.port)
@@ -561,7 +605,8 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(502, f"NINA connection failed: {e}")
 
-    @app.post("/api/connect/rig")
+    @app.post("/api/connect/rig", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def connect_rig(body: RigSpecBody):
         """Connect a whole rig by RigSpec (the pluggable-backend connect path,
         W1.6). The ``primary`` backend fills every ROLE it can; ``roles`` carry
@@ -599,18 +644,21 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(502, f"rig connection failed: {e}")
 
-    @app.post("/api/disconnect")
+    @app.post("/api/disconnect", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def disconnect():
         if engine.running:
             await engine.abort()
         await hub.disconnect_all()
         return {"ok": True}
 
-    @app.get("/api/status")
+    @app.get("/api/status", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def status():
         return await hub.poll_status()
 
-    @app.get("/api/summary")
+    @app.get("/api/summary", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def summary():
         return hub.summary()
 
@@ -718,15 +766,73 @@ def create_app() -> FastAPI:
             if body.deadman_url or not config_store.cfg().deadman_url:
                 config_store.set_deadman(body.deadman_url)
 
-    @app.get("/api/config")
+    def _require_config_field_caps(body: ConfigPatchBody,
+                                   principal: Principal) -> None:
+        """Field-level RBAC for ``POST /api/config`` (plan field-level map).
+
+        Presence is determined by ``model_fields_set`` (NOT value-vs-default), so
+        a block explicitly sent (even == its default) is gated; an omitted block
+        is free. Atomic + fail-closed: if ANY present block's cap is not held, the
+        WHOLE request 403s and NOTHING is merged. An unknown/forbidden block (incl.
+        a stray ``auth``/``remote`` key -- which ``ConfigPatchBody`` doesn't even
+        model, so it can't be merged, but we still reject the body) also 403s.
+
+        Block -> required capability:
+          site                 -> config.site_optics
+          site.horizon_min_deg -> ALSO config.safety (a safety floor)
+          safety               -> config.safety
+          escalation           -> config.alerts   (notification/recovery policy)
+          alerts               -> config.alerts
+          deadman_url          -> config.alerts
+        """
+        present = body.model_fields_set
+        # Known, mapped blocks only. Any field on the body outside this map is a
+        # programming error (a new block added without a cap) -> fail closed.
+        block_caps = {
+            "site": CAP_CONFIG_SITE_OPTICS,
+            "safety": CAP_CONFIG_SAFETY,
+            "escalation": CAP_CONFIG_ALERTS,
+            "alerts": CAP_CONFIG_ALERTS,
+            "deadman_url": CAP_CONFIG_ALERTS,
+        }
+        for field in present:
+            cap = block_caps.get(field)
+            if cap is None:
+                # Unmapped/unknown block (or a forbidden auth/remote key that
+                # slipped through model config) -> reject the whole body.
+                raise HTTPException(403, detail={
+                    "detail": f"config block {field!r} is not permitted here",
+                    "code": "forbidden_block"})
+            if not principal.has(cap):
+                raise HTTPException(403, detail={
+                    "detail": f"capability not held for config block {field!r}",
+                    "code": "forbidden"})
+        # Nested: a present site.horizon_min_deg ALSO requires config.safety.
+        if "site" in present and body.site is not None \
+                and "horizon_min_deg" in body.site.model_fields_set:
+            if not principal.has(CAP_CONFIG_SAFETY):
+                raise HTTPException(403, detail={
+                    "detail": "config.safety required to set site.horizon_min_deg",
+                    "code": "forbidden"})
+
+    @app.get("/api/config", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def get_config():
         return _config_payload()
 
     @app.post("/api/config")
-    async def post_config(body: ConfigPatchBody):
+    @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY,
+             CAP_CONFIG_ALERTS)
+    async def post_config(body: ConfigPatchBody,
+                          principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Partial-merge persist of any subset of the automation config (§1.10).
         Re-reads ``hub.site`` (config-backed property) implicitly, pushes the
-        site to the mount when it changed, and broadcasts the redacted union."""
+        site to the mount when it changed, and broadcasts the redacted union.
+
+        FIELD-LEVEL RBAC: ``require(view.status)`` is the floor (any authenticated
+        caller); ``_require_config_field_caps`` then atomically enforces the
+        per-block capability before any write."""
+        _require_config_field_caps(body, principal)
         await asyncio.to_thread(_persist_config_patch, body)
         if body.site is not None:
             push = getattr(hub, "push_site_to_mount", None)
@@ -739,8 +845,27 @@ def create_app() -> FastAPI:
         bus.publish("config", config=redacted(config_store.cfg()))
         return _config_payload()
 
+    def _require_site_field_caps(body: SiteSaveBody, principal: Principal) -> None:
+        """Field-level RBAC for ``PUT/POST /api/site`` (plan): site coords need
+        ``config.site_optics``; a present ``horizon_min_deg`` (a safety floor)
+        ALSO needs ``config.safety``. Atomic: any missing cap 403s before any
+        write (the persisted config is left untouched)."""
+        if not principal.has(CAP_CONFIG_SITE_OPTICS):
+            raise HTTPException(403, detail={
+                "detail": "config.site_optics required to save site",
+                "code": "forbidden"})
+        if "horizon_min_deg" in body.model_fields_set \
+                and body.horizon_min_deg is not None \
+                and not principal.has(CAP_CONFIG_SAFETY):
+            raise HTTPException(403, detail={
+                "detail": "config.safety required to set horizon_min_deg",
+                "code": "forbidden"})
+
     @app.put("/api/site")
-    async def put_site(body: SiteSaveBody):
+    @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY)
+    async def put_site(body: SiteSaveBody,
+                       principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        _require_site_field_caps(body, principal)
         site = body.site
         # onboarding: an optional per-site minimum-altitude horizon rides the
         # save. The Site model carries the field; merge it in before persisting.
@@ -775,10 +900,13 @@ def create_app() -> FastAPI:
 
     # thin alias kept for backward compat (referenced nowhere in UI, cheap)
     @app.post("/api/site")
-    async def post_site(body: SiteSaveBody):
-        return await put_site(body)
+    @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY)
+    async def post_site(body: SiteSaveBody,
+                        principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        return await put_site(body, principal)
 
-    @app.put("/api/optics")
+    @app.put("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @declare(CAP_CONFIG_SITE_OPTICS)
     async def put_optics(body: OpticsSaveBody):
         try:
             # P2-3: offload the blocking disk write off the event loop.
@@ -793,11 +921,13 @@ def create_app() -> FastAPI:
         return _config_payload()
 
     # atlas alias: also seeds hub.optics (same persisted object)
-    @app.post("/api/optics")
+    @app.post("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @declare(CAP_CONFIG_SITE_OPTICS)
     async def post_optics(body: OpticsSaveBody):
         return await put_optics(body)
 
-    @app.get("/api/site/sky")
+    @app.get("/api/site/sky", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def site_sky(lat: float | None = None, lon: float | None = None):
         from ..catalog import coords
         s = config_store.cfg().site
@@ -818,7 +948,8 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------------- safety
 
-    @app.get("/api/safety/state")
+    @app.get("/api/safety/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def safety_state():
         """``{connected, reading|null, streak, stale}`` for the Monitor/Settings
         safety widget. ``reading`` is the hub's CACHED own-cadence read (never an
@@ -843,7 +974,8 @@ def create_app() -> FastAPI:
             "stale": stale,
         }
 
-    @app.post("/api/safety/simulate")
+    @app.post("/api/safety/simulate", dependencies=[Depends(require(CAP_CONFIG_SAFETY))])
+    @declare(CAP_CONFIG_SAFETY)
     async def safety_simulate(body: SafetySimulateBody):
         """Sim-only safety injection (404 unless ``mode == 'sim'``). Flips the
         simulated SafetyMonitor so the unattended gate can be exercised end-to-end
@@ -867,7 +999,8 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------------- alerts
 
-    @app.get("/api/alerts")
+    @app.get("/api/alerts", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def list_alerts():
         """Configured alert sinks with the Telegram token blanked (never sent to
         the client — the only secret kept at rest)."""
@@ -876,7 +1009,8 @@ def create_app() -> FastAPI:
             for s in config_store.cfg().alerts
         ]
 
-    @app.post("/api/alerts")
+    @app.post("/api/alerts", dependencies=[Depends(require(CAP_CONFIG_ALERTS))])
+    @declare(CAP_CONFIG_ALERTS)
     async def upsert_alert(sink: AlertSink):
         """Upsert one alert sink by id. ``verified`` is reset to False whenever the
         delivery identity (url/token/chat_id/kind) changes vs. the stored copy, so
@@ -901,14 +1035,16 @@ def create_app() -> FastAPI:
         return [s.model_copy(update={"token": ""}).model_dump()
                 for s in config_store.cfg().alerts]
 
-    @app.delete("/api/alerts/{sink_id}")
+    @app.delete("/api/alerts/{sink_id}", dependencies=[Depends(require(CAP_CONFIG_ALERTS))])
+    @declare(CAP_CONFIG_ALERTS)
     async def delete_alert(sink_id: str):
         alerts = [s for s in config_store.cfg().alerts if s.id != sink_id]
         await asyncio.to_thread(config_store.set_alerts, alerts)
         bus.publish("config", config=redacted(config_store.cfg()))
         return {"deleted": sink_id}
 
-    @app.post("/api/alerts/{sink_id}/test")
+    @app.post("/api/alerts/{sink_id}/test", dependencies=[Depends(require(CAP_CONFIG_ALERTS))])
+    @declare(CAP_CONFIG_ALERTS)
     async def test_alert(sink_id: str):
         """Real round-trip test of one sink (§1.8). On a genuine 2xx the sink's
         ``verified`` flag flips True and is persisted; otherwise the error is
@@ -925,12 +1061,14 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------------- reports
 
-    @app.get("/api/reports")
+    @app.get("/api/reports", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def list_reports():
         """Newest-first session-report summaries (no frame detail)."""
         return await asyncio.to_thread(SessionReporter.list_reports)
 
-    @app.get("/api/reports/{report_id}")
+    @app.get("/api/reports/{report_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def get_report(report_id: str):
         """One report + read-time-derived trend sparklines (404 if missing). The
         trends are computed from the frame records on read, never stored as
@@ -941,7 +1079,8 @@ def create_app() -> FastAPI:
         trends = SessionReporter.trends(report)
         return report.model_dump() | {"trends": trends}
 
-    @app.get("/api/reports/{report_id}/frames.csv")
+    @app.get("/api/reports/{report_id}/frames.csv", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def report_frames_csv(report_id: str):
         """Append-only frame list as CSV (power-user export). 404 if missing."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
@@ -964,18 +1103,21 @@ def create_app() -> FastAPI:
 
     # ----------------------------------------------------------------- profiles
 
-    @app.get("/api/profiles")
+    @app.get("/api/profiles", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def list_profiles():
         return profiles.list(config_store.cfg().active_profile_id)
 
-    @app.get("/api/profiles/{profile_id}")
+    @app.get("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def get_profile(profile_id: str):
         try:
             return profiles.get(profile_id)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "profile not found")
 
-    @app.post("/api/profiles")
+    @app.post("/api/profiles", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def save_profile(profile: Profile):
         # P0: never trust a client-supplied id for a NEW record (path-traversal
         # / arbitrary-file-write vector). Only honor the id as an upsert when a
@@ -988,13 +1130,15 @@ def create_app() -> FastAPI:
             invalidate()
         return row
 
-    @app.post("/api/profiles/capture")
+    @app.post("/api/profiles/capture", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def capture_profile(body: ProfileCaptureBody):
         if hub.mode == "none" or not hub.devices:
             raise HTTPException(409, "connect a rig before saving a profile")
         return await hub.capture_profile(body.name)
 
-    @app.patch("/api/profiles/{profile_id}")
+    @app.patch("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def rename_profile(profile_id: str, body: ProfileRenameBody):
         try:
             row = await asyncio.to_thread(profiles.rename, profile_id, body.name)
@@ -1005,7 +1149,8 @@ def create_app() -> FastAPI:
             invalidate()
         return row
 
-    @app.delete("/api/profiles/{profile_id}")
+    @app.delete("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def delete_profile(profile_id: str):
         await asyncio.to_thread(profiles.delete, profile_id)
         invalidate = getattr(hub, "invalidate_profile_cache", None)
@@ -1013,7 +1158,8 @@ def create_app() -> FastAPI:
             invalidate()
         return {"deleted": profile_id}
 
-    @app.post("/api/profiles/{profile_id}/apply")
+    @app.post("/api/profiles/{profile_id}/apply", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def apply_profile(profile_id: str, body: ProfileApplyBody | None = None):
         force = bool(body and body.force)
         try:
@@ -1030,7 +1176,8 @@ def create_app() -> FastAPI:
             await engine.abort()
         return _spawn("profile", hub.apply_profile(prof))
 
-    @app.post("/api/profiles/{profile_id}/activate")
+    @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def activate_profile(profile_id: str,
                                body: ProfileApplyBody | None = None):
         """Set a profile active AND connect its rig (W1.6 / C2). Reuses the
@@ -1056,18 +1203,21 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------------- plans
 
-    @app.get("/api/plans")
+    @app.get("/api/plans", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def list_plans():
         return plan_library.list()
 
-    @app.get("/api/plans/{plan_id}")
+    @app.get("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def get_plan(plan_id: str):
         try:
             return plan_library.get(plan_id)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "plan not found")
 
-    @app.post("/api/plans")
+    @app.post("/api/plans", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def save_plan(body: PlanSaveBody):
         # P0: only honor a client id as an upsert when that plan already exists;
         # otherwise mint the uuid server-side (None → library mints) so a crafted
@@ -1080,12 +1230,14 @@ def create_app() -> FastAPI:
                 "code": "name_collision"})
         return await asyncio.to_thread(plan_library.save, body.plan, plan_id)
 
-    @app.delete("/api/plans/{plan_id}")
+    @app.delete("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def delete_plan(plan_id: str):
         await asyncio.to_thread(plan_library.delete, plan_id)
         return {"deleted": plan_id}
 
-    @app.get("/api/plans/{plan_id}/export")
+    @app.get("/api/plans/{plan_id}/export", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def export_plan(plan_id: str):
         try:
             raw = plan_library.export_bytes(plan_id)
@@ -1096,7 +1248,8 @@ def create_app() -> FastAPI:
         return Response(raw, media_type="application/json", headers={
             "Content-Disposition": f'attachment; filename="{safe}.astroplan.json"'})
 
-    @app.post("/api/plans/import")
+    @app.post("/api/plans/import", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def import_plan(raw: dict):
         # Distinguish "exported by a newer AstroDeck" from genuinely-invalid so
         # the UI maps the two codes to different copy (C1-E19).
@@ -1123,7 +1276,8 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------- capture
 
-    @app.post("/api/capture")
+    @app.post("/api/capture", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def capture(body: CaptureBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
@@ -1135,7 +1289,8 @@ def create_app() -> FastAPI:
             body.exposure_s, body.gain, body.offset, body.binning,
             save=body.save, target=body.target, frame_type=body.frame_type))
 
-    @app.post("/api/capture/loop")
+    @app.post("/api/capture/loop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def capture_loop(body: CaptureBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
@@ -1146,7 +1301,8 @@ def create_app() -> FastAPI:
         hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning)
         return {"looping": True}
 
-    @app.post("/api/capture/stop")
+    @app.post("/api/capture/stop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def capture_stop():
         hub.stop_loop()
         task = hub._busy.get("capture")
@@ -1168,7 +1324,8 @@ def create_app() -> FastAPI:
 
     _PREVIEW_CACHE = {"Cache-Control": "max-age=3600"}
 
-    @app.get("/api/preview/{preview_id:int}")
+    @app.get("/api/preview/{preview_id:int}", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_display(preview_id: int):
         """Display bytes for the live loop, with the correct mime (JPEG for the
         linear path, NINA's JPEG verbatim otherwise).
@@ -1181,7 +1338,8 @@ def create_app() -> FastAPI:
         return Response(entry.display, media_type=entry.mime,
                         headers=_PREVIEW_CACHE)
 
-    @app.get("/api/preview/{preview_id}.png")
+    @app.get("/api/preview/{preview_id}.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_png_compat(preview_id: int):
         """Back-compat `.png` URL. Returns a REAL PNG (the lossless base) when one
         is held; otherwise 404 so callers fall back to `/`. Never a JPEG-under-
@@ -1197,7 +1355,8 @@ def create_app() -> FastAPI:
                             headers=_PREVIEW_CACHE)
         raise HTTPException(404, "no PNG for this frame — use /api/preview/{id}")
 
-    @app.get("/api/preview/{preview_id}/lossless.png")
+    @app.get("/api/preview/{preview_id}/lossless.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_lossless(preview_id: int):
         """Lossless stretched PNG for the paused/zoomed frame (latest 1–2 only).
         422 when the lossless base is no longer held (Pi memory cap)."""
@@ -1209,7 +1368,8 @@ def create_app() -> FastAPI:
         return Response(entry.lossless, media_type="image/png",
                         headers=_PREVIEW_CACHE)
 
-    @app.get("/api/preview/{preview_id}/thumb.jpg")
+    @app.get("/api/preview/{preview_id}/thumb.jpg", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_thumb(preview_id: int):
         """~160px JPEG thumbnail for the filmstrip (kept for many frames)."""
         thumb = hub.preview_thumbs.get(preview_id)
@@ -1220,7 +1380,8 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "thumbnail expired")
         return Response(thumb, media_type="image/jpeg", headers=_PREVIEW_CACHE)
 
-    @app.get("/api/preview/{preview_id}/fits")
+    @app.get("/api/preview/{preview_id}/fits", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
     async def preview_fits(preview_id: int):
         """The saved FITS for this frame, but only when it is a real file under
         CAPTURE_DIR (`saved_local`). The guard is the hub's own
@@ -1235,7 +1396,8 @@ def create_app() -> FastAPI:
         p = Path(saved_path).resolve()
         return FileResponse(p, media_type="application/fits", filename=p.name)
 
-    @app.get("/api/preview/{preview_id}/png")
+    @app.get("/api/preview/{preview_id}/png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_png_download(preview_id: int):
         """Full-res stretched PNG as a download (attachment)."""
         entry = hub.previews.get(preview_id)
@@ -1248,19 +1410,22 @@ def create_app() -> FastAPI:
             **_PREVIEW_CACHE,
             "Content-Disposition": f'attachment; filename="preview_{preview_id}.png"'})
 
-    @app.get("/api/preview/{preview_id}/crop")
+    @app.get("/api/preview/{preview_id}/crop", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_crop(preview_id: int, x: int = 0, y: int = 0,
                            w: int = 0, h: int = 0):
         """Sensor-1:1 ROI from linear data. Pass 2 — stubbed."""
         raise HTTPException(501, "preview crop is not implemented yet (Pass 2)")
 
-    @app.get("/api/preview/{preview_id}/render.png")
+    @app.get("/api/preview/{preview_id}/render.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def preview_render(preview_id: int, black: float = 0.0,
                              mid: float = 0.5, white: float = 1.0):
         """Server-side baked stretch / export. Pass 2 — stubbed."""
         raise HTTPException(501, "server render is not implemented yet (Pass 2)")
 
-    @app.post("/api/camera/cooler")
+    @app.post("/api/camera/cooler", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def cooler(body: CoolerBody):
         try:
             cam = hub.require("camera")
@@ -1269,7 +1434,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
-    @app.post("/api/camera/dew-heater")
+    @app.post("/api/camera/dew-heater", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def dew_heater(body: DewBody):
         try:
             cam = hub.require("camera")
@@ -1280,7 +1446,8 @@ def create_app() -> FastAPI:
 
     # ---------------------------------------------------------------- mount
 
-    @app.post("/api/mount/goto")
+    @app.post("/api/mount/goto", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
     async def goto(body: GotoBody):
         try:
             hub.require("telescope")
@@ -1305,7 +1472,8 @@ def create_app() -> FastAPI:
             bus.publish("mount", action="slew_complete")
         return _spawn("goto", plain_goto())
 
-    @app.post("/api/mount/solve_sync")
+    @app.post("/api/mount/solve_sync", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.sync"})
     async def solve_sync():
         try:
             hub.require("telescope"), hub.require("camera")
@@ -1313,7 +1481,8 @@ def create_app() -> FastAPI:
             raise _err(e)
         return _spawn("solve", hub.solve_and_sync())
 
-    @app.post("/api/mount/move")
+    @app.post("/api/mount/move", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.move_axis"})
     async def move_axis(body: MoveAxisBody):
         try:
             tel = hub.require("telescope")
@@ -1335,7 +1504,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
-    @app.post("/api/mount/stop")
+    @app.post("/api/mount/stop", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.stop"})
     async def mount_stop():
         try:
             tel = hub.require("telescope")
@@ -1354,7 +1524,8 @@ def create_app() -> FastAPI:
         hub.note_move("dec", 0.0)
         return {"ok": True}
 
-    @app.post("/api/mount/tracking")
+    @app.post("/api/mount/tracking", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.set_tracking"})
     async def tracking(on: bool):
         try:
             tel = hub.require("telescope")
@@ -1363,7 +1534,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
-    @app.post("/api/mount/park")
+    @app.post("/api/mount/park", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.park"})
     async def park():
         try:
             hub.require("telescope")
@@ -1371,7 +1543,8 @@ def create_app() -> FastAPI:
             raise _err(e)
         return _spawn("goto", hub.require("telescope").park())
 
-    @app.post("/api/mount/unpark")
+    @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.unpark"})
     async def unpark():
         try:
             tel = hub.require("telescope")
@@ -1382,7 +1555,8 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------- focuser
 
-    @app.post("/api/focuser/move")
+    @app.post("/api/focuser/move", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def focuser_move(body: FocuserMoveBody):
         try:
             foc = hub.require("focuser")
@@ -1390,7 +1564,8 @@ def create_app() -> FastAPI:
             raise _err(e)
         return _spawn("focuser", foc.move_to(body.position))
 
-    @app.post("/api/focuser/autofocus")
+    @app.post("/api/focuser/autofocus", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def autofocus(body: AutofocusBody):
         try:
             cam = hub.require("camera")
@@ -1401,7 +1576,8 @@ def create_app() -> FastAPI:
             cam, foc, exposure_s=body.exposure_s, gain=body.gain,
             step=body.step, steps_each_side=body.steps_each_side))
 
-    @app.post("/api/focuser/halt")
+    @app.post("/api/focuser/halt", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def focuser_halt():
         try:
             foc = hub.require("focuser")
@@ -1416,7 +1592,8 @@ def create_app() -> FastAPI:
 
     # ---------------------------------------------------------- filterwheel
 
-    @app.post("/api/filterwheel/position")
+    @app.post("/api/filterwheel/position", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def set_filter(body: FilterBody):
         try:
             fw = hub.require("filterwheel")
@@ -1426,7 +1603,8 @@ def create_app() -> FastAPI:
 
     # --------------------------------------------------------------- switch
 
-    @app.get("/api/switch/ports")
+    @app.get("/api/switch/ports", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def switch_ports():
         try:
             sw = hub.require("switch")
@@ -1434,7 +1612,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
-    @app.post("/api/switch/set")
+    @app.post("/api/switch/set", dependencies=[Depends(require(CAP_CONTROL_POWER))])
+    @declare(CAP_CONTROL_POWER)
     async def switch_set(body: SwitchBody):
         try:
             sw = hub.require("switch")
@@ -1445,26 +1624,30 @@ def create_app() -> FastAPI:
 
     # ---------------------------------------------------------------- guide
 
-    @app.post("/api/guide/start")
+    @app.post("/api/guide/start", dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
     async def guide_start():
         if not hub.guider or not hub.guider.connected:
             raise HTTPException(409, "no guider connected")
         return _spawn("guide", hub.guider.start_guiding())
 
-    @app.post("/api/guide/stop")
+    @app.post("/api/guide/stop", dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
     async def guide_stop():
         if not hub.guider:
             raise HTTPException(409, "no guider connected")
         await hub.guider.stop_guiding()
         return {"ok": True}
 
-    @app.post("/api/guide/dither")
+    @app.post("/api/guide/dither", dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
     async def guide_dither(body: DitherBody):
         if not hub.guider or not hub.guider.connected:
             raise HTTPException(409, "no guider connected")
         return _spawn("dither", hub.guider.dither(body.pixels))
 
-    @app.get("/api/guide/frame.png")
+    @app.get("/api/guide/frame.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
     async def guide_frame():
         """Auto-stretched PNG thumbnail of the current guide star (PHD2
         ``get_star_image`` in PHD2/NINA mode, a synthesized frame in sim). Cheap
@@ -1483,7 +1666,8 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------- sequence
 
-    @app.post("/api/sequence/start")
+    @app.post("/api/sequence/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
     async def sequence_start(body: StartSequenceBody):
         # F-P1.6: read plan/force from the JSON BODY (matches the GOTO body
         # convention and the UI's api.post `{ ...plan, force }`, which only ever
@@ -1523,28 +1707,33 @@ def create_app() -> FastAPI:
             raise _err(e)
         return {"started": True, "frames": plan.total_frames()}
 
-    @app.post("/api/sequence/pause")
+    @app.post("/api/sequence/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def sequence_pause():
         engine.pause()
         return {"paused": True}
 
-    @app.post("/api/sequence/resume")
+    @app.post("/api/sequence/resume", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def sequence_resume():
         engine.resume()
         return {"paused": False}
 
-    @app.post("/api/sequence/abort")
+    @app.post("/api/sequence/abort", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def sequence_abort():
         await engine.abort()
         return {"aborted": True}
 
-    @app.get("/api/sequence/state")
+    @app.get("/api/sequence/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def sequence_state():
         return engine.state | {"running": engine.running, "paused": engine.paused}
 
     # ----------------------------------------------------------------- monitor
 
-    @app.get("/api/monitor/snapshot")
+    @app.get("/api/monitor/snapshot", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def monitor_snapshot():
         """One-shot cold-load hydration for the Monitor view (monitor spec §8).
         Non-fatal: the WS catches up within ~2s, so the view never blocks on it.
@@ -1554,13 +1743,15 @@ def create_app() -> FastAPI:
             "running": engine.running, "paused": engine.paused}
         return snap
 
-    @app.get("/api/sequence/preflight")
+    @app.get("/api/sequence/preflight", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def sequence_preflight(ra_hours: float, dec_deg: float):
         """Live single-target altitude verdict from the current site. Returns
         ``unknown`` while the site is still the default (no trustworthy answer)."""
         return _preflight_alt(ra_hours, dec_deg)
 
-    @app.post("/api/sequence/preflight")
+    @app.post("/api/sequence/preflight", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
     async def sequence_preflight_plan(plan: SequencePlan):
         """Plan-wide, NON-BLOCKING pre-flight (§1.10 / C2-11). A DIFFERENT route
         from the GET single-target verdict above (same path, different verb — no
@@ -1606,7 +1797,8 @@ def create_app() -> FastAPI:
                     })
         return {"ok": not warnings, "warnings": warnings}
 
-    @app.get("/api/sequence/recoverable")
+    @app.get("/api/sequence/recoverable", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def sequence_recoverable():
         data = engine.load_resume()
         if not data:
@@ -1616,7 +1808,8 @@ def create_app() -> FastAPI:
         return {"recoverable": True, "name": plan.name, "frames_done": done,
                 "frames_total": plan.total_frames(), "ts": data.get("ts")}
 
-    @app.post("/api/sequence/recover")
+    @app.post("/api/sequence/recover", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
     async def sequence_recover():
         data = engine.load_resume()
         if not data:
@@ -1635,7 +1828,8 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------- polar align
 
-    @app.post("/api/polar/start")
+    @app.post("/api/polar/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"PolarSession.start"})
     async def polar_start():
         try:
             await hub.polar.start()
@@ -1643,28 +1837,33 @@ def create_app() -> FastAPI:
             raise HTTPException(409, str(e))
         return {"started": True, "source": hub.polar.state["source"]}
 
-    @app.post("/api/polar/stop")
+    @app.post("/api/polar/stop", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def polar_stop():
         await hub.polar.stop()
         return {"ok": True}
 
-    @app.post("/api/polar/pause")
+    @app.post("/api/polar/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def polar_pause():
         await hub.polar.pause()
         return {"ok": True}
 
-    @app.post("/api/polar/resume")
+    @app.post("/api/polar/resume", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
     async def polar_resume():
         await hub.polar.resume()
         return {"ok": True}
 
-    @app.get("/api/polar/state")
+    @app.get("/api/polar/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def polar_state():
         return hub.polar.state | {"running": hub.polar.running}
 
     # -------------------------------------------------------------- catalog
 
-    @app.get("/api/catalog")
+    @app.get("/api/catalog", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def catalog(q: str = ""):
         from ..catalog import altaz
         results = search_catalog(q)
@@ -1675,9 +1874,97 @@ def create_app() -> FastAPI:
             r["az"] = round(az, 1)
         return results
 
-    @app.get("/api/logs")
+    @app.get("/api/logs", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
     async def logs():
         return bus.log_history
+
+    # ----------------------------------------------------- identity / auth admin
+    # W2.5 client seam + the admin.users-gated auth/remote/revoke surface. These
+    # are the ONLY way to write AuthConfig (NEVER via POST /api/config, whose
+    # ConfigPatchBody forbids auth/remote blocks).
+
+    @app.get("/api/me", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def whoami(principal: Principal = Depends(get_principal)):
+        """The genuinely-resolved caller identity (W2.5). FAIL-CLOSED: a None
+        resolution is a 401 (``get_principal``), never a default-admin. Under the
+        open ``none`` provider this returns admin/ALL_CAPS as today; under a real
+        provider it returns the caller's actual ``{role, email, caps}``."""
+        return principal.to_public()
+
+    def _reconfigure_provider() -> None:
+        """Re-install the active provider from the freshly-persisted AuthConfig so
+        a role-allowlist / revoke / provider change takes effect immediately (no
+        restart). Never raises out of the route (degrade, log)."""
+        try:
+            configure_provider_from_auth(config_store.cfg().auth)
+        except Exception as e:  # noqa: BLE001
+            bus.log("error", f"auth provider re-init failed: {e}", "auth")
+
+    @app.post("/api/auth/config", dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def set_auth_config(auth: AuthConfig):
+        """Persist a new ``AuthConfig`` (admin.users-gated). Validates the pinned
+        rules (provider/role/default_role ceiling/append-only revoke registry) via
+        ``ConfigStore.set_auth``; a violation is a 400. Re-installs the provider
+        and broadcasts the REDACTED config so the UI updates without a restart."""
+        try:
+            cfg = await asyncio.to_thread(config_store.set_auth, auth)
+        except ValueError as e:
+            raise HTTPException(400, detail={"detail": str(e), "code": "invalid_auth"})
+        _reconfigure_provider()
+        bus.publish("config", config=redacted(cfg))
+        return redacted(cfg)["auth"]
+
+    @app.post("/api/remote/config", dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def set_remote_config(auth: AuthConfig):
+        """W3 relay-config seam (admin.users-gated). The relay/remote knobs live on
+        the same ``AuthConfig`` (relay_pubkey / viewer_link_pubkey); this dedicated
+        admin route exists now so the relay lane never has to touch ``app.py``.
+        Today it persists AuthConfig exactly like ``/api/auth/config``."""
+        try:
+            cfg = await asyncio.to_thread(config_store.set_auth, auth)
+        except ValueError as e:
+            raise HTTPException(400, detail={"detail": str(e), "code": "invalid_auth"})
+        _reconfigure_provider()
+        bus.publish("config", config=redacted(cfg))
+        return redacted(cfg)["auth"]
+
+    @app.post("/api/auth/revoke", dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def revoke_jti(body: JtiBody):
+        """APPEND a session/link id to the revoke registry (admin.users-gated).
+        Append-only: the registry can only grow, so a revoked session can never be
+        un-revoked by a config merge (only the explicit unrevoke route below)."""
+        auth = config_store.cfg().auth
+        if body.jti in auth.revoked_jti:
+            return {"revoked": list(auth.revoked_jti)}
+        new = auth.model_copy(update={"revoked_jti": [*auth.revoked_jti, body.jti]})
+        try:
+            cfg = await asyncio.to_thread(config_store.set_auth, new)
+        except ValueError as e:
+            raise HTTPException(400, detail={"detail": str(e), "code": "invalid_auth"})
+        _reconfigure_provider()
+        return {"revoked": list(cfg.auth.revoked_jti)}
+
+    @app.post("/api/auth/unrevoke", dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def unrevoke_jti(body: JtiBody):
+        """Remove a jti from the revoke registry (admin.users-gated). This is the
+        ONLY path that may shrink the registry (``set_auth``'s append-only guard is
+        bypassed here by passing the shrunk list as the new baseline)."""
+        auth = config_store.cfg().auth
+        remaining = [j for j in auth.revoked_jti if j != body.jti]
+        # set_auth refuses to shrink vs. current; build the new cfg so current==new
+        # for the registry by writing the model directly through a fresh validate.
+        new = auth.model_copy(update={"revoked_jti": remaining})
+        cfg = config_store.cfg()
+        cfg.auth = new
+        await asyncio.to_thread(config_store.bump_and_save)
+        _reconfigure_provider()
+        return {"revoked": list(new.revoked_jti)}
 
     # ------------------------------------------------------------ websocket
 
@@ -1697,6 +1984,19 @@ def create_app() -> FastAPI:
             if not _token_ok(supplied):
                 await websocket.close(code=1008)
                 return
+        # RBAC accept-time subscribe gate (W2.2). The WS is SEND-ONLY (it never
+        # calls receive()), so there is no control channel to gate -- the only
+        # gate is "may this principal subscribe to the status stream?", i.e.
+        # ``view.status``. Resolve the principal via the active provider (the
+        # WebSocket is request-like enough for ``resolve_principal``). Under the
+        # open ``none`` provider every caller is admin -> holds view.status, so
+        # the default LAN path is byte-for-byte today. A principal lacking
+        # ``view.status`` (or an unauthenticated caller under a real provider) is
+        # closed 1008 BEFORE accept, never joining the bus.
+        principal = await resolve_principal(websocket)
+        if principal is None or not principal.has(CAP_VIEW_STATUS):
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         q = bus.subscribe()
         try:
@@ -1709,6 +2009,17 @@ def create_app() -> FastAPI:
         finally:
             bus.unsubscribe(q)
 
+    # --------------------------------------------------- auth router (OIDC, W2.4-C)
+    # The OIDC login/callback/logout APIRouter is owned by the provider lane
+    # (auth/routes.py). Include it if present so the apply-lane and the
+    # provider-lane never fight over app.py. Absent today -> a no-op import guard
+    # (the seam is reserved; the login paths are already in _AUTH_OPEN_PREFIXES).
+    try:
+        from ..auth.routes import router as auth_router  # type: ignore
+        app.include_router(auth_router)
+    except Exception:  # noqa: BLE001 - router not present yet; seam reserved
+        pass
+
     # ------------------------------------------------------------ static UI
 
     if UI_DIST.exists():
@@ -1720,5 +2031,27 @@ def create_app() -> FastAPI:
             if path and target.is_file():
                 return FileResponse(target)
             return FileResponse(UI_DIST / "index.html")
+
+    # ----------------------------------------- BOOT RBAC route assertion (W2.2)
+    # Fail create_app() LOUDLY if any mutating route is un-gated, tagged with a
+    # retired cap, or reaches a motion sink without control.mount. The SPA
+    # catch-all + the open auth-login dance are exempt. This runs LAST so every
+    # route (incl. the included routers) is present when it enumerates.
+    # The two atlas POST routes (/api/framing/mosaic, /api/visibility/order) are
+    # pure STATELESS COMPUTE owned by the Sky-Atlas lanes -- they take a structured
+    # body (hence POST) but mutate NO server state and command NO device, so they
+    # are read-equivalent and exempt from the mutating-cap requirement. (A future
+    # pass can gate them view.status in their own modules; the seam is noted.)
+    #
+    # The whole ``/auth`` prefix is owned by the provider lane's auth/routes.py
+    # (the OIDC login dance + self-revoke logout + fail-closed /auth/me). Those
+    # routes self-gate (login is open pre-session; logout revokes your OWN session
+    # without admin.users; /auth/me is fail-closed) rather than via require(), so
+    # the prefix is exempt from this app-side mutating-cap assertion.
+    assert_route_capabilities(
+        app,
+        exempt_paths={"/{path:path}", "/api/framing/mosaic",
+                      "/api/visibility/order"},
+        exempt_prefixes=("/assets", "/auth"))
 
     return app
