@@ -177,6 +177,153 @@ def test_save_rejects_new_record_at_cap(tmp_path, monkeypatch):
     assert lib.save(a)["name"] == "A renamed"
 
 
+# ------------------------------------------------ Stage B: RigSpec persistence
+#
+# A persisted Profile must map onto a live RigSpec (the single Profile->RigSpec
+# mapper the hub + boot path both call). These cover the three migration cases
+# the spec T4(5) pins: legacy ``alpaca``->``native`` alias, legacy ``nina_host``-
+# only, and the new ``primary_backend`` + per-device ``extra`` fields round-trip.
+
+def test_to_rigspec_legacy_alpaca_aliases_to_native():
+    """T4(5): a Profile in the OLD on-disk schema (a ProfileDevice with
+    backend="alpaca", no extra/primary_backend) deserializes, and to_rigspec maps
+    backend="alpaca" -> ConnSpec(backend="native") via the migration alias -- NOT
+    a KeyError in get_backend."""
+    import astrodeck.devices.backends as _b  # noqa: F401 -- registration side effect
+    from astrodeck.devices.backend import get_backend
+
+    # the literal old-schema dict (no ``extra``, no ``primary_backend`` keys)
+    legacy_json = {
+        "id": "11111111-1111-1111-1111-111111111111",
+        "name": "Legacy Alpaca Rig",
+        "devices": [
+            {"role": "camera", "backend": "alpaca", "host": "10.0.0.5",
+             "port": 11111, "dev_type": "camera", "dev_num": 0, "name": "ASI2600"},
+            {"role": "telescope", "backend": "alpaca", "host": "10.0.0.5",
+             "port": 11111, "dev_type": "telescope", "dev_num": 0},
+        ],
+    }
+    prof = Profile(**legacy_json)            # old JSON still deserializes
+    assert prof.primary_backend == "sim"     # field defaulted (forward-compat)
+    spec = prof.to_rigspec()
+    # every alpaca device is now on the ``native`` backend (the alias), and that
+    # backend is registered (no KeyError).
+    assert spec.roles["camera"].backend == "native"
+    assert spec.roles["telescope"].backend == "native"
+    get_backend(spec.roles["camera"].backend)   # would KeyError if unmapped
+    # device identity preserved through the mapping; the display name folds into
+    # ConnSpec.extra['name'] so the native session can label the device.
+    cam = spec.roles["camera"]
+    assert cam.host == "10.0.0.5" and cam.port == 11111 and cam.dev_type == "camera"
+    assert cam.extra.get("name") == "ASI2600"
+    # An old-schema dict deserializes with the default primary_backend="sim"
+    # (truthy), so the pinned ``primary or derived`` keeps "sim". The per-role
+    # native overrides above still drive the device connections; the primary is
+    # only the fallback for roles WITHOUT an override. The derivation path is
+    # exercised explicitly below via an empty primary_backend.
+    assert spec.primary == "sim"
+
+
+def test_to_rigspec_derives_native_when_primary_blank():
+    """When ``primary_backend`` is explicitly blank (a hand-written/migrated
+    profile), the device-shape derivation kicks in: any device row -> 'native'."""
+    import astrodeck.devices.backends as _b  # noqa: F401 -- registration side effect
+
+    p = Profile(name="d", primary_backend="", devices=[
+        ProfileDevice(role="camera", backend="alpaca", host="h", port=1)])
+    assert p.to_rigspec().primary == "native"
+    # blank + nina_host + no rows -> nina
+    n = Profile(name="n", primary_backend="", nina_host="127.0.0.1")
+    assert n.to_rigspec().primary == "nina"
+    # blank + nothing -> sim
+    e = Profile(name="e", primary_backend="")
+    assert e.to_rigspec().primary == "sim"
+
+
+def test_to_rigspec_legacy_nina_host_only():
+    """T4(5): a legacy nina_host-only profile (no device rows) deserializes and
+    maps to RigSpec(primary="nina", roles={}); requested roles then resolve from
+    NINA's fillable set."""
+    import astrodeck.devices.backends as _b  # noqa: F401 -- registration side effect
+    from astrodeck.devices.backend import get_backend
+
+    prof = Profile(**{"id": "22222222-2222-2222-2222-222222222222",
+                      "name": "Legacy NINA", "nina_host": "127.0.0.1"})
+    spec = prof.to_rigspec()
+    assert spec.primary == "nina"
+    assert spec.roles == {}
+    # a role with no override resolves to a default ConnSpec on the primary, so
+    # the requested roles are exactly NINA's fillable set.
+    nina_roles = set(get_backend("nina").roles)
+    assert "camera" in nina_roles
+    assert spec.resolve("camera").backend == "nina"
+
+
+def test_profile_new_fields_round_trip(tmp_path):
+    """New fields (primary_backend + per-device extra) save/load unchanged, and an
+    old profile JSON without these keys still loads via pydantic defaults."""
+    lib = _lib(tmp_path)
+    p = Profile(
+        name="Native Rig",
+        primary_backend="native",
+        devices=[ProfileDevice(role="guider", backend="phd2",
+                               extra={"pixel_scale_arcsec": 1.5})],
+    )
+    lib.save(p)
+    loaded = lib.get(p.id)
+    assert loaded.primary_backend == "native"
+    assert loaded.devices[0].extra == {"pixel_scale_arcsec": 1.5}
+    # the extra survives into the RigSpec ConnSpec verbatim.
+    spec = loaded.to_rigspec()
+    assert spec.roles["guider"].backend == "phd2"
+    assert spec.roles["guider"].extra.get("pixel_scale_arcsec") == 1.5
+    # an OLD profile json with neither new key still loads (defaults fill in).
+    old = Profile(**{"id": "33333333-3333-3333-3333-333333333333",
+                     "name": "Old", "devices": [
+                         {"role": "camera", "backend": "alpaca"}]})
+    assert old.primary_backend == "sim"
+    assert old.devices[0].extra == {}
+
+
+def test_to_rigspec_empty_profile_defaults_to_sim():
+    """A genuinely empty profile (no devices, no nina_host) keeps the literal
+    primary_backend default of 'sim' -- the empty-rig fallback."""
+    spec = Profile(name="empty").to_rigspec()
+    assert spec.primary == "sim"
+    assert spec.roles == {}
+
+
+def test_to_rigspec_explicit_primary_wins_over_derived():
+    """An explicit non-default primary_backend is honored over the legacy
+    device-shape derivation (so a user can pin e.g. a sim primary on a rig that
+    also carries native device rows)."""
+    p = Profile(name="mixed", primary_backend="nina", devices=[
+        ProfileDevice(role="camera", backend="alpaca", host="h", port=1)])
+    spec = p.to_rigspec()
+    assert spec.primary == "nina"               # explicit field, not derived
+    assert spec.roles["camera"].backend == "native"  # device row still aliased
+
+
+@pytest.mark.asyncio
+async def test_to_rigspec_connects_a_sim_rig(monkeypatch):
+    """End-to-end shape check on the hostless sim backend (no network): a profile
+    with primary='sim' connects through the orchestrator and yields a live rig
+    keyed by role -- proving to_rigspec produces an orchestrator-consumable spec."""
+    import astrodeck.devices.backends as _b  # noqa: F401 -- registration side effect
+    from astrodeck.devices.orchestrator import connect_profile
+
+    spec = Profile(name="Sim", primary_backend="sim").to_rigspec()
+    result = await connect_profile(spec)
+    try:
+        assert "camera" in result.rig and "telescope" in result.rig
+        # every requested role got a tri-state RoleResult.
+        assert {r.role for r in result.results}
+        assert all(rr.attempted for rr in result.results if rr.ok)
+    finally:
+        for sess in result.sessions.values():
+            await sess.close()
+
+
 @pytest.mark.asyncio
 async def test_capture_profile_reads_device_identity(tmp_path, monkeypatch):
     import astrodeck.config as config_mod

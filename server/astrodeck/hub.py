@@ -12,7 +12,7 @@ import shutil
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -47,6 +47,10 @@ from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
 from .solve import get_solver
+
+if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
+    from .devices.backend import ConnSpec, RigSpec
+    from .devices.orchestrator import ConnectResult
 
 #: The device roles a rig fills. Imported from ``devices.backend`` (the single
 #: source of truth, a 7-tuple INCLUDING ``guider``) so hub and backend can never
@@ -146,6 +150,12 @@ class Hub:
         # an Alpaca device (host/port/dev_type/dev_num/name). Populated in every
         # connect path; consumed by reconnect_role() (escalation/reconnect_resume).
         self._last_connect: dict[str, dict] = {}
+        # the last connect-by-profile / connect-by-rig / boot ConnectResult, retained
+        # so the boot-LED grid (backend_links) can report the per-role tri-state that
+        # survives a page reload (W1.6). None until the first RigSpec connect / after
+        # a manual disconnect. The legacy connect_sim/connect_nina/connect_alpaca_device
+        # paths leave it None (they predate this surface and report via self.devices).
+        self.last_connect_result: ConnectResult | None = None
         self._nina_ws_task: asyncio.Task | None = None
         self._nina_hb_task: asyncio.Task | None = None   # 5s NINA heartbeat
         self._bridge_ready = False              # false until first successful NINA poll
@@ -300,6 +310,150 @@ class Hub:
         self.guider = PHD2Guider(host, port)
         await self.guider.connect()
 
+    # ------------------------------------------------- connect by profile / rig
+
+    async def connect_rigspec(self, spec: "RigSpec", *, set_active: str | None = None,
+                              profile: "Profile | None" = None) -> dict:
+        """The single low-level connect-by-RigSpec entry: the profile path, the
+        ``/api/connect/rig`` route and boot auto-connect all funnel through here.
+
+        Tears down any current rig FIRST (so a failed open never strands the live
+        rig mid-flight -- same order as ``connect_sim``), then runs the Stage A
+        orchestrator (graceful per-role degrade: a failed role becomes a not-ok
+        ``RoleResult`` and is simply absent from ``result.rig``), applies the
+        ``ConnectResult`` onto hub state, and -- only on success -- records the
+        active-profile pointer. An unexpected raise from ``connect_profile`` (it
+        first tears down any sessions it opened, no transport leak) propagates to
+        the caller; the API maps it to 4xx/502 and the boot path swallows it.
+
+        NEVER initiates motion: it only opens device connections (no unpark / slew
+        / set_tracking)."""
+        await self.disconnect_all()
+        RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
+        result = await connect_profile(spec)
+        summary = await self._apply_connect_result(result, primary=spec.primary)
+        if set_active is not None:
+            await asyncio.to_thread(config_store.set_active_profile, set_active)
+            if profile is not None:
+                # seed the active-profile cache from the object we already hold so
+                # the next effective_optics() is served from memory (no disk read).
+                self._profile_cache = profile
+                self._profile_cache_id = set_active
+        return {
+            "summary": summary,
+            "results": [vars(rr) for rr in result.results],
+            "backend_links": self.backend_links(),
+        }
+
+    async def connect_profile_id(self, pid: str) -> dict:
+        """Connect the persisted profile ``pid`` (its ``to_rigspec()``) and set it
+        active on success. Raises ``KeyError`` if the id is unknown (the API maps
+        it to 404). The disk read is offloaded so it never blocks the event loop."""
+        prof = await asyncio.to_thread(profiles.get, pid)
+        return await self.connect_rigspec(prof.to_rigspec(), set_active=pid,
+                                          profile=prof)
+
+    async def connect_active(self) -> dict | None:
+        """Connect the active profile if one is set, else a clean no-op (None).
+
+        The single entry the boot path calls. Returns None on first run / when no
+        ``active_profile_id`` is configured, so boot connects nothing."""
+        pid = config_store.cfg().active_profile_id
+        if not pid:
+            return None
+        return await self.connect_profile_id(pid)
+
+    async def _apply_connect_result(self, result: "ConnectResult", *, primary: str,
+                                    last_connect_meta: dict[str, dict] | None = None
+                                    ) -> dict:
+        """Map a ``ConnectResult`` onto hub state -- the single generalized place
+        that does what ``connect_sim``/``connect_nina`` do inline.
+
+        The CALLER tears the current rig down BEFORE building ``result`` (so a
+        failed open never tears down a working rig mid-flight). Here we connect
+        each device the orchestrator produced (idempotent), wire the guider /
+        guide camera, derive ``self.mode`` from the primary backend, set the
+        sim/NINA handles only when the primary exposes them, retain the
+        ``ConnectResult`` for the boot-LED grid, and start the pollers."""
+        meta = last_connect_meta or {}
+        for role in ROLES:
+            dev = result.rig.get(role)
+            if dev is None:
+                continue
+            await dev.connect()                       # idempotent
+            self.devices[role] = dev
+            # record enough to replay this connection (reconnect_role); default to
+            # the device's own backend label so a native reconnect still works.
+            self._last_connect[role] = meta.get(
+                role, {"backend": getattr(dev, "backend", primary)})
+        # dedicated guide camera (sim only; None for nina/native/phd2).
+        if result.guide_camera is not None:
+            await result.guide_camera.connect()
+            self.devices["guide_camera"] = result.guide_camera
+        # guider: the guider-role session's native guider (SimGuider / NinaGuider /
+        # PHD2). None when the rig has no guider role / it degraded.
+        self.guider = result.guider
+        if self.guider is not None:
+            await self.guider.connect()
+        # sim/NINA handles: set ONLY from the PRIMARY session, read via the
+        # Protocol-safe accessors (sim ``shared_state`` / nina ``client``) exactly
+        # as the existing connect_* methods do -- never a blanket attribute read.
+        self.sim_rig = None
+        self.nina_client = None
+        if primary == "sim":
+            session = self._primary_session(result, "sim")
+            if session is not None:
+                self.sim_rig = session.shared_state
+        elif primary == "nina":
+            session = self._primary_session(result, "nina")
+            if session is not None:
+                self.nina_client = session.client
+        # derived rig label. The legacy UI / poll_status / _preview_source key off
+        # "alpaca" for the direct path, so map native -> "alpaca" (W1.6 PIN).
+        self.mode = "alpaca" if primary == "native" else primary
+        # retain the tri-state result for the boot-LED grid (backend_links).
+        self.last_connect_result = result
+        self.ensure_status_poller()
+        if primary == "nina":
+            self._start_nina_ws()
+        connected = [r for r in ROLES if r in self.devices]
+        roles = ", ".join(connected) or "no equipment connected"
+        bus.log("info", f"rig connected ({self.mode}) -- {roles}", "hub")
+        return self.summary()
+
+    @staticmethod
+    def _primary_session(result: "ConnectResult", backend_name: str):
+        """The open session for ``backend_name`` (the rig's primary), or None.
+
+        Sessions are keyed by ``(backend, host, port)``; return the first whose
+        backend matches so the hub can read its sim ``shared_state`` / nina
+        ``client`` without reaching off-Protocol."""
+        for key, session in result.sessions.items():
+            if key[0] == backend_name:
+                return session
+        return None
+
+    def backend_links(self) -> list[dict]:
+        """The per-role boot-LED surface (W1.6): the retained ConnectResult's
+        tri-state ``RoleResult`` joined with each role's LIVE ``connected`` state.
+
+        ``[]`` when no RigSpec connect has happened (the legacy connect_* paths
+        don't populate ``last_connect_result``)."""
+        res = self.last_connect_result
+        if res is None:
+            return []
+        out: list[dict] = []
+        for rr in res.results:
+            dev = self.devices.get(rr.role)
+            out.append({
+                "role": rr.role,
+                "ok": rr.ok,
+                "error": rr.error,
+                "attempted": rr.attempted,
+                "connected": bool(dev is not None and getattr(dev, "connected", False)),
+            })
+        return out
+
     async def disconnect_all(self) -> None:
         self.stop_loop()
         await self.polar.stop()
@@ -346,6 +500,8 @@ class Hub:
             self.nina_client = None
         self.sim_rig = None
         self.mode = "none"
+        # a manual disconnect clears the boot-LED grid (no stale tri-state).
+        self.last_connect_result = None
         bus.log("info", "all equipment disconnected", "hub")
 
     def require(self, role: str):
@@ -426,6 +582,8 @@ class Hub:
             # latest cached SafetyReading (None until the first poll / no monitor),
             # and the redacted config snapshot (alert tokens blanked).
             "safety": (self._safety_reading_dict(sr) if sr is not None else None),
+            # per-role boot-LED tri-state (W1.6); [] for the legacy connect_* paths.
+            "backend_links": self.backend_links(),
             "config": redacted(config_store.cfg()),
         }
 
@@ -1308,6 +1466,13 @@ class Hub:
                        "horizon_min_deg": s["horizon_min_deg"]}
         out["optics"] = self.effective_optics()        # in-process, no device I/O
         out["busy"] = self.busy_label                  # reliability: busy-aware stale
+        # boot-LED grid that survives a page reload (W1.6): the retained per-role
+        # tri-state + a single boot-failure flag, riding the existing 2s WS push.
+        out["backend_links"] = self.backend_links()
+        out["boot_connect_failed"] = bool(
+            self.last_connect_result is not None
+            and any(not rr.ok and rr.attempted
+                    for rr in self.last_connect_result.results))
         try:
             du = shutil.disk_usage(CAPTURE_DIR)
             free_gb = du.free / 1e9

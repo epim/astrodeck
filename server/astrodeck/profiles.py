@@ -13,6 +13,7 @@ at read time by the hub (it never stomps the global config).
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -20,10 +21,20 @@ from pydantic import BaseModel, Field
 from .config import PROFILES_DIR, Optics
 from .persist import ensure_dir, list_json, read_json_or, write_json_atomic
 
+if TYPE_CHECKING:  # avoid an import cycle at runtime (backend imports are lazy)
+    from .devices.backend import RigSpec
+
 # Soft quota: refuse new records past this (a client can otherwise fill the disk
 # and degrade every list/name-check linearly). Upserting an existing id is always
 # allowed so an at-cap library can still be edited. The API maps LibraryFull → 409.
 MAX_PROFILES = 500
+
+# Legacy-migration alias (Stage B / spec T4(5)): the on-disk schema used the
+# label ``"alpaca"`` for the direct-Alpaca path; the pluggable registry names that
+# backend ``"native"``. A legacy ``ProfileDevice(backend="alpaca")`` must map to
+# the ``native`` backend through ``to_rigspec`` rather than KeyError in
+# ``get_backend``. This is the single most upgrade-day-breaking case, pinned here.
+_BACKEND_ALIAS: dict[str, str] = {"alpaca": "native"}
 
 
 class LibraryFull(ValueError):
@@ -38,18 +49,29 @@ class LibraryFull(ValueError):
 
 
 class ProfileDevice(BaseModel):
-    role: str                    # camera|telescope|focuser|filterwheel|switch
-    backend: str = "alpaca"      # "alpaca" | "nina"  (PER-DEVICE — supports mixed rigs)
+    role: str                    # camera|telescope|focuser|guider|filterwheel|switch|safety
+    backend: str = "alpaca"      # "alpaca"|"native"|"nina"|... (PER-DEVICE — mixed rigs)
     host: str = ""
     port: int = 0
     dev_type: str = ""
     dev_num: int = 0
     name: str = ""
+    # Stage B: carries ``ConnSpec.extra`` (backend-specific options, e.g. a PHD2
+    # pixel scale). Additive + JSON-able only — a non-serializable runtime
+    # injection (the NINA ``build_rig`` callable) is NEVER persisted here; see
+    # ``to_rigspec`` which copies ``extra`` verbatim plus a derived ``name``.
+    extra: dict = Field(default_factory=dict)
 
 
 class Profile(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))  # immutable identity
     name: str = "New Profile"    # display only; mutable; may collide → prompt
+    # Stage B: the RigSpec primary (default backend for any role with no explicit
+    # per-device override). Old profiles on disk lack this key → pydantic defaults
+    # to "sim", but ``to_rigspec`` derives a better primary for legacy shapes
+    # (nina_host-only → "nina", any device row → "native") so the literal default
+    # only bites a genuinely empty profile.
+    primary_backend: str = "sim"
     devices: list[ProfileDevice] = []
     nina_host: str | None = None
     nina_port: int = 1888
@@ -69,6 +91,57 @@ class Profile(BaseModel):
         if backends:
             return "mixed"
         return "empty"
+
+    def _derived_primary(self) -> str:
+        """Best-guess RigSpec primary for a legacy profile that predates
+        ``primary_backend``. A ``nina_host``-only rig → ``"nina"``; any per-device
+        row → ``"native"`` (the post-alias direct-Alpaca name); otherwise the
+        empty-rig fallback ``"sim"``."""
+        if self.nina_host and not self.devices:
+            return "nina"
+        if self.devices:
+            return "native"
+        return "sim"
+
+    def to_rigspec(self) -> "RigSpec":
+        """Map this persisted profile onto a live ``RigSpec`` (the single
+        Profile→RigSpec mapper the hub + tests both call).
+
+        Per-device rows become per-role ``ConnSpec`` overrides on the registry
+        backend (with the ``alpaca``→``native`` migration alias applied), and the
+        display ``name`` is folded into ``ConnSpec.extra['name']`` so the native
+        session can label the device. The non-serializable NINA ``build_rig``
+        runtime injection is NEVER read from a profile, so nothing unsafe leaks
+        into ``extra``. A legacy ``nina_host``-only profile (no device rows) is
+        expressed as ``primary="nina"`` with no overrides; primary-derived
+        resolution then fills NINA's roles.
+        """
+        # Imported lazily to keep ``profiles`` import-light and cycle-free.
+        from .devices.backend import ConnSpec, RigSpec
+
+        primary = self.primary_backend or self._derived_primary()
+        roles: dict[str, ConnSpec] = {}
+        for d in self.devices:
+            backend = _BACKEND_ALIAS.get(d.backend, d.backend)   # alpaca -> native
+            extra = dict(d.extra or {})
+            if d.name:
+                extra.setdefault("name", d.name)
+            roles[d.role] = ConnSpec(
+                backend=backend,
+                host=d.host or None,
+                port=d.port or None,
+                dev_type=d.dev_type or None,
+                dev_num=d.dev_num,
+                role=d.role,
+                extra=extra,
+            )
+        # Legacy nina_host-only profile (no per-device rows): the rig IS NINA, so
+        # the primary is nina and the roles resolve from primary at connect time.
+        if self.nina_host and not self.devices:
+            primary = "nina"
+        return RigSpec(primary=primary, roles=roles)
+        # TODO(W2): redact ConnSpec.extra secrets at-rest if a future backend
+        # stores a credential there; no profile-borne secret exists in Stage B.
 
     def row(self, active_id: str | None = None) -> dict:
         return {
