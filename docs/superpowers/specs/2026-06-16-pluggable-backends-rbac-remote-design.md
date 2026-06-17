@@ -1486,6 +1486,85 @@ class AuthConfig(BaseModel):
 > Only the token-verification helper is shared; everything about cookie domain, PKCE custody, and `state`/`nonce`
 > validation is topology-specific.
 
+#### W2.3-bis Multi-method auth (`local` + `google` enabled together) — supersedes the single-`provider` field
+
+The single `AuthConfig.provider: str = "none"` is **too narrow**: an offline rig (phone/tablet straight to the box, no
+internet) needs a **username + bcrypt-password** login, AND that login must be able to coexist with Google OIDC on a
+home that is sometimes online. So `provider` is **generalized to an enabled-METHODS list** and a `LocalAuthProvider` is
+added alongside the existing `GoogleAuthProvider`. **SAML is explicitly out of scope** (dropped by the user) — do NOT
+add it to the method enum or anywhere else.
+
+**Methods model.**
+```python
+class AuthConfig(BaseModel):
+    # NEW (multi-method). Empty list => OPEN/admin (today's byte-for-byte default).
+    methods: list[str] = []          # subset of {"local", "google"}; order is irrelevant
+    # DEPRECATED-but-honored for migration (see below). Never written back.
+    provider: str = "none"           # legacy single-provider; "none"|"google"
+    admin_token: str = ""            # break-glass bearer => admin (secret); ALWAYS active, method-independent
+    # --- local auth (NEW) ---
+    local_enabled_first_run: bool = True   # allow the first-admin setup route while the user store is EMPTY
+    session_ttl_s: int = 8 * 3600          # session cookie lifetime for BOTH local + google logins
+    # --- google (UNCHANGED) ---
+    google_client_id: str = ""
+    google_client_secret: str = ""   # secret
+    google_redirect_uri: str = ""
+    google_hd: str = ""
+    role_allowlist: dict[str, str] = {}    # email -> role; re-evaluated EVERY request (google)
+    default_role: str | None = None        # google default role (or None=deny); the `viewer`-ceiling rule still applies
+    # --- signing / revoke (UNCHANGED) ---
+    session_signing_alg: str = "EdDSA"     # W3 seam; the home session is HMAC today (auth/session.py)
+    session_private_key: str = ""
+    session_public_key: str = ""
+    relay_pubkey: str = ""
+    viewer_link_pubkey: str = ""
+    revoked_jti: list[str] = []            # append-only deny registry; admin.users-gated ONLY
+```
+`user_store_path` is NOT an `AuthConfig` field — the user store lives at a FIXED location (`server/config/users.json`,
+next to `astrodeck.json`) so a config that disables auth can never relocate or orphan the credential file, and so the
+`create-admin` CLI can find it without reading `AuthConfig`.
+
+**Migration (read-time, in `AuthConfig` model-validator — old `astrodeck.json` files load unchanged).** If `methods`
+is **empty** AND the legacy `provider == "google"`, treat it as `methods == ["google"]`; `provider in {"none",""}` with
+empty `methods` stays **OPEN/admin** (today's default). `provider` is **never written back** — once any `/api/auth/config`
+write occurs, the persisted shape carries `methods` and the legacy field is left at its default. **`admin.users` writes
+that set `methods` must also blank a stale `provider`** is NOT required (the validator's precedence is: a non-empty
+`methods` wins and `provider` is ignored), but the redactor and `/api/auth/config` response report only `methods`.
+
+**`resolve_principal` chain (pinned order; FIRST non-None wins, fail-closed otherwise).** This is the SAME single
+`resolve_principal` seam (`deps.py`) — multi-method is realized as a `MultiAuthProvider` that the chain composes, NOT as
+N parallel middlewares:
+1. **Break-glass admin token** (`admin_token`/`ASTRODECK_TOKEN`) — if set AND the bearer matches → **admin**. Always
+   active regardless of `methods`, so it can NEVER lock you out (anti-lockout #1).
+2. **Session cookie** (`ad_session`, HMAC-signed) — the SAME cookie whether it was minted by the LOCAL login or the
+   GOOGLE callback (both call `sign_session(role, email, jti, ttl_s)`), so `SessionCookieProvider` resolves BOTH with no
+   per-method branch; its `revoked_jti` check is unchanged.
+3. **None** — if `methods` is empty → **admin** (open default, today's behavior); else (a real method is enabled and no
+   cookie/token matched) → **None** (fail-closed 401).
+
+```python
+# auth/providers.py (extend)
+class MultiAuthProvider:
+    """Composes the enabled methods behind ONE resolve(). name is the join of
+    enabled method names (e.g. "local+google") so the W3 remote-interlock check
+    `name == "none"` is still correct (a composed provider is never "none")."""
+    name: str                                   # "local", "google", "local+google", ...
+    def __init__(self, *, methods, admin_token, revoked_jti, role_allowlist,
+                 default_role, google_hd): ...
+    async def resolve(self, request) -> Principal | None:
+        # 1) break-glass token  2) session cookie (local OR google)  3) None (fail-closed)
+```
+`build_provider(auth_cfg)` (in `deps.py`) selects: empty `methods` (after migration) **and** no `admin_token` →
+`NoneAuthProvider`; empty `methods` **with** `admin_token` → `TokenAdminProvider` (unchanged); otherwise →
+`MultiAuthProvider(methods=...)`. The W3 per-request remote interlock (`resolve_principal(remote=True)` hard-denies when
+`provider.name == "none"`) is preserved verbatim — only a `NoneAuthProvider` is named `"none"`, so enabling ANY method
+closes the open-default-over-WAN hole exactly as before.
+
+> **`session_ttl_s`, `methods`, `local_enabled_first_run` are privilege-defining and ride `admin.users` ONLY** — same
+> rule as the rest of `AuthConfig` (W2.2): they are NEVER accepted by the general `POST /api/config` merge, only by the
+> dedicated `admin.users`-gated `POST /api/auth/config`. A `config.alerts` holder cannot flip `methods` back to empty
+> (which would re-open the rig to admin-for-all) — that is the exact escalation W2.2 forbids.
+
 ### W2.5 Client role model — viewer surfaces are READ-ONLY in the UI, not 403-on-tap
 
 The UI has **no concept of role today**. With server-only enforcement, a viewer sees live slew pads / capture / park /
@@ -1566,7 +1645,149 @@ B) `AuthConfig` + asymmetric signed-session JWT issue/verify + `jti` registry + 
 role model (W2.5) + DESTRUCTIVE double-confirm** (pulled FORWARD — it must ship with the first non-admin role OR with
 ANY remote exposure, NOT at the tail after viewer links could already be deployed; reuse the existing `confirmDialog`
 **hold** mode with tone `danger` + `HoldButton`). C) `GoogleProvider` (OIDC verify + PKCE + state/nonce/`email_verified`
-/`hd`) + login UI. D) `operator` role.
+/`hd`) + login UI. **C2 (LOCAL AUTH — W2.6)** `UserStore` + `LocalAuthProvider` + `MultiAuthProvider` + `methods` model
++ `POST /auth/local` login + `admin.users` user-CRUD routes + first-run setup route + `create-admin` CLI + bcrypt
+dependency + the login/Users/auth-method UI (ships with or after C; needs the W2.5 client role model already present).
+D) `operator` role.
+
+### W2.6 — User management + local auth (offline, no internet)
+
+**Goal.** A rig with no internet (phone/tablet → box) needs a real login without Google. Add a `local` method
+(username + bcrypt password) and real **user management**, both behind the existing capability/session machinery, while
+keeping the **NON-BREAKING** guarantee: with `methods == []` the server is still OPEN (every caller = admin). A method
+enforces ONLY once explicitly enabled. **All three anti-lockout paths ship together** (see below).
+
+**Dependency.** Add **`bcrypt>=4.1`** to `server/pyproject.toml` `dependencies` and `pip install bcrypt` into
+`server/.venv` (it is NOT installed today — verified). Use the `bcrypt` package directly (NOT `passlib`): `bcrypt.hashpw`
++ `bcrypt.checkpw`, **cost factor 12** (`bcrypt.gensalt(12)`). `checkpw` is constant-time internally. bcrypt silently
+truncates input at 72 bytes, so the login/CRUD layer **rejects passwords longer than 72 bytes** (UTF-8 encoded) with a
+422 rather than letting them be silently truncated. The stored `password_hash` is the full `$2b$12$...` string.
+
+**UserStore — `server/astrodeck/auth/users.py` (NEW).** A small JSON-backed store, SAME atomicity discipline as
+`ConfigStore` (reuse `persist.write_json_atomic` / `read_json_or`), at the FIXED path `server/config/users.json`
+(`CONFIG_DIR / "users.json"`). It is a SEPARATE file from `astrodeck.json` so credentials never ride the config merge /
+redaction / broadcast paths and the `create-admin` CLI needs no `AuthConfig`.
+
+```python
+# auth/users.py  (NEW)
+class User(BaseModel):
+    id: str                       # opaque uuid4 hex; stable across username changes
+    username: str                 # unique, case-folded for lookup (stored lower); 1..64 chars
+    email: str | None = None      # optional; used only for display + (future) google linking
+    role: str                     # "viewer" | "operator" | "admin" (validated against ROLES)
+    password_hash: str            # bcrypt "$2b$12$..."; SECRET — NEVER serialized to any API
+    enabled: bool = True          # a disabled user cannot log in (existing sessions still need jti-revoke)
+    created: float                # unix ts (time.time())
+
+    def to_public(self) -> dict:  # the ONLY shape any API/UI ever sees
+        return {"id": self.id, "username": self.username, "email": self.email,
+                "role": self.role, "enabled": self.enabled, "created": self.created}
+        # password_hash is STRUCTURALLY ABSENT here — there is no code path that returns it.
+
+class UserStore:
+    def __init__(self, path: Path = CONFIG_DIR / "users.json"): ...
+    # -- reads --
+    def is_empty(self) -> bool: ...                       # gates the first-run route
+    def list(self) -> list[User]: ...                     # callers MUST .to_public() before serializing
+    def get(self, user_id: str) -> User | None: ...
+    def get_by_username(self, username: str) -> User | None: ...   # case-folded lookup
+    # -- writes (each does an atomic full-file rewrite + in-mem refresh) --
+    def create(self, *, username: str, password: str, role: str,
+               email: str | None = None, enabled: bool = True) -> User: ...   # hashes; raises on dup username
+    def set_password(self, user_id: str, password: str) -> User: ...          # re-hash; bumps nothing else
+    def set_role(self, user_id: str, role: str) -> User: ...
+    def set_enabled(self, user_id: str, enabled: bool) -> User: ...
+    def rename(self, user_id: str, username: str) -> User: ...                # dup-checked
+    def delete(self, user_id: str) -> None: ...
+    # -- auth --
+    def verify(self, username: str, password: str) -> User | None:
+        # case-folded username lookup -> bcrypt.checkpw -> enabled check.
+        # Returns None (not a reason) on ANY failure (unknown user, bad pw, disabled)
+        # so the login route cannot leak which of the three failed (timing + message).
+        ...
+```
+**Invariants (pinned):** (1) `password_hash` is NEVER returned by `to_public()`, `UserStore.list()` consumers, the
+`/api/users` routes, or any broadcast — there is exactly ONE place it is read (`verify`) and ONE place it is written
+(the hashing in `create`/`set_password`). (2) **The redactor (`api/app.py redacted()`) need not touch users** because
+users.json is never part of the broadcast config; but if a user dict ever reaches a response it MUST be via `to_public`.
+(3) **You cannot delete or disable the LAST enabled admin** — `delete`/`set_enabled(False)`/`set_role` away from admin
+**raise `ValueError("last admin")`** when it would leave zero enabled admins (the route maps it to 409), so the UI can
+never strand the rig. (4) Username uniqueness is **case-folded** (`ADMIN` == `admin`).
+
+**LocalAuthProvider + login flow.** The provider itself adds **no new resolve path** — a local login mints the SAME
+`ad_session` cookie the `SessionCookieProvider` already resolves (chain step 2 above), so `LocalAuthProvider` is realized
+as a **login route** + the existing session resolution, composed under `MultiAuthProvider`. Flow:
+```
+POST /auth/local  {username, password}
+  -> UserStore.verify(username, password)            # bcrypt, constant-time, enabled-gated
+  -> None  => 401 {"detail": "invalid credentials"}  # generic, no which-field leak
+  -> User  => jti = token_urlsafe(16)
+              token = sign_session(user.role, email=user.email, jti=jti, ttl_s=auth.session_ttl_s)
+              Set-Cookie ad_session=<token>  HttpOnly, SameSite=Strict, Secure-on-HTTPS, path=/
+              200 {"role": ..., "email": ...}         # same public shape as /auth/me
+```
+This reuses the cookie/CSRF posture already pinned for the google session (SameSite=Strict + the SPA also sends the
+session as `Authorization: Bearer` on mutations). `POST /auth/local` is **only mounted/active when `"local" in methods`**
+(else 404), mirroring how `/auth/login` 404s when google is off. **Logout is the EXISTING `POST /auth/logout`** — it
+clears `ad_session` and appends the `jti` to `revoked_jti`, identical for local and google sessions (no new route).
+
+**First-run setup (anti-lockout #3).** `POST /auth/setup/local {username, password}` creates the FIRST admin:
+- **Gated to `UserStore.is_empty()` AND `"local" in methods` AND `auth.local_enabled_first_run`.** Once ANY user exists
+  it returns **409 `{"detail": "setup already complete"}`** — it auto-closes; there is no flag to flip.
+- Reachable from **localhost/LAN without a session** (it is added to the auth-middleware open set the SAME way the login
+  dance is, BUT only while the store is empty — the handler itself re-checks emptiness, so the open-path is not a
+  bypass once a user exists). It always creates the user with `role="admin"`, `enabled=True`.
+- After creating the first admin it returns 200 and the UI proceeds to the normal login screen.
+
+**CLI (anti-lockout #2) — `python -m astrodeck create-admin <username>`.** An `argparse` SUBCOMMAND added to
+`__main__.py` (today `main()` parses only `--host/--port`; restructure to a subparser where the **no-subcommand default
+is `run`** so `python -m astrodeck` and `python -m astrodeck run --host ...` both still start the server unchanged):
+```
+python -m astrodeck create-admin <username> [--password PW]   # seeds OR resets a local admin; does NOT start the server
+python -m astrodeck run [--host H] [--port P]                 # default subcommand == today's behavior
+```
+`create-admin`: if the user exists → **reset its password + force role=admin + enabled=True** (recovery); else create a
+new admin. `--password` is optional; when omitted, read it interactively WITHOUT echo (`getpass.getpass`) and confirm.
+It writes `users.json` directly via `UserStore` and **never imports `api.app` / starts uvicorn**, so it works on a box
+that won't boot the server. **Break-glass token (anti-lockout #1)** is unchanged — `ASTRODECK_TOKEN`/`admin_token`
+always resolves to admin (chain step 1), independent of `methods` or the user store.
+
+**Route + CLI surface (pinned, all NEW user routes behind `admin.users` except login/setup).** These live in a new
+`auth/users_routes.py` `APIRouter` (so `api/app.py` is untouched, mirroring `auth/routes.py`), included via the same
+`try: include_router` seam:
+| Method + path | Cap | Notes |
+|---|---|---|
+| `POST /auth/local` | (open; only when `"local" in methods`) | username+password → session cookie; 401 on failure |
+| `POST /auth/setup/local` | (open; only while store EMPTY + local on) | first-admin; 409 once any user exists |
+| `POST /auth/logout` | (self) | EXISTING route; clears cookie + revokes jti (no change) |
+| `GET  /api/users` | `admin.users` | `[to_public(), ...]` — NEVER `password_hash` |
+| `POST /api/users` | `admin.users` | create `{username,password,role,email?}` → `to_public()`; 409 on dup |
+| `PATCH /api/users/{id}` | `admin.users` | role/enabled/email/username; enforces "last admin" 409 |
+| `POST /api/users/{id}/password` | `admin.users` | admin reset of another user's password |
+| `DELETE /api/users/{id}` | `admin.users` | enforces "last admin" 409 |
+| `GET  /api/auth/methods` | (open) | `{"methods": [...], "google_configured": bool, "first_run": bool}` — the LOGIN SCREEN reads this to decide which buttons/forms to show; discloses NO secrets |
+
+`methods` itself is edited through the EXISTING `POST /api/auth/config` (`admin.users`-gated) which already persists the
+whole `AuthConfig`; no new method-config route is needed.
+
+**UI surface.**
+- **Login screen** (`ui/src/views/Login.tsx`, shown when `/auth/me` 401s under a real method): reads
+  `GET /api/auth/methods`; renders (a) a **local username/password form** when `"local"` is enabled, (b) a **"Sign in
+  with Google"** button (→ `/auth/login`) when `"google"` is enabled + configured, and (c) the **first-run create-admin
+  form** when `first_run` is true (store empty). With `methods == []` the app never shows Login (open/admin) — unchanged.
+- **Admin → Users panel** (under Settings, gated client-side on `caps` including `admin.users`): table of `to_public()`
+  users with add / edit-role / enable-disable / reset-password / delete, each destructive action using the EXISTING
+  `HoldButton`/`confirmDialog` danger pattern (W2.5). "Last admin" 409s surface as an inline error.
+- **Auth-method config panel** (Settings, `admin.users`): toggle `local`/`google` in `methods`, set `session_ttl_s`, and
+  the existing google_* / allowlist / default_role fields; saves via `POST /api/auth/config`. Shows a LOUD note that
+  setting `methods == []` re-opens the rig to admin-for-all on the LAN.
+
+**Tests (additive to §T6).** bcrypt round-trip + wrong-password reject; `verify` returns None (not a reason) for
+unknown/disabled/bad-pw; `to_public()` has NO `password_hash` (assert the key is absent); the "last admin" guard 409s on
+delete/disable/role-change; first-run route 409s once a user exists; `methods == []` still resolves admin (non-breaking);
+a `local`-minted cookie resolves via `SessionCookieProvider` exactly like a google-minted one; `create-admin` CLI seeds
+then resets without importing `api.app`; a `config.alerts`-only principal CANNOT flip `methods`/`session_ttl_s` via
+`POST /api/config` (rejected, registry/auth unchanged — extends the W2.2 §T6 case).
 
 ---
 

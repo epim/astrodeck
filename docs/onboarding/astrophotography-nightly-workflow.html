@@ -1,0 +1,2684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck — A Night, Step by Step</title>
+<meta name="description" content="The order of operations an astrophotographer runs on an average night, and what AstroDeck does at each step — for developers new to the domain.">
+
+<!-- Same brand family as the primer: Fraunces (display) + Newsreader (body) + IBM Plex Mono (data/labels) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN SYSTEM — tokens (same brand language as the primer)
+     The whole document inherits from here. Authors reference
+     these with var(--name) and invent nothing global.
+     ============================================================ */
+  :root {
+    /* --- color: deep-space canvas, warm amber lamp --- */
+    --c-bg:          #0a0d16;   /* near-black, faint blue — the night */
+    --c-bg-raised:   #11151f;   /* cards, panels, topic blocks */
+    --c-bg-sunk:     #070910;   /* wells, code, fact insets */
+    --c-ink:         #ece7df;   /* primary text — warm paper white */
+    --c-ink-soft:    #b3ada3;   /* secondary text */
+    --c-ink-faint:   #6d6a64;   /* hairline decoration, the quiet non-text stuff */
+    --c-caption:     #8a857c;   /* faint TEXT meant to be read — AA on bg */
+    --c-line:        #232838;   /* hairlines and borders */
+    --c-accent:      #e8a849;   /* amber — THE accent, one moment per block */
+    --c-accent-soft: #f0c483;   /* lighter amber for hovers / glints */
+    --c-accent-deep: #b8791f;   /* pressed / underlines */
+    --c-cool:        #6f9bd8;   /* cool counter-accent (sky, links), sparingly */
+    --c-good:        #74c69d;   /* "this is fine" green, rarely needed */
+    --c-warn:        #d98b6a;   /* warm "what breaks" rust, used on risk lines */
+
+    /* --- type --- */
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body:    "Newsreader", Georgia, serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* a confident modular scale (~1.25) */
+    --t-xs:   0.78rem;
+    --t-sm:   0.92rem;
+    --t-base: 1.05rem;     /* slightly tighter than the primer — this is a reference, not an essay */
+    --t-lg:   1.32rem;
+    --t-xl:   1.75rem;
+    --t-2xl:  2.3rem;
+    --t-3xl:  3rem;
+    --t-4xl:  clamp(2.6rem, 6vw, 4.5rem);
+
+    --leading-tight: 1.12;
+    --leading-snug:  1.3;
+    --leading-body:  1.55;
+
+    /* --- space: an 8px-ish rhythm, trimmed for a compact card feel --- */
+    --s-1: 0.5rem;
+    --s-2: 1rem;
+    --s-3: 1.5rem;
+    --s-4: 2rem;
+    --s-5: 3rem;
+    --s-6: 4.5rem;
+    --s-7: 6.5rem;
+    --s-8: 9rem;
+
+    /* --- layout --- */
+    --measure:      40rem;    /* reading width inside a block */
+    --measure-wide: 64rem;    /* the reference grid / wide figures */
+    --gutter:       clamp(1.1rem, 4vw, 3rem);
+
+    /* --- depth + edges --- */
+    --radius:    14px;
+    --radius-sm: 9px;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.75);
+    --ring:      0 0 0 1px var(--c-line);
+
+    /* --- motion --- */
+    --ease:      cubic-bezier(0.22, 1, 0.36, 1);   /* gentle, overshoot-free */
+    --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur:       0.6s;
+    --dur-fast:  0.3s;
+  }
+
+  /* ============================================================
+     RESET + GLOBAL ELEMENTS
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: var(--font-body);
+    font-size: var(--t-base);
+    line-height: var(--leading-body);
+    font-weight: 400;
+    letter-spacing: 0.002em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* faint star-dust gradient so the dark never reads as flat #000 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 800px at 82% -10%, rgba(232,168,73,0.07), transparent 60%),
+      radial-gradient(900px 700px at 6% 14%, rgba(111,155,216,0.05), transparent 55%),
+      radial-gradient(1100px 900px at 50% 118%, rgba(111,155,216,0.045), transparent 60%);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.015em;
+    margin: 0 0 var(--s-2);
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--t-4xl); font-weight: 500; }
+  h2 { font-size: var(--t-2xl); }
+  h3 { font-size: var(--t-lg); }
+  h4 { font-size: var(--t-base); }
+
+  p { margin: 0 0 var(--s-2); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--c-cool);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-cool) 35%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  a:hover { color: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  strong, b { font-weight: 600; color: var(--c-ink); }
+  em { font-style: italic; }
+
+  code, kbd, samp {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+    color: var(--c-accent-soft);
+  }
+
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--c-line);
+    margin: var(--s-4) 0;
+  }
+
+  ::selection { background: var(--c-accent); color: #1a1206; }
+
+  img, svg, canvas { max-width: 100%; display: block; }
+
+  /* ============================================================
+     LAYOUT — the reference card
+     Each topic is a .precis-topic block: compact, lifted off the
+     page, with a hairline edge. Blocks sit on a wide centered
+     column and breathe with efficient whitespace.
+     ============================================================ */
+  main { display: block; }
+
+  /* The outer band for one topic. Holds vertical rhythm + the wide column. */
+  .precis-topic {
+    position: relative;
+    padding: var(--s-5) var(--gutter);
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    scroll-margin-top: var(--s-4);
+  }
+
+  /* The lifted card the topic actually lives in. */
+  .precis-card {
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--c-bg-raised) 92%, var(--c-accent) 2%),
+      var(--c-bg-raised));
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: clamp(1.4rem, 3.5vw, var(--s-5));
+    overflow: clip;
+  }
+
+  /* ---- the masthead: one card-height intro before topic 01 ---- */
+  .precis-masthead {
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+    padding: var(--s-6) var(--gutter) var(--s-3);
+  }
+  .precis-masthead .precis-eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin: 0 0 var(--s-2);
+  }
+  .precis-masthead h1 { max-width: 16ch; margin-bottom: var(--s-3); }
+  .precis-masthead .precis-standfirst {
+    font-family: var(--font-body);
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin: 0;
+  }
+  /* the "how to read a card" legend: def -> facts -> BREAKS -> UI */
+  .precis-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em 0.8em;
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-faint);
+  }
+  .precis-legend b { color: var(--c-ink-soft); font-weight: 500; }
+  .precis-legend .precis-legend-arrow { color: var(--c-ink-faint); opacity: 0.7; }
+  .precis-legend .precis-legend-breaks { color: var(--c-warn); }
+  .precis-legend .precis-legend-ui { color: var(--c-accent); }
+
+  /* ---- shared topic furniture ---- */
+
+  /* mono label above a topic title */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: var(--s-1);
+    display: flex;
+    align-items: baseline;
+    gap: 0.7em;
+  }
+  /* optional running number in the kicker (e.g. "03 / Polar Alignment") */
+  .kicker .num { color: var(--c-ink-faint); }
+
+  /* the crisp one-line definition under the title */
+  .def {
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+    max-width: var(--measure);
+    margin-bottom: var(--s-3);
+  }
+  .def b, .def strong { color: var(--c-ink); font-weight: 500; }
+
+  .caption {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+
+  /* ---- the labeled-facts list: the workhorse of a reference card ---- */
+  /* A definition list rendered as a tidy two-column "label : value" grid. */
+  .facts {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: 0.55rem var(--s-3);
+    margin: 0 0 var(--s-3);
+    font-size: var(--t-base);
+  }
+  .facts dt {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    line-height: var(--leading-body);
+    padding-top: 0.15em;
+  }
+  .facts dd {
+    margin: 0;
+    color: var(--c-ink);
+    line-height: var(--leading-snug);
+  }
+  @media (max-width: 540px) {
+    .facts { grid-template-columns: 1fr; gap: 0.2rem var(--s-2); }
+    .facts dt { padding-top: var(--s-1); }
+    .facts dt:first-of-type { padding-top: 0; }
+  }
+
+  /* a single key number you want to pop (e.g. a focal ratio, an exposure) */
+  .stat {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    color: var(--c-accent-soft);
+    white-space: nowrap;
+  }
+
+  /* the one-line "why it matters / what breaks if wrong" */
+  .stakes {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .stakes::before {
+    content: "BREAKS";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-warn);
+    line-height: 1.5;
+  }
+  .stakes b, .stakes strong { color: var(--c-ink); font-weight: 500; }
+
+  /* the AstroDeck UI hook — a small amber-flagged footer line */
+  .hook {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .hook::before {
+    content: "UI";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-accent);
+    line-height: 1.5;
+  }
+  .hook b, .hook strong { color: var(--c-ink); font-weight: 500; }
+  .hook code { color: var(--c-accent-soft); }
+
+  /* a dry one-line aside, set apart, never load-bearing */
+  .aside {
+    margin-top: var(--s-2);
+    font-style: italic;
+    color: var(--c-caption);
+    font-size: var(--t-sm);
+  }
+
+  /* opt-out widths for a figure that needs room inside a card */
+  .precis-card > .bleed-wide { margin-inline: calc(-1 * clamp(1.4rem, 3.5vw, var(--s-5))); }
+
+  @media (max-width: 640px) {
+    .precis-topic { padding: var(--s-4) var(--gutter); }
+  }
+
+  /* ============================================================
+     .reveal — shared scroll-in utility (REPLAYABLE here)
+     Unlike the primer, the precis observer adds .is-in on enter
+     and REMOVES it on exit, so reveals replay every time. The
+     transition handles both directions on its own.
+     ============================================================ */
+  .reveal {
+    opacity: 0;
+    transform: translateY(18px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+    will-change: opacity, transform;
+  }
+  .precis-topic.in .reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ============================================================
+     CHROME — scroll-progress bar + section nav
+     ============================================================ */
+  .progress-track {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent), var(--c-accent-soft));
+    box-shadow: 0 0 12px rgba(232,168,73,0.5);
+  }
+
+  /* a compact labeled section nav rail (right side, desktop) */
+  .topic-nav {
+    position: fixed;
+    top: 50%;
+    right: clamp(0.6rem, 1.6vw, 1.4rem);
+    transform: translateY(-50%);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    padding: 0.4rem;
+    max-height: 80vh;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+  .topic-nav::-webkit-scrollbar { display: none; }
+  .topic-nav a {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.2rem 0.35rem;
+    border: 0;
+    color: var(--c-ink-faint);
+    border-radius: 6px;
+    transition: color var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a .tick {
+    width: 16px;
+    height: 1px;
+    background: currentColor;
+    transition: width var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease-soft);
+    flex: none;
+  }
+  .topic-nav a .tn-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-width var(--dur) var(--ease), opacity var(--dur-fast) var(--ease-soft);
+  }
+  .topic-nav a:hover { color: var(--c-ink-soft); }
+  .topic-nav a:hover .tick { width: 22px; }
+  .topic-nav a:hover .tn-label,
+  .topic-nav a:focus-visible .tn-label { max-width: 16rem; opacity: 1; }
+  .topic-nav a.is-active { color: var(--c-accent); }
+  .topic-nav a.is-active .tick { width: 28px; background: var(--c-accent); }
+  .topic-nav a.is-active .tn-label { max-width: 16rem; opacity: 1; }
+  @media (max-width: 860px) {
+    .topic-nav { display: none; }
+  }
+
+  /* visible focus for keyboard users, everywhere */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* skip link */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--c-accent);
+    color: #1a1206;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============================================================
+     REDUCED MOTION — honor the system preference fully.
+     CSS transitions are zeroed; reveals are simply present.
+     The JS framework paints final state and skips replay (below).
+     ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+    /* ===== injected styles: 01-setup.html ===== */
+.setup-fig {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-5);
+}
+.setup-pane {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+}
+.setup-pane-label {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--c-ink-faint);
+}
+/* Bubble level vial */
+.setup-vial {
+  position: relative;
+  width: 78%;
+  height: 26px;
+  border-radius: 999px;
+  background: var(--c-bg-raised);
+  border: 1px solid var(--c-line);
+  box-shadow: inset 0 1px 2px var(--c-bg-sunk);
+  overflow: hidden;
+}
+.setup-vial-marks {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 30%;
+}
+.setup-tick {
+  width: 1px;
+  height: 60%;
+  background: var(--c-line);
+}
+.setup-bubble {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border-radius: 50%;
+  background: var(--c-cool);
+  opacity: .85;
+  /* resting state: centered */
+  transform: translateX(0);
+}
+/* Compass dial */
+.setup-dial {
+  position: relative;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: var(--c-bg-raised);
+  border: 1px solid var(--c-line);
+  box-shadow: inset 0 0 0 6px var(--c-bg-sunk);
+}
+.setup-n {
+  position: absolute;
+  top: var(--s-1);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--c-accent);
+}
+.setup-needle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2px;
+  height: 44%;
+  background: var(--c-ink-soft);
+  transform-origin: bottom center;
+  transform: translate(-50%, -100%) rotate(0deg);
+  border-radius: 2px;
+}
+.setup-needle::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid var(--c-warn);
+}
+.setup-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+}
+
+@keyframes setup-settle {
+  0%   { transform: translateX(-150%); }
+  70%  { transform: translateX(18%); }
+  100% { transform: translateX(0); }
+}
+@keyframes setup-swing {
+  0%   { transform: translate(-50%, -100%) rotate(118deg); }
+  75%  { transform: translate(-50%, -100%) rotate(-9deg); }
+  100% { transform: translate(-50%, -100%) rotate(0deg); }
+}
+.precis-topic.in .setup-bubble {
+  animation: setup-settle var(--dur) var(--ease-soft) both;
+}
+.precis-topic.in .setup-needle {
+  animation: setup-swing var(--dur) var(--ease-soft) both;
+}
+@media (max-width: 540px) {
+  .setup-fig { grid-template-columns: 1fr; gap: var(--s-4); }
+}
+
+  /* ===== injected styles: 02-power.html ===== */
+  /* slug: power — device chips enumerating on a bus, one by one */
+  .power-bus {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    align-items: stretch;
+  }
+  .power-chip {
+    flex: 1 1 8.5rem;
+    min-width: 8.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    /* resting / final state = connected (also the reduced-motion state) */
+    color: var(--c-ink-soft);
+    border-color: color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
+  }
+  .power-dot {
+    flex: 0 0 auto;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    /* resting / final = amber connected */
+    background: var(--c-accent);
+    box-shadow: 0 0 7px var(--c-accent);
+  }
+  .power-label { color: var(--c-ink); }
+  .power-state {
+    margin-left: auto;
+    color: var(--c-accent);
+    font-size: 0.92em;
+  }
+  /* the grey "—" placeholder shown only mid-animation */
+  .power-state .power-dash { display: none; }
+
+  /* Animation: each chip starts dim/disconnected and snaps to connected,
+     staggered like a bus enumerating. Gated on .in so it replays.
+     Base selector above is the final connected look (reduced-motion safe). */
+  @keyframes power-connect {
+    0%, 35% {
+      color: var(--c-ink-faint);
+      border-color: var(--c-line);
+    }
+    55%, 100% {
+      color: var(--c-ink-soft);
+      border-color: color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
+    }
+  }
+  @keyframes power-light {
+    0%, 35% {
+      background: var(--c-ink-faint);
+      box-shadow: none;
+    }
+    50% {
+      box-shadow: 0 0 11px var(--c-accent);
+    }
+    55%, 100% {
+      background: var(--c-accent);
+      box-shadow: 0 0 7px var(--c-accent);
+    }
+  }
+  .precis-topic.in .power-chip {
+    animation: power-connect var(--dur) var(--ease) both;
+    animation-delay: calc(var(--power-i) * 0.16s);
+  }
+  .precis-topic.in .power-chip .power-dot {
+    animation: power-light var(--dur) var(--ease) both;
+    animation-delay: calc(var(--power-i) * 0.16s);
+  }
+
+  .power-rail {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-ink-faint);
+    text-transform: uppercase;
+  }
+  .power-rail b { color: var(--c-ink-soft); font-weight: 500; }
+
+  /* ===== injected styles: 03-cooling.html ===== */
+.cool-figure {
+  margin-top: var(--s-3);
+  background: var(--c-bg-sunk);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--ring);
+  overflow: hidden;
+}
+.cool-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  background:
+    radial-gradient(60% 55% at 38% 44%, var(--c-cool) 0%, transparent 62%),
+    radial-gradient(45% 40% at 64% 58%, var(--c-accent-soft) 0%, transparent 70%),
+    var(--c-bg-sunk);
+  overflow: hidden;
+}
+.cool-glow {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  mix-blend-mode: screen;
+  background:
+    radial-gradient(38% 34% at 46% 48%, color-mix(in srgb, var(--c-cool) 70%, white) 0%, transparent 60%),
+    radial-gradient(22% 20% at 58% 40%, color-mix(in srgb, var(--c-accent) 60%, white) 0%, transparent 65%);
+}
+.cool-speckle {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--cool-noise, 0.12);
+  transition: opacity var(--dur-fast) var(--ease);
+  background-color: transparent;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 27% 71%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 41% 33%, var(--c-ink-soft) 50%, transparent 51%),
+    radial-gradient(1px 1px at 55% 88%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 63% 12%, var(--c-ink-soft) 50%, transparent 51%),
+    radial-gradient(1px 1px at 74% 49%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 83% 77%, var(--c-ink-soft) 50%, transparent 51%),
+    radial-gradient(1px 1px at 91% 28%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 18% 54%, var(--c-ink-soft) 50%, transparent 51%),
+    radial-gradient(1px 1px at 34% 92%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 48% 6%, var(--c-ink) 50%, transparent 51%),
+    radial-gradient(1px 1px at 69% 64%, var(--c-ink-soft) 50%, transparent 51%);
+  background-size: 7px 7px, 9px 9px, 6px 6px, 8px 8px, 11px 11px, 5px 5px, 10px 10px, 7px 7px, 9px 9px, 6px 6px, 8px 8px, 12px 12px;
+}
+.cool-controls {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--c-bg-raised);
+  border-top: 1px solid var(--c-line);
+}
+.cool-controls label {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.08em;
+  color: var(--c-ink-soft);
+}
+.cool-controls input[type="range"] {
+  width: 100%;
+  accent-color: var(--c-accent);
+  cursor: pointer;
+}
+.cool-readout {
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  color: var(--c-ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 30rem) {
+  .cool-controls {
+    grid-template-columns: 1fr;
+    gap: var(--s-2);
+  }
+  .cool-readout { justify-self: start; }
+}
+
+  /* ===== injected styles: 04-slew.html ===== */
+.slew-stage {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+.slew-field {
+  position: absolute;
+  inset: 0;
+}
+.slew-star-bg {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+  opacity: .5;
+}
+.slew-fov {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46%;
+  aspect-ratio: 16 / 9;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+}
+.slew-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  transform: translate(-50%, -50%);
+  opacity: .8;
+}
+.slew-crosshair::before,
+.slew-crosshair::after {
+  content: "";
+  position: absolute;
+  background: var(--c-ink-soft);
+}
+.slew-crosshair::before {
+  top: 50%;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+.slew-crosshair::after {
+  left: 50%;
+  top: 0;
+  height: 100%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+/* resting / final state: star near-centred with small residual */
+.slew-target {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c-ink);
+  box-shadow: 0 0 8px 2px var(--c-ink-faint);
+  transform: translate(calc(-50% + 7px), calc(-50% - 4px));
+}
+.slew-lock {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius-sm);
+  transform: translate(calc(-50% + 7px), calc(-50% - 4px));
+  opacity: .9;
+}
+.slew-solve {
+  position: absolute;
+  inset: 0;
+  background: var(--c-accent-soft);
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes slew-fly {
+  0% { transform: translate(calc(-50% + 240px), calc(-50% - 120px)); opacity: 0; }
+  18% { opacity: 1; }
+  55% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 1; }
+  70% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 1; }
+  100% { transform: translate(calc(-50% + 7px), calc(-50% - 4px)); opacity: 1; }
+}
+@keyframes slew-pulse {
+  0%, 64% { opacity: 0; }
+  72% { opacity: .55; }
+  100% { opacity: 0; }
+}
+@keyframes slew-snap {
+  0%, 70% { transform: translate(calc(-50% + 130px), calc(-50% - 64px)); opacity: 0; }
+  78% { opacity: .9; }
+  100% { transform: translate(calc(-50% + 7px), calc(-50% - 4px)); opacity: .9; }
+}
+
+.precis-topic.in .slew-target {
+  animation: slew-fly 2.4s var(--ease) both;
+}
+.precis-topic.in .slew-solve {
+  animation: slew-pulse 2.4s var(--ease) both;
+}
+.precis-topic.in .slew-lock {
+  animation: slew-snap 2.4s var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .slew-target,
+  .precis-topic.in .slew-solve,
+  .precis-topic.in .slew-lock {
+    animation: none;
+  }
+}
+
+  /* ===== injected styles: 05-focus.html ===== */
+.focus-figure {
+  margin-top: var(--s-3);
+  background: var(--c-bg-sunk);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--ring);
+  overflow: hidden;
+}
+.focus-figure canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+  /* ===== injected styles: 06-tppa.html ===== */
+.tppa-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.tppa-arc-panel,
+.tppa-reticle-panel {
+  position: relative;
+}
+.tppa-arc-panel {
+  border-right: 1px solid var(--c-line);
+}
+.tppa-star-bg {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--c-ink-faint);
+  opacity: .5;
+}
+/* faint RA arc the three points sit on */
+.tppa-arc {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 70%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+  border: 1px dashed var(--c-line);
+  border-radius: 50%;
+  clip-path: polygon(0 0, 100% 0, 100% 60%, 0 60%);
+  opacity: .7;
+}
+.tppa-pt {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--c-ink-soft);
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 6px 1px var(--c-ink-faint);
+}
+.tppa-pt-1 { top: 30%; left: 22%; }
+.tppa-pt-2 { top: 16%; left: 50%; }
+.tppa-pt-3 { top: 30%; left: 78%; }
+.tppa-pt-3 {
+  background: var(--c-accent);
+  box-shadow: 0 0 10px 2px var(--c-accent-soft);
+}
+
+/* reticle: concentric bullseye + crosshair */
+.tppa-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 58%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%);
+}
+.tppa-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  border: 1px solid var(--c-line);
+  transform: translate(-50%, -50%);
+}
+.tppa-ring-1 { width: 100%; height: 100%; }
+.tppa-ring-2 { width: 62%; height: 62%; }
+.tppa-ring-3 { width: 26%; height: 26%; border-color: var(--c-ink-faint); }
+.tppa-cross::before,
+.tppa-cross::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: var(--c-line);
+}
+.tppa-cross::before {
+  width: 100%;
+  height: 1px;
+  transform: translate(-50%, -50%);
+}
+.tppa-cross::after {
+  height: 100%;
+  width: 1px;
+  transform: translate(-50%, -50%);
+}
+/* resting / final state: dot near centre, low error */
+.tppa-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 10px 2px var(--c-accent-soft);
+  transform: translate(calc(-50% + 6px), calc(-50% - 4px));
+}
+.tppa-readout {
+  position: absolute;
+  bottom: var(--s-2);
+  right: var(--s-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--c-accent);
+  letter-spacing: .04em;
+}
+
+@keyframes tppa-light {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.4); }
+  60% { opacity: 1; transform: translate(-50%, -50%) scale(1.25); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes tppa-reticle-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes tppa-converge {
+  0% { transform: translate(calc(-50% + 78px), calc(-50% - 52px)); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: translate(calc(-50% + 6px), calc(-50% - 4px)); opacity: 1; }
+}
+@keyframes tppa-count {
+  0% { opacity: 0; }
+  20% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+.precis-topic.in .tppa-pt {
+  opacity: 0;
+  animation: tppa-light .5s var(--ease) both;
+  animation-delay: calc(.2s + var(--tppa-i) * .45s);
+}
+.precis-topic.in .tppa-reticle {
+  opacity: 0;
+  animation: tppa-reticle-in .5s var(--ease) both;
+  animation-delay: 1.7s;
+}
+.precis-topic.in .tppa-dot {
+  animation: tppa-converge 1.6s var(--ease-soft) both;
+  animation-delay: 1.9s;
+}
+.precis-topic.in .tppa-readout {
+  opacity: 0;
+  animation: tppa-count 1.6s var(--ease) both;
+  animation-delay: 1.9s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .tppa-pt,
+  .precis-topic.in .tppa-reticle,
+  .precis-topic.in .tppa-dot,
+  .precis-topic.in .tppa-readout {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+  /* ===== injected styles: 07-guiding.html ===== */
+  /* ---- TOPIC: Guiding (slug: guide) ---- */
+  .guide-fig {
+    display: grid;
+    grid-template-columns: minmax(7rem, 9.5rem) 1fr;
+    gap: var(--s-3);
+    align-items: stretch;
+    margin: var(--s-3) 0 var(--s-2);
+  }
+  @media (max-width: 540px) {
+    .guide-fig { grid-template-columns: 1fr; }
+  }
+  .guide-panel {
+    position: relative;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  .guide-box { aspect-ratio: 1 / 1; }
+  .guide-graph { aspect-ratio: 16 / 7; }
+  .guide-canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .guide-tag {
+    position: absolute;
+    top: 0.5em; left: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    color: var(--c-ink-faint);
+  }
+  .guide-rms {
+    position: absolute;
+    top: 0.5em; right: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-good);
+  }
+
+  /* ===== injected styles: 08-guidescope.html ===== */
+.gscope-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.gscope-panel {
+  position: relative;
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.gscope-panel.gscope-main {
+  border-right: 1px solid var(--c-line);
+}
+.gscope-label {
+  position: absolute;
+  top: var(--s-2);
+  left: var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--c-ink-faint);
+}
+
+/* the optical tube: a horizontal bar; main is long, guide is short */
+.gscope-tube {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--c-line);
+  border: 1px solid var(--c-ink-faint);
+  margin-bottom: var(--s-3);
+}
+.gscope-main .gscope-tube { width: 78%; }
+.gscope-guide .gscope-tube { width: 42%; }
+
+/* field-of-view box: main is small/narrow, guide is large/wide */
+.gscope-fov {
+  position: relative;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+}
+.gscope-main .gscope-fov {
+  width: 44%;
+  aspect-ratio: 3 / 2;
+}
+.gscope-guide .gscope-fov {
+  width: 82%;
+  aspect-ratio: 3 / 2;
+}
+
+.gscope-star {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--c-ink-soft);
+  transform: translate(-50%, -50%);
+}
+.gscope-star.gscope-dim {
+  background: var(--c-ink-faint);
+  opacity: .6;
+}
+
+/* the marked guide star — the single amber accent */
+.gscope-guidestar {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px 2px var(--c-accent-soft);
+  transform: translate(-50%, -50%);
+}
+.gscope-reticle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--c-accent-deep);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: .8;
+}
+
+@keyframes gscope-pulse {
+  0%, 100% { box-shadow: 0 0 6px 1px var(--c-accent-soft); }
+  50% { box-shadow: 0 0 12px 4px var(--c-accent-soft); }
+}
+@keyframes gscope-drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(2px, -1px); }
+}
+@keyframes gscope-rise {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* animated entrance for tubes + fov boxes */
+.precis-topic.in .gscope-tube,
+.precis-topic.in .gscope-fov {
+  animation: gscope-rise .55s var(--ease) both;
+}
+.precis-topic.in .gscope-main .gscope-tube { animation-delay: .18s; }
+.precis-topic.in .gscope-main .gscope-fov  { animation-delay: .30s; }
+.precis-topic.in .gscope-guide .gscope-tube { animation-delay: .30s; }
+.precis-topic.in .gscope-guide .gscope-fov  { animation-delay: .42s; }
+
+/* subtle differential-flex wobble on the main panel's field */
+.precis-topic.in .gscope-main .gscope-fov {
+  transform-origin: center;
+}
+.precis-topic.in .gscope-flexer {
+  animation: gscope-drift 6s var(--ease-soft) .9s infinite;
+}
+
+/* the guide star pulses gently once the field is in */
+.precis-topic.in .gscope-guidestar {
+  animation: gscope-pulse 2.4s var(--ease-soft) .9s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .gscope-tube,
+  .precis-topic.in .gscope-fov,
+  .precis-topic.in .gscope-flexer,
+  .precis-topic.in .gscope-guidestar {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+  /* ===== injected styles: 09-filters.html ===== */
+  /* slug: filt — toggle filter channels to composite a preview */
+  .filt-figure {
+    margin-top: var(--s-3);
+  }
+  .filt-preview {
+    position: relative;
+    aspect-ratio: 16 / 7;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    box-shadow: var(--ring);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    isolation: isolate;
+  }
+  /* the faint nebula base — always present under the channel layers */
+  .filt-base {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(60% 70% at 38% 46%, rgba(150,150,170,0.30), rgba(0,0,0,0) 70%),
+      radial-gradient(40% 55% at 64% 58%, rgba(120,130,150,0.22), rgba(0,0,0,0) 72%),
+      radial-gradient(90% 90% at 50% 50%, rgba(90,95,115,0.10), rgba(0,0,0,0) 80%);
+  }
+  /* sparse stars so toggling channels reads as color shifts on real structure */
+  .filt-stars {
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1.4px 1.4px at 18% 30%, rgba(255,255,255,0.9), transparent),
+      radial-gradient(1.2px 1.2px at 72% 22%, rgba(255,255,255,0.8), transparent),
+      radial-gradient(1.6px 1.6px at 44% 70%, rgba(255,255,255,0.85), transparent),
+      radial-gradient(1px 1px at 86% 64%, rgba(255,255,255,0.7), transparent),
+      radial-gradient(1.2px 1.2px at 30% 84%, rgba(255,255,255,0.75), transparent),
+      radial-gradient(1px 1px at 58% 40%, rgba(255,255,255,0.65), transparent);
+  }
+  /* one layer per channel; opacity toggled from JS. screen = additive feel */
+  .filt-layer {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    mix-blend-mode: screen;
+    transition: opacity var(--dur) var(--ease);
+  }
+  /* overall dim wash used for narrowband-only composites (little light) */
+  .filt-dim {
+    position: absolute;
+    inset: 0;
+    background: var(--c-bg);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease);
+    z-index: 2;
+  }
+
+  .filt-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  .filt-btn {
+    flex: 0 0 auto;
+    min-width: 3.4rem;
+    padding: 0.45rem 0.7rem;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    color: var(--c-ink-faint);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease),
+                border-color var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease);
+  }
+  .filt-btn:hover { color: var(--c-ink-soft); }
+  .filt-btn.filt-on {
+    color: var(--c-ink);
+    border-color: color-mix(in srgb, var(--c-accent) 55%, var(--c-line));
+    background: color-mix(in srgb, var(--c-accent) 10%, var(--c-bg-raised));
+  }
+  /* a small color swatch echoing the channel tint */
+  .filt-btn::before {
+    content: "";
+    display: inline-block;
+    width: 0.55rem;
+    height: 0.55rem;
+    margin-right: 0.45rem;
+    border-radius: 2px;
+    background: var(--filt-swatch, var(--c-ink-faint));
+    vertical-align: middle;
+    opacity: 0.35;
+    transition: opacity var(--dur-fast) var(--ease);
+  }
+  .filt-btn.filt-on::before { opacity: 1; }
+
+  .filt-palette {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-ink-faint);
+    text-transform: uppercase;
+  }
+  .filt-palette .filt-name { color: var(--c-ink-soft); font-weight: 500; }
+  .filt-palette .filt-note { color: var(--c-warn); }
+
+  /* ===== injected styles: 10-plan.html ===== */
+.plan-figure {
+  margin-top: var(--s-3);
+  background: var(--c-bg-sunk);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--ring);
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+}
+.plan-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.plan-axis { stroke: var(--c-line); stroke-width: 1; }
+.plan-label { fill: var(--c-ink-faint); font: 11px var(--font-mono); }
+.plan-meridian { stroke: var(--c-line); stroke-width: 1; stroke-dasharray: 3 4; }
+.plan-meridian-label { fill: var(--c-accent); font: 11px var(--font-mono); }
+
+/* altitude arc — resting/final state: fully drawn */
+.plan-arc {
+  fill: none;
+  stroke: var(--c-ink-soft);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 520;
+  stroke-dashoffset: 0;
+}
+/* peak marker — the one amber accent at the meridian summit */
+.plan-peak {
+  fill: var(--c-accent);
+}
+.plan-peak-glow {
+  fill: var(--c-accent-soft);
+  opacity: .5;
+}
+/* play-head — resting/final state: past the meridian, on the falling arm */
+.plan-head {
+  transform: translateX(232px);
+}
+.plan-head-dot { fill: var(--c-accent); }
+.plan-head-line { stroke: var(--c-accent-deep); stroke-width: 1; opacity: .5; }
+
+/* scope icon — resting/final state: flipped (east side) */
+.plan-scope {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleX(-1);
+}
+.plan-scope-pier { fill: var(--c-ink-faint); }
+.plan-scope-tube { fill: var(--c-ink-soft); }
+.plan-scope-cw { fill: var(--c-ink-faint); }
+
+@keyframes plan-draw {
+  from { stroke-dashoffset: 520; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes plan-sweep {
+  0% { transform: translateX(34px); }
+  100% { transform: translateX(232px); }
+}
+@keyframes plan-peak-in {
+  0%, 55% { opacity: 0; }
+  68% { opacity: 1; }
+  100% { opacity: 1; }
+}
+@keyframes plan-flip {
+  0%, 48% { transform: scaleX(1); }
+  56% { transform: scaleX(0.06); }
+  64% { transform: scaleX(-1); }
+  100% { transform: scaleX(-1); }
+}
+
+.precis-topic.in .plan-arc {
+  animation: plan-draw 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-head {
+  animation: plan-sweep 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-peak,
+.precis-topic.in .plan-peak-glow {
+  animation: plan-peak-in 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-scope {
+  animation: plan-flip 2.4s var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .plan-arc,
+  .precis-topic.in .plan-head,
+  .precis-topic.in .plan-peak,
+  .precis-topic.in .plan-peak-glow,
+  .precis-topic.in .plan-scope {
+    animation: none;
+  }
+}
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#precis">Skip to content</a>
+
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <nav class="topic-nav" id="topicNav" aria-label="Topic navigation"></nav>
+
+  <!-- ================================================================
+       ASTRODECK PRECIS — animation framework (defined FIRST)
+       This runs before the injected section scripts so that any
+       AstroAnim.register(...) call inside a section finds the API
+       already present. _start() is invoked later, after the sections
+       and their register() calls have all executed.
+
+       The earlier docs fired each animation once, the instant a
+       section's top edge appeared, and never replayed. This fixes
+       both faults: a topic counts as "in" only when it is properly
+       on screen (its center near the viewport center), and it RE-ARMS
+       on exit so every animation replays on every re-entry.
+       ================================================================ -->
+  <script>
+  window.AstroAnim = (function () {
+    "use strict";
+
+    var reduceMotion = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---- JS animation registry --------------------------------
+       Authors register an element with { play, reset } callbacks.
+       The observer calls play() when the element's topic enters
+       and reset() when it leaves. Both are optional.
+       For reduced motion we call play() once (to paint the final
+       frame) and never reset — no motion, no replay loop.        */
+    var registry = new Map();    // el -> { play, reset, playing }
+
+    function register(el, handlers) {
+      if (!el) return;
+      handlers = handlers || {};
+      registry.set(el, {
+        play: typeof handlers.play === "function" ? handlers.play : null,
+        reset: typeof handlers.reset === "function" ? handlers.reset : null,
+        playing: false
+      });
+      if (reduceMotion) {
+        // Paint the final state immediately; never animate, never reset.
+        if (registry.get(el).play) {
+          try { registry.get(el).play(); } catch (e) {}
+        }
+        registry.get(el).playing = true;
+      }
+    }
+
+    function unregister(el) { registry.delete(el); }
+
+    // Fire play/reset for every registered element inside a topic.
+    function driveTopic(topic, entering) {
+      if (reduceMotion) return; // handled once at register time
+      registry.forEach(function (h, el) {
+        if (!topic.contains(el)) return;
+        if (entering && !h.playing) {
+          h.playing = true;
+          if (h.play) { try { h.play(); } catch (e) {} }
+        } else if (!entering && h.playing) {
+          h.playing = false;
+          if (h.reset) { try { h.reset(); } catch (e) {} }
+        }
+      });
+    }
+
+    /* ---- CSS path: restart .in-gated animations ---------------
+       Adding .in lets `.precis-topic.in .thing { animation: ... }`
+       run. Removing .in resets it. To make a CSS animation REPLAY
+       on re-entry we force a reflow between remove and add so the
+       browser actually restarts it rather than treating it as a
+       no-op.                                                       */
+    function setTopicIn(topic, on) {
+      if (on) {
+        topic.classList.add("in");
+      } else {
+        topic.classList.remove("in");
+        // Force reflow so the next add() restarts CSS animations.
+        void topic.offsetWidth;
+      }
+    }
+
+    /* ---- the shared, threshold-gated, RE-ARMING observer -------
+       A topic is "in" only when it is PROPERLY on screen. Two ways
+       to qualify: ratio >= 0.5 (a short card sitting mostly on
+       screen) OR its center band straddling the viewport center (a
+       tall card that can never reach half-visible). The rootMargin
+       trims the top and bottom 15% so the trigger sits at center,
+       not the top edge. On exit we remove .in and call reset() —
+       the section is re-armed and replays the next time it returns. */
+    var topics = [];
+
+    function observe(topic) {
+      if (topics.indexOf(topic) === -1) topics.push(topic);
+    }
+
+    function start() {
+      topics = Array.prototype.slice.call(
+        document.querySelectorAll("#precis .precis-topic")
+      );
+
+      if (reduceMotion || !("IntersectionObserver" in window)) {
+        // No motion (or no observer): everything is simply present.
+        topics.forEach(function (t) { t.classList.add("in"); });
+        return;
+      }
+
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          var topic = entry.target;
+          // A tall card (h2 + def + facts + 16:9 figure + caption + stakes
+          // + hook + aside) can exceed the viewport, so it never reaches
+          // intersectionRatio >= 0.5 — the old gate was unreachable and the
+          // card never played. Treat a topic as "in" when its CENTER band
+          // straddles the viewport center: top above 60% AND bottom below
+          // 40% of the viewport height. The ratio gate still catches the
+          // short cards that fit comfortably on screen.
+          var r = entry.boundingClientRect;
+          var vh = window.innerHeight;
+          var centerInView = r.top < vh * 0.6 && r.bottom > vh * 0.4;
+          var inView = entry.isIntersecting &&
+            (entry.intersectionRatio >= 0.5 || centerInView);
+          var already = topic.classList.contains("in");
+          if (inView && !already) {
+            setTopicIn(topic, true);     // CSS path: replay
+            driveTopic(topic, true);     // JS path: play()
+          } else if (!inView && already) {
+            setTopicIn(topic, false);    // CSS path: reset + reflow
+            driveTopic(topic, false);    // JS path: reset()
+          }
+        });
+      }, {
+        root: null,
+        // trim top + bottom 15% so the trigger band sits at center
+        rootMargin: "-15% 0px -15% 0px",
+        // multi-stop so the callback fires across the whole scroll, letting
+        // the center-band test re-evaluate as a tall card passes through
+        threshold: [0, 0.25, 0.5, 0.75, 1]
+      });
+
+      topics.forEach(function (t) { io.observe(t); });
+    }
+
+    return {
+      register: register,
+      unregister: unregister,
+      observe: observe,
+      _start: start,
+      reduceMotion: reduceMotion
+    };
+  })();
+  </script>
+
+  <header class="precis-masthead">
+    <p class="precis-eyebrow">AstroDeck · Onboarding</p>
+    <h1>A night, step by step</h1>
+    <p class="precis-standfirst">You write the software that runs the telescope. You have
+      never run one. This is the night an astrophotographer actually has — ten steps
+      in the order they happen — and what AstroDeck is doing at each. Scroll; the diagrams
+      replay as you go.</p>
+    <p class="precis-legend" aria-label="How to read a card">
+      <span>Each step</span>
+      <b>does</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b>facts</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-breaks">BREAKS</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-ui">UI</b>
+      <span>— what you do, the numbers that matter, what goes wrong if you skip it, and where it lives in AstroDeck.</span>
+    </p>
+  </header>
+
+  <main id="precis">
+      <!-- ===== section: 01-setup.html ===== -->
+<section class="precis-topic" id="setup" data-nav="Set Up + Level">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">01</span> Setting Up</p>
+    <h2 class="reveal">Level it, point it north</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Plant the tripod on firm ground, level it, and aim the mount's rotation axis at true (geographic) north.</p>
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Level</dt><dd>A bubble level on the mount head; off-level skews everything downstream.</dd>
+      <dt>North</dt><dd>TRUE north, not magnetic — they differ by the local magnetic declination, up to <span class="stat">tens of degrees</span>.</dd>
+      <dt>Latitude</dt><dd>Set the altitude wedge to your site latitude so the axis tilts up toward the pole.</dd>
+      <dt>Why north</dt><dd>An equatorial mount tracks by spinning <span class="stat">one</span> axis; that axis must point at the celestial pole, which sits due north in the northern hemisphere.</dd>
+    </dl>
+    <figure class="setup-fig reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="setup-pane">
+        <div class="setup-vial">
+          <div class="setup-vial-marks">
+            <span class="setup-tick"></span>
+            <span class="setup-tick"></span>
+          </div>
+          <div class="setup-bubble"></div>
+        </div>
+        <span class="setup-pane-label">Level</span>
+      </div>
+      <div class="setup-pane">
+        <div class="setup-dial">
+          <span class="setup-n">N</span>
+          <span class="setup-needle"></span>
+          <span class="setup-hub"></span>
+        </div>
+        <span class="setup-pane-label">North</span>
+      </div>
+    </figure>
+    <p class="caption">Coarse setup by hand; the software refines it later.</p>
+    <p class="stakes reveal">A tilted or mis-aimed mount makes polar alignment and every GoTo start from a bad reference — you fight it the rest of the night.</p>
+    <p class="hook reveal">AstroDeck assumes a roughly polar-aligned mount and reads your site latitude/longitude from config (<code>site</code>) to compute where everything is in the sky.</p>
+    <p class="aside">This is the one step no API call can do for you.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 02-power.html ===== -->
+<section class="precis-topic" id="power" data-nav="Power + Connect">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">02</span> Powering On</p>
+    <h2 class="reveal">Power on, boot, connect</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Bring up power to the mount, camera,
+      focuser, filter wheel and guider, then start AstroDeck and let it connect to each
+      device.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Order</dt><dd>Power the USB hub, dew heaters and mount first, then the host
+        computer running AstroDeck — peripherals up before the bus enumerates.</dd>
+      <dt>Devices</dt><dd>An imaging camera, mount, focuser, filter wheel and guider:
+        <span class="stat">5 roles</span>, each driven by a separate driver.</dd>
+      <dt>Backends</dt><dd>AstroDeck reaches gear through a backend — a <b>simulator</b>,
+        <b>Alpaca</b>, or <b>NINA</b> — so the same UI drives real or fake hardware.</dd>
+      <dt>Profiles</dt><dd>A saved profile maps each role to a device and auto-connects on
+        boot, so a known rig comes up in one step.</dd>
+    </dl>
+
+    <div class="power-bus bleed-wide reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="power-chip" style="--power-i: 0">
+        <span class="power-dot"></span><span class="power-label">Mount</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 1">
+        <span class="power-dot"></span><span class="power-label">Camera</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 2">
+        <span class="power-dot"></span><span class="power-label">Focuser</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 3">
+        <span class="power-dot"></span><span class="power-label">Wheel</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 4">
+        <span class="power-dot"></span><span class="power-label">Guider</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-rail">
+        <span>backend <b>simulator</b></span>
+        <span>profile <b>backyard-rig</b></span>
+      </div>
+    </div>
+    <p class="caption">Each device connects independently; the session waits for the roles it
+      needs.</p>
+
+    <p class="stakes reveal">A device that fails to connect — or connects to the wrong
+      backend — stalls the run before the first frame.</p>
+    <p class="hook reveal">AstroDeck shows a backend + profile picker and a tri-state
+      connection status per role; viewers get a read-only view with no control.</p>
+    <p class="aside">The simulator backend connects instantly and never clouds over.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 03-cooling.html ===== -->
+<section class="precis-topic" id="cool" data-nav="Cool the Sensor">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">03</span> Cooling</p>
+    <h2 class="reveal">Cool the camera</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Run the camera's thermoelectric cooler down to a stable set-point so thermal noise stays low and, just as important, repeatable.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Ambient</dt>
+      <dd>Uncooled, the sensor sits near ambient (sim: <span class="stat">+12.3 °C</span>).</dd>
+      <dt>Set-point</dt>
+      <dd>A typical target is <span class="stat">−10 °C</span>, held to a fixed delta all night.</dd>
+      <dt>Dark current</dt>
+      <dd>Sensor noise roughly halves for every <span class="stat">~6 °C</span> cooler.</dd>
+      <dt>Headroom</dt>
+      <dd>Pick a set-point the cooler can hold (~70–80% power) so it stays locked as the night warms or cools.</dd>
+    </dl>
+    <figure class="cool-figure reveal" style="--reveal-delay:.18s">
+      <div class="cool-frame">
+        <div class="cool-glow"></div>
+        <div class="cool-speckle" id="cool-speckle"></div>
+      </div>
+      <div class="cool-controls">
+        <label for="cool-temp">SET-POINT</label>
+        <input id="cool-temp" type="range" min="-15" max="12.3" step="0.1" value="-10" aria-label="Cooler set-point in degrees C">
+        <span class="cool-readout" id="cool-readout">−10.0 °C · cooler 62%</span>
+      </div>
+    </figure>
+    <p class="caption">Drag the set-point — the grain is dark current you can't fully subtract away.</p>
+    <p class="stakes reveal">A warm sensor buries faint nebulosity in thermal noise; cooling too far or too fast can frost the sensor with condensation.</p>
+    <p class="hook reveal">AstroDeck's monitor shows live sensor temperature and cooler power %, and the sequence can warm the cooler gently at the end of the night (<code>warm_cooler_when_done</code>).</p>
+    <p class="aside">−10 °C isn't sacred; it just has to be repeatable, so your dark frames match.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 04-slew.html ===== -->
+<section class="precis-topic" id="slew" data-nav="Slew + Sync">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">04</span> First Slew</p>
+    <h2 class="reveal">Slew to a bright star</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Send the mount to a known bright star — often Polaris or another northern object — to check pointing and give focus something to work on.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>GoTo</dt>
+      <dd>The mount slews using its internal pointing model.</dd>
+      <dt>The miss</dt>
+      <dd>An uncalibrated model lands the star off-centre, sometimes outside the frame entirely.</dd>
+      <dt>Plate-solve + sync</dt>
+      <dd>Image the field, solve where the scope actually points, and sync the model to truth.</dd>
+      <dt>Park</dt>
+      <dd>A known home reference (the sim parks near the pole at Dec <span class="stat">+89.5°</span>).</dd>
+    </dl>
+    <figure class="slew-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="slew-stage">
+        <div class="slew-field">
+          <span class="slew-star-bg" style="top:18%; left:22%"></span>
+          <span class="slew-star-bg" style="top:30%; left:74%"></span>
+          <span class="slew-star-bg" style="top:62%; left:14%"></span>
+          <span class="slew-star-bg" style="top:78%; left:58%"></span>
+          <span class="slew-star-bg" style="top:44%; left:88%"></span>
+          <span class="slew-star-bg" style="top:70%; left:40%"></span>
+          <span class="slew-star-bg" style="top:12%; left:54%"></span>
+        </div>
+        <div class="slew-fov"></div>
+        <div class="slew-crosshair"></div>
+        <div class="slew-solve"></div>
+        <div class="slew-lock"></div>
+        <div class="slew-target"></div>
+      </div>
+    </figure>
+    <p class="caption">First GoTo lands close, not centred; the plate-solve fixes the rest.</p>
+    <p class="stakes reveal">Trust an unsynced model and the target sits outside the sensor — you expose empty sky and never notice.</p>
+    <p class="hook reveal">MountView has a <code>Slew Pad</code>, a <code>Pointing</code> panel (RA / Dec / Alt / Az / State) and a <code>Target Catalog</code>; a plate-solve syncs the model to where it truly points.</p>
+    <p class="aside">The mount is confident and wrong; the camera is how it learns.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 05-focus.html ===== -->
+<section class="precis-topic" id="focus" data-nav="Focus">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">05</span> Focusing</p>
+    <h2 class="reveal">Find focus</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Move the focuser until stars are as tight as possible — measured by the software, not eyeballed.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>HFR</dt>
+      <dd>Focus quality is the star's half-flux radius; <span class="stat">smaller is sharper</span>.</dd>
+      <dt>V-curve</dt>
+      <dd>HFR vs focuser position traces a V; autofocus samples both arms and solves for the minimum.</dd>
+      <dt>Per filter</dt>
+      <dd>Each filter comes to focus at a slightly different point (filter focus offsets).</dd>
+      <dt>Temp drift</dt>
+      <dd>Focus shifts as the scope cools, so it refocuses on a <span class="stat">temperature delta</span>.</dd>
+    </dl>
+    <figure class="focus-figure reveal" style="--reveal-delay:.16s">
+      <canvas id="focus-canvas" width="640" height="280" style="width:100%;height:auto;display:block" aria-hidden="true"></canvas>
+    </figure>
+    <p class="caption">Autofocus samples the V and drives the focuser to its floor.</p>
+    <p class="stakes reveal">Soft focus fattens every star and drowns faint detail — no amount of processing puts it back.</p>
+    <p class="hook reveal">FocusView shows a <code>Live Preview</code>, an <code>Autofocus</code> routine (exposure, step size) and a <code>V-Curve · HFR vs Position</code> plot; Automation can autofocus every N frames, apply filter offsets, and refocus on a temperature delta.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 06-tppa.html ===== -->
+<section class="precis-topic" id="tppa" data-nav="Polar Align">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">06</span> Polar Alignment</p>
+    <h2 class="reveal">Three-point polar alignment</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Refine the mount-axis-to-pole error by plate-solving three points along a slow rotation in RA — no need to actually see the pole star.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Why</dt>
+      <dd>Tracking spins one axis; if that axis isn't on the true pole, the field slowly rotates and stars trail.</dd>
+      <dt>Three points</dt>
+      <dd>Solving the sky at three RA positions fixes the rotation axis relative to the true celestial pole.</dd>
+      <dt>No Polaris needed</dt>
+      <dd>It's computed from any solvable star field, not a sight line to Polaris.</dd>
+      <dt>Result</dt>
+      <dd>Azimuth and altitude error in arcminutes; you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
+    </dl>
+    <figure class="tppa-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="tppa-stage">
+        <div class="tppa-arc-panel">
+          <span class="tppa-star-bg" style="top:20%; left:30%"></span>
+          <span class="tppa-star-bg" style="top:46%; left:64%"></span>
+          <span class="tppa-star-bg" style="top:68%; left:24%"></span>
+          <span class="tppa-star-bg" style="top:74%; left:70%"></span>
+          <span class="tppa-star-bg" style="top:54%; left:44%"></span>
+          <div class="tppa-arc"></div>
+          <div class="tppa-pt tppa-pt-1" style="--tppa-i:0"></div>
+          <div class="tppa-pt tppa-pt-2" style="--tppa-i:1"></div>
+          <div class="tppa-pt tppa-pt-3" style="--tppa-i:2"></div>
+        </div>
+        <div class="tppa-reticle-panel">
+          <div class="tppa-reticle tppa-cross">
+            <div class="tppa-ring tppa-ring-1"></div>
+            <div class="tppa-ring tppa-ring-2"></div>
+            <div class="tppa-ring tppa-ring-3"></div>
+          </div>
+          <div class="tppa-dot"></div>
+          <div class="tppa-readout">0.4'</div>
+        </div>
+      </div>
+    </figure>
+    <p class="caption">Three solved points define the spin axis; the reticle shows how far it misses the pole.</p>
+    <p class="stakes reveal">Skip it and long exposures show field rotation — stars trail in little arcs even with guiding running perfectly.</p>
+    <p class="hook reveal">AstroDeck drives a TPPA routine (via NINA) and publishes one <code>polar</code> reading — az / alt / total error in arcmin — to a live reticle, with pause/resume.</p>
+    <p class="aside">The old way needed a clear sightline to Polaris; plate-solving doesn't — good news for everyone south of the equator, behind a tree, or otherwise invited to check their privilege.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 07-guiding.html ===== -->
+<section class="precis-topic" id="guide" data-nav="Guiding">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">07</span> Guiding</p>
+    <h2 class="reveal">Guide out the drift (PHD2)</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">A second camera watches one star and
+      sends tiny correction pulses to the mount, cancelling the small errors that tracking
+      and polar alignment leave behind.</p>
+
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Loop</dt><dd>Measure the guide star's offset, pulse the mount to push it back,
+        repeat every <span class="stat">~1&ndash;3 s</span>.</dd>
+      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds; smaller means
+        rounder stars.</dd>
+      <dt>Dither</dt><dd>Shift a few pixels between frames so stacking rejects hot pixels
+        and walking noise.</dd>
+      <dt>PHD2</dt><dd>The de-facto guiding engine AstroDeck drives.</dd>
+    </dl>
+
+    <figure class="guide-fig reveal bleed-wide" style="--reveal-delay:.16s">
+      <div class="guide-panel guide-box">
+        <span class="guide-tag">GUIDE STAR</span>
+        <canvas class="guide-canvas" id="guide-star" width="320" height="320" aria-hidden="true"></canvas>
+      </div>
+      <div class="guide-panel guide-graph">
+        <span class="guide-tag">RMS ERROR</span>
+        <span class="guide-rms" id="guide-rms">0.6"</span>
+        <canvas class="guide-canvas" id="guide-trace" width="640" height="280" aria-hidden="true"></canvas>
+      </div>
+    </figure>
+    <p class="caption">Each pulse pushes the star back toward the crosshair; the trace is the
+      residual it can't catch.</p>
+
+    <p class="stakes reveal">Without guiding, the field slowly walks during long sub-exposures
+      and stars smear into ovals.</p>
+    <p class="hook reveal">AstroDeck reports live guide <code>RMS</code> and exposes a
+      <code>dither</code> setting in the sequence Automation.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 08-guidescope.html ===== -->
+<section class="precis-topic" id="gscope" data-nav="Guide Scope">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">08</span> Guiding Optics</p>
+    <h2 class="reveal">Why the guide scope isn't the main scope</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Guiding gets its own small, short-focal-length scope and camera, separate from the imaging train.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Wide field</dt>
+      <dd>A short guide scope sees a wide patch of sky, so it almost always finds a <span class="stat">usable guide star</span>.</dd>
+      <dt>Main scope</dt>
+      <dd>Long focal length, narrow field, tuned for the target — a poor place to go hunting for guide stars.</dd>
+      <dt>Cost vs flexure</dt>
+      <dd>A piggybacked guide scope is cheap and light, but any flex between the two tubes shows up as drift.</dd>
+      <dt>Alternative</dt>
+      <dd>An off-axis guider (OAG) picks a star out of the main scope's own light, removing flexure, at the cost of a dim, cramped field.</dd>
+    </dl>
+    <figure class="gscope-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="gscope-stage">
+        <div class="gscope-panel gscope-main">
+          <span class="gscope-label">Main</span>
+          <div class="gscope-tube"></div>
+          <div class="gscope-fov gscope-flexer">
+            <span class="gscope-star" style="top:42%; left:46%"></span>
+            <span class="gscope-star gscope-dim" style="top:64%; left:62%"></span>
+          </div>
+        </div>
+        <div class="gscope-panel gscope-guide">
+          <span class="gscope-label">Guide</span>
+          <div class="gscope-tube"></div>
+          <div class="gscope-fov">
+            <span class="gscope-star" style="top:24%; left:30%"></span>
+            <span class="gscope-star" style="top:70%; left:22%"></span>
+            <span class="gscope-star gscope-dim" style="top:38%; left:74%"></span>
+            <span class="gscope-star" style="top:80%; left:66%"></span>
+            <span class="gscope-star gscope-dim" style="top:18%; left:58%"></span>
+            <span class="gscope-reticle" style="top:52%; left:50%"></span>
+            <span class="gscope-guidestar" style="top:52%; left:50%"></span>
+          </div>
+        </div>
+      </div>
+    </figure>
+    <p class="caption">Wide guide field, narrow imaging field — same sky, different jobs.</p>
+    <p class="stakes reveal">Differential flexure makes guiding look perfect on its own star while the main image quietly drifts.</p>
+    <p class="hook reveal">AstroDeck resolves the <code>guider</code> role and its guide camera separately from the imaging camera.</p>
+    <p class="aside">The guide camera is the cheapest, ugliest sensor in the rig, and it never has to look pretty.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 09-filters.html ===== -->
+<section class="precis-topic" id="filt" data-nav="Filters">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">09</span> Filter Wheel</p>
+    <h2 class="reveal">Filters, and how they combine</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">A mono camera shoots through one
+      filter at a time; you stack each channel separately, then combine them into a color
+      image.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Wheel</dt><dd>A motorized wheel rotates filters in front of the sensor (sim: a
+        <span class="stat">7×36 mm</span> wheel).</dd>
+      <dt>Broadband</dt><dd><b>L R G B</b>: luminance plus red/green/blue make a
+        natural-color image.</dd>
+      <dt>Narrowband</dt><dd><b>Ha OIII SII</b> isolate single emission lines; they reject
+        light pollution and moonlight but pass little light, so subs run long.</dd>
+      <dt>False color</dt><dd>Narrowband channels are assigned to RGB by choice; the "Hubble
+        palette" is SHO (SII→R, Ha→G, OIII→B).</dd>
+    </dl>
+
+    <figure class="filt-figure bleed-wide reveal" style="--reveal-delay: .16s">
+      <div class="filt-preview" aria-hidden="true">
+        <div class="filt-base"></div>
+        <div class="filt-layer" data-ch="L"></div>
+        <div class="filt-layer" data-ch="R"></div>
+        <div class="filt-layer" data-ch="G"></div>
+        <div class="filt-layer" data-ch="B"></div>
+        <div class="filt-layer" data-ch="Ha"></div>
+        <div class="filt-layer" data-ch="OIII"></div>
+        <div class="filt-layer" data-ch="SII"></div>
+        <div class="filt-stars"></div>
+        <div class="filt-dim" id="filt-dim"></div>
+      </div>
+
+      <div class="filt-controls" role="group" aria-label="Filter channels">
+        <button type="button" class="filt-btn" data-ch="L"    aria-pressed="false">L</button>
+        <button type="button" class="filt-btn" data-ch="R"    aria-pressed="false">R</button>
+        <button type="button" class="filt-btn" data-ch="G"    aria-pressed="false">G</button>
+        <button type="button" class="filt-btn" data-ch="B"    aria-pressed="false">B</button>
+        <button type="button" class="filt-btn" data-ch="Ha"   aria-pressed="false">Ha</button>
+        <button type="button" class="filt-btn" data-ch="OIII" aria-pressed="false">OIII</button>
+        <button type="button" class="filt-btn" data-ch="SII"  aria-pressed="false">SII</button>
+      </div>
+
+      <div class="filt-palette">
+        <span>palette</span>
+        <span class="filt-name" id="filt-name">LRGB · natural color</span>
+        <span class="filt-note" id="filt-note"></span>
+      </div>
+    </figure>
+    <p class="caption">Toggle channels — broadband makes natural color, narrowband maps
+      emission lines to a false-color palette.</p>
+
+    <p class="stakes reveal">Forget to refocus per filter or to match each filter's exposure
+      to its throughput and a channel comes back soft or starved — the composite is
+      unusable.</p>
+    <p class="hook reveal">AstroDeck moves the wheel by slot
+      (<code>/api/filterwheel/position</code>), names the slots
+      <code>L R G B Ha OIII SII</code>, and applies per-filter focus offsets in
+      Automation.</p>
+    <p class="aside">The colors of a narrowband image are a decision, not a measurement.</p>
+  </article>
+</section>
+
+  <!-- ===== section: 10-plan.html ===== -->
+<section class="precis-topic" id="plan" data-nav="Plan the Night">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">10</span> Planning</p>
+    <h2 class="reveal">Plan the night, then let it run</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Choose targets that are high and dark during your imaging window, set exposures per filter, and queue a sequence that runs unattended.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Altitude</dt>
+      <dd>Image a target near its highest point (the meridian), where its light cuts through the least air.</dd>
+      <dt>Meridian flip</dt>
+      <dd>A German equatorial mount must swap sides as the target crosses the meridian (when the hour angle <span class="stat">HA = LST − RA</span> reaches 0).</dd>
+      <dt>Budget</dt>
+      <dd>Total integration = sub length × frame count, split across filters.</dd>
+      <dt>Safety</dt>
+      <dd>The sequence handles refocus, dither, the flip, and aborts on its own.</dd>
+    </dl>
+    <figure class="plan-figure reveal" style="--reveal-delay:.16s" aria-hidden="true">
+      <svg class="plan-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid meet">
+        <!-- axes -->
+        <line class="plan-axis" x1="34" y1="20" x2="34" y2="150"></line>
+        <line class="plan-axis" x1="34" y1="150" x2="296" y2="150"></line>
+        <text class="plan-label" x="6" y="34">alt</text>
+        <text class="plan-label" x="244" y="166">time</text>
+
+        <!-- meridian marker at centre -->
+        <line class="plan-meridian" x1="165" y1="20" x2="165" y2="150"></line>
+        <text class="plan-meridian-label" x="138" y="16">MERIDIAN</text>
+
+        <!-- altitude arc: rises, peaks at the meridian, then falls -->
+        <path class="plan-arc" d="M 34 150 Q 165 -36 296 150"></path>
+
+        <!-- peak marker at the summit (one amber accent) -->
+        <circle class="plan-peak-glow" cx="165" cy="51" r="9"></circle>
+        <circle class="plan-peak" cx="165" cy="51" r="3.5"></circle>
+
+        <!-- play-head sweeping along the time axis -->
+        <g class="plan-head">
+          <line class="plan-head-line" x1="0" y1="20" x2="0" y2="150"></line>
+          <circle class="plan-head-dot" cx="0" cy="150" r="3"></circle>
+        </g>
+
+        <!-- mount/scope icon that flips sides at the meridian -->
+        <g class="plan-scope" transform="translate(150,118)">
+          <rect class="plan-scope-pier" x="6" y="14" width="4" height="20"></rect>
+          <rect class="plan-scope-cw" x="-6" y="20" width="9" height="4" rx="1.5"></rect>
+          <rect class="plan-scope-tube" x="2" y="-2" width="20" height="6" rx="3" transform="rotate(-26 12 1)"></rect>
+        </g>
+      </svg>
+    </figure>
+    <p class="caption">Best signal near the meridian; the run flips the mount as the target crosses it.</p>
+    <p class="stakes reveal">Pick a target too low (or behind a tree), or run past the meridian without a flip, and you lose the subs — or crash the mount into the pier.</p>
+    <p class="hook reveal">SequenceView holds the <code>Plan</code> (frames, integration), a <code>Targets</code> list, and <code>Automation</code> (meridian flip, HFR spike rejection, dither, filter offsets).</p>
+    <p class="aside">Most imagers plan before dark; it sits last here because it's the part you keep tuning all night.</p>
+  </article>
+</section>
+  </main>
+
+    <!-- ===== script: 03-cooling.html ===== -->
+  <script>
+(function () {
+  var root = document.getElementById("cool");
+  if (!root) return;
+  var slider = root.querySelector("#cool-temp");
+  var speckle = root.querySelector("#cool-speckle");
+  var readout = root.querySelector("#cool-readout");
+  if (!slider || !speckle || !readout) return;
+
+  var AMBIENT = 12.3;
+  var T_MIN = -15;
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  // Noise opacity: linear in temperature, anchored at -10 -> 0.12 and +12.3 -> 0.85.
+  function noiseFor(t) {
+    var lo = -10, hi = AMBIENT;
+    var frac = (t - lo) / (hi - lo);
+    var n = 0.12 + frac * (0.85 - 0.12);
+    return clamp(n, 0.04, 0.92);
+  }
+
+  // Cooler power: 0% at ambient, rising with the delta below ambient, capped ~85%.
+  function powerFor(t) {
+    var delta = AMBIENT - t;            // degrees below ambient
+    if (delta <= 0) return 0;
+    var span = AMBIENT - T_MIN;         // full achievable delta
+    var p = (delta / span) * 85;
+    return Math.round(clamp(p, 0, 85));
+  }
+
+  function fmt(t) {
+    var s = Math.abs(t).toFixed(1);
+    return (t < 0 ? "−" : "") + s;
+  }
+
+  function sync() {
+    var t = parseFloat(slider.value);
+    speckle.style.setProperty("--cool-noise", noiseFor(t).toFixed(3));
+    readout.textContent = fmt(t) + " °C · cooler " + powerFor(t) + "%";
+  }
+
+  slider.addEventListener("input", sync);
+  sync();
+})();
+  </script>
+
+  <!-- ===== script: 05-focus.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var canvas = document.getElementById("focus-canvas");
+  if (!canvas || !window.AstroAnim) return;
+  var ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  function tok(n, fb) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return v || fb;
+  }
+
+  var W = canvas.width, H = canvas.height;
+
+  // ---- palette (read once per paint pass so theme changes apply) ----
+  var BG, INK, FAINT, LINE, AMBER, AMBER_DEEP, STAR;
+  function readTokens() {
+    BG = tok("--c-bg-sunk", "#070910");
+    INK = tok("--c-ink-soft", "#b3ada3");
+    FAINT = tok("--c-ink-faint", "#6d6a64");
+    LINE = tok("--c-line", "#232838");
+    AMBER = tok("--c-accent", "#e8a849");
+    AMBER_DEEP = tok("--c-accent-deep", "#b97d22");
+    STAR = tok("--c-ink", "#ece7df");
+  }
+
+  // ---- V-curve plot geometry (left ~62% of canvas) ----
+  var padL = 44, padT = 30, padB = 34;
+  var plotR = Math.round(W * 0.60);
+  var x0 = padL, x1 = plotR, y0 = padT, y1 = H - padB;
+
+  var minX = 0.5;     // focuser position of the V minimum (0..1)
+  var minHFR = 0.10;  // normalized HFR at the floor
+  var armSlope = 1.55;
+
+  function hfrAt(t) { return minHFR + Math.abs(t - minX) * armSlope; }
+  function px(t) { return x0 + t * (x1 - x0); }
+  function py(h) { return y0 + h * (y1 - y0); } // larger HFR sits lower
+
+  // ---- star panel geometry (right side) ----
+  var starCx = Math.round(W * 0.81);
+  var starCy = Math.round(H * 0.5);
+
+  // prog 0..1: marker walks from the top of the left arm down to the floor.
+  function paint(prog) {
+    readTokens();
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+
+    // ---------- V-curve ----------
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1);
+    ctx.stroke();
+
+    ctx.fillStyle = FAINT;
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("HFR", x0 - 32, y0 + 6);
+    ctx.fillText("focuser pos", x1 - 74, y1 + 22);
+
+    // full V curve (always drawn — autofocus has both arms sampled)
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var first = true;
+    for (var t = 0; t <= 1.0001; t += 0.02) {
+      var X = px(t), Y = py(hfrAt(t));
+      if (first) { ctx.moveTo(X, Y); first = false; }
+      else ctx.lineTo(X, Y);
+    }
+    ctx.stroke();
+
+    // sampled measurement dots
+    ctx.fillStyle = INK;
+    for (var s = 0.06; s <= 0.95; s += 0.11) {
+      ctx.beginPath();
+      ctx.arc(px(s), py(hfrAt(s)), 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // marker walks DOWN the left arm toward the minimum.
+    // start position high on the left arm, end at the floor.
+    var startT = 0.14;
+    var mt = startT + (minX - startT) * prog;
+    var mX = px(mt), mY = py(hfrAt(mt));
+
+    // dashed guide down to the axis at the floor when near/at minimum
+    if (prog > 0.85) {
+      var a = Math.min(1, (prog - 0.85) / 0.15);
+      ctx.strokeStyle = AMBER_DEEP;
+      ctx.globalAlpha = 0.45 * a;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(px(minX), py(minHFR)); ctx.lineTo(px(minX), y1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
+    // amber marker + glow
+    var glow = ctx.createRadialGradient(mX, mY, 0, mX, mY, 13);
+    glow.addColorStop(0, AMBER);
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(mX, mY, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = AMBER;
+    ctx.beginPath(); ctx.arc(mX, mY, 4, 0, Math.PI * 2); ctx.fill();
+
+    if (prog > 0.92) {
+      ctx.globalAlpha = Math.min(1, (prog - 0.92) / 0.08);
+      ctx.fillStyle = AMBER;
+      ctx.font = "11px ui-monospace, monospace";
+      ctx.fillText("best focus", px(minX) + 9, py(minHFR) - 7);
+      ctx.globalAlpha = 1;
+    }
+
+    // ---------- star: bloated/soft -> tight bright point ----------
+    var coreR = 4 + (1 - prog) * 30;       // fat blob -> tiny dot
+    var brightness = 0.35 + prog * 0.65;
+
+    var halo = ctx.createRadialGradient(starCx, starCy, 0, starCx, starCy, coreR + 14);
+    halo.addColorStop(0, STAR);
+    halo.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = brightness * 0.55;
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(starCx, starCy, coreR + 14, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = STAR;
+    ctx.globalAlpha = brightness;
+    ctx.beginPath();
+    ctx.arc(starCx, starCy, Math.max(1.6, coreR * 0.45), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // diffraction sparkle once tight, to read as a crisp point
+    if (prog > 0.6) {
+      var sp = (prog - 0.6) / 0.4;
+      var len = 9 + sp * 7;
+      ctx.strokeStyle = STAR;
+      ctx.globalAlpha = sp * 0.7;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(starCx - len, starCy); ctx.lineTo(starCx + len, starCy);
+      ctx.moveTo(starCx, starCy - len); ctx.lineTo(starCx, starCy + len);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---- single rAF loop, idempotent ----
+  var raf = 0, t0 = 0;
+  var DUR = 2.6;   // seconds for marker to reach the floor
+  var HOLD = 1.2;  // hold the locked state, then loop
+
+  function loop(now) {
+    if (!t0) t0 = now;
+    var e = (now - t0) / 1000;
+    var cycle = DUR + HOLD;
+    if (e > cycle) { t0 = now; e = 0; }
+    var prog = Math.min(1, e / DUR);
+    var eased = prog * prog * (3 - 2 * prog); // smoothstep
+    paint(eased);
+    raf = requestAnimationFrame(loop);
+  }
+
+  function paintStatic() { paint(1); }
+
+  window.AstroAnim.register(canvas, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) { paintStatic(); return; }
+      t0 = 0;
+      raf = requestAnimationFrame(loop);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      paintStatic();
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 07-guiding.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var el = document.getElementById("guide-star");
+  if (!el || !window.AstroAnim) return;
+
+  var starC = el;
+  var traceC = document.getElementById("guide-trace");
+  var rmsEl = document.getElementById("guide-rms");
+  if (!traceC) return;
+
+  var sx = starC.getContext("2d");
+  var tx = traceC.getContext("2d");
+
+  function tok(n, fb) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return v || fb;
+  }
+  var C_ACCENT = tok("--c-accent", "#e8a849");
+  var C_ACCENT_SOFT = tok("--c-accent-soft", "#f0c483");
+  var C_COOL = tok("--c-cool", "#6f9bd8");
+  var C_GOOD = tok("--c-good", "#74c69d");
+  var C_LINE = tok("--c-line", "#232838");
+
+  var SW = starC.width, SH = starC.height, TW = traceC.width, TH = traceC.height;
+  var raf = 0, t = 0, ditherAt = 0, history = [];
+
+  function rnd() { return Math.random() * 2 - 1; }
+
+  function drawStar(offx, offy, nudge) {
+    sx.clearRect(0, 0, SW, SH);
+    // crosshair box
+    sx.strokeStyle = C_LINE; sx.lineWidth = 1;
+    sx.strokeRect(SW * 0.18, SH * 0.18, SW * 0.64, SH * 0.64);
+    sx.beginPath();
+    sx.moveTo(SW / 2, SH * 0.18); sx.lineTo(SW / 2, SH * 0.82);
+    sx.moveTo(SW * 0.18, SH / 2); sx.lineTo(SW * 0.82, SH / 2);
+    sx.strokeStyle = "rgba(111,155,216,0.25)"; sx.stroke();
+
+    var cx = SW / 2 + offx, cy = SH / 2 + offy;
+    // star glow (amber)
+    var g = sx.createRadialGradient(cx, cy, 0, cx, cy, 26);
+    g.addColorStop(0, C_ACCENT_SOFT);
+    g.addColorStop(0.4, C_ACCENT);
+    g.addColorStop(1, "rgba(232,168,73,0)");
+    sx.fillStyle = g;
+    sx.beginPath(); sx.arc(cx, cy, 26, 0, Math.PI * 2); sx.fill();
+
+    // correction pulse arrow pointing back toward centre
+    if (nudge) {
+      sx.strokeStyle = C_ACCENT; sx.lineWidth = 2;
+      sx.beginPath();
+      sx.moveTo(cx, cy);
+      sx.lineTo(cx - offx * 0.55, cy - offy * 0.55);
+      sx.stroke();
+    }
+  }
+
+  function drawTrace() {
+    tx.clearRect(0, 0, TW, TH);
+    var mid = TH / 2;
+    // zero line + tolerance band (the near-zero target)
+    tx.fillStyle = "rgba(116,198,157,0.08)";
+    tx.fillRect(0, mid - TH * 0.12, TW, TH * 0.24);
+    tx.strokeStyle = C_LINE; tx.lineWidth = 1;
+    tx.beginPath(); tx.moveTo(0, mid); tx.lineTo(TW, mid); tx.stroke();
+
+    tx.strokeStyle = C_ACCENT; tx.lineWidth = 1.5;
+    tx.beginPath();
+    var n = history.length;
+    for (var i = 0; i < n; i++) {
+      var x = (i / (n - 1 || 1)) * TW;
+      var y = mid - history[i] * (TH * 0.34);
+      if (i === 0) tx.moveTo(x, y); else tx.lineTo(x, y);
+    }
+    tx.stroke();
+  }
+
+  function setRms(v) { if (rmsEl) rmsEl.textContent = v.toFixed(1) + '"'; }
+
+  function paintStatic() {
+    // calm, settled final frame: trace near zero, star near centre
+    history = [];
+    for (var i = 0; i < 140; i++) history.push(rnd() * 0.16);
+    drawStar(2, -1, false);
+    drawTrace();
+    setRms(0.6);
+  }
+
+  function loop() {
+    t += 1;
+    var settle = Math.min(1, t / 90);       // jitter shrinks as guiding locks
+    var amp = 9 * (1 - settle) + 2.4;       // px jitter, decreasing
+    var offx = rnd() * amp, offy = rnd() * amp;
+    var nudge = Math.abs(offx) + Math.abs(offy) > 6;
+
+    // dither hop every ~260 frames: kick the star + trace, then resettle
+    if (t - ditherAt > 260) { ditherAt = t; t = 30; offx += 18; }
+
+    drawStar(offx, offy, nudge);
+
+    var err = (Math.abs(offx) + Math.abs(offy)) / 22;  // arcsec proxy
+    history.push((offx + offy) / 22);
+    if (history.length > 140) history.shift();
+    drawTrace();
+    setRms(0.5 + err);
+
+    raf = requestAnimationFrame(loop);
+  }
+
+  window.AstroAnim.register(starC, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) { paintStatic(); return; }
+      t = 0; ditherAt = 0; history = [];
+      raf = requestAnimationFrame(loop);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      paintStatic();
+    }
+  });
+})();
+  </script>
+
+  <!-- ===== script: 09-filters.html ===== -->
+  <script>
+(function () {
+  "use strict";
+  var root = document.getElementById("filt");
+  if (!root) return;
+
+  var preview = root.querySelector(".filt-preview");
+  var dim = root.querySelector("#filt-dim");
+  var nameEl = root.querySelector("#filt-name");
+  var noteEl = root.querySelector("#filt-note");
+  var buttons = Array.prototype.slice.call(root.querySelectorAll(".filt-btn"));
+  if (!preview || !nameEl || buttons.length === 0) return;
+
+  // Channel tints. Broadband RGB do their job; narrowband are mapped to
+  // SHO RGB positions (SII->red, Ha->green, OIII->blue) so the composite
+  // reads as the Hubble palette when those three are on.
+  // [tint css, swatch css, default-on, base opacity]
+  var CH = {
+    L:    { layer: "linear-gradient(rgba(235,235,240,0.30), rgba(235,235,240,0.30))", swatch: "rgba(235,235,240,0.95)", on: true,  op: 0.30 },
+    R:    { layer: "linear-gradient(rgba(225,70,70,0.55), rgba(225,70,70,0.55))",     swatch: "rgba(225,70,70,1)",      on: true,  op: 0.55 },
+    G:    { layer: "linear-gradient(rgba(70,200,90,0.50), rgba(70,200,90,0.50))",     swatch: "rgba(70,200,90,1)",      on: true,  op: 0.50 },
+    B:    { layer: "linear-gradient(rgba(80,120,230,0.55), rgba(80,120,230,0.55))",   swatch: "rgba(80,120,230,1)",     on: true,  op: 0.55 },
+    // narrowband mapped to SHO positions:
+    SII:  { layer: "linear-gradient(rgba(210,55,45,0.60), rgba(210,55,45,0.60))",     swatch: "rgba(210,55,45,1)",      on: false, op: 0.60 }, // -> red
+    Ha:   { layer: "linear-gradient(rgba(70,205,95,0.55), rgba(70,205,95,0.55))",     swatch: "rgba(150,40,40,1)",      on: false, op: 0.55 }, // -> green (deep-red light)
+    OIII: { layer: "linear-gradient(rgba(45,200,210,0.55), rgba(45,200,210,0.55))",   swatch: "rgba(45,200,210,1)",     on: false, op: 0.55 }  // -> blue (teal/cyan)
+  };
+
+  var BROAD = ["L", "R", "G", "B"];
+  var NARROW = ["Ha", "OIII", "SII"];
+
+  // state: which channels are on
+  var state = {};
+  Object.keys(CH).forEach(function (k) { state[k] = !!CH[k].on; });
+
+  var layers = {};
+  Array.prototype.forEach.call(preview.querySelectorAll(".filt-layer"), function (el) {
+    var ch = el.getAttribute("data-ch");
+    layers[ch] = el;
+    el.style.backgroundImage = CH[ch].layer;
+  });
+
+  // paint swatches on buttons
+  buttons.forEach(function (b) {
+    var ch = b.getAttribute("data-ch");
+    if (CH[ch]) b.style.setProperty("--filt-swatch", CH[ch].swatch);
+  });
+
+  function any(list) { return list.some(function (k) { return state[k]; }); }
+  function all(list) { return list.every(function (k) { return state[k]; }); }
+  function countNarrow() { return NARROW.filter(function (k) { return state[k]; }).length; }
+
+  function describe() {
+    var hasBroad = any(BROAD);
+    var hasNarrow = any(NARROW);
+
+    if (hasBroad && !hasNarrow) {
+      var lum = state.L;
+      var rgb = state.R && state.G && state.B;
+      var label = (lum && rgb) ? "LRGB" : (rgb ? "RGB" : "broadband");
+      return { name: label + " · natural color", note: "", narrowOnly: false };
+    }
+
+    if (hasNarrow && !hasBroad) {
+      var sho = state.SII && state.Ha && state.OIII;
+      var hoo = state.Ha && state.OIII && !state.SII;
+      var label2;
+      if (sho) label2 = "SHO · narrowband (false color)";
+      else if (hoo) label2 = "HOO · narrowband (gold/teal)";
+      else label2 = "narrowband (false color)";
+      return { name: label2, note: "long subs — little light passes", narrowOnly: true };
+    }
+
+    if (hasBroad && hasNarrow) {
+      return { name: "mixed", note: "", narrowOnly: false };
+    }
+
+    return { name: "no channels", note: "", narrowOnly: false };
+  }
+
+  function render() {
+    // layer opacities
+    Object.keys(CH).forEach(function (ch) {
+      var el = layers[ch];
+      if (!el) return;
+      el.style.opacity = state[ch] ? String(CH[ch].op) : "0";
+    });
+
+    // button visual + a11y state
+    buttons.forEach(function (b) {
+      var ch = b.getAttribute("data-ch");
+      var on = !!state[ch];
+      b.classList.toggle("filt-on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+
+    // palette readout
+    var d = describe();
+    nameEl.textContent = d.name;
+    noteEl.textContent = d.note;
+
+    // narrowband passes little light -> render narrowband-only a touch dimmer.
+    // scale dimness so a single weak channel is dimmer than a full SHO trio.
+    if (dim) {
+      if (d.narrowOnly) {
+        var n = countNarrow();
+        dim.style.opacity = String(n >= 3 ? 0.18 : n === 2 ? 0.26 : 0.34);
+      } else {
+        dim.style.opacity = "0";
+      }
+    }
+  }
+
+  function sync() { render(); }
+
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var ch = b.getAttribute("data-ch");
+      state[ch] = !state[ch];
+      render();
+    });
+  });
+
+  // initialise with L+R+G+B ON
+  sync();
+})();
+  </script>
+
+  <!-- ================================================================
+       CHROME + kickoff — runs AFTER the sections and their register()
+       calls, so the registry is fully populated before _start().
+       ================================================================ -->
+  <script>
+  /* ---- progress bar + topic nav (independent of the framework) ---- */
+  (function () {
+    "use strict";
+
+    /* ---------- scroll progress bar ---------------------------- */
+    var fill = document.getElementById("progressFill");
+    var ticking = false;
+    function updateProgress() {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - doc.clientHeight;
+      var pct = scrollable > 0 ? (doc.scrollTop || document.body.scrollTop) / scrollable : 0;
+      fill.style.width = (Math.max(0, Math.min(1, pct)) * 100).toFixed(2) + "%";
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) { window.requestAnimationFrame(updateProgress); ticking = true; }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    updateProgress();
+
+    /* ---------- topic nav, built from the topic blocks --------- */
+    var nav = document.getElementById("topicNav");
+    var topics = Array.prototype.slice.call(
+      document.querySelectorAll("#precis .precis-topic[id]")
+    );
+    var linkFor = {};
+    topics.forEach(function (t) {
+      var a = document.createElement("a");
+      a.href = "#" + t.id;
+      var label = t.getAttribute("data-nav") || t.id;
+      a.setAttribute("aria-label", "Go to topic: " + label);
+      var tick = document.createElement("span");
+      tick.className = "tick";
+      tick.setAttribute("aria-hidden", "true");
+      var txt = document.createElement("span");
+      txt.className = "tn-label";
+      txt.textContent = label;
+      a.appendChild(tick);
+      a.appendChild(txt);
+      nav.appendChild(a);
+      linkFor[t.id] = a;
+    });
+
+    if ("IntersectionObserver" in window && topics.length) {
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            topics.forEach(function (t) {
+              if (linkFor[t.id]) linkFor[t.id].classList.remove("is-active");
+            });
+            if (linkFor[entry.target.id]) linkFor[entry.target.id].classList.add("is-active");
+          }
+        });
+      }, { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+      topics.forEach(function (t) { navObserver.observe(t); });
+    }
+  })();
+
+  /* Kick off the animation framework after sections + their
+     register() calls have run (their scripts are injected above
+     this point, so the registry is already populated). */
+  window.AstroAnim._start();
+  </script>
+</body>
+</html>

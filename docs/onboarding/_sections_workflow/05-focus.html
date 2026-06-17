@@ -1,0 +1,226 @@
+<!--STYLE-->
+.focus-figure {
+  margin-top: var(--s-3);
+  background: var(--c-bg-sunk);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--ring);
+  overflow: hidden;
+}
+.focus-figure canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="focus" data-nav="Focus">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">05</span> Focusing</p>
+    <h2 class="reveal">Find focus</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Move the focuser until stars are as tight as possible — measured by the software, not eyeballed.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>HFR</dt>
+      <dd>Focus quality is the star's half-flux radius; <span class="stat">smaller is sharper</span>.</dd>
+      <dt>V-curve</dt>
+      <dd>HFR vs focuser position traces a V; autofocus samples both arms and solves for the minimum.</dd>
+      <dt>Per filter</dt>
+      <dd>Each filter comes to focus at a slightly different point (filter focus offsets).</dd>
+      <dt>Temp drift</dt>
+      <dd>Focus shifts as the scope cools, so it refocuses on a <span class="stat">temperature delta</span>.</dd>
+    </dl>
+    <figure class="focus-figure reveal" style="--reveal-delay:.16s">
+      <canvas id="focus-canvas" width="640" height="280" style="width:100%;height:auto;display:block" aria-hidden="true"></canvas>
+    </figure>
+    <p class="caption">Autofocus samples the V and drives the focuser to its floor.</p>
+    <p class="stakes reveal">Soft focus fattens every star and drowns faint detail — no amount of processing puts it back.</p>
+    <p class="hook reveal">FocusView shows a <code>Live Preview</code>, an <code>Autofocus</code> routine (exposure, step size) and a <code>V-Curve · HFR vs Position</code> plot; Automation can autofocus every N frames, apply filter offsets, and refocus on a temperature delta.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var canvas = document.getElementById("focus-canvas");
+  if (!canvas || !window.AstroAnim) return;
+  var ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  function tok(n, fb) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return v || fb;
+  }
+
+  var W = canvas.width, H = canvas.height;
+
+  // ---- palette (read once per paint pass so theme changes apply) ----
+  var BG, INK, FAINT, LINE, AMBER, AMBER_DEEP, STAR;
+  function readTokens() {
+    BG = tok("--c-bg-sunk", "#070910");
+    INK = tok("--c-ink-soft", "#b3ada3");
+    FAINT = tok("--c-ink-faint", "#6d6a64");
+    LINE = tok("--c-line", "#232838");
+    AMBER = tok("--c-accent", "#e8a849");
+    AMBER_DEEP = tok("--c-accent-deep", "#b97d22");
+    STAR = tok("--c-ink", "#ece7df");
+  }
+
+  // ---- V-curve plot geometry (left ~62% of canvas) ----
+  var padL = 44, padT = 30, padB = 34;
+  var plotR = Math.round(W * 0.60);
+  var x0 = padL, x1 = plotR, y0 = padT, y1 = H - padB;
+
+  var minX = 0.5;     // focuser position of the V minimum (0..1)
+  var minHFR = 0.10;  // normalized HFR at the floor
+  var armSlope = 1.55;
+
+  function hfrAt(t) { return minHFR + Math.abs(t - minX) * armSlope; }
+  function px(t) { return x0 + t * (x1 - x0); }
+  function py(h) { return y0 + h * (y1 - y0); } // larger HFR sits lower
+
+  // ---- star panel geometry (right side) ----
+  var starCx = Math.round(W * 0.81);
+  var starCy = Math.round(H * 0.5);
+
+  // prog 0..1: marker walks from the top of the left arm down to the floor.
+  function paint(prog) {
+    readTokens();
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+
+    // ---------- V-curve ----------
+    ctx.strokeStyle = LINE;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, y0); ctx.lineTo(x0, y1); ctx.lineTo(x1, y1);
+    ctx.stroke();
+
+    ctx.fillStyle = FAINT;
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText("HFR", x0 - 32, y0 + 6);
+    ctx.fillText("focuser pos", x1 - 74, y1 + 22);
+
+    // full V curve (always drawn — autofocus has both arms sampled)
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var first = true;
+    for (var t = 0; t <= 1.0001; t += 0.02) {
+      var X = px(t), Y = py(hfrAt(t));
+      if (first) { ctx.moveTo(X, Y); first = false; }
+      else ctx.lineTo(X, Y);
+    }
+    ctx.stroke();
+
+    // sampled measurement dots
+    ctx.fillStyle = INK;
+    for (var s = 0.06; s <= 0.95; s += 0.11) {
+      ctx.beginPath();
+      ctx.arc(px(s), py(hfrAt(s)), 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // marker walks DOWN the left arm toward the minimum.
+    // start position high on the left arm, end at the floor.
+    var startT = 0.14;
+    var mt = startT + (minX - startT) * prog;
+    var mX = px(mt), mY = py(hfrAt(mt));
+
+    // dashed guide down to the axis at the floor when near/at minimum
+    if (prog > 0.85) {
+      var a = Math.min(1, (prog - 0.85) / 0.15);
+      ctx.strokeStyle = AMBER_DEEP;
+      ctx.globalAlpha = 0.45 * a;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(px(minX), py(minHFR)); ctx.lineTo(px(minX), y1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+
+    // amber marker + glow
+    var glow = ctx.createRadialGradient(mX, mY, 0, mX, mY, 13);
+    glow.addColorStop(0, AMBER);
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(mX, mY, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = AMBER;
+    ctx.beginPath(); ctx.arc(mX, mY, 4, 0, Math.PI * 2); ctx.fill();
+
+    if (prog > 0.92) {
+      ctx.globalAlpha = Math.min(1, (prog - 0.92) / 0.08);
+      ctx.fillStyle = AMBER;
+      ctx.font = "11px ui-monospace, monospace";
+      ctx.fillText("best focus", px(minX) + 9, py(minHFR) - 7);
+      ctx.globalAlpha = 1;
+    }
+
+    // ---------- star: bloated/soft -> tight bright point ----------
+    var coreR = 4 + (1 - prog) * 30;       // fat blob -> tiny dot
+    var brightness = 0.35 + prog * 0.65;
+
+    var halo = ctx.createRadialGradient(starCx, starCy, 0, starCx, starCy, coreR + 14);
+    halo.addColorStop(0, STAR);
+    halo.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.globalAlpha = brightness * 0.55;
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(starCx, starCy, coreR + 14, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = STAR;
+    ctx.globalAlpha = brightness;
+    ctx.beginPath();
+    ctx.arc(starCx, starCy, Math.max(1.6, coreR * 0.45), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // diffraction sparkle once tight, to read as a crisp point
+    if (prog > 0.6) {
+      var sp = (prog - 0.6) / 0.4;
+      var len = 9 + sp * 7;
+      ctx.strokeStyle = STAR;
+      ctx.globalAlpha = sp * 0.7;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(starCx - len, starCy); ctx.lineTo(starCx + len, starCy);
+      ctx.moveTo(starCx, starCy - len); ctx.lineTo(starCx, starCy + len);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ---- single rAF loop, idempotent ----
+  var raf = 0, t0 = 0;
+  var DUR = 2.6;   // seconds for marker to reach the floor
+  var HOLD = 1.2;  // hold the locked state, then loop
+
+  function loop(now) {
+    if (!t0) t0 = now;
+    var e = (now - t0) / 1000;
+    var cycle = DUR + HOLD;
+    if (e > cycle) { t0 = now; e = 0; }
+    var prog = Math.min(1, e / DUR);
+    var eased = prog * prog * (3 - 2 * prog); // smoothstep
+    paint(eased);
+    raf = requestAnimationFrame(loop);
+  }
+
+  function paintStatic() { paint(1); }
+
+  window.AstroAnim.register(canvas, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) { paintStatic(); return; }
+      t0 = 0;
+      raf = requestAnimationFrame(loop);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      paintStatic();
+    }
+  });
+})();
+<!--/SCRIPT-->

@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .events import bus
 from .persist import ensure_dir, read_json, write_json_atomic
@@ -139,8 +139,13 @@ class AlertSink(BaseModel):
 # admin token or a Google provider is explicitly configured.
 
 class AuthConfig(BaseModel):
-    provider: str = "none"               # "none" | "google"
-    admin_token: str = ""                # OPTIONAL: generalizes ASTRODECK_TOKEN; bearer => admin (secret)
+    # Multi-method auth (W2.3-bis). ``methods`` is the source of truth: a subset
+    # of {"local","google"}. EMPTY => OPEN/admin (today's byte-for-byte default).
+    # Both methods can be enabled at once. ``provider`` below is LEGACY, honored
+    # only for read-time migration of old config files (never written back).
+    methods: list[str] = Field(default_factory=list)  # subset of {"local","google"}; [] => open/admin
+    provider: str = "none"               # LEGACY (migrate-only): "none" | "google"
+    admin_token: str = ""                # OPTIONAL break-glass: generalizes ASTRODECK_TOKEN; bearer => admin (secret)
     google_client_id: str = ""
     google_client_secret: str = ""       # secret
     google_redirect_uri: str = ""
@@ -150,9 +155,31 @@ class AuthConfig(BaseModel):
     session_signing_alg: str = "EdDSA"   # asymmetric (W3 seam); the home session today is HMAC (see auth/session.py)
     session_private_key: str = ""        # secret (home is the JWT issuer)
     session_public_key: str = ""         # home verifies its own sessions
+    session_ttl_s: int = 28800           # session lifetime (8h); used by BOTH local + google logins
+    local_enabled_first_run: bool = True  # allow the first-admin setup path while the user store is empty
     relay_pubkey: str = ""               # verify relay-forwarded principal (W3 seam)
     viewer_link_pubkey: str = ""         # SEPARATE key for viewer links (W3 seam)
     revoked_jti: list[str] = Field(default_factory=list)  # append-only deny registry; admin.users-gated ONLY
+
+    @model_validator(mode="after")
+    def _migrate_legacy_provider(self) -> "AuthConfig":
+        """READ-TIME migration ONLY (never written back to ``provider``).
+
+        When ``methods`` is empty we honor the legacy single ``provider`` so old
+        config files keep their behavior:
+          - empty methods + ``provider == "google"`` => behave as ["google"];
+          - empty methods + ``provider in {"none",""}`` => stay open/admin ([]).
+        A non-empty ``methods`` always wins and ``provider`` is ignored. The
+        resolution chain reads ``methods``; ``provider`` is never persisted from
+        here (we only populate the in-memory ``methods`` list)."""
+        if not self.methods and self.provider == "google":
+            object.__setattr__(self, "methods", ["google"])
+        return self
+
+    def methods_effective(self) -> list[str]:
+        """The enabled methods after migration, deduped to {"local","google"}
+        order. Empty => OPEN/admin."""
+        return [m for m in ("local", "google") if m in self.methods]
 
 
 class AppConfig(BaseModel):
@@ -393,12 +420,22 @@ def validate_auth_config(auth: AuthConfig, current: AuthConfig | None = None) ->
     4. ``revoked_jti`` is APPEND-ONLY: a save may add jtis but never drop one
        that ``current`` already had (the deny registry cannot be shrunk).
 
+    Multi-method (W2.3-bis): ``methods`` must be a subset of {"local","google"}.
+    EMPTY ``methods`` is valid (open/admin). The legacy ``provider`` field is
+    still validated for back-compat but is no longer the source of truth.
+
     Lazy-imports the auth role table so config.py stays import-light (no auth
     package import at module load — avoids any import cycle)."""
     from .auth.capabilities import ROLES, role_rank  # lazy: keep config import-light
 
     if auth.provider not in ("none", "google"):
         raise ValueError(f"unknown auth provider: {auth.provider!r}")
+
+    for m in auth.methods:
+        if m not in ("local", "google"):
+            raise ValueError(f"unknown auth method: {m!r}")
+    if auth.session_ttl_s <= 0:
+        raise ValueError("session_ttl_s must be positive")
 
     roles_in_use = list(auth.role_allowlist.values())
     if auth.default_role is not None:

@@ -29,6 +29,10 @@ export function connectWs(): void {
     // lands the cap gates treat the caller as a viewer; under the `none` provider
     // it resolves to admin + ALL caps, so the default LAN UI is unchanged.
     void st.loadPrincipal();
+    // Resolve the login-screen signal (W2.6). Under the open default this returns
+    // {methods:[]} ⇒ NO login screen (LAN UI unchanged); when a method is enabled
+    // and the principal can't resolve, App shows the Login gate.
+    void st.loadAuthMethods();
     // Reconcile after any gap: the bus drops frames under backpressure, so the
     // drawer/badge could be missing log lines that arrived while we were away.
     try {

@@ -96,6 +96,7 @@ async def _lifespan(app: "FastAPI"):
     # boot: a bad provider config degrades to open-default rather than bricking.
     try:
         configure_provider_from_auth(config_store.cfg().auth)
+        _warn_insecure_session_secret()
     except Exception as e:  # noqa: BLE001 - degrade to open-default, never crash boot
         bus.log("error", f"auth provider init failed (open-default): {e}", "auth")
     task = asyncio.create_task(dispatcher.run())
@@ -420,6 +421,40 @@ def auth_token() -> str:
 
 def auth_enabled() -> bool:
     return bool(auth_token())
+
+
+def _warn_insecure_session_secret() -> None:
+    """LOUD, fail-closed-aware warning when a real auth method is enabled but the
+    session-signing secret is still the public dev default (critical fix).
+
+    ``configure_provider_from_auth`` already tries to generate+persist a random
+    secret and arm the fail-closed interlock; this surfaces the state to the
+    operator. ASCII only (the live console is cp1252). A no-op under the
+    open/admin default (no method enabled), so default behavior is unchanged."""
+    from ..auth import session as _session
+    try:
+        methods = config_store.cfg().auth.methods_effective()
+    except Exception:  # noqa: BLE001 - never break boot on a banner
+        methods = []
+    if not methods:
+        return  # open/admin default: nothing is signed, no secret needed
+    if _session.secret_is_default():
+        # A real secret could NOT be established (env unset AND persist failed);
+        # the interlock is armed so sessions fail closed. Tell the operator LOUD.
+        bus.log("error", "=" * 70, "auth")
+        bus.log("error",
+                "SECURITY: auth method enabled but no ASTRODECK_SECRET and the "
+                "auto-generated secret could not be persisted.", "auth")
+        bus.log("error",
+                "Sessions are DISABLED (fail-closed) until you set "
+                "ASTRODECK_SECRET. Logins will not work.", "auth")
+        bus.log("error", "=" * 70, "auth")
+    elif not (os.environ.get(_session.SECRET_ENV_VAR) or "").strip():
+        # Running on the auto-generated persisted secret. Functional + safe, but
+        # note it so the operator knows a key was minted on their behalf.
+        bus.log("info",
+                "auth: a random session secret was generated and persisted "
+                "(set ASTRODECK_SECRET to manage it yourself).", "auth")
 
 
 def _present_token(*, header: str | None, authorization: str | None,
@@ -1902,18 +1937,51 @@ def create_app() -> FastAPI:
         except Exception as e:  # noqa: BLE001
             bus.log("error", f"auth provider re-init failed: {e}", "auth")
 
+    def _preserve_auth_secrets(new: AuthConfig) -> AuthConfig:
+        """Re-apply the stored secrets when the incoming value is BLANK.
+
+        The redacted ``auth`` block the UI reads has every secret scrubbed
+        (``admin_token`` / ``google_client_secret`` / ``session_private_key`` ->
+        ""). When the admin-method config panel echoes that block back, a blank
+        secret means "UNCHANGED" -- never "wipe it" -- exactly mirroring the
+        alerts route's "empty token means unchanged" contract. A non-empty value
+        is an explicit rotation and is kept. ``revoked_jti`` is append-only, so a
+        blank/short list from the UI is unioned with the stored registry (the UI
+        never needs to carry it)."""
+        old = config_store.cfg().auth
+        updates: dict = {}
+        if not (new.admin_token or "").strip():
+            updates["admin_token"] = old.admin_token
+        if not (new.google_client_secret or "").strip():
+            updates["google_client_secret"] = old.google_client_secret
+        if not (new.session_private_key or "").strip():
+            updates["session_private_key"] = old.session_private_key
+        # Never let a UI round-trip drop a revoked jti (append-only registry).
+        merged_jti = list(dict.fromkeys([*old.revoked_jti, *new.revoked_jti]))
+        if merged_jti != list(new.revoked_jti):
+            updates["revoked_jti"] = merged_jti
+        return new.model_copy(update=updates) if updates else new
+
     @app.post("/api/auth/config", dependencies=[Depends(require(CAP_ADMIN_USERS))])
     @declare(CAP_ADMIN_USERS)
     async def set_auth_config(auth: AuthConfig):
         """Persist a new ``AuthConfig`` (admin.users-gated). Validates the pinned
         rules (provider/role/default_role ceiling/append-only revoke registry) via
         ``ConfigStore.set_auth``; a violation is a 400. Re-installs the provider
-        and broadcasts the REDACTED config so the UI updates without a restart."""
+        and broadcasts the REDACTED config so the UI updates without a restart.
+
+        Blank secrets in the body mean "unchanged" (the UI only ever sees the
+        redacted block), so a method/TTL toggle never wipes a stored credential."""
+        auth = _preserve_auth_secrets(auth)
         try:
             cfg = await asyncio.to_thread(config_store.set_auth, auth)
         except ValueError as e:
             raise HTTPException(400, detail={"detail": str(e), "code": "invalid_auth"})
         _reconfigure_provider()
+        # Enabling a method without ASTRODECK_SECRET auto-generates+persists a
+        # secret and (if that fails) arms the fail-closed session interlock --
+        # ``_reconfigure_provider`` did that; surface the state LOUD here too.
+        _warn_insecure_session_secret()
         bus.publish("config", config=redacted(cfg))
         return redacted(cfg)["auth"]
 

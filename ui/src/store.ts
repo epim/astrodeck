@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { ReactNode } from "react";
 import type {
   AppConfig,
+  AuthMethods,
   BackendLink,
   CatalogEntry,
   FocusEvent,
@@ -35,7 +36,7 @@ import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
 import { api, ApiError } from "./api";
-import { getMe } from "./api/backends";
+import { getMe, getAuthMethods } from "./api/backends";
 
 // Re-export ViewName from its canonical home (types.ts) so existing imports
 // `import type { ViewName } from "./store"` keep working.
@@ -334,6 +335,11 @@ interface AppState {
   // ALL caps, so the default LAN UI is unchanged. The cap-gate hooks (lib/caps.ts)
   // read this slice.
   principal: Principal | null;
+  // The UNAUTHENTICATED "what login UI do I render?" signal (W2.6; GET
+  // /api/auth/methods). null = not-yet-loaded. `methods == []` ⇒ open LAN, NO
+  // login screen (today's default). Loaded at boot next to config/principal, and
+  // re-loaded after login/logout/first-run/method-config so the gate flips live.
+  authMethods: AuthMethods | null;
   plan: SequencePlan; // atlas SSOT; setPlan persists localStorage in the setter
   editorDirty: boolean;
   siteDirty: boolean;
@@ -423,6 +429,10 @@ interface AppState {
   // read-only instead of hanging unresolved. Call from ws.ts onopen next to
   // loadConfig(), and re-call after sign-in / sign-out.
   loadPrincipal: () => Promise<void>;
+  // GET /api/auth/methods → the login-screen signal (W2.6). Best-effort: a
+  // failure leaves the prior value (or null) so a transient blip never strips the
+  // gate. Call at boot next to loadConfig/loadPrincipal and after auth changes.
+  loadAuthMethods: () => Promise<void>;
   setPlan: (p: SequencePlan, dirty?: boolean) => void;
   setSiteDirty: (b: boolean) => void;
   setOpticsDirty: (b: boolean) => void;
@@ -505,6 +515,7 @@ export const useStore = create<AppState>((set, get) => ({
   // --- config / plan ---
   config: null,
   principal: null, // unresolved → fail-closed viewer until loadPrincipal()
+  authMethods: null, // unresolved → no login gate until loadAuthMethods() lands
   plan: loadPlan(),
   editorDirty: false,
   siteDirty: false,
@@ -603,6 +614,18 @@ export const useStore = create<AppState>((set, get) => ({
         set({ principal: { role: "viewer", email: null, caps: [] } });
       }
       /* else: keep the prior principal; transport blip, not a deauth */
+    }
+  },
+
+  // Resolve the login-screen signal (W2.6). Best-effort: on ANY failure keep the
+  // prior value so a transient blip never flips the gate. Under the open default
+  // this returns {methods:[]} ⇒ no login screen, LAN UI unchanged.
+  loadAuthMethods: async () => {
+    try {
+      const authMethods = await getAuthMethods();
+      set({ authMethods });
+    } catch {
+      /* keep prior value; never strip the gate on a transport blip */
     }
   },
 
@@ -1126,6 +1149,7 @@ export const usePlan = () => useStore((s) => s.plan);
 // The cap-gate hooks themselves live in lib/caps.ts (useCan/useCapability).
 // ============================================================================
 export const usePrincipal = () => useStore((s) => s.principal);
+export const useAuthMethods = () => useStore((s) => s.authMethods);
 export const useCaps = () =>
   useStore(useShallow((s) => s.principal?.caps ?? []));
 export const useBackendLinks = (): BackendLink[] =>

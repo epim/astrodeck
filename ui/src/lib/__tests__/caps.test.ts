@@ -31,9 +31,16 @@ const {
   isViewerRole,
   resolveRoleConnected,
   VIEW_REQUIRED_ROLE,
+  shouldShowLogin,
 } = await import("../caps");
 const { useStore } = await import("../../store");
-import type { BackendLink, Capability, DeviceInfo, Principal } from "../../types";
+import type {
+  AuthMethods,
+  BackendLink,
+  Capability,
+  DeviceInfo,
+  Principal,
+} from "../../types";
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -192,6 +199,44 @@ test("store: null principal (pre-resolution) fails closed via the slice", () => 
   const s = useStore.getState();
   assert(!capAllowed(s.principal, "control.capture"), "null slice denies capture");
   assert(isViewerRole(s.principal), "null slice is viewer (fail-closed)");
+});
+
+// ============================================================ login gate (W2.6)
+// The HARD non-breaking guarantee: no method enabled ⇒ NEVER a login screen.
+const M = (methods: string[], extra: Partial<AuthMethods> = {}): AuthMethods => ({
+  methods, google_configured: false, first_run: false, ...extra,
+});
+
+test("login gate: null signal never gates (fail open until it loads)", () => {
+  assert(shouldShowLogin(null, null) === false, "null authMethods → no login");
+  assert(shouldShowLogin(null, admin) === false, "null authMethods + admin → no login");
+});
+
+test("login gate: methods==[] NEVER shows login (open LAN, unchanged)", () => {
+  assert(shouldShowLogin(M([]), null) === false, "open + null principal");
+  assert(shouldShowLogin(M([]), viewerSentinel) === false, "open + viewer sentinel");
+  assert(shouldShowLogin(M([]), admin) === false, "open + admin");
+  assert(shouldShowLogin(M([], { first_run: true }), null) === false, "open wins over first_run");
+});
+
+test("login gate: first_run shows login regardless of principal", () => {
+  assert(shouldShowLogin(M(["local"], { first_run: true }), null) === true, "first_run → login");
+  assert(shouldShowLogin(M(["local"], { first_run: true }), admin) === true, "first_run even if admin sentinel stale");
+});
+
+test("login gate: method enabled + anonymous sentinel shows login", () => {
+  assert(shouldShowLogin(M(["local"]), viewerSentinel) === true, "local + anon → login");
+  assert(shouldShowLogin(M(["google"], { google_configured: true }), viewerSentinel) === true, "google + anon → login");
+});
+
+test("login gate: method enabled + signed-in identity does NOT gate", () => {
+  assert(shouldShowLogin(M(["local"]), admin) === false, "admin (caps) → no login");
+  assert(shouldShowLogin(M(["local"]), operator) === false, "operator (email) → no login");
+  assert(shouldShowLogin(M(["local"]), viewer) === false, "named viewer (email) → no login");
+});
+
+test("login gate: method enabled + principal not yet resolved waits", () => {
+  assert(shouldShowLogin(M(["local"]), null) === false, "null principal → wait, don't flash login");
 });
 
 // ---------------------------------------------------------------- report

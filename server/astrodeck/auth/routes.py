@@ -46,7 +46,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import config_store
-from .deps import resolve_principal
+from .deps import configure_provider_from_auth, resolve_principal
 from .google import (GoogleOIDCClient, GoogleOIDCConfig, OIDCError, new_nonce,
                      new_pkce_verifier, new_state, pkce_challenge)
 from .session import session_secret, sign_session, verify_session
@@ -302,12 +302,22 @@ def _revoke_jti(jti: str) -> None:
     """Append ``jti`` to the append-only ``revoked_jti`` registry (idempotent).
 
     Goes through ``ConfigStore.set_auth`` so the append-only invariant +
-    version bump are enforced centrally. A duplicate jti is a no-op."""
+    version bump are enforced centrally. A duplicate jti is a no-op.
+
+    HIGH fix: the active provider snapshots ``revoked_jti`` into a frozenset at
+    construction, so persisting alone does NOT kill the cookie -- the live
+    provider must be REBUILT for the new jti to enter its deny set. We therefore
+    re-install the provider from the freshly-persisted config here (mirroring the
+    admin ``/api/auth/revoke`` route), so a user's own logout kills their cookie
+    on its very next request instead of waiting for an unrelated provider rebuild
+    or a restart."""
     cur = config_store.cfg().auth
     if jti in (cur.revoked_jti or []):
         return
     updated = cur.model_copy(update={"revoked_jti": [*cur.revoked_jti, jti]})
     config_store.set_auth(updated)
+    # Rebuild the running provider so the new jti is in its live deny set NOW.
+    configure_provider_from_auth(config_store.cfg().auth)
 
 
 # ---------------------------------------------------------------------- /auth/me
@@ -321,6 +331,20 @@ async def auth_me(request: Request):
     if principal is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return principal.to_public()
+
+
+# --------------------------------------------------- local auth + user mgmt
+# The LOCAL (offline/LAN) login, first-run setup, and user-management CRUD live
+# in ``local_routes.py``. They are folded into THIS router so the apply-lane's
+# single ``include_router(auth.routes.router)`` in ``api/app.py`` picks them up
+# too -- ``api/app.py`` is never edited. Guarded so a partial checkout that
+# lacks ``local_routes`` still imports the google router cleanly.
+try:
+    from .local_routes import router as _local_router
+
+    router.include_router(_local_router)
+except Exception:  # noqa: BLE001 - local-auth surface optional / seam reserved
+    pass
 
 
 __all__ = [

@@ -1,0 +1,155 @@
+<!--STYLE-->
+.plan-figure {
+  margin-top: var(--s-3);
+  background: var(--c-bg-sunk);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--ring);
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+}
+.plan-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.plan-axis { stroke: var(--c-line); stroke-width: 1; }
+.plan-label { fill: var(--c-ink-faint); font: 11px var(--font-mono); }
+.plan-meridian { stroke: var(--c-line); stroke-width: 1; stroke-dasharray: 3 4; }
+.plan-meridian-label { fill: var(--c-accent); font: 11px var(--font-mono); }
+
+/* altitude arc — resting/final state: fully drawn */
+.plan-arc {
+  fill: none;
+  stroke: var(--c-ink-soft);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 520;
+  stroke-dashoffset: 0;
+}
+/* peak marker — the one amber accent at the meridian summit */
+.plan-peak {
+  fill: var(--c-accent);
+}
+.plan-peak-glow {
+  fill: var(--c-accent-soft);
+  opacity: .5;
+}
+/* play-head — resting/final state: past the meridian, on the falling arm */
+.plan-head {
+  transform: translateX(232px);
+}
+.plan-head-dot { fill: var(--c-accent); }
+.plan-head-line { stroke: var(--c-accent-deep); stroke-width: 1; opacity: .5; }
+
+/* scope icon — resting/final state: flipped (east side) */
+.plan-scope {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scaleX(-1);
+}
+.plan-scope-pier { fill: var(--c-ink-faint); }
+.plan-scope-tube { fill: var(--c-ink-soft); }
+.plan-scope-cw { fill: var(--c-ink-faint); }
+
+@keyframes plan-draw {
+  from { stroke-dashoffset: 520; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes plan-sweep {
+  0% { transform: translateX(34px); }
+  100% { transform: translateX(232px); }
+}
+@keyframes plan-peak-in {
+  0%, 55% { opacity: 0; }
+  68% { opacity: 1; }
+  100% { opacity: 1; }
+}
+@keyframes plan-flip {
+  0%, 48% { transform: scaleX(1); }
+  56% { transform: scaleX(0.06); }
+  64% { transform: scaleX(-1); }
+  100% { transform: scaleX(-1); }
+}
+
+.precis-topic.in .plan-arc {
+  animation: plan-draw 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-head {
+  animation: plan-sweep 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-peak,
+.precis-topic.in .plan-peak-glow {
+  animation: plan-peak-in 2.4s var(--ease) both;
+}
+.precis-topic.in .plan-scope {
+  animation: plan-flip 2.4s var(--ease) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .plan-arc,
+  .precis-topic.in .plan-head,
+  .precis-topic.in .plan-peak,
+  .precis-topic.in .plan-peak-glow,
+  .precis-topic.in .plan-scope {
+    animation: none;
+  }
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="plan" data-nav="Plan the Night">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">10</span> Planning</p>
+    <h2 class="reveal">Plan the night, then let it run</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Choose targets that are high and dark during your imaging window, set exposures per filter, and queue a sequence that runs unattended.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Altitude</dt>
+      <dd>Image a target near its highest point (the meridian), where its light cuts through the least air.</dd>
+      <dt>Meridian flip</dt>
+      <dd>A German equatorial mount must swap sides as the target crosses the meridian (when the hour angle <span class="stat">HA = LST − RA</span> reaches 0).</dd>
+      <dt>Budget</dt>
+      <dd>Total integration = sub length × frame count, split across filters.</dd>
+      <dt>Safety</dt>
+      <dd>The sequence handles refocus, dither, the flip, and aborts on its own.</dd>
+    </dl>
+    <figure class="plan-figure reveal" style="--reveal-delay:.16s" aria-hidden="true">
+      <svg class="plan-svg" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid meet">
+        <!-- axes -->
+        <line class="plan-axis" x1="34" y1="20" x2="34" y2="150"></line>
+        <line class="plan-axis" x1="34" y1="150" x2="296" y2="150"></line>
+        <text class="plan-label" x="6" y="34">alt</text>
+        <text class="plan-label" x="244" y="166">time</text>
+
+        <!-- meridian marker at centre -->
+        <line class="plan-meridian" x1="165" y1="20" x2="165" y2="150"></line>
+        <text class="plan-meridian-label" x="138" y="16">MERIDIAN</text>
+
+        <!-- altitude arc: rises, peaks at the meridian, then falls -->
+        <path class="plan-arc" d="M 34 150 Q 165 -36 296 150"></path>
+
+        <!-- peak marker at the summit (one amber accent) -->
+        <circle class="plan-peak-glow" cx="165" cy="51" r="9"></circle>
+        <circle class="plan-peak" cx="165" cy="51" r="3.5"></circle>
+
+        <!-- play-head sweeping along the time axis -->
+        <g class="plan-head">
+          <line class="plan-head-line" x1="0" y1="20" x2="0" y2="150"></line>
+          <circle class="plan-head-dot" cx="0" cy="150" r="3"></circle>
+        </g>
+
+        <!-- mount/scope icon that flips sides at the meridian -->
+        <g class="plan-scope" transform="translate(150,118)">
+          <rect class="plan-scope-pier" x="6" y="14" width="4" height="20"></rect>
+          <rect class="plan-scope-cw" x="-6" y="20" width="9" height="4" rx="1.5"></rect>
+          <rect class="plan-scope-tube" x="2" y="-2" width="20" height="6" rx="3" transform="rotate(-26 12 1)"></rect>
+        </g>
+      </svg>
+    </figure>
+    <p class="caption">Best signal near the meridian; the run flips the mount as the target crosses it.</p>
+    <p class="stakes reveal">Pick a target too low (or behind a tree), or run past the meridian without a flip, and you lose the subs — or crash the mount into the pier.</p>
+    <p class="hook reveal">SequenceView holds the <code>Plan</code> (frames, integration), a <code>Targets</code> list, and <code>Automation</code> (meridian flip, HFR spike rejection, dither, filter offsets).</p>
+    <p class="aside">Most imagers plan before dark; it sits last here because it's the part you keep tuning all night.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+<!--/SCRIPT-->

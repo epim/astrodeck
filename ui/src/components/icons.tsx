@@ -12,11 +12,11 @@ export type IconName =
   | "play" | "stop" | "pause" | "refresh" | "bridge" | "link"
   | "sun" | "moon" | "lock" | "unlock" | "frame"
   // account / rbac
-  | "user" | "logout" | "eye"
+  | "user" | "logout" | "eye" | "key" | "shield"
   // status
   | "alert" | "check" | "info" | "x"
   // misc
-  | "grid"
+  | "grid" | "plus" | "trash"
   // directional
   | "arrow-up" | "arrow-down" | "arrow-left" | "arrow-right";
 
@@ -65,6 +65,14 @@ const PATHS: Record<IconName, JSX.Element> = {
   x: <><path d="M6 6l12 12M18 6L6 18" /></>,
   // grid — 2x2 cells (mosaic / total-field glyph), Lucide-style
   grid: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
+  // key — credential / reset-password glyph
+  key: <><circle cx="8" cy="8" r="4" /><path d="M11 11l8 8M16 16l2-2M18 18l2-2" /></>,
+  // shield — auth-method / security panel glyph
+  shield: <><path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z" /></>,
+  // plus — add user / add row
+  plus: <><path d="M12 5v14M5 12h14" /></>,
+  // trash — delete user
+  trash: <><path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13" /><path d="M10 11v6M14 11v6" /></>,
   "arrow-up": <><path d="M12 19V5M6 11l6-6 6 6" /></>,
   "arrow-down": <><path d="M12 5v14M6 13l6 6 6-6" /></>,
   "arrow-left": <><path d="M19 12H5M11 6l-6 6 6 6" /></>,

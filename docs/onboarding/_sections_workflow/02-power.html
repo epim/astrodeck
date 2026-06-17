@@ -1,0 +1,150 @@
+<!--STYLE-->
+  /* slug: power — device chips enumerating on a bus, one by one */
+  .power-bus {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
+    align-items: stretch;
+  }
+  .power-chip {
+    flex: 1 1 8.5rem;
+    min-width: 8.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    /* resting / final state = connected (also the reduced-motion state) */
+    color: var(--c-ink-soft);
+    border-color: color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
+  }
+  .power-dot {
+    flex: 0 0 auto;
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    /* resting / final = amber connected */
+    background: var(--c-accent);
+    box-shadow: 0 0 7px var(--c-accent);
+  }
+  .power-label { color: var(--c-ink); }
+  .power-state {
+    margin-left: auto;
+    color: var(--c-accent);
+    font-size: 0.92em;
+  }
+  /* the grey "—" placeholder shown only mid-animation */
+  .power-state .power-dash { display: none; }
+
+  /* Animation: each chip starts dim/disconnected and snaps to connected,
+     staggered like a bus enumerating. Gated on .in so it replays.
+     Base selector above is the final connected look (reduced-motion safe). */
+  @keyframes power-connect {
+    0%, 35% {
+      color: var(--c-ink-faint);
+      border-color: var(--c-line);
+    }
+    55%, 100% {
+      color: var(--c-ink-soft);
+      border-color: color-mix(in srgb, var(--c-accent) 35%, var(--c-line));
+    }
+  }
+  @keyframes power-light {
+    0%, 35% {
+      background: var(--c-ink-faint);
+      box-shadow: none;
+    }
+    50% {
+      box-shadow: 0 0 11px var(--c-accent);
+    }
+    55%, 100% {
+      background: var(--c-accent);
+      box-shadow: 0 0 7px var(--c-accent);
+    }
+  }
+  .precis-topic.in .power-chip {
+    animation: power-connect var(--dur) var(--ease) both;
+    animation-delay: calc(var(--power-i) * 0.16s);
+  }
+  .precis-topic.in .power-chip .power-dot {
+    animation: power-light var(--dur) var(--ease) both;
+    animation-delay: calc(var(--power-i) * 0.16s);
+  }
+
+  .power-rail {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+    padding-top: var(--s-3);
+    border-top: 1px solid var(--c-line);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-ink-faint);
+    text-transform: uppercase;
+  }
+  .power-rail b { color: var(--c-ink-soft); font-weight: 500; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="power" data-nav="Power + Connect">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">02</span> Powering On</p>
+    <h2 class="reveal">Power on, boot, connect</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Bring up power to the mount, camera,
+      focuser, filter wheel and guider, then start AstroDeck and let it connect to each
+      device.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Order</dt><dd>Power the USB hub, dew heaters and mount first, then the host
+        computer running AstroDeck — peripherals up before the bus enumerates.</dd>
+      <dt>Devices</dt><dd>An imaging camera, mount, focuser, filter wheel and guider:
+        <span class="stat">5 roles</span>, each driven by a separate driver.</dd>
+      <dt>Backends</dt><dd>AstroDeck reaches gear through a backend — a <b>simulator</b>,
+        <b>Alpaca</b>, or <b>NINA</b> — so the same UI drives real or fake hardware.</dd>
+      <dt>Profiles</dt><dd>A saved profile maps each role to a device and auto-connects on
+        boot, so a known rig comes up in one step.</dd>
+    </dl>
+
+    <div class="power-bus bleed-wide reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="power-chip" style="--power-i: 0">
+        <span class="power-dot"></span><span class="power-label">Mount</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 1">
+        <span class="power-dot"></span><span class="power-label">Camera</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 2">
+        <span class="power-dot"></span><span class="power-label">Focuser</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 3">
+        <span class="power-dot"></span><span class="power-label">Wheel</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-chip" style="--power-i: 4">
+        <span class="power-dot"></span><span class="power-label">Guider</span><span class="power-state">ok</span>
+      </div>
+      <div class="power-rail">
+        <span>backend <b>simulator</b></span>
+        <span>profile <b>backyard-rig</b></span>
+      </div>
+    </div>
+    <p class="caption">Each device connects independently; the session waits for the roles it
+      needs.</p>
+
+    <p class="stakes reveal">A device that fails to connect — or connects to the wrong
+      backend — stalls the run before the first frame.</p>
+    <p class="hook reveal">AstroDeck shows a backend + profile picker and a tri-state
+      connection status per role; viewers get a read-only view with no control.</p>
+    <p class="aside">The simulator backend connects instantly and never clouds over.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+<!--/SCRIPT-->

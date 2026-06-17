@@ -1,0 +1,208 @@
+<!--STYLE-->
+  /* ---- TOPIC: Guiding (slug: guide) ---- */
+  .guide-fig {
+    display: grid;
+    grid-template-columns: minmax(7rem, 9.5rem) 1fr;
+    gap: var(--s-3);
+    align-items: stretch;
+    margin: var(--s-3) 0 var(--s-2);
+  }
+  @media (max-width: 540px) {
+    .guide-fig { grid-template-columns: 1fr; }
+  }
+  .guide-panel {
+    position: relative;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  .guide-box { aspect-ratio: 1 / 1; }
+  .guide-graph { aspect-ratio: 16 / 7; }
+  .guide-canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+  }
+  .guide-tag {
+    position: absolute;
+    top: 0.5em; left: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    color: var(--c-ink-faint);
+  }
+  .guide-rms {
+    position: absolute;
+    top: 0.5em; right: 0.6em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-good);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="guide" data-nav="Guiding">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">07</span> Guiding</p>
+    <h2 class="reveal">Guide out the drift (PHD2)</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">A second camera watches one star and
+      sends tiny correction pulses to the mount, cancelling the small errors that tracking
+      and polar alignment leave behind.</p>
+
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Loop</dt><dd>Measure the guide star's offset, pulse the mount to push it back,
+        repeat every <span class="stat">~1&ndash;3 s</span>.</dd>
+      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds; smaller means
+        rounder stars.</dd>
+      <dt>Dither</dt><dd>Shift a few pixels between frames so stacking rejects hot pixels
+        and walking noise.</dd>
+      <dt>PHD2</dt><dd>The de-facto guiding engine AstroDeck drives.</dd>
+    </dl>
+
+    <figure class="guide-fig reveal bleed-wide" style="--reveal-delay:.16s">
+      <div class="guide-panel guide-box">
+        <span class="guide-tag">GUIDE STAR</span>
+        <canvas class="guide-canvas" id="guide-star" width="320" height="320" aria-hidden="true"></canvas>
+      </div>
+      <div class="guide-panel guide-graph">
+        <span class="guide-tag">RMS ERROR</span>
+        <span class="guide-rms" id="guide-rms">0.6"</span>
+        <canvas class="guide-canvas" id="guide-trace" width="640" height="280" aria-hidden="true"></canvas>
+      </div>
+    </figure>
+    <p class="caption">Each pulse pushes the star back toward the crosshair; the trace is the
+      residual it can't catch.</p>
+
+    <p class="stakes reveal">Without guiding, the field slowly walks during long sub-exposures
+      and stars smear into ovals.</p>
+    <p class="hook reveal">AstroDeck reports live guide <code>RMS</code> and exposes a
+      <code>dither</code> setting in the sequence Automation.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var el = document.getElementById("guide-star");
+  if (!el || !window.AstroAnim) return;
+
+  var starC = el;
+  var traceC = document.getElementById("guide-trace");
+  var rmsEl = document.getElementById("guide-rms");
+  if (!traceC) return;
+
+  var sx = starC.getContext("2d");
+  var tx = traceC.getContext("2d");
+
+  function tok(n, fb) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    return v || fb;
+  }
+  var C_ACCENT = tok("--c-accent", "#e8a849");
+  var C_ACCENT_SOFT = tok("--c-accent-soft", "#f0c483");
+  var C_COOL = tok("--c-cool", "#6f9bd8");
+  var C_GOOD = tok("--c-good", "#74c69d");
+  var C_LINE = tok("--c-line", "#232838");
+
+  var SW = starC.width, SH = starC.height, TW = traceC.width, TH = traceC.height;
+  var raf = 0, t = 0, ditherAt = 0, history = [];
+
+  function rnd() { return Math.random() * 2 - 1; }
+
+  function drawStar(offx, offy, nudge) {
+    sx.clearRect(0, 0, SW, SH);
+    // crosshair box
+    sx.strokeStyle = C_LINE; sx.lineWidth = 1;
+    sx.strokeRect(SW * 0.18, SH * 0.18, SW * 0.64, SH * 0.64);
+    sx.beginPath();
+    sx.moveTo(SW / 2, SH * 0.18); sx.lineTo(SW / 2, SH * 0.82);
+    sx.moveTo(SW * 0.18, SH / 2); sx.lineTo(SW * 0.82, SH / 2);
+    sx.strokeStyle = "rgba(111,155,216,0.25)"; sx.stroke();
+
+    var cx = SW / 2 + offx, cy = SH / 2 + offy;
+    // star glow (amber)
+    var g = sx.createRadialGradient(cx, cy, 0, cx, cy, 26);
+    g.addColorStop(0, C_ACCENT_SOFT);
+    g.addColorStop(0.4, C_ACCENT);
+    g.addColorStop(1, "rgba(232,168,73,0)");
+    sx.fillStyle = g;
+    sx.beginPath(); sx.arc(cx, cy, 26, 0, Math.PI * 2); sx.fill();
+
+    // correction pulse arrow pointing back toward centre
+    if (nudge) {
+      sx.strokeStyle = C_ACCENT; sx.lineWidth = 2;
+      sx.beginPath();
+      sx.moveTo(cx, cy);
+      sx.lineTo(cx - offx * 0.55, cy - offy * 0.55);
+      sx.stroke();
+    }
+  }
+
+  function drawTrace() {
+    tx.clearRect(0, 0, TW, TH);
+    var mid = TH / 2;
+    // zero line + tolerance band (the near-zero target)
+    tx.fillStyle = "rgba(116,198,157,0.08)";
+    tx.fillRect(0, mid - TH * 0.12, TW, TH * 0.24);
+    tx.strokeStyle = C_LINE; tx.lineWidth = 1;
+    tx.beginPath(); tx.moveTo(0, mid); tx.lineTo(TW, mid); tx.stroke();
+
+    tx.strokeStyle = C_ACCENT; tx.lineWidth = 1.5;
+    tx.beginPath();
+    var n = history.length;
+    for (var i = 0; i < n; i++) {
+      var x = (i / (n - 1 || 1)) * TW;
+      var y = mid - history[i] * (TH * 0.34);
+      if (i === 0) tx.moveTo(x, y); else tx.lineTo(x, y);
+    }
+    tx.stroke();
+  }
+
+  function setRms(v) { if (rmsEl) rmsEl.textContent = v.toFixed(1) + '"'; }
+
+  function paintStatic() {
+    // calm, settled final frame: trace near zero, star near centre
+    history = [];
+    for (var i = 0; i < 140; i++) history.push(rnd() * 0.16);
+    drawStar(2, -1, false);
+    drawTrace();
+    setRms(0.6);
+  }
+
+  function loop() {
+    t += 1;
+    var settle = Math.min(1, t / 90);       // jitter shrinks as guiding locks
+    var amp = 9 * (1 - settle) + 2.4;       // px jitter, decreasing
+    var offx = rnd() * amp, offy = rnd() * amp;
+    var nudge = Math.abs(offx) + Math.abs(offy) > 6;
+
+    // dither hop every ~260 frames: kick the star + trace, then resettle
+    if (t - ditherAt > 260) { ditherAt = t; t = 30; offx += 18; }
+
+    drawStar(offx, offy, nudge);
+
+    var err = (Math.abs(offx) + Math.abs(offy)) / 22;  // arcsec proxy
+    history.push((offx + offy) / 22);
+    if (history.length > 140) history.shift();
+    drawTrace();
+    setRms(0.5 + err);
+
+    raf = requestAnimationFrame(loop);
+  }
+
+  window.AstroAnim.register(starC, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      if (window.AstroAnim.reduceMotion) { paintStatic(); return; }
+      t = 0; ditherAt = 0; history = [];
+      raf = requestAnimationFrame(loop);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      paintStatic();
+    }
+  });
+})();
+<!--/SCRIPT-->

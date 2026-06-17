@@ -6,7 +6,14 @@
 
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store";
-import type { BackendLink, Capability, DeviceInfo, Principal, PrincipalRole } from "../types";
+import type {
+  AuthMethods,
+  BackendLink,
+  Capability,
+  DeviceInfo,
+  Principal,
+  PrincipalRole,
+} from "../types";
 
 // ============================================================================
 // PURE decision helpers (no React, no store). The hooks below are thin wrappers
@@ -62,6 +69,47 @@ export const VIEW_REQUIRED_ROLE: Partial<Record<string, string>> = {
   power: "switch",
 };
 
+// ---------------------------------------------------------------- login gate
+// Decide whether App should replace the whole shell with the <Login/> screen.
+// HARD non-breaking rule: when NO method is enabled (`methods == []`, today's
+// open-LAN default) this is ALWAYS false — no login is ever shown and the UI is
+// byte-for-byte unchanged. A login is shown ONLY when a method is enabled AND
+// either the store still needs a first admin OR the caller is unauthenticated.
+//
+// "Unauthenticated under an enabled method" = the fail-closed sentinel the store
+// pins on a 401: role "viewer" with no email and no caps. A genuinely signed-in
+// viewer carries an email (Google) or is a named local account, so they are NOT
+// gated — they see the read-only UI. We fail OPEN while the signal is still
+// loading (authMethods == null) so a transport blip never traps the live tablet
+// behind a login.
+export function shouldShowLogin(
+  authMethods: AuthMethods | null,
+  principal: Principal | null,
+): boolean {
+  // Signal not loaded yet → never gate (fail open to today's behavior).
+  if (!authMethods) return false;
+  const methods = authMethods.methods ?? [];
+  // No method enabled → open LAN, NEVER a login (the hard guarantee).
+  if (methods.length === 0) return false;
+  // A first admin still needs creating → show the setup form.
+  if (authMethods.first_run) return true;
+  // Principal not resolved yet → wait (don't flash a login over an admin).
+  if (!principal) return false;
+  // Signed in (any account with an identity, or any elevated role) → no login.
+  if (principal.email) return false;
+  if (principal.role === "admin" || principal.role === "operator") return false;
+  if ((principal.caps?.length ?? 0) > 0) return false;
+  // Otherwise: the anonymous fail-closed viewer sentinel under an enabled method.
+  return true;
+}
+
+/** Reactive form of shouldShowLogin — App subscribes to this to gate the shell. */
+export function useShouldShowLogin(): boolean {
+  return useStore(
+    useShallow((s) => shouldShowLogin(s.authMethods, s.principal)),
+  );
+}
+
 /** Does the resolved principal hold `cap`? Fail-closed: unresolved → false. */
 export function useCapability(cap: Capability): boolean {
   return useStore((s) => capAllowed(s.principal, cap));
@@ -77,6 +125,8 @@ export const useCanControlCapture = () => useCapability("control.capture");
 export const useCanControlGuide = () => useCapability("control.guide");
 export const useCanControlPower = () => useCapability("control.power");
 export const useCanConfigBackend = () => useCapability("config.backend");
+/** admin.users — gates the Users panel + the auth-method config panel (W2.6). */
+export const useCanAdminUsers = () => useCapability("admin.users");
 
 /** True when the caller is a viewer (or unresolved). Drives the "View-only"
  *  badge + read-only surfaces (controls HIDDEN/disabled, not 403-on-tap). */
