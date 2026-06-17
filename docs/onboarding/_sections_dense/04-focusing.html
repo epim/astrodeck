@@ -1,0 +1,361 @@
+<!--STYLE-->
+  /* ── Section 4: focusing ────────────────────────────────────── */
+  .focus-stage {
+    display: grid;
+    gap: var(--s-5);
+    margin-top: var(--s-6);
+  }
+
+  /* the three little demos sit in a column, each its own panel */
+  .focus-demo {
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+    display: grid;
+    gap: var(--s-3);
+  }
+  .focus-demo-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin: 0;
+  }
+
+  /* ── demo 1: the bloated star tightening ──────────────────── */
+  .focus-starwrap {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-3);
+    align-items: center;
+    justify-items: center;
+  }
+  .focus-star-field {
+    width: 100%;
+    aspect-ratio: 16 / 7;
+    border-radius: var(--radius-sm);
+    background:
+      radial-gradient(circle at 20% 80%, rgba(111,155,216,0.10), transparent 40%),
+      var(--c-bg-sunk);
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+  }
+  /* the star itself: a blurred dot whose blur + scale we animate */
+  .focus-star {
+    width: 16%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--c-ink) 0%, var(--c-accent-soft) 38%, var(--c-accent) 62%, transparent 72%);
+    /* --focus: 0 = sharp pinpoint, 1 = bloated marshmallow */
+    --focus: 1;
+    filter: blur(calc(var(--focus) * 22px));
+    transform: scale(calc(1 + var(--focus) * 1.9));
+    opacity: calc(1 - var(--focus) * 0.35);
+    transition:
+      filter var(--dur) var(--ease),
+      transform var(--dur) var(--ease),
+      opacity var(--dur) var(--ease);
+  }
+  .focus-is-in .focus-star { --focus: 0; }
+
+  /* the HFR readout that counts down as the star tightens */
+  .focus-readout {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+  }
+  .focus-readout-num {
+    font-size: var(--t-2xl);
+    color: var(--c-accent);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .focus-readout-unit {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    letter-spacing: 0.08em;
+  }
+  .focus-readout-word {
+    margin-left: auto;
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+
+  /* ── demo 2: the Bahtinov mask spikes ─────────────────────── */
+  .focus-bahtinov { width: 100%; height: auto; }
+  .focus-bah-spike {
+    stroke: var(--c-cool);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    opacity: 0.85;
+  }
+  .focus-bah-center {
+    stroke: var(--c-accent);
+    stroke-width: 3;
+    stroke-linecap: round;
+    /* travels from off-kilter to dead-center on reveal */
+    transform: rotate(11deg);
+    transform-origin: 50% 50%;
+    transition: transform calc(var(--dur) * 1.6) var(--ease);
+  }
+  .focus-is-in .focus-bah-center { transform: rotate(0deg); }
+  .focus-bah-core {
+    fill: var(--c-ink);
+  }
+  /* the little "aligned" tag fades in once centered */
+  .focus-bah-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    fill: var(--c-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.4);
+  }
+  .focus-is-in .focus-bah-tag { opacity: 1; }
+
+  /* ── demo 3: the V-curve ──────────────────────────────────── */
+  .focus-vcurve { width: 100%; height: auto; }
+  .focus-axis { stroke: var(--c-line); stroke-width: 1; }
+  .focus-axis-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    fill: var(--c-ink-faint);
+  }
+  .focus-vpoint {
+    fill: var(--c-ink-soft);
+    opacity: 0;
+    transform: scale(0.2);
+    transform-box: fill-box;
+    transform-origin: center;
+    transition:
+      opacity var(--dur-fast) var(--ease-soft),
+      transform var(--dur-fast) var(--ease);
+  }
+  .focus-is-in .focus-vpoint { opacity: 1; transform: scale(1); }
+  /* the fitted V line draws itself */
+  .focus-vline {
+    stroke: var(--c-ink-faint);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+    fill: none;
+    stroke-dashoffset: 260;
+    opacity: 0;
+    transition:
+      stroke-dashoffset calc(var(--dur) * 1.2) var(--ease) calc(var(--dur) * 0.6),
+      opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 0.6);
+  }
+  .focus-is-in .focus-vline { stroke-dashoffset: 0; opacity: 0.9; }
+  /* the minimum marker drops in last and glows */
+  .focus-vmin {
+    fill: var(--c-accent);
+    opacity: 0;
+    transform: scale(0.2);
+    transform-box: fill-box;
+    transform-origin: center;
+    transition:
+      opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.5),
+      transform var(--dur) var(--ease) calc(var(--dur) * 1.5);
+  }
+  .focus-is-in .focus-vmin {
+    opacity: 1;
+    transform: scale(1);
+    filter: drop-shadow(0 0 6px var(--c-accent));
+  }
+  .focus-vmin-line {
+    stroke: var(--c-accent);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.7);
+  }
+  .focus-is-in .focus-vmin-line { opacity: 0.5; }
+
+  .focus-demo-note {
+    margin: 0;
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="focusing" data-nav="Focus">
+  <p class="kicker">Sharpness, Measured</p>
+  <h2 class="reveal">A star should be a point, not a marshmallow</h2>
+  <p class="lede reveal">
+    A star is far enough away to be a true point source — zero angular size at any
+    aperture you'll own. Focus is the job of making the optics agree, collapsing each
+    star to the smallest, brightest dot they can form. Miss it and the same star bloats
+    into a soft pale blob: same sky, worse photo.
+  </p>
+
+  <p class="reveal">
+    A slightly soft star and a sharp one look identical to a human eye at 2am, so you
+    stop trusting eyeballs and trust a number. The standard one is <strong>HFR</strong>
+    — half-flux radius, the radius enclosing half the star's total light, in pixels.
+    Smaller is sharper. The whole game is driving HFR down and keeping it there.
+  </p>
+
+  <div class="focus-stage" data-focus-stage>
+    <!-- DEMO 1 -->
+    <figure class="focus-demo reveal">
+      <p class="focus-demo-label">In focus vs. out of focus</p>
+      <div class="focus-starwrap">
+        <div class="focus-star-field" aria-hidden="true">
+          <div class="focus-star"></div>
+        </div>
+      </div>
+      <div class="focus-readout" aria-hidden="true">
+        <span class="focus-readout-num" data-focus-hfr>4.8</span>
+        <span class="focus-readout-unit">HFR&nbsp;px</span>
+        <span class="focus-readout-word" data-focus-word>bloated</span>
+      </div>
+      <figcaption class="caption">
+        The blob tightens to a pinpoint as the focuser finds its spot, HFR falling to
+        match — roughly 4.8 down to 1.2 px.
+      </figcaption>
+    </figure>
+
+    <!-- DEMO 2 -->
+    <figure class="focus-demo reveal" style="--reveal-delay: .08s">
+      <p class="focus-demo-label">Where this came from · the Bahtinov mask</p>
+      <svg class="focus-bahtinov" viewBox="0 0 320 150" role="img"
+           aria-label="A bright star throwing three diffraction spikes. Two fixed spikes form an X; a third moving spike rotates until it sits exactly between them, marking perfect focus.">
+        <!-- two fixed spikes forming the X -->
+        <line class="focus-bah-spike" x1="60" y1="35" x2="260" y2="115"/>
+        <line class="focus-bah-spike" x1="60" y1="115" x2="260" y2="35"/>
+        <!-- the moving center spike -->
+        <line class="focus-bah-center" x1="40" y1="75" x2="280" y2="75"/>
+        <!-- the star core -->
+        <circle class="focus-bah-core" cx="160" cy="75" r="6"/>
+        <text class="focus-bah-tag" x="160" y="140" text-anchor="middle">CENTERED · IN FOCUS</text>
+      </svg>
+      <figcaption class="caption">
+        The manual ancestor, for intuition — a physical grille you clip over the
+        aperture, so there's no on-screen control. A bright star sprouts three
+        diffraction spikes; two are fixed, the third drifts as you turn the focuser,
+        and dead-center between them means sharp. People still swear by it, but a
+        computer can't turn a knob and squint — hence the next demo.
+      </figcaption>
+    </figure>
+
+    <!-- DEMO 3 -->
+    <figure class="focus-demo reveal" style="--reveal-delay: .16s">
+      <p class="focus-demo-label">V-curve autofocus · the automated method</p>
+      <svg class="focus-vcurve" viewBox="0 0 320 170" role="img"
+           aria-label="A V-shaped plot of star size against focuser position. The software measures HFR at several positions, fits the V, and drives to the lowest point — the sharpest focus.">
+        <!-- axes -->
+        <line class="focus-axis" x1="36" y1="14" x2="36" y2="138"/>
+        <line class="focus-axis" x1="36" y1="138" x2="306" y2="138"/>
+        <text class="focus-axis-label" x="20" y="20">HFR</text>
+        <text class="focus-axis-label" x="240" y="156">FOCUSER POS →</text>
+        <!-- fitted V -->
+        <polyline class="focus-vline" points="60,40 160,120 260,40"/>
+        <!-- sampled points climbing down then up -->
+        <circle class="focus-vpoint" cx="60"  cy="42"  r="4"/>
+        <circle class="focus-vpoint" cx="100" cy="78"  r="4"/>
+        <circle class="focus-vpoint" cx="135" cy="104" r="4"/>
+        <circle class="focus-vpoint" cx="185" cy="100" r="4"/>
+        <circle class="focus-vpoint" cx="225" cy="72"  r="4"/>
+        <circle class="focus-vpoint" cx="262" cy="40"  r="4"/>
+        <!-- the minimum -->
+        <line class="focus-vmin-line" x1="160" y1="120" x2="160" y2="138"/>
+        <circle class="focus-vmin" cx="160" cy="120" r="6"/>
+      </svg>
+      <figcaption class="caption">
+        Same hunt, handed to a machine and built on the HFR number from demo one: step
+        the focuser across a range, measure HFR at each stop, fit the V those points
+        trace, and drive to its minimum. No grille, no squinting. This is exactly what
+        AstroDeck's focus button runs.
+      </figcaption>
+    </figure>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    Focus won't hold: it <em>drifts</em>. As the night cools, the tube's metal
+    contracts a few microns, the focal point shifts, and sharp stars quietly puff back
+    up. So you refocus periodically — a chore built for automation, which is where this
+    goes: re-running the V-curve on a temperature or time trigger, watching HFR, moving
+    the focuser with no human in the loop.
+  </p>
+
+  <p class="reveal">
+    In AstroDeck's focus panel, the <strong>HFR readout is the protagonist</strong>,
+    not the buttons around it. The user is hunting a minimum; the two control flows — a
+    manual nudge and the full V-curve run — exist to make that number small and say,
+    plainly, when it is.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var stage = document.querySelector("[data-focus-stage]");
+  if (!stage) return;
+
+  var hfrEl  = stage.querySelector("[data-focus-hfr]");
+  var wordEl = stage.querySelector("[data-focus-word]");
+
+  // shared trigger: when the first demo reveals, add the state class that
+  // drives all three CSS transitions, and run the HFR countdown.
+  var firstDemo = stage.querySelector(".focus-demo");
+
+  function snapToSharp() {
+    // static end-state, also the reduced-motion fallback
+    stage.querySelectorAll(".focus-demo").forEach(function (d) {
+      d.classList.add("focus-is-in");
+    });
+    if (hfrEl)  hfrEl.textContent = "1.2";
+    if (wordEl) wordEl.textContent = "sharp";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    snapToSharp();
+    return;
+  }
+
+  var fired = false;
+
+  function animateReadout() {
+    var start = 4.8, end = 1.2;
+    var t0 = null;
+    var dur = 900;
+    function frame(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / dur);
+      // ease-out so it settles, matching the CSS --ease feel
+      var eased = 1 - Math.pow(1 - p, 3);
+      var val = start + (end - start) * eased;
+      if (hfrEl) hfrEl.textContent = val.toFixed(1);
+      if (wordEl) {
+        wordEl.textContent = val > 3.4 ? "bloated" : (val > 2.0 ? "soft" : "sharp");
+      }
+      if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        stage.querySelectorAll(".focus-demo").forEach(function (d) {
+          d.classList.add("focus-is-in");
+        });
+        animateReadout();
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.4 });
+
+  obs.observe(firstDemo);
+})();
+<!--/SCRIPT-->

@@ -1,0 +1,193 @@
+<!--STYLE-->
+  /* ===== Section 12: Outro (slug: out) ===== */
+  .out-grid {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2);
+    list-style: none;
+    padding: 0;
+  }
+  @media (max-width: 720px) { .out-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 440px) { .out-grid { grid-template-columns: 1fr; } }
+
+  .out-card {
+    position: relative;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-3);
+    overflow: hidden;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                transform var(--dur-fast) var(--ease);
+  }
+  .out-card:hover { border-color: var(--c-accent); transform: translateY(-2px); }
+
+  /* a thin amber edge that wipes in on reveal */
+  .out-card::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--c-accent);
+    transform: scaleY(0);
+    transform-origin: top;
+    transition: transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+  }
+  .out-card.is-in::before { transform: scaleY(1); }
+
+  .out-icon { width: 30px; height: 30px; margin-bottom: var(--s-2); color: var(--c-accent); }
+  .out-icon svg { width: 100%; height: 100%; }
+
+  .out-concept {
+    font-family: var(--font-display);
+    font-size: var(--t-lg);
+    line-height: var(--leading-tight);
+    margin-bottom: 0.35rem;
+  }
+  .out-screen {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin-bottom: 0.6rem;
+  }
+  .out-screen b { color: var(--c-cool); font-weight: 500; }
+  .out-note {
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+    line-height: var(--leading-snug);
+  }
+
+  /* ---- closing flourish: a quiet pulse around "your move" ---- */
+  .out-close {
+    margin-top: var(--s-6);
+    text-align: center;
+  }
+  .out-close > * { margin-inline: auto; }
+
+  .out-orbit {
+    position: relative;
+    width: 84px;
+    height: 84px;
+    margin: 0 auto var(--s-3);
+  }
+  .out-orbit svg { width: 100%; height: 100%; overflow: visible; }
+  .out-core {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .out-ring {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  /* the dot rides the ring once it is revealed */
+  .out-close.is-in .out-ring {
+    animation: out-spin 9s linear infinite;
+  }
+  .out-close.is-in .out-core {
+    animation: out-breathe 4.5s var(--ease) infinite;
+  }
+  @keyframes out-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes out-breathe {
+    0%, 100% { opacity: 0.85; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.08); }
+  }
+
+  .out-kbd {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="out" data-nav="Your Move">
+  <p class="kicker">Where You Come In</p>
+  <h2 class="reveal">Every idea here is a screen you can now critique.</h2>
+  <p class="lede reveal">You came in knowing software and nothing about the sky. That's the right way around. Each concept in this primer maps to a specific surface in AstroDeck — and each surface has one piece of state a half-awake operator must read in a glance, and one way it fails when they can't.</p>
+
+  <ul class="out-grid">
+    <li class="out-card reveal" style="--reveal-delay: .04s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="0.8" fill="currentColor"/></svg></div>
+      <h3 class="out-concept">Polar alignment</h3>
+      <p class="out-screen">screen · <b>the bullseye</b></p>
+      <p class="out-note">Get the mount's axis on the celestial pole, or everything downstream drifts. The target is dead-center or it isn't.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .08s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h4l2-5 3 14 3-9h6"/></svg></div>
+      <h3 class="out-concept">Focus &amp; HFR</h3>
+      <p class="out-screen">screen · <b>focus / HFR</b></p>
+      <p class="out-note">One number for star tightness. Lower is sharper; you hunt the bottom of the V-curve.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .12s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M12 14v5"/><path d="M9 19h6"/><path d="M8 9l1.5-3M16 9l-1.5-3"/></svg></div>
+      <h3 class="out-concept">Cooling</h3>
+      <p class="out-screen">screen · <b>cooler</b></p>
+      <p class="out-note">A colder sensor makes less thermal noise. You set a target temp and watch it hold.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .16s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="6" width="16" height="12" rx="1.5"/><path d="M9 6v12M15 6v12"/></svg></div>
+      <h3 class="out-concept">Framing</h3>
+      <p class="out-screen">screen · <b>framing</b></p>
+      <p class="out-note">Where the target sits in the rectangle and which way is up. A composition call wearing a coordinate.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .20s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 17l4-6 3 3 4-7 3 5 4-3"/><path d="M3 20h18"/></svg></div>
+      <h3 class="out-concept">Guiding</h3>
+      <p class="out-screen">screen · <b>guiding graph</b></p>
+      <p class="out-note">A live error chart of tracking accuracy, in arcseconds. Flat and quiet is the whole goal.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .24s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="5" rx="1"/><rect x="3" y="14" width="12" height="5" rx="1"/><path d="M18 16.5h3M19.5 15v3"/></svg></div>
+      <h3 class="out-concept">Sequencing &amp; safety</h3>
+      <p class="out-screen">screen · <b>sequencer</b></p>
+      <p class="out-note">The plan for the whole night, plus the guard that stops it. The highest-stakes corner of the app.</p>
+    </li>
+  </ul>
+
+  <p class="reveal" style="margin-top: var(--s-5)">Drop the jargon and the craft is three fights: motion, noise, focus — on a rig that runs alone in the dark while its owner sleeps. That last clause is why this is a software problem and not a knob-twiddling one. No one is standing there to read a vague number or rescue a stuck step. The interface is the only adult in the field at 2am.</p>
+
+  <p class="reveal">So it lives or dies on exactly what you judge well: can a half-awake person read the current state at a glance and trust it enough to go back to sleep, and does the rig fail safely — parked, not pointed at the Sun — when a cloud or a cable or a missed flip goes wrong, instead of failing in silence and costing a sensor. None of that needs astrophysics. It needs software and people, which is the job.</p>
+
+  <div class="out-close reveal">
+    <div class="out-orbit" aria-hidden="true">
+      <svg viewBox="0 0 84 84" role="img" aria-label="A small point of light orbiting a steady center.">
+        <circle class="out-core" cx="42" cy="42" r="6" fill="var(--c-accent)"/>
+        <g class="out-ring">
+          <circle cx="42" cy="42" r="30" fill="none" stroke="var(--c-line)" stroke-width="1"/>
+          <circle cx="42" cy="12" r="3.5" fill="var(--c-cool)"/>
+        </g>
+      </svg>
+    </div>
+    <h3 class="out-concept" style="font-size: var(--t-xl)">Your move.</h3>
+    <p class="out-note" style="max-width: 34rem">
+      Go open AstroDeck and poke it with software-native eyes. You'll catch the control in the wrong place before any astrophotographer would, and the moments where a status is a word when it should be a color, or a failure stays politer than it should. We built the rig. The interface is yours to argue with.
+    </p>
+    <p class="out-kbd" style="margin-top: var(--s-3)">— and yes, the worm gets an opinion too.</p>
+  </div>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  // The closing flourish is pure CSS animation, gated by .is-in (added by the
+  // shell's reveal observer) and globally calmed by the shell's reduced-motion
+  // rule, so there is no JS-driven loop to guard here.
+  //
+  // We add one small courtesy: if a browser lacks the reveal observer entirely,
+  // the shell already force-adds .is-in to every .reveal, so the orbit still
+  // animates and the cards still show their amber edge. Nothing to do.
+  return;
+})();
+<!--/SCRIPT-->

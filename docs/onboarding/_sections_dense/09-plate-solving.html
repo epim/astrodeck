@@ -1,0 +1,273 @@
+<!--STYLE-->
+  /* ===== Section 09 — plate-solving ===== */
+  .ps-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    padding: var(--s-4);
+    background: var(--c-bg-sunk);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    overflow: hidden;
+  }
+  .ps-stage svg { width: 100%; height: auto; display: block; }
+
+  /* status chip, top-left, cycles solving -> solved */
+  .ps-status {
+    position: absolute;
+    top: var(--s-3);
+    left: var(--s-3);
+    z-index: 2;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    background: var(--c-bg-raised);
+    color: var(--c-caption);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ps-status .ps-led {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--c-ink-faint);
+  }
+  .ps-status.ps-working { color: var(--c-accent); border-color: color-mix(in srgb, var(--c-accent) 40%, transparent); }
+  .ps-status.ps-working .ps-led { background: var(--c-accent); animation: ps-pulse 1s var(--ease-soft) infinite; }
+  .ps-status.ps-done { color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent); }
+  .ps-status.ps-done .ps-led { background: var(--c-good); }
+  @keyframes ps-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+  /* faint stars start dim; matched stars get marked + ringed by JS */
+  .ps-star { fill: var(--c-ink-soft); }
+  .ps-match {
+    fill: var(--c-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft);
+  }
+  .ps-match.ps-on { opacity: 1; }
+  .ps-ring {
+    stroke: var(--c-accent);
+    fill: none;
+    stroke-width: 1.5;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(0.4);
+    transition: opacity var(--dur-fast) var(--ease),
+                transform var(--dur-fast) var(--ease);
+  }
+  .ps-ring.ps-on { opacity: 0.8; transform: scale(1); }
+
+  /* catalog overlay lines connecting the matched constellation shape */
+  .ps-catalog {
+    stroke: var(--c-cool);
+    stroke-width: 1.25;
+    fill: none;
+    stroke-dasharray: 4 4;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  .ps-catalog.ps-on { opacity: 0.6; }
+
+  /* the crosshair that snaps onto the named target */
+  .ps-cross {
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(1.8);
+    transition: opacity var(--dur) var(--ease),
+                transform var(--dur) var(--ease);
+  }
+  .ps-cross.ps-on { opacity: 1; transform: scale(1); }
+  .ps-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--c-accent);
+    letter-spacing: 0.06em;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft) 0.15s;
+  }
+  .ps-name.ps-on { opacity: 1; }
+
+  .ps-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="plate-solving" data-nav="Plate Solving">
+  <p class="kicker">Knowing Where You Are</p>
+  <h2 class="reveal">Plate solving: the app working out exactly where it's pointed</h2>
+  <p class="lede reveal">
+    A telescope knows where you <em>told</em> it to point. Whether it actually got there
+    is a separate, more optimistic question.
+  </p>
+
+  <p class="reveal">
+    The fix is a content-addressed lookup on the sky. The app shoots a quick frame, detects the
+    stars in it, and measures the geometry between them — distances and angles for groups of four,
+    encoded into a hash. It queries an all-sky catalog for that exact hash. Bright star patterns
+    are effectively unique, so one hit pins down three things at once: where the scope points (RA/Dec),
+    how the camera is rotated, and the image scale (arcseconds per pixel). GPS for a telescope,
+    built entirely out of looking at the picture it just took.
+  </p>
+
+  <figure class="ps-stage bleed-wide reveal" aria-labelledby="ps-cap">
+    <div class="ps-status" id="ps-status" role="status">
+      <span class="ps-led" aria-hidden="true"></span>
+      <span id="ps-status-text">ready</span>
+    </div>
+    <svg viewBox="0 0 640 360" role="img"
+         aria-label="A field of stars; several light up as matched to a catalog, then a crosshair snaps onto the named target M31.">
+      <!-- background scatter of faint stars (decorative) -->
+      <g aria-hidden="true">
+        <circle class="ps-star" cx="58"  cy="60"  r="1.3" opacity="0.5"/>
+        <circle class="ps-star" cx="120" cy="300" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="500" cy="40"  r="1.4" opacity="0.5"/>
+        <circle class="ps-star" cx="600" cy="200" r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="300" cy="330" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="40"  cy="200" r="1.5" opacity="0.55"/>
+        <circle class="ps-star" cx="560" cy="320" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="210" cy="40"  r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="390" cy="60"  r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="470" cy="280" r="1.3" opacity="0.5"/>
+        <circle class="ps-star" cx="90"  cy="130" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="630" cy="100" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="260" cy="250" r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="150" cy="220" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="350" cy="300" r="1.1" opacity="0.4"/>
+      </g>
+
+      <!-- catalog overlay: the shape JS will connect across matched stars -->
+      <polyline class="ps-catalog" id="ps-catalog"
+                points="180,180 270,140 360,170 430,120 500,160"/>
+
+      <!-- the matchable stars: brighter, each paired with a glow + ring -->
+      <g id="ps-matches">
+        <g>
+          <circle class="ps-star" cx="180" cy="180" r="2.6"/>
+          <circle class="ps-match" cx="180" cy="180" r="2.6"/>
+          <circle class="ps-ring"  cx="180" cy="180" r="9"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="270" cy="140" r="3.0"/>
+          <circle class="ps-match" cx="270" cy="140" r="3.0"/>
+          <circle class="ps-ring"  cx="270" cy="140" r="10"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="360" cy="170" r="2.4"/>
+          <circle class="ps-match" cx="360" cy="170" r="2.4"/>
+          <circle class="ps-ring"  cx="360" cy="170" r="9"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="430" cy="120" r="2.8"/>
+          <circle class="ps-match" cx="430" cy="120" r="2.8"/>
+          <circle class="ps-ring"  cx="430" cy="120" r="10"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="500" cy="160" r="2.5"/>
+          <circle class="ps-match" cx="500" cy="160" r="2.5"/>
+          <circle class="ps-ring"  cx="500" cy="160" r="9"/>
+        </g>
+      </g>
+
+      <!-- crosshair + label that snaps to the target -->
+      <g class="ps-cross" id="ps-cross">
+        <circle cx="360" cy="170" r="26" fill="none" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="360" y1="134" x2="360" y2="150" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="360" y1="190" x2="360" y2="206" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="324" y1="170" x2="340" y2="170" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="380" y1="170" x2="396" y2="170" stroke="var(--c-accent)" stroke-width="1.5"/>
+      </g>
+      <text class="ps-name" id="ps-name" x="392" y="206">M31 — Andromeda</text>
+    </svg>
+    <figcaption class="caption" id="ps-cap" style="margin-top: var(--s-3);">
+      Stars match to the catalog one by one, the recognized shape lights up in blue,
+      and the solver locks a crosshair onto the named target.
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    Feed that solved position back to the mount and you get a closed loop: shoot, solve, measure
+    the offset from where you wanted to be, slew to correct, repeat. Two or three iterations and the
+    target lands dead center, typically within a few arcseconds. This loop —
+    <strong>go-to-and-center</strong> — sits under almost everything: framing, polar-alignment
+    routines, and re-finding the target after the mount flips to the other side of the sky mid-night.
+  </p>
+
+  <p class="ps-hook reveal">
+    Which makes "Solving…" one of the load-bearing words in the UI: the app is busy and the user is
+    blocked on it. For AstroDeck, the real questions are whether that state reads as progress or as a
+    hang, and what the failure path looks like. A solve fails on clouds, a smeared frame, or a wrong
+    image scale — and a solver that gives up in silence is far worse than one that says it couldn't
+    find the sky and names the next thing to try.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var stage   = document.querySelector("#plate-solving .ps-stage");
+  if (!stage) return;
+  var status  = document.getElementById("ps-status");
+  var stText  = document.getElementById("ps-status-text");
+  var groups  = Array.prototype.slice.call(document.querySelectorAll("#ps-matches g"));
+  var catalog = document.getElementById("ps-catalog");
+  var cross   = document.getElementById("ps-cross");
+  var name    = document.getElementById("ps-name");
+
+  function setMatched(g) {
+    var m = g.querySelector(".ps-match");
+    var r = g.querySelector(".ps-ring");
+    if (m) m.classList.add("ps-on");
+    if (r) r.classList.add("ps-on");
+  }
+  function showSolved() {
+    catalog.classList.add("ps-on");
+    cross.classList.add("ps-on");
+    name.classList.add("ps-on");
+    status.classList.remove("ps-working");
+    status.classList.add("ps-done");
+    stText.textContent = "solved · M31";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    // Static final state: everything matched, target named, no animation.
+    groups.forEach(setMatched);
+    showSolved();
+    return;
+  }
+
+  var timers = [];
+  function run() {
+    status.classList.add("ps-working");
+    stText.textContent = "solving…";
+    // light up matched stars one at a time
+    groups.forEach(function (g, i) {
+      timers.push(setTimeout(function () { setMatched(g); }, 250 + i * 230));
+    });
+    // then resolve the whole field
+    timers.push(setTimeout(showSolved, 250 + groups.length * 230 + 250));
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        run();
+        obs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.45 });
+  obs.observe(stage);
+})();
+<!--/SCRIPT-->

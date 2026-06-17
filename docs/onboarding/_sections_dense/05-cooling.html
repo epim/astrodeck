@@ -1,0 +1,333 @@
+<!--STYLE-->
+  /* ── Section 5: cooling ─────────────────────────────────────── */
+  .cool-rig {
+    margin-top: var(--s-6);
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-4);
+    align-items: stretch;
+  }
+  @media (min-width: 760px) {
+    .cool-rig { grid-template-columns: 1.3fr 1fr; }
+  }
+
+  /* the noisy frame that cleans up */
+  .cool-frame {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 38% 42%, rgba(232,168,73,0.18), transparent 30%),
+      radial-gradient(circle at 64% 60%, rgba(111,155,216,0.14), transparent 26%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring);
+  }
+  /* a faint nebula so there is real signal under the noise */
+  .cool-frame-signal {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 45% 38% at 50% 50%, rgba(115,198,157,0.22), transparent 70%),
+      radial-gradient(ellipse 30% 50% at 56% 46%, rgba(111,155,216,0.18), transparent 72%);
+    opacity: 0.9;
+  }
+  /* the thermal noise layer: tiled speckle whose opacity we drive down.
+     --grain: 1 = warm and ugly, 0 = cold and clean */
+  .cool-frame-noise {
+    position: absolute;
+    inset: -50%;
+    --grain: 1;
+    opacity: var(--grain);
+    background-image:
+      radial-gradient(rgba(236,231,223,0.85) 0.6px, transparent 0.7px),
+      radial-gradient(rgba(240,196,131,0.7) 0.6px, transparent 0.7px),
+      radial-gradient(rgba(111,155,216,0.6) 0.5px, transparent 0.6px);
+    background-size: 7px 7px, 11px 9px, 13px 12px;
+    background-position: 0 0, 3px 5px, 6px 2px;
+    transition: opacity calc(var(--dur) * 2) var(--ease-soft);
+    will-change: opacity;
+  }
+  .cool-is-cold .cool-frame-noise { --grain: 0.12; }
+
+  .cool-frame-tag {
+    position: absolute;
+    left: var(--s-2);
+    bottom: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    color: var(--c-ink-soft);
+    background: rgba(7,9,16,0.6);
+    backdrop-filter: blur(4px);
+    padding: 0.3rem 0.55rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--c-line);
+  }
+
+  /* the control column: thermometer + state pill */
+  .cool-panel {
+    display: grid;
+    gap: var(--s-3);
+    align-content: center;
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+  }
+
+  .cool-thermo {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--s-3);
+    align-items: stretch;
+  }
+  /* the tube */
+  .cool-tube {
+    position: relative;
+    width: 18px;
+    border-radius: 999px;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    overflow: hidden;
+    min-height: 150px;
+  }
+  /* the mercury: height shrinks from top as it cools.
+     --fill = fraction of tube filled (1 warm → low cold) */
+  .cool-mercury {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    --fill: 0.92;
+    height: calc(var(--fill) * 100%);
+    background: linear-gradient(180deg, var(--c-accent) 0%, var(--c-accent-deep) 100%);
+    transition: height calc(var(--dur) * 3) var(--ease), background calc(var(--dur) * 3) var(--ease-soft);
+  }
+  .cool-is-cold .cool-mercury {
+    --fill: 0.34;
+    background: linear-gradient(180deg, var(--c-cool) 0%, #3f6196 100%);
+  }
+  /* the set-point line on the tube */
+  .cool-setpoint {
+    position: absolute;
+    left: -3px; right: -3px;
+    bottom: 34%;
+    height: 2px;
+    background: var(--c-accent-soft);
+    opacity: 0.7;
+  }
+
+  .cool-scale {
+    display: grid;
+    align-content: space-between;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    padding: 2px 0;
+  }
+  .cool-scale span { line-height: 1; }
+  .cool-scale .cool-scale-set {
+    color: var(--c-accent);
+    align-self: end;
+    margin-bottom: 28%;
+  }
+
+  .cool-temp {
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+  .cool-temp-num {
+    font-size: var(--t-2xl);
+    color: var(--c-cool);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    transition: color var(--dur) var(--ease-soft);
+  }
+  .cool-temp-unit { font-size: var(--t-sm); color: var(--c-caption); }
+
+  /* the state pill — flips from cooling to at-target */
+  .cool-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    padding: 0.4rem 0.8rem;
+    border-radius: 999px;
+    width: fit-content;
+    border: 1px solid var(--c-line);
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    transition: color var(--dur) var(--ease-soft), border-color var(--dur) var(--ease-soft);
+  }
+  .cool-pill-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--c-accent);
+    box-shadow: 0 0 8px var(--c-accent);
+    animation: cool-pulse 1.4s var(--ease-soft) infinite;
+  }
+  @keyframes cool-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+  .cool-is-cold .cool-pill { color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent); }
+  .cool-is-cold .cool-pill-dot {
+    background: var(--c-good);
+    box-shadow: 0 0 8px var(--c-good);
+    animation: none;
+  }
+  /* swap the two label states */
+  .cool-pill .cool-label-cooling { display: inline; }
+  .cool-pill .cool-label-target  { display: none; }
+  .cool-is-cold .cool-pill .cool-label-cooling { display: none; }
+  .cool-is-cold .cool-pill .cool-label-target  { display: inline; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="cooling" data-nav="Cooling">
+  <p class="kicker">The Sensor's Self-Inflicted Lies</p>
+  <h2 class="reveal">Cold sensors lie less</h2>
+  <p class="lede reveal">
+    A sensor is supposed to report the light that lands on it. It also reports light
+    that never arrived — a faint static it generates on its own, just by being a warm
+    electronic thing. That's <strong>dark current</strong>, and on a long exposure it
+    speckles the frame with noise the sky never put there.
+  </p>
+
+  <p class="reveal">
+    Two things drive it: heat and time. Dark current roughly doubles every 6–8°C, and
+    it accumulates the whole exposure. Astrophotography is staring at one faint thing
+    for minutes per frame, so you can't cut the exposure. You cut the temperature.
+  </p>
+
+  <div class="cool-rig" data-cool-rig>
+    <figure class="cool-frame reveal" style="margin: 0">
+      <div class="cool-frame-signal" aria-hidden="true"></div>
+      <div class="cool-frame-noise" aria-hidden="true"></div>
+      <span class="cool-frame-tag" data-cool-frametag>warm · noisy</span>
+    </figure>
+
+    <div class="cool-panel reveal" style="--reveal-delay: .1s" aria-hidden="true">
+      <div class="cool-thermo">
+        <div class="cool-tube">
+          <div class="cool-setpoint"></div>
+          <div class="cool-mercury"></div>
+        </div>
+        <div class="cool-scale">
+          <span>+20°</span>
+          <span class="cool-scale-set">−10° set</span>
+          <span>−30°</span>
+        </div>
+      </div>
+      <div class="cool-temp">
+        <span class="cool-temp-num" data-cool-temp>+18</span>
+        <span class="cool-temp-unit">°C sensor</span>
+      </div>
+      <div class="cool-pill">
+        <span class="cool-pill-dot"></span>
+        <span class="cool-label-cooling">cooling…</span>
+        <span class="cool-label-target">at set-point</span>
+      </div>
+    </div>
+  </div>
+  <p class="caption reveal" style="margin-top: var(--s-3)">
+    For anyone the animation skips: the grainy frame settles clean as the sensor falls
+    +18°C → −10°C, and the status flips from pulsing amber "cooling" to steady green
+    "at set-point."
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    The hardware is a <strong>thermoelectric cooler</strong> (a Peltier) bolted to the
+    sensor, holding a chosen <strong>set-point</strong> — say −10°C — all night. The
+    set-point matters more than raw cold: you cancel the leftover speckle by subtracting
+    reference <em>dark frames</em>, and that subtraction only works if the darks were
+    shot at the <em>same</em> temperature. A repeatable −10°C beats a colder number you
+    can't hit twice.
+  </p>
+
+  <p class="reveal">
+    A cooler also has a floor — roughly 35–45°C below ambient — so on a warm night the
+    number you typed may be unreachable. The indicator has to report where it actually
+    is, not where you asked it to go.
+  </p>
+
+  <p class="reveal">
+    In AstroDeck, the cooler box answers one question the user asks all night:
+    <strong>cooling, at set-point, or off?</strong> That state has to read at a glance
+    and stay honest about the in-between, instead of leaving the user doing subtraction
+    on a raw temperature.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var rig = document.querySelector("[data-cool-rig]");
+  if (!rig) return;
+
+  var tempEl = rig.querySelector("[data-cool-temp]");
+  var tagEl  = rig.querySelector("[data-cool-frametag]");
+  var frame  = rig.querySelector(".cool-frame");
+  var panel  = rig.querySelector(".cool-panel");
+
+  function fmtTemp(v) {
+    var r = Math.round(v);
+    return (r > 0 ? "+" : "") + r;
+  }
+
+  function snapCold() {
+    // static end-state + reduced-motion fallback
+    rig.classList.add("cool-is-cold");
+    if (tempEl) tempEl.textContent = "−10";
+    if (tagEl)  tagEl.textContent = "−10°C · clean";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    snapCold();
+    return;
+  }
+
+  var fired = false;
+
+  function runCountdown() {
+    var start = 18, end = -10;
+    var t0 = null, dur = 2200;
+    function frameStep(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / dur);
+      var eased = 1 - Math.pow(1 - p, 2.2);
+      var val = start + (end - start) * eased;
+      if (tempEl) tempEl.textContent = fmtTemp(val);
+      if (p < 1) {
+        requestAnimationFrame(frameStep);
+      } else {
+        if (tempEl) tempEl.textContent = "−10";
+        if (tagEl)  tagEl.textContent = "−10°C · clean";
+      }
+    }
+    requestAnimationFrame(frameStep);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        // flip the CSS state (thermometer, mercury, pill, noise all transition)
+        rig.classList.add("cool-is-cold");
+        runCountdown();
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.45 });
+
+  // observe whichever exists; the frame is the visual anchor
+  obs.observe(frame || panel);
+})();
+<!--/SCRIPT-->

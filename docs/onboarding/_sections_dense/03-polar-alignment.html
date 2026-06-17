@@ -1,0 +1,376 @@
+<!--STYLE-->
+  /* ===== polar-alignment: trailing-vs-held panels + a converging bullseye ===== */
+  .pa-compare {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-3);
+  }
+  @media (max-width: 640px) { .pa-compare { grid-template-columns: 1fr; } }
+
+  .pa-panel {
+    position: relative;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+    aspect-ratio: 1 / 1;
+  }
+  .pa-panel svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pa-tag {
+    position: absolute;
+    left: var(--s-2);
+    top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.25rem 0.55rem;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--c-bg) 72%, transparent);
+    border: 1px solid var(--c-line);
+    backdrop-filter: blur(3px);
+  }
+  .pa-tag.pa-bad  { color: var(--c-accent); }
+  .pa-tag.pa-good { color: var(--c-cool); }
+
+  .pa-trail { fill: none; stroke-linecap: round; }
+  .pa-panel--bad  .pa-trail { stroke: var(--c-accent); }
+  .pa-panel--good .pa-trail { stroke: var(--c-cool); }
+  .pa-dot { }
+  .pa-panel--bad  .pa-dot { fill: var(--c-accent); }
+  .pa-panel--good .pa-dot { fill: var(--c-cool); }
+  .pa-pole { fill: var(--c-ink-faint); }
+
+  /* draw-on the arcs / point-jitter when revealed */
+  .pa-trail {
+    stroke-dasharray: var(--pa-len, 200);
+    stroke-dashoffset: var(--pa-len, 200);
+  }
+  .pa-compare.pa-drawn .pa-trail {
+    animation: pa-draw 2.4s var(--ease) forwards;
+    animation-delay: calc(var(--pa-d, 0) * 1s);
+  }
+  @keyframes pa-draw { to { stroke-dashoffset: 0; } }
+
+  /* ---- the bullseye ---- */
+  .pa-scope {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: var(--s-4);
+    align-items: center;
+  }
+  @media (max-width: 680px) { .pa-scope { grid-template-columns: 1fr; } }
+
+  .pa-bullseye {
+    position: relative;
+    border-radius: var(--radius);
+    background:
+      radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--c-accent) 6%, transparent), transparent 62%),
+      var(--c-bg-raised);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+  }
+  .pa-bullseye svg { width: 100%; height: 100%; display: block; }
+  .pa-ring { fill: none; stroke: var(--c-line); stroke-width: 1.5; }
+  .pa-ring.pa-ring-hot { stroke: color-mix(in srgb, var(--c-good) 60%, var(--c-line)); }
+  .pa-cross { stroke: var(--c-ink-faint); stroke-width: 1; }
+  .pa-errdot { fill: var(--c-accent); transition: fill var(--dur) var(--ease-soft); }
+  .pa-errdot.pa-home { fill: var(--c-good); }
+  .pa-track { fill: none; stroke: color-mix(in srgb, var(--c-accent) 40%, transparent); stroke-width: 1.5; stroke-dasharray: 2 5; }
+
+  .pa-panel-side h4 { margin-bottom: var(--s-2); }
+  .pa-cue {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2);
+    display: flex;
+    justify-content: space-between;
+    gap: var(--s-2);
+    margin-bottom: var(--s-2);
+  }
+  .pa-cue b { color: var(--c-accent); font-weight: 500; }
+  .pa-cue.pa-cue-done b { color: var(--c-good); }
+  .pa-err-readout {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-caption);
+    text-transform: uppercase;
+  }
+  .pa-err-readout b { color: var(--c-ink-soft); font-weight: 500; }
+  .pa-adjust {
+    margin-top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft);
+  }
+  .pa-adjust:hover { border-color: var(--c-accent); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="polar-alignment" data-nav="Polar Alignment">
+  <p class="kicker">Aiming the Spin Axis</p>
+  <h2 class="reveal">Polar alignment: aim the axis at the pole, or everything smears</h2>
+  <p class="lede reveal">
+    The cancel-the-sky trick has one precondition: the mount's spin axis must point at
+    the exact pivot the sky turns around — the celestial pole, which in the north sits
+    about 0.7° from Polaris. Aim there and the sky holds. Aim a little off and the
+    mount spends the night rotating around the <em>wrong</em> center, smearing every
+    star in a way no single exposure recovers.
+  </p>
+
+  <p class="reveal">
+    The failure mode, while merely tracking, is <strong>drift</strong>: the field
+    slides steadily in one direction, and each star smears into a short, near-straight
+    streak, all roughly parallel. Longer exposure, longer streak. Both outcomes below,
+    each star drawing its own path over a few minutes — parallel smears left, held
+    points right.
+  </p>
+
+  <div class="pa-compare bleed-wide reveal" id="pa-compare">
+    <figure class="pa-panel pa-panel--bad" aria-labelledby="pa-bad-cap">
+      <span class="pa-tag pa-bad">Misaligned</span>
+      <svg viewBox="0 0 400 400" role="img" aria-label="A starfield where every star is smeared into a short, nearly straight streak, all the streaks pointing roughly the same direction.">
+        <g id="pa-bad-field"></g>
+      </svg>
+      <figcaption id="pa-bad-cap" style="position:absolute; left:-9999px;">Every star smears the same way — tracking drift.</figcaption>
+    </figure>
+    <figure class="pa-panel pa-panel--good" aria-labelledby="pa-good-cap">
+      <span class="pa-tag pa-good">Aligned</span>
+      <svg viewBox="0 0 400 400" role="img" aria-label="The same starfield, but every star is a clean stationary point with no trailing.">
+        <g id="pa-good-field"></g>
+      </svg>
+      <figcaption id="pa-good-cap" style="position:absolute; left:-9999px;">Same field, axis on the pole — stars stay points.</figcaption>
+    </figure>
+  </div>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    Same sky, same exposure. The only variable is where the spin axis points.
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    A <em>guider</em> — a second camera that pins one star and erases drift in real
+    time — comes later and works well, which raises the obvious question: if it cancels
+    the smear, why align at all? Because it can only pin one star. With the axis still
+    off, the rest of the field <strong>rotates</strong> around that pinned point over
+    the night — field rotation, the residual that survives guiding. Good polar
+    alignment keeps that rotation negligible. You don't eyeball Polaris through a hole
+    anymore: a routine (three-point, or a drift test) photographs the sky and
+    <strong>plate-solves</strong> the frames — reads the star pattern to compute exactly
+    where the scope points — then reports your axis error as a direction and a distance.
+    You correct it with two mechanical knobs: <em>altitude</em> (up/down) and
+    <em>azimuth</em> (left/right). The standard readout is a bullseye: your error is a
+    dot off-center, and you turn knobs to walk it in.
+  </p>
+
+  <div class="pa-scope bleed-wide reveal">
+    <div class="pa-bullseye">
+      <svg viewBox="0 0 320 320" role="img" aria-label="A bullseye target. An amber dot starts near the edge and moves toward the center as alignment is corrected, turning green when it lands in the middle.">
+        <circle class="pa-ring" cx="160" cy="160" r="130"/>
+        <circle class="pa-ring" cx="160" cy="160" r="90"/>
+        <circle class="pa-ring" cx="160" cy="160" r="50"/>
+        <circle class="pa-ring pa-ring-hot" cx="160" cy="160" r="18"/>
+        <line class="pa-cross" x1="160" y1="20" x2="160" y2="300"/>
+        <line class="pa-cross" x1="20" y1="160" x2="300" y2="160"/>
+        <path class="pa-track" id="pa-track" d=""/>
+        <circle class="pa-errdot" id="pa-errdot" cx="0" cy="0" r="9"/>
+      </svg>
+    </div>
+    <div class="pa-panel-side">
+      <h4>The fix, in two knobs</h4>
+      <div class="pa-cue" id="pa-cue-alt">
+        <span>Altitude</span><b id="pa-alt-dir">turn up</b>
+      </div>
+      <div class="pa-cue" id="pa-cue-az">
+        <span>Azimuth</span><b id="pa-az-dir">turn left</b>
+      </div>
+      <div class="pa-err-readout">error <b id="pa-err-val">12.4′</b></div>
+      <button class="pa-adjust" id="pa-adjust" type="button">Nudge the knobs →</button>
+    </div>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    This is the screen you stare at while reaching blindly behind the mount in the cold.
+    Could you correct alignment with it wearing gloves? That sets three requirements: a
+    dot findable at a glance, cues that say <em>turn this knob, this way</em> without
+    assuming you know which direction azimuth runs, and a done state you can't misread.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  var svgNS = "http://www.w3.org/2000/svg";
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- A. the two comparison panels ---------- */
+  var compare = document.getElementById("pa-compare");
+  var badField = document.getElementById("pa-bad-field");
+  var goodField = document.getElementById("pa-good-field");
+
+  // shared star layout so the two panels are visibly "the same sky"
+  var seed = 4242;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var layout = [];
+  for (var i = 0; i < 34; i++) {
+    layout.push({ x: 30 + rnd() * 340, y: 30 + rnd() * 340, r: 1 + rnd() * rnd() * 2.6 });
+  }
+
+  // tracking drift: the whole field slides one way, so every star draws a short,
+  // nearly straight streak in roughly the same direction. A hair of per-star jitter
+  // in angle keeps it from looking mechanically perfect.
+  var DRIFT_ANG = 2.55;           // radians: down-and-to-the-left, the drift direction
+  var DRIFT_LEN = 26;             // streak length over the "exposure"
+  function arcPath(x, y) {
+    // tiny angle wobble per star so the streaks read as natural, not stamped
+    var jitter = (Math.sin(x * 0.21 + y * 0.13) * 0.12);
+    var ang = DRIFT_ANG + jitter;
+    var len = DRIFT_LEN * (0.85 + ((x + y) % 40) / 40 * 0.3);
+    var x1 = x + len * Math.cos(ang);
+    var y1 = y + len * Math.sin(ang);
+    // a barely-there bow so the line has a little life without becoming an arc
+    var mx = (x + x1) / 2 + Math.cos(ang + Math.PI / 2) * 1.5;
+    var my = (y + y1) / 2 + Math.sin(ang + Math.PI / 2) * 1.5;
+    return { d: "M" + x.toFixed(1) + " " + y.toFixed(1) + " Q" + mx.toFixed(1) + " " + my.toFixed(1) + " " + x1.toFixed(1) + " " + y1.toFixed(1), len: len };
+  }
+
+  layout.forEach(function (s, idx) {
+    // BAD: a short straight-ish drift streak plus a faint head dot
+    var seg = arcPath(s.x, s.y);
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("class", "pa-trail");
+    p.setAttribute("d", seg.d);
+    p.setAttribute("stroke-width", Math.max(1.4, s.r).toFixed(1));
+    p.style.setProperty("--pa-len", (seg.len + 4).toFixed(1));
+    p.style.setProperty("--pa-d", (idx % 6) * 0.05);
+    badField.appendChild(p);
+
+    // GOOD: a clean point in the same spot
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("class", "pa-dot");
+    c.setAttribute("cx", s.x.toFixed(1));
+    c.setAttribute("cy", s.y.toFixed(1));
+    c.setAttribute("r", s.r.toFixed(2));
+    goodField.appendChild(c);
+  });
+
+  if (compare) {
+    if (reduce) {
+      compare.classList.add("pa-drawn"); // CSS reduced-motion already neutralizes the keyframe
+    } else if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { compare.classList.add("pa-drawn"); io.unobserve(e.target); }
+        });
+      }, { threshold: 0.3 });
+      io.observe(compare);
+    } else {
+      compare.classList.add("pa-drawn");
+    }
+  }
+
+  /* ---------- B. the converging bullseye ---------- */
+  var dot = document.getElementById("pa-errdot");
+  var track = document.getElementById("pa-track");
+  var altDir = document.getElementById("pa-alt-dir");
+  var azDir = document.getElementById("pa-az-dir");
+  var errVal = document.getElementById("pa-err-val");
+  var cueAlt = document.getElementById("pa-cue-alt");
+  var cueAz = document.getElementById("pa-cue-az");
+  var adjust = document.getElementById("pa-adjust");
+  if (!dot) return;
+
+  var CX = 160, CY = 160;
+  // start position (error) near the outer ring, off to one quadrant
+  var start = { x: 92, y: 246 };   // down-left of center
+  var pos = { x: start.x, y: start.y };
+  var R_FULL = Math.hypot(start.x - CX, start.y - CY);
+
+  function errArcMin(d) {
+    // map pixel distance to a plausible-looking arcminute readout
+    return (d / R_FULL) * 12.4;
+  }
+  function render() {
+    dot.setAttribute("cx", pos.x.toFixed(1));
+    dot.setAttribute("cy", pos.y.toFixed(1));
+    var d = Math.hypot(pos.x - CX, pos.y - CY);
+    var done = d < 14;
+    dot.classList.toggle("pa-home", done);
+    if (errVal) errVal.textContent = done ? "aligned" : errArcMin(d).toFixed(1) + "′";
+    // direction cues from the sign of the offset
+    if (altDir) altDir.textContent = done ? "good" : (pos.y > CY ? "turn up" : "turn down");
+    if (azDir)  azDir.textContent  = done ? "good" : (pos.x < CX ? "turn right" : "turn left");
+    if (cueAlt) cueAlt.classList.toggle("pa-cue-done", done);
+    if (cueAz)  cueAz.classList.toggle("pa-cue-done", done);
+    if (adjust) adjust.textContent = done ? "Aligned. ✓" : "Nudge the knobs →";
+  }
+
+  // path the dot will spiral in along (for the dashed trail + the animation)
+  function buildTrack(steps) {
+    var d = "M" + start.x + " " + start.y, pts = [];
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var ease = 1 - Math.pow(1 - t, 2.2);
+      // slight spiral so it reads as iterative knob-turning, not a straight slide
+      var ang = Math.atan2(start.y - CY, start.x - CX) + t * 1.1;
+      var rad = R_FULL * (1 - ease);
+      var x = CX + rad * Math.cos(ang);
+      var y = CY + rad * Math.sin(ang);
+      pts.push({ x: x, y: y, t: t });
+      d += " L" + x.toFixed(1) + " " + y.toFixed(1);
+    }
+    if (track) track.setAttribute("d", d);
+    return pts;
+  }
+  var path = buildTrack(60);
+
+  render();
+
+  function converge() {
+    if (reduce) { pos = { x: CX, y: CY }; render(); return; }
+    var i = 0;
+    var timer = window.setInterval(function () {
+      i++;
+      if (i >= path.length) { window.clearInterval(timer); pos = { x: CX, y: CY }; render(); return; }
+      pos = { x: path[i].x, y: path[i].y };
+      render();
+    }, 28);
+  }
+
+  if (adjust) {
+    adjust.addEventListener("click", function () {
+      pos = { x: start.x, y: start.y };  // reset, then converge — lets the reader re-run it
+      render();
+      converge();
+    });
+  }
+
+  // auto-run once when scrolled into view (static end-state under reduced motion)
+  if (reduce) {
+    pos = { x: CX, y: CY }; render();
+  } else if ("IntersectionObserver" in window) {
+    var io2 = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { converge(); io2.unobserve(e.target); }
+      });
+    }, { threshold: 0.4 });
+    io2.observe(dot.closest(".pa-bullseye"));
+  } else {
+    converge();
+  }
+})();
+<!--/SCRIPT-->

@@ -1,0 +1,490 @@
+<!--STYLE-->
+  /* ===== Section 11b — one evening, worked end to end (slug: eve) ===== */
+  .eve-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  /* ---- the clock + readout header ---- */
+  .eve-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    flex-wrap: wrap;
+  }
+  .eve-clock {
+    flex: none;
+    width: 84px;
+    height: 84px;
+  }
+  .eve-clock svg { width: 100%; height: 100%; display: block; }
+  .eve-hand {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    transition: transform 0.5s var(--ease);
+  }
+  .eve-clock-time {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.12em;
+    fill: var(--c-accent);
+  }
+
+  .eve-readout {
+    flex: 1 1 14rem;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2) var(--s-3);
+  }
+  .eve-stat {
+    min-width: 0;
+  }
+  .eve-stat-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+  }
+  .eve-stat-val {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-lg);
+    line-height: 1.1;
+    color: var(--c-ink);
+    transition: color var(--dur-fast) var(--ease-soft);
+  }
+  .eve-stat-val.eve-bad   { color: var(--c-accent); }
+  .eve-stat-val.eve-good  { color: var(--c-good); }
+  .eve-stat-val.eve-idle  { color: var(--c-ink-faint); }
+  .eve-stat-unit {
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* ---- the night timeline strip ---- */
+  .eve-timeline {
+    margin-top: var(--s-4);
+    position: relative;
+  }
+  .eve-axis {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    margin-bottom: var(--s-1);
+  }
+  .eve-track {
+    position: relative;
+    height: 52px;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+    display: flex;
+  }
+  .eve-block {
+    position: relative;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 0.35rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-caption);
+    border-right: 1px solid var(--c-line);
+    transition: color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .eve-block:last-child { border-right: 0; }
+  .eve-block.is-done   { color: var(--c-ink-soft); }
+  .eve-block.is-active {
+    color: var(--c-bg);
+    background: var(--c-accent);
+  }
+  /* the meridian flip gets the cool counter-accent */
+  .eve-block.eve-flip.is-active { background: var(--c-cool); color: var(--c-bg); }
+
+  /* the sweeping "now" head */
+  .eve-now {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 2px;
+    background: var(--c-accent-soft);
+    box-shadow: 0 0 10px rgba(232,168,73,0.7);
+    left: 0;
+    transition: left 0.5s var(--ease);
+    pointer-events: none;
+  }
+
+  /* ---- the running narration line under the strip ---- */
+  .eve-now-line {
+    margin-top: var(--s-3);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    min-height: 4.5rem;
+    display: flex;
+    gap: var(--s-3);
+    align-items: baseline;
+  }
+  .eve-now-clock {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    letter-spacing: 0.06em;
+  }
+  .eve-now-text {
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-size: var(--t-sm);
+  }
+  .eve-now-text strong { color: var(--c-ink); font-weight: 600; }
+
+  /* the step control for keyboard / no-scroll users */
+  .eve-controls {
+    margin-top: var(--s-3);
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+  .eve-btn {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft);
+  }
+  .eve-btn:hover { color: var(--c-accent); border-color: var(--c-accent-deep); }
+  .eve-progress {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* a compact decision ledger below the figure */
+  .eve-ledger {
+    margin-top: var(--s-5);
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+    background: var(--c-line);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .eve-row {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    background: var(--c-bg-raised);
+  }
+  .eve-row-when {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    letter-spacing: 0.04em;
+  }
+  .eve-row-what { line-height: var(--leading-snug); }
+  .eve-row-what b { color: var(--c-ink); }
+  .eve-row-what code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--c-ink);
+    background: var(--c-bg-sunk);
+    padding: 0.1em 0.4em;
+    border-radius: var(--radius-sm);
+  }
+
+  @media (max-width: 33rem) {
+    .eve-readout { grid-template-columns: repeat(3, 1fr); }
+    .eve-row { grid-template-columns: 1fr; gap: var(--s-1); }
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="eve" data-nav="One Evening">
+  <p class="kicker">Worked Example</p>
+  <h2 class="reveal">One evening, every dial turned in order</h2>
+  <p class="lede reveal">Each preceding section was one instrument on the dashboard. Here they run as a single night — November, a backyard, a 130mm refractor on a German equatorial mount, a cooled mono camera, NGC 891 (an edge-on galaxy in Perseus, mag 10, transiting near midnight). Real numbers, real order, real failure points. The clock below advances as you scroll.</p>
+
+  <figure class="eve-figure bleed-wide reveal" aria-labelledby="eve-cap">
+    <div class="eve-head">
+      <div class="eve-clock" aria-hidden="true">
+        <svg viewBox="0 0 100 100" role="img" aria-label="A clock advancing through the night.">
+          <circle cx="50" cy="50" r="46" fill="var(--c-bg-sunk)" stroke="var(--c-line)" stroke-width="1.5"/>
+          <g stroke="var(--c-ink-faint)" stroke-width="1.4" stroke-linecap="round">
+            <line x1="50" y1="9"  x2="50" y2="15"/>
+            <line x1="91" y1="50" x2="85" y2="50"/>
+            <line x1="50" y1="91" x2="50" y2="85"/>
+            <line x1="9"  y1="50" x2="15" y2="50"/>
+          </g>
+          <g class="eve-hand" id="eve-hand">
+            <line x1="50" y1="50" x2="50" y2="20" stroke="var(--c-accent)" stroke-width="2.4" stroke-linecap="round"/>
+          </g>
+          <circle cx="50" cy="50" r="3" fill="var(--c-accent)"/>
+          <text class="eve-clock-time" id="eve-clock-time" x="50" y="74" text-anchor="middle">19:40</text>
+        </svg>
+      </div>
+
+      <div class="eve-readout" id="eve-readout">
+        <div class="eve-stat">
+          <span class="eve-stat-label">Sensor</span>
+          <span class="eve-stat-val eve-idle" id="eve-temp">+14<span class="eve-stat-unit">°C</span></span>
+        </div>
+        <div class="eve-stat">
+          <span class="eve-stat-label">HFR</span>
+          <span class="eve-stat-val eve-idle" id="eve-hfr">—</span>
+        </div>
+        <div class="eve-stat">
+          <span class="eve-stat-label">Guide RMS</span>
+          <span class="eve-stat-val eve-idle" id="eve-rms">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="eve-timeline">
+      <div class="eve-axis" aria-hidden="true">
+        <span>dusk · 19:40</span>
+        <span>midnight</span>
+        <span>dawn · 05:20</span>
+      </div>
+      <div class="eve-track" id="eve-track" role="img"
+           aria-label="A night, beat by beat: setup, polar align, cool, target, focus, frame, guide, image, meridian flip, refocus, image, park.">
+        <div class="eve-block" data-dur="2">setup</div>
+        <div class="eve-block" data-dur="1">cool</div>
+        <div class="eve-block" data-dur="1">polar align</div>
+        <div class="eve-block" data-dur="1">slew + solve</div>
+        <div class="eve-block" data-dur="1">focus</div>
+        <div class="eve-block" data-dur="1">rotate</div>
+        <div class="eve-block" data-dur="1">guide</div>
+        <div class="eve-block" data-dur="4">subs · dither</div>
+        <div class="eve-block eve-flip" data-dur="1">flip</div>
+        <div class="eve-block" data-dur="4">subs · dither</div>
+        <div class="eve-block" data-dur="1">refocus</div>
+        <div class="eve-block" data-dur="1">park</div>
+        <div class="eve-now" id="eve-now"></div>
+      </div>
+    </div>
+
+    <div class="eve-now-line" aria-live="polite">
+      <span class="eve-now-clock" id="eve-now-clock">19:40</span>
+      <span class="eve-now-text" id="eve-now-text"><strong>Setup.</strong> Tripod down, mount on, scope balanced, cables routed so nothing snags through a full rotation. Rough polar align by eye — point the mount's axis at Polaris, close enough for now.</span>
+    </div>
+
+    <div class="eve-controls">
+      <button type="button" class="eve-btn" id="eve-prev">◂ Prev</button>
+      <button type="button" class="eve-btn" id="eve-next">Next ▸</button>
+      <span class="eve-progress" id="eve-progress">1 / 12</span>
+    </div>
+
+    <figcaption class="caption" id="eve-cap" style="margin-top: var(--s-3)">
+      One backyard night, beat by beat. Scroll to advance the clock, or step it by hand. Amber blocks are imaging tasks; the blue block is the meridian flip.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">The beats above run moment to moment; the ledger below is the same night at a glance. One texture the strip can't hold: at the meridian flip the scope swaps to the west side and guiding has to re-calibrate, because east and west feel like two different mounts to it.</p>
+
+  <ul class="eve-ledger reveal" aria-label="The night's decisions in order">
+    <li class="eve-row"><span class="eve-row-when">20:15</span><span class="eve-row-what"><b>Cool to −10 °C</b>, ramped over 4 min — low dark current, no thermal shock.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:25</span><span class="eve-row-what"><b>Polar align</b> to under a couple of arcminutes — tight enough that field rotation over one sub stays sub-pixel, the residual guiding can't fix.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:40</span><span class="eve-row-what"><b>Plate-solve + center</b> on NGC 891; 8′ off → corrected to dead center.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:48</span><span class="eve-row-what"><b>V-curve autofocus</b> → HFR <code>1.8</code>; rotate to PA 67°, re-solve to confirm.</span></li>
+    <li class="eve-row"><span class="eve-row-when">21:00</span><span class="eve-row-what"><b>Guide</b> calibrates then locks at <code>0.6″ RMS</code>. Sequence starts: 300s, dither ×3.</span></li>
+    <li class="eve-row"><span class="eve-row-when">23:55</span><span class="eve-row-what"><b>Meridian flip</b> at the south crossing — re-solve, re-center, re-calibrate guiding.</span></li>
+    <li class="eve-row"><span class="eve-row-when">02:30</span><span class="eve-row-what"><b>Refocus</b> after a 4 °C drop drifts the focuser; HFR back to <code>1.8</code>.</span></li>
+    <li class="eve-row"><span class="eve-row-when">05:00</span><span class="eve-row-what"><b>End → park → warm cooler.</b> Result: <code>48 × 300s = 4h</code> on NGC 891.</span></li>
+  </ul>
+
+  <p class="reveal"><strong>What AstroDeck owes this night:</strong> twelve surfaces that handed off cleanly without you re-deciding anything you already decided. The cooler page, the polar-align solver, plate-solve-and-center, the V-curve focuser, the rotator readout, the guiding graph, the sequencer, the safety monitor, the park button — each is one beat above, and the seams between them are where a night quietly dies. A flip that doesn't re-solve, a refocus that never fires, a park that forgets the Sun. The job of the UI is to make those handoffs legible enough that you can be asleep for most of them.</p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var root = document.querySelector("#eve");
+  if (!root) return;
+
+  var track   = root.querySelector("#eve-track");
+  var nowHead = root.querySelector("#eve-now");
+  var hand    = root.querySelector("#eve-hand");
+  var clockT  = root.querySelector("#eve-clock-time");
+  var tempEl  = root.querySelector("#eve-temp");
+  var hfrEl   = root.querySelector("#eve-hfr");
+  var rmsEl   = root.querySelector("#eve-rms");
+  var nowClock= root.querySelector("#eve-now-clock");
+  var nowText = root.querySelector("#eve-now-text");
+  var progEl  = root.querySelector("#eve-progress");
+  var prevBtn = root.querySelector("#eve-prev");
+  var nextBtn = root.querySelector("#eve-next");
+  var blocks  = Array.prototype.slice.call(track.querySelectorAll(".eve-block"));
+
+  // Each beat: clock label, hand angle (deg, 19:40→05:20 mapped across ~280°),
+  // sensor temp, HFR, guide RMS, and the narration. Nulls mean "not yet meaningful".
+  var beats = [
+    { t: "19:40", deg: 0,   temp: "+14", hfr: null,  rms: null,
+      html: "<strong>Setup.</strong> Tripod down, mount on, scope balanced, cables routed so nothing snags through a full rotation. Rough polar align by eye — point the axis at Polaris, close enough for now." },
+    { t: "20:15", deg: 22,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Cool.</strong> Cooler ramps the sensor to <strong>−10 °C</strong> over ~4 min — gradual, no thermal shock. Cold sensor, low dark current, cleaner subs." },
+    { t: "20:25", deg: 30,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Precise polar align.</strong> Solver slews to three points, measures the axis error, you turn alt/az knobs until the residual is under <strong>a couple of arcminutes</strong> — tight enough that field rotation over one sub stays sub-pixel. That rotation is the residual guiding cannot rescue." },
+    { t: "20:40", deg: 38,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Slew + plate-solve.</strong> Goto NGC 891. First frame solves: 8′ off. Mount corrects, re-solves, lands the galaxy dead center." },
+    { t: "20:48", deg: 44,  temp: "-10", hfr: "1.8", rms: null,
+      html: "<strong>V-curve autofocus.</strong> Step the focuser, measure HFR at each stop, fit the V, drive to its floor. HFR settles at <strong>1.8</strong>." },
+    { t: "20:54", deg: 50,  temp: "-10", hfr: "1.8", rms: null,
+      html: "<strong>Rotate to frame.</strong> Turn the camera so the dust lane runs horizontal, re-solve to confirm <strong>position angle 67°</strong>." },
+    { t: "21:00", deg: 56,  temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Guide.</strong> Calibrate (push each axis to learn scale + direction), then lock a star and hold <strong>0.6″ RMS</strong> — comfortably inside a 1.6″ pixel." },
+    { t: "21:05", deg: 70,  temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Subs running.</strong> 300-second exposures, <strong>dither every 3rd</strong> so a small shift scrambles hot pixels for the stack." },
+    { t: "23:55", deg: 140, temp: "-10", hfr: "1.8", rms: "0.6", flip: true,
+      html: "<strong>Meridian flip.</strong> Galaxy crosses due south. Mount swings to the west side, re-solves to recover framing, <strong>re-calibrates guiding</strong> for the new orientation." },
+    { t: "00:05", deg: 150, temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Back to subs.</strong> Same target, west side, same 300s cadence, dithering continues. The robot runs; you sleep." },
+    { t: "02:30", deg: 205, temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Refocus.</strong> Temperature has dropped 4 °C; the focuser drifted as metal contracted. An autofocus check pulls HFR back to <strong>1.8</strong>." },
+    { t: "05:00", deg: 280, temp: "+14", hfr: null,  rms: null, park: true,
+      html: "<strong>Dawn → park.</strong> End condition fires: stop, slew to park clear of the Sun, warm the cooler gradually. Result: <strong>48 × 300s = 4h</strong> on NGC 891." }
+  ];
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // place the "now" head at the left edge of a block (or far right when ended)
+  function headTo(idx) {
+    var total = track.clientWidth || 1;
+    var x = 0;
+    for (var i = 0; i < idx; i++) x += blocks[i].offsetWidth;
+    if (idx >= blocks.length && blocks.length) {
+      x = total;
+    }
+    nowHead.style.left = (x / total * 100) + "%";
+  }
+
+  function setStat(el, value, cls) {
+    el.classList.remove("eve-idle", "eve-good", "eve-bad");
+    if (value === null) {
+      el.innerHTML = "—";
+      el.classList.add("eve-idle");
+      return;
+    }
+    el.innerHTML = value;
+    if (cls) el.classList.add(cls);
+  }
+
+  function render(i) {
+    var b = beats[i];
+
+    blocks.forEach(function (blk, j) {
+      blk.classList.toggle("is-active", j === i);
+      blk.classList.toggle("is-done", j < i);
+    });
+    headTo(i);
+
+    // clock
+    clockT.textContent = b.t;
+    nowClock.textContent = b.t;
+    nowText.innerHTML = b.html;
+    hand.style.transform = "rotate(" + b.deg + "deg)";
+
+    // readouts
+    setStat(tempEl, b.temp === null ? null :
+      b.temp + "<span class='eve-stat-unit'>°C</span>",
+      (b.temp && b.temp.charAt(0) === "-") ? "eve-good" : null);
+    setStat(hfrEl, b.hfr, b.hfr ? "eve-good" : null);
+    setStat(rmsEl, b.rms === null ? null :
+      b.rms + "<span class='eve-stat-unit'>″</span>",
+      b.rms ? "eve-good" : null);
+
+    progEl.textContent = (i + 1) + " / " + beats.length;
+  }
+
+  // ----- step controls (always available, keyboard-friendly) -----
+  var idx = 0;
+  function go(n) {
+    idx = Math.max(0, Math.min(beats.length - 1, n));
+    render(idx);
+  }
+  prevBtn.addEventListener("click", function () { go(idx - 1); });
+  nextBtn.addEventListener("click", function () { go(idx + 1); });
+
+  // ----- reduced motion: paint the final, finished night and stop -----
+  if (reduce) {
+    blocks.forEach(function (b) { b.classList.add("is-done"); });
+    render(beats.length - 1);
+    blocks.forEach(function (b, j) { b.classList.toggle("is-active", false); });
+    headTo(blocks.length);
+    progEl.textContent = beats.length + " / " + beats.length;
+    return;
+  }
+
+  // start on the first beat
+  render(0);
+
+  // ----- scroll-drive: advance the beat as the figure passes the viewport -----
+  var figure = root.querySelector(".eve-figure");
+  var autoIdx = 0;
+  if ("IntersectionObserver" in window) {
+    // a column of sentinels would be cleaner, but the figure is one element;
+    // map its scroll progress through the viewport onto the beat index.
+    var ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        var r = figure.getBoundingClientRect();
+        var vh = window.innerHeight || 1;
+        // progress 0..1 as the figure travels from entering to leaving center band
+        var p = (vh * 0.85 - r.top) / (vh * 0.85 + r.height * 0.5);
+        p = Math.max(0, Math.min(1, p));
+        var target = Math.round(p * (beats.length - 1));
+        if (target !== autoIdx) {
+          autoIdx = target;
+          go(target);
+        }
+      });
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          window.addEventListener("scroll", onScroll, { passive: true });
+          onScroll();
+        } else {
+          window.removeEventListener("scroll", onScroll);
+        }
+      });
+    }, { threshold: 0 });
+    io.observe(figure);
+  }
+
+  // keep the head aligned if the figure resizes mid-run
+  window.addEventListener("resize", function () { headTo(idx); }, { passive: true });
+})();
+<!--/SCRIPT-->
