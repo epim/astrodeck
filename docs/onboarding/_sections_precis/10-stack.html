@@ -1,0 +1,153 @@
+<!--STYLE-->
+  /* ===== Topic 10 — exposure + calibration (slug: stack) ===== */
+  .stack-stage {
+    position: relative;
+    margin-top: var(--s-2);
+    aspect-ratio: 16 / 8;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+    overflow: hidden;
+  }
+  .stack-stage svg { width: 100%; height: 100%; display: block; }
+
+  /* grain layer fades out as N climbs; the faint nebula fades in */
+  .stack-grain  { transition: opacity var(--dur) var(--ease-soft); }
+  .stack-signal { opacity: 0; transition: opacity var(--dur) var(--ease); }
+
+  /* readout: frame count + noise %, mono + tabular */
+  .stack-readout {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: var(--s-2); margin-top: var(--s-2);
+    font-family: var(--font-mono); font-size: var(--t-sm); color: var(--c-ink-soft);
+  }
+  .stack-count {
+    color: var(--c-accent); font-size: var(--t-lg); font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .stack-noise { color: var(--c-caption); font-variant-numeric: tabular-nums; }
+
+  /* skinny bar that shrinks as noise falls */
+  .stack-bar {
+    margin-top: var(--s-1); height: 6px; border-radius: 99px;
+    background: var(--c-bg-sunk); box-shadow: inset 0 0 0 1px var(--c-line); overflow: hidden;
+  }
+  .stack-bar > i {
+    display: block; height: 100%; width: 100%; border-radius: 99px;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent));
+    transform-origin: left; transition: transform var(--dur) var(--ease);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="stack" data-nav="Exposure + Calibration">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">10</span> Stacking &amp; Calibration</p>
+    <h2>Exposure + calibration</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">One sub is mostly noise. Stack many
+      and the random grain averages away while real detail accumulates.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Why stack</dt><dd>Noise drops as <span class="stat">~&radic;N</span> — 4&times; the subs halves it, 100&times; cuts it tenfold.</dd>
+      <dt>Integration</dt><dd>Sub length &times; count. <span class="stat">5min &times; 60 = 5h</span> total.</dd>
+      <dt>Darks</dt><dd>Lens capped (no light), same exposure + temp — maps the sensor's thermal pattern (dark current, amp glow, hot pixels).</dd>
+      <dt>Flats</dt><dd>Even-lit blank field — divides out dust shadows + vignetting.</dd>
+      <dt>Bias / dark-flats</dt><dd>Very short, capped frames — capture the sensor's fixed bias offset / read pattern.</dd>
+    </dl>
+
+    <figure class="bleed-wide reveal" style="--reveal-delay: .16s" aria-labelledby="stack-cap">
+      <div class="stack-stage">
+        <svg viewBox="0 0 320 160" role="img" aria-label="A noisy frame of a nebula that grows cleaner and reveals faint detail as more frames stack in.">
+          <defs>
+            <radialGradient id="stack-neb" cx="50%" cy="50%" r="60%">
+              <stop offset="0%"  stop-color="#e8a849" stop-opacity="0.55"/>
+              <stop offset="38%" stop-color="#b8791f" stop-opacity="0.28"/>
+              <stop offset="100%" stop-color="#6f9bd8" stop-opacity="0"/>
+            </radialGradient>
+            <filter id="stack-soft"><feGaussianBlur stdDeviation="2.8"/></filter>
+          </defs>
+          <g class="stack-signal">
+            <ellipse cx="160" cy="80" rx="86" ry="46" fill="url(#stack-neb)" filter="url(#stack-soft)"/>
+            <ellipse cx="138" cy="72" rx="30" ry="18" fill="#f0c483" opacity="0.5" filter="url(#stack-soft)"/>
+            <circle cx="206" cy="98" r="2.0" fill="#ece7df"/>
+            <circle cx="96"  cy="58" r="1.5" fill="#ece7df"/>
+            <circle cx="232" cy="44" r="1.7" fill="#f0c483"/>
+          </g>
+          <g class="stack-grain" id="stack-grain" aria-hidden="true"></g>
+        </svg>
+      </div>
+      <div class="stack-readout">
+        <span>frames <span class="stack-count" id="stack-count">1</span></span>
+        <span class="stack-noise">noise <span id="stack-noise">100</span>%</span>
+      </div>
+      <div class="stack-bar" aria-hidden="true"><i id="stack-bar"></i></div>
+      <figcaption class="caption" id="stack-cap" style="margin-top: var(--s-2);">
+        Same sky, same exposure; grain falls and faint nebula emerges as the frame count climbs.
+      </figcaption>
+    </figure>
+
+    <p class="stakes reveal">Skip calibration and the fixed errors survive stacking:
+      <b>amp glow, dust donuts, and vignetting</b> bake straight into the final image.</p>
+    <p class="hook reveal">AstroDeck's sequence settings set sub length and count, and the
+      <b>calibration plan</b> schedules darks/flats or pulls a matched library.</p>
+    <p class="aside">It is averaging your way out of a bad photo, sixty times over.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var stage = document.querySelector("#stack .stack-stage");
+  if (!stage || !window.AstroAnim) return;
+
+  var topic   = document.querySelector("#stack");
+  var grainG  = stage.querySelector("#stack-grain");
+  var grain   = stage.querySelector(".stack-grain");
+  var signal  = stage.querySelector(".stack-signal");
+  var countEl = topic.querySelector("#stack-count");
+  var noiseEl = topic.querySelector("#stack-noise");
+  var barEl   = topic.querySelector("#stack-bar");
+  var timers  = [];
+
+  // Build a fixed speckle field once so the grain is stable across replays.
+  var NS = "http://www.w3.org/2000/svg";
+  for (var i = 0; i < 220; i++) {
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", (Math.random() * 320).toFixed(1));
+    c.setAttribute("cy", (Math.random() * 160).toFixed(1));
+    c.setAttribute("r", (0.5 + Math.random() * 1.0).toFixed(2));
+    var roll = Math.random();
+    c.setAttribute("fill", roll < 0.6 ? "#b3ada3" : (roll < 0.8 ? "#e8a849" : "#6f9bd8"));
+    c.setAttribute("opacity", (0.25 + Math.random() * 0.5).toFixed(2));
+    grainG.appendChild(c);
+  }
+
+  // Render the stack at a given frame count: noise ~ 1/sqrt(N).
+  function render(n) {
+    var noiseFrac = 1 / Math.sqrt(n);
+    countEl.textContent = n;
+    noiseEl.textContent = Math.round(noiseFrac * 100);
+    grain.style.opacity  = noiseFrac.toFixed(3);
+    signal.style.opacity = (1 - noiseFrac * 0.92).toFixed(3);
+    barEl.style.transform = "scaleX(" + noiseFrac.toFixed(3) + ")";
+  }
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+
+  window.AstroAnim.register(stage, {
+    play: function () {
+      clearTimers();
+      if (window.AstroAnim.reduceMotion) { render(64); return; }  // final clean frame
+      render(1);
+      [2, 4, 8, 16, 32, 64].forEach(function (n, k) {
+        timers.push(setTimeout(function () { render(n); }, 420 + k * 480));
+      });
+    },
+    reset: function () {
+      clearTimers();
+      render(1);
+    }
+  });
+})();
+<!--/SCRIPT-->

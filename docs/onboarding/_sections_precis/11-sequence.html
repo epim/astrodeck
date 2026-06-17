@@ -1,0 +1,186 @@
+<!--STYLE-->
+  /* ===== Topic 11 — sequencing + safety (slug: sequence) ===== */
+  .sequence-stage {
+    margin-top: var(--s-2);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+  }
+  .sequence-stage svg { width: 100%; height: auto; display: block; }
+
+  /* the night timeline: a track with a sweeping play-head */
+  .sequence-track  { stroke: var(--c-line); stroke-width: 2; }
+  .sequence-tick   { stroke: var(--c-ink-faint); stroke-width: 1; }
+  .sequence-tlabel {
+    font-family: var(--font-mono); font-size: 9px; fill: var(--c-caption);
+    letter-spacing: 0.04em; text-anchor: middle;
+  }
+  /* meridian marker, dead center */
+  .sequence-meridian { stroke: var(--c-cool); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.7; }
+  .sequence-mlabel   { font-family: var(--font-mono); font-size: 9px; fill: var(--c-cool); text-anchor: middle; }
+
+  /* the play-head + the little scope tube that flips at the meridian */
+  .sequence-head { stroke: var(--c-accent); stroke-width: 2; }
+  .sequence-dot  { fill: var(--c-accent); }
+  .sequence-tube {
+    stroke: var(--c-accent); stroke-width: 3; stroke-linecap: round;
+    transform-box: fill-box; transform-origin: center;
+    transition: transform var(--dur) var(--ease);
+  }
+  .sequence-tube.sequence-flipped { transform: rotate(180deg); }
+
+  /* stage labels above the timeline (focus / subs / flip / subs / park) */
+  .sequence-phase {
+    font-family: var(--font-mono); font-size: 10px; fill: var(--c-ink-faint);
+    text-anchor: middle; letter-spacing: 0.04em;
+    transition: fill var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-phase.sequence-active { fill: var(--c-accent); }
+
+  /* the safety guard chip */
+  .sequence-guard {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    margin-top: var(--s-3);
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    font-family: var(--font-mono); font-size: var(--t-xs);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-guard .sequence-gled {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--c-good);
+    transition: background var(--dur-fast) var(--ease-soft);
+  }
+  .sequence-guard.sequence-unsafe { color: var(--c-warn); border-color: color-mix(in srgb, var(--c-warn) 45%, transparent); }
+  .sequence-guard.sequence-unsafe .sequence-gled { background: var(--c-warn); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="sequence" data-nav="Sequencing + Safety">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">11</span> Running the Night</p>
+    <h2>Sequencing + safety</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">A sequence runs the whole night
+      unattended — acquire, focus, dithered subs, filter swaps — then parks at dawn.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Meridian flip</dt><dd>On a German equatorial, when the target crosses <b>the meridian (the overhead line)</b> the tube must swing to the mount's other side, then <b>re-solve, re-center, re-calibrate</b>.</dd>
+      <dt>Dithering</dt><dd>Nudge a few pixels between subs so fixed sensor specks don't stack into streaks.</dd>
+      <dt>Safety monitor</dt><dd>Watches cloud, dawn, dome close — pauses or aborts on <span class="stat">unsafe</span>.</dd>
+      <dt>Hard rule</dt><dd>Never slew at the Sun. Park the mount at the end.</dd>
+    </dl>
+
+    <figure class="sequence-stage bleed-wide reveal" style="--reveal-delay: .16s" aria-labelledby="sequence-cap">
+      <svg viewBox="0 0 600 150" role="img"
+           aria-label="A night timeline ticking through focus, subs, a meridian flip, more subs, and park; a scope tube flips as it crosses the meridian; a safety guard toggles between safe and unsafe.">
+        <!-- phase labels -->
+        <text class="sequence-phase" id="sequence-p0" x="70"  y="22">focus</text>
+        <text class="sequence-phase" id="sequence-p1" x="200" y="22">subs</text>
+        <text class="sequence-phase" id="sequence-p2" x="300" y="22">flip</text>
+        <text class="sequence-phase" id="sequence-p3" x="430" y="22">subs</text>
+        <text class="sequence-phase" id="sequence-p4" x="555" y="22">park</text>
+
+        <!-- the timeline track -->
+        <line class="sequence-track" x1="40" y1="70" x2="560" y2="70"/>
+        <g aria-hidden="true">
+          <line class="sequence-tick" x1="40"  y1="64" x2="40"  y2="76"/>
+          <line class="sequence-tick" x1="160" y1="64" x2="160" y2="76"/>
+          <line class="sequence-tick" x1="280" y1="64" x2="280" y2="76"/>
+          <line class="sequence-tick" x1="400" y1="64" x2="400" y2="76"/>
+          <line class="sequence-tick" x1="520" y1="64" x2="520" y2="76"/>
+          <line class="sequence-tick" x1="560" y1="64" x2="560" y2="76"/>
+        </g>
+        <text class="sequence-tlabel" x="40"  y="92">22h</text>
+        <text class="sequence-tlabel" x="280" y="92">01h</text>
+        <text class="sequence-tlabel" x="560" y="92">05h</text>
+
+        <!-- meridian, dead center -->
+        <line class="sequence-meridian" x1="300" y1="44" x2="300" y2="120"/>
+        <text class="sequence-mlabel" x="300" y="134">meridian</text>
+
+        <!-- the scope tube on the play-head, flips across the meridian -->
+        <g class="sequence-head" id="sequence-head" transform="translate(40,70)">
+          <line class="sequence-tube" id="sequence-tube" x1="-13" y1="0" x2="13" y2="0"/>
+          <circle class="sequence-dot" cx="0" cy="0" r="3.5"/>
+        </g>
+      </svg>
+      <figcaption class="caption" id="sequence-cap" style="margin-top: var(--s-2);">
+        The play-head ticks across the night; at the meridian the tube flips sides, then imaging resumes and the mount parks.
+      </figcaption>
+    </figure>
+
+    <div class="sequence-guard" id="sequence-guard" role="status">
+      <span class="sequence-gled" aria-hidden="true"></span>
+      <span id="sequence-guard-text">safe · imaging</span>
+    </div>
+
+    <p class="stakes reveal">Miss the flip and the scope drives into the tripod, or
+      tracking reverses and every sub after it <b>trails</b> — the second half of the
+      night is scrap.</p>
+    <p class="hook reveal">AstroDeck's sequencer chains the night; the
+      <b>safety monitor</b> pauses on unsafe and the run ends at <b>park</b>.</p>
+    <p class="aside">Software that babysits a robot pointing a glass tube at the sky, all night, alone.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var topic = document.querySelector("#sequence");
+  if (!topic || !window.AstroAnim) return;
+
+  var head   = topic.querySelector("#sequence-head");
+  var tube   = topic.querySelector("#sequence-tube");
+  var guard  = topic.querySelector("#sequence-guard");
+  var gText  = topic.querySelector("#sequence-guard-text");
+  var phases = ["sequence-p0","sequence-p1","sequence-p2","sequence-p3","sequence-p4"]
+                 .map(function (id) { return topic.querySelector("#" + id); });
+
+  // play-head x positions for each phase (matches the phase label x's)
+  var X = [70, 200, 300, 430, 555];
+  var Y = 70;
+  var timers = [];
+
+  function clearTimers() { timers.forEach(clearTimeout); timers = []; }
+  function activate(i) {
+    phases.forEach(function (p, k) { if (p) p.classList.toggle("sequence-active", k === i); });
+  }
+  function moveTo(i) { head.setAttribute("transform", "translate(" + X[i] + "," + Y + ")"); }
+  function setFlipped(on) { tube.classList.toggle("sequence-flipped", on); }
+  function setGuard(safe, label) {
+    guard.classList.toggle("sequence-unsafe", !safe);
+    gText.textContent = label;
+  }
+
+  // Paint a sensible static end-state: parked, post-flip, safe.
+  function paintFinal() {
+    clearTimers();
+    moveTo(4); activate(4); setFlipped(true); setGuard(true, "safe · parked");
+  }
+
+  window.AstroAnim.register(topic, {
+    play: function () {
+      clearTimers();
+      if (window.AstroAnim.reduceMotion) { paintFinal(); return; }
+      // step the night: focus -> subs -> flip -> subs -> park,
+      // with a brief "unsafe" blip (a cloud) partway through the first subs run.
+      moveTo(0); activate(0); setFlipped(false); setGuard(true, "safe · imaging");
+      var t = 0, step = 760;
+      timers.push(setTimeout(function () { moveTo(1); activate(1); }, t += step));
+      timers.push(setTimeout(function () { setGuard(false, "unsafe · cloud · paused"); }, t += step));
+      timers.push(setTimeout(function () { setGuard(true, "safe · imaging"); }, t += step));
+      timers.push(setTimeout(function () { moveTo(2); activate(2); setFlipped(true); }, t += step));
+      timers.push(setTimeout(function () { moveTo(3); activate(3); }, t += step));
+      timers.push(setTimeout(function () { moveTo(4); activate(4); setGuard(true, "safe · parked"); }, t += step));
+    },
+    reset: function () {
+      clearTimers();
+      moveTo(0); activate(0); setFlipped(false); setGuard(true, "safe · imaging");
+    }
+  });
+})();
+<!--/SCRIPT-->

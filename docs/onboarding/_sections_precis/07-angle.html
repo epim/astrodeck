@@ -1,0 +1,136 @@
+<!--STYLE-->
+  /* ---- TOPIC: Camera angle (slug: angle) ---- */
+  .angle-stage {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    margin: var(--s-2) 0 var(--s-2);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(70% 90% at 50% 50%, color-mix(in srgb, var(--c-cool) 7%, transparent), transparent 75%),
+      var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* an edge-on galaxy: a thin lens lying along the horizontal */
+  .angle-galaxy {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 46%; height: 5%;
+    transform: translate(-50%, -50%) rotate(34deg);
+    border-radius: 999px;
+    background: linear-gradient(90deg,
+      transparent, color-mix(in srgb, var(--c-warn) 55%, transparent) 30%,
+      var(--c-accent-soft) 50%,
+      color-mix(in srgb, var(--c-warn) 55%, transparent) 70%, transparent);
+    box-shadow: 0 0 22px -2px color-mix(in srgb, var(--c-accent) 45%, transparent);
+  }
+  /* the FOV rectangle that rotates to seat the galaxy on its diagonal */
+  .angle-fov {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 52%; height: 38%;
+    transform: translate(-50%, -50%) rotate(34deg); /* resting/final = aligned */
+    border: 1.5px solid var(--c-accent);
+    border-radius: 2px;
+    box-shadow: 0 0 16px -4px var(--c-accent);
+  }
+  .angle-fov::after {
+    content: "FOV";
+    position: absolute;
+    top: -1.35em; left: 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-accent);
+  }
+  .precis-topic.in .angle-fov {
+    animation: angle-rotate calc(var(--dur) * 2.4) var(--ease) both;
+  }
+  @keyframes angle-rotate {
+    from { transform: translate(-50%, -50%) rotate(-12deg); }
+    to   { transform: translate(-50%, -50%) rotate(34deg); }
+  }
+
+  /* PA readout pill */
+  .angle-readout {
+    position: absolute;
+    left: var(--s-2); bottom: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.06em;
+    color: var(--c-accent-soft);
+    background: color-mix(in srgb, var(--c-bg-sunk) 80%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.3em 0.65em;
+  }
+  .angle-readout .angle-label { color: var(--c-ink-faint); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="angle" data-nav="Camera Angle">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">07</span> Rotating the Frame</p>
+    <h2>Camera angle</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">Turning the camera in its holder
+      sets the <b>position angle</b> — the rotation of the frame on the sky.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Sets</dt><dd>Composition — orientation of the target within the frame.</dd>
+      <dt>By hand</dt><dd>Twist the camera and <b>lock</b> the holder.</dd>
+      <dt>Motorized</dt><dd>A <b>rotator</b> drives PA to a commanded angle.</dd>
+      <dt>Truth</dt><dd>Plate-solving reports the <b>actual PA</b>, in degrees.</dd>
+    </dl>
+
+    <figure class="angle-stage reveal bleed-wide" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="angle-galaxy"></div>
+      <div class="angle-fov"></div>
+      <div class="angle-readout"><span class="angle-label">PA</span> <span id="angle-pa">214&deg;</span></div>
+    </figure>
+    <p class="caption">The frame rotates until the edge-on galaxy lies along the diagonal; PA settles on the plan.</p>
+
+    <p class="stakes reveal">Skip the angle and a mosaic's panels meet at mismatched rotations,
+      so the seams never line up and the stitch fails.</p>
+    <p class="hook reveal">AstroDeck shows a <b>rotation control</b> with planned vs. actual PA,
+      nudging until the error closes.</p>
+    <p class="aside">It is a Dutch angle you have to justify to a plate solver.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var el = document.getElementById("angle-pa");
+  if (!el || !window.AstroAnim) return;
+
+  // PA ticks from start toward the planned angle, mirroring the FOV rotation.
+  var FROM = 168, TO = 214, DUR = 1440; // ms; ~matches the CSS rotate duration
+  var raf = 0, t0 = 0;
+
+  function ease(p) { return 1 - Math.pow(1 - p, 3); } // cubic-out, house feel
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var p = Math.min(1, (now - t0) / DUR);
+    var v = Math.round(FROM + (TO - FROM) * ease(p));
+    el.textContent = v + "°";
+    if (p < 1) { raf = requestAnimationFrame(frame); }
+  }
+
+  window.AstroAnim.register(el, {
+    play: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      // Reduced motion calls play() once: paint the final PA, no loop needed.
+      if (window.AstroAnim.reduceMotion) { el.textContent = TO + "°"; return; }
+      raf = requestAnimationFrame(frame);
+    },
+    reset: function () {
+      cancelAnimationFrame(raf);
+      t0 = 0;
+      el.textContent = FROM + "°"; // re-arm to the starting angle
+    }
+  });
+})();
+<!--/SCRIPT-->

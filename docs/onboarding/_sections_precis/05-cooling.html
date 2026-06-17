@@ -1,0 +1,171 @@
+<!--STYLE-->
+  /* ---- TOPIC: Sensor cooling (slug: cooling) ---- */
+  .cooling-fig {
+    display: grid;
+    grid-template-columns: 1fr minmax(8rem, 12rem);
+    gap: var(--s-3);
+    align-items: center;
+    margin: var(--s-2) 0 var(--s-3);
+    padding: var(--s-3);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+  }
+  @media (max-width: 540px) {
+    .cooling-fig { grid-template-columns: 1fr; }
+  }
+
+  /* the noisy frame that de-speckles as it cools */
+  .cooling-frame {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(60% 70% at 50% 45%, color-mix(in srgb, var(--c-cool) 22%, transparent), transparent 70%),
+      var(--c-bg);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* speckle layer = simulated dark-current grain */
+  .cooling-speckle {
+    position: absolute;
+    inset: 0;
+    background-image:
+      radial-gradient(1px 1px at 12% 22%, var(--c-accent-soft), transparent 60%),
+      radial-gradient(1px 1px at 78% 18%, var(--c-warn), transparent 60%),
+      radial-gradient(1px 1px at 34% 62%, var(--c-ink), transparent 60%),
+      radial-gradient(1px 1px at 88% 71%, var(--c-accent), transparent 60%),
+      radial-gradient(1px 1px at 55% 38%, var(--c-cool), transparent 60%),
+      radial-gradient(1px 1px at 22% 82%, var(--c-warn), transparent 60%),
+      radial-gradient(1px 1px at 67% 88%, var(--c-ink-soft), transparent 60%),
+      radial-gradient(1px 1px at 44% 12%, var(--c-accent-soft), transparent 60%),
+      radial-gradient(1px 1px at 91% 44%, var(--c-cool), transparent 60%),
+      radial-gradient(1px 1px at 8% 55%, var(--c-warn), transparent 60%);
+    opacity: 0.9;
+  }
+  .precis-topic.in .cooling-speckle {
+    animation: cooling-clear var(--dur) var(--ease) forwards;
+  }
+  @keyframes cooling-clear {
+    from { opacity: 0.9; }
+    to   { opacity: 0.12; }
+  }
+
+  /* thermometer column */
+  .cooling-therm {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    gap: var(--s-2);
+    justify-items: center;
+  }
+  .cooling-tube {
+    position: relative;
+    width: 10px;
+    height: 7.5rem;
+    border-radius: 999px;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  /* the falling mercury — height shrinks toward the set-point */
+  .cooling-merc {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--c-warn), var(--c-accent));
+    height: 92%;
+  }
+  .precis-topic.in .cooling-merc {
+    animation: cooling-fall var(--dur) var(--ease) forwards;
+  }
+  @keyframes cooling-fall {
+    from { height: 92%; background: linear-gradient(180deg, var(--c-warn), var(--c-accent)); }
+    to   { height: 34%; background: linear-gradient(180deg, var(--c-accent), var(--c-cool)); }
+  }
+  /* set-point marker line */
+  .cooling-mark {
+    position: absolute;
+    left: -5px; right: -5px;
+    bottom: 34%;
+    height: 1px;
+    background: var(--c-cool);
+  }
+  .cooling-mark::after {
+    content: "-10\00B0";
+    position: absolute;
+    right: 14px;
+    top: -0.7em;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-cool);
+    white-space: nowrap;
+  }
+
+  /* the cooler-state pill that flips to LOCKED */
+  .cooling-pill {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    padding: 0.25em 0.7em;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    color: var(--c-ink-faint);
+    background: var(--c-bg-sunk);
+  }
+  .precis-topic.in .cooling-pill {
+    animation: cooling-lock var(--dur) var(--ease) forwards;
+    animation-delay: calc(var(--dur) * 0.7);
+  }
+  @keyframes cooling-lock {
+    from { color: var(--c-ink-faint); border-color: var(--c-line); }
+    to   { color: var(--c-cool); border-color: color-mix(in srgb, var(--c-cool) 55%, transparent); }
+  }
+  /* swap the label text via two stacked spans */
+  .cooling-pill .cooling-cooling { display: inline; }
+  .cooling-pill .cooling-locked  { display: none; }
+  .precis-topic.in .cooling-pill .cooling-cooling { display: none; }
+  .precis-topic.in .cooling-pill .cooling-locked  { display: inline; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="cooling" data-nav="Sensor Cooling">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">05</span> Quieting the Sensor</p>
+    <h2>Sensor cooling</h2>
+    <p class="def reveal" style="--reveal-delay: .06s">A thermoelectric cooler holds the
+      sensor at a fixed cold temperature, keeping dark-current noise low and calibration
+      frames repeatable.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .12s">
+      <dt>Noise source</dt><dd>Dark current — self-generated; roughly <b>doubles every ~6&deg;C</b>, grows with exposure time.</dd>
+      <dt>Set-point</dt><dd>A stable target like <span class="stat">-10&deg;C</span>; lower and steady beats merely cold.</dd>
+      <dt>Floor</dt><dd>TEC reaches roughly <span class="stat">30-40&deg;C</span> below ambient.</dd>
+      <dt>Ramp</dt><dd>Cool and warm <b>gradually</b> to avoid condensation and thermal shock.</dd>
+    </dl>
+
+    <div class="cooling-fig reveal" style="--reveal-delay: .16s" aria-hidden="true">
+      <div class="cooling-frame">
+        <div class="cooling-speckle"></div>
+      </div>
+      <div class="cooling-therm">
+        <div class="cooling-tube">
+          <div class="cooling-merc"></div>
+          <div class="cooling-mark"></div>
+        </div>
+        <span class="cooling-pill">
+          <span class="cooling-cooling">COOLING</span><span class="cooling-locked">LOCKED -10&deg;</span>
+        </span>
+      </div>
+    </div>
+    <p class="caption">Grain clears as the sensor falls to its set-point and the cooler locks.</p>
+
+    <p class="stakes reveal">Drift the temperature between subs and your library of dark frames
+      no longer matches, so calibration leaves noise it was meant to subtract.</p>
+    <p class="hook reveal">AstroDeck's <b>cooler box</b> shows target vs. actual with a
+      cooling-state indicator that reads <b>LOCKED</b> once it holds.</p>
+    <p class="aside">It is a tiny fridge bolted to a camera, sulking at physics.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+<!--/SCRIPT-->

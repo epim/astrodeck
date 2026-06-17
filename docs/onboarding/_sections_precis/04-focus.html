@@ -1,0 +1,283 @@
+<!--STYLE-->
+  /* slug: focus */
+  .focus-fig {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  @media (max-width: 540px) { .focus-fig { grid-template-columns: 1fr; } }
+
+  .focus-panel {
+    position: relative;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  .focus-panel canvas { width: 100%; height: auto; display: block; }
+  .focus-panel .focus-cap {
+    position: absolute;
+    left: 0.55rem; top: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    z-index: 2;
+    pointer-events: none;
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="focus" data-nav="Focusing">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">04</span> Getting Sharp</p>
+    <h2>Focusing</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">In focus = the tightest star dot,
+      judged by a <b>number</b> (HFR / FWHM, smaller is sharper), never by eye.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Metric</dt><dd><b>HFR</b> / <b>FWHM</b> — the star's width in pixels.
+        <span class="stat">Smaller = sharper</span>.</dd>
+      <dt>Drift</dt><dd>As the night cools, metal contracts and focus wanders — refocus
+        periodically.</dd>
+      <dt>Bahtinov</dt><dd>A mask throws <span class="stat">3</span> diffraction spikes;
+        the center spike sits dead-center when focused.</dd>
+      <dt>V-curve</dt><dd>Autofocus steps the focuser, plots HFR vs position, and drives
+        to the <b>minimum</b>.</dd>
+    </dl>
+
+    <div class="focus-fig bleed-wide reveal" style="--reveal-delay: .24s">
+      <div class="focus-panel">
+        <span class="focus-cap">blur &rarr; Bahtinov lock</span>
+        <canvas id="focus-star" width="440" height="300"
+          role="img"
+          aria-label="A blurred star sharpens to a pinpoint as the Bahtinov mask's
+            center diffraction spike slides into the middle."></canvas>
+      </div>
+      <div class="focus-panel">
+        <span class="focus-cap">V-curve autofocus</span>
+        <canvas id="focus-vcurve" width="440" height="300"
+          role="img"
+          aria-label="An HFR-versus-focuser-position plot fills in as a V, then snaps a
+            marker to the lowest point — best focus."></canvas>
+      </div>
+    </div>
+
+    <p class="stakes reveal">Soft focus is unrecoverable — bloated stars and lost faint detail
+      bake into every frame and no later step sharpens them back.</p>
+    <p class="hook reveal">AstroDeck's focus panel: live <b>HFR readout</b>, a V-curve run, and a
+      Bahtinov auto-focus flow that reads the spikes for you.</p>
+    <p class="aside">The sharpest moment of your night is decided by a number you can't
+      see and a wrench you keep forgetting.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var starCv = document.querySelector("#focus-star");
+  var vCv = document.querySelector("#focus-vcurve");
+  if (!window.AstroAnim) return;
+
+  var AMBER = "#e8a849", INK = "#b3ada3", FAINT = "#6d6a64", LINE = "#232838";
+  var BG = "#070910";
+
+  /* =============== panel A: blur -> Bahtinov lock =============== */
+  var sctx = starCv && starCv.getContext("2d");
+  var SW = starCv ? starCv.width : 0, SH = starCv ? starCv.height : 0;
+  var cx = SW / 2, cy = SH / 2;
+
+  // p: 0 = fully blurred / center spike off to the side,
+  //    1 = pinpoint / center spike dead-center.
+  function paintStar(p) {
+    if (!sctx) return;
+    sctx.fillStyle = BG;
+    sctx.fillRect(0, 0, SW, SH);
+
+    var blur = (1 - p);             // 1 -> 0
+    var coreR = 3 + blur * 26;      // fat blob -> tight dot
+    var spikeLen = 70 + p * 30;
+
+    // soft halo
+    var halo = sctx.createRadialGradient(cx, cy, 0, cx, cy, coreR + 10);
+    halo.addColorStop(0, "rgba(236,231,223," + (0.5 + p * 0.4) + ")");
+    halo.addColorStop(1, "rgba(236,231,223,0)");
+    sctx.fillStyle = halo;
+    sctx.beginPath();
+    sctx.arc(cx, cy, coreR + 12, 0, Math.PI * 2);
+    sctx.fill();
+
+    // core
+    sctx.fillStyle = "#ece7df";
+    sctx.beginPath();
+    sctx.arc(cx, cy, Math.max(1.5, coreR * 0.5), 0, Math.PI * 2);
+    sctx.fill();
+
+    // three Bahtinov spikes: two fixed diagonals (an X) + one center
+    // bar that slides from offset into the middle as p -> 1.
+    sctx.lineWidth = 1.4;
+    sctx.strokeStyle = "rgba(179,173,163," + (0.35 + p * 0.5) + ")";
+    drawSpike(cx, cy, Math.PI * 0.25, spikeLen);
+    drawSpike(cx, cy, -Math.PI * 0.25, spikeLen);
+
+    // center spike: horizontal, but its midpoint is offset by (1-p)
+    var off = (1 - p) * 34;
+    sctx.strokeStyle = AMBER;
+    sctx.lineWidth = 2;
+    sctx.beginPath();
+    sctx.moveTo(cx - spikeLen + off, cy);
+    sctx.lineTo(cx + spikeLen + off, cy);
+    sctx.stroke();
+
+    // a faint center reference tick so "centered" reads clearly
+    sctx.strokeStyle = LINE;
+    sctx.lineWidth = 1;
+    sctx.beginPath();
+    sctx.moveTo(cx, cy - 10); sctx.lineTo(cx, cy + 10);
+    sctx.stroke();
+  }
+  function drawSpike(x, y, ang, len) {
+    sctx.beginPath();
+    sctx.moveTo(x - Math.cos(ang) * len, y - Math.sin(ang) * len);
+    sctx.lineTo(x + Math.cos(ang) * len, y + Math.sin(ang) * len);
+    sctx.stroke();
+  }
+
+  /* =============== panel B: V-curve plotting + snap =============== */
+  var vctx = vCv && vCv.getContext("2d");
+  var VW = vCv ? vCv.width : 0, VH = vCv ? vCv.height : 0;
+  var padL = 36, padR = 20, padT = 26, padB = 30;
+  var x0 = padL, x1 = VW - padR, y0 = padT, y1 = VH - padB;
+  var minX = 0.5;     // position of the V's minimum (normalized 0..1)
+  var minHFR = 0.16;  // normalized HFR at the bottom
+
+  function hfrAt(t) { // t in 0..1 across the focuser sweep
+    var d = Math.abs(t - minX);
+    return minHFR + d * 1.7;   // a clean V
+  }
+  function px(t) { return x0 + t * (x1 - x0); }
+  // HFR maps to screen Y so that a larger HFR sits LOWER (down the V
+  // arms) and the minimum sits near the bottom — a clean visual V.
+  function plotY(h) { return y0 + h * (y1 - y0); }
+
+  // progress: 0..1 draw the curve left->right, then snap marker.
+  function paintV(prog) {
+    if (!vctx) return;
+    vctx.fillStyle = BG;
+    vctx.fillRect(0, 0, VW, VH);
+
+    // axes
+    vctx.strokeStyle = LINE;
+    vctx.lineWidth = 1;
+    vctx.beginPath();
+    vctx.moveTo(x0, y0); vctx.lineTo(x0, y1); vctx.lineTo(x1, y1);
+    vctx.stroke();
+
+    // axis labels
+    vctx.fillStyle = FAINT;
+    vctx.font = "11px IBM Plex Mono, monospace";
+    vctx.fillText("HFR", x0 - 30, y0 + 8);
+    vctx.fillText("focuser pos", x1 - 76, y1 + 20);
+
+    // the V, drawn up to prog along the sweep
+    var drawT = Math.min(1, prog * 1.15);
+    vctx.strokeStyle = INK;
+    vctx.lineWidth = 2;
+    vctx.beginPath();
+    var first = true;
+    for (var t = 0; t <= drawT + 1e-6; t += 0.02) {
+      var h = hfrAt(t);          // 0..~1
+      var X = px(t);
+      var Y = plotY(h);          // bigger HFR -> lower on screen (down)
+      if (first) { vctx.moveTo(X, Y); first = false; }
+      else vctx.lineTo(X, Y);
+    }
+    vctx.stroke();
+
+    // sampled measurement dots along what's drawn
+    vctx.fillStyle = "rgba(179,173,163,0.7)";
+    for (var s = 0; s <= drawT + 1e-6; s += 0.1) {
+      var hh = hfrAt(s);
+      vctx.beginPath();
+      vctx.arc(px(s), plotY(hh), 2.2, 0, Math.PI * 2);
+      vctx.fill();
+    }
+
+    // once the sweep is complete, snap an amber marker to the minimum
+    if (prog >= 0.92) {
+      var snap = Math.min(1, (prog - 0.92) / 0.08); // 0..1 ease
+      var mX = px(minX);
+      var mY = plotY(minHFR);
+      // dashed guide to the bottom
+      vctx.strokeStyle = "rgba(232,168,73,0.4)";
+      vctx.setLineDash([3, 4]);
+      vctx.beginPath();
+      vctx.moveTo(mX, mY); vctx.lineTo(mX, y1);
+      vctx.stroke();
+      vctx.setLineDash([]);
+      // glow + marker
+      var g = vctx.createRadialGradient(mX, mY, 0, mX, mY, 12);
+      g.addColorStop(0, "rgba(232,168,73," + (0.6 * snap) + ")");
+      g.addColorStop(1, "rgba(232,168,73,0)");
+      vctx.fillStyle = g;
+      vctx.beginPath(); vctx.arc(mX, mY, 12, 0, Math.PI * 2); vctx.fill();
+      vctx.fillStyle = AMBER;
+      vctx.beginPath();
+      vctx.arc(mX, mY, 3 + 2 * snap, 0, Math.PI * 2);
+      vctx.fill();
+      vctx.fillStyle = AMBER;
+      vctx.font = "11px IBM Plex Mono, monospace";
+      vctx.globalAlpha = snap;
+      vctx.fillText("best focus", mX + 8, mY - 6);
+      vctx.globalAlpha = 1;
+    }
+  }
+
+  /* =============== drive both with one rAF loop =============== */
+  var raf = 0, t0 = 0;
+  var DUR = 3.0;   // seconds for one full run
+  var HOLD = 1.1;  // hold the locked state, then loop
+
+  function frame(now) {
+    if (!t0) t0 = now;
+    var e = (now - t0) / 1000;
+    var cycle = DUR + HOLD;
+    if (e > cycle) { t0 = now; e = 0; }
+    var prog = Math.min(1, e / DUR);
+    var eased = prog * prog * (3 - 2 * prog); // smoothstep
+    paintStar(eased);
+    paintV(eased);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function paintFinal() {
+    paintStar(1);
+    paintV(1);
+  }
+
+  // Register each canvas. Both callbacks drive the shared loop; the
+  // loop is idempotent (cancel before start), so registering twice
+  // is harmless.
+  function makeHandlers() {
+    return {
+      play: function () {
+        cancelAnimationFrame(raf);
+        if (window.AstroAnim.reduceMotion) { paintFinal(); return; }
+        t0 = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      reset: function () {
+        cancelAnimationFrame(raf);
+        t0 = 0;
+        paintStar(0);
+        paintV(0);
+      }
+    };
+  }
+  if (starCv) window.AstroAnim.register(starCv, makeHandlers());
+  if (vCv) window.AstroAnim.register(vCv, makeHandlers());
+})();
+<!--/SCRIPT-->
