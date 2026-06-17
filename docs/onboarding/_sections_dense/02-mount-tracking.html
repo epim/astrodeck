@@ -1,0 +1,294 @@
+<!--STYLE-->
+  /* ===== mount-tracking: drift, then lock one star dead-center ===== */
+  .mt-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(130% 100% at 50% 100%, color-mix(in srgb, var(--c-cool) 7%, transparent), transparent 55%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 16 / 9;
+  }
+  .mt-sky { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .mt-star { fill: var(--c-ink); }
+  .mt-locked { fill: var(--c-accent); }
+
+  /* the reticle that marks "this star should stay put" */
+  .mt-reticle { opacity: 0; transition: opacity var(--dur) var(--ease-soft); }
+  .mt-stage.mt-tracking .mt-reticle { opacity: 1; }
+  .mt-reticle [stroke] { stroke: var(--c-accent); }
+
+  /* control + readout row */
+  .mt-controls {
+    position: absolute;
+    left: var(--s-3);
+    bottom: var(--s-3);
+    right: var(--s-3);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex-wrap: wrap;
+  }
+  .mt-toggle {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    color: var(--c-ink);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+  }
+  .mt-toggle:hover { border-color: var(--c-accent); }
+  .mt-toggle .mt-led {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--c-ink-faint);
+    box-shadow: none;
+    transition: background var(--dur-fast) var(--ease-soft),
+                box-shadow var(--dur-fast) var(--ease-soft);
+  }
+  .mt-stage.mt-tracking .mt-toggle .mt-led {
+    background: var(--c-accent);
+    box-shadow: 0 0 9px var(--c-accent);
+  }
+  .mt-readout {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-caption);
+    background: color-mix(in srgb, var(--c-bg) 70%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.6rem;
+    backdrop-filter: blur(3px);
+  }
+  .mt-readout b { color: var(--c-ink-soft); font-weight: 500; }
+
+  /* RA / Dec gloss cards */
+  .mt-coords {
+    margin-top: var(--s-4);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+  }
+  @media (max-width: 560px) { .mt-coords { grid-template-columns: 1fr; } }
+  .mt-coord {
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-left: 3px solid var(--c-accent);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2) var(--s-3);
+  }
+  .mt-coord.mt-dec { border-left-color: var(--c-cool); }
+  .mt-coord h4 { margin-bottom: var(--s-1); }
+  .mt-coord p { color: var(--c-ink-soft); font-size: var(--t-sm); line-height: var(--leading-snug); margin: 0; }
+  .mt-coord .mt-kdef {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 0.35rem;
+  }
+  .mt-coord.mt-dec .mt-kdef { color: var(--c-cool); }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="mount-tracking" data-nav="Tracking">
+  <p class="kicker">Pointing the Mount</p>
+  <h2 class="reveal">The sky moves, so the mount moves back</h2>
+  <p class="lede reveal">
+    The sky appears to turn only because the Earth turns under it, around one fixed
+    axis. Align one of the mount's axes with that axis, spin a single motor at the
+    matching speed in the opposite direction, and the apparent motion cancels exactly.
+    A star that should slide off the sensor sits still instead.
+  </p>
+
+  <p class="reveal">
+    That alignment is what an <strong>equatorial mount</strong> is built for: it tilts
+    so one axis runs parallel to the Earth's. Holding a target then costs one motor
+    turning slowly at the <em>sidereal rate</em> — one revolution per sidereal day,
+    about 23h 56m. Below, the frame drifts the way the real sky drifts; flip tracking
+    on and the amber star locks to the crosshair while the rest stops sliding.
+  </p>
+
+  <figure class="mt-stage bleed-wide reveal" id="mt-stage" aria-labelledby="mt-cap">
+    <svg class="mt-sky" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img"
+         aria-label="A starfield drifting across the frame. When tracking turns on, one highlighted star locks to a crosshair in the center and the drift stops.">
+      <g id="mt-field"></g>
+      <g class="mt-reticle">
+        <circle cx="800" cy="450" r="34" fill="none" stroke-width="2"/>
+        <path d="M800 398 V428 M800 472 V502 M748 450 H778 M822 450 H852" stroke-width="2" stroke-linecap="round"/>
+      </g>
+    </svg>
+    <div class="mt-controls">
+      <button class="mt-toggle" id="mt-toggle" type="button" aria-pressed="false">
+        <span class="mt-led" aria-hidden="true"></span>
+        <span id="mt-toggle-label">Tracking: off</span>
+      </button>
+      <span class="mt-readout" aria-hidden="true">RATE <b id="mt-rate">drifting</b></span>
+    </div>
+    <figcaption class="caption" id="mt-cap" style="position:absolute; left:-9999px;">
+      Toggle tracking to lock the amber star to the center crosshair.
+    </figcaption>
+  </figure>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    The amber star is the one you asked the mount to hold. With tracking on it stops
+    dead — and so does every other star, all carried by that one motor.
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    You name the point to hold with two numbers — like latitude and longitude, but
+    painted onto the rotating dome of the sky, so they stay constant as the night runs.
+  </p>
+
+  <div class="mt-coords bleed-wide reveal">
+    <div class="mt-coord">
+      <span class="mt-kdef">RA — Right Ascension</span>
+      <h4>Sky-longitude</h4>
+      <p>Position around the celestial sphere — a fixed label that names the target all night. The RA-axis motor turns at sidereal rate; that constant motion is what keeps this fixed number fixed.</p>
+    </div>
+    <div class="mt-coord mt-dec">
+      <span class="mt-kdef">Dec — Declination</span>
+      <h4>Sky-latitude</h4>
+      <p>Degrees north or south of the celestial equator. Once you're on target, this barely moves.</p>
+    </div>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    Tracking is excellent and never perfect — periodic gear error, a hair of
+    misalignment — so over a long exposure the star still drifts a few pixels. That
+    residual is why <em>guiding</em> exists, covered later. For now, the control
+    surface is three verbs: <strong>slew</strong> to point, <strong>track on/off</strong>
+    to hold, <strong>go-to</strong> to send the mount to a named target by its
+    coordinates. They live in AstroDeck's mount panel, where two facts have to be
+    glanceable in the dark — where it's pointed, and whether it's holding or drifting —
+    because a mount that silently stopped tracking looks identical to one that didn't.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  var stage = document.getElementById("mt-stage");
+  var field = document.getElementById("mt-field");
+  var toggle = document.getElementById("mt-toggle");
+  var label = document.getElementById("mt-toggle-label");
+  var rateOut = document.getElementById("mt-rate");
+  if (!stage || !field || !toggle) return;
+
+  var svgNS = "http://www.w3.org/2000/svg";
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a starfield. Each star has a base position; we draw it shifted by a global
+  // drift offset. One star is the "locked" target sitting at center (800,450) when held.
+  var W = 1600, H = 900, CX = 800, CY = 450;
+  var seed = 90210;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+  var stars = [];
+  for (var i = 0; i < 150; i++) {
+    var mag = rnd();
+    stars.push({
+      bx: -300 + rnd() * 2200,
+      by: -200 + rnd() * 1300,
+      r: 0.5 + mag * mag * 2.6,
+      o: 0.22 + mag * 0.7,
+      locked: false
+    });
+  }
+  // the target star — starts off-center to the right so locking visibly pulls it home
+  var target = { bx: CX + 360, by: CY - 120, r: 3.6, o: 1, locked: true };
+  stars.push(target);
+
+  var nodes = stars.map(function (s) {
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("r", s.r.toFixed(2));
+    c.setAttribute("opacity", s.o.toFixed(2));
+    c.setAttribute("class", s.locked ? "mt-locked" : "mt-star");
+    field.appendChild(c);
+    return c;
+  });
+
+  // drift in screen-space: stars slide left+down a touch, the way the sky pans
+  var DRIFT_VX = -14, DRIFT_VY = 5.2;     // px per second (sim units)
+  var offX = 0, offY = 0;
+  var tracking = false;
+  var last = null, raf = null;
+
+  function place() {
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var x, y;
+      if (tracking) {
+        // mount cancels drift: locked star snaps to center, field is held with it
+        x = s.locked ? CX : s.bx - target.bx + CX;
+        y = s.locked ? CY : s.by - target.by + CY;
+      } else {
+        x = s.bx + offX;
+        y = s.by + offY;
+      }
+      nodes[i].setAttribute("cx", x.toFixed(1));
+      nodes[i].setAttribute("cy", y.toFixed(1));
+    }
+  }
+
+  function frame(ts) {
+    if (last == null) last = ts;
+    var dt = (ts - last) / 1000;
+    last = ts;
+    if (!tracking) {
+      offX += DRIFT_VX * dt;
+      offY += DRIFT_VY * dt;
+      // wrap so it drifts forever without marching off into the void
+      if (offX < -260) { offX += 260; }
+      if (offY > 200) { offY -= 200; }
+    }
+    place();
+    raf = window.requestAnimationFrame(frame);
+  }
+
+  function setTracking(on) {
+    tracking = on;
+    stage.classList.toggle("mt-tracking", on);
+    toggle.setAttribute("aria-pressed", on ? "true" : "false");
+    label.textContent = on ? "Tracking: on" : "Tracking: off";
+    if (rateOut) rateOut.textContent = on ? "sidereal · locked" : "drifting";
+    place();
+  }
+
+  toggle.addEventListener("click", function () { setTracking(!tracking); });
+
+  if (reduce) {
+    // static, instructive end-state: tracking ON, field held, no rAF loop
+    setTracking(true);
+    place();
+    return;
+  }
+
+  // begin drifting only when the figure is on screen; pause the loop when it leaves
+  function start() { if (!raf) { last = null; raf = window.requestAnimationFrame(frame); } }
+  function stop() { if (raf) { window.cancelAnimationFrame(raf); raf = null; } }
+
+  place();
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) start(); else stop(); });
+    }, { threshold: 0.15 });
+    io.observe(stage);
+  } else {
+    start();
+  }
+})();
+<!--/SCRIPT-->

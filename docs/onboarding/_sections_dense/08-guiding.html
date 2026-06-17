@@ -1,0 +1,266 @@
+<!--STYLE-->
+  /* ===== Section 08 — guiding ===== */
+  .gd-stage {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    gap: var(--s-3);
+    align-items: stretch;
+  }
+  @media (max-width: 720px) {
+    .gd-stage { grid-template-columns: 1fr; }
+  }
+
+  .gd-panel {
+    position: relative;
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-3);
+  }
+
+  .gd-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin-bottom: var(--s-2);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .gd-rms { color: var(--c-accent); font-variant-numeric: tabular-nums; }
+
+  .gd-panel svg { width: 100%; height: auto; display: block; }
+
+  .gd-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+
+  /* a tiny "DITHER" flag that flashes on the hop */
+  .gd-dither {
+    position: absolute;
+    top: var(--s-2);
+    right: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-cool);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft);
+  }
+  .gd-dither.gd-show { opacity: 1; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="guiding" data-nav="Guiding">
+  <p class="kicker">Holding Still</p>
+  <h2 class="reveal">Guiding, or a second camera that babysits one star</h2>
+  <p class="lede reveal">
+    A mount that tracks the sky is close to right, and close to right is not right when the
+    shutter is open for five minutes.
+  </p>
+
+  <p class="reveal">
+    The earth turns, the sky appears to drift, the mount rotates to cancel the drift. But
+    gears have periodic error and the atmosphere shoves the air around, so over a few minutes
+    small errors accumulate. A star that should be a round point smears into a comma. The
+    errors are measured in <strong>arcseconds</strong> — the hair-thin angle from the framing
+    section, a coin held a few miles off — and a couple is enough to wreck a frame.
+  </p>
+
+  <p class="reveal">
+    The fix is almost suspiciously simple. A small second camera locks onto one ordinary star
+    and reads it several times a minute, asking the same dull question: did it move? When the
+    star slips a hair left, the guide camera tells the mount to nudge a hair right. The graph
+    below is that conversation.
+  </p>
+
+  <figure class="gd-stage bleed-wide reveal" aria-labelledby="gd-cap">
+    <div class="gd-panel">
+      <div class="gd-label"><span>guide star</span><span>locked</span></div>
+      <div class="gd-dither" id="gd-dither" aria-hidden="true">DITHER</div>
+      <svg viewBox="0 0 200 200" role="img" aria-label="A guide star jittering inside a tracking box while correction arrows nudge it back to center.">
+        <rect x="20" y="20" width="160" height="160" rx="8"
+              fill="var(--c-bg-sunk)" stroke="var(--c-line)" stroke-width="1.5"/>
+        <!-- crosshair to the locked center -->
+        <line x1="100" y1="40" x2="100" y2="160" stroke="var(--c-line)" stroke-width="1"/>
+        <line x1="40" y1="100" x2="160" y2="100" stroke="var(--c-line)" stroke-width="1"/>
+        <circle cx="100" cy="100" r="3" fill="none" stroke="var(--c-ink-faint)" stroke-width="1"/>
+        <!-- correction arrows, opacity driven by JS -->
+        <g id="gd-arrows">
+          <path id="gd-arr-x" d="M100 100 L100 100" stroke="var(--c-accent)" stroke-width="2.5"
+                marker-end="url(#gd-head)" opacity="0"/>
+          <path id="gd-arr-y" d="M100 100 L100 100" stroke="var(--c-accent)" stroke-width="2.5"
+                marker-end="url(#gd-head)" opacity="0"/>
+        </g>
+        <!-- the star itself -->
+        <circle id="gd-star" cx="100" cy="100" r="6" fill="var(--c-ink)">
+          <animate id="gd-glow" attributeName="r" values="6;6" dur="2s"/>
+        </circle>
+        <defs>
+          <marker id="gd-head" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto">
+            <path d="M0 0 L6 3 L0 6 z" fill="var(--c-accent)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="gd-panel">
+      <div class="gd-label"><span>tracking error</span><span class="gd-rms" id="gd-rms">RMS 0.00&Prime;</span></div>
+      <svg viewBox="0 0 360 200" role="img" aria-label="A guiding error graph wiggling close to the zero line.">
+        <!-- the calm zone -->
+        <rect x="0" y="84" width="360" height="32" fill="var(--c-good)" opacity="0.06"/>
+        <line x1="0" y1="100" x2="360" y2="100" stroke="var(--c-line)" stroke-width="1"/>
+        <text x="6" y="96" font-family="var(--font-mono)" font-size="9" fill="var(--c-ink-faint)">+1&Prime;</text>
+        <text x="6" y="124" font-family="var(--font-mono)" font-size="9" fill="var(--c-ink-faint)">&minus;1&Prime;</text>
+        <!-- two traces: RA + Dec -->
+        <polyline id="gd-trace-ra" fill="none" stroke="var(--c-accent)" stroke-width="1.6" points=""/>
+        <polyline id="gd-trace-dec" fill="none" stroke="var(--c-cool)" stroke-width="1.6" points="" opacity="0.85"/>
+      </svg>
+    </div>
+    <figcaption class="caption" id="gd-cap" style="grid-column: 1 / -1; margin-top: var(--s-2);">
+      Left, the star held inside its box; amber arrows are the mount being told to nudge.
+      Right, the RA and Dec error traces, kept hugging the zero line one correction at a time.
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    One deliberate exception to all the holding-still. Between exposures the system shoves the
+    whole frame a few pixels sideways on purpose — a <strong>dither</strong> (watch the box
+    hop). It reads like sabotage, undoing the precision you just paid for. The point: a hot
+    pixel or fixed smudge stays put on the sensor while the stars land somewhere new each
+    frame, so the stacker can tell signal from junk and discard the junk.
+  </p>
+
+  <p class="gd-hook reveal">
+    That error graph is the densest surface in the app and probably the most improvable. A
+    jagged line near zero is good news but doesn't feel like good news at a glance, and a
+    beginner reading RMS 0.62″ has no idea whether to relax or panic. A healthy guiding
+    readout in AstroDeck should make you <em>feel</em> the state — relief, not arithmetic —
+    before you've parsed a single number.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var star   = document.getElementById("gd-star");
+  var arrX   = document.getElementById("gd-arr-x");
+  var arrY   = document.getElementById("gd-arr-y");
+  var traceR = document.getElementById("gd-trace-ra");
+  var traceD = document.getElementById("gd-trace-dec");
+  var rmsEl  = document.getElementById("gd-rms");
+  var dither = document.getElementById("gd-dither");
+  if (!star || !traceR) return;
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a representative static trace so reduced-motion users see the idea.
+  function buildStatic() {
+    var pr = [], pd = [], seed = 1;
+    function noise() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280 - 0.5; }
+    for (var i = 0; i <= 60; i++) {
+      var x = i * 6;
+      pr.push(x + "," + (100 + noise() * 14).toFixed(1));
+      pd.push(x + "," + (100 + noise() * 11).toFixed(1));
+    }
+    traceR.setAttribute("points", pr.join(" "));
+    traceD.setAttribute("points", pd.join(" "));
+    rmsEl.textContent = "RMS 0.62″";
+  }
+
+  if (reduce || !("requestAnimationFrame" in window)) {
+    buildStatic();
+    return;
+  }
+
+  // ---- live simulation, only while on screen ----
+  var W = 360, MAXPTS = 60, STEP = 6;
+  var ra = [], dec = [];
+  var cx = 100, cy = 100;        // star position in the box
+  var vx = 0, vy = 0;            // accumulated drift
+  var running = false, frame = 0;
+  var ditherT = 0, ditherDir = {x: 0, y: 0};
+
+  function rnd() { return Math.random() - 0.5; }
+
+  function loop() {
+    if (!running) return;
+    frame++;
+
+    // drift accumulates, correction pulls it back toward center
+    vx += rnd() * 0.9; vy += rnd() * 0.7;
+    var corrX = -vx * 0.28, corrY = -vy * 0.28;
+    vx += corrX; vy += corrY;
+
+    // a dither event every ~5s: hop, hold, then re-lock
+    if (frame % 300 === 0) {
+      ditherDir = { x: (Math.random() < 0.5 ? -1 : 1) * 18, y: (Math.random() < 0.5 ? -1 : 1) * 14 };
+      ditherT = 45;
+      dither.classList.add("gd-show");
+    }
+    var dx = 0, dy = 0;
+    if (ditherT > 0) {
+      ditherT--;
+      var k = ditherT / 45;
+      dx = ditherDir.x * k; dy = ditherDir.y * k;
+      if (ditherT === 0) dither.classList.remove("gd-show");
+    }
+
+    cx = 100 + vx + dx;
+    cy = 100 + vy + dy;
+    star.setAttribute("cx", cx.toFixed(2));
+    star.setAttribute("cy", cy.toFixed(2));
+
+    // correction arrows: drawn opposite the drift, fading with magnitude
+    var magX = Math.min(1, Math.abs(corrX) * 2.2);
+    var magY = Math.min(1, Math.abs(corrY) * 2.2);
+    arrX.setAttribute("d", "M100 100 L" + (100 + corrX * 9).toFixed(1) + " 100");
+    arrY.setAttribute("d", "M100 100 L100 " + (100 + corrY * 9).toFixed(1));
+    arrX.setAttribute("opacity", magX.toFixed(2));
+    arrY.setAttribute("opacity", magY.toFixed(2));
+
+    // push to error traces (scaled: 8px on graph ≈ 1 arcsec)
+    ra.push(100 + vx * 1.4);
+    dec.push(100 + vy * 1.4);
+    if (ra.length > MAXPTS) { ra.shift(); dec.shift(); }
+
+    var pr = [], pd = [], sum = 0;
+    for (var i = 0; i < ra.length; i++) {
+      var x = i * STEP;
+      pr.push(x + "," + ra[i].toFixed(1));
+      pd.push(x + "," + dec[i].toFixed(1));
+      var e = (ra[i] - 100) / 1.4 / 8;   // back to arcsec
+      sum += e * e;
+    }
+    traceR.setAttribute("points", pr.join(" "));
+    traceD.setAttribute("points", pd.join(" "));
+
+    if (frame % 8 === 0) {
+      var rms = Math.sqrt(sum / Math.max(1, ra.length));
+      rmsEl.textContent = "RMS " + rms.toFixed(2) + "″";
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !running) {
+        running = true;
+        requestAnimationFrame(loop);
+      } else if (!e.isIntersecting && running) {
+        running = false;   // pause off-screen; don't burn cycles
+      }
+    });
+  }, { threshold: 0.25 });
+  obs.observe(traceR.closest(".gd-stage"));
+})();
+<!--/SCRIPT-->

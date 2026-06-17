@@ -1,0 +1,4607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck — A Field Guide to the Sky We Photograph</title>
+<meta name="description" content="A scroll-driven primer on astrophotography for people who build software, not telescopes.">
+
+<!-- Fonts: Fraunces (display, optical + a little personality) + Newsreader (body, calm and readable) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN SYSTEM — tokens
+     The whole document inherits from here. Change a value once,
+     the change ripples everywhere. This is the only place an
+     author should ever touch global color, type, or spacing.
+     ============================================================ */
+  :root {
+    /* --- color: a deep-space canvas, warm human accent --- */
+    --c-bg:          #0a0d16;   /* near-black, faint blue — the night */
+    --c-bg-raised:   #11151f;   /* panels, cards, anything lifted off the page */
+    --c-bg-sunk:     #070910;   /* wells, code, things pushed in */
+    --c-ink:         #ece7df;   /* primary text — warm paper white, not pure white */
+    --c-ink-soft:    #b3ada3;   /* secondary text */
+    --c-ink-faint:   #6d6a64;   /* hairlines, decoration, the quiet non-text stuff */
+    --c-caption:     #8a857c;   /* faint TEXT meant to be read (captions, labels) — AA on bg */
+    --c-line:        #232838;   /* hairlines and borders */
+    --c-accent:      #e8a849;   /* amber — a warm lamp in the dark. THE accent. */
+    --c-accent-soft: #f0c483;   /* lighter amber for hovers / glints */
+    --c-accent-deep: #b8791f;   /* pressed / underlines */
+    --c-cool:        #6f9bd8;   /* a cool counter-accent, used sparingly (sky, links) */
+    --c-good:        #74c69d;   /* "this is fine" green, rarely needed */
+
+    /* --- type --- */
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body:    "Newsreader", Georgia, serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* a confident modular scale (~1.25) */
+    --t-xs:   0.78rem;
+    --t-sm:   0.92rem;
+    --t-base: 1.18rem;
+    --t-lg:   1.5rem;
+    --t-xl:   2rem;
+    --t-2xl:  2.75rem;
+    --t-3xl:  3.75rem;
+    --t-4xl:  clamp(2.8rem, 7vw, 5.5rem);
+
+    --leading-tight: 1.12;
+    --leading-snug:  1.32;
+    --leading-body:  1.62;
+
+    /* --- space: an 8px-ish rhythm --- */
+    --s-1: 0.5rem;
+    --s-2: 1rem;
+    --s-3: 1.5rem;
+    --s-4: 2rem;
+    --s-5: 3rem;
+    --s-6: 4.5rem;
+    --s-7: 7rem;
+    --s-8: 11rem;
+
+    /* --- layout --- */
+    --measure:      38rem;    /* ideal reading width */
+    --measure-wide: 62rem;    /* figures, wide moments */
+    --gutter:       clamp(1.25rem, 5vw, 3.5rem);
+
+    /* --- depth + edges --- */
+    --radius:    14px;
+    --radius-sm: 9px;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.75);
+    --ring:      0 0 0 1px var(--c-line);
+
+    /* --- motion --- */
+    --ease:      cubic-bezier(0.22, 1, 0.36, 1);   /* gentle overshoot-free */
+    --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur:       0.7s;
+    --dur-fast:  0.3s;
+  }
+
+  /* ============================================================
+     RESET + GLOBAL ELEMENTS
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: var(--font-body);
+    font-size: var(--t-base);
+    line-height: var(--leading-body);
+    font-weight: 400;
+    letter-spacing: 0.002em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* a faint star-dust gradient so the dark never reads as flat #000 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 800px at 78% -8%, rgba(232,168,73,0.08), transparent 60%),
+      radial-gradient(900px 700px at 8% 18%, rgba(111,155,216,0.06), transparent 55%),
+      radial-gradient(1100px 900px at 50% 115%, rgba(111,155,216,0.05), transparent 60%);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.015em;
+    margin: 0 0 var(--s-3);
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--t-4xl); font-weight: 500; }
+  h2 { font-size: var(--t-3xl); }
+  h3 { font-size: var(--t-xl); }
+  h4 { font-size: var(--t-lg); }
+
+  p { margin: 0 0 var(--s-3); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--c-cool);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-cool) 35%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  a:hover { color: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  strong, b { font-weight: 600; color: var(--c-ink); }
+  em { font-style: italic; }
+
+  code, kbd, samp {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+    color: var(--c-accent-soft);
+  }
+
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--c-line);
+    margin: var(--s-5) 0;
+  }
+
+  ::selection { background: var(--c-accent); color: #1a1206; }
+
+  img, svg, canvas { max-width: 100%; display: block; }
+
+  /* ============================================================
+     LAYOUT CONTAINERS
+     ============================================================ */
+  main { display: block; }
+
+  /* Every section author drops in is a .primer-section.
+     It owns vertical rhythm + the centered reading column. */
+  .primer-section {
+    position: relative;
+    padding: var(--s-8) var(--gutter);
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+  }
+  .primer-section > * {
+    max-width: var(--measure);
+    margin-inline: auto;
+  }
+  /* opt-out for full-bleed figures within a section */
+  .primer-section > .bleed-wide { max-width: var(--measure-wide); }
+  .primer-section > .bleed-full { max-width: none; }
+
+  @media (max-width: 640px) {
+    .primer-section { padding: var(--s-7) var(--gutter); }
+  }
+
+  /* a small label that sits above section titles — the "kicker" */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: var(--s-2);
+  }
+
+  .lede {
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+  }
+
+  .caption {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+
+  /* ============================================================
+     .reveal — the shared scroll-in utility
+     Authors add class="reveal" (optionally with --reveal-delay
+     inline) to anything they want to fade + rise into view.
+     JS toggles .is-in when it crosses the threshold.
+     ============================================================ */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+    will-change: opacity, transform;
+  }
+  .reveal.is-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ============================================================
+     CHROME — progress bar + dot nav
+     ============================================================ */
+  .progress-track {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent), var(--c-accent-soft));
+    box-shadow: 0 0 12px rgba(232,168,73,0.5);
+    transform-origin: left;
+  }
+
+  .dot-nav {
+    position: fixed;
+    top: 50%;
+    right: clamp(0.75rem, 2.5vw, 2rem);
+    transform: translateY(-50%);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    padding: 0.4rem;
+  }
+  .dot-nav a {
+    --d: 9px;
+    display: block;
+    width: var(--d);
+    height: var(--d);
+    border-radius: 50%;
+    border: 1px solid var(--c-ink-faint);
+    background: transparent;
+    position: relative;
+    transition: transform var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease-soft),
+                border-color var(--dur-fast) var(--ease-soft);
+  }
+  .dot-nav a:hover { transform: scale(1.35); border-color: var(--c-accent); }
+  .dot-nav a.is-active {
+    background: var(--c-accent);
+    border-color: var(--c-accent);
+    box-shadow: 0 0 10px rgba(232,168,73,0.6);
+  }
+  /* tooltip label pulled from the anchor's data-label */
+  .dot-nav a::after {
+    content: attr(data-label);
+    position: absolute;
+    right: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%) translateX(6px);
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: 6px;
+    padding: 0.25rem 0.55rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-soft),
+                transform var(--dur-fast) var(--ease);
+  }
+  .dot-nav a:hover::after,
+  .dot-nav a:focus-visible::after {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+  @media (max-width: 760px) {
+    .dot-nav { display: none; }
+  }
+
+  /* visible focus for keyboard users, everywhere */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* skip link for screen-reader / keyboard users */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--c-accent);
+    color: #1a1206;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============================================================
+     REDUCED MOTION — honor the system preference fully.
+     Nothing moves; everything is simply present.
+     ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+  /* ===================== SECTION 01: 01-cold-open ===================== */
+  /* ===== cold-open: starfield drift + imaging-train assembly ===== */
+  .co-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--c-cool) 8%, transparent), transparent 60%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 16 / 9;
+  }
+  .co-sky {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .co-twinkle { fill: var(--c-ink); }
+  /* the slow Earth-rotation drift — a long, almost-imperceptible pan */
+  .co-driftgroup {
+    transform-box: fill-box;
+    transform-origin: 50% 130%;
+  }
+  .co-stage.co-running .co-driftgroup {
+    animation: co-drift 90s linear infinite;
+  }
+  @keyframes co-drift {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(-6deg); }
+  }
+  .co-stage.co-static .co-driftgroup { animation: none; }
+
+  /* caption strip inside the stage */
+  .co-tag {
+    position: absolute;
+    left: var(--s-3);
+    bottom: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    background: color-mix(in srgb, var(--c-bg) 70%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.6rem;
+    backdrop-filter: blur(3px);
+  }
+
+  /* ----- the imaging train: a row of labeled parts that assemble ----- */
+  .co-train {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: var(--s-2);
+    align-items: stretch;
+  }
+  @media (max-width: 720px) {
+    .co-train { grid-template-columns: repeat(2, 1fr); }
+  }
+  .co-part {
+    position: relative;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2) var(--s-2) var(--s-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .co-part.co-helper {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--c-line) 80%, var(--c-cool));
+  }
+  .co-icon { width: 100%; height: 56px; }
+  .co-icon [stroke] { stroke: var(--c-accent); }
+  .co-helper .co-icon [stroke] { stroke: var(--c-cool); }
+  .co-name {
+    font-family: var(--font-display);
+    font-size: var(--t-base);
+    color: var(--c-ink);
+    line-height: var(--leading-snug);
+  }
+  .co-role {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+  .co-badge {
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 0.12rem 0.4rem;
+    border-radius: 4px;
+    margin-bottom: var(--s-1);
+  }
+  .co-badge.co-core   { color: var(--c-accent); background: color-mix(in srgb, var(--c-accent) 14%, transparent); }
+  .co-badge.co-helps  { color: var(--c-cool);   background: color-mix(in srgb, var(--c-cool) 14%, transparent); }
+
+  /* assemble-in: each part slides up + settles, staggered via --co-i */
+  .co-train .co-part {
+    opacity: 0;
+    transform: translateY(26px) scale(0.97);
+  }
+  .co-train.co-built .co-part {
+    opacity: 1;
+    transform: none;
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: calc(var(--co-i) * 0.11s);
+  }
+
+  .co-legend {
+    margin-top: var(--s-3);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+  }
+  .co-legend span {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-ink-soft);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .co-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .co-swatch.co-s-core  { background: var(--c-accent); }
+  .co-swatch.co-s-helps { background: var(--c-cool); }
+
+  /* ===================== SECTION 02: 02-mount-tracking ===================== */
+  /* ===== mount-tracking: drift, then lock one star dead-center ===== */
+  .mt-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(130% 100% at 50% 100%, color-mix(in srgb, var(--c-cool) 7%, transparent), transparent 55%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 16 / 9;
+  }
+  .mt-sky { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .mt-star { fill: var(--c-ink); }
+  .mt-locked { fill: var(--c-accent); }
+
+  /* the reticle that marks "this star should stay put" */
+  .mt-reticle { opacity: 0; transition: opacity var(--dur) var(--ease-soft); }
+  .mt-stage.mt-tracking .mt-reticle { opacity: 1; }
+  .mt-reticle [stroke] { stroke: var(--c-accent); }
+
+  /* control + readout row */
+  .mt-controls {
+    position: absolute;
+    left: var(--s-3);
+    bottom: var(--s-3);
+    right: var(--s-3);
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex-wrap: wrap;
+  }
+  .mt-toggle {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    color: var(--c-ink);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+  }
+  .mt-toggle:hover { border-color: var(--c-accent); }
+  .mt-toggle .mt-led {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--c-ink-faint);
+    box-shadow: none;
+    transition: background var(--dur-fast) var(--ease-soft),
+                box-shadow var(--dur-fast) var(--ease-soft);
+  }
+  .mt-stage.mt-tracking .mt-toggle .mt-led {
+    background: var(--c-accent);
+    box-shadow: 0 0 9px var(--c-accent);
+  }
+  .mt-readout {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-caption);
+    background: color-mix(in srgb, var(--c-bg) 70%, transparent);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.6rem;
+    backdrop-filter: blur(3px);
+  }
+  .mt-readout b { color: var(--c-ink-soft); font-weight: 500; }
+
+  /* RA / Dec gloss cards */
+  .mt-coords {
+    margin-top: var(--s-4);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+  }
+  @media (max-width: 560px) { .mt-coords { grid-template-columns: 1fr; } }
+  .mt-coord {
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-left: 3px solid var(--c-accent);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2) var(--s-3);
+  }
+  .mt-coord.mt-dec { border-left-color: var(--c-cool); }
+  .mt-coord h4 { margin-bottom: var(--s-1); }
+  .mt-coord p { color: var(--c-ink-soft); font-size: var(--t-sm); line-height: var(--leading-snug); margin: 0; }
+  .mt-coord .mt-kdef {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-accent);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: block;
+    margin-bottom: 0.35rem;
+  }
+  .mt-coord.mt-dec .mt-kdef { color: var(--c-cool); }
+
+  /* ===================== SECTION 03: 03-polar-alignment ===================== */
+  /* ===== polar-alignment: trailing-vs-held panels + a converging bullseye ===== */
+  .pa-compare {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-3);
+  }
+  @media (max-width: 640px) { .pa-compare { grid-template-columns: 1fr; } }
+
+  .pa-panel {
+    position: relative;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: var(--ring);
+    aspect-ratio: 1 / 1;
+  }
+  .pa-panel svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .pa-tag {
+    position: absolute;
+    left: var(--s-2);
+    top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.25rem 0.55rem;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--c-bg) 72%, transparent);
+    border: 1px solid var(--c-line);
+    backdrop-filter: blur(3px);
+  }
+  .pa-tag.pa-bad  { color: var(--c-accent); }
+  .pa-tag.pa-good { color: var(--c-cool); }
+
+  .pa-trail { fill: none; stroke-linecap: round; }
+  .pa-panel--bad  .pa-trail { stroke: var(--c-accent); }
+  .pa-panel--good .pa-trail { stroke: var(--c-cool); }
+  .pa-dot { }
+  .pa-panel--bad  .pa-dot { fill: var(--c-accent); }
+  .pa-panel--good .pa-dot { fill: var(--c-cool); }
+  .pa-pole { fill: var(--c-ink-faint); }
+
+  /* draw-on the arcs / point-jitter when revealed */
+  .pa-trail {
+    stroke-dasharray: var(--pa-len, 200);
+    stroke-dashoffset: var(--pa-len, 200);
+  }
+  .pa-compare.pa-drawn .pa-trail {
+    animation: pa-draw 2.4s var(--ease) forwards;
+    animation-delay: calc(var(--pa-d, 0) * 1s);
+  }
+  @keyframes pa-draw { to { stroke-dashoffset: 0; } }
+
+  /* ---- the bullseye ---- */
+  .pa-scope {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: var(--s-4);
+    align-items: center;
+  }
+  @media (max-width: 680px) { .pa-scope { grid-template-columns: 1fr; } }
+
+  .pa-bullseye {
+    position: relative;
+    border-radius: var(--radius);
+    background:
+      radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--c-accent) 6%, transparent), transparent 62%),
+      var(--c-bg-raised);
+    box-shadow: var(--ring), var(--shadow);
+    aspect-ratio: 1 / 1;
+    overflow: hidden;
+  }
+  .pa-bullseye svg { width: 100%; height: 100%; display: block; }
+  .pa-ring { fill: none; stroke: var(--c-line); stroke-width: 1.5; }
+  .pa-ring.pa-ring-hot { stroke: color-mix(in srgb, var(--c-good) 60%, var(--c-line)); }
+  .pa-cross { stroke: var(--c-ink-faint); stroke-width: 1; }
+  .pa-errdot { fill: var(--c-accent); transition: fill var(--dur) var(--ease-soft); }
+  .pa-errdot.pa-home { fill: var(--c-good); }
+  .pa-track { fill: none; stroke: color-mix(in srgb, var(--c-accent) 40%, transparent); stroke-width: 1.5; stroke-dasharray: 2 5; }
+
+  .pa-panel-side h4 { margin-bottom: var(--s-2); }
+  .pa-cue {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2);
+    display: flex;
+    justify-content: space-between;
+    gap: var(--s-2);
+    margin-bottom: var(--s-2);
+  }
+  .pa-cue b { color: var(--c-accent); font-weight: 500; }
+  .pa-cue.pa-cue-done b { color: var(--c-good); }
+  .pa-err-readout {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-caption);
+    text-transform: uppercase;
+  }
+  .pa-err-readout b { color: var(--c-ink-soft); font-weight: 500; }
+  .pa-adjust {
+    margin-top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft);
+  }
+  .pa-adjust:hover { border-color: var(--c-accent); }
+
+  /* ===================== SECTION 04: 04-focusing ===================== */
+  /* ── Section 4: focusing ────────────────────────────────────── */
+  .focus-stage {
+    display: grid;
+    gap: var(--s-5);
+    margin-top: var(--s-6);
+  }
+
+  /* the three little demos sit in a column, each its own panel */
+  .focus-demo {
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+    display: grid;
+    gap: var(--s-3);
+  }
+  .focus-demo-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin: 0;
+  }
+
+  /* ── demo 1: the bloated star tightening ──────────────────── */
+  .focus-starwrap {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-3);
+    align-items: center;
+    justify-items: center;
+  }
+  .focus-star-field {
+    width: 100%;
+    aspect-ratio: 16 / 7;
+    border-radius: var(--radius-sm);
+    background:
+      radial-gradient(circle at 20% 80%, rgba(111,155,216,0.10), transparent 40%),
+      var(--c-bg-sunk);
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    place-items: center;
+  }
+  /* the star itself: a blurred dot whose blur + scale we animate */
+  .focus-star {
+    width: 16%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--c-ink) 0%, var(--c-accent-soft) 38%, var(--c-accent) 62%, transparent 72%);
+    /* --focus: 0 = sharp pinpoint, 1 = bloated marshmallow */
+    --focus: 1;
+    filter: blur(calc(var(--focus) * 22px));
+    transform: scale(calc(1 + var(--focus) * 1.9));
+    opacity: calc(1 - var(--focus) * 0.35);
+    transition:
+      filter var(--dur) var(--ease),
+      transform var(--dur) var(--ease),
+      opacity var(--dur) var(--ease);
+  }
+  .focus-is-in .focus-star { --focus: 0; }
+
+  /* the HFR readout that counts down as the star tightens */
+  .focus-readout {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    font-family: var(--font-mono);
+  }
+  .focus-readout-num {
+    font-size: var(--t-2xl);
+    color: var(--c-accent);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .focus-readout-unit {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    letter-spacing: 0.08em;
+  }
+  .focus-readout-word {
+    margin-left: auto;
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+
+  /* ── demo 2: the Bahtinov mask spikes ─────────────────────── */
+  .focus-bahtinov { width: 100%; height: auto; }
+  .focus-bah-spike {
+    stroke: var(--c-cool);
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    opacity: 0.85;
+  }
+  .focus-bah-center {
+    stroke: var(--c-accent);
+    stroke-width: 3;
+    stroke-linecap: round;
+    /* travels from off-kilter to dead-center on reveal */
+    transform: rotate(11deg);
+    transform-origin: 50% 50%;
+    transition: transform calc(var(--dur) * 1.6) var(--ease);
+  }
+  .focus-is-in .focus-bah-center { transform: rotate(0deg); }
+  .focus-bah-core {
+    fill: var(--c-ink);
+  }
+  /* the little "aligned" tag fades in once centered */
+  .focus-bah-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    fill: var(--c-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.4);
+  }
+  .focus-is-in .focus-bah-tag { opacity: 1; }
+
+  /* ── demo 3: the V-curve ──────────────────────────────────── */
+  .focus-vcurve { width: 100%; height: auto; }
+  .focus-axis { stroke: var(--c-line); stroke-width: 1; }
+  .focus-axis-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    fill: var(--c-ink-faint);
+  }
+  .focus-vpoint {
+    fill: var(--c-ink-soft);
+    opacity: 0;
+    transform: scale(0.2);
+    transform-box: fill-box;
+    transform-origin: center;
+    transition:
+      opacity var(--dur-fast) var(--ease-soft),
+      transform var(--dur-fast) var(--ease);
+  }
+  .focus-is-in .focus-vpoint { opacity: 1; transform: scale(1); }
+  /* the fitted V line draws itself */
+  .focus-vline {
+    stroke: var(--c-ink-faint);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 4;
+    fill: none;
+    stroke-dashoffset: 260;
+    opacity: 0;
+    transition:
+      stroke-dashoffset calc(var(--dur) * 1.2) var(--ease) calc(var(--dur) * 0.6),
+      opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 0.6);
+  }
+  .focus-is-in .focus-vline { stroke-dashoffset: 0; opacity: 0.9; }
+  /* the minimum marker drops in last and glows */
+  .focus-vmin {
+    fill: var(--c-accent);
+    opacity: 0;
+    transform: scale(0.2);
+    transform-box: fill-box;
+    transform-origin: center;
+    transition:
+      opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.5),
+      transform var(--dur) var(--ease) calc(var(--dur) * 1.5);
+  }
+  .focus-is-in .focus-vmin {
+    opacity: 1;
+    transform: scale(1);
+    filter: drop-shadow(0 0 6px var(--c-accent));
+  }
+  .focus-vmin-line {
+    stroke: var(--c-accent);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft) calc(var(--dur) * 1.7);
+  }
+  .focus-is-in .focus-vmin-line { opacity: 0.5; }
+
+  .focus-demo-note {
+    margin: 0;
+  }
+
+  /* ===================== SECTION 05: 05-cooling ===================== */
+  /* ── Section 5: cooling ─────────────────────────────────────── */
+  .cool-rig {
+    margin-top: var(--s-6);
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-4);
+    align-items: stretch;
+  }
+  @media (min-width: 760px) {
+    .cool-rig { grid-template-columns: 1.3fr 1fr; }
+  }
+
+  /* the noisy frame that cleans up */
+  .cool-frame {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 38% 42%, rgba(232,168,73,0.18), transparent 30%),
+      radial-gradient(circle at 64% 60%, rgba(111,155,216,0.14), transparent 26%),
+      var(--c-bg-sunk);
+    box-shadow: var(--ring);
+  }
+  /* a faint nebula so there is real signal under the noise */
+  .cool-frame-signal {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 45% 38% at 50% 50%, rgba(115,198,157,0.22), transparent 70%),
+      radial-gradient(ellipse 30% 50% at 56% 46%, rgba(111,155,216,0.18), transparent 72%);
+    opacity: 0.9;
+  }
+  /* the thermal noise layer: tiled speckle whose opacity we drive down.
+     --grain: 1 = warm and ugly, 0 = cold and clean */
+  .cool-frame-noise {
+    position: absolute;
+    inset: -50%;
+    --grain: 1;
+    opacity: var(--grain);
+    background-image:
+      radial-gradient(rgba(236,231,223,0.85) 0.6px, transparent 0.7px),
+      radial-gradient(rgba(240,196,131,0.7) 0.6px, transparent 0.7px),
+      radial-gradient(rgba(111,155,216,0.6) 0.5px, transparent 0.6px);
+    background-size: 7px 7px, 11px 9px, 13px 12px;
+    background-position: 0 0, 3px 5px, 6px 2px;
+    transition: opacity calc(var(--dur) * 2) var(--ease-soft);
+    will-change: opacity;
+  }
+  .cool-is-cold .cool-frame-noise { --grain: 0.12; }
+
+  .cool-frame-tag {
+    position: absolute;
+    left: var(--s-2);
+    bottom: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    color: var(--c-ink-soft);
+    background: rgba(7,9,16,0.6);
+    backdrop-filter: blur(4px);
+    padding: 0.3rem 0.55rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--c-line);
+  }
+
+  /* the control column: thermometer + state pill */
+  .cool-panel {
+    display: grid;
+    gap: var(--s-3);
+    align-content: center;
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+  }
+
+  .cool-thermo {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--s-3);
+    align-items: stretch;
+  }
+  /* the tube */
+  .cool-tube {
+    position: relative;
+    width: 18px;
+    border-radius: 999px;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    overflow: hidden;
+    min-height: 150px;
+  }
+  /* the mercury: height shrinks from top as it cools.
+     --fill = fraction of tube filled (1 warm → low cold) */
+  .cool-mercury {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    --fill: 0.92;
+    height: calc(var(--fill) * 100%);
+    background: linear-gradient(180deg, var(--c-accent) 0%, var(--c-accent-deep) 100%);
+    transition: height calc(var(--dur) * 3) var(--ease), background calc(var(--dur) * 3) var(--ease-soft);
+  }
+  .cool-is-cold .cool-mercury {
+    --fill: 0.34;
+    background: linear-gradient(180deg, var(--c-cool) 0%, #3f6196 100%);
+  }
+  /* the set-point line on the tube */
+  .cool-setpoint {
+    position: absolute;
+    left: -3px; right: -3px;
+    bottom: 34%;
+    height: 2px;
+    background: var(--c-accent-soft);
+    opacity: 0.7;
+  }
+
+  .cool-scale {
+    display: grid;
+    align-content: space-between;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    padding: 2px 0;
+  }
+  .cool-scale span { line-height: 1; }
+  .cool-scale .cool-scale-set {
+    color: var(--c-accent);
+    align-self: end;
+    margin-bottom: 28%;
+  }
+
+  .cool-temp {
+    font-family: var(--font-mono);
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+  .cool-temp-num {
+    font-size: var(--t-2xl);
+    color: var(--c-cool);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    transition: color var(--dur) var(--ease-soft);
+  }
+  .cool-temp-unit { font-size: var(--t-sm); color: var(--c-caption); }
+
+  /* the state pill — flips from cooling to at-target */
+  .cool-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.04em;
+    padding: 0.4rem 0.8rem;
+    border-radius: 999px;
+    width: fit-content;
+    border: 1px solid var(--c-line);
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    transition: color var(--dur) var(--ease-soft), border-color var(--dur) var(--ease-soft);
+  }
+  .cool-pill-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--c-accent);
+    box-shadow: 0 0 8px var(--c-accent);
+    animation: cool-pulse 1.4s var(--ease-soft) infinite;
+  }
+  @keyframes cool-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+  }
+  .cool-is-cold .cool-pill { color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent); }
+  .cool-is-cold .cool-pill-dot {
+    background: var(--c-good);
+    box-shadow: 0 0 8px var(--c-good);
+    animation: none;
+  }
+  /* swap the two label states */
+  .cool-pill .cool-label-cooling { display: inline; }
+  .cool-pill .cool-label-target  { display: none; }
+  .cool-is-cold .cool-pill .cool-label-cooling { display: none; }
+  .cool-is-cold .cool-pill .cool-label-target  { display: inline; }
+
+  /* ===================== SECTION 06: 06-framing-fov ===================== */
+  /* ── Section 6: framing-fov ─────────────────────────────────── */
+  .fov-stage {
+    margin-top: var(--s-6);
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+    display: grid;
+    gap: var(--s-4);
+  }
+
+  /* the sky panel: a nebula sits in a starfield; an FOV rectangle floats over it */
+  .fov-sky {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(900px 600px at 70% 30%, rgba(111,155,216,0.10), transparent 60%),
+      var(--c-bg-sunk);
+  }
+  /* the target: an off-center nebula so "centering it" is a visible move */
+  .fov-target {
+    position: absolute;
+    width: 30%;
+    aspect-ratio: 1;
+    left: 64%;
+    top: 30%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 50%, rgba(232,168,73,0.45), transparent 70%),
+      radial-gradient(ellipse 40% 60% at 42% 56%, rgba(115,198,157,0.35), transparent 72%),
+      radial-gradient(ellipse 50% 40% at 60% 44%, rgba(111,155,216,0.30), transparent 72%);
+    filter: blur(2px);
+  }
+  .fov-target-label {
+    position: absolute;
+    left: 64%;
+    top: 30%;
+    transform: translate(-50%, 130%);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    color: var(--c-caption);
+    white-space: nowrap;
+  }
+
+  /* a sprinkle of stars, drawn once with box-shadow trickery via gradient */
+  .fov-stars {
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(1.4px 1.4px at 12% 22%, var(--c-ink-soft), transparent),
+      radial-gradient(1.2px 1.2px at 28% 68%, var(--c-ink-faint), transparent),
+      radial-gradient(1.6px 1.6px at 48% 18%, var(--c-ink-soft), transparent),
+      radial-gradient(1.1px 1.1px at 82% 78%, var(--c-ink-faint), transparent),
+      radial-gradient(1.3px 1.3px at 90% 32%, var(--c-ink-soft), transparent),
+      radial-gradient(1.2px 1.2px at 36% 88%, var(--c-ink-faint), transparent),
+      radial-gradient(1.5px 1.5px at 58% 60%, var(--c-ink-soft), transparent);
+    opacity: 0.8;
+  }
+
+  /* the FOV rectangle — what the sensor actually sees.
+     --fov: a scale factor we drive with the slider (bigger = wider field) */
+  .fov-rect {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    --fov: 0.62;
+    --fov-x: 50%;
+    --fov-y: 50%;
+    width: calc(var(--fov) * 70%);
+    aspect-ratio: 3 / 2;
+    left: var(--fov-x);
+    top: var(--fov-y);
+    transform: translate(-50%, -50%);
+    border: 2px solid var(--c-accent);
+    border-radius: 4px;
+    box-shadow: 0 0 0 100vmax rgba(7,9,16,0.55);
+    transition:
+      width var(--dur) var(--ease),
+      left calc(var(--dur) * 1.1) var(--ease),
+      top calc(var(--dur) * 1.1) var(--ease);
+  }
+  .fov-rect::before {
+    /* corner ticks for that targeting-reticle feel */
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border: 1px dashed color-mix(in srgb, var(--c-accent) 45%, transparent);
+    border-radius: 2px;
+  }
+  .fov-rect-tag {
+    position: absolute;
+    left: 50%;
+    top: -10px;
+    transform: translate(-50%, -100%);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-accent);
+    white-space: nowrap;
+  }
+
+  /* the controls */
+  .fov-controls {
+    display: grid;
+    gap: var(--s-3);
+  }
+  .fov-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-2);
+  }
+  @media (min-width: 620px) {
+    .fov-row { grid-template-columns: auto 1fr auto; align-items: center; }
+  }
+  .fov-row-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+  }
+  .fov-row-value {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* the range input, restyled to fit the palette */
+  .fov-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--c-line);
+    outline-offset: 6px;
+  }
+  .fov-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    border: 2px solid var(--c-bg-raised);
+    box-shadow: 0 0 10px rgba(232,168,73,0.5);
+    cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease);
+  }
+  .fov-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+  .fov-slider::-moz-range-thumb {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    border: 2px solid var(--c-bg-raised);
+    box-shadow: 0 0 10px rgba(232,168,73,0.5);
+    cursor: pointer;
+  }
+
+  /* the solve button */
+  .fov-solve {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.06em;
+    color: var(--c-bg);
+    background: var(--c-accent);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    justify-self: start;
+    transition: background var(--dur-fast) var(--ease-soft), transform var(--dur-fast) var(--ease);
+  }
+  .fov-solve:hover { background: var(--c-accent-soft); }
+  .fov-solve:active { transform: translateY(1px); }
+  .fov-solve[disabled] { opacity: 0.5; cursor: default; }
+
+  /* the "solving" sweep line that crosses the sky while plate-solving */
+  .fov-scan {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    left: -10%;
+    background: linear-gradient(180deg, transparent, var(--c-cool), transparent);
+    box-shadow: 0 0 14px var(--c-cool);
+    opacity: 0;
+  }
+  .fov-scanning .fov-scan {
+    animation: fov-sweep 0.85s var(--ease-soft) 1;
+  }
+  @keyframes fov-sweep {
+    0%   { left: -5%;  opacity: 0; }
+    12%  { opacity: 1; }
+    88%  { opacity: 1; }
+    100% { left: 105%; opacity: 0; }
+  }
+
+  .fov-readout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    border-top: 1px solid var(--c-line);
+    padding-top: var(--s-3);
+  }
+  .fov-readout b { color: var(--c-ink-soft); font-weight: 500; }
+
+  /* ===================== SECTION 07: 07-camera-angle ===================== */
+  /* ===== Section 07 — camera-angle ===== */
+  .ca-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    padding: var(--s-4);
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+  }
+
+  .ca-figure {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+  }
+  .ca-figure svg { width: 100%; height: 100%; }
+
+  /* the galaxy smudge sitting at the target */
+  .ca-galaxy { transform-origin: 320px 200px; }
+
+  /* the framing rectangle that we rotate around the target */
+  .ca-frame {
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: rotate(0deg);
+  }
+  .ca-stage.ca-live .ca-frame {
+    animation: ca-swing var(--dur) var(--ease) forwards;
+    animation-delay: 0.25s;
+  }
+  @keyframes ca-swing {
+    0%   { transform: rotate(0deg); }
+    65%  { transform: rotate(38deg); }   /* slight overshoot for life */
+    100% { transform: rotate(32deg); }   /* graceful diagonal seat */
+  }
+
+  /* the angle arc + tick sweep with the frame */
+  .ca-arc {
+    stroke-dasharray: 0 1;
+    transition: stroke-dasharray var(--dur) var(--ease) 0.25s;
+  }
+  .ca-stage.ca-live .ca-arc { stroke-dasharray: 1 0; }
+
+  .ca-readout {
+    position: absolute;
+    top: var(--s-3);
+    left: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.05em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.7rem;
+    line-height: 1.4;
+  }
+  .ca-readout b { color: var(--c-accent); font-weight: 500; }
+  .ca-readout .ca-num { font-variant-numeric: tabular-nums; }
+
+  .ca-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-4);
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-caption);
+  }
+  .ca-legend span { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .ca-swatch { width: 14px; height: 2px; border-radius: 2px; }
+  .ca-swatch.ca-amber { background: var(--c-accent); }
+  .ca-swatch.ca-cool  { background: var(--c-cool); }
+
+  .ca-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+
+  /* ===================== SECTION 08: 08-guiding ===================== */
+  /* ===== Section 08 — guiding ===== */
+  .gd-stage {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+    gap: var(--s-3);
+    align-items: stretch;
+  }
+  @media (max-width: 720px) {
+    .gd-stage { grid-template-columns: 1fr; }
+  }
+
+  .gd-panel {
+    position: relative;
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-3);
+  }
+
+  .gd-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin-bottom: var(--s-2);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .gd-rms { color: var(--c-accent); font-variant-numeric: tabular-nums; }
+
+  .gd-panel svg { width: 100%; height: auto; display: block; }
+
+  .gd-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+
+  /* a tiny "DITHER" flag that flashes on the hop */
+  .gd-dither {
+    position: absolute;
+    top: var(--s-2);
+    right: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    color: var(--c-cool);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft);
+  }
+  .gd-dither.gd-show { opacity: 1; }
+
+  /* ===================== SECTION 09: 09-plate-solving ===================== */
+  /* ===== Section 09 — plate-solving ===== */
+  .ps-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    padding: var(--s-4);
+    background: var(--c-bg-sunk);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    overflow: hidden;
+  }
+  .ps-stage svg { width: 100%; height: auto; display: block; }
+
+  /* status chip, top-left, cycles solving -> solved */
+  .ps-status {
+    position: absolute;
+    top: var(--s-3);
+    left: var(--s-3);
+    z-index: 2;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid var(--c-line);
+    background: var(--c-bg-raised);
+    color: var(--c-caption);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ps-status .ps-led {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--c-ink-faint);
+  }
+  .ps-status.ps-working { color: var(--c-accent); border-color: color-mix(in srgb, var(--c-accent) 40%, transparent); }
+  .ps-status.ps-working .ps-led { background: var(--c-accent); animation: ps-pulse 1s var(--ease-soft) infinite; }
+  .ps-status.ps-done { color: var(--c-good); border-color: color-mix(in srgb, var(--c-good) 40%, transparent); }
+  .ps-status.ps-done .ps-led { background: var(--c-good); }
+  @keyframes ps-pulse { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+  /* faint stars start dim; matched stars get marked + ringed by JS */
+  .ps-star { fill: var(--c-ink-soft); }
+  .ps-match {
+    fill: var(--c-accent);
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease-soft);
+  }
+  .ps-match.ps-on { opacity: 1; }
+  .ps-ring {
+    stroke: var(--c-accent);
+    fill: none;
+    stroke-width: 1.5;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(0.4);
+    transition: opacity var(--dur-fast) var(--ease),
+                transform var(--dur-fast) var(--ease);
+  }
+  .ps-ring.ps-on { opacity: 0.8; transform: scale(1); }
+
+  /* catalog overlay lines connecting the matched constellation shape */
+  .ps-catalog {
+    stroke: var(--c-cool);
+    stroke-width: 1.25;
+    fill: none;
+    stroke-dasharray: 4 4;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  .ps-catalog.ps-on { opacity: 0.6; }
+
+  /* the crosshair that snaps onto the named target */
+  .ps-cross {
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: scale(1.8);
+    transition: opacity var(--dur) var(--ease),
+                transform var(--dur) var(--ease);
+  }
+  .ps-cross.ps-on { opacity: 1; transform: scale(1); }
+  .ps-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    fill: var(--c-accent);
+    letter-spacing: 0.06em;
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft) 0.15s;
+  }
+  .ps-name.ps-on { opacity: 1; }
+
+  .ps-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+
+  /* ===================== SECTION 10: 10-exposure-calibration ===================== */
+  /* ===== Section 10: Exposure + calibration (slug: ec) ===== */
+  .ec-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  .ec-stage {
+    position: relative;
+    aspect-ratio: 16 / 10;
+    width: 100%;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+
+  .ec-stage svg { width: 100%; height: 100%; }
+
+  /* The grain layer fades out as the stack count climbs. */
+  .ec-grain {
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  /* The faint nebula fades in as the stack count climbs. */
+  .ec-signal {
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease);
+  }
+
+  .ec-readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .ec-count {
+    color: var(--c-accent);
+    font-size: var(--t-lg);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .ec-noise-label {
+    color: var(--c-caption);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A skinny bar that shrinks to show noise dropping. */
+  .ec-noisebar {
+    margin-top: var(--s-2);
+    height: 6px;
+    border-radius: 99px;
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+  }
+  .ec-noisebar > i {
+    display: block;
+    height: 100%;
+    width: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent));
+    transform-origin: left;
+    transition: transform var(--dur) var(--ease);
+  }
+
+  .ec-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  .ec-btn {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.95rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+  }
+  .ec-btn:hover { border-color: var(--c-accent); color: var(--c-accent-soft); }
+  .ec-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* lights / darks / flats legend */
+  .ec-legend {
+    margin-top: var(--s-4);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2);
+    list-style: none;
+    padding: 0;
+  }
+  .ec-legend li {
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-2);
+  }
+  .ec-legend dt {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: 0.35rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .ec-legend dt::before {
+    content: "";
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 3px;
+    background: currentColor;
+    flex: none;
+  }
+  .ec-legend dd {
+    margin: 0;
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+    line-height: var(--leading-snug);
+  }
+  @media (max-width: 560px) {
+    .ec-legend { grid-template-columns: 1fr; }
+  }
+
+  /* ===================== SECTION 11: 11-sequencing-safety ===================== */
+  /* ===== Section 11: Sequencing + safety (slug: seq) ===== */
+  .seq-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  /* ---- the scope swinging across the meridian ---- */
+  .seq-sky {
+    position: relative;
+    aspect-ratio: 2 / 1;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(120% 100% at 50% 120%, var(--c-bg-raised) 0%, var(--c-bg-sunk) 70%);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  .seq-sky svg { width: 100%; height: 100%; }
+
+  /* the mount arm rotates from east of the meridian to west */
+  .seq-arm {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    transform: rotate(-46deg);
+    transition: transform 1.1s var(--ease);
+  }
+  .seq-sky.is-flipped .seq-arm { transform: rotate(46deg); }
+
+  /* the meridian line glows briefly at the moment of the flip */
+  .seq-meridian {
+    transition: opacity var(--dur) var(--ease-soft);
+    opacity: 0.4;
+  }
+  .seq-sky.is-flipping .seq-meridian { opacity: 1; }
+
+  .seq-flip-flash {
+    opacity: 0;
+  }
+  .seq-sky.is-flipping .seq-flip-flash {
+    animation: seq-flash 1.1s var(--ease) 1;
+  }
+  @keyframes seq-flash {
+    0%, 100% { opacity: 0; }
+    40%      { opacity: 1; }
+  }
+
+  /* ---- the night timeline ---- */
+  .seq-timeline {
+    margin-top: var(--s-4);
+    position: relative;
+  }
+  .seq-track {
+    position: relative;
+    height: 46px;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+    display: flex;
+  }
+  .seq-block {
+    position: relative;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-caption);
+    border-right: 1px solid var(--c-line);
+    transition: color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .seq-block:last-child { border-right: 0; }
+  .seq-block.is-done   { color: var(--c-ink-soft); }
+  .seq-block.is-active {
+    color: var(--c-bg);
+    background: var(--c-accent);
+  }
+  .seq-block.seq-flipblock.is-active { background: var(--c-cool); color: var(--c-bg); }
+
+  /* the sweeping "now" head */
+  .seq-now {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 2px;
+    background: var(--c-accent-soft);
+    box-shadow: 0 0 10px rgba(232,168,73,0.7);
+    left: 0;
+    transition: left 0.45s linear;
+    pointer-events: none;
+  }
+
+  .seq-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    margin-top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* ---- the safety guard ---- */
+  .seq-guard {
+    margin-top: var(--s-4);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    transition: box-shadow var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe {
+    box-shadow: inset 0 0 0 1px var(--c-accent-deep),
+                0 0 26px -8px rgba(184,121,31,0.8);
+  }
+  .seq-lamp {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--c-good);
+    box-shadow: 0 0 12px var(--c-good);
+    transition: background var(--dur) var(--ease-soft),
+                box-shadow var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe .seq-lamp {
+    background: var(--c-accent);
+    box-shadow: 0 0 14px var(--c-accent);
+  }
+  .seq-guard-text { line-height: var(--leading-snug); }
+  .seq-guard-state {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-good);
+    transition: color var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe .seq-guard-state { color: var(--c-accent); }
+  .seq-guard-reason {
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+
+  /* the little sun that drifts toward the scope to trigger the abort */
+  .seq-sun {
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  .seq-sky.is-sun .seq-sun { opacity: 1; }
+
+  /* ===================== SECTION 11b: 11b-evening-session ===================== */
+  /* ===== Section 11b — one evening, worked end to end (slug: eve) ===== */
+  .eve-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  /* ---- the clock + readout header ---- */
+  .eve-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    flex-wrap: wrap;
+  }
+  .eve-clock {
+    flex: none;
+    width: 84px;
+    height: 84px;
+  }
+  .eve-clock svg { width: 100%; height: 100%; display: block; }
+  .eve-hand {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    transition: transform 0.5s var(--ease);
+  }
+  .eve-clock-time {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.12em;
+    fill: var(--c-accent);
+  }
+
+  .eve-readout {
+    flex: 1 1 14rem;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2) var(--s-3);
+  }
+  .eve-stat {
+    min-width: 0;
+  }
+  .eve-stat-label {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+  }
+  .eve-stat-val {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--t-lg);
+    line-height: 1.1;
+    color: var(--c-ink);
+    transition: color var(--dur-fast) var(--ease-soft);
+  }
+  .eve-stat-val.eve-bad   { color: var(--c-accent); }
+  .eve-stat-val.eve-good  { color: var(--c-good); }
+  .eve-stat-val.eve-idle  { color: var(--c-ink-faint); }
+  .eve-stat-unit {
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* ---- the night timeline strip ---- */
+  .eve-timeline {
+    margin-top: var(--s-4);
+    position: relative;
+  }
+  .eve-axis {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    margin-bottom: var(--s-1);
+  }
+  .eve-track {
+    position: relative;
+    height: 52px;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+    display: flex;
+  }
+  .eve-block {
+    position: relative;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 0 0.35rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-caption);
+    border-right: 1px solid var(--c-line);
+    transition: color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .eve-block:last-child { border-right: 0; }
+  .eve-block.is-done   { color: var(--c-ink-soft); }
+  .eve-block.is-active {
+    color: var(--c-bg);
+    background: var(--c-accent);
+  }
+  /* the meridian flip gets the cool counter-accent */
+  .eve-block.eve-flip.is-active { background: var(--c-cool); color: var(--c-bg); }
+
+  /* the sweeping "now" head */
+  .eve-now {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 2px;
+    background: var(--c-accent-soft);
+    box-shadow: 0 0 10px rgba(232,168,73,0.7);
+    left: 0;
+    transition: left 0.5s var(--ease);
+    pointer-events: none;
+  }
+
+  /* ---- the running narration line under the strip ---- */
+  .eve-now-line {
+    margin-top: var(--s-3);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    min-height: 4.5rem;
+    display: flex;
+    gap: var(--s-3);
+    align-items: baseline;
+  }
+  .eve-now-clock {
+    flex: none;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    letter-spacing: 0.06em;
+  }
+  .eve-now-text {
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-size: var(--t-sm);
+  }
+  .eve-now-text strong { color: var(--c-ink); font-weight: 600; }
+
+  /* the step control for keyboard / no-scroll users */
+  .eve-controls {
+    margin-top: var(--s-3);
+    display: flex;
+    gap: var(--s-2);
+    align-items: center;
+  }
+  .eve-btn {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                color var(--dur-fast) var(--ease-soft);
+  }
+  .eve-btn:hover { color: var(--c-accent); border-color: var(--c-accent-deep); }
+  .eve-progress {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* a compact decision ledger below the figure */
+  .eve-ledger {
+    margin-top: var(--s-5);
+    list-style: none;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+    background: var(--c-line);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .eve-row {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: var(--s-3);
+    padding: var(--s-3) var(--s-4);
+    background: var(--c-bg-raised);
+  }
+  .eve-row-when {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    letter-spacing: 0.04em;
+  }
+  .eve-row-what { line-height: var(--leading-snug); }
+  .eve-row-what b { color: var(--c-ink); }
+  .eve-row-what code {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--c-ink);
+    background: var(--c-bg-sunk);
+    padding: 0.1em 0.4em;
+    border-radius: var(--radius-sm);
+  }
+
+  @media (max-width: 33rem) {
+    .eve-readout { grid-template-columns: repeat(3, 1fr); }
+    .eve-row { grid-template-columns: 1fr; gap: var(--s-1); }
+  }
+
+  /* ===================== SECTION 12: 12-outro ===================== */
+  /* ===== Section 12: Outro (slug: out) ===== */
+  .out-grid {
+    margin-top: var(--s-5);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--s-2);
+    list-style: none;
+    padding: 0;
+  }
+  @media (max-width: 720px) { .out-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 440px) { .out-grid { grid-template-columns: 1fr; } }
+
+  .out-card {
+    position: relative;
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: var(--s-3);
+    overflow: hidden;
+    transition: border-color var(--dur-fast) var(--ease-soft),
+                transform var(--dur-fast) var(--ease);
+  }
+  .out-card:hover { border-color: var(--c-accent); transform: translateY(-2px); }
+
+  /* a thin amber edge that wipes in on reveal */
+  .out-card::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: var(--c-accent);
+    transform: scaleY(0);
+    transform-origin: top;
+    transition: transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+  }
+  .out-card.is-in::before { transform: scaleY(1); }
+
+  .out-icon { width: 30px; height: 30px; margin-bottom: var(--s-2); color: var(--c-accent); }
+  .out-icon svg { width: 100%; height: 100%; }
+
+  .out-concept {
+    font-family: var(--font-display);
+    font-size: var(--t-lg);
+    line-height: var(--leading-tight);
+    margin-bottom: 0.35rem;
+  }
+  .out-screen {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+    margin-bottom: 0.6rem;
+  }
+  .out-screen b { color: var(--c-cool); font-weight: 500; }
+  .out-note {
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+    line-height: var(--leading-snug);
+  }
+
+  /* ---- closing flourish: a quiet pulse around "your move" ---- */
+  .out-close {
+    margin-top: var(--s-6);
+    text-align: center;
+  }
+  .out-close > * { margin-inline: auto; }
+
+  .out-orbit {
+    position: relative;
+    width: 84px;
+    height: 84px;
+    margin: 0 auto var(--s-3);
+  }
+  .out-orbit svg { width: 100%; height: 100%; overflow: visible; }
+  .out-core {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  .out-ring {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+  /* the dot rides the ring once it is revealed */
+  .out-close.is-in .out-ring {
+    animation: out-spin 9s linear infinite;
+  }
+  .out-close.is-in .out-core {
+    animation: out-breathe 4.5s var(--ease) infinite;
+  }
+  @keyframes out-spin {
+    to { transform: rotate(360deg); }
+  }
+  @keyframes out-breathe {
+    0%, 100% { opacity: 0.85; transform: scale(1); }
+    50%      { opacity: 1;    transform: scale(1.08); }
+  }
+
+  .out-kbd {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#primer">Skip to content</a>
+
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <nav class="dot-nav" id="dotNav" aria-label="Section navigation"></nav>
+
+  <main id="primer">
+    <!-- ===================== SECTION 01: 01-cold-open ===================== -->
+<section class="primer-section" id="cold-open" data-nav="The Premise">
+  <p class="kicker">The Premise</p>
+  <h2 class="reveal">You are about to photograph a faint smudge from a spinning rock</h2>
+  <p class="lede reveal">
+    The target is dim, millions of light-years off, and last did anything interesting
+    before there were primates to notice. To collect enough of its light you hold the
+    shutter open for minutes — often hours. Meanwhile the planet under you keeps
+    turning, so the target slides across the sky the entire time you're trying to hold
+    on it.
+  </p>
+
+  <figure class="co-stage bleed-wide reveal" id="co-stage" aria-labelledby="co-skycap">
+    <svg class="co-sky" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img"
+         aria-label="A field of stars drifting slowly, the way the night sky moves while the Earth rotates.">
+      <g class="co-driftgroup" id="co-drift"></g>
+    </svg>
+    <figcaption class="co-tag" id="co-skycap">Real-time. The sky is not posing for you.</figcaption>
+  </figure>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    That drift is the entire problem in one frame. Everything below exists to cancel it.
+  </p>
+
+  <p class="reveal">
+    The craft is three fights at once. <strong>Motion</strong>: the sky won't sit still.
+    <strong>Noise</strong>: the signal is faint and the sensor adds static of its own.
+    <strong>Focus</strong>: a star is a point source, and points punish error. You win
+    by bolting together a stack of boxes — the <em>imaging train</em>. Three boxes do
+    the work; two more earn their place later.
+  </p>
+
+  <div class="co-train bleed-wide reveal" id="co-train" role="list" aria-label="The imaging train, part by part">
+    <div class="co-part" role="listitem" style="--co-i:0">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M14 48 L32 18 M32 18 L50 48 M22 48 H42" stroke-linecap="round"/>
+        <circle cx="32" cy="14" r="5" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Mount</span>
+      <span class="co-role">Motorized base. Aims at the target and tracks it as the sky slides.</span>
+    </div>
+    <div class="co-part" role="listitem" style="--co-i:1">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M10 22 L46 14 L46 42 L10 34 Z" stroke-linejoin="round"/>
+        <path fill="none" stroke-width="2.5" d="M46 20 L56 17 L56 39 L46 36"/>
+      </svg>
+      <span class="co-name">Telescope</span>
+      <span class="co-role">The optics, called an OTA — a long, fixed-focal-length lens.</span>
+    </div>
+    <div class="co-part" role="listitem" style="--co-i:2">
+      <span class="co-badge co-core">Core</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <rect x="12" y="16" width="40" height="28" rx="4" fill="none" stroke-width="2.5"/>
+        <circle cx="32" cy="30" r="8" fill="none" stroke-width="2.5"/>
+        <path d="M44 16 V12 H50 V16" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Main camera</span>
+      <span class="co-role">The sensor that collects the photons. The point of the exercise.</span>
+    </div>
+    <div class="co-part co-helper" role="listitem" style="--co-i:3">
+      <span class="co-badge co-helps">Helper</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <path fill="none" stroke-width="2.5" d="M12 24 L40 18 L40 38 L12 32 Z" stroke-linejoin="round"/>
+        <rect x="40" y="22" width="12" height="12" rx="2" fill="none" stroke-width="2.5"/>
+      </svg>
+      <span class="co-name">Guide scope + cam</span>
+      <span class="co-role">Second eye on one star, feeding correction nudges to the mount.</span>
+    </div>
+    <div class="co-part co-helper" role="listitem" style="--co-i:4">
+      <span class="co-badge co-helps">Helper</span>
+      <svg class="co-icon" viewBox="0 0 64 56" aria-hidden="true">
+        <circle cx="32" cy="28" r="13" fill="none" stroke-width="2.5"/>
+        <circle cx="32" cy="28" r="4" fill="none" stroke-width="2.5"/>
+        <path fill="none" stroke-width="2.5" d="M32 8 V14 M32 42 V48 M12 28 H18 M46 28 H52"/>
+      </svg>
+      <span class="co-name">Focuser + filters</span>
+      <span class="co-role">Moves the optics to a hair of focus; swaps color filters at the sensor.</span>
+    </div>
+  </div>
+
+  <div class="co-legend bleed-wide reveal" aria-hidden="true">
+    <span><i class="co-swatch co-s-core"></i> Does the work</span>
+    <span><i class="co-swatch co-s-helps"></i> Makes the work better</span>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    These boxes ship from different vendors and were never designed to talk to each
+    other — the old workflow was five apps, alt-tabbed in the cold at 2am.
+    <strong>AstroDeck is the brain that drives the whole train from one screen.</strong>
+    The rest of this guide tours what that brain coordinates — each box, the state it
+    exposes, and the one screen where a wrong control placement strands you in the cold.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 02: 02-mount-tracking ===================== -->
+<section class="primer-section" id="mount-tracking" data-nav="Tracking">
+  <p class="kicker">Pointing the Mount</p>
+  <h2 class="reveal">The sky moves, so the mount moves back</h2>
+  <p class="lede reveal">
+    The sky appears to turn only because the Earth turns under it, around one fixed
+    axis. Align one of the mount's axes with that axis, spin a single motor at the
+    matching speed in the opposite direction, and the apparent motion cancels exactly.
+    A star that should slide off the sensor sits still instead.
+  </p>
+
+  <p class="reveal">
+    That alignment is what an <strong>equatorial mount</strong> is built for: it tilts
+    so one axis runs parallel to the Earth's. Holding a target then costs one motor
+    turning slowly at the <em>sidereal rate</em> — one revolution per sidereal day,
+    about 23h 56m. Below, the frame drifts the way the real sky drifts; flip tracking
+    on and the amber star locks to the crosshair while the rest stops sliding.
+  </p>
+
+  <figure class="mt-stage bleed-wide reveal" id="mt-stage" aria-labelledby="mt-cap">
+    <svg class="mt-sky" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img"
+         aria-label="A starfield drifting across the frame. When tracking turns on, one highlighted star locks to a crosshair in the center and the drift stops.">
+      <g id="mt-field"></g>
+      <g class="mt-reticle">
+        <circle cx="800" cy="450" r="34" fill="none" stroke-width="2"/>
+        <path d="M800 398 V428 M800 472 V502 M748 450 H778 M822 450 H852" stroke-width="2" stroke-linecap="round"/>
+      </g>
+    </svg>
+    <div class="mt-controls">
+      <button class="mt-toggle" id="mt-toggle" type="button" aria-pressed="false">
+        <span class="mt-led" aria-hidden="true"></span>
+        <span id="mt-toggle-label">Tracking: off</span>
+      </button>
+      <span class="mt-readout" aria-hidden="true">RATE <b id="mt-rate">drifting</b></span>
+    </div>
+    <figcaption class="caption" id="mt-cap" style="position:absolute; left:-9999px;">
+      Toggle tracking to lock the amber star to the center crosshair.
+    </figcaption>
+  </figure>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    The amber star is the one you asked the mount to hold. With tracking on it stops
+    dead — and so does every other star, all carried by that one motor.
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    You name the point to hold with two numbers — like latitude and longitude, but
+    painted onto the rotating dome of the sky, so they stay constant as the night runs.
+  </p>
+
+  <div class="mt-coords bleed-wide reveal">
+    <div class="mt-coord">
+      <span class="mt-kdef">RA — Right Ascension</span>
+      <h4>Sky-longitude</h4>
+      <p>Position around the celestial sphere — a fixed label that names the target all night. The RA-axis motor turns at sidereal rate; that constant motion is what keeps this fixed number fixed.</p>
+    </div>
+    <div class="mt-coord mt-dec">
+      <span class="mt-kdef">Dec — Declination</span>
+      <h4>Sky-latitude</h4>
+      <p>Degrees north or south of the celestial equator. Once you're on target, this barely moves.</p>
+    </div>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    Tracking is excellent and never perfect — periodic gear error, a hair of
+    misalignment — so over a long exposure the star still drifts a few pixels. That
+    residual is why <em>guiding</em> exists, covered later. For now, the control
+    surface is three verbs: <strong>slew</strong> to point, <strong>track on/off</strong>
+    to hold, <strong>go-to</strong> to send the mount to a named target by its
+    coordinates. They live in AstroDeck's mount panel, where two facts have to be
+    glanceable in the dark — where it's pointed, and whether it's holding or drifting —
+    because a mount that silently stopped tracking looks identical to one that didn't.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 03: 03-polar-alignment ===================== -->
+<section class="primer-section" id="polar-alignment" data-nav="Polar Alignment">
+  <p class="kicker">Aiming the Spin Axis</p>
+  <h2 class="reveal">Polar alignment: aim the axis at the pole, or everything smears</h2>
+  <p class="lede reveal">
+    The cancel-the-sky trick has one precondition: the mount's spin axis must point at
+    the exact pivot the sky turns around — the celestial pole, which in the north sits
+    about 0.7° from Polaris. Aim there and the sky holds. Aim a little off and the
+    mount spends the night rotating around the <em>wrong</em> center, smearing every
+    star in a way no single exposure recovers.
+  </p>
+
+  <p class="reveal">
+    The failure mode, while merely tracking, is <strong>drift</strong>: the field
+    slides steadily in one direction, and each star smears into a short, near-straight
+    streak, all roughly parallel. Longer exposure, longer streak. Both outcomes below,
+    each star drawing its own path over a few minutes — parallel smears left, held
+    points right.
+  </p>
+
+  <div class="pa-compare bleed-wide reveal" id="pa-compare">
+    <figure class="pa-panel pa-panel--bad" aria-labelledby="pa-bad-cap">
+      <span class="pa-tag pa-bad">Misaligned</span>
+      <svg viewBox="0 0 400 400" role="img" aria-label="A starfield where every star is smeared into a short, nearly straight streak, all the streaks pointing roughly the same direction.">
+        <g id="pa-bad-field"></g>
+      </svg>
+      <figcaption id="pa-bad-cap" style="position:absolute; left:-9999px;">Every star smears the same way — tracking drift.</figcaption>
+    </figure>
+    <figure class="pa-panel pa-panel--good" aria-labelledby="pa-good-cap">
+      <span class="pa-tag pa-good">Aligned</span>
+      <svg viewBox="0 0 400 400" role="img" aria-label="The same starfield, but every star is a clean stationary point with no trailing.">
+        <g id="pa-good-field"></g>
+      </svg>
+      <figcaption id="pa-good-cap" style="position:absolute; left:-9999px;">Same field, axis on the pole — stars stay points.</figcaption>
+    </figure>
+  </div>
+  <p class="caption bleed-wide reveal" style="--reveal-delay:.1s; margin-top: var(--s-2);">
+    Same sky, same exposure. The only variable is where the spin axis points.
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    A <em>guider</em> — a second camera that pins one star and erases drift in real
+    time — comes later and works well, which raises the obvious question: if it cancels
+    the smear, why align at all? Because it can only pin one star. With the axis still
+    off, the rest of the field <strong>rotates</strong> around that pinned point over
+    the night — field rotation, the residual that survives guiding. Good polar
+    alignment keeps that rotation negligible. You don't eyeball Polaris through a hole
+    anymore: a routine (three-point, or a drift test) photographs the sky and
+    <strong>plate-solves</strong> the frames — reads the star pattern to compute exactly
+    where the scope points — then reports your axis error as a direction and a distance.
+    You correct it with two mechanical knobs: <em>altitude</em> (up/down) and
+    <em>azimuth</em> (left/right). The standard readout is a bullseye: your error is a
+    dot off-center, and you turn knobs to walk it in.
+  </p>
+
+  <div class="pa-scope bleed-wide reveal">
+    <div class="pa-bullseye">
+      <svg viewBox="0 0 320 320" role="img" aria-label="A bullseye target. An amber dot starts near the edge and moves toward the center as alignment is corrected, turning green when it lands in the middle.">
+        <circle class="pa-ring" cx="160" cy="160" r="130"/>
+        <circle class="pa-ring" cx="160" cy="160" r="90"/>
+        <circle class="pa-ring" cx="160" cy="160" r="50"/>
+        <circle class="pa-ring pa-ring-hot" cx="160" cy="160" r="18"/>
+        <line class="pa-cross" x1="160" y1="20" x2="160" y2="300"/>
+        <line class="pa-cross" x1="20" y1="160" x2="300" y2="160"/>
+        <path class="pa-track" id="pa-track" d=""/>
+        <circle class="pa-errdot" id="pa-errdot" cx="0" cy="0" r="9"/>
+      </svg>
+    </div>
+    <div class="pa-panel-side">
+      <h4>The fix, in two knobs</h4>
+      <div class="pa-cue" id="pa-cue-alt">
+        <span>Altitude</span><b id="pa-alt-dir">turn up</b>
+      </div>
+      <div class="pa-cue" id="pa-cue-az">
+        <span>Azimuth</span><b id="pa-az-dir">turn left</b>
+      </div>
+      <div class="pa-err-readout">error <b id="pa-err-val">12.4′</b></div>
+      <button class="pa-adjust" id="pa-adjust" type="button">Nudge the knobs →</button>
+    </div>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5);">
+    This is the screen you stare at while reaching blindly behind the mount in the cold.
+    Could you correct alignment with it wearing gloves? That sets three requirements: a
+    dot findable at a glance, cues that say <em>turn this knob, this way</em> without
+    assuming you know which direction azimuth runs, and a done state you can't misread.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 04: 04-focusing ===================== -->
+<section class="primer-section" id="focusing" data-nav="Focus">
+  <p class="kicker">Sharpness, Measured</p>
+  <h2 class="reveal">A star should be a point, not a marshmallow</h2>
+  <p class="lede reveal">
+    A star is far enough away to be a true point source — zero angular size at any
+    aperture you'll own. Focus is the job of making the optics agree, collapsing each
+    star to the smallest, brightest dot they can form. Miss it and the same star bloats
+    into a soft pale blob: same sky, worse photo.
+  </p>
+
+  <p class="reveal">
+    A slightly soft star and a sharp one look identical to a human eye at 2am, so you
+    stop trusting eyeballs and trust a number. The standard one is <strong>HFR</strong>
+    — half-flux radius, the radius enclosing half the star's total light, in pixels.
+    Smaller is sharper. The whole game is driving HFR down and keeping it there.
+  </p>
+
+  <div class="focus-stage" data-focus-stage>
+    <!-- DEMO 1 -->
+    <figure class="focus-demo reveal">
+      <p class="focus-demo-label">In focus vs. out of focus</p>
+      <div class="focus-starwrap">
+        <div class="focus-star-field" aria-hidden="true">
+          <div class="focus-star"></div>
+        </div>
+      </div>
+      <div class="focus-readout" aria-hidden="true">
+        <span class="focus-readout-num" data-focus-hfr>4.8</span>
+        <span class="focus-readout-unit">HFR&nbsp;px</span>
+        <span class="focus-readout-word" data-focus-word>bloated</span>
+      </div>
+      <figcaption class="caption">
+        The blob tightens to a pinpoint as the focuser finds its spot, HFR falling to
+        match — roughly 4.8 down to 1.2 px.
+      </figcaption>
+    </figure>
+
+    <!-- DEMO 2 -->
+    <figure class="focus-demo reveal" style="--reveal-delay: .08s">
+      <p class="focus-demo-label">Where this came from · the Bahtinov mask</p>
+      <svg class="focus-bahtinov" viewBox="0 0 320 150" role="img"
+           aria-label="A bright star throwing three diffraction spikes. Two fixed spikes form an X; a third moving spike rotates until it sits exactly between them, marking perfect focus.">
+        <!-- two fixed spikes forming the X -->
+        <line class="focus-bah-spike" x1="60" y1="35" x2="260" y2="115"/>
+        <line class="focus-bah-spike" x1="60" y1="115" x2="260" y2="35"/>
+        <!-- the moving center spike -->
+        <line class="focus-bah-center" x1="40" y1="75" x2="280" y2="75"/>
+        <!-- the star core -->
+        <circle class="focus-bah-core" cx="160" cy="75" r="6"/>
+        <text class="focus-bah-tag" x="160" y="140" text-anchor="middle">CENTERED · IN FOCUS</text>
+      </svg>
+      <figcaption class="caption">
+        The manual ancestor, for intuition — a physical grille you clip over the
+        aperture, so there's no on-screen control. A bright star sprouts three
+        diffraction spikes; two are fixed, the third drifts as you turn the focuser,
+        and dead-center between them means sharp. People still swear by it, but a
+        computer can't turn a knob and squint — hence the next demo.
+      </figcaption>
+    </figure>
+
+    <!-- DEMO 3 -->
+    <figure class="focus-demo reveal" style="--reveal-delay: .16s">
+      <p class="focus-demo-label">V-curve autofocus · the automated method</p>
+      <svg class="focus-vcurve" viewBox="0 0 320 170" role="img"
+           aria-label="A V-shaped plot of star size against focuser position. The software measures HFR at several positions, fits the V, and drives to the lowest point — the sharpest focus.">
+        <!-- axes -->
+        <line class="focus-axis" x1="36" y1="14" x2="36" y2="138"/>
+        <line class="focus-axis" x1="36" y1="138" x2="306" y2="138"/>
+        <text class="focus-axis-label" x="20" y="20">HFR</text>
+        <text class="focus-axis-label" x="240" y="156">FOCUSER POS →</text>
+        <!-- fitted V -->
+        <polyline class="focus-vline" points="60,40 160,120 260,40"/>
+        <!-- sampled points climbing down then up -->
+        <circle class="focus-vpoint" cx="60"  cy="42"  r="4"/>
+        <circle class="focus-vpoint" cx="100" cy="78"  r="4"/>
+        <circle class="focus-vpoint" cx="135" cy="104" r="4"/>
+        <circle class="focus-vpoint" cx="185" cy="100" r="4"/>
+        <circle class="focus-vpoint" cx="225" cy="72"  r="4"/>
+        <circle class="focus-vpoint" cx="262" cy="40"  r="4"/>
+        <!-- the minimum -->
+        <line class="focus-vmin-line" x1="160" y1="120" x2="160" y2="138"/>
+        <circle class="focus-vmin" cx="160" cy="120" r="6"/>
+      </svg>
+      <figcaption class="caption">
+        Same hunt, handed to a machine and built on the HFR number from demo one: step
+        the focuser across a range, measure HFR at each stop, fit the V those points
+        trace, and drive to its minimum. No grille, no squinting. This is exactly what
+        AstroDeck's focus button runs.
+      </figcaption>
+    </figure>
+  </div>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    Focus won't hold: it <em>drifts</em>. As the night cools, the tube's metal
+    contracts a few microns, the focal point shifts, and sharp stars quietly puff back
+    up. So you refocus periodically — a chore built for automation, which is where this
+    goes: re-running the V-curve on a temperature or time trigger, watching HFR, moving
+    the focuser with no human in the loop.
+  </p>
+
+  <p class="reveal">
+    In AstroDeck's focus panel, the <strong>HFR readout is the protagonist</strong>,
+    not the buttons around it. The user is hunting a minimum; the two control flows — a
+    manual nudge and the full V-curve run — exist to make that number small and say,
+    plainly, when it is.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 05: 05-cooling ===================== -->
+<section class="primer-section" id="cooling" data-nav="Cooling">
+  <p class="kicker">The Sensor's Self-Inflicted Lies</p>
+  <h2 class="reveal">Cold sensors lie less</h2>
+  <p class="lede reveal">
+    A sensor is supposed to report the light that lands on it. It also reports light
+    that never arrived — a faint static it generates on its own, just by being a warm
+    electronic thing. That's <strong>dark current</strong>, and on a long exposure it
+    speckles the frame with noise the sky never put there.
+  </p>
+
+  <p class="reveal">
+    Two things drive it: heat and time. Dark current roughly doubles every 6–8°C, and
+    it accumulates the whole exposure. Astrophotography is staring at one faint thing
+    for minutes per frame, so you can't cut the exposure. You cut the temperature.
+  </p>
+
+  <div class="cool-rig" data-cool-rig>
+    <figure class="cool-frame reveal" style="margin: 0">
+      <div class="cool-frame-signal" aria-hidden="true"></div>
+      <div class="cool-frame-noise" aria-hidden="true"></div>
+      <span class="cool-frame-tag" data-cool-frametag>warm · noisy</span>
+    </figure>
+
+    <div class="cool-panel reveal" style="--reveal-delay: .1s" aria-hidden="true">
+      <div class="cool-thermo">
+        <div class="cool-tube">
+          <div class="cool-setpoint"></div>
+          <div class="cool-mercury"></div>
+        </div>
+        <div class="cool-scale">
+          <span>+20°</span>
+          <span class="cool-scale-set">−10° set</span>
+          <span>−30°</span>
+        </div>
+      </div>
+      <div class="cool-temp">
+        <span class="cool-temp-num" data-cool-temp>+18</span>
+        <span class="cool-temp-unit">°C sensor</span>
+      </div>
+      <div class="cool-pill">
+        <span class="cool-pill-dot"></span>
+        <span class="cool-label-cooling">cooling…</span>
+        <span class="cool-label-target">at set-point</span>
+      </div>
+    </div>
+  </div>
+  <p class="caption reveal" style="margin-top: var(--s-3)">
+    For anyone the animation skips: the grainy frame settles clean as the sensor falls
+    +18°C → −10°C, and the status flips from pulsing amber "cooling" to steady green
+    "at set-point."
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    The hardware is a <strong>thermoelectric cooler</strong> (a Peltier) bolted to the
+    sensor, holding a chosen <strong>set-point</strong> — say −10°C — all night. The
+    set-point matters more than raw cold: you cancel the leftover speckle by subtracting
+    reference <em>dark frames</em>, and that subtraction only works if the darks were
+    shot at the <em>same</em> temperature. A repeatable −10°C beats a colder number you
+    can't hit twice.
+  </p>
+
+  <p class="reveal">
+    A cooler also has a floor — roughly 35–45°C below ambient — so on a warm night the
+    number you typed may be unreachable. The indicator has to report where it actually
+    is, not where you asked it to go.
+  </p>
+
+  <p class="reveal">
+    In AstroDeck, the cooler box answers one question the user asks all night:
+    <strong>cooling, at set-point, or off?</strong> That state has to read at a glance
+    and stay honest about the in-between, instead of leaving the user doing subtraction
+    on a raw temperature.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 06: 06-framing-fov ===================== -->
+<section class="primer-section" id="framing-fov" data-nav="Framing">
+  <p class="kicker">Pointing &amp; Composition</p>
+  <h2 class="reveal">How much sky fits, and where the target lands</h2>
+  <p class="lede reveal">
+    Before focus, cooling, and hours of exposure comes a creative question: what's in
+    the shot? A telescope is a lens with a fixed crop. Your only compositional moves are
+    how wide that crop is and where you aim it. Get them wrong and you've spent the night
+    perfectly photographing the corner of something.
+  </p>
+
+  <p class="reveal">
+    Field of view is focal length against sensor size. Long focal length = tight crop,
+    right for a small distant galaxy, hopeless for anything big. Short focal length = wide
+    field that swallows a sprawling nebula but renders each object small. Underneath sits
+    <strong>pixel scale</strong> (arcseconds per pixel), the detail dial, with a sweet
+    spot around 1–2″/px. The UI's job is keeping the user in that band, not handing them a
+    knob they'll crank to the max.
+  </p>
+
+  <div class="fov-stage" data-fov-stage>
+    <div class="fov-sky reveal">
+      <div class="fov-stars" aria-hidden="true"></div>
+      <div class="fov-target" aria-hidden="true"></div>
+      <span class="fov-target-label">target</span>
+      <div class="fov-rect" data-fov-rect aria-hidden="true">
+        <span class="fov-rect-tag" data-fov-recttag>your frame</span>
+      </div>
+      <div class="fov-scan" aria-hidden="true"></div>
+    </div>
+
+    <div class="fov-controls reveal" style="--reveal-delay: .1s">
+      <div class="fov-row">
+        <label class="fov-row-label" for="fov-focal">Focal length</label>
+        <input class="fov-slider" id="fov-focal" type="range"
+               min="200" max="1200" value="600" step="10"
+               aria-describedby="fov-focal-val">
+        <span class="fov-row-value" id="fov-focal-val">600&nbsp;mm</span>
+      </div>
+
+      <button class="fov-solve" type="button" data-fov-solve>
+        Plate-solve &amp; center
+      </button>
+
+      <div class="fov-readout" aria-live="polite">
+        <span>FOV <b data-fov-deg>2.3°</b></span>
+        <span>pixel scale <b data-fov-scale>1.5″/px</b></span>
+        <span>fit <b data-fov-fit>target fits</b></span>
+      </div>
+    </div>
+  </div>
+  <p class="caption reveal" style="margin-top: var(--s-3)">
+    Drag focal length and the amber frame widens or crops over the nebula. FOV reads in
+    degrees; the full Moon is ~0.5° across, so 2.3° is about four-and-a-half Moons wide.
+    Hit <em>plate-solve &amp; center</em> and a scan line sweeps the sky, then the frame
+    slides to put the target dead-center.
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    Aiming feels like magic and is really bookkeeping. The mount points where it thinks
+    the target is, the camera grabs a quick frame, and the software
+    <strong>plate-solves</strong> it: matches the star pattern against a catalog, derives
+    exactly where the scope is actually pointed, and nudges until the target sits where
+    you framed it. No star-hopping, no "a little to the left." When a target won't fit
+    even the widest sensible frame, you shoot it as a multi-panel <strong>mosaic</strong>
+    and stitch the tiles later.
+  </p>
+
+  <p class="reveal">
+    On AstroDeck's framing screen, the sky atlas does two jobs: a true-to-scale preview of
+    what the sensor will capture, and a way to place that rectangle with intent. The open
+    UX question is how a wide field, a tight crop, and a multi-tile mosaic all live in one
+    preview without the user ever picturing arcseconds in their head.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 07: 07-camera-angle ===================== -->
+<section class="primer-section" id="camera-angle" data-nav="Camera Angle">
+  <p class="kicker">Framing the Shot</p>
+  <h2 class="reveal">Camera angle, where rotation becomes composition</h2>
+  <p class="lede reveal">
+    The telescope decides what you point at. The rotation of the camera behind it decides
+    how that thing sits in the frame.
+  </p>
+
+  <p class="reveal">
+    A sensor is a rectangle and the sky doesn't care which way you hold it. Spin the
+    camera and the same galaxy streaks corner to corner or lies flat across the middle —
+    nothing about the target changed, you rotated the rectangle. That angle is the
+    <strong>position angle</strong>, and it's as much a part of the photograph as exposure
+    or focus.
+  </p>
+
+  <figure class="ca-stage bleed-wide reveal" id="ca-stage" aria-labelledby="ca-cap">
+    <div class="ca-readout" aria-hidden="true">
+      position angle<br>
+      <b class="ca-num" id="ca-deg">0&deg;</b>
+    </div>
+    <div class="ca-figure">
+      <svg viewBox="0 0 640 400" role="img" aria-labelledby="ca-cap">
+        <!-- the target: an elongated galaxy smudge -->
+        <g class="ca-galaxy">
+          <ellipse cx="320" cy="200" rx="120" ry="34" transform="rotate(32 320 200)"
+                   fill="var(--c-cool)" opacity="0.16"/>
+          <ellipse cx="320" cy="200" rx="86" ry="22" transform="rotate(32 320 200)"
+                   fill="var(--c-cool)" opacity="0.28"/>
+          <ellipse cx="320" cy="200" rx="40" ry="12" transform="rotate(32 320 200)"
+                   fill="var(--c-ink)" opacity="0.55"/>
+          <circle cx="320" cy="200" r="4" fill="var(--c-ink)" opacity="0.9"/>
+        </g>
+
+        <!-- the angle arc, sweeping from horizontal to the seated angle -->
+        <path class="ca-arc" d="M 320 200 m 70 0 A 70 70 0 0 0 379.4 -37.1"
+              transform="translate(0 200) rotate(0)"
+              fill="none" stroke="var(--c-accent)" stroke-width="2" opacity="0.5"
+              pathLength="1"/>
+
+        <!-- the FOV frame, rotates around the target -->
+        <g class="ca-frame">
+          <rect x="160" y="80" width="320" height="240" rx="6"
+                fill="none" stroke="var(--c-accent)" stroke-width="2.5"/>
+          <!-- thirds guides, the photographer's reflex -->
+          <line x1="266.6" y1="80" x2="266.6" y2="320" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="373.3" y1="80" x2="373.3" y2="320" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="160" y1="160" x2="480" y2="160" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="160" y1="240" x2="480" y2="240" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <!-- a corner tick so "up" on the sensor is legible -->
+          <path d="M 160 110 L 160 80 L 190 80" fill="none" stroke="var(--c-accent-soft)" stroke-width="3"/>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="caption ca-legend" id="ca-cap">
+      <span><i class="ca-swatch ca-amber" aria-hidden="true"></i> the camera frame, rotating</span>
+      <span><i class="ca-swatch ca-cool" aria-hidden="true"></i> the galaxy, holding still</span>
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    Two ways to set it. Loosen a clamp and turn the camera by hand in the dark, then lock
+    it close to right. Or a motorized <strong>rotator</strong> drives it to a number you
+    asked for. Either way you don't know you nailed it until the sky tells you — through
+    plate-solving, which reads an exposure and reports the angle the camera actually landed
+    at, to a fraction of a degree.
+  </p>
+
+  <p class="reveal">
+    That readout matters most in a <strong>mosaic</strong>, several tiles meant to line up
+    into one larger picture. If panel three is two degrees off panels one and two, the seam
+    shows, and no amount of later wrangling fully hides a crooked join. Planned angle and
+    actual angle have to agree.
+  </p>
+
+  <p class="ca-hook reveal">
+    So at AstroDeck's rotation control, the question is how clearly it shows the gap between
+    the angle you <em>asked</em> for and the angle you <em>got</em>. One number is a setting.
+    Two side by side, with the difference called out, is something you can steer by.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 08: 08-guiding ===================== -->
+<section class="primer-section" id="guiding" data-nav="Guiding">
+  <p class="kicker">Holding Still</p>
+  <h2 class="reveal">Guiding, or a second camera that babysits one star</h2>
+  <p class="lede reveal">
+    A mount that tracks the sky is close to right, and close to right is not right when the
+    shutter is open for five minutes.
+  </p>
+
+  <p class="reveal">
+    The earth turns, the sky appears to drift, the mount rotates to cancel the drift. But
+    gears have periodic error and the atmosphere shoves the air around, so over a few minutes
+    small errors accumulate. A star that should be a round point smears into a comma. The
+    errors are measured in <strong>arcseconds</strong> — the hair-thin angle from the framing
+    section, a coin held a few miles off — and a couple is enough to wreck a frame.
+  </p>
+
+  <p class="reveal">
+    The fix is almost suspiciously simple. A small second camera locks onto one ordinary star
+    and reads it several times a minute, asking the same dull question: did it move? When the
+    star slips a hair left, the guide camera tells the mount to nudge a hair right. The graph
+    below is that conversation.
+  </p>
+
+  <figure class="gd-stage bleed-wide reveal" aria-labelledby="gd-cap">
+    <div class="gd-panel">
+      <div class="gd-label"><span>guide star</span><span>locked</span></div>
+      <div class="gd-dither" id="gd-dither" aria-hidden="true">DITHER</div>
+      <svg viewBox="0 0 200 200" role="img" aria-label="A guide star jittering inside a tracking box while correction arrows nudge it back to center.">
+        <rect x="20" y="20" width="160" height="160" rx="8"
+              fill="var(--c-bg-sunk)" stroke="var(--c-line)" stroke-width="1.5"/>
+        <!-- crosshair to the locked center -->
+        <line x1="100" y1="40" x2="100" y2="160" stroke="var(--c-line)" stroke-width="1"/>
+        <line x1="40" y1="100" x2="160" y2="100" stroke="var(--c-line)" stroke-width="1"/>
+        <circle cx="100" cy="100" r="3" fill="none" stroke="var(--c-ink-faint)" stroke-width="1"/>
+        <!-- correction arrows, opacity driven by JS -->
+        <g id="gd-arrows">
+          <path id="gd-arr-x" d="M100 100 L100 100" stroke="var(--c-accent)" stroke-width="2.5"
+                marker-end="url(#gd-head)" opacity="0"/>
+          <path id="gd-arr-y" d="M100 100 L100 100" stroke="var(--c-accent)" stroke-width="2.5"
+                marker-end="url(#gd-head)" opacity="0"/>
+        </g>
+        <!-- the star itself -->
+        <circle id="gd-star" cx="100" cy="100" r="6" fill="var(--c-ink)">
+          <animate id="gd-glow" attributeName="r" values="6;6" dur="2s"/>
+        </circle>
+        <defs>
+          <marker id="gd-head" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto">
+            <path d="M0 0 L6 3 L0 6 z" fill="var(--c-accent)"/>
+          </marker>
+        </defs>
+      </svg>
+    </div>
+
+    <div class="gd-panel">
+      <div class="gd-label"><span>tracking error</span><span class="gd-rms" id="gd-rms">RMS 0.00&Prime;</span></div>
+      <svg viewBox="0 0 360 200" role="img" aria-label="A guiding error graph wiggling close to the zero line.">
+        <!-- the calm zone -->
+        <rect x="0" y="84" width="360" height="32" fill="var(--c-good)" opacity="0.06"/>
+        <line x1="0" y1="100" x2="360" y2="100" stroke="var(--c-line)" stroke-width="1"/>
+        <text x="6" y="96" font-family="var(--font-mono)" font-size="9" fill="var(--c-ink-faint)">+1&Prime;</text>
+        <text x="6" y="124" font-family="var(--font-mono)" font-size="9" fill="var(--c-ink-faint)">&minus;1&Prime;</text>
+        <!-- two traces: RA + Dec -->
+        <polyline id="gd-trace-ra" fill="none" stroke="var(--c-accent)" stroke-width="1.6" points=""/>
+        <polyline id="gd-trace-dec" fill="none" stroke="var(--c-cool)" stroke-width="1.6" points="" opacity="0.85"/>
+      </svg>
+    </div>
+    <figcaption class="caption" id="gd-cap" style="grid-column: 1 / -1; margin-top: var(--s-2);">
+      Left, the star held inside its box; amber arrows are the mount being told to nudge.
+      Right, the RA and Dec error traces, kept hugging the zero line one correction at a time.
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    One deliberate exception to all the holding-still. Between exposures the system shoves the
+    whole frame a few pixels sideways on purpose — a <strong>dither</strong> (watch the box
+    hop). It reads like sabotage, undoing the precision you just paid for. The point: a hot
+    pixel or fixed smudge stays put on the sensor while the stars land somewhere new each
+    frame, so the stacker can tell signal from junk and discard the junk.
+  </p>
+
+  <p class="gd-hook reveal">
+    That error graph is the densest surface in the app and probably the most improvable. A
+    jagged line near zero is good news but doesn't feel like good news at a glance, and a
+    beginner reading RMS 0.62″ has no idea whether to relax or panic. A healthy guiding
+    readout in AstroDeck should make you <em>feel</em> the state — relief, not arithmetic —
+    before you've parsed a single number.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 09: 09-plate-solving ===================== -->
+<section class="primer-section" id="plate-solving" data-nav="Plate Solving">
+  <p class="kicker">Knowing Where You Are</p>
+  <h2 class="reveal">Plate solving: the app working out exactly where it's pointed</h2>
+  <p class="lede reveal">
+    A telescope knows where you <em>told</em> it to point. Whether it actually got there
+    is a separate, more optimistic question.
+  </p>
+
+  <p class="reveal">
+    The fix is a content-addressed lookup on the sky. The app shoots a quick frame, detects the
+    stars in it, and measures the geometry between them — distances and angles for groups of four,
+    encoded into a hash. It queries an all-sky catalog for that exact hash. Bright star patterns
+    are effectively unique, so one hit pins down three things at once: where the scope points (RA/Dec),
+    how the camera is rotated, and the image scale (arcseconds per pixel). GPS for a telescope,
+    built entirely out of looking at the picture it just took.
+  </p>
+
+  <figure class="ps-stage bleed-wide reveal" aria-labelledby="ps-cap">
+    <div class="ps-status" id="ps-status" role="status">
+      <span class="ps-led" aria-hidden="true"></span>
+      <span id="ps-status-text">ready</span>
+    </div>
+    <svg viewBox="0 0 640 360" role="img"
+         aria-label="A field of stars; several light up as matched to a catalog, then a crosshair snaps onto the named target M31.">
+      <!-- background scatter of faint stars (decorative) -->
+      <g aria-hidden="true">
+        <circle class="ps-star" cx="58"  cy="60"  r="1.3" opacity="0.5"/>
+        <circle class="ps-star" cx="120" cy="300" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="500" cy="40"  r="1.4" opacity="0.5"/>
+        <circle class="ps-star" cx="600" cy="200" r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="300" cy="330" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="40"  cy="200" r="1.5" opacity="0.55"/>
+        <circle class="ps-star" cx="560" cy="320" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="210" cy="40"  r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="390" cy="60"  r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="470" cy="280" r="1.3" opacity="0.5"/>
+        <circle class="ps-star" cx="90"  cy="130" r="1.1" opacity="0.4"/>
+        <circle class="ps-star" cx="630" cy="100" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="260" cy="250" r="1.2" opacity="0.45"/>
+        <circle class="ps-star" cx="150" cy="220" r="1.0" opacity="0.4"/>
+        <circle class="ps-star" cx="350" cy="300" r="1.1" opacity="0.4"/>
+      </g>
+
+      <!-- catalog overlay: the shape JS will connect across matched stars -->
+      <polyline class="ps-catalog" id="ps-catalog"
+                points="180,180 270,140 360,170 430,120 500,160"/>
+
+      <!-- the matchable stars: brighter, each paired with a glow + ring -->
+      <g id="ps-matches">
+        <g>
+          <circle class="ps-star" cx="180" cy="180" r="2.6"/>
+          <circle class="ps-match" cx="180" cy="180" r="2.6"/>
+          <circle class="ps-ring"  cx="180" cy="180" r="9"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="270" cy="140" r="3.0"/>
+          <circle class="ps-match" cx="270" cy="140" r="3.0"/>
+          <circle class="ps-ring"  cx="270" cy="140" r="10"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="360" cy="170" r="2.4"/>
+          <circle class="ps-match" cx="360" cy="170" r="2.4"/>
+          <circle class="ps-ring"  cx="360" cy="170" r="9"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="430" cy="120" r="2.8"/>
+          <circle class="ps-match" cx="430" cy="120" r="2.8"/>
+          <circle class="ps-ring"  cx="430" cy="120" r="10"/>
+        </g>
+        <g>
+          <circle class="ps-star" cx="500" cy="160" r="2.5"/>
+          <circle class="ps-match" cx="500" cy="160" r="2.5"/>
+          <circle class="ps-ring"  cx="500" cy="160" r="9"/>
+        </g>
+      </g>
+
+      <!-- crosshair + label that snaps to the target -->
+      <g class="ps-cross" id="ps-cross">
+        <circle cx="360" cy="170" r="26" fill="none" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="360" y1="134" x2="360" y2="150" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="360" y1="190" x2="360" y2="206" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="324" y1="170" x2="340" y2="170" stroke="var(--c-accent)" stroke-width="1.5"/>
+        <line x1="380" y1="170" x2="396" y2="170" stroke="var(--c-accent)" stroke-width="1.5"/>
+      </g>
+      <text class="ps-name" id="ps-name" x="392" y="206">M31 — Andromeda</text>
+    </svg>
+    <figcaption class="caption" id="ps-cap" style="margin-top: var(--s-3);">
+      Stars match to the catalog one by one, the recognized shape lights up in blue,
+      and the solver locks a crosshair onto the named target.
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    Feed that solved position back to the mount and you get a closed loop: shoot, solve, measure
+    the offset from where you wanted to be, slew to correct, repeat. Two or three iterations and the
+    target lands dead center, typically within a few arcseconds. This loop —
+    <strong>go-to-and-center</strong> — sits under almost everything: framing, polar-alignment
+    routines, and re-finding the target after the mount flips to the other side of the sky mid-night.
+  </p>
+
+  <p class="ps-hook reveal">
+    Which makes "Solving…" one of the load-bearing words in the UI: the app is busy and the user is
+    blocked on it. For AstroDeck, the real questions are whether that state reads as progress or as a
+    hang, and what the failure path looks like. A solve fails on clouds, a smeared frame, or a wrong
+    image scale — and a solver that gives up in silence is far worse than one that says it couldn't
+    find the sky and names the next thing to try.
+  </p>
+</section>
+
+    <!-- ===================== SECTION 10: 10-exposure-calibration ===================== -->
+<section class="primer-section" id="ec" data-nav="Calibration">
+  <p class="kicker">Stacking &amp; Calibration</p>
+  <h2 class="reveal">Signal is shy. You coax it out with arithmetic.</h2>
+  <p class="lede reveal">A single frame of a galaxy is mostly a portrait of your sensor having a bad night. The target sits buried in grain, a hair above it. The fix isn't a better exposure — it's many exposures, averaged with care.</p>
+
+  <p class="reveal">Noise is random, so it lands in a different place every frame and averages toward zero. The galaxy's light hits the same pixels every time and accumulates. Signal-to-noise scales with the square root of the frame count: 4× the frames halves the noise, 100× drops it tenfold, and detail you couldn't see at all surfaces like a print coming up in the developer tray.</p>
+
+  <figure class="ec-figure bleed-wide reveal" aria-labelledby="ec-cap">
+    <div class="ec-stage">
+      <svg viewBox="0 0 320 200" role="img" aria-label="A noisy frame of a nebula that grows cleaner and reveals faint detail as more frames are stacked.">
+        <defs>
+          <radialGradient id="ec-neb" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#e8a849" stop-opacity="0.55"/>
+            <stop offset="38%" stop-color="#b8791f" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="#6f9bd8" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="ec-soft"><feGaussianBlur stdDeviation="3.2"/></filter>
+        </defs>
+
+        <!-- the real, faint target: hidden at first, revealed by stacking -->
+        <g class="ec-signal">
+          <ellipse cx="160" cy="100" rx="92" ry="58" fill="url(#ec-neb)" filter="url(#ec-soft)"/>
+          <ellipse cx="138" cy="92" rx="34" ry="22" fill="#f0c483" opacity="0.5" filter="url(#ec-soft)"/>
+          <circle cx="206" cy="120" r="2.2" fill="#ece7df"/>
+          <circle cx="96"  cy="74"  r="1.6" fill="#ece7df"/>
+          <circle cx="232" cy="58"  r="1.8" fill="#f0c483"/>
+          <circle cx="70"  cy="140" r="1.4" fill="#ece7df"/>
+        </g>
+
+        <!-- the grain layer, drawn once by JS, fading as the count climbs -->
+        <g class="ec-grain" id="ec-grain"></g>
+      </svg>
+    </div>
+
+    <div class="ec-readout">
+      <span>frames stacked <span class="ec-count" id="ec-count">1</span></span>
+      <span class="ec-noise-label">noise <span id="ec-noise">100</span>%</span>
+    </div>
+    <div class="ec-noisebar" aria-hidden="true"><i id="ec-bar"></i></div>
+
+    <div class="ec-controls">
+      <button class="ec-btn" id="ec-add" type="button">Stack more frames</button>
+      <button class="ec-btn" id="ec-reset" type="button">Back to one</button>
+    </div>
+
+    <figcaption class="caption" id="ec-cap" style="margin-top: var(--s-3)">
+      Same sky, same exposure, more frames. The detail was always there — you were hearing it through static.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">Averaging kills the random component. It does nothing about errors that repeat identically in every frame, and three of those have names. The fix: photograph the sensor's predictable mistakes and subtract them. These are <strong>calibration frames</strong>.</p>
+
+  <dl class="ec-legend">
+    <li class="reveal" style="--reveal-delay: .05s">
+      <dt>Lights</dt>
+      <dd>The actual sky frames. Everything else exists to clean these up.</dd>
+    </li>
+    <li class="reveal" style="--reveal-delay: .12s">
+      <dt>Darks</dt>
+      <dd>Same exposure and temperature, shutter closed. Maps the sensor's own thermal glow so you can subtract it.</dd>
+    </li>
+    <li class="reveal" style="--reveal-delay: .19s">
+      <dt>Flats</dt>
+      <dd>A shot of an evenly lit blank field. It records the optics' falloff — brighter center, darker edges (vignetting) — and the soft donuts from dust on the glass. Dividing it out flattens the frame.</dd>
+    </li>
+  </dl>
+
+  <p class="reveal" style="margin-top: var(--s-4)">It's bookkeeping, not glamour. It's also the entire gap between a brown smudge and a clean image, and exactly the kind of thing software should run for you instead of making you memorize it.</p>
+
+  <p class="reveal"><strong>Where this lands in AstroDeck:</strong> exposure and sequence settings decide sub length and frame count; the calibration plan schedules darks and flats or pulls them from a matched library. If someone has to hold that math in their head at 2am, the UI is doing too little. The good version surfaces the trade live — more frames, less noise, here's where you are on the curve.</p>
+</section>
+
+    <!-- ===================== SECTION 11: 11-sequencing-safety ===================== -->
+<section class="primer-section" id="seq" data-nav="Sequencing">
+  <p class="kicker">The Robot Night</p>
+  <h2 class="reveal">A robot runs the night while you sleep, or eat dinner.</h2>
+  <p class="lede reveal">A full night of imaging is too long and too dull to babysit. You write the plan once, hand it to the software, and go inside. A sequence is that plan: find the target, focus, shoot frames, swap filters, repeat until dawn, then stow everything.</p>
+
+  <p class="reveal">Two parts of the plan decide whether any interface running it is any good. The first is a chore with a dramatic name. The sky appears to rotate, so your target drifts from east of due south to west across the night. The mount tracks it by hanging the scope off one side of its tilted polar axis, balanced by a counterweight on the other — a lever. Keep swinging that lever west and the tube eventually points down into its own tripod. So the mount can't cross due south on the same side; when the target hits that line it runs a <strong>meridian flip</strong>: pause, swing the rig to the other side of the axis, re-find the target, resume from a posture that clears the legs. Miss it and best case the night ends early; worst case, a crunch.</p>
+
+  <figure class="seq-figure bleed-wide reveal" aria-labelledby="seq-cap">
+    <div class="seq-sky" id="seq-sky" aria-hidden="true">
+      <svg viewBox="0 0 400 200" role="img" aria-label="A telescope on a mount swings from the east side of the sky across the meridian to the west, while a safety guard watches for the Sun.">
+        <!-- faint stars -->
+        <g fill="#b3ada3" opacity="0.5">
+          <circle cx="48" cy="40" r="1"/><circle cx="120" cy="28" r="1.3"/>
+          <circle cx="300" cy="36" r="1"/><circle cx="360" cy="64" r="1.2"/>
+          <circle cx="84" cy="84" r="0.9"/><circle cx="332" cy="100" r="0.9"/>
+          <circle cx="200" cy="22" r="1.1"/><circle cx="248" cy="54" r="1"/>
+        </g>
+
+        <!-- the meridian: due south, the line you must not cross dragging the tube -->
+        <line class="seq-meridian" x1="200" y1="6" x2="200" y2="168"
+              stroke="#6f9bd8" stroke-width="1.5" stroke-dasharray="4 5"/>
+        <rect class="seq-flip-flash" x="0" y="0" width="400" height="200" fill="#6f9bd8" opacity="0.08"/>
+
+        <!-- ground -->
+        <rect x="0" y="168" width="400" height="32" fill="#0e1322"/>
+        <!-- pier -->
+        <rect x="192" y="150" width="16" height="24" rx="2" fill="#232838"/>
+
+        <!-- the mount arm + telescope tube, pivoting at the pier head -->
+        <g class="seq-arm">
+          <rect x="196" y="92" width="8" height="64" rx="4" fill="#3a4256"/>
+          <g transform="translate(200,96)">
+            <rect x="-46" y="-9" width="92" height="18" rx="9" fill="#586079"/>
+            <circle cx="44" cy="0" r="11" fill="#11151f" stroke="#e8a849" stroke-width="2"/>
+          </g>
+        </g>
+
+        <!-- the Sun, which drifts in to trigger the abort -->
+        <g class="seq-sun" transform="translate(70,52)">
+          <circle r="15" fill="#e8a849"/>
+          <circle r="15" fill="none" stroke="#f0c483" stroke-width="2" opacity="0.6"/>
+          <g stroke="#f0c483" stroke-width="2" stroke-linecap="round">
+            <line x1="0" y1="-20" x2="0" y2="-26"/><line x1="0" y1="20" x2="0" y2="26"/>
+            <line x1="-20" y1="0" x2="-26" y2="0"/><line x1="20" y1="0" x2="26" y2="0"/>
+          </g>
+        </g>
+      </svg>
+    </div>
+
+    <!-- the night, as a strip of time -->
+    <div class="seq-timeline">
+      <div class="seq-track" id="seq-track" role="img"
+           aria-label="A timeline of a night: focus, frames, meridian flip, more frames, then park.">
+        <div class="seq-block" data-dur="1" style="flex:1">focus</div>
+        <div class="seq-block" data-dur="3" style="flex:3">subs · dither</div>
+        <div class="seq-block seq-flipblock" data-dur="1" style="flex:1">flip</div>
+        <div class="seq-block" data-dur="3" style="flex:3">subs · dither</div>
+        <div class="seq-block" data-dur="1" style="flex:1">refocus</div>
+        <div class="seq-block" data-dur="1" style="flex:1">park</div>
+        <div class="seq-now" id="seq-now"></div>
+      </div>
+      <div class="seq-legend" aria-hidden="true">
+        <span>amber · imaging task</span>
+        <span>blue · meridian flip</span>
+      </div>
+    </div>
+
+    <!-- the guard that wraps the whole night -->
+    <div class="seq-guard" id="seq-guard">
+      <span class="seq-lamp" aria-hidden="true"></span>
+      <span class="seq-guard-text">
+        <span class="seq-guard-state" id="seq-state">Safe</span><br>
+        <span class="seq-guard-reason" id="seq-reason">Skies clear, Sun well below the horizon. Carry on.</span>
+      </span>
+    </div>
+
+    <figcaption class="caption" id="seq-cap" style="margin-top: var(--s-3)">
+      The scope works east-to-west, flips at the meridian, and the guard watches throughout. The moment the Sun rises, imaging halts and the rig parks.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">The second part wraps everything else, and it's the part that earns its keep when nobody's watching: the safety layer. Clouds ruin frames mid-exposure. Dawn washes the sky out. A roll-off roof or dome may need to close before rain. And the rule above all others — the scope must never slew toward the Sun, because a telescope is a superb instrument for setting things on fire, your sensor included. When a safety monitor trips, the correct behavior is fixed: stop imaging, slew to a safe resting position, wait. A clean night ends the same way on purpose — the rig parks itself.</p>
+
+  <p class="reveal"><strong>Where this lands in AstroDeck:</strong> the sequencer, the safety monitor, and the park command are the highest-stakes surfaces in the app — they run unattended, and the failure modes are expensive. A half-awake person checking their phone from bed should read three things in one second: is the night fine, did it flip on schedule, and what does the rig do the instant something breaks. Buried state and ambiguous controls here aren't friction; they're how a $4,000 sensor meets the Sun.</p>
+</section>
+
+    <!-- ===================== SECTION 11b: 11b-evening-session ===================== -->
+<section class="primer-section" id="eve" data-nav="One Evening">
+  <p class="kicker">Worked Example</p>
+  <h2 class="reveal">One evening, every dial turned in order</h2>
+  <p class="lede reveal">Each preceding section was one instrument on the dashboard. Here they run as a single night — November, a backyard, a 130mm refractor on a German equatorial mount, a cooled mono camera, NGC 891 (an edge-on galaxy in Perseus, mag 10, transiting near midnight). Real numbers, real order, real failure points. The clock below advances as you scroll.</p>
+
+  <figure class="eve-figure bleed-wide reveal" aria-labelledby="eve-cap">
+    <div class="eve-head">
+      <div class="eve-clock" aria-hidden="true">
+        <svg viewBox="0 0 100 100" role="img" aria-label="A clock advancing through the night.">
+          <circle cx="50" cy="50" r="46" fill="var(--c-bg-sunk)" stroke="var(--c-line)" stroke-width="1.5"/>
+          <g stroke="var(--c-ink-faint)" stroke-width="1.4" stroke-linecap="round">
+            <line x1="50" y1="9"  x2="50" y2="15"/>
+            <line x1="91" y1="50" x2="85" y2="50"/>
+            <line x1="50" y1="91" x2="50" y2="85"/>
+            <line x1="9"  y1="50" x2="15" y2="50"/>
+          </g>
+          <g class="eve-hand" id="eve-hand">
+            <line x1="50" y1="50" x2="50" y2="20" stroke="var(--c-accent)" stroke-width="2.4" stroke-linecap="round"/>
+          </g>
+          <circle cx="50" cy="50" r="3" fill="var(--c-accent)"/>
+          <text class="eve-clock-time" id="eve-clock-time" x="50" y="74" text-anchor="middle">19:40</text>
+        </svg>
+      </div>
+
+      <div class="eve-readout" id="eve-readout">
+        <div class="eve-stat">
+          <span class="eve-stat-label">Sensor</span>
+          <span class="eve-stat-val eve-idle" id="eve-temp">+14<span class="eve-stat-unit">°C</span></span>
+        </div>
+        <div class="eve-stat">
+          <span class="eve-stat-label">HFR</span>
+          <span class="eve-stat-val eve-idle" id="eve-hfr">—</span>
+        </div>
+        <div class="eve-stat">
+          <span class="eve-stat-label">Guide RMS</span>
+          <span class="eve-stat-val eve-idle" id="eve-rms">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="eve-timeline">
+      <div class="eve-axis" aria-hidden="true">
+        <span>dusk · 19:40</span>
+        <span>midnight</span>
+        <span>dawn · 05:20</span>
+      </div>
+      <div class="eve-track" id="eve-track" role="img"
+           aria-label="A night, beat by beat: setup, polar align, cool, target, focus, frame, guide, image, meridian flip, refocus, image, park.">
+        <div class="eve-block" data-dur="2">setup</div>
+        <div class="eve-block" data-dur="1">cool</div>
+        <div class="eve-block" data-dur="1">polar align</div>
+        <div class="eve-block" data-dur="1">slew + solve</div>
+        <div class="eve-block" data-dur="1">focus</div>
+        <div class="eve-block" data-dur="1">rotate</div>
+        <div class="eve-block" data-dur="1">guide</div>
+        <div class="eve-block" data-dur="4">subs · dither</div>
+        <div class="eve-block eve-flip" data-dur="1">flip</div>
+        <div class="eve-block" data-dur="4">subs · dither</div>
+        <div class="eve-block" data-dur="1">refocus</div>
+        <div class="eve-block" data-dur="1">park</div>
+        <div class="eve-now" id="eve-now"></div>
+      </div>
+    </div>
+
+    <div class="eve-now-line" aria-live="polite">
+      <span class="eve-now-clock" id="eve-now-clock">19:40</span>
+      <span class="eve-now-text" id="eve-now-text"><strong>Setup.</strong> Tripod down, mount on, scope balanced, cables routed so nothing snags through a full rotation. Rough polar align by eye — point the mount's axis at Polaris, close enough for now.</span>
+    </div>
+
+    <div class="eve-controls">
+      <button type="button" class="eve-btn" id="eve-prev">◂ Prev</button>
+      <button type="button" class="eve-btn" id="eve-next">Next ▸</button>
+      <span class="eve-progress" id="eve-progress">1 / 12</span>
+    </div>
+
+    <figcaption class="caption" id="eve-cap" style="margin-top: var(--s-3)">
+      One backyard night, beat by beat. Scroll to advance the clock, or step it by hand. Amber blocks are imaging tasks; the blue block is the meridian flip.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">The beats above run moment to moment; the ledger below is the same night at a glance. One texture the strip can't hold: at the meridian flip the scope swaps to the west side and guiding has to re-calibrate, because east and west feel like two different mounts to it.</p>
+
+  <ul class="eve-ledger reveal" aria-label="The night's decisions in order">
+    <li class="eve-row"><span class="eve-row-when">20:15</span><span class="eve-row-what"><b>Cool to −10 °C</b>, ramped over 4 min — low dark current, no thermal shock.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:25</span><span class="eve-row-what"><b>Polar align</b> to under a couple of arcminutes — tight enough that field rotation over one sub stays sub-pixel, the residual guiding can't fix.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:40</span><span class="eve-row-what"><b>Plate-solve + center</b> on NGC 891; 8′ off → corrected to dead center.</span></li>
+    <li class="eve-row"><span class="eve-row-when">20:48</span><span class="eve-row-what"><b>V-curve autofocus</b> → HFR <code>1.8</code>; rotate to PA 67°, re-solve to confirm.</span></li>
+    <li class="eve-row"><span class="eve-row-when">21:00</span><span class="eve-row-what"><b>Guide</b> calibrates then locks at <code>0.6″ RMS</code>. Sequence starts: 300s, dither ×3.</span></li>
+    <li class="eve-row"><span class="eve-row-when">23:55</span><span class="eve-row-what"><b>Meridian flip</b> at the south crossing — re-solve, re-center, re-calibrate guiding.</span></li>
+    <li class="eve-row"><span class="eve-row-when">02:30</span><span class="eve-row-what"><b>Refocus</b> after a 4 °C drop drifts the focuser; HFR back to <code>1.8</code>.</span></li>
+    <li class="eve-row"><span class="eve-row-when">05:00</span><span class="eve-row-what"><b>End → park → warm cooler.</b> Result: <code>48 × 300s = 4h</code> on NGC 891.</span></li>
+  </ul>
+
+  <p class="reveal"><strong>What AstroDeck owes this night:</strong> twelve surfaces that handed off cleanly without you re-deciding anything you already decided. The cooler page, the polar-align solver, plate-solve-and-center, the V-curve focuser, the rotator readout, the guiding graph, the sequencer, the safety monitor, the park button — each is one beat above, and the seams between them are where a night quietly dies. A flip that doesn't re-solve, a refocus that never fires, a park that forgets the Sun. The job of the UI is to make those handoffs legible enough that you can be asleep for most of them.</p>
+</section>
+
+    <!-- ===================== SECTION 12: 12-outro ===================== -->
+<section class="primer-section" id="out" data-nav="Your Move">
+  <p class="kicker">Where You Come In</p>
+  <h2 class="reveal">Every idea here is a screen you can now critique.</h2>
+  <p class="lede reveal">You came in knowing software and nothing about the sky. That's the right way around. Each concept in this primer maps to a specific surface in AstroDeck — and each surface has one piece of state a half-awake operator must read in a glance, and one way it fails when they can't.</p>
+
+  <ul class="out-grid">
+    <li class="out-card reveal" style="--reveal-delay: .04s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="0.8" fill="currentColor"/></svg></div>
+      <h3 class="out-concept">Polar alignment</h3>
+      <p class="out-screen">screen · <b>the bullseye</b></p>
+      <p class="out-note">Get the mount's axis on the celestial pole, or everything downstream drifts. The target is dead-center or it isn't.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .08s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 12h4l2-5 3 14 3-9h6"/></svg></div>
+      <h3 class="out-concept">Focus &amp; HFR</h3>
+      <p class="out-screen">screen · <b>focus / HFR</b></p>
+      <p class="out-note">One number for star tightness. Lower is sharper; you hunt the bottom of the V-curve.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .12s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M12 14v5"/><path d="M9 19h6"/><path d="M8 9l1.5-3M16 9l-1.5-3"/></svg></div>
+      <h3 class="out-concept">Cooling</h3>
+      <p class="out-screen">screen · <b>cooler</b></p>
+      <p class="out-note">A colder sensor makes less thermal noise. You set a target temp and watch it hold.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .16s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="6" width="16" height="12" rx="1.5"/><path d="M9 6v12M15 6v12"/></svg></div>
+      <h3 class="out-concept">Framing</h3>
+      <p class="out-screen">screen · <b>framing</b></p>
+      <p class="out-note">Where the target sits in the rectangle and which way is up. A composition call wearing a coordinate.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .20s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 17l4-6 3 3 4-7 3 5 4-3"/><path d="M3 20h18"/></svg></div>
+      <h3 class="out-concept">Guiding</h3>
+      <p class="out-screen">screen · <b>guiding graph</b></p>
+      <p class="out-note">A live error chart of tracking accuracy, in arcseconds. Flat and quiet is the whole goal.</p>
+    </li>
+
+    <li class="out-card reveal" style="--reveal-delay: .24s">
+      <div class="out-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="5" rx="1"/><rect x="3" y="14" width="12" height="5" rx="1"/><path d="M18 16.5h3M19.5 15v3"/></svg></div>
+      <h3 class="out-concept">Sequencing &amp; safety</h3>
+      <p class="out-screen">screen · <b>sequencer</b></p>
+      <p class="out-note">The plan for the whole night, plus the guard that stops it. The highest-stakes corner of the app.</p>
+    </li>
+  </ul>
+
+  <p class="reveal" style="margin-top: var(--s-5)">Drop the jargon and the craft is three fights: motion, noise, focus — on a rig that runs alone in the dark while its owner sleeps. That last clause is why this is a software problem and not a knob-twiddling one. No one is standing there to read a vague number or rescue a stuck step. The interface is the only adult in the field at 2am.</p>
+
+  <p class="reveal">So it lives or dies on exactly what you judge well: can a half-awake person read the current state at a glance and trust it enough to go back to sleep, and does the rig fail safely — parked, not pointed at the Sun — when a cloud or a cable or a missed flip goes wrong, instead of failing in silence and costing a sensor. None of that needs astrophysics. It needs software and people, which is the job.</p>
+
+  <div class="out-close reveal">
+    <div class="out-orbit" aria-hidden="true">
+      <svg viewBox="0 0 84 84" role="img" aria-label="A small point of light orbiting a steady center.">
+        <circle class="out-core" cx="42" cy="42" r="6" fill="var(--c-accent)"/>
+        <g class="out-ring">
+          <circle cx="42" cy="42" r="30" fill="none" stroke="var(--c-line)" stroke-width="1"/>
+          <circle cx="42" cy="12" r="3.5" fill="var(--c-cool)"/>
+        </g>
+      </svg>
+    </div>
+    <h3 class="out-concept" style="font-size: var(--t-xl)">Your move.</h3>
+    <p class="out-note" style="max-width: 34rem">
+      Go open AstroDeck and poke it with software-native eyes. You'll catch the control in the wrong place before any astrophotographer would, and the moments where a status is a word when it should be a color, or a failure stays politer than it should. We built the rig. The interface is yours to argue with.
+    </p>
+    <p class="out-kbd" style="margin-top: var(--s-3)">— and yes, the worm gets an opinion too.</p>
+  </div>
+</section>
+  </main>
+
+  <!-- section 01 (01-cold-open) behavior -->
+  <script>
+(function () {
+  var stage = document.getElementById("co-stage");
+  var driftG = document.getElementById("co-drift");
+  var train = document.getElementById("co-train");
+  if (!stage || !driftG || !train) return;
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // --- build a deterministic-ish starfield once (oversized so the slow pan never shows an edge) ---
+  var svgNS = "http://www.w3.org/2000/svg";
+  var seed = 1337;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var count = 220;
+  for (var i = 0; i < count; i++) {
+    var c = document.createElementNS(svgNS, "circle");
+    var x = -200 + rnd() * 2000;   // overscan beyond the 1600 viewBox
+    var y = -150 + rnd() * 1100;
+    var mag = rnd();
+    var r = 0.5 + mag * mag * 2.4;  // a few bright, many faint
+    c.setAttribute("cx", x.toFixed(1));
+    c.setAttribute("cy", y.toFixed(1));
+    c.setAttribute("r", r.toFixed(2));
+    c.setAttribute("class", "co-twinkle");
+    c.setAttribute("opacity", (0.25 + mag * 0.7).toFixed(2));
+    driftG.appendChild(c);
+  }
+
+  // --- a couple of accent "named" stars so the eye has anchors ---
+  var anchors = [[520, 300], [1080, 470], [780, 640]];
+  anchors.forEach(function (p) {
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("cx", p[0]); c.setAttribute("cy", p[1]); c.setAttribute("r", "3.4");
+    c.setAttribute("fill", "var(--c-accent)");
+    c.setAttribute("opacity", "0.9");
+    driftG.appendChild(c);
+  });
+
+  if (reduce) {
+    stage.classList.add("co-static");      // present, but never moving
+  }
+
+  // --- start the drift + assemble the train only when scrolled into view ---
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        if (e.target === stage && !reduce) stage.classList.add("co-running");
+        if (e.target === train) train.classList.add("co-built");
+        io.unobserve(e.target);
+      });
+    }, { threshold: 0.2 });
+    io.observe(stage);
+    io.observe(train);
+  } else {
+    if (!reduce) stage.classList.add("co-running");
+    train.classList.add("co-built");
+  }
+})();
+  </script>
+
+  <!-- section 02 (02-mount-tracking) behavior -->
+  <script>
+(function () {
+  var stage = document.getElementById("mt-stage");
+  var field = document.getElementById("mt-field");
+  var toggle = document.getElementById("mt-toggle");
+  var label = document.getElementById("mt-toggle-label");
+  var rateOut = document.getElementById("mt-rate");
+  if (!stage || !field || !toggle) return;
+
+  var svgNS = "http://www.w3.org/2000/svg";
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a starfield. Each star has a base position; we draw it shifted by a global
+  // drift offset. One star is the "locked" target sitting at center (800,450) when held.
+  var W = 1600, H = 900, CX = 800, CY = 450;
+  var seed = 90210;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+
+  var stars = [];
+  for (var i = 0; i < 150; i++) {
+    var mag = rnd();
+    stars.push({
+      bx: -300 + rnd() * 2200,
+      by: -200 + rnd() * 1300,
+      r: 0.5 + mag * mag * 2.6,
+      o: 0.22 + mag * 0.7,
+      locked: false
+    });
+  }
+  // the target star — starts off-center to the right so locking visibly pulls it home
+  var target = { bx: CX + 360, by: CY - 120, r: 3.6, o: 1, locked: true };
+  stars.push(target);
+
+  var nodes = stars.map(function (s) {
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("r", s.r.toFixed(2));
+    c.setAttribute("opacity", s.o.toFixed(2));
+    c.setAttribute("class", s.locked ? "mt-locked" : "mt-star");
+    field.appendChild(c);
+    return c;
+  });
+
+  // drift in screen-space: stars slide left+down a touch, the way the sky pans
+  var DRIFT_VX = -14, DRIFT_VY = 5.2;     // px per second (sim units)
+  var offX = 0, offY = 0;
+  var tracking = false;
+  var last = null, raf = null;
+
+  function place() {
+    for (var i = 0; i < stars.length; i++) {
+      var s = stars[i];
+      var x, y;
+      if (tracking) {
+        // mount cancels drift: locked star snaps to center, field is held with it
+        x = s.locked ? CX : s.bx - target.bx + CX;
+        y = s.locked ? CY : s.by - target.by + CY;
+      } else {
+        x = s.bx + offX;
+        y = s.by + offY;
+      }
+      nodes[i].setAttribute("cx", x.toFixed(1));
+      nodes[i].setAttribute("cy", y.toFixed(1));
+    }
+  }
+
+  function frame(ts) {
+    if (last == null) last = ts;
+    var dt = (ts - last) / 1000;
+    last = ts;
+    if (!tracking) {
+      offX += DRIFT_VX * dt;
+      offY += DRIFT_VY * dt;
+      // wrap so it drifts forever without marching off into the void
+      if (offX < -260) { offX += 260; }
+      if (offY > 200) { offY -= 200; }
+    }
+    place();
+    raf = window.requestAnimationFrame(frame);
+  }
+
+  function setTracking(on) {
+    tracking = on;
+    stage.classList.toggle("mt-tracking", on);
+    toggle.setAttribute("aria-pressed", on ? "true" : "false");
+    label.textContent = on ? "Tracking: on" : "Tracking: off";
+    if (rateOut) rateOut.textContent = on ? "sidereal · locked" : "drifting";
+    place();
+  }
+
+  toggle.addEventListener("click", function () { setTracking(!tracking); });
+
+  if (reduce) {
+    // static, instructive end-state: tracking ON, field held, no rAF loop
+    setTracking(true);
+    place();
+    return;
+  }
+
+  // begin drifting only when the figure is on screen; pause the loop when it leaves
+  function start() { if (!raf) { last = null; raf = window.requestAnimationFrame(frame); } }
+  function stop() { if (raf) { window.cancelAnimationFrame(raf); raf = null; } }
+
+  place();
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) { if (e.isIntersecting) start(); else stop(); });
+    }, { threshold: 0.15 });
+    io.observe(stage);
+  } else {
+    start();
+  }
+})();
+  </script>
+
+  <!-- section 03 (03-polar-alignment) behavior -->
+  <script>
+(function () {
+  var svgNS = "http://www.w3.org/2000/svg";
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- A. the two comparison panels ---------- */
+  var compare = document.getElementById("pa-compare");
+  var badField = document.getElementById("pa-bad-field");
+  var goodField = document.getElementById("pa-good-field");
+
+  // shared star layout so the two panels are visibly "the same sky"
+  var seed = 4242;
+  function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+  var layout = [];
+  for (var i = 0; i < 34; i++) {
+    layout.push({ x: 30 + rnd() * 340, y: 30 + rnd() * 340, r: 1 + rnd() * rnd() * 2.6 });
+  }
+
+  // tracking drift: the whole field slides one way, so every star draws a short,
+  // nearly straight streak in roughly the same direction. A hair of per-star jitter
+  // in angle keeps it from looking mechanically perfect.
+  var DRIFT_ANG = 2.55;           // radians: down-and-to-the-left, the drift direction
+  var DRIFT_LEN = 26;             // streak length over the "exposure"
+  function arcPath(x, y) {
+    // tiny angle wobble per star so the streaks read as natural, not stamped
+    var jitter = (Math.sin(x * 0.21 + y * 0.13) * 0.12);
+    var ang = DRIFT_ANG + jitter;
+    var len = DRIFT_LEN * (0.85 + ((x + y) % 40) / 40 * 0.3);
+    var x1 = x + len * Math.cos(ang);
+    var y1 = y + len * Math.sin(ang);
+    // a barely-there bow so the line has a little life without becoming an arc
+    var mx = (x + x1) / 2 + Math.cos(ang + Math.PI / 2) * 1.5;
+    var my = (y + y1) / 2 + Math.sin(ang + Math.PI / 2) * 1.5;
+    return { d: "M" + x.toFixed(1) + " " + y.toFixed(1) + " Q" + mx.toFixed(1) + " " + my.toFixed(1) + " " + x1.toFixed(1) + " " + y1.toFixed(1), len: len };
+  }
+
+  layout.forEach(function (s, idx) {
+    // BAD: a short straight-ish drift streak plus a faint head dot
+    var seg = arcPath(s.x, s.y);
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("class", "pa-trail");
+    p.setAttribute("d", seg.d);
+    p.setAttribute("stroke-width", Math.max(1.4, s.r).toFixed(1));
+    p.style.setProperty("--pa-len", (seg.len + 4).toFixed(1));
+    p.style.setProperty("--pa-d", (idx % 6) * 0.05);
+    badField.appendChild(p);
+
+    // GOOD: a clean point in the same spot
+    var c = document.createElementNS(svgNS, "circle");
+    c.setAttribute("class", "pa-dot");
+    c.setAttribute("cx", s.x.toFixed(1));
+    c.setAttribute("cy", s.y.toFixed(1));
+    c.setAttribute("r", s.r.toFixed(2));
+    goodField.appendChild(c);
+  });
+
+  if (compare) {
+    if (reduce) {
+      compare.classList.add("pa-drawn"); // CSS reduced-motion already neutralizes the keyframe
+    } else if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting) { compare.classList.add("pa-drawn"); io.unobserve(e.target); }
+        });
+      }, { threshold: 0.3 });
+      io.observe(compare);
+    } else {
+      compare.classList.add("pa-drawn");
+    }
+  }
+
+  /* ---------- B. the converging bullseye ---------- */
+  var dot = document.getElementById("pa-errdot");
+  var track = document.getElementById("pa-track");
+  var altDir = document.getElementById("pa-alt-dir");
+  var azDir = document.getElementById("pa-az-dir");
+  var errVal = document.getElementById("pa-err-val");
+  var cueAlt = document.getElementById("pa-cue-alt");
+  var cueAz = document.getElementById("pa-cue-az");
+  var adjust = document.getElementById("pa-adjust");
+  if (!dot) return;
+
+  var CX = 160, CY = 160;
+  // start position (error) near the outer ring, off to one quadrant
+  var start = { x: 92, y: 246 };   // down-left of center
+  var pos = { x: start.x, y: start.y };
+  var R_FULL = Math.hypot(start.x - CX, start.y - CY);
+
+  function errArcMin(d) {
+    // map pixel distance to a plausible-looking arcminute readout
+    return (d / R_FULL) * 12.4;
+  }
+  function render() {
+    dot.setAttribute("cx", pos.x.toFixed(1));
+    dot.setAttribute("cy", pos.y.toFixed(1));
+    var d = Math.hypot(pos.x - CX, pos.y - CY);
+    var done = d < 14;
+    dot.classList.toggle("pa-home", done);
+    if (errVal) errVal.textContent = done ? "aligned" : errArcMin(d).toFixed(1) + "′";
+    // direction cues from the sign of the offset
+    if (altDir) altDir.textContent = done ? "good" : (pos.y > CY ? "turn up" : "turn down");
+    if (azDir)  azDir.textContent  = done ? "good" : (pos.x < CX ? "turn right" : "turn left");
+    if (cueAlt) cueAlt.classList.toggle("pa-cue-done", done);
+    if (cueAz)  cueAz.classList.toggle("pa-cue-done", done);
+    if (adjust) adjust.textContent = done ? "Aligned. ✓" : "Nudge the knobs →";
+  }
+
+  // path the dot will spiral in along (for the dashed trail + the animation)
+  function buildTrack(steps) {
+    var d = "M" + start.x + " " + start.y, pts = [];
+    for (var i = 0; i <= steps; i++) {
+      var t = i / steps;
+      var ease = 1 - Math.pow(1 - t, 2.2);
+      // slight spiral so it reads as iterative knob-turning, not a straight slide
+      var ang = Math.atan2(start.y - CY, start.x - CX) + t * 1.1;
+      var rad = R_FULL * (1 - ease);
+      var x = CX + rad * Math.cos(ang);
+      var y = CY + rad * Math.sin(ang);
+      pts.push({ x: x, y: y, t: t });
+      d += " L" + x.toFixed(1) + " " + y.toFixed(1);
+    }
+    if (track) track.setAttribute("d", d);
+    return pts;
+  }
+  var path = buildTrack(60);
+
+  render();
+
+  function converge() {
+    if (reduce) { pos = { x: CX, y: CY }; render(); return; }
+    var i = 0;
+    var timer = window.setInterval(function () {
+      i++;
+      if (i >= path.length) { window.clearInterval(timer); pos = { x: CX, y: CY }; render(); return; }
+      pos = { x: path[i].x, y: path[i].y };
+      render();
+    }, 28);
+  }
+
+  if (adjust) {
+    adjust.addEventListener("click", function () {
+      pos = { x: start.x, y: start.y };  // reset, then converge — lets the reader re-run it
+      render();
+      converge();
+    });
+  }
+
+  // auto-run once when scrolled into view (static end-state under reduced motion)
+  if (reduce) {
+    pos = { x: CX, y: CY }; render();
+  } else if ("IntersectionObserver" in window) {
+    var io2 = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { converge(); io2.unobserve(e.target); }
+      });
+    }, { threshold: 0.4 });
+    io2.observe(dot.closest(".pa-bullseye"));
+  } else {
+    converge();
+  }
+})();
+  </script>
+
+  <!-- section 04 (04-focusing) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var stage = document.querySelector("[data-focus-stage]");
+  if (!stage) return;
+
+  var hfrEl  = stage.querySelector("[data-focus-hfr]");
+  var wordEl = stage.querySelector("[data-focus-word]");
+
+  // shared trigger: when the first demo reveals, add the state class that
+  // drives all three CSS transitions, and run the HFR countdown.
+  var firstDemo = stage.querySelector(".focus-demo");
+
+  function snapToSharp() {
+    // static end-state, also the reduced-motion fallback
+    stage.querySelectorAll(".focus-demo").forEach(function (d) {
+      d.classList.add("focus-is-in");
+    });
+    if (hfrEl)  hfrEl.textContent = "1.2";
+    if (wordEl) wordEl.textContent = "sharp";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    snapToSharp();
+    return;
+  }
+
+  var fired = false;
+
+  function animateReadout() {
+    var start = 4.8, end = 1.2;
+    var t0 = null;
+    var dur = 900;
+    function frame(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / dur);
+      // ease-out so it settles, matching the CSS --ease feel
+      var eased = 1 - Math.pow(1 - p, 3);
+      var val = start + (end - start) * eased;
+      if (hfrEl) hfrEl.textContent = val.toFixed(1);
+      if (wordEl) {
+        wordEl.textContent = val > 3.4 ? "bloated" : (val > 2.0 ? "soft" : "sharp");
+      }
+      if (p < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        stage.querySelectorAll(".focus-demo").forEach(function (d) {
+          d.classList.add("focus-is-in");
+        });
+        animateReadout();
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.4 });
+
+  obs.observe(firstDemo);
+})();
+  </script>
+
+  <!-- section 05 (05-cooling) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var rig = document.querySelector("[data-cool-rig]");
+  if (!rig) return;
+
+  var tempEl = rig.querySelector("[data-cool-temp]");
+  var tagEl  = rig.querySelector("[data-cool-frametag]");
+  var frame  = rig.querySelector(".cool-frame");
+  var panel  = rig.querySelector(".cool-panel");
+
+  function fmtTemp(v) {
+    var r = Math.round(v);
+    return (r > 0 ? "+" : "") + r;
+  }
+
+  function snapCold() {
+    // static end-state + reduced-motion fallback
+    rig.classList.add("cool-is-cold");
+    if (tempEl) tempEl.textContent = "−10";
+    if (tagEl)  tagEl.textContent = "−10°C · clean";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    snapCold();
+    return;
+  }
+
+  var fired = false;
+
+  function runCountdown() {
+    var start = 18, end = -10;
+    var t0 = null, dur = 2200;
+    function frameStep(ts) {
+      if (t0 === null) t0 = ts;
+      var p = Math.min(1, (ts - t0) / dur);
+      var eased = 1 - Math.pow(1 - p, 2.2);
+      var val = start + (end - start) * eased;
+      if (tempEl) tempEl.textContent = fmtTemp(val);
+      if (p < 1) {
+        requestAnimationFrame(frameStep);
+      } else {
+        if (tempEl) tempEl.textContent = "−10";
+        if (tagEl)  tagEl.textContent = "−10°C · clean";
+      }
+    }
+    requestAnimationFrame(frameStep);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        // flip the CSS state (thermometer, mercury, pill, noise all transition)
+        rig.classList.add("cool-is-cold");
+        runCountdown();
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.45 });
+
+  // observe whichever exists; the frame is the visual anchor
+  obs.observe(frame || panel);
+})();
+  </script>
+
+  <!-- section 06 (06-framing-fov) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var stage = document.querySelector("[data-fov-stage]");
+  if (!stage) return;
+
+  var rect      = stage.querySelector("[data-fov-rect]");
+  var recttag   = stage.querySelector("[data-fov-recttag]");
+  var slider    = stage.querySelector("#fov-focal");
+  var focalVal  = stage.querySelector("#fov-focal-val");
+  var degEl     = stage.querySelector("[data-fov-deg]");
+  var scaleEl   = stage.querySelector("[data-fov-scale]");
+  var fitEl     = stage.querySelector("[data-fov-fit]");
+  var solveBtn  = stage.querySelector("[data-fov-solve]");
+  var sky       = stage.querySelector(".fov-sky");
+
+  // map focal length (mm) → a visual FOV scale + the derived numbers.
+  // (illustrative math, not observatory-grade — enough to feel right.)
+  function update() {
+    var f = parseInt(slider.value, 10);          // 200..1200 mm
+    // wider field at short focal lengths: inverse relationship.
+    var fovScale = 1.05 - (f - 200) / 1000 * 0.78;  // ~1.05 down to ~0.27
+    rect.style.setProperty("--fov", fovScale.toFixed(3));
+
+    var deg   = (1380 / f).toFixed(1);            // toy: degrees of field
+    var scale = (920 / f).toFixed(1);             // toy: arcsec / pixel
+    if (focalVal) focalVal.textContent = f + " mm";
+    if (degEl)    degEl.textContent = deg + "°";
+    if (scaleEl)  scaleEl.textContent = scale + "″/px";
+
+    // target "fits" when the frame is wide enough; nebula ~30% of sky width
+    if (fitEl) {
+      fitEl.textContent = fovScale > 0.5 ? "target fits" : "too tight — crops target";
+    }
+    if (recttag) {
+      recttag.textContent = fovScale > 0.78 ? "wide field" :
+                            (fovScale > 0.5 ? "your frame" : "tight crop");
+    }
+  }
+
+  slider.addEventListener("input", update);
+  update();
+
+  // target sits at left:64% top:30% in the sky; centering means moving the
+  // frame's center onto that point.
+  var centered = false;
+  function doSolve() {
+    if (sky.classList.contains("fov-scanning")) return;
+    solveBtn.setAttribute("disabled", "");
+    sky.classList.add("fov-scanning");
+
+    var reduce = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var delay = reduce ? 0 : 760;
+
+    window.setTimeout(function () {
+      rect.style.setProperty("--fov-x", "64%");
+      rect.style.setProperty("--fov-y", "30%");
+      centered = true;
+      if (recttag) recttag.textContent = "centered";
+    }, delay);
+
+    window.setTimeout(function () {
+      sky.classList.remove("fov-scanning");
+      solveBtn.removeAttribute("disabled");
+      solveBtn.textContent = centered ? "Re-solve" : "Plate-solve & center";
+    }, delay + 200);
+  }
+  solveBtn.addEventListener("click", doSolve);
+
+  // gentle nudge: auto-run the solve once when the stage scrolls into view,
+  // so a reader who never touches a control still sees the payoff.
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    // static end-state: just center the frame, no sweep.
+    rect.style.setProperty("--fov-x", "64%");
+    rect.style.setProperty("--fov-y", "30%");
+    if (recttag) recttag.textContent = "centered";
+    if (solveBtn) solveBtn.textContent = "Re-solve";
+    return;
+  }
+
+  var fired = false;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        window.setTimeout(doSolve, 600);
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.5 });
+  obs.observe(sky);
+})();
+  </script>
+
+  <!-- section 07 (07-camera-angle) behavior -->
+  <script>
+(function () {
+  "use strict";
+  var stage = document.getElementById("ca-stage");
+  var deg = document.getElementById("ca-deg");
+  if (!stage || !deg) return;
+
+  var TARGET = 32;
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Static final state for reduced motion or no observer.
+  function settle() {
+    deg.textContent = TARGET + "°";
+  }
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    stage.classList.add("ca-live"); // CSS reduced-motion guard pins it to final frame
+    settle();
+    return;
+  }
+
+  function tickTo(target, ms) {
+    var start = performance.now();
+    function frame(now) {
+      var t = Math.min(1, (now - start) / ms);
+      // ease-out with a whisper of overshoot to mirror the swing
+      var eased = 1 - Math.pow(1 - t, 3);
+      var val = target * eased;
+      if (t < 0.65) val = target * 1.19 * (eased / 0.84); // shadow the 38deg peak
+      deg.textContent = (Math.round(Math.min(target, val) * 10) / 10) + "°";
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        deg.textContent = target + "°";
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        stage.classList.add("ca-live");
+        tickTo(TARGET, 700);
+        obs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.4 });
+  obs.observe(stage);
+})();
+  </script>
+
+  <!-- section 08 (08-guiding) behavior -->
+  <script>
+(function () {
+  "use strict";
+  var star   = document.getElementById("gd-star");
+  var arrX   = document.getElementById("gd-arr-x");
+  var arrY   = document.getElementById("gd-arr-y");
+  var traceR = document.getElementById("gd-trace-ra");
+  var traceD = document.getElementById("gd-trace-dec");
+  var rmsEl  = document.getElementById("gd-rms");
+  var dither = document.getElementById("gd-dither");
+  if (!star || !traceR) return;
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a representative static trace so reduced-motion users see the idea.
+  function buildStatic() {
+    var pr = [], pd = [], seed = 1;
+    function noise() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280 - 0.5; }
+    for (var i = 0; i <= 60; i++) {
+      var x = i * 6;
+      pr.push(x + "," + (100 + noise() * 14).toFixed(1));
+      pd.push(x + "," + (100 + noise() * 11).toFixed(1));
+    }
+    traceR.setAttribute("points", pr.join(" "));
+    traceD.setAttribute("points", pd.join(" "));
+    rmsEl.textContent = "RMS 0.62″";
+  }
+
+  if (reduce || !("requestAnimationFrame" in window)) {
+    buildStatic();
+    return;
+  }
+
+  // ---- live simulation, only while on screen ----
+  var W = 360, MAXPTS = 60, STEP = 6;
+  var ra = [], dec = [];
+  var cx = 100, cy = 100;        // star position in the box
+  var vx = 0, vy = 0;            // accumulated drift
+  var running = false, frame = 0;
+  var ditherT = 0, ditherDir = {x: 0, y: 0};
+
+  function rnd() { return Math.random() - 0.5; }
+
+  function loop() {
+    if (!running) return;
+    frame++;
+
+    // drift accumulates, correction pulls it back toward center
+    vx += rnd() * 0.9; vy += rnd() * 0.7;
+    var corrX = -vx * 0.28, corrY = -vy * 0.28;
+    vx += corrX; vy += corrY;
+
+    // a dither event every ~5s: hop, hold, then re-lock
+    if (frame % 300 === 0) {
+      ditherDir = { x: (Math.random() < 0.5 ? -1 : 1) * 18, y: (Math.random() < 0.5 ? -1 : 1) * 14 };
+      ditherT = 45;
+      dither.classList.add("gd-show");
+    }
+    var dx = 0, dy = 0;
+    if (ditherT > 0) {
+      ditherT--;
+      var k = ditherT / 45;
+      dx = ditherDir.x * k; dy = ditherDir.y * k;
+      if (ditherT === 0) dither.classList.remove("gd-show");
+    }
+
+    cx = 100 + vx + dx;
+    cy = 100 + vy + dy;
+    star.setAttribute("cx", cx.toFixed(2));
+    star.setAttribute("cy", cy.toFixed(2));
+
+    // correction arrows: drawn opposite the drift, fading with magnitude
+    var magX = Math.min(1, Math.abs(corrX) * 2.2);
+    var magY = Math.min(1, Math.abs(corrY) * 2.2);
+    arrX.setAttribute("d", "M100 100 L" + (100 + corrX * 9).toFixed(1) + " 100");
+    arrY.setAttribute("d", "M100 100 L100 " + (100 + corrY * 9).toFixed(1));
+    arrX.setAttribute("opacity", magX.toFixed(2));
+    arrY.setAttribute("opacity", magY.toFixed(2));
+
+    // push to error traces (scaled: 8px on graph ≈ 1 arcsec)
+    ra.push(100 + vx * 1.4);
+    dec.push(100 + vy * 1.4);
+    if (ra.length > MAXPTS) { ra.shift(); dec.shift(); }
+
+    var pr = [], pd = [], sum = 0;
+    for (var i = 0; i < ra.length; i++) {
+      var x = i * STEP;
+      pr.push(x + "," + ra[i].toFixed(1));
+      pd.push(x + "," + dec[i].toFixed(1));
+      var e = (ra[i] - 100) / 1.4 / 8;   // back to arcsec
+      sum += e * e;
+    }
+    traceR.setAttribute("points", pr.join(" "));
+    traceD.setAttribute("points", pd.join(" "));
+
+    if (frame % 8 === 0) {
+      var rms = Math.sqrt(sum / Math.max(1, ra.length));
+      rmsEl.textContent = "RMS " + rms.toFixed(2) + "″";
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting && !running) {
+        running = true;
+        requestAnimationFrame(loop);
+      } else if (!e.isIntersecting && running) {
+        running = false;   // pause off-screen; don't burn cycles
+      }
+    });
+  }, { threshold: 0.25 });
+  obs.observe(traceR.closest(".gd-stage"));
+})();
+  </script>
+
+  <!-- section 09 (09-plate-solving) behavior -->
+  <script>
+(function () {
+  "use strict";
+  var stage   = document.querySelector("#plate-solving .ps-stage");
+  if (!stage) return;
+  var status  = document.getElementById("ps-status");
+  var stText  = document.getElementById("ps-status-text");
+  var groups  = Array.prototype.slice.call(document.querySelectorAll("#ps-matches g"));
+  var catalog = document.getElementById("ps-catalog");
+  var cross   = document.getElementById("ps-cross");
+  var name    = document.getElementById("ps-name");
+
+  function setMatched(g) {
+    var m = g.querySelector(".ps-match");
+    var r = g.querySelector(".ps-ring");
+    if (m) m.classList.add("ps-on");
+    if (r) r.classList.add("ps-on");
+  }
+  function showSolved() {
+    catalog.classList.add("ps-on");
+    cross.classList.add("ps-on");
+    name.classList.add("ps-on");
+    status.classList.remove("ps-working");
+    status.classList.add("ps-done");
+    stText.textContent = "solved · M31";
+  }
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    // Static final state: everything matched, target named, no animation.
+    groups.forEach(setMatched);
+    showSolved();
+    return;
+  }
+
+  var timers = [];
+  function run() {
+    status.classList.add("ps-working");
+    stText.textContent = "solving…";
+    // light up matched stars one at a time
+    groups.forEach(function (g, i) {
+      timers.push(setTimeout(function () { setMatched(g); }, 250 + i * 230));
+    });
+    // then resolve the whole field
+    timers.push(setTimeout(showSolved, 250 + groups.length * 230 + 250));
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        run();
+        obs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.45 });
+  obs.observe(stage);
+})();
+  </script>
+
+  <!-- section 10 (10-exposure-calibration) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var stage   = document.querySelector("#ec");
+  if (!stage) return;
+
+  var grainG  = stage.querySelector("#ec-grain");
+  var signal  = stage.querySelector(".ec-signal");
+  var grain   = stage.querySelector(".ec-grain");
+  var countEl = stage.querySelector("#ec-count");
+  var noiseEl = stage.querySelector("#ec-noise");
+  var barEl   = stage.querySelector("#ec-bar");
+  var addBtn  = stage.querySelector("#ec-add");
+  var resetBtn= stage.querySelector("#ec-reset");
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Build a fixed field of speckle dots once (SVG namespace).
+  var NS = "http://www.w3.org/2000/svg";
+  var DOTS = 320;
+  for (var i = 0; i < DOTS; i++) {
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", (Math.random() * 320).toFixed(1));
+    c.setAttribute("cy", (Math.random() * 200).toFixed(1));
+    c.setAttribute("r", (0.5 + Math.random() * 1.1).toFixed(2));
+    // a warm/cool/white scatter so it reads as sensor noise, not polka dots
+    var roll = Math.random();
+    c.setAttribute("fill", roll < 0.6 ? "#b3ada3" : (roll < 0.8 ? "#e8a849" : "#6f9bd8"));
+    c.setAttribute("opacity", (0.25 + Math.random() * 0.55).toFixed(2));
+    grainG.appendChild(c);
+  }
+
+  var count = 1;
+
+  // noise ~ 1/sqrt(N): the headline intuition of stacking.
+  function render(animate) {
+    var noiseFrac = 1 / Math.sqrt(count);          // 1.0 down toward 0
+    var pct = Math.round(noiseFrac * 100);
+    countEl.textContent = count;
+    noiseEl.textContent = pct;
+    // grain opacity tracks the noise; signal emerges as noise falls
+    grain.style.opacity  = noiseFrac.toFixed(3);
+    signal.style.opacity = (1 - noiseFrac * 0.92).toFixed(3);
+    barEl.style.transform = "scaleX(" + noiseFrac.toFixed(3) + ")";
+  }
+
+  // Reduced motion: jump straight to a clean, stacked result and stop.
+  if (reduce) {
+    count = 64;
+    // disable transitions so it's just instantly the final state
+    grain.style.transition = "none";
+    signal.style.transition = "none";
+    barEl.style.transition = "none";
+    render(false);
+  } else {
+    render(false);
+    // First time the figure scrolls into view, auto-stack a little so the
+    // idea demonstrates itself even if nobody clicks.
+    var seen = false;
+    if ("IntersectionObserver" in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting && !seen) {
+            seen = true;
+            var steps = [2, 4, 8, 16];
+            steps.forEach(function (n, k) {
+              setTimeout(function () { count = n; render(true); }, 450 + k * 520);
+            });
+            io.unobserve(e.target);
+          }
+        });
+      }, { threshold: 0.4 });
+      io.observe(stage.querySelector(".ec-figure"));
+    }
+  }
+
+  addBtn.addEventListener("click", function () {
+    count = Math.min(count * 2, 256);
+    if (count >= 256) addBtn.disabled = true;
+    render(true);
+  });
+  resetBtn.addEventListener("click", function () {
+    count = 1;
+    addBtn.disabled = false;
+    render(true);
+  });
+})();
+  </script>
+
+  <!-- section 11 (11-sequencing-safety) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var root   = document.querySelector("#seq");
+  if (!root) return;
+
+  var sky    = root.querySelector("#seq-sky");
+  var track  = root.querySelector("#seq-track");
+  var now    = root.querySelector("#seq-now");
+  var guard  = root.querySelector("#seq-guard");
+  var stateEl= root.querySelector("#seq-state");
+  var reason = root.querySelector("#seq-reason");
+  var blocks = Array.prototype.slice.call(track.querySelectorAll(".seq-block"));
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Position the "now" head at the left edge of a given block.
+  function headTo(idx, atEnd) {
+    var total = track.clientWidth;
+    var x = 0;
+    for (var i = 0; i < idx; i++) x += blocks[i].offsetWidth;
+    if (atEnd && blocks[idx]) x += blocks[idx].offsetWidth;
+    now.style.left = (x / total * 100) + "%";
+  }
+
+  function setActive(idx) {
+    blocks.forEach(function (b, i) {
+      b.classList.toggle("is-active", i === idx);
+      b.classList.toggle("is-done", i < idx);
+    });
+  }
+
+  function setGuard(unsafe, label, why) {
+    guard.classList.toggle("is-unsafe", unsafe);
+    stateEl.textContent = label;
+    reason.textContent = why;
+  }
+
+  // ----- Reduced motion: paint a sensible final still and stop. -----
+  if (reduce) {
+    sky.classList.add("is-flipped");
+    blocks.forEach(function (b) { b.classList.add("is-done"); });
+    headTo(blocks.length - 1, true);
+    setGuard(false, "Parked", "Night complete. Rig stowed in its safe position.");
+    return;
+  }
+
+  // ----- Otherwise, run the night once when it scrolls into view. -----
+  var timers = [];
+  function at(ms, fn) { timers.push(setTimeout(fn, ms)); }
+
+  function runNight() {
+    // walk the timeline block by block
+    var t = 300;
+    blocks.forEach(function (b, i) {
+      at(t, function () {
+        setActive(i);
+        headTo(i, false);
+        // the flip block also swings the scope across the meridian
+        if (b.classList.contains("seq-flipblock")) {
+          sky.classList.add("is-flipping");
+          at(0, function () { sky.classList.add("is-flipped"); });
+          at(1100, function () { sky.classList.remove("is-flipping"); });
+        }
+      });
+      // each block's dwell is proportional to its declared duration
+      var dur = parseInt(b.getAttribute("data-dur"), 10) || 1;
+      t += dur * 520 + 220;
+    });
+
+    // land the head at the end, mark all done
+    at(t, function () {
+      setActive(-1);
+      blocks.forEach(function (b) { b.classList.add("is-done"); });
+      headTo(blocks.length - 1, true);
+    });
+
+    // ---- the safety beat: a Sun rises, the guard trips, imaging halts ----
+    at(t + 700, function () {
+      sky.classList.add("is-sun");
+      setGuard(true, "Unsafe — Sun", "Sun rising into the field. Imaging halted, slewing to park.");
+    });
+    at(t + 2300, function () {
+      sky.classList.remove("is-sun");
+      setGuard(false, "Parked", "Rig safely stowed. See you tomorrow night.");
+    });
+  }
+
+  var started = false;
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !started) {
+          started = true;
+          // let layout settle so the head math is correct
+          requestAnimationFrame(runNight);
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.45 });
+    io.observe(root.querySelector(".seq-figure"));
+  } else {
+    runNight();
+  }
+
+  // keep the head aligned if the figure resizes mid-run
+  window.addEventListener("resize", function () {
+    var active = blocks.findIndex(function (b) { return b.classList.contains("is-active"); });
+    if (active >= 0) headTo(active, false);
+  }, { passive: true });
+})();
+  </script>
+
+  <!-- section 11b (11b-evening-session) behavior -->
+  <script>
+(function () {
+  "use strict";
+
+  var root = document.querySelector("#eve");
+  if (!root) return;
+
+  var track   = root.querySelector("#eve-track");
+  var nowHead = root.querySelector("#eve-now");
+  var hand    = root.querySelector("#eve-hand");
+  var clockT  = root.querySelector("#eve-clock-time");
+  var tempEl  = root.querySelector("#eve-temp");
+  var hfrEl   = root.querySelector("#eve-hfr");
+  var rmsEl   = root.querySelector("#eve-rms");
+  var nowClock= root.querySelector("#eve-now-clock");
+  var nowText = root.querySelector("#eve-now-text");
+  var progEl  = root.querySelector("#eve-progress");
+  var prevBtn = root.querySelector("#eve-prev");
+  var nextBtn = root.querySelector("#eve-next");
+  var blocks  = Array.prototype.slice.call(track.querySelectorAll(".eve-block"));
+
+  // Each beat: clock label, hand angle (deg, 19:40→05:20 mapped across ~280°),
+  // sensor temp, HFR, guide RMS, and the narration. Nulls mean "not yet meaningful".
+  var beats = [
+    { t: "19:40", deg: 0,   temp: "+14", hfr: null,  rms: null,
+      html: "<strong>Setup.</strong> Tripod down, mount on, scope balanced, cables routed so nothing snags through a full rotation. Rough polar align by eye — point the axis at Polaris, close enough for now." },
+    { t: "20:15", deg: 22,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Cool.</strong> Cooler ramps the sensor to <strong>−10 °C</strong> over ~4 min — gradual, no thermal shock. Cold sensor, low dark current, cleaner subs." },
+    { t: "20:25", deg: 30,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Precise polar align.</strong> Solver slews to three points, measures the axis error, you turn alt/az knobs until the residual is under <strong>a couple of arcminutes</strong> — tight enough that field rotation over one sub stays sub-pixel. That rotation is the residual guiding cannot rescue." },
+    { t: "20:40", deg: 38,  temp: "-10", hfr: null,  rms: null,
+      html: "<strong>Slew + plate-solve.</strong> Goto NGC 891. First frame solves: 8′ off. Mount corrects, re-solves, lands the galaxy dead center." },
+    { t: "20:48", deg: 44,  temp: "-10", hfr: "1.8", rms: null,
+      html: "<strong>V-curve autofocus.</strong> Step the focuser, measure HFR at each stop, fit the V, drive to its floor. HFR settles at <strong>1.8</strong>." },
+    { t: "20:54", deg: 50,  temp: "-10", hfr: "1.8", rms: null,
+      html: "<strong>Rotate to frame.</strong> Turn the camera so the dust lane runs horizontal, re-solve to confirm <strong>position angle 67°</strong>." },
+    { t: "21:00", deg: 56,  temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Guide.</strong> Calibrate (push each axis to learn scale + direction), then lock a star and hold <strong>0.6″ RMS</strong> — comfortably inside a 1.6″ pixel." },
+    { t: "21:05", deg: 70,  temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Subs running.</strong> 300-second exposures, <strong>dither every 3rd</strong> so a small shift scrambles hot pixels for the stack." },
+    { t: "23:55", deg: 140, temp: "-10", hfr: "1.8", rms: "0.6", flip: true,
+      html: "<strong>Meridian flip.</strong> Galaxy crosses due south. Mount swings to the west side, re-solves to recover framing, <strong>re-calibrates guiding</strong> for the new orientation." },
+    { t: "00:05", deg: 150, temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Back to subs.</strong> Same target, west side, same 300s cadence, dithering continues. The robot runs; you sleep." },
+    { t: "02:30", deg: 205, temp: "-10", hfr: "1.8", rms: "0.6",
+      html: "<strong>Refocus.</strong> Temperature has dropped 4 °C; the focuser drifted as metal contracted. An autofocus check pulls HFR back to <strong>1.8</strong>." },
+    { t: "05:00", deg: 280, temp: "+14", hfr: null,  rms: null, park: true,
+      html: "<strong>Dawn → park.</strong> End condition fires: stop, slew to park clear of the Sun, warm the cooler gradually. Result: <strong>48 × 300s = 4h</strong> on NGC 891." }
+  ];
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // place the "now" head at the left edge of a block (or far right when ended)
+  function headTo(idx) {
+    var total = track.clientWidth || 1;
+    var x = 0;
+    for (var i = 0; i < idx; i++) x += blocks[i].offsetWidth;
+    if (idx >= blocks.length && blocks.length) {
+      x = total;
+    }
+    nowHead.style.left = (x / total * 100) + "%";
+  }
+
+  function setStat(el, value, cls) {
+    el.classList.remove("eve-idle", "eve-good", "eve-bad");
+    if (value === null) {
+      el.innerHTML = "—";
+      el.classList.add("eve-idle");
+      return;
+    }
+    el.innerHTML = value;
+    if (cls) el.classList.add(cls);
+  }
+
+  function render(i) {
+    var b = beats[i];
+
+    blocks.forEach(function (blk, j) {
+      blk.classList.toggle("is-active", j === i);
+      blk.classList.toggle("is-done", j < i);
+    });
+    headTo(i);
+
+    // clock
+    clockT.textContent = b.t;
+    nowClock.textContent = b.t;
+    nowText.innerHTML = b.html;
+    hand.style.transform = "rotate(" + b.deg + "deg)";
+
+    // readouts
+    setStat(tempEl, b.temp === null ? null :
+      b.temp + "<span class='eve-stat-unit'>°C</span>",
+      (b.temp && b.temp.charAt(0) === "-") ? "eve-good" : null);
+    setStat(hfrEl, b.hfr, b.hfr ? "eve-good" : null);
+    setStat(rmsEl, b.rms === null ? null :
+      b.rms + "<span class='eve-stat-unit'>″</span>",
+      b.rms ? "eve-good" : null);
+
+    progEl.textContent = (i + 1) + " / " + beats.length;
+  }
+
+  // ----- step controls (always available, keyboard-friendly) -----
+  var idx = 0;
+  function go(n) {
+    idx = Math.max(0, Math.min(beats.length - 1, n));
+    render(idx);
+  }
+  prevBtn.addEventListener("click", function () { go(idx - 1); });
+  nextBtn.addEventListener("click", function () { go(idx + 1); });
+
+  // ----- reduced motion: paint the final, finished night and stop -----
+  if (reduce) {
+    blocks.forEach(function (b) { b.classList.add("is-done"); });
+    render(beats.length - 1);
+    blocks.forEach(function (b, j) { b.classList.toggle("is-active", false); });
+    headTo(blocks.length);
+    progEl.textContent = beats.length + " / " + beats.length;
+    return;
+  }
+
+  // start on the first beat
+  render(0);
+
+  // ----- scroll-drive: advance the beat as the figure passes the viewport -----
+  var figure = root.querySelector(".eve-figure");
+  var autoIdx = 0;
+  if ("IntersectionObserver" in window) {
+    // a column of sentinels would be cleaner, but the figure is one element;
+    // map its scroll progress through the viewport onto the beat index.
+    var ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        ticking = false;
+        var r = figure.getBoundingClientRect();
+        var vh = window.innerHeight || 1;
+        // progress 0..1 as the figure travels from entering to leaving center band
+        var p = (vh * 0.85 - r.top) / (vh * 0.85 + r.height * 0.5);
+        p = Math.max(0, Math.min(1, p));
+        var target = Math.round(p * (beats.length - 1));
+        if (target !== autoIdx) {
+          autoIdx = target;
+          go(target);
+        }
+      });
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          window.addEventListener("scroll", onScroll, { passive: true });
+          onScroll();
+        } else {
+          window.removeEventListener("scroll", onScroll);
+        }
+      });
+    }, { threshold: 0 });
+    io.observe(figure);
+  }
+
+  // keep the head aligned if the figure resizes mid-run
+  window.addEventListener("resize", function () { headTo(idx); }, { passive: true });
+})();
+  </script>
+
+  <!-- section 12 (12-outro) behavior -->
+  <script>
+(function () {
+  "use strict";
+  // The closing flourish is pure CSS animation, gated by .is-in (added by the
+  // shell's reveal observer) and globally calmed by the shell's reduced-motion
+  // rule, so there is no JS-driven loop to guard here.
+  //
+  // We add one small courtesy: if a browser lacks the reveal observer entirely,
+  // the shell already force-adds .is-in to every .reveal, so the orbit still
+  // animates and the cards still show their amber edge. Nothing to do.
+  return;
+})();
+  </script>
+
+  <script>
+  (function () {
+    "use strict";
+
+    var reduceMotion = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---------- 1. REVEAL on scroll ---------------------------- */
+    var revealEls = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
+
+    if (reduceMotion || !("IntersectionObserver" in window)) {
+      // No motion (or no observer support): show everything immediately.
+      revealEls.forEach(function (el) { el.classList.add("is-in"); });
+    } else {
+      var revealObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-in");
+            revealObserver.unobserve(entry.target); // reveal once, then forget
+          }
+        });
+      }, { root: null, rootMargin: "0px 0px -12% 0px", threshold: 0.12 });
+
+      revealEls.forEach(function (el) { revealObserver.observe(el); });
+    }
+
+    /* ---------- 2. SCROLL PROGRESS BAR ------------------------- */
+    var fill = document.getElementById("progressFill");
+    var ticking = false;
+
+    function updateProgress() {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - doc.clientHeight;
+      var pct = scrollable > 0 ? (doc.scrollTop || document.body.scrollTop) / scrollable : 0;
+      fill.style.width = (Math.max(0, Math.min(1, pct)) * 100).toFixed(2) + "%";
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) {
+        window.requestAnimationFrame(updateProgress);
+        ticking = true;
+      }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    updateProgress();
+
+    /* ---------- 3. DOT NAV (built from sections) --------------- */
+    var nav = document.getElementById("dotNav");
+    var sections = Array.prototype.slice.call(
+      document.querySelectorAll("#primer .primer-section[id]")
+    );
+
+    var dotFor = {};
+    sections.forEach(function (sec) {
+      var a = document.createElement("a");
+      a.href = "#" + sec.id;
+      var label = sec.getAttribute("data-nav") || sec.id;
+      a.setAttribute("data-label", label);
+      a.setAttribute("aria-label", "Go to section: " + label);
+      nav.appendChild(a);
+      dotFor[sec.id] = a;
+    });
+
+    if ("IntersectionObserver" in window && sections.length) {
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            sections.forEach(function (s) {
+              if (dotFor[s.id]) dotFor[s.id].classList.remove("is-active");
+            });
+            var active = dotFor[entry.target.id];
+            if (active) active.classList.add("is-active");
+          }
+        });
+      }, { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+
+      sections.forEach(function (sec) { navObserver.observe(sec); });
+    }
+  })();
+  </script>
+</body>
+</html>
