@@ -16,9 +16,11 @@ Routes:
                                  the append-only ``revoked_jti`` registry.
   GET  /auth/me               -> the resolved Principal (fail-closed 401).
 
-The provider is INACTIVE unless ``AuthConfig.provider == "google"``: /auth/login
-and the callback 404/400 when Google is not configured, so a default (open)
-deployment is byte-for-byte unchanged and these endpoints are inert.
+The provider is INACTIVE unless Google is an enabled auth method (i.e. "google"
+is in ``AuthConfig.methods_effective()``; the legacy ``provider == "google"`` is
+folded in by the migration validator): /auth/login and the callback 404/400 when
+Google is not enabled, so a default (open) deployment is byte-for-byte unchanged
+and these endpoints are inert.
 
 Cookies:
   - The PRE-AUTH cookie (``ad_oauth``) carries the per-login secrets, signed with
@@ -77,6 +79,18 @@ def _auth_cfg() -> Any:
 
 
 def _google_enabled(auth_cfg: Any) -> bool:
+    """True when Google is an enabled auth METHOD (methods-aware).
+
+    The UI enables Google by writing ``methods=["google"]`` and never touches the
+    legacy ``provider`` field, so we read the effective methods first. ``auth_cfg``
+    is typed ``Any`` here, so we duck-type ``methods_effective`` (a callable on the
+    real ``AuthConfig``). The migration validator already folds a legacy
+    ``provider == "google"`` into ``methods``, so ``methods_effective`` covers both
+    shapes; the ``provider`` fallback is kept only for old-shaped objects that
+    lack ``methods_effective`` entirely (back-compat safety)."""
+    eff = getattr(auth_cfg, "methods_effective", None)
+    if callable(eff):
+        return "google" in eff()
     return getattr(auth_cfg, "provider", "none") == "google"
 
 

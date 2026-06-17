@@ -351,6 +351,101 @@ def test_login_404_when_google_disabled(tmp_path, monkeypatch):
         assert c.get("/auth/login", follow_redirects=False).status_code == 404
 
 
+def _mount_auth_router(store, monkeypatch):
+    """Mount ONLY the auth router against ``store`` (no fake-Google transport).
+
+    Used by the ``_google_enabled`` gate regression tests, which only care
+    whether /auth/login ACTIVATES (status != 404) vs is inert (404)."""
+    import astrodeck.config as config_mod
+    monkeypatch.setattr(config_mod, "config_store", store)
+    monkeypatch.setattr(auth_routes, "config_store", store)
+    app = FastAPI()
+    app.include_router(auth_routes.router)
+    return app
+
+
+def test_login_activates_when_google_in_methods(tmp_path, monkeypatch):
+    """REGRESSION: the new UI enables Google via ``methods=["google"]`` and never
+    sets the legacy ``provider``. /auth/login must ACTIVATE (not 404) -- it 302s
+    to Google with creds set (here it does, since we set them)."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    auth = AuthConfig(methods=["google"], google_client_id="client-123",
+                      google_client_secret="secret",
+                      google_redirect_uri="https://home/auth/google/callback")
+    cfg = store.cfg()
+    cfg.auth = auth
+    store._save()
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
+    app = _mount_auth_router(store, monkeypatch)
+    with TestClient(app) as c:
+        r = c.get("/auth/login", follow_redirects=False)
+        # ACTIVATED: methods-aware gate let it through (not the old 404).
+        assert r.status_code != 404
+        assert r.status_code == 302
+        assert r.headers["location"].startswith(g.GOOGLE_AUTH_URI)
+
+
+def test_login_activates_when_google_in_methods_even_without_creds(
+        tmp_path, monkeypatch):
+    """REGRESSION: ``methods=["google"]`` must ACTIVATE the gate even when the
+    Google creds are blank -- the route then 503s ("not fully configured"), NOT
+    404. The point is the mint-the-cookie flow is no longer gated off."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    auth = AuthConfig(methods=["google"])  # no google creds
+    cfg = store.cfg()
+    cfg.auth = auth
+    store._save()
+    app = _mount_auth_router(store, monkeypatch)
+    with TestClient(app) as c:
+        r = c.get("/auth/login", follow_redirects=False)
+        assert r.status_code != 404           # ACTIVATED, just unconfigured
+        assert r.status_code == 503
+
+
+def test_login_activates_via_legacy_provider(tmp_path, monkeypatch):
+    """Back-compat: an old-shaped config that sets only the legacy
+    ``provider="google"`` must still activate (the migration validator folds it
+    into ``methods``, which the methods-aware gate then sees)."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    auth = AuthConfig(provider="google", google_client_id="client-123",
+                      google_client_secret="secret",
+                      google_redirect_uri="https://home/auth/google/callback")
+    # the migration validator should have populated methods from provider
+    assert auth.methods_effective() == ["google"]
+    cfg = store.cfg()
+    cfg.auth = auth
+    store._save()
+    monkeypatch.setenv("ASTRODECK_SECRET", "test-session-secret-xyz")
+    app = _mount_auth_router(store, monkeypatch)
+    with TestClient(app) as c:
+        r = c.get("/auth/login", follow_redirects=False)
+        assert r.status_code != 404
+        assert r.status_code == 302
+
+
+def test_login_404_and_open_admin_intact_when_methods_empty(tmp_path, monkeypatch):
+    """NON-BREAKING: default ``methods==[]`` (open/admin) must leave /auth/login
+    404 (the google flow is inert) AND the app must still serve open/admin -- the
+    open ``none`` provider resolves /auth/me as admin without any login."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    auth = AuthConfig()  # methods=[] => open/admin default
+    assert auth.methods_effective() == []
+    cfg = store.cfg()
+    cfg.auth = auth
+    store._save()
+    # install the open default provider so /auth/me resolves admin (open mode).
+    from astrodeck.auth.deps import configure_provider_from_auth
+    configure_provider_from_auth(auth)
+    app = _mount_auth_router(store, monkeypatch)
+    with TestClient(app) as c:
+        # google flow inert
+        assert c.get("/auth/login", follow_redirects=False).status_code == 404
+        # open/admin still served (non-breaking): /auth/me resolves admin
+        me = c.get("/auth/me")
+        assert me.status_code == 200
+        assert me.json()["role"] == "admin"
+
+
 def test_login_sets_preauth_cookie_and_redirects(tmp_path, monkeypatch):
     app, store, fake = _client_with_google(tmp_path, monkeypatch)
     with TestClient(app) as c:
