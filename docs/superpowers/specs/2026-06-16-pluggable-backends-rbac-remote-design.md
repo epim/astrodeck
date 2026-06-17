@@ -117,7 +117,7 @@ class BackendSession(Protocol):
     name: str
     async def get_device(self, role: str, conn: ConnSpec) -> object: ...   # devices.base.Device | None, duck-typed
     def native_guider(self) -> object | None: ...        # guide.base.Guider this backend provides, if any
-    def native_solver(self) -> object | None: ...        # in-process PlateSolver (NINA/native), if any
+    def native_solver(self) -> object | None: ...        # in-process PlateSolver (native only), if any; no stage-A backend provides one
     async def health(self) -> dict | None: ...           # backend_links entry, or None
     async def close(self) -> None: ...
 
@@ -128,6 +128,7 @@ class Backend(Protocol):
     label: str                         # UI label, e.g. "Native (direct)"
     roles: tuple[str, ...]             # roles this backend can fill
     discoverable: bool                 # whether discover() does anything useful
+    hostless: bool = False             # endpoint-less: host/port normalize to None in the grouping key (True on SimBackend/Phd2Backend) — W1.3
     async def open(self, conn: ConnSpec) -> BackendSession: ...
     async def discover(self) -> list[dict]: ...          # [] when not discoverable
 
@@ -195,7 +196,13 @@ Key wrapping notes:
     itself issues.
 - **`NinaSession`** holds the one `NinaClient` from `build_nina_rig(host, port)` (one HTTP client + the event WS).
   `get_device(role)` returns `rig["devices"][role]`; `native_guider()` returns `rig["guider"]`; `native_solver()`
-  returns the NINA solver adapter; `health()` returns the `nina_link` dict (the old `poll_status` block, now generic).
+  returns `None` (committed `nina_backend.py:72-75`) — NINA captures a frame and solves via the hub's local solver
+  (`solve.get_solver` → ASTAP, with a refusing `SimSolver` fallback), exactly as `hub.solve_and_sync` does today
+  (`hub.py:959-966`); `health()` returns the `nina_link` dict (the old `poll_status` block, now generic).
+  No `NinaSolver` class exists (only `AstapSolver`/`SimSolver`), so wiring `native_solver()` to a "NINA solver adapter"
+  would make `_pick_solver` (lines 424-425) prefer a nonexistent/hanging NINA solver over ASTAP, re-introducing the
+  orphaned-ASTAP / live-rig-hang hazard the `solve_and_sync` fix removed. `_pick_solver`'s ASTAP-vs-guarded-`SimSolver`
+  precedence stays the SINGLE owner of the NINA camera solve path.
   **One NINA client per session** — the harness guarantees roles sharing the NINA backend share one client (the
   per-wrapper test asserts object identity). **`close()` must NOT tear down NINA itself** (bridge semantics, per the
   committed `BackendSession.close` docstring) — it drops AstroDeck's client + event WS only.
@@ -232,10 +239,13 @@ Key wrapping notes:
   `aclose` EVERY owned `AlpacaConnection`** (`conn.close()` aclose's each httpx client) so a profile switch leaks
   nothing — the §T1 `test_native_backend.py` asserts `close()` actually closes every owned connection (impossible to
   satisfy today since `make_device` hides the connection inside the device).
-- **`Phd2Session`** wraps `PHD2Guider(host, port)`. `get_device()` returns None for non-guider roles;
-  `native_guider()` returns the guider. This is the formalization of today's independently-plugged guider. **Because
-  `get_device` returns None for the guider role too, a guider-only backend must NOT be represented as a device
-  `RoleResult` — see W1.3** (its success is "`native_guider()` is not None", not a device in `rig`).
+- **`Phd2Session`** wraps `PHD2Guider(host, port)`. `get_device(non-guider)` **raises `KeyError`** (PHD2 is guider-only —
+  matching the committed `Phd2Session.get_device` `raise KeyError` at `phd2_backend.py:56-59`, the house convention sim/
+  native also follow); `get_device("guider")` returns the connected guider and `native_guider()` returns the same guider.
+  This is the formalization of today's independently-plugged guider. **A guider-only backend must NOT be represented as a
+  device `RoleResult` — see W1.3** (its success is "`native_guider()` is not None", not a device in `rig`; the guider is
+  resolved via the guider-role session in `connect_profile` step 5, never via a device `get_device` lookup in the
+  endpoint-grouping path — so the `KeyError` for non-guider roles is never reached on the happy path).
 
 ### W1.3 `devices/orchestrator.py` (EXISTS as `assemble()`/`AssembledRig` — RENAMED + RESHAPED, not greenfield)
 
@@ -263,6 +273,8 @@ The reshape, stated as an explicit breaking amendment landed in **stage A**:
 | `sessions: dict[str, BackendSession]` keyed by the **string** `_session_key(name, conn)` = `"{name}@{host}:{port}"` (`orchestrator.py:52`) | `sessions: dict[tuple[str, str|None, int|None], BackendSession]` keyed by the `(backend, host, port)` **tuple** | the string key is a lossy join; the tuple is the grouping key W1.3 already requires for endpoint isolation, and is unambiguous for `disconnect_all` fan-out. |
 | `solver_source: object | None` | `solver: object | None` (same camera-session-`native_solver()`-or-fall-back semantics) | rename only; the fallback to `solve.get_solver` is unchanged (W1.3 solver-precedence note). |
 | `to_dict` over `AssembledRig` | `to_dict` over `ConnectResult`, keys preserved as a **back-compat superset** | the existing `{roles, sessions, has_guider, has_native_solver, failures}` keys are kept (with `failures` derived from the not-ok `results`) so `test_to_dict_summary_shape` still passes; `results` is added alongside. |
+
+**The back-compat `sessions` summary value MUST be computed None-safely AND JSON-ably from the new tuple keys — do NOT reuse the committed `to_dict` line.** The committed `to_dict` emits `"sessions": sorted(result.sessions)` (`orchestrator.py:129`), which sorted over the OLD string keys. Re-keying `sessions` to the `(backend, host|None, port|None)` tuple breaks that line two ways: (a) **`sorted()` over the tuple keys raises** `TypeError: '<' not supported between instances of 'int' and 'NoneType'` the moment two same-host keys differ in port-presence — e.g. `('native','host',11111)` vs `('native','host',None)`, exactly the partial-port multi-endpoint rigs the tuple key is introduced to support — because tuple comparison falls through to comparing `11111 < None`; and (b) **raw tuples are not JSON-serializable**, so even an unsorted dump fails the API/diagnostics contract. The reshaped `to_dict` MUST therefore stringify each tuple key AND sort None-safely, e.g. `"sessions": sorted(str(k) for k in result.sessions)` (sorting the stringified tuples is total and JSON-able), or equivalently sort the keys under a None-coercing key `key=lambda k: (k[0], k[1] or "", k[2] or -1)` and emit `str(k)`/`list(k)` for each. State this derivation explicitly in this row so no implementer carries `sorted(result.sessions)` forward verbatim and ships the `TypeError`.
 
 **Stage-A gate:** `tests/test_orchestrator.py` is **rewritten in stage A as the C1 gate** (the fault-injecting §T2 suite
 replaces the happy-path `assemble` tests) — but its existing `to_dict`-shape and graceful-degrade assertions are
@@ -297,10 +309,13 @@ session.** `sim` (and `phd2` in unmanaged-LOCAL mode) is **endpoint-less** — t
 sim role MUST share it (the shared `SimRig` state is the whole point — two SimSessions would split the simulated
 mount/camera state). But a stray `ConnSpec.host`/`port` on a sim override (left over from a copy-paste or a UI default)
 would make `(backend, host, port)` produce TWO sim keys and open the `SimRig` twice, silently splitting state. So
-`_group(resolved)` **normalizes `host`/`port` to `None` for any hostless backend** (a backend declares itself hostless,
-e.g. a `Backend.hostless`/`endpoint_less` flag, OR `RigSpec.resolve`/`connect_profile` drops `host`/`port` for sim/phd2-
-local before keying) so all sim roles always collapse to the single key `("sim", None, None)` regardless of stray
-addressing. Add a **§T2 case:** a `primary=sim` rig with a sim override carrying a **non-None `host`** still opens the
+`_group(resolved)` **normalizes `host`/`port` to `None` for any hostless backend** via the REQUIRED `Backend.hostless`
+boolean flag (W1.1; `True` on `SimBackend`/`Phd2Backend`, default `False`): `_group`/`_pick_guider`/`_pick_solver`
+normalize `host`/`port` → `None` via `get_backend(name).hostless`, **never a literal `{sim, phd2}` name set**. (The
+discarded alternative — `RigSpec.resolve`/`connect_profile` dropping `host`/`port` for sim/phd2-local before keying — is
+NOT permitted: it can only be implemented by hardcoding the `{sim, phd2}` name set inside `_group`/`connect_profile`,
+re-introducing exactly the `if backend == "sim"` coupling the pluggable design exists to delete.) So all sim roles always
+collapse to the single key `("sim", None, None)` regardless of stray addressing. Add a **§T2 case:** a `primary=sim` rig with a sim override carrying a **non-None `host`** still opens the
 `SimRig` **exactly ONCE** (assert one session in `sessions`, and that the override role and a primary role share the
 SAME `SimRig`/shared state) — proving stray addressing cannot split the shared sim state.
 
@@ -381,7 +396,9 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
             except Exception: pass
         raise
     # 5. pick the guider from the GUIDER ROLE's session.native_guider(); its RoleResult is
-    #    ok=(guider is not None) — NOT a device lookup (see W1.2 Phd2Session).
+    #    ok=(guider is not None) — NOT a device lookup (see W1.2 Phd2Session). _pick_guider keys
+    #    'sessions' with the SAME normalized grouping key _group used (hostless host/port -> None)
+    #    so a stray-addressed sim/phd2-local guider override still finds its session (defined below).
     guider = _pick_guider(resolved, sessions)
     if "guider" in requested:
         results["guider"] = RoleResult("guider", ok=guider is not None, attempted=True,
@@ -404,6 +421,16 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
   rejects the offending OVERRIDE at apply-time) rather than silently vanishing from the LED grid. The whole W1.6 tri-state
   LED contract ("an unfillable role never shows a red LED") hinges on this function being exactly this set, so it is
   pinned here and exercised by the §T2 grouping tests (§T2(9)).
+- **`_pick_guider(resolved, sessions)` is DEFINED, not assumed — and its session lookup is PINNED the same way
+  `_pick_solver`'s is.** It locates the guider's session using the **SAME normalized grouping key `_group` produces**:
+  apply the hostless `host`/`port` → `None` normalization (W1.3 §T2(10)) to `resolved["guider"]` BEFORE keying into
+  `sessions`, then return that session's `native_guider()`. Keying off the **raw** `(conn.backend, conn.host, conn.port)`
+  is a BUG: a stray non-None host on a `sim` or `phd2`-local guider override (a copy-paste / UI default) would key under
+  `(backend, host, port)` while `_group` opened the session under `(backend, None, None)` — the lookup MISSES, returns
+  `None`, and `connect_profile` emits a spurious `"no guider"` `RoleResult` (line 393) for a guider that is in fact up.
+  Equivalently, restore the explicit `role → session-key` map the committed `assemble()` built (`orchestrator.py:76`,
+  `:92-93`, `:105-108`) and have BOTH `_pick_guider` and `_pick_solver` read it — either way both seams resolve their
+  session through the SAME normalized key, never raw addressing.
 - **Solver precedence has ONE owner.** Do NOT re-derive "ASTAP else sim" in the orchestrator. `_pick_solver` returns
   the active camera session's `native_solver()` if non-None, otherwise calls the existing
   `solve.get_solver(sim_rig, mode=...)` (`solve/__init__.py:17`) so ASTAP-vs-guarded-sim precedence stays in one place
@@ -981,11 +1008,11 @@ device classes already carry the flags (`Camera.can_cool`/`has_dew_heater` at `b
     hub SKIPS its own offset move; otherwise the hub applies it. So a natively-applying backend is never double-corrected
     and a non-applying backend's offset is never silently skipped.
   - **The double-apply ALREADY EXISTS in committed `sequence/engine.py` — name the exact consumer.** `engine.py`'s
-    `_change_filter` (`engine.py:1358-1364`) does `await foc.move_to(pos + delta)` **UNCONDITIONALLY** whenever
+    `_apply_filter` (`engine.py:1358-1364`) does `await foc.move_to(pos + delta)` **UNCONDITIONALLY** whenever
     `self.plan.apply_filter_offsets` is set and a focuser is present — it does NOT consult any
     `FilterWheel.applies_focuser_offset` flag. So a **NINA-primary rig is double-correcting focus on EVERY filter change
     TODAY** (NINA moves the focuser by the offset, then AstroDeck's engine moves it AGAIN by the same delta) — this is a
-    present bug, not a future risk. The fix lands in `engine.py:_change_filter`: **gate the `foc.move_to(pos + delta)` on
+    present bug, not a future risk. The fix lands in `engine.py:_apply_filter`: **gate the `foc.move_to(pos + delta)` on
     NOT `fw.applies_focuser_offset`** (skip the engine's move when the active filterwheel advertises it applies the offset
     itself; apply it otherwise). **§T test:** assert the engine **SKIPS** its offset move when the active filterwheel
     advertises `applies_focuser_offset` (the focuser `move_to` is NOT called for the offset) and **APPLIES** it (calls
@@ -1107,12 +1134,35 @@ RA**. So:
   mount that did not move pier sides — inducing the exact backwards/runaway-RA outcome the gate exists to prevent, in the
   OPPOSITE direction. The "mount positively advertises it does NOT flip" escape clause **has no backing flag today** —
   only `reports_destination_pier_side` exists (`base.py:152`), which is about whether pier side is *reported*, not about
-  whether the mount *flips*. So **gate the whole flip-calibration path on a positive does-meridian-flip signal**:
-  `Telescope.time_to_meridian_flip()` **is not `None`** (`base.py:202` returns `None` for non-GEM) **and/or** an explicit
-  **`is_german_equatorial` / `does_meridian_flip` capability flag added to the `Telescope` ABC**. The decision tree is:
-  **(1) if the mount does NOT do GEM flips (`time_to_meridian_flip()` is `None` and no positive flip flag) → NEVER flip
-  the calibration** (a fork/alt-az never needs it); **(2) only for a GEM, apply the inverted rule** — FLIP UNLESS pier
-  side is KNOWN-and-UNCHANGED.
+  whether the mount *flips*.
+- **The GEM/non-GEM classifier MUST NOT use `time_to_meridian_flip() is None` as the non-GEM signal — that property is
+  NINA-only and mis-classifies the W4/test-target GEMs.** `Telescope.time_to_meridian_flip()` is overridden **solely in
+  `nina.py:429`**; `base.py:202` returns `None`, and **neither `SimTelescope`** (`sim.py:241`, explicitly "a German
+  equatorial that reports DestinationSideOfPier") **nor Alpaca/ASCOM telescopes** (there is no standard
+  `TimeToMeridianFlip` ASCOM property) override it. So a real native-Alpaca GEM and the sim GEM — exactly the rigs W4 and
+  §T1.12 target — return `None` from `time_to_meridian_flip()` and would be mis-classified as non-GEM, **NEVER getting
+  their guider calibration flipped: the precise backwards/runaway-RA hazard this section exists to prevent.** This also
+  directly contradicts the already-committed `hub._compute_meridian`, which detects a GEM via `_is_gem(side)` =
+  `pier_side ∈ {east, west}` (`hub.py:1217-1220`, `:1244-1246`) **precisely because an Alpaca/sim GEM returns `None` from
+  `time_to_meridian_flip()`** and derives hours-to-flip from the hour angle instead (`hub.py:1238-1243`).
+- **Gate the flip-calibration path on a positive does-GEM-flip signal that AGREES with the committed `_compute_meridian`.
+  The classifier is `_is_gem(side) OR does_meridian_flip_flag` — NOT either branch standing ALONE.** `_is_gem(side)`
+  alone (`hub.py:1217-1220`) returns `side ∈ {east, west}`, so `_is_gem("unknown")` is **False** — but the common real
+  GEM is a **non-reporting / UNKNOWN-pier** mount (`base.py:190-191` `pier_side()` → `UNKNOWN`; `base.py:152`
+  `reports_destination_pier_side = False`). Classifying such a GEM by `_is_gem(side)` alone marks it **non-GEM** and
+  (under step (1) below) NEVER flips its calibration — the exact backwards/runaway-RA hazard this section exists to
+  prevent. So `_is_gem(side)` is **NOT** an acceptable standalone classifier; the does-GEM-flip signal **MUST** be
+  `(_is_gem(side)) OR (positive does_meridian_flip / is_german_equatorial flag)`.
+- **Add the MANDATORY `does_meridian_flip` / `is_german_equatorial` capability flag to the `Telescope` ABC.** None
+  exists today (grep confirms only `reports_destination_pier_side` at `base.py:152` — that flag is about
+  `destination_pier_side` support, NOT meridian-flip class). The native Alpaca backend **sets it from ASCOM
+  `AlignmentMode == germanPolar`**; `SimTelescope` **sets it `True`**. The flag is **NOT optional/unset** — an unset
+  optional flag collapses back to the `_is_gem(side)`-only mis-classification (or the `time_to_meridian_flip() is None`
+  mis-classification) above. A mount with `pier_side` **UNKNOWN AND no positive flip flag** is the **only** true non-GEM
+  (a fork / alt-az). The decision tree is: **(1) if the mount does NOT do GEM flips (NOT `_is_gem(side)` AND no positive
+  flip flag — and NOT keyed off `time_to_meridian_flip() is None`) → NEVER flip the calibration** (a fork/alt-az never
+  needs it); **(2) for any GEM — `_is_gem(side)` true, OR the flip flag set even when pier side is UNKNOWN / non-reporting
+  and `time_to_meridian_flip()` returns `None` — apply the inverted rule** — FLIP UNLESS pier side is KNOWN-and-UNCHANGED.
 - **Invert the gate (GEM only): FLIP the calibration UNLESS the pier side is KNOWN-and-UNCHANGED** (both pre- and
   post-slew sides reported and equal). **Treat UNKNOWN / non-reporting as "flip"** — for a GEM. This makes the dangerous
   default (skip on a real non-reporting GEM) impossible while the step-(1) GEM gate makes the opposite failure (flip a
@@ -1120,9 +1170,12 @@ RA**. So:
 - **Keep each guider's internal self-guard as the SECOND line of defence** (the guider may still no-op if it knows it
   cannot be backwards) — the hub-level GEM-gated inverted gate is the FIRST line.
 - Spell this out so the implementer does NOT build a "flip only on confirmed change" gate that silently strands
-  non-reporting GEMs into backwards guiding, AND does not build an ungated inverted gate that flips a fork mount. Tested
-  by §T1.12: the cross-backend pier-gate test PLUS a **non-flipping fork mount** case (`time_to_meridian_flip()` returns
-  `None`) asserting `flip_calibration` is **NOT called**.
+  non-reporting GEMs into backwards guiding, AND does not build an ungated inverted gate that flips a fork mount, AND does
+  not key the GEM gate off `time_to_meridian_flip() is None` (which would strand the sim/Alpaca GEMs). Tested by §T1.12:
+  the cross-backend pier-gate test PLUS a **non-flipping fork/alt-az mount** case (distinguished as **pier_side ==
+  UNKNOWN AND not a flagged/`_is_gem` GEM**) asserting `flip_calibration` is **NOT called**, PLUS an **Alpaca/sim GEM that
+  returns `None` from `time_to_meridian_flip()` but reports pier_side east/west** asserting the inverted FLIP-UNLESS-
+  known-and-unchanged rule **STILL fires** (the mis-classification regression guard).
 
 ---
 
@@ -1138,7 +1191,10 @@ determines which capabilities a caller holds. **The capability set is built by e
 
 | Capability | Guards (real routes) | Notes |
 |---|---|---|
-| `view` | read-only status/preview/WS subscribe (`GET /api/status`, `/api/preview/*`, `/ws`) | every authenticated caller |
+| `view.status` | read-only status + WS subscribe (`GET /api/status`, `/ws` accept) — live telemetry, NO bulk media | every authenticated caller; the floor a viewer link holds |
+| `view.preview` | downsized preview frames (`GET /api/preview/{id}/lossless.png`, `/thumb.jpg`, `/png`) — NOT raw FITS | in the default viewer-link set (live-watch) |
+| `view.media` | **full-res / raw science frames: `GET /api/preview/{id}/fits`** (`app.py:1044`/`:1057`, raw FITS, tens of MB) and any full-res science route | **NOT in the default viewer-link set** (W3.3); a viewer link grants it only by explicit opt-in |
+| `view.site_precise` | precise site lat/lon in the `hub.summary()` WS hello + `config` bus frames (`hub.py:404`) | **NOT in the default viewer-link set**; absence → coarsened/redacted coordinates (W3.3 redaction) |
 | `control.capture` | capture/loop, autofocus; **`POST /api/camera/cooler`** (`app.py:1084`), **`POST /api/camera/dew-heater`** (`app.py:1093`), **`POST /api/focuser/halt`** (`app.py:1225`), **`POST /api/filterwheel/position`** (`app.py:1240`) | drive **imaging** only — NOT motion. (Consider carving `camera/cooler` into its own cap if thermal-shock by a low-trust operator is a concern; listed here so the boot assertion has a declared mapping, not an inferred one.) |
 | `control.mount` | mount **MOTION** — EVERY route that ultimately calls `Telescope.slew`/`move_axis`/`set_tracking`/`park`/`unpark`/`pulse_guide`: `/api/mount/goto` (`:1104`), `/api/mount/move` (`:1137`), `/api/mount/tracking` (`:1178`), `/api/mount/slew`, park/unpark, **`POST /api/mount/stop`** (`:1159` — cancels goto/solve + commands `tel.stop`), sync, **`POST /api/mount/solve_sync`** (`:1129` — writes a sync to a REAL mount), **`POST /api/sequence/{start,pause,resume,abort}`** (`:1307`/`:1347`/`:1352`/`:1357` — the engine slews+centers+meridian-flips per target), **`POST /api/sequence/recover`** (`:1440` — calls `engine.start`, the SAME slew+center+meridian-flip entry as `sequence/start`), **`POST /api/polar/{start,stop,pause,resume}`** (`:1459`+ — rotates RA) | **split out of `control.capture`** so a capture role can't drive a real mount remotely. Sequence + polar (and `sequence/recover`, `mount/solve_sync`, `mount/stop`) are motion-capable and MUST carry `control.mount` (or a `control.sequence` sub-cap), NOT `control.capture` — see the privilege-escalation note below. |
 | `control.guide` | start/stop/**dither** guiding | `dither` PULSES the mount (`pulse_guide`) — a bounded, rate-limited accepted exception (see transitive-coupling note). |
@@ -1192,20 +1248,28 @@ determines which capabilities a caller holds. **The capability set is built by e
 **Roles (capability bundles):**
 
 ```python
+# 'view' is SPLIT (W2.1/W3.3) into view.status / view.preview / view.media + view.site_precise.
+# There is no monolithic 'view' capability — no route may be tagged with it (the boot assertion rejects it).
+VIEWER_LINK_CAPS = {"view.status", "view.preview"}   # the DEFAULT viewer-link set: live-watch only.
+                                                     # EXCLUDES view.media (raw FITS) and view.site_precise (precise lat/lon).
 ROLES_CAP = {
-    "viewer":   {"view"},
-    "operator": {"view", "control.capture", "control.guide"},   # imaging + guiding; NOT control.mount/power/config
-    "admin":    ALL_CAPS,                                        # everything
+    "viewer":   VIEWER_LINK_CAPS,                                # = {view.status, view.preview}; NO raw-FITS, NO precise site
+    "operator": {"view.status", "view.preview", "control.capture", "control.guide"},  # imaging + guiding; NOT control.mount/power/config
+    "admin":    ALL_CAPS,                                        # everything (incl. view.media, view.site_precise)
 }
 ```
 
-`operator` is reserved for a future "friend can run my imaging but not drive the mount or reconfigure limits" tier
-(note it deliberately EXCLUDES `control.mount`, `control.power`, and every `config.*`); `viewer` and `admin` ship
-first. Because **sequence-start and polar are now `control.mount`-gated** (the privilege-escalation fix above), an
-`operator` can run a single capture/loop and guiding (with `dither`'s bounded `pulse_guide` as the one accepted motion
-exception) but **cannot start a slewing/centering/meridian-flipping SEQUENCE** — that needs `control.mount`. This is the
-honest boundary; the earlier "operator can image but a sequence drives the mount" leak is closed. `config.safety` and
-`config.solar_override` are flagged DESTRUCTIVE so the UI double-confirms even for admins.
+`ROLES_CAP["viewer"]` EQUALS `VIEWER_LINK_CAPS` — the local `viewer` role and a relay-issued viewer link carry the SAME
+default cap set (`{view.status, view.preview}`). A viewer link gains `view.media` (raw FITS) or `view.site_precise`
+(precise coordinates) ONLY by an explicit per-link opt-in carrying a DISTINCT explicit caps list (W3.3 viewer-link
+issuance) — neither is ever implied by the role. `operator` is reserved for a future "friend can run my imaging but not
+drive the mount or reconfigure limits" tier (note it deliberately EXCLUDES `control.mount`, `control.power`, every
+`config.*`, and `view.media`/`view.site_precise`); `viewer` and `admin` ship first. Because **sequence-start and polar
+are now `control.mount`-gated** (the privilege-escalation fix above), an `operator` can run a single capture/loop and
+guiding (with `dither`'s bounded `pulse_guide` as the one accepted motion exception) but **cannot start a
+slewing/centering/meridian-flipping SEQUENCE** — that needs `control.mount`. This is the honest boundary; the earlier
+"operator can image but a sequence drives the mount" leak is closed. `config.safety` and `config.solar_override` are
+flagged DESTRUCTIVE so the UI double-confirms even for admins.
 
 **The route→capability table is exhaustive and ASSERTED AT BOOT.** `auth/rbac.py` enumerates `app.routes` at startup
 and **fails create_app() if ANY mutating route (POST/PUT/PATCH/DELETE + the `/ws` accept) lacks a declared
@@ -1216,6 +1280,17 @@ goto/move/slew, meridian flip) **MUST carry `control.mount`** (or `control.seque
 sequence route mis-tagged `control.capture` fails the boot check. A single `Depends(requires(cap))` per route is
 INSUFFICIENT for multi-domain mutating routes — see W2.2 for `POST /api/config`. The `safety/simulate` route must carry
 `config.safety` or the boot assertion fails (it is a live-safety-engine mutator).
+
+**The boot assertion validates the RE-KEYED view-split table, so a data-minimization route mis-tag also FAILS boot.**
+Because `view` is split (`view.status`/`view.preview`/`view.media`/`view.site_precise`, W2.1), the boot check **rejects
+the retired monolithic `view` capability outright** — any route still declaring `view` fails `create_app()`. In
+particular the raw-FITS / full-res science routes (`GET /api/preview/{id}/fits`, `app.py:1044`/`:1057`, and any other
+full-res route) **MUST carry `view.media`, NOT `view` and NOT `view.preview`** — a `fits`/full-res route tagged
+`view`/`view.preview` FAILS the boot check, so a viewer-link principal holding only `{view.status, view.preview}`
+(`VIEWER_LINK_CAPS`) can never reach raw FITS through a mis-tagged route. The `/ws` accept and `GET /api/status` carry
+`view.status`; the downsized preview routes carry `view.preview`. This closes the W3.3 leak at the single-source-of-truth
+table rather than only in prose, and is exercised by a §T6 assertion (a `fits` route tagged broad `view`/`view.preview`
+must FAIL boot).
 
 ### W2.2 Enforcement — a FastAPI dependency + WS gate
 
@@ -1555,9 +1630,15 @@ message HomeFrame {                  // home -> relay
     WsEvent           ws_event   = 2; // one bus event for a tunnelled /ws
     Hello             hello      = 3; // device-token auth + stream generation on open
     Pong              pong       = 4;
+    RevokeSignal      revoke     = 6; // CONTROL frame: home PUSHES jti/ws_id invalidation (W3.3 revocation push,
+                                      //   lines 1373, 1744-1745). NOT a response to any request — carries NO corr_id.
   }
   string corr_id      = 10;
   uint32 stream_class = 12;          // self-describing tag; per-class flow control is per-RPC (see service note)
+}
+message RevokeSignal {               // home -> relay revocation PUSH (W3.3): close matching OPEN per-ws_id projections
+  repeated string jti    = 1;        // revoked jti(s) — the relay drops every per-ws_id projection whose ws_id maps to one
+  repeated string ws_id  = 2;        // OR explicit ws_id(s) to close directly (e.g. on logout of a specific viewer link)
 }
 message HttpRequest  {
   string method = 1;
@@ -1649,7 +1730,10 @@ message Hello   {                    // first frame each side sends on stream op
     not overwrite the in-flight request); (2) the home **REJECTS a response/request chunk whose `corr_id` has no open head
     (orphan-chunk → error)** — a `resp_chunk`/`req_chunk` for an unknown/closed `corr_id` is an error, never silently
     buffered. This closes the silent-body-corruption hazard the §T7(1) byte-for-byte reassembly test otherwise assumes
-    away (two requests reusing a `corr_id` would interleave bodies).
+    away (two requests reusing a `corr_id` would interleave bodies). **EXEMPTION — CONTROL frames carry no `corr_id`.**
+    The `HomeFrame.revoke` (`RevokeSignal`) is a home→relay PUSH, not a reply to any request: it **bears NO `corr_id`** and
+    is therefore **NOT subject to the orphan-chunk reject rule above** (it is neither a head nor a chunk). The relay routes
+    it by `jti`/`ws_id`, not by `corr_id`, and never rejects it as an orphan chunk.
   - **Pi-class home DoS protection:** a **max concurrent in-flight `corr_id`s per home**; a **per-request total + per-chunk
     idle timeout** that cancels the ASGI replay and frees the corr_id; a **max request-body size** enforced at BOTH relay
     AND home; and **corr_id collision handling** (reject a duplicate live corr_id, per the namespace rule above) — so a
@@ -1666,9 +1750,10 @@ message Hello   {                    // first frame each side sends on stream op
     keep receiving live status/preview forever, because `requires()` only re-checks on a NEW request and the push path has
     none. So the **relay's per-`ws_id` projection re-checks the `ws_id`'s `jti`** against a **home-PUSHED revocation set**
     (push, not only poll) and **tears down the browser WS within a stated SLA (≤ N s, the same ≤ 30 s bound as the
-    home-direct case, W2.2) on revoke/logout**. The **home emits a revoke SIGNAL on `jti` invalidation** (over a
-    `HomeFrame`) that **closes matching OPEN streams**, not only future requests — so revocation reaches an already-open
-    viewer stream that issues no more requests. Add the bound to the §T test that today only covers the per-request 403,
+    home-direct case, W2.2) on revoke/logout**. The **home emits a revoke SIGNAL on `jti` invalidation** (the
+    `HomeFrame.revoke` / `RevokeSignal` control variant — carrying the revoked `jti`(s) and/or affected `ws_id`(s), with
+    NO `corr_id`) that **closes matching OPEN streams**, not only future requests — so revocation reaches an already-open
+    viewer stream that issues no more requests **independent of any in-flight `corr_id`**. Add the bound to the §T test that today only covers the per-request 403,
     so **"revocable before `exp`" holds for an already-OPEN viewer stream** (not just for the next request): assert an open
     tunnelled `/ws` for a revoked `jti` is **torn down within the bound** after a home-pushed revoke, with no further
     `WsEvent` delivered.
@@ -1793,15 +1878,16 @@ message Hello   {                    // first frame each side sends on stream op
     **TTL + renew-while-connected** for multi-hour imaging sessions; **max concurrent viewers per link**; **per-link
     audit logging**. `config.*`/`admin`/`control.mount`/`control.power`/`config.alerts` are never reachable through a
     viewer link, enforced again at the home.
-  - **`view` is too monolithic for a shared link — SPLIT it.** A `/share` link granting `{view}` exposes, per W2.1,
-    `/api/preview/*` AND the `/ws` stream — i.e. **full-res PNG, raw FITS (tens of MB), and live telemetry including the
-    operator's precise site lat/long** for the link TTL. Split `view` into **`view.status` / `view.preview` /
-    `view.media`** so a viewer link can live-watch (status + maybe downsized preview) WITHOUT bulk science-frame
-    download. Decisions baked in: **raw-FITS download (`/api/preview/{id}/fits`) is NOT in the default viewer-link
-    capability set** (`view.media` only, off by default); and **whether precise site coordinates are exposed to
-    viewer-link holders is an explicit toggle** (it leaks the operator's home location — default to coarse/redacted for
-    shared links). At minimum, the share UI documents that a viewer link exposes full preview + telemetry + site
-    coordinates unless these splits are applied.
+  - **`view` is SPLIT in the W2.1 table — a viewer link carries only `VIEWER_LINK_CAPS`.** The split
+    (`view.status` / `view.preview` / `view.media` + `view.site_precise`) is now canonical in the W2.1 capability table,
+    NOT just this prose. A `/share` link carries the default `VIEWER_LINK_CAPS = {view.status, view.preview}` so it can
+    live-watch (status + downsized preview) WITHOUT bulk science-frame download or precise coordinates. Decisions baked
+    in and ENFORCED at the table + boot assertion (W2.1): **raw-FITS download (`GET /api/preview/{id}/fits`,
+    `app.py:1044`/`:1057`) is gated on `view.media`, which is NOT in `VIEWER_LINK_CAPS`** (off by default — a viewer link
+    grants it only by explicit per-link opt-in); and **precise site coordinates are gated on `view.site_precise`** (also
+    excluded by default — absence coarsens/redacts the coordinates server-side per the redaction bullet below). The boot
+    assertion rejects any preview/FITS route still tagged the retired monolithic `view`, so this is closed at the
+    single-source-of-truth table, not only in the share UI.
   - **REDACTION IS A SERVER-SIDE PROPERTY OF SNAPSHOT/EVENT GENERATION — the "coarse/redacted toggle" has nowhere else to
     run.** Three lenses converge into a leak with **no implementation seam** as written: (1) `hub.summary()`
     (`hub.py:404`/`:409`, verified) **unconditionally** embeds full site `lat`/`lon` AND `redacted(config_store.cfg())`
@@ -1944,7 +2030,7 @@ green (`pytest` + `npm run build`).
 | **C1** | W1.A | 4 wrapping backends (`native_backend.py` rewritten for the pool) + `backends/__init__` import site + **`assemble`→`connect_profile` rename/reshape** (W1.3.0) + sun guard at the motion boundary; hub `rig`/`sessions`; old connect paths reimplemented over it | **ENTRY:** W1.5 characterization snapshots vs `assemble()` (§T3). per-wrapper `test_{sim,nina,native,phd2}_backend.py` (§T1) + **rewritten** fault-injecting `test_orchestrator.py` (§T2, `to_dict`-shape back-compat carried) + `test_sun_guard.py` (§T1.10) + §T1.12 pier-gate + existing green |
 | **C2** | W1.B | RigSpec↔Profile persistence, `/api/backends`, `/api/connect/rig`, boot auto-connect (parked, failure-swallowing) | multi-backend profile round-trip + reconnect; boot-connect-failure isolation + mixed-rig integration (§T4) |
 | **C3** | W1.C | Settings backend picker (primary + per-role, resolved-backend display, mixed-rig confirm) + per-role badges + managed-PHD2 toggle + `backend_links`/boot-LED readout | `npm run build` **+ UI unit tests** (§T8) |
-| **C4** | W1.D | retire ALL `self.mode`/`sim_rig`/`nina_client` reads; `backend_links` array; `mode` = derived label; per-role SimSolver guard | full `pytest` across sim/native/nina/mixed + **source-grep guard** (§T3) |
+| **C4** | W1.D | retire ALL `self.mode`/`sim_rig`/`nina_client` reads; `backend_links` array; `mode` = derived label; per-role SimSolver guard + **W1.11 filter-offset decoupling** (gate `engine._apply_filter` offset move on NOT `fw.applies_focuser_offset`) | full `pytest` across sim/native/nina/mixed + **source-grep guard** (§T3) + **§T1.11 filter-offset skip/apply** |
 | **C5** | W1.7 | managed PHD2 supervisor (allowlisted spawn, on-disk profile write, set_connected/find_star/loop/cal-status RPCs, watchdog) | injected-launcher supervisor tests (§T5) |
 | **C6** | W2.A–B | `AuthProvider("none")` + `requires()` + route table + **boot `app.routes` assertion** + accept-time WS gate + asymmetric session JWT + `jti` + allowlist API + client role model | every existing test green (admin default) + RBAC dependency/WS/JWT tests (§T6) |
 | **C7** | W2.C–D | Google OIDC provider (state/nonce/email_verified/hd) + login UI + `operator` role | OIDC verify (faked JWKS, no live Google) + 403 matrix per role (§T6) |
@@ -1976,7 +2062,8 @@ C6–C7 land (the relay tags roles W2 defines).
   `close()` only clears a dict and `make_device` hides the connection inside the device — W1.2). Also assert
   `NativeBackend.roles` does NOT advertise `guider`/an unfillable role (W1.9): `get_device('guider')` is never offered
   because the role is absent from `backend.roles`.
-- `test_phd2_backend.py` reusing `FakePHD2`: `get_device(non-guider)` → `None`; `native_guider()` identity.
+- `test_phd2_backend.py` reusing `FakePHD2`: `get_device(non-guider)` → **raises `KeyError`** (`pytest.raises(KeyError)`,
+  matching the committed `phd2_backend.py:56-59` and committed `test_phd2_backend.py:116-119`); `native_guider()` identity.
 - **`test_backend_roles_match_served.py` (W1.9):** for EVERY registered backend, assert each role in `backend.roles` is
   actually serviceable — `get_device(role)`/`native_guider()` does not `KeyError` — so an over-broad `roles` tuple (the
   shipped `NativeBackend.roles = ROLES` advertising `guider`/`safety`) fails the test.
@@ -1985,7 +2072,13 @@ C6–C7 land (the relay tags roles W2 defines).
 `tests/test_orchestrator.py`** (W1.3.0): the existing happy-path `assemble` tests are replaced by a
 `FakeBackend`/`FakeSession` fault-injecting suite targeting `connect_profile`, while the existing `to_dict`-shape
 (`{roles, sessions, has_guider, has_native_solver, failures}`) and graceful-degrade assertions are **carried forward**
-(back-compat keys preserved, plus the new `results` list) so the rename+reshape is proven non-regressive. Enumerate:
+(back-compat keys preserved, plus the new `results` list) so the rename+reshape is proven non-regressive. **The
+carried-forward `to_dict`-shape assertion MUST be rewritten to exercise a rig with TWO same-host endpoints of differing
+port-presence** — `(backend, host, 11111)` AND `(backend, host, None)` both keyed under the same host — and assert
+`to_dict(result)["sessions"]` returns a sorted list of JSON-able strings WITHOUT raising. This is the C1 gate that
+catches the `TypeError: '<' not supported between instances of 'int' and 'NoneType'` an implementer would ship by
+carrying `sorted(result.sessions)` (`orchestrator.py:129`) forward over the new tuple keys (W1.3.0 to_dict row), and the
+non-JSON-able raw-tuple regression — neither is caught by a single-endpoint shape assertion. Enumerate:
 (1) `open()` raises → every role on that endpoint `RoleResult(ok=False, attempted=True)`, OTHER backends still come up;
 (2) one role's `get_device` raises → that role degraded, sibling roles on the same session still in the rig;
 (3) `get_device` returns `None` → `RoleResult(ok=False, attempted=True)`, no crash; (4) two roles on one endpoint →
@@ -1998,10 +2091,19 @@ native hosts → **two connections**, correct device per host; (8) a later step 
 `SimRig` **exactly ONCE** (one session; the override role and a primary role share the same shared state) — stray
 addressing cannot split shared sim state; (11) **"zero hub edits" proof (W1.5):** a NEW `FakeBackend` filling
 `camera`+`telescope`, registered with ONLY `register()` + one import line, comes up through `connect_profile` with **NO
-new hub method** — `hub.rig` populated, `device.connect()` awaited per role, no `KeyError`, no `connect_fakebackend`;
+new hub method** — `hub.rig` populated, `device.connect()` awaited per role, no `KeyError`, no `connect_fakebackend`.
+**Add a HOSTLESS variant of this same `FakeBackend`** (`hostless = True`) carrying a stray **non-None `host`** on ≥2 of
+its roles: assert all those roles STILL coalesce to **ONE** session (one `open()` call), proving `_group` keyed off
+`get_backend(name).hostless` rather than a literal `{sim, phd2}` name set — a name-list `_group` that only special-cases
+`sim`/`phd2` would split this new hostless backend into two sessions and FAIL here;
 (12) **empty-sessions on total-primary-failure (W1.3.0):** a single-endpoint rig whose only `open()` raises returns
 **empty `sessions`** and the thin builder **re-raises** the recorded `RoleResult.error` (matching the committed
-`hub.py:222-224` NINA fail-fast), not a silent partial-connect.
+`hub.py:222-224` NINA fail-fast), not a silent partial-connect; (13) **stray-addressed guider still found (W1.3.0
+`_pick_guider` seam):** a guider override on a HOSTLESS backend (`sim` or `phd2`-local) carrying a **stray non-None
+`host`** is STILL resolved — `_pick_guider` keys `sessions` with the SAME normalized `(backend, None, None)` key `_group`
+used, so `guider is not None` and its `RoleResult` is **`ok=True`** (NOT a spurious `"no guider"`). This mirrors the
+§T2(10) imaging-path stray-addressing case for the guider seam and fails any implementation keying `_pick_guider` off the
+raw `(conn.backend, conn.host, conn.port)`.
 
 **§T2/§T4 — mixed-rig per-role SimSolver derivation.** A MIXED rig — `primary=native` mount + camera OVERRIDDEN to
 `sim` — asserts `_pick_solver` selects the **guarded `SimSolver` via the CAMERA session** and that `get_solver` receives
@@ -2043,14 +2145,34 @@ on `/api/status` (persistent header chip) AND a **TYPED bus event published to a
 `AlertDispatcher._on_bus_event` (`alerting.py:233`) without coupling the test to network delivery (which the existing
 `MockTransport` alerting tests cover separately).
 
-**§T1.12 — cross-backend meridian-flip pier-gate (W1.12/W1.13).** With a fake **GEM** mount (`time_to_meridian_flip()`
-returns a number, not `None`) reporting an **UNCHANGED** pier side across the flip: assert `guider.flip_calibration()`
-**IS still called when the side is UNKNOWN/non-reporting** (the inverted-gate behavior, W1.13) and is **NOT called only
-when the side is KNOWN-and-unchanged**; with a **confirmed side change** assert it **IS called exactly once**. **Add a
-NON-FLIPPING FORK mount case** (`time_to_meridian_flip()` returns `None`, no positive flip flag): assert
+**§T1.11 — filter-offset double-apply skip/apply (W1.11 / C4).** New case in the `test_sequence.py` / `test_engine_*.py`
+in-process fakes suite (NOT `unittest.mock`): drive `engine._apply_filter` across a filter change with an in-process
+**fake `FilterWheel`** (carrying `filter_offsets`) and **fake `Focuser`** (recording `move_to` calls), `plan.apply_filter_offsets = True`. (1) **SKIP:** when the active filterwheel advertises `applies_focuser_offset = True`, assert
+`focuser.move_to` is **NOT called for the offset** (the engine must skip its own `move_to(pos + delta)` because NINA
+applies it natively — the double-correction guard). (2) **APPLY:** when the flag is **absent/`False`**, assert the engine
+**APPLIES** the offset — `focuser.move_to(pos + delta)` is called exactly once with the per-filter delta. Grounds the
+W1.11 fix: committed `sequence/engine.py:1358-1364` does `await foc.move_to(pos + delta)` UNCONDITIONALLY (it consults no
+`FilterWheel.applies_focuser_offset` flag), so a NINA-primary rig double-corrects focus on every filter change TODAY;
+this test fails until the move is gated on NOT `fw.applies_focuser_offset`. (Wired into a chunk gate via C4/W1.D's
+decoupling pass — see the chunk table Verify column.)
+
+**§T1.12 — cross-backend meridian-flip pier-gate (W1.12/W1.13).** With a fake **reporting GEM** mount (reporting
+pier_side east/west so `_is_gem(side)` is true) reporting an **UNCHANGED** pier side across the flip: assert
+`guider.flip_calibration()` is **NOT called only when the side is KNOWN-and-unchanged**; with a **confirmed side change**
+assert it **IS called exactly once**. **Add a NON-REPORTING GEM case (the runaway-RA regression guard) — a DISTINCT
+mount from the fork case below:** `does_meridian_flip = True` (the mandatory W1.13 flag), `pier_side()` returns
+**UNKNOWN** (non-reporting), and `time_to_meridian_flip()` returns `None` (`base.py:202`/`sim.py` return `None`;
+`nina.py:429` alone overrides): assert the inverted FLIP-UNLESS-known-and-unchanged rule **STILL fires** — i.e.
+`flip_calibration` **IS called** even though `_is_gem("unknown")` is **False**, proving the GEM gate keys off
+`_is_gem(side) OR the mandatory flip flag`, NOT off `_is_gem(side)` alone NOR off `time_to_meridian_flip() is None`, so
+the sim/native non-reporting GEMs the W4 tests target are not mis-classified into backwards guiding (W1.13). **Add a
+NON-FLIPPING FORK/ALT-AZ mount case** as a **SEPARATE** mount distinguished as **`does_meridian_flip = False` AND
+pier_side == UNKNOWN AND not a flagged/`_is_gem` GEM** (and `time_to_meridian_flip()` returns `None`): assert
 `flip_calibration` is **NOT called** even when pier side is UNKNOWN (the GEM-gate-first rule, W1.13 step 1 — so the
-inverted rule cannot back-fire on a fork/alt-az mount). Cover the **cross-backend** case (PHD2-guider fake + native-mount
-fake on different sessions) so the **hub-level** coordination — not the guider — triggers the flip. **Add the
+inverted rule cannot back-fire on a fork/alt-az mount). The two UNKNOWN-pier mounts are deliberately split: the flag
+`True` one MUST flip, the flag `False` one MUST NOT — they differ ONLY in `does_meridian_flip`, proving the flag is the
+discriminator. Cover the **cross-backend** case (PHD2-guider fake + native-mount fake on different sessions) so the
+**hub-level** coordination — not the guider — triggers the flip. **Add the
 MANAGED-PHD2 + meridian-flip case (W1.7):** with managed PHD2 and an EXISTING calibration, the post-flip restart uses
 `flip_calibration` and issues **NO new calibration slew** (the fake records no `find_star`/calibrate after the flip) —
 so a freshly-written managed profile cannot trigger a full re-calibration that slews a real GEM off the centered target.
@@ -2588,7 +2710,7 @@ Third review pass, grounded by spot-checking the committed tree at the time of w
 Fourth review pass, grounded by spot-checking the committed tree at the time of writing: `hub.py`
 (`connect_sim` reads `session.shared_state`/`session.guide_camera` at `:177-178`, `connect_nina` reads `session.client`
 at `:226`, `meridian_flip` `stop_guiding→goto_and_center→flip_calibration→start_guiding` at `:1043-1079`),
-`sequence/engine.py` (`_change_filter` does `foc.move_to(pos+delta)` UNCONDITIONALLY at `:1358-1364`),
+`sequence/engine.py` (`_apply_filter` does `foc.move_to(pos+delta)` UNCONDITIONALLY at `:1358-1364`),
 `alerting.py` (`AlertDispatcher._on_bus_event` at `:233`; `_url_is_safe(allow_private)` at `:69-103`; deadman
 `allow_private=True` at `:459`), `devices/backends/__init__.py` (ALREADY EXISTS, imports all four),
 `devices/base.py` (`Camera.set_cooler` single set-point at `:134`), `devices/sim.py` (non-`ROLES` `guide_camera` at
@@ -2637,9 +2759,10 @@ and why:
   (brightness + cover + auto-flat target type).
 - **W1.10 — periodic sun-proximity check on the status poller** so a TRACKING mount drifting into the cone over time is
   halted, not only at goto/move/connect; added §T1.10(9).
-- **W1.11 — filter-offset double-apply named in committed `engine.py`.** `engine.py:_change_filter` (`:1358-1364`) does
+- **W1.11 — filter-offset double-apply named in committed `engine.py`.** `engine.py:_apply_filter` (`:1358-1364`) does
   the offset `foc.move_to` UNCONDITIONALLY — a NINA-primary rig double-corrects focus TODAY; gate it on NOT
-  `applies_focuser_offset`; added the §T skip/apply test. Added a cooling-ramp / warmup-before-disconnect contract as a
+  `applies_focuser_offset`; the §T skip/apply test is added as a named case in r7 (§T1.11) and wired into the C4 gate.
+  Added a cooling-ramp / warmup-before-disconnect contract as a
   known gap (`Camera.set_cooler` at `base.py:134` is a single set-point; the W1.3 teardown abruptly cuts cooler power).
 - **W1.C — danger hold-confirm extended to ANY real motion device** (mount OR focuser), not only the mixed bench combo,
   with a per-rig consequence summary; sim-only stays frictionless.
@@ -2695,3 +2818,166 @@ and why:
 GuideRate{RA,Dec} are separate, independently settable; no guide-rate accessor exists anywhere today), and stated
 NativeGuider must implement its OWN calibration routine (a real re-implementation of what PHD2 provides for free) — the
 concrete reason it is a larger lift than a Backend registration; OPEN DECISION 3 updated to name the calibration cost.
+
+---
+
+## Review revision r5
+
+Fifth review pass — STRICT convergence, surfacing only material must-fix defects (correctness bugs, safety holes,
+spec↔committed-code drift). Grounded by spot-checking the committed tree: `devices/orchestrator.py` (`to_dict` does
+`"sessions": sorted(result.sessions)` at `:129`), `devices/backends/phd2_backend.py` (`Phd2Session.get_device` `raise
+KeyError` for non-guider roles at `:56-59`), `tests/test_phd2_backend.py` (`test_get_device_rejects_non_guider_role`
+asserts `pytest.raises(KeyError)` at `:116-119`), `devices/nina.py` (`time_to_meridian_flip` overridden at `:429`),
+`devices/base.py` (`time_to_meridian_flip` returns `None` at `:202`), `devices/sim.py` (`SimTelescope` is "a German
+equatorial", does NOT override `time_to_meridian_flip`, at `:241`), and `devices/hub.py` (`_is_gem(side)` = pier_side
+east/west at `:1217-1220`; `_compute_meridian` gates `flip_enabled` on `_is_gem(side)` at `:1244-1246` precisely because
+an Alpaca/sim GEM returns `None` from `time_to_meridian_flip()`). What changed and why:
+
+- **W1.3.0 — `to_dict` back-compat `sessions` value made None-safe AND JSON-able over the new tuple keys (HIGH).** The
+  reshape re-keys `sessions` to `(backend, host|None, port|None)` but was silent on how the back-compat `sessions`
+  summary value is derived — so an implementer would carry the committed `"sessions": sorted(result.sessions)`
+  (`orchestrator.py:129`) forward. `sorted()` over the new tuple keys raises `TypeError: '<' not supported between
+  instances of 'int' and 'NoneType'` the moment two same-host keys differ in port-presence (`('native','host',11111)`
+  vs `('native','host',None)`) — exactly the partial-port multi-endpoint rigs the tuple key exists to support — and raw
+  tuples are not JSON-able. Pinned the derivation in the W1.3.0 to_dict row (`sorted(str(k) for k in result.sessions)`,
+  or a None-coercing sort key emitting stringified tuples), and rewrote the carried-forward §T2 to_dict-shape assertion
+  to exercise a rig with TWO same-host endpoints of differing port-presence so the C1 gate catches the crash and the
+  non-JSON-able regression.
+- **W1.13/§T1.12 — does-GEM-flip classifier MUST NOT key off `time_to_meridian_flip() is None` (HIGH, safety).** That
+  property is NINA-only (overridden solely at `nina.py:429`; `base.py:202` and `sim.py` return `None`), so a real
+  native-Alpaca GEM and the sim GEM — the W4/§T1.12 targets — return `None` and were mis-classified as non-GEM, NEVER
+  getting their guider calibration flipped: the exact backwards/runaway-RA hazard the gate exists to prevent. This also
+  contradicted the committed `hub._compute_meridian`, which detects a GEM via `_is_gem(side)` = pier_side east/west
+  (`hub.py:1217-1220`, `:1244-1246`) precisely because Alpaca/sim GEMs return `None`. Re-specced the classifier to gate on
+  a positive does-GEM-flip signal that AGREES with `_compute_meridian` — EITHER reuse the committed `_is_gem(side)`/
+  pier_side east|west signal OR a MANDATORY (not "and/or"-optional) `is_german_equatorial`/`does_meridian_flip` flag set
+  by the native Alpaca backend from ASCOM `AlignmentMode == germanPolar` (and `SimTelescope` → `True`). Fixed the §T1.12
+  cases: fork/alt-az distinguished as pier_side == UNKNOWN AND not-`_is_gem`/not-flagged (flip NOT called), while an
+  Alpaca/sim GEM that returns `None` from `time_to_meridian_flip()` but reports pier_side east/west STILL gets the
+  inverted FLIP-UNLESS-known-and-unchanged rule (mis-classification regression guard).
+- **§T1 + design body — PHD2 `get_device(non-guider)` reconciled to `raises KeyError` (HIGH, spec↔code drift).** Spec
+  line 235 ("returns None for non-guider roles") and §T1 line 1979 ("`get_device(non-guider)` → None") contradicted the
+  committed `Phd2Session.get_device` which RAISES `KeyError` (`phd2_backend.py:56-59`), matching the house convention
+  (sim/native also raise) and the committed `test_phd2_backend.py:116-119` (`pytest.raises(KeyError)`). A §T1 test written
+  verbatim to the spec would fail shipped code, and this was not framed as an intentional red test. Changed both the
+  design body (lines 235-238, including the dependent guider-only prose) and the §T1 line to `raises KeyError` so spec
+  body, §T1, and committed code agree.
+
+## Review revision r6
+
+Sixth review pass — STRICT convergence, applying only material must-fix defects grounded by spot-checking the committed
+tree: `devices/hub.py` (`_is_gem(side)` = pier_side east/west at `:1216-1220`; `_compute_meridian` at `:1222-1249`;
+`summary()` embeds full site lat/lon + redacted config at `:404`/`:409`), `devices/base.py` (`pier_side()` → `UNKNOWN`
+at `:190-191`; `reports_destination_pier_side = False` at `:152`; `time_to_meridian_flip()` → `None` at `:202`),
+`devices/orchestrator.py` (`assemble()` builds an explicit `role_session` key map at `:76`/`:92-93`/`:105-108`;
+`_session_key` at `:52`), and `api/app.py` (raw-FITS `GET /api/preview/{id}/fits` `FileResponse` at `:1044`/`:1057`).
+What changed and why:
+
+- **W1.13/§T1.12 — does-GEM-flip classifier MUST be `_is_gem(side) OR flip-flag`, never `_is_gem(side)` alone (HIGH,
+  safety).** The r5 decision tree offered option (a) — reuse `_is_gem(side)` (pier_side east/west, `hub.py:1216-1220`) —
+  as a STANDALONE classifier. But the common real GEM is a non-reporting / UNKNOWN-pier mount (`base.py:190-191`
+  `pier_side()` → `UNKNOWN`; `base.py:152` `reports_destination_pier_side=False`), so `_is_gem("unknown")` is `False` and
+  step (1) classifies it non-GEM and NEVER flips its calibration — the exact backwards/runaway-RA hazard the section
+  exists to prevent, contradicting its own claim. Removed option (a) as a standalone choice: the classifier is now
+  `_is_gem(side) OR positive does_meridian_flip/is_german_equatorial flag`, and that flag is a MANDATORY (not optional)
+  addition to the `Telescope` ABC — none exists today (`reports_destination_pier_side` at `base.py:152` is about
+  destination-pier-side support, NOT flip class). Native Alpaca sets it from ASCOM `AlignmentMode == germanPolar`;
+  `SimTelescope` sets it `True`. A mount with pier_side UNKNOWN AND no flag is the only true non-GEM (fork/alt-az). Split
+  the self-contradictory §T1.12 GEM case ("reporting pier_side east/west so `_is_gem` is true ... when the side is
+  UNKNOWN") into TWO distinct mounts: (i) a non-reporting GEM (`does_meridian_flip=True`, pier UNKNOWN, `ttf=None`)
+  asserting `flip_calibration` IS called, and (ii) a fork (`does_meridian_flip=False`, pier UNKNOWN) asserting it is NOT
+  called — the two differ ONLY in the flag, proving the flag is the discriminator.
+- **W1.3.0 — undefined `_pick_guider` session-lookup seam PINNED (HIGH, correctness).** `connect_profile` calls
+  `guider = _pick_guider(resolved, sessions)` (line 390) but `_pick_guider` was DEFINED NOWHERE (single grep occurrence =
+  the call site), unlike its fully-specified sibling `_pick_solver`. `sessions` is keyed by the `_group`-normalized
+  `(backend, host|None, port|None)` tuple (hostless sim/phd2-local → host/port `None`). An implementer keying off raw
+  `(conn.backend, conn.host, conn.port)` would MISS the session for a stray-addressed sim/PHD2-local guider override and
+  emit a spurious `"no guider"` `RoleResult` (line 393). Added a defining bullet pinning `_pick_guider`'s lookup the same
+  way `_pick_solver`'s is — locate the guider session via the SAME normalized grouping key `_group` produces (hostless
+  host/port → None before keying) then return `native_guider()`; OR restore the explicit `role → session-key` map the
+  committed `assemble()` built (`orchestrator.py:76`/`:92-93`/`:105-108`) and have both seams read it. Updated the
+  pseudocode call-site comment and added §T2 case (13): a stray-non-None-host guider override on a hostless backend is
+  STILL found and yields a non-None guider with an `ok=True` `RoleResult` (mirrors §T2(10) for the guider seam).
+
+---
+
+## Review revision r8
+
+Strict convergence pass, grounded by spot-checking the committed tree: `sequence/engine.py` (`_apply_filter` at `:1342`,
+called from `:812`, unconditional `await foc.move_to(pos + delta)` at `:1364`) and `tests/test_sequence.py`
+(`engine._apply_filter(...)` already invoked at `:125`). What changed and why:
+
+- **W3.2 `proto/relay.proto` — `HomeFrame` oneof had no revocation-signal variant; the required home→relay revocation
+  PUSH was unexpressible on the wire (HIGH, correctness / security — spec lines 1626-1633).** The spec mandates a
+  home-pushed revoke "over a `HomeFrame`" (lines 1373, 1744-1745) and asserts a §T6(2)/§T7 teardown test against it
+  (lines 1746-1749), but the `HomeFrame` oneof carried only `{response, resp_chunk, ws_event, hello, pong}` — no variant
+  could encode it and it cannot be smuggled as a `corr_id`-bearing chunk, so a revoked viewer's tunnelled `/ws` keeps
+  receiving live status/preview past the ≤ 30 s bound. Added an explicit control variant `RevokeSignal revoke = 6;` to
+  the `HomeFrame` oneof and defined `message RevokeSignal { repeated string jti = 1; repeated string ws_id = 2; }`, so the
+  home can PUSH revocation that closes matching OPEN per-`ws_id` projections within the ≤ 30 s bound independent of any
+  in-flight `corr_id`. Stated this control frame carries **no `corr_id`** and is therefore **exempt from the orphan-chunk
+  reject rule** (lines 1724-1725 — it is neither a head nor a chunk; the relay routes it by `jti`/`ws_id`). Updated the
+  W3.3 prose (lines 1744-1745) to name the concrete `HomeFrame.revoke` / `RevokeSignal` variant. The documented
+  poll-of-`revoked_jti` fallback is kept; the required push is now expressible on the wire so the §T6(2)/§T7 assertion is
+  implementable.
+- **TEST PLAN §T1.11 + C4 chunk Verify column + W1.11 prose — wrong method name `_change_filter` corrected to the
+  committed `_apply_filter` (HIGH, spec↔code DRIFT — spec lines 1011, 1015, 2023, 2139, 2703, 2752, 2931).** The committed
+  tree has `SequenceEngine._apply_filter` (`engine.py:1342`, called from `:812`, unconditional `move_to(pos + delta)` at
+  `:1364`) and **no** `_change_filter`; `tests/test_sequence.py:125` already calls `engine._apply_filter(...)`. As
+  written, the named §T1.11 entry point (`drive engine._change_filter`) would `AttributeError` against committed code and
+  the C4 gate instruction pointed at a nonexistent method. Replaced `_change_filter` with `_apply_filter` at all seven
+  occurrences. The cited line range (`engine.py:1358-1364`) is correct and was left unchanged — only the method name was
+  wrong. No new test content added.
+- **W2.1 ↔ W3.3 — split view capabilities reconciled into the single-source-of-truth table (HIGH, data-minimization /
+  security).** The split-view caps W3.3 relies on (`view.status`/`view.preview`/`view.media`/`view.site_precise`) lived
+  ONLY in W3.2/W3.3 prose + changelog and were NEVER reconciled into the W2.1 table, which still mapped ALL of
+  `/api/preview/*` (incl. raw-FITS `GET /api/preview/{id}/fits`, `app.py:1044`/`:1057`) to monolithic `view` with
+  `ROLES_CAP['viewer']={'view'}`. The boot route→capability assertion therefore validated only monolithic `view`, so a
+  viewer-link principal granted `{view}` passed `requires('view')` on the raw-FITS route and the `hub.summary()` WS hello
+  carried precise site lat/lon (`hub.py:404`) — re-opening exactly the leak the W3.3 split exists to close. (1) Replaced
+  the monolithic `view` table row with `view.status`/`view.preview`/`view.media` + `view.site_precise`, gating raw-FITS
+  (and any full-res science route) on `view.media`, status/WS on `view.status`, downsized preview on `view.preview`.
+  (2) Defined the explicit default `VIEWER_LINK_CAPS = {view.status, view.preview}` (EXCLUDES `view.media` and
+  `view.site_precise`) and stated `ROLES_CAP['viewer']` EQUALS it, with `view.media`/`view.site_precise` reachable only
+  via an explicit per-link opt-in caps list. (3) Extended the boot assertion to validate the re-keyed table — it rejects
+  the retired monolithic `view` outright, so a preview/FITS route still tagged broad `view`/`view.preview` FAILS boot
+  (exercised by a §T6 assertion). Updated the W3.3 "`view` is too monolithic" bullet to reference the now-canonical split
+  rather than framing it as a future action.
+
+---
+
+## Review revision r7
+
+Strict convergence pass: only must-fix defects (spec↔committed-code drift, a TEST-PLAN gap with a dangling false
+changelog claim, and an either/or mechanism permitting hardcoded backend names). No enrichment or scope additions.
+
+**W1 — pluggable backends / orchestrator:**
+- **W1.2 — `NinaSession.native_solver()` spec contradicted committed code and resurrected a removed broken path (HIGH,
+  correctness / live-rig-hang).** Spec line 198 said `native_solver()` "returns the NINA solver adapter," but committed
+  `nina_backend.py:72-75` returns `None` and there is **no `NinaSolver` class** (only `AstapSolver`/`SimSolver`). Wiring
+  that line literally would make `_pick_solver` (lines 424-425) prefer a nonexistent/hanging NINA solver over ASTAP,
+  re-introducing the orphaned-ASTAP / live-rig-hang hazard the committed `hub.solve_and_sync` fix (`hub.py:959-966`)
+  deliberately removed. Reconciled line 198 to committed reality: `native_solver()` returns `None`; NINA captures a frame
+  and solves via the hub's local solver (`solve.get_solver` → ASTAP, refusing `SimSolver` fallback), exactly as
+  `solve_and_sync` does today; `_pick_solver`'s ASTAP-vs-guarded-`SimSolver` precedence is the single owner of the NINA
+  camera solve path. Softened the `BackendSession` contract comment (line 120) from "in-process PlateSolver (NINA/native)"
+  to "(native only) … no stage-A backend provides one."
+- **W1.11 — filter-offset double-apply fix had no §T case and no owning chunk (HIGH, TEST-PLAN gap + false changelog
+  claim).** The committed bug is real: `sequence/engine.py:1358-1364` does `await foc.move_to(pos + delta)`
+  UNCONDITIONALLY whenever `apply_filter_offsets` is set and a focuser is present — it consults no
+  `FilterWheel.applies_focuser_offset` flag — so a NINA-primary rig double-corrects focus on every filter change today.
+  The r4 changelog (old line 2729) claimed "added the §T skip/apply test," but no such case existed in §T1-§T8. Lifted the
+  already-written §T assertions into a NAMED **§T1.11** test (in-process fake `FilterWheel`/`Focuser`): assert
+  `engine._apply_filter` SKIPS `move_to(pos + delta)` when the active filterwheel advertises
+  `applies_focuser_offset=True` and APPLIES it when the flag is absent/`False`. Wired the W1.11 fix + §T1.11 into the
+  **C4/W1.D** chunk Verify column so a gate actually runs it, and corrected the dangling r4 claim to point at the now-real
+  §T1.11.
+- **W1.3 — hostless-coalescing left as an either/or that permitted hardcoded backend names (MEDIUM, architecture).**
+  Lines 305-306 offered `Backend.hostless` OR "`RigSpec.resolve`/`connect_profile` drops host/port for sim/phd2-local
+  before keying"; the second branch can only be built by hardcoding the `{sim, phd2}` name set inside
+  `_group`/`connect_profile`, re-introducing the `if backend == "sim"` coupling the pluggable design exists to delete.
+  Pinned `Backend.hostless` (default `False`, `True` on `SimBackend`/`Phd2Backend`) as the REQUIRED mechanism, added the
+  flag to the W1.1 `Backend` Protocol, deleted the alternative, and stated `_group`/`_pick_guider`/`_pick_solver`
+  normalize host/port→`None` via `get_backend(name).hostless`, never a literal name set. Strengthened **§T2(11)** with a
+  HOSTLESS `FakeBackend` variant (stray non-None host on ≥2 roles must still coalesce to ONE session), which catches a
+  name-list `_group` that only special-cases sim/phd2.
