@@ -104,6 +104,44 @@ def test_atomic_write_leaves_no_tmp(tmp_path):
     AppConfig(**json.loads(path.read_text(encoding="utf-8")))
 
 
+# ----------------------------------------------- active-profile pointer (Stage B)
+
+def test_set_active_profile_persists_and_bumps_version(tmp_path):
+    """The active-profile pointer is the only profile state AppConfig holds (the
+    records live in ProfileLibrary). Setting it bumps version, writes atomically,
+    and survives a restart."""
+    path = tmp_path / "astrodeck.json"
+    store = ConfigStore(path=path)
+    pid = "abc-123"
+    cfg = store.set_active_profile(pid)
+    assert cfg.active_profile_id == pid
+    assert cfg.version == 2                         # bumped on save
+    # a fresh store reading the same file sees the pointer (restart simulation).
+    reborn = ConfigStore(path=path)
+    assert reborn.cfg().active_profile_id == pid
+    assert reborn.cfg().version == 2
+    assert not (tmp_path / "astrodeck.json.tmp").exists()  # atomic, no temp left
+
+
+def test_set_active_profile_none_clears_pointer(tmp_path):
+    """Clearing the active pointer (e.g. after deleting the active profile) sets
+    it to None and still bumps version."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    store.set_active_profile("xyz")
+    cfg = store.set_active_profile(None)
+    assert cfg.active_profile_id is None
+    assert cfg.version == 3                         # 1 -> 2 (set) -> 3 (clear)
+
+
+def test_active_profile_round_trips_on_disk(tmp_path):
+    """The active_profile_id is serialized into the JSON document verbatim."""
+    path = tmp_path / "astrodeck.json"
+    store = ConfigStore(path=path)
+    store.set_active_profile("rig-uuid-1")
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["active_profile_id"] == "rig-uuid-1"
+
+
 def test_union_config_tolerates_extra_keys(tmp_path):
     """Risk-2: the AppConfig is a union (settings keys now, automation keys
     later). A file with unknown keys must still load (defaults fill the rest)."""
