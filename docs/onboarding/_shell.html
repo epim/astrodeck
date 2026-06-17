@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstroDeck — A Field Guide to the Sky We Photograph</title>
+<meta name="description" content="A scroll-driven primer on astrophotography for people who build software, not telescopes.">
+
+<!-- Fonts: Fraunces (display, optical + a little personality) + Newsreader (body, calm and readable) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  /* ============================================================
+     DESIGN SYSTEM — tokens
+     The whole document inherits from here. Change a value once,
+     the change ripples everywhere. This is the only place an
+     author should ever touch global color, type, or spacing.
+     ============================================================ */
+  :root {
+    /* --- color: a deep-space canvas, warm human accent --- */
+    --c-bg:          #0a0d16;   /* near-black, faint blue — the night */
+    --c-bg-raised:   #11151f;   /* panels, cards, anything lifted off the page */
+    --c-bg-sunk:     #070910;   /* wells, code, things pushed in */
+    --c-ink:         #ece7df;   /* primary text — warm paper white, not pure white */
+    --c-ink-soft:    #b3ada3;   /* secondary text */
+    --c-ink-faint:   #6d6a64;   /* hairlines, decoration, the quiet non-text stuff */
+    --c-caption:     #8a857c;   /* faint TEXT meant to be read (captions, labels) — AA on bg */
+    --c-line:        #232838;   /* hairlines and borders */
+    --c-accent:      #e8a849;   /* amber — a warm lamp in the dark. THE accent. */
+    --c-accent-soft: #f0c483;   /* lighter amber for hovers / glints */
+    --c-accent-deep: #b8791f;   /* pressed / underlines */
+    --c-cool:        #6f9bd8;   /* a cool counter-accent, used sparingly (sky, links) */
+    --c-good:        #74c69d;   /* "this is fine" green, rarely needed */
+
+    /* --- type --- */
+    --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+    --font-body:    "Newsreader", Georgia, serif;
+    --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* a confident modular scale (~1.25) */
+    --t-xs:   0.78rem;
+    --t-sm:   0.92rem;
+    --t-base: 1.18rem;
+    --t-lg:   1.5rem;
+    --t-xl:   2rem;
+    --t-2xl:  2.75rem;
+    --t-3xl:  3.75rem;
+    --t-4xl:  clamp(2.8rem, 7vw, 5.5rem);
+
+    --leading-tight: 1.12;
+    --leading-snug:  1.32;
+    --leading-body:  1.62;
+
+    /* --- space: an 8px-ish rhythm --- */
+    --s-1: 0.5rem;
+    --s-2: 1rem;
+    --s-3: 1.5rem;
+    --s-4: 2rem;
+    --s-5: 3rem;
+    --s-6: 4.5rem;
+    --s-7: 7rem;
+    --s-8: 11rem;
+
+    /* --- layout --- */
+    --measure:      38rem;    /* ideal reading width */
+    --measure-wide: 62rem;    /* figures, wide moments */
+    --gutter:       clamp(1.25rem, 5vw, 3.5rem);
+
+    /* --- depth + edges --- */
+    --radius:    14px;
+    --radius-sm: 9px;
+    --shadow:    0 24px 60px -28px rgba(0,0,0,0.75);
+    --ring:      0 0 0 1px var(--c-line);
+
+    /* --- motion --- */
+    --ease:      cubic-bezier(0.22, 1, 0.36, 1);   /* gentle overshoot-free */
+    --ease-soft: cubic-bezier(0.4, 0, 0.2, 1);
+    --dur:       0.7s;
+    --dur-fast:  0.3s;
+  }
+
+  /* ============================================================
+     RESET + GLOBAL ELEMENTS
+     ============================================================ */
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--c-bg);
+    color: var(--c-ink);
+    font-family: var(--font-body);
+    font-size: var(--t-base);
+    line-height: var(--leading-body);
+    font-weight: 400;
+    letter-spacing: 0.002em;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+
+  /* a faint star-dust gradient so the dark never reads as flat #000 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(1200px 800px at 78% -8%, rgba(232,168,73,0.08), transparent 60%),
+      radial-gradient(900px 700px at 8% 18%, rgba(111,155,216,0.06), transparent 55%),
+      radial-gradient(1100px 900px at 50% 115%, rgba(111,155,216,0.05), transparent 60%);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 400;
+    line-height: var(--leading-tight);
+    letter-spacing: -0.015em;
+    margin: 0 0 var(--s-3);
+    text-wrap: balance;
+  }
+  h1 { font-size: var(--t-4xl); font-weight: 500; }
+  h2 { font-size: var(--t-3xl); }
+  h3 { font-size: var(--t-xl); }
+  h4 { font-size: var(--t-lg); }
+
+  p { margin: 0 0 var(--s-3); }
+  p:last-child { margin-bottom: 0; }
+
+  a {
+    color: var(--c-cool);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--c-cool) 35%, transparent);
+    transition: color var(--dur-fast) var(--ease-soft), border-color var(--dur-fast) var(--ease-soft);
+  }
+  a:hover { color: var(--c-accent-soft); border-color: var(--c-accent); }
+
+  strong, b { font-weight: 600; color: var(--c-ink); }
+  em { font-style: italic; }
+
+  code, kbd, samp {
+    font-family: var(--font-mono);
+    font-size: 0.86em;
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: 5px;
+    padding: 0.1em 0.4em;
+    color: var(--c-accent-soft);
+  }
+
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--c-line);
+    margin: var(--s-5) 0;
+  }
+
+  ::selection { background: var(--c-accent); color: #1a1206; }
+
+  img, svg, canvas { max-width: 100%; display: block; }
+
+  /* ============================================================
+     LAYOUT CONTAINERS
+     ============================================================ */
+  main { display: block; }
+
+  /* Every section author drops in is a .primer-section.
+     It owns vertical rhythm + the centered reading column. */
+  .primer-section {
+    position: relative;
+    padding: var(--s-8) var(--gutter);
+    max-width: var(--measure-wide);
+    margin-inline: auto;
+  }
+  .primer-section > * {
+    max-width: var(--measure);
+    margin-inline: auto;
+  }
+  /* opt-out for full-bleed figures within a section */
+  .primer-section > .bleed-wide { max-width: var(--measure-wide); }
+  .primer-section > .bleed-full { max-width: none; }
+
+  @media (max-width: 640px) {
+    .primer-section { padding: var(--s-7) var(--gutter); }
+  }
+
+  /* a small label that sits above section titles — the "kicker" */
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--c-accent);
+    margin-bottom: var(--s-2);
+  }
+
+  .lede {
+    font-size: var(--t-lg);
+    line-height: var(--leading-snug);
+    color: var(--c-ink-soft);
+    font-weight: 300;
+  }
+
+  .caption {
+    font-size: var(--t-sm);
+    color: var(--c-caption);
+    line-height: var(--leading-snug);
+  }
+
+  /* ============================================================
+     .reveal — the shared scroll-in utility
+     Authors add class="reveal" (optionally with --reveal-delay
+     inline) to anything they want to fade + rise into view.
+     JS toggles .is-in when it crosses the threshold.
+     ============================================================ */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition:
+      opacity var(--dur) var(--ease),
+      transform var(--dur) var(--ease);
+    transition-delay: var(--reveal-delay, 0s);
+    will-change: opacity, transform;
+  }
+  .reveal.is-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* ============================================================
+     CHROME — progress bar + dot nav
+     ============================================================ */
+  .progress-track {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: transparent;
+    z-index: 100;
+    pointer-events: none;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--c-accent-deep), var(--c-accent), var(--c-accent-soft));
+    box-shadow: 0 0 12px rgba(232,168,73,0.5);
+    transform-origin: left;
+  }
+
+  .dot-nav {
+    position: fixed;
+    top: 50%;
+    right: clamp(0.75rem, 2.5vw, 2rem);
+    transform: translateY(-50%);
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    padding: 0.4rem;
+  }
+  .dot-nav a {
+    --d: 9px;
+    display: block;
+    width: var(--d);
+    height: var(--d);
+    border-radius: 50%;
+    border: 1px solid var(--c-ink-faint);
+    background: transparent;
+    position: relative;
+    transition: transform var(--dur-fast) var(--ease),
+                background var(--dur-fast) var(--ease-soft),
+                border-color var(--dur-fast) var(--ease-soft);
+  }
+  .dot-nav a:hover { transform: scale(1.35); border-color: var(--c-accent); }
+  .dot-nav a.is-active {
+    background: var(--c-accent);
+    border-color: var(--c-accent);
+    box-shadow: 0 0 10px rgba(232,168,73,0.6);
+  }
+  /* tooltip label pulled from the anchor's data-label */
+  .dot-nav a::after {
+    content: attr(data-label);
+    position: absolute;
+    right: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%) translateX(6px);
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: 6px;
+    padding: 0.25rem 0.55rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-soft),
+                transform var(--dur-fast) var(--ease);
+  }
+  .dot-nav a:hover::after,
+  .dot-nav a:focus-visible::after {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+  @media (max-width: 760px) {
+    .dot-nav { display: none; }
+  }
+
+  /* visible focus for keyboard users, everywhere */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+
+  /* skip link for screen-reader / keyboard users */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 200;
+    background: var(--c-accent);
+    color: #1a1206;
+    padding: 0.6rem 1rem;
+    border-radius: 0 0 var(--radius-sm) 0;
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+  }
+  .skip-link:focus { left: 0; }
+
+  /* ============================================================
+     REDUCED MOTION — honor the system preference fully.
+     Nothing moves; everything is simply present.
+     ============================================================ */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+  <!--INJECT:STYLES-->
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#primer">Skip to content</a>
+
+  <div class="progress-track" aria-hidden="true">
+    <div class="progress-fill" id="progressFill"></div>
+  </div>
+
+  <nav class="dot-nav" id="dotNav" aria-label="Section navigation"></nav>
+
+  <main id="primer">
+    <!--INJECT:SECTIONS-->
+  </main>
+
+  <!--INJECT:SCRIPTS-->
+
+  <script>
+  (function () {
+    "use strict";
+
+    var reduceMotion = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* ---------- 1. REVEAL on scroll ---------------------------- */
+    var revealEls = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
+
+    if (reduceMotion || !("IntersectionObserver" in window)) {
+      // No motion (or no observer support): show everything immediately.
+      revealEls.forEach(function (el) { el.classList.add("is-in"); });
+    } else {
+      var revealObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-in");
+            revealObserver.unobserve(entry.target); // reveal once, then forget
+          }
+        });
+      }, { root: null, rootMargin: "0px 0px -12% 0px", threshold: 0.12 });
+
+      revealEls.forEach(function (el) { revealObserver.observe(el); });
+    }
+
+    /* ---------- 2. SCROLL PROGRESS BAR ------------------------- */
+    var fill = document.getElementById("progressFill");
+    var ticking = false;
+
+    function updateProgress() {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - doc.clientHeight;
+      var pct = scrollable > 0 ? (doc.scrollTop || document.body.scrollTop) / scrollable : 0;
+      fill.style.width = (Math.max(0, Math.min(1, pct)) * 100).toFixed(2) + "%";
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) {
+        window.requestAnimationFrame(updateProgress);
+        ticking = true;
+      }
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    updateProgress();
+
+    /* ---------- 3. DOT NAV (built from sections) --------------- */
+    var nav = document.getElementById("dotNav");
+    var sections = Array.prototype.slice.call(
+      document.querySelectorAll("#primer .primer-section[id]")
+    );
+
+    var dotFor = {};
+    sections.forEach(function (sec) {
+      var a = document.createElement("a");
+      a.href = "#" + sec.id;
+      var label = sec.getAttribute("data-nav") || sec.id;
+      a.setAttribute("data-label", label);
+      a.setAttribute("aria-label", "Go to section: " + label);
+      nav.appendChild(a);
+      dotFor[sec.id] = a;
+    });
+
+    if ("IntersectionObserver" in window && sections.length) {
+      var navObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            sections.forEach(function (s) {
+              if (dotFor[s.id]) dotFor[s.id].classList.remove("is-active");
+            });
+            var active = dotFor[entry.target.id];
+            if (active) active.classList.add("is-active");
+          }
+        });
+      }, { root: null, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+
+      sections.forEach(function (sec) { navObserver.observe(sec); });
+    }
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!--STYLE-->
+  /* ── Section 6: framing-fov ─────────────────────────────────── */
+  .fov-stage {
+    margin-top: var(--s-6);
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+    padding: var(--s-4);
+    display: grid;
+    gap: var(--s-4);
+  }
+
+  /* the sky panel: a nebula sits in a starfield; an FOV rectangle floats over it */
+  .fov-sky {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(900px 600px at 70% 30%, rgba(111,155,216,0.10), transparent 60%),
+      var(--c-bg-sunk);
+  }
+  /* the target: an off-center nebula so "centering it" is a visible move */
+  .fov-target {
+    position: absolute;
+    width: 30%;
+    aspect-ratio: 1;
+    left: 64%;
+    top: 30%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 50%, rgba(232,168,73,0.45), transparent 70%),
+      radial-gradient(ellipse 40% 60% at 42% 56%, rgba(115,198,157,0.35), transparent 72%),
+      radial-gradient(ellipse 50% 40% at 60% 44%, rgba(111,155,216,0.30), transparent 72%);
+    filter: blur(2px);
+  }
+  .fov-target-label {
+    position: absolute;
+    left: 64%;
+    top: 30%;
+    transform: translate(-50%, 130%);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.1em;
+    color: var(--c-caption);
+    white-space: nowrap;
+  }
+
+  /* a sprinkle of stars, drawn once with box-shadow trickery via gradient */
+  .fov-stars {
+    position: absolute; inset: 0;
+    background-image:
+      radial-gradient(1.4px 1.4px at 12% 22%, var(--c-ink-soft), transparent),
+      radial-gradient(1.2px 1.2px at 28% 68%, var(--c-ink-faint), transparent),
+      radial-gradient(1.6px 1.6px at 48% 18%, var(--c-ink-soft), transparent),
+      radial-gradient(1.1px 1.1px at 82% 78%, var(--c-ink-faint), transparent),
+      radial-gradient(1.3px 1.3px at 90% 32%, var(--c-ink-soft), transparent),
+      radial-gradient(1.2px 1.2px at 36% 88%, var(--c-ink-faint), transparent),
+      radial-gradient(1.5px 1.5px at 58% 60%, var(--c-ink-soft), transparent);
+    opacity: 0.8;
+  }
+
+  /* the FOV rectangle — what the sensor actually sees.
+     --fov: a scale factor we drive with the slider (bigger = wider field) */
+  .fov-rect {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    --fov: 0.62;
+    --fov-x: 50%;
+    --fov-y: 50%;
+    width: calc(var(--fov) * 70%);
+    aspect-ratio: 3 / 2;
+    left: var(--fov-x);
+    top: var(--fov-y);
+    transform: translate(-50%, -50%);
+    border: 2px solid var(--c-accent);
+    border-radius: 4px;
+    box-shadow: 0 0 0 100vmax rgba(7,9,16,0.55);
+    transition:
+      width var(--dur) var(--ease),
+      left calc(var(--dur) * 1.1) var(--ease),
+      top calc(var(--dur) * 1.1) var(--ease);
+  }
+  .fov-rect::before {
+    /* corner ticks for that targeting-reticle feel */
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border: 1px dashed color-mix(in srgb, var(--c-accent) 45%, transparent);
+    border-radius: 2px;
+  }
+  .fov-rect-tag {
+    position: absolute;
+    left: 50%;
+    top: -10px;
+    transform: translate(-50%, -100%);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    color: var(--c-accent);
+    white-space: nowrap;
+  }
+
+  /* the controls */
+  .fov-controls {
+    display: grid;
+    gap: var(--s-3);
+  }
+  .fov-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--s-2);
+  }
+  @media (min-width: 620px) {
+    .fov-row { grid-template-columns: auto 1fr auto; align-items: center; }
+  }
+  .fov-row-label {
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--c-caption);
+  }
+  .fov-row-value {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--c-accent);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* the range input, restyled to fit the palette */
+  .fov-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--c-line);
+    outline-offset: 6px;
+  }
+  .fov-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    border: 2px solid var(--c-bg-raised);
+    box-shadow: 0 0 10px rgba(232,168,73,0.5);
+    cursor: pointer;
+    transition: transform var(--dur-fast) var(--ease);
+  }
+  .fov-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+  .fov-slider::-moz-range-thumb {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    border: 2px solid var(--c-bg-raised);
+    box-shadow: 0 0 10px rgba(232,168,73,0.5);
+    cursor: pointer;
+  }
+
+  /* the solve button */
+  .fov-solve {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.06em;
+    color: var(--c-bg);
+    background: var(--c-accent);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    justify-self: start;
+    transition: background var(--dur-fast) var(--ease-soft), transform var(--dur-fast) var(--ease);
+  }
+  .fov-solve:hover { background: var(--c-accent-soft); }
+  .fov-solve:active { transform: translateY(1px); }
+  .fov-solve[disabled] { opacity: 0.5; cursor: default; }
+
+  /* the "solving" sweep line that crosses the sky while plate-solving */
+  .fov-scan {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    left: -10%;
+    background: linear-gradient(180deg, transparent, var(--c-cool), transparent);
+    box-shadow: 0 0 14px var(--c-cool);
+    opacity: 0;
+  }
+  .fov-scanning .fov-scan {
+    animation: fov-sweep 0.85s var(--ease-soft) 1;
+  }
+  @keyframes fov-sweep {
+    0%   { left: -5%;  opacity: 0; }
+    12%  { opacity: 1; }
+    88%  { opacity: 1; }
+    100% { left: 105%; opacity: 0; }
+  }
+
+  .fov-readout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+    border-top: 1px solid var(--c-line);
+    padding-top: var(--s-3);
+  }
+  .fov-readout b { color: var(--c-ink-soft); font-weight: 500; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="framing-fov" data-nav="Framing">
+  <p class="kicker">Pointing &amp; Composition</p>
+  <h2 class="reveal">How much sky fits, and where the target lands</h2>
+  <p class="lede reveal">
+    Before any of the careful stuff — focus, cooling, hours of exposure — there is a
+    plainly creative question: what's in the shot? A telescope is a lens with a fixed
+    crop, and your only compositional moves are how wide that crop is and where you
+    aim it. Get those wrong and you've spent the whole night perfectly photographing
+    the corner of something.
+  </p>
+
+  <p class="reveal">
+    How much sky fits comes down to focal length against sensor size. A long focal
+    length is a tight crop — great for a small, distant galaxy, hopeless for anything
+    big. A short focal length is a wide field that swallows a whole sprawling nebula
+    but renders each object small. Underneath sits <strong>pixel scale</strong>, a
+    fineness-of-detail dial with a sweet spot in the middle; the UI's job is to keep
+    the user inside that sweet spot, not hand them a knob they'll reflexively crank to
+    the max.
+  </p>
+
+  <div class="fov-stage" data-fov-stage>
+    <div class="fov-sky reveal">
+      <div class="fov-stars" aria-hidden="true"></div>
+      <div class="fov-target" aria-hidden="true"></div>
+      <span class="fov-target-label">target</span>
+      <div class="fov-rect" data-fov-rect aria-hidden="true">
+        <span class="fov-rect-tag" data-fov-recttag>your frame</span>
+      </div>
+      <div class="fov-scan" aria-hidden="true"></div>
+    </div>
+
+    <div class="fov-controls reveal" style="--reveal-delay: .1s">
+      <div class="fov-row">
+        <label class="fov-row-label" for="fov-focal">Focal length</label>
+        <input class="fov-slider" id="fov-focal" type="range"
+               min="200" max="1200" value="600" step="10"
+               aria-describedby="fov-focal-val">
+        <span class="fov-row-value" id="fov-focal-val">600&nbsp;mm</span>
+      </div>
+
+      <button class="fov-solve" type="button" data-fov-solve>
+        Plate-solve &amp; center
+      </button>
+
+      <div class="fov-readout" aria-live="polite">
+        <span>FOV <b data-fov-deg>2.3°</b></span>
+        <span>pixel scale <b data-fov-scale>1.5″/px</b></span>
+        <span>fit <b data-fov-fit>target fits</b></span>
+      </div>
+    </div>
+  </div>
+  <p class="caption reveal" style="margin-top: var(--s-3)">
+    Drag the focal-length slider and the amber frame grows wider or crops tighter
+    over the nebula. The readout's field of view is in degrees, and a useful yardstick
+    is the full Moon, which is about half a degree across — so a frame reading 2.3° is
+    roughly four-and-a-half Moons wide. Press <em>plate-solve &amp; center</em> and a
+    scan line sweeps the sky, then the frame slides to put the target dead-center — the
+    same trick the software uses to land on a target precisely instead of "roughly over
+    there."
+  </p>
+
+  <p class="reveal" style="margin-top: var(--s-5)">
+    Aiming is the part that feels like magic and is really just bookkeeping. The
+    mount points where it thinks the target is, the camera takes a quick frame, and
+    the software <strong>plate-solves</strong> it — recognizes the star pattern,
+    works out exactly where the scope is actually looking, and nudges it until the
+    target sits where you framed it. No star-hopping, no "a little to the left." When
+    a target is too big to fit even the widest sensible frame, you shoot it as a
+    multi-panel <strong>mosaic</strong> and stitch the tiles together later, which is
+    its own little composition problem in a grid.
+  </p>
+
+  <p class="reveal">
+    On AstroDeck's framing screen, the sky atlas is doing two jobs at once: showing
+    the user a true-to-scale preview of what the sensor will capture, and letting them
+    place that rectangle on the target with intent. The interesting UX question is how
+    a wide-field shot, a tight crop, and a multi-tile mosaic all live in the same
+    preview without the user ever having to picture arcseconds in their head.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var stage = document.querySelector("[data-fov-stage]");
+  if (!stage) return;
+
+  var rect      = stage.querySelector("[data-fov-rect]");
+  var recttag   = stage.querySelector("[data-fov-recttag]");
+  var slider    = stage.querySelector("#fov-focal");
+  var focalVal  = stage.querySelector("#fov-focal-val");
+  var degEl     = stage.querySelector("[data-fov-deg]");
+  var scaleEl   = stage.querySelector("[data-fov-scale]");
+  var fitEl     = stage.querySelector("[data-fov-fit]");
+  var solveBtn  = stage.querySelector("[data-fov-solve]");
+  var sky       = stage.querySelector(".fov-sky");
+
+  // map focal length (mm) → a visual FOV scale + the derived numbers.
+  // (illustrative math, not observatory-grade — enough to feel right.)
+  function update() {
+    var f = parseInt(slider.value, 10);          // 200..1200 mm
+    // wider field at short focal lengths: inverse relationship.
+    var fovScale = 1.05 - (f - 200) / 1000 * 0.78;  // ~1.05 down to ~0.27
+    rect.style.setProperty("--fov", fovScale.toFixed(3));
+
+    var deg   = (1380 / f).toFixed(1);            // toy: degrees of field
+    var scale = (920 / f).toFixed(1);             // toy: arcsec / pixel
+    if (focalVal) focalVal.textContent = f + " mm";
+    if (degEl)    degEl.textContent = deg + "°";
+    if (scaleEl)  scaleEl.textContent = scale + "″/px";
+
+    // target "fits" when the frame is wide enough; nebula ~30% of sky width
+    if (fitEl) {
+      fitEl.textContent = fovScale > 0.5 ? "target fits" : "too tight — crops target";
+    }
+    if (recttag) {
+      recttag.textContent = fovScale > 0.78 ? "wide field" :
+                            (fovScale > 0.5 ? "your frame" : "tight crop");
+    }
+  }
+
+  slider.addEventListener("input", update);
+  update();
+
+  // target sits at left:64% top:30% in the sky; centering means moving the
+  // frame's center onto that point.
+  var centered = false;
+  function doSolve() {
+    if (sky.classList.contains("fov-scanning")) return;
+    solveBtn.setAttribute("disabled", "");
+    sky.classList.add("fov-scanning");
+
+    var reduce = window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var delay = reduce ? 0 : 760;
+
+    window.setTimeout(function () {
+      rect.style.setProperty("--fov-x", "64%");
+      rect.style.setProperty("--fov-y", "30%");
+      centered = true;
+      if (recttag) recttag.textContent = "centered";
+    }, delay);
+
+    window.setTimeout(function () {
+      sky.classList.remove("fov-scanning");
+      solveBtn.removeAttribute("disabled");
+      solveBtn.textContent = centered ? "Re-solve" : "Plate-solve & center";
+    }, delay + 200);
+  }
+  solveBtn.addEventListener("click", doSolve);
+
+  // gentle nudge: auto-run the solve once when the stage scrolls into view,
+  // so a reader who never touches a control still sees the payoff.
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    // static end-state: just center the frame, no sweep.
+    rect.style.setProperty("--fov-x", "64%");
+    rect.style.setProperty("--fov-y", "30%");
+    if (recttag) recttag.textContent = "centered";
+    if (solveBtn) solveBtn.textContent = "Re-solve";
+    return;
+  }
+
+  var fired = false;
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting && !fired) {
+        fired = true;
+        window.setTimeout(doSolve, 600);
+        obs.disconnect();
+      }
+    });
+  }, { threshold: 0.5 });
+  obs.observe(sky);
+})();
+<!--/SCRIPT-->
