@@ -1,0 +1,365 @@
+<!--STYLE-->
+  /* ===== Section 11: Sequencing + safety (slug: seq) ===== */
+  .seq-figure {
+    margin-top: var(--s-5);
+    background: var(--c-bg-raised);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: var(--s-4);
+  }
+
+  /* ---- the scope swinging across the meridian ---- */
+  .seq-sky {
+    position: relative;
+    aspect-ratio: 2 / 1;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background:
+      radial-gradient(120% 100% at 50% 120%, var(--c-bg-raised) 0%, var(--c-bg-sunk) 70%);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+  }
+  .seq-sky svg { width: 100%; height: 100%; }
+
+  /* the mount arm rotates from east of the meridian to west */
+  .seq-arm {
+    transform-box: fill-box;
+    transform-origin: 50% 100%;
+    transform: rotate(-46deg);
+    transition: transform 1.1s var(--ease);
+  }
+  .seq-sky.is-flipped .seq-arm { transform: rotate(46deg); }
+
+  /* the meridian line glows briefly at the moment of the flip */
+  .seq-meridian {
+    transition: opacity var(--dur) var(--ease-soft);
+    opacity: 0.4;
+  }
+  .seq-sky.is-flipping .seq-meridian { opacity: 1; }
+
+  .seq-flip-flash {
+    opacity: 0;
+  }
+  .seq-sky.is-flipping .seq-flip-flash {
+    animation: seq-flash 1.1s var(--ease) 1;
+  }
+  @keyframes seq-flash {
+    0%, 100% { opacity: 0; }
+    40%      { opacity: 1; }
+  }
+
+  /* ---- the night timeline ---- */
+  .seq-timeline {
+    margin-top: var(--s-4);
+    position: relative;
+  }
+  .seq-track {
+    position: relative;
+    height: 46px;
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    overflow: hidden;
+    display: flex;
+  }
+  .seq-block {
+    position: relative;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.06em;
+    color: var(--c-caption);
+    border-right: 1px solid var(--c-line);
+    transition: color var(--dur-fast) var(--ease-soft),
+                background var(--dur-fast) var(--ease-soft);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .seq-block:last-child { border-right: 0; }
+  .seq-block.is-done   { color: var(--c-ink-soft); }
+  .seq-block.is-active {
+    color: var(--c-bg);
+    background: var(--c-accent);
+  }
+  .seq-block.seq-flipblock.is-active { background: var(--c-cool); color: var(--c-bg); }
+
+  /* the sweeping "now" head */
+  .seq-now {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 2px;
+    background: var(--c-accent-soft);
+    box-shadow: 0 0 10px rgba(232,168,73,0.7);
+    left: 0;
+    transition: left 0.45s linear;
+    pointer-events: none;
+  }
+
+  .seq-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-3);
+    margin-top: var(--s-2);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    color: var(--c-caption);
+  }
+
+  /* ---- the safety guard ---- */
+  .seq-guard {
+    margin-top: var(--s-4);
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    padding: var(--s-3);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    box-shadow: inset 0 0 0 1px var(--c-line);
+    transition: box-shadow var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe {
+    box-shadow: inset 0 0 0 1px var(--c-accent-deep),
+                0 0 26px -8px rgba(184,121,31,0.8);
+  }
+  .seq-lamp {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--c-good);
+    box-shadow: 0 0 12px var(--c-good);
+    transition: background var(--dur) var(--ease-soft),
+                box-shadow var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe .seq-lamp {
+    background: var(--c-accent);
+    box-shadow: 0 0 14px var(--c-accent);
+  }
+  .seq-guard-text { line-height: var(--leading-snug); }
+  .seq-guard-state {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-good);
+    transition: color var(--dur) var(--ease-soft);
+  }
+  .seq-guard.is-unsafe .seq-guard-state { color: var(--c-accent); }
+  .seq-guard-reason {
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+
+  /* the little sun that drifts toward the scope to trigger the abort */
+  .seq-sun {
+    opacity: 0;
+    transition: opacity var(--dur) var(--ease-soft);
+  }
+  .seq-sky.is-sun .seq-sun { opacity: 1; }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="seq" data-nav="Sequencing">
+  <p class="kicker">The Robot Night</p>
+  <h2 class="reveal">A robot runs the night while you sleep, or eat dinner.</h2>
+  <p class="lede reveal">A full night of imaging is too long and too dull for a human to babysit. So you write down the plan once, hand it to the software, and go inside. A sequence is that plan: find the target, get sharp, take frames, change filters, repeat until dawn, then put everything away.</p>
+
+  <p class="reveal">Two parts of the plan are worth understanding before you judge any interface that runs it. The first is a chore with a dramatic name. Because the sky appears to rotate overhead, your target drifts from the eastern side of due south to the western side over the course of a night. To follow it, the mount hangs the telescope off one side of its tilted main axis, balanced by a counterweight on the other — a lever. As that lever swings to chase the sky westward, it keeps tipping over until the scope would eventually be pointing down into the tripod legs it stands on. So the mount can't simply keep turning past due south; when the target crosses that line it performs a <strong>meridian flip</strong>, handing the scope to the other side of the axis: it pauses, swings the whole rig over, re-finds the target, and carries on the same job from a posture that clears the legs. Miss it and best case the night ends early; worst case there's a crunch.</p>
+
+  <figure class="seq-figure bleed-wide reveal" aria-labelledby="seq-cap">
+    <div class="seq-sky" id="seq-sky" aria-hidden="true">
+      <svg viewBox="0 0 400 200" role="img" aria-label="A telescope on a mount swings from the east side of the sky across the meridian to the west, while a safety guard watches for the Sun.">
+        <!-- faint stars -->
+        <g fill="#b3ada3" opacity="0.5">
+          <circle cx="48" cy="40" r="1"/><circle cx="120" cy="28" r="1.3"/>
+          <circle cx="300" cy="36" r="1"/><circle cx="360" cy="64" r="1.2"/>
+          <circle cx="84" cy="84" r="0.9"/><circle cx="332" cy="100" r="0.9"/>
+          <circle cx="200" cy="22" r="1.1"/><circle cx="248" cy="54" r="1"/>
+        </g>
+
+        <!-- the meridian: due south, the line you must not cross dragging the tube -->
+        <line class="seq-meridian" x1="200" y1="6" x2="200" y2="168"
+              stroke="#6f9bd8" stroke-width="1.5" stroke-dasharray="4 5"/>
+        <rect class="seq-flip-flash" x="0" y="0" width="400" height="200" fill="#6f9bd8" opacity="0.08"/>
+
+        <!-- ground -->
+        <rect x="0" y="168" width="400" height="32" fill="#0e1322"/>
+        <!-- pier -->
+        <rect x="192" y="150" width="16" height="24" rx="2" fill="#232838"/>
+
+        <!-- the mount arm + telescope tube, pivoting at the pier head -->
+        <g class="seq-arm">
+          <rect x="196" y="92" width="8" height="64" rx="4" fill="#3a4256"/>
+          <g transform="translate(200,96)">
+            <rect x="-46" y="-9" width="92" height="18" rx="9" fill="#586079"/>
+            <circle cx="44" cy="0" r="11" fill="#11151f" stroke="#e8a849" stroke-width="2"/>
+          </g>
+        </g>
+
+        <!-- the Sun, which drifts in to trigger the abort -->
+        <g class="seq-sun" transform="translate(70,52)">
+          <circle r="15" fill="#e8a849"/>
+          <circle r="15" fill="none" stroke="#f0c483" stroke-width="2" opacity="0.6"/>
+          <g stroke="#f0c483" stroke-width="2" stroke-linecap="round">
+            <line x1="0" y1="-20" x2="0" y2="-26"/><line x1="0" y1="20" x2="0" y2="26"/>
+            <line x1="-20" y1="0" x2="-26" y2="0"/><line x1="20" y1="0" x2="26" y2="0"/>
+          </g>
+        </g>
+      </svg>
+    </div>
+
+    <!-- the night, as a strip of time -->
+    <div class="seq-timeline">
+      <div class="seq-track" id="seq-track" role="img"
+           aria-label="A timeline of a night: focus, frames, meridian flip, more frames, then park.">
+        <div class="seq-block" data-dur="1" style="flex:1">focus</div>
+        <div class="seq-block" data-dur="3" style="flex:3">subs · dither</div>
+        <div class="seq-block seq-flipblock" data-dur="1" style="flex:1">flip</div>
+        <div class="seq-block" data-dur="3" style="flex:3">subs · dither</div>
+        <div class="seq-block" data-dur="1" style="flex:1">refocus</div>
+        <div class="seq-block" data-dur="1" style="flex:1">park</div>
+        <div class="seq-now" id="seq-now"></div>
+      </div>
+      <div class="seq-legend" aria-hidden="true">
+        <span>amber · imaging task</span>
+        <span>blue · meridian flip</span>
+      </div>
+    </div>
+
+    <!-- the guard that wraps the whole night -->
+    <div class="seq-guard" id="seq-guard">
+      <span class="seq-lamp" aria-hidden="true"></span>
+      <span class="seq-guard-text">
+        <span class="seq-guard-state" id="seq-state">Safe</span><br>
+        <span class="seq-guard-reason" id="seq-reason">Skies clear, Sun well below the horizon. Carry on.</span>
+      </span>
+    </div>
+
+    <figcaption class="caption" id="seq-cap" style="margin-top: var(--s-3)">
+      The scope works east-to-west, flips at the meridian, and the guard watches the whole time. When the Sun comes up, imaging stops cold and the rig parks.
+    </figcaption>
+  </figure>
+
+  <p class="reveal" style="margin-top: var(--s-5)">The second part is the layer wrapped around everything else, and it's the one that matters most when nobody is watching. Clouds roll in and ruin the frames being taken. Dawn arrives and washes out the sky. A roof or dome may need to close before rain. And the single rule that sits above all the others: the scope must never, under any circumstance, swing toward the Sun, because a telescope is an extremely effective device for setting things on fire, your camera sensor very much included. When a safety monitor trips, the sane behavior is to stop imaging, get the equipment to a safe resting position, and wait. At the end of a clean night it does the same thing on purpose and parks itself.</p>
+
+  <p class="reveal"><strong>Where this lands in AstroDeck:</strong> the sequencer, the safety monitor, and the park command are the highest-stakes surfaces in the entire app, because they run unattended and the failure modes are expensive. This is where clarity earns its keep. A person glancing at their phone from bed should be able to tell in one second whether the night is fine, whether it flipped on schedule, and what the rig will do the instant something goes wrong. Buried state and ambiguous controls here aren't an annoyance; they're how a $4,000 sensor meets the Sun.</p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+
+  var root   = document.querySelector("#seq");
+  if (!root) return;
+
+  var sky    = root.querySelector("#seq-sky");
+  var track  = root.querySelector("#seq-track");
+  var now    = root.querySelector("#seq-now");
+  var guard  = root.querySelector("#seq-guard");
+  var stateEl= root.querySelector("#seq-state");
+  var reason = root.querySelector("#seq-reason");
+  var blocks = Array.prototype.slice.call(track.querySelectorAll(".seq-block"));
+
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Position the "now" head at the left edge of a given block.
+  function headTo(idx, atEnd) {
+    var total = track.clientWidth;
+    var x = 0;
+    for (var i = 0; i < idx; i++) x += blocks[i].offsetWidth;
+    if (atEnd && blocks[idx]) x += blocks[idx].offsetWidth;
+    now.style.left = (x / total * 100) + "%";
+  }
+
+  function setActive(idx) {
+    blocks.forEach(function (b, i) {
+      b.classList.toggle("is-active", i === idx);
+      b.classList.toggle("is-done", i < idx);
+    });
+  }
+
+  function setGuard(unsafe, label, why) {
+    guard.classList.toggle("is-unsafe", unsafe);
+    stateEl.textContent = label;
+    reason.textContent = why;
+  }
+
+  // ----- Reduced motion: paint a sensible final still and stop. -----
+  if (reduce) {
+    sky.classList.add("is-flipped");
+    blocks.forEach(function (b) { b.classList.add("is-done"); });
+    headTo(blocks.length - 1, true);
+    setGuard(false, "Parked", "Night complete. Rig stowed in its safe position.");
+    return;
+  }
+
+  // ----- Otherwise, run the night once when it scrolls into view. -----
+  var timers = [];
+  function at(ms, fn) { timers.push(setTimeout(fn, ms)); }
+
+  function runNight() {
+    // walk the timeline block by block
+    var t = 300;
+    blocks.forEach(function (b, i) {
+      at(t, function () {
+        setActive(i);
+        headTo(i, false);
+        // the flip block also swings the scope across the meridian
+        if (b.classList.contains("seq-flipblock")) {
+          sky.classList.add("is-flipping");
+          at(0, function () { sky.classList.add("is-flipped"); });
+          at(1100, function () { sky.classList.remove("is-flipping"); });
+        }
+      });
+      // each block's dwell is proportional to its declared duration
+      var dur = parseInt(b.getAttribute("data-dur"), 10) || 1;
+      t += dur * 520 + 220;
+    });
+
+    // land the head at the end, mark all done
+    at(t, function () {
+      setActive(-1);
+      blocks.forEach(function (b) { b.classList.add("is-done"); });
+      headTo(blocks.length - 1, true);
+    });
+
+    // ---- the safety beat: a Sun rises, the guard trips, imaging halts ----
+    at(t + 700, function () {
+      sky.classList.add("is-sun");
+      setGuard(true, "Unsafe — Sun", "Sun rising into the field. Imaging halted, slewing to park.");
+    });
+    at(t + 2300, function () {
+      sky.classList.remove("is-sun");
+      setGuard(false, "Parked", "Rig safely stowed. See you tomorrow night.");
+    });
+  }
+
+  var started = false;
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting && !started) {
+          started = true;
+          // let layout settle so the head math is correct
+          requestAnimationFrame(runNight);
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.45 });
+    io.observe(root.querySelector(".seq-figure"));
+  } else {
+    runNight();
+  }
+
+  // keep the head aligned if the figure resizes mid-run
+  window.addEventListener("resize", function () {
+    var active = blocks.findIndex(function (b) { return b.classList.contains("is-active"); });
+    if (active >= 0) headTo(active, false);
+  }, { passive: true });
+})();
+<!--/SCRIPT-->

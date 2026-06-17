@@ -1,0 +1,223 @@
+<!--STYLE-->
+  /* ===== Section 07 — camera-angle ===== */
+  .ca-stage {
+    position: relative;
+    margin-top: var(--s-5);
+    padding: var(--s-4);
+    background: var(--c-bg-raised);
+    border-radius: var(--radius);
+    box-shadow: var(--ring);
+  }
+
+  .ca-figure {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+  }
+  .ca-figure svg { width: 100%; height: 100%; }
+
+  /* the galaxy smudge sitting at the target */
+  .ca-galaxy { transform-origin: 320px 200px; }
+
+  /* the framing rectangle that we rotate around the target */
+  .ca-frame {
+    transform-box: fill-box;
+    transform-origin: center;
+    transform: rotate(0deg);
+  }
+  .ca-stage.ca-live .ca-frame {
+    animation: ca-swing var(--dur) var(--ease) forwards;
+    animation-delay: 0.25s;
+  }
+  @keyframes ca-swing {
+    0%   { transform: rotate(0deg); }
+    65%  { transform: rotate(38deg); }   /* slight overshoot for life */
+    100% { transform: rotate(32deg); }   /* graceful diagonal seat */
+  }
+
+  /* the angle arc + tick sweep with the frame */
+  .ca-arc {
+    stroke-dasharray: 0 1;
+    transition: stroke-dasharray var(--dur) var(--ease) 0.25s;
+  }
+  .ca-stage.ca-live .ca-arc { stroke-dasharray: 1 0; }
+
+  .ca-readout {
+    position: absolute;
+    top: var(--s-3);
+    left: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    letter-spacing: 0.05em;
+    color: var(--c-ink-soft);
+    background: var(--c-bg-sunk);
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.7rem;
+    line-height: 1.4;
+  }
+  .ca-readout b { color: var(--c-accent); font-weight: 500; }
+  .ca-readout .ca-num { font-variant-numeric: tabular-nums; }
+
+  .ca-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-1) var(--s-4);
+    margin-top: var(--s-3);
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.04em;
+    color: var(--c-caption);
+  }
+  .ca-legend span { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .ca-swatch { width: 14px; height: 2px; border-radius: 2px; }
+  .ca-swatch.ca-amber { background: var(--c-accent); }
+  .ca-swatch.ca-cool  { background: var(--c-cool); }
+
+  .ca-hook {
+    margin-top: var(--s-5);
+    padding-left: var(--s-3);
+    border-left: 2px solid var(--c-accent);
+    color: var(--c-ink-soft);
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="primer-section" id="camera-angle" data-nav="Camera Angle">
+  <p class="kicker">Framing the Shot</p>
+  <h2 class="reveal">Camera angle, where rotation becomes composition</h2>
+  <p class="lede reveal">
+    The telescope decides what you point at. The rotation of the camera behind it
+    decides how that thing sits in the frame, and those are not the same decision.
+  </p>
+
+  <p class="reveal">
+    A camera sensor is a rectangle, and the sky does not care which way you hold it.
+    Spin the camera and the exact same galaxy can streak corner to corner like it has
+    somewhere to be, or lie down flat across the middle looking faintly bored. Nothing
+    about the target changed. You just rotated the rectangle. That angle has a name,
+    the <strong>position angle</strong>, and it is as much a part of the photograph as
+    exposure or focus.
+  </p>
+
+  <figure class="ca-stage bleed-wide reveal" id="ca-stage" aria-labelledby="ca-cap">
+    <div class="ca-readout" aria-hidden="true">
+      position angle<br>
+      <b class="ca-num" id="ca-deg">0&deg;</b>
+    </div>
+    <div class="ca-figure">
+      <svg viewBox="0 0 640 400" role="img" aria-labelledby="ca-cap">
+        <!-- the target: an elongated galaxy smudge -->
+        <g class="ca-galaxy">
+          <ellipse cx="320" cy="200" rx="120" ry="34" transform="rotate(32 320 200)"
+                   fill="var(--c-cool)" opacity="0.16"/>
+          <ellipse cx="320" cy="200" rx="86" ry="22" transform="rotate(32 320 200)"
+                   fill="var(--c-cool)" opacity="0.28"/>
+          <ellipse cx="320" cy="200" rx="40" ry="12" transform="rotate(32 320 200)"
+                   fill="var(--c-ink)" opacity="0.55"/>
+          <circle cx="320" cy="200" r="4" fill="var(--c-ink)" opacity="0.9"/>
+        </g>
+
+        <!-- the angle arc, sweeping from horizontal to the seated angle -->
+        <path class="ca-arc" d="M 320 200 m 70 0 A 70 70 0 0 0 379.4 -37.1"
+              transform="translate(0 200) rotate(0)"
+              fill="none" stroke="var(--c-accent)" stroke-width="2" opacity="0.5"
+              pathLength="1"/>
+
+        <!-- the FOV frame, rotates around the target -->
+        <g class="ca-frame">
+          <rect x="160" y="80" width="320" height="240" rx="6"
+                fill="none" stroke="var(--c-accent)" stroke-width="2.5"/>
+          <!-- thirds guides, the photographer's reflex -->
+          <line x1="266.6" y1="80" x2="266.6" y2="320" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="373.3" y1="80" x2="373.3" y2="320" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="160" y1="160" x2="480" y2="160" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <line x1="160" y1="240" x2="480" y2="240" stroke="var(--c-accent)" stroke-width="1" opacity="0.22"/>
+          <!-- a corner tick so "up" on the sensor is legible -->
+          <path d="M 160 110 L 160 80 L 190 80" fill="none" stroke="var(--c-accent-soft)" stroke-width="3"/>
+        </g>
+      </svg>
+    </div>
+    <figcaption class="caption ca-legend" id="ca-cap">
+      <span><i class="ca-swatch ca-amber" aria-hidden="true"></i> the camera frame, rotating</span>
+      <span><i class="ca-swatch ca-cool" aria-hidden="true"></i> the galaxy, holding still</span>
+    </figcaption>
+  </figure>
+
+  <p class="reveal">
+    There are two ways to set it. You can loosen a clamp, turn the camera with your
+    hands in the dark like you are adjusting a stubborn doorknob, and lock it down close
+    to right. Or a motorized <strong>rotator</strong> drives the camera to a number you
+    asked for. Either way you are never quite sure you nailed it until the sky tells you,
+    and the sky tells you through plate-solving, which reads an exposure and reports the
+    angle the camera actually landed at, down to a fraction of a degree.
+  </p>
+
+  <p class="reveal">
+    That readout matters most when you are stitching a <strong>mosaic</strong>, several
+    framed tiles meant to line up into one larger picture. If panel three is rotated two
+    degrees off from panels one and two, the seam shows, and no amount of later wrangling
+    fully hides a crooked join. Planned angle and actual angle need to agree.
+  </p>
+
+  <p class="ca-hook reveal">
+    So when you reach the rotation control in AstroDeck, the question worth asking is how
+    clearly it shows the gap between the angle you <em>asked</em> for and the angle you
+    actually <em>got</em>. A single number is a setting. Two numbers side by side, with the
+    difference called out, is a tool you can actually steer by.
+  </p>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+(function () {
+  "use strict";
+  var stage = document.getElementById("ca-stage");
+  var deg = document.getElementById("ca-deg");
+  if (!stage || !deg) return;
+
+  var TARGET = 32;
+  var reduce = window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Static final state for reduced motion or no observer.
+  function settle() {
+    deg.textContent = TARGET + "°";
+  }
+
+  if (reduce || !("IntersectionObserver" in window)) {
+    stage.classList.add("ca-live"); // CSS reduced-motion guard pins it to final frame
+    settle();
+    return;
+  }
+
+  function tickTo(target, ms) {
+    var start = performance.now();
+    function frame(now) {
+      var t = Math.min(1, (now - start) / ms);
+      // ease-out with a whisper of overshoot to mirror the swing
+      var eased = 1 - Math.pow(1 - t, 3);
+      var val = target * eased;
+      if (t < 0.65) val = target * 1.19 * (eased / 0.84); // shadow the 38deg peak
+      deg.textContent = (Math.round(Math.min(target, val) * 10) / 10) + "°";
+      if (t < 1) {
+        requestAnimationFrame(frame);
+      } else {
+        deg.textContent = target + "°";
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  var obs = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) {
+        stage.classList.add("ca-live");
+        tickTo(TARGET, 700);
+        obs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.4 });
+  obs.observe(stage);
+})();
+<!--/SCRIPT-->
