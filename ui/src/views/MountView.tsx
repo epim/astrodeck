@@ -4,6 +4,8 @@ import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle, IconButton } from "../components/ui";
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
+import { useCanControlMount } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { CatalogEntry, PreflightAlt } from "../types";
 
 /** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7). */
@@ -17,6 +19,7 @@ export default function MountView() {
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
   const openFraming = useStore((s) => s.openFraming);
+  const canMount = useCanControlMount(); // viewer => pointing visible, controls read-only
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [center, setCenter] = useState(true);
@@ -42,6 +45,7 @@ export default function MountView() {
   //             doesn't re-block an accepted low slew
   //   unknown-> default site / fetch issue: OK/Cancel "slew anyway"
   const doGoto = async (r: CatalogEntry) => {
+    if (!canMount) return; // viewer: GOTO is read-only (buttons are disabled too)
     let pf: PreflightAlt | null = null;
     try {
       pf = await api.get<PreflightAlt>(
@@ -93,7 +97,7 @@ export default function MountView() {
   return (
     <div className="grid gap-4 md:grid-cols-[minmax(290px,340px)_1fr]">
       <div className="flex flex-col gap-4">
-        <Panel title="Pointing">
+        <Panel title="Pointing" right={!canMount && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
             <Stat label="RA" value={m?.ra_str ?? "—"} />
             <Stat label="Dec" value={m?.dec_str ?? "—"} />
@@ -105,25 +109,27 @@ export default function MountView() {
               tone={m?.parked ? undefined : m?.slewing ? "warn" : m?.tracking ? "good" : undefined} />
           </div>
           <div className="flex items-center gap-3 mt-4 border-t border-line pt-3">
-            <Toggle checked={!!m?.tracking} disabled={!m}
+            <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
               onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} />
             <span className="text-xs text-dim">sidereal tracking</span>
             <div className="flex-1" />
             {m?.parked ? (
-              <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
+              <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
             ) : (
-              <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
+              <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
             )}
           </div>
         </Panel>
 
-        <Panel title="Slew Pad">
+        <Panel title="Slew Pad" right={!canMount && <ReadOnlyBadge />}>
           {/* 3B predictable fixed-rate slew + tap-to-pulse pad (replaces the old
               slow/med/fast 3-chip pad). Owns rate selector, STOP bar, reverse
-              toggles, alt-guard, NINA mode. */}
+              toggles, alt-guard, NINA mode. SlewPad itself hard-guards on the cap
+              (it can't post moves for a viewer); the disabled inputs here are the
+              visible read-only affordance. */}
           <SlewPad />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
-            <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
+            <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
               ✛ Solve &amp; Sync
             </button>
           </div>
@@ -173,7 +179,7 @@ export default function MountView() {
                         label={`Frame ${r.id} in the Sky Atlas`}
                         onClick={() => openFraming(r)}
                       />
-                      <button className="btn tap min-h-[44px] !px-3" disabled={!m}
+                      <button className="btn tap min-h-[44px] !px-3" disabled={!canMount || !m}
                         onClick={() => doGoto(r)}>
                         GOTO
                       </button>

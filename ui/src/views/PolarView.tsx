@@ -3,11 +3,14 @@ import { useStore, useStatus, usePolar } from "../store";
 import { PolarReticle } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Panel } from "../components/ui";
+import { useCanControlMount } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 
 export default function PolarView() {
   const polar = usePolar();
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
+  const canMount = useCanControlMount(); // polar alignment slews the mount
   const running = polar.state === "running" || polar.state === "paused";
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -78,26 +81,26 @@ export default function PolarView() {
           )}
         </Panel>
 
-        <Panel title="Control">
+        <Panel title="Control" right={!canMount && <ReadOnlyBadge />}>
           <p className="text-xs text-dim mb-3 leading-relaxed">
             {willUseNina
               ? "Runs NINA's Three-Point Polar Alignment on your rig: it rotates in RA, plate-solves, and streams the live error here as you adjust the mount's altitude/azimuth bolts."
               : "No NINA rig bridged — this runs the built-in simulator so you can see the full alignment flow. Bridge to NINA on the Rig page to align real hardware."}
           </p>
           <div className="flex flex-col gap-2">
-            <button className="btn btn-accent" disabled={running}
+            <button className="btn btn-accent" disabled={!canMount || running}
               onClick={() => act(() => api.post("/api/polar/start"))}>
               ⊕ Start Alignment
             </button>
             <div className="grid grid-cols-2 gap-2">
               {polar.state === "paused" ? (
-                <button className="btn" disabled={!running}
+                <button className="btn" disabled={!canMount || !running}
                   onClick={() => act(() => api.post("/api/polar/resume"))}>Resume</button>
               ) : (
-                <button className="btn" disabled={!running}
+                <button className="btn" disabled={!canMount || !running}
                   onClick={() => act(() => api.post("/api/polar/pause"))}>Pause</button>
               )}
-              <button className="btn btn-danger" disabled={!running}
+              <button className="btn btn-danger" disabled={!canMount || !running}
                 onClick={() => act(() => api.post("/api/polar/stop"))}>Stop</button>
             </div>
           </div>

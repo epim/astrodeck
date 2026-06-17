@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
 import { Led, Panel } from "../components/ui";
+import { useCanControlPower } from "../lib/caps";
+import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { SwitchPort } from "../types";
 
 export default function PowerView() {
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
+  const canControl = useCanControlPower(); // viewer => read-only ports
   const [ports, setPorts] = useState<SwitchPort[] | null>(null);
   const connected = !!status?.connected?.switch?.connected;
 
@@ -24,6 +27,7 @@ export default function PowerView() {
   }, [connected]);
 
   const setPort = async (id: number, value: number) => {
+    if (!canControl) return; // viewer: read-only, controls are inert anyway
     try { setPorts(await api.post<SwitchPort[]>("/api/switch/set", { port_id: id, value })); }
     catch (e) { showToast("error", (e as Error).message); }
   };
@@ -44,13 +48,16 @@ export default function PowerView() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Panel title="Power Outputs">
+      <Panel title="Power Outputs" right={!canControl && <ReadOnlyBadge />}>
         <div className="flex flex-col gap-2">
           {toggles.map((p) => (
             <button key={p.id}
+              disabled={!canControl}
+              aria-disabled={!canControl || undefined}
               onClick={() => setPort(p.id, p.value > 0 ? 0 : 1)}
-              className={`flex items-center gap-3 border px-3 py-3 transition-all cursor-pointer text-left
-                ${p.value > 0 ? "border-accent2 bg-accent/5" : "border-line bg-bg/60 hover:border-line2"}`}>
+              className={`flex items-center gap-3 border px-3 py-3 transition-all text-left
+                ${canControl ? "cursor-pointer" : "cursor-default opacity-60"}
+                ${p.value > 0 ? "border-accent2 bg-accent/5" : "border-line bg-bg/60 " + (canControl ? "hover:border-line2" : "")}`}>
               <Led on={p.value > 0} />
               <span className="text-sm flex-1">{p.name}</span>
               <span className={`label ${p.value > 0 ? "text-good" : ""}`}>
@@ -62,7 +69,7 @@ export default function PowerView() {
       </Panel>
 
       <div className="flex flex-col gap-4">
-        <Panel title="Dew Heaters · PWM">
+        <Panel title="Dew Heaters · PWM" right={!canControl && <ReadOnlyBadge />}>
           <div className="flex flex-col gap-4">
             {dimmers.map((p) => (
               <div key={p.id}>
@@ -71,7 +78,8 @@ export default function PowerView() {
                   <span className="mono text-xs text-accent">{p.value.toFixed(0)}{p.unit}</span>
                 </div>
                 <input type="range" min={p.min} max={p.max} value={p.value}
-                  className="w-full accent-(--accent) cursor-pointer"
+                  disabled={!canControl}
+                  className={`w-full accent-(--accent) ${canControl ? "cursor-pointer" : "opacity-50 cursor-default"}`}
                   onChange={(e) => setPort(p.id, Number(e.target.value))} />
               </div>
             ))}
