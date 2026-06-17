@@ -11,7 +11,12 @@ Public surface (import from ``astrodeck.auth``):
 
   Providers:
     AuthProvider, NoneAuthProvider, TokenAdminProvider,
-    SessionCookieProvider, GoogleAuthProvider
+    SessionCookieProvider, GoogleAuthProvider, LocalAuthProvider,
+    MultiAuthProvider
+
+  Local users / passwords:
+    User, UserStore, user_store, hash_password, verify_password,
+    PasswordTooLongError
 
   Sessions:
     sign_session, verify_session, decode_session, session_secret,
@@ -42,13 +47,15 @@ from .deps import (build_provider, configure_provider_from_auth,
                    get_active_provider, get_principal, require, requires,
                    reset_active_provider, resolve_principal,
                    set_active_provider)
+from .passwords import (PasswordTooLongError, hash_password, verify_password)
 from .principal import Principal, admin_principal, principal_for_role
 from .providers import (AuthProvider, DEFAULT_PROVIDER, GoogleAuthProvider,
-                        NoneAuthProvider, SessionCookieProvider,
-                        TokenAdminProvider)
+                        LocalAuthProvider, MultiAuthProvider, NoneAuthProvider,
+                        SessionCookieProvider, TokenAdminProvider)
 from .session import (DEV_DEFAULT_SECRET, SECRET_ENV_VAR, SessionError,
                       decode_session, secret_is_default, session_secret,
                       sign_session, verify_session)
+from .users import User, UserStore, user_store
 
 __all__ = [
     # capabilities
@@ -63,7 +70,11 @@ __all__ = [
     "Principal", "admin_principal", "principal_for_role",
     # providers
     "AuthProvider", "NoneAuthProvider", "TokenAdminProvider",
-    "SessionCookieProvider", "GoogleAuthProvider", "DEFAULT_PROVIDER",
+    "SessionCookieProvider", "GoogleAuthProvider", "LocalAuthProvider",
+    "MultiAuthProvider", "DEFAULT_PROVIDER",
+    # local users / passwords
+    "User", "UserStore", "user_store",
+    "hash_password", "verify_password", "PasswordTooLongError",
     # session
     "sign_session", "verify_session", "decode_session", "session_secret",
     "secret_is_default", "SECRET_ENV_VAR", "DEV_DEFAULT_SECRET", "SessionError",

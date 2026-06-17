@@ -29,8 +29,9 @@ from .capabilities import (CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                            CAP_CONTROL_POWER, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
                            CAP_VIEW_STATUS)
 from .principal import Principal
-from .providers import (AuthProvider, GoogleAuthProvider, NoneAuthProvider,
-                        SessionCookieProvider, TokenAdminProvider)
+from .providers import (AuthProvider, GoogleAuthProvider, MultiAuthProvider,
+                        NoneAuthProvider, SessionCookieProvider,
+                        TokenAdminProvider)
 
 # ----------------------------------------------------- active provider slot
 # Default = open admin. ``create_app()`` calls ``set_active_provider()`` (or
@@ -50,38 +51,78 @@ def get_active_provider() -> AuthProvider:
 
 
 def reset_active_provider() -> None:
-    """Restore the open-default provider (tests + a clean app re-create)."""
+    """Restore the open-default provider (tests + a clean app re-create).
+
+    Also disarms the session-secret fail-closed interlock so a prior test that
+    enabled a method cannot leave ``sign_session`` armed for the next test."""
     set_active_provider(NoneAuthProvider())
+    from . import session as _session
+    _session.set_require_real_secret(False)
+
+
+def _effective_methods(auth_cfg) -> list[str]:
+    """The enabled methods from an ``AuthConfig``-shaped object, with the legacy
+    single ``provider`` migrated in when ``methods`` is empty. Deduped to the
+    canonical {"local","google"} order. Empty => open/admin.
+
+    Mirrors ``AuthConfig.methods_effective`` but duck-typed so ``deps`` never
+    imports ``config`` (keeps the module import-light / cycle-free)."""
+    methods = list(getattr(auth_cfg, "methods", []) or [])
+    if not methods and (getattr(auth_cfg, "provider", "none") or "none") == "google":
+        methods = ["google"]  # read-time migration of the legacy single provider
+    return [m for m in ("local", "google") if m in methods]
 
 
 def build_provider(auth_cfg) -> AuthProvider:
-    """Select an ``AuthProvider`` from an ``AuthConfig``-shaped object.
+    """Select an ``AuthProvider`` from an ``AuthConfig``-shaped object (multi-method).
 
-    Pinned selection:
-      - ``provider == "google"`` -> ``GoogleAuthProvider`` (allowlist/default_role/hd)
-      - ``provider == "none"`` AND an ``admin_token`` is set -> ``TokenAdminProvider``
-        (the generalized ASTRODECK_TOKEN: bearer => admin)
-      - otherwise -> ``NoneAuthProvider`` (open admin; today's default)
+    Pinned selection (W2.3-bis):
+      - EMPTY methods + NO ``admin_token`` -> ``NoneAuthProvider`` (open admin;
+        today's byte-for-byte default);
+      - EMPTY methods + an ``admin_token`` -> ``TokenAdminProvider`` (the
+        generalized ASTRODECK_TOKEN: bearer => admin) -- UNCHANGED;
+      - any enabled method (``local`` and/or ``google``) -> ``MultiAuthProvider``
+        composing break-glass token -> session cookie (local- OR google-minted).
 
-    Accepts a duck-typed object (so this module never imports ``config``); reads
-    only the attributes it needs, each with a safe default."""
-    provider = getattr(auth_cfg, "provider", "none") or "none"
+    The legacy single ``provider == "google"`` migrates to ``methods == ["google"]``
+    at read time (see ``_effective_methods``). Accepts a duck-typed object (so
+    this module never imports ``config``); reads only the attributes it needs,
+    each with a safe default."""
     revoked = frozenset(getattr(auth_cfg, "revoked_jti", []) or [])
-    if provider == "google":
-        return GoogleAuthProvider(
-            role_allowlist=getattr(auth_cfg, "role_allowlist", {}) or {},
-            default_role=getattr(auth_cfg, "default_role", None),
-            hd=getattr(auth_cfg, "google_hd", "") or "",
-            revoked_jti=revoked,
-        )
     admin_token = (getattr(auth_cfg, "admin_token", "") or "").strip()
-    if admin_token:
-        return TokenAdminProvider(admin_token)
-    return NoneAuthProvider()
+    methods = _effective_methods(auth_cfg)
+    if not methods:
+        # open/admin -- unless a break-glass token generalizes ASTRODECK_TOKEN.
+        if admin_token:
+            return TokenAdminProvider(admin_token)
+        return NoneAuthProvider()
+    return MultiAuthProvider(
+        methods,
+        admin_token=admin_token,
+        role_allowlist=getattr(auth_cfg, "role_allowlist", {}) or {},
+        default_role=getattr(auth_cfg, "default_role", None),
+        hd=getattr(auth_cfg, "google_hd", "") or "",
+        revoked_jti=revoked,
+    )
 
 
 def configure_provider_from_auth(auth_cfg) -> AuthProvider:
-    """Build + install the provider for ``auth_cfg`` and return it."""
+    """Build + install the provider for ``auth_cfg`` and return it.
+
+    Also enforces the session-secret invariant (critical fix): when a real auth
+    method (local/google) is enabled, a session cookie signed with the public
+    dev secret would let anyone mint an admin session. So whenever a method is
+    enabled we (a) generate+persist a random secret if ``ASTRODECK_SECRET`` is
+    unset, and (b) ARM the fail-closed interlock so ``sign_session`` raises and
+    sessions refuse to verify if a real secret could NOT be established. With NO
+    method enabled (open/admin default) the interlock is disarmed and behavior is
+    byte-for-byte unchanged."""
+    from . import session as _session
+    if _effective_methods(auth_cfg):
+        ok = _session.ensure_real_secret()
+        _session.set_require_real_secret(not ok or _session.secret_is_default())
+    else:
+        _session.set_require_real_secret(False)
     provider = build_provider(auth_cfg)
     set_active_provider(provider)
     return provider

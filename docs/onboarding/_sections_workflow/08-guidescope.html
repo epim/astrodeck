@@ -1,0 +1,186 @@
+<!--STYLE-->
+.gscope-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.gscope-panel {
+  position: relative;
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.gscope-panel.gscope-main {
+  border-right: 1px solid var(--c-line);
+}
+.gscope-label {
+  position: absolute;
+  top: var(--s-2);
+  left: var(--s-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--c-ink-faint);
+}
+
+/* the optical tube: a horizontal bar; main is long, guide is short */
+.gscope-tube {
+  height: 12px;
+  border-radius: 6px;
+  background: var(--c-line);
+  border: 1px solid var(--c-ink-faint);
+  margin-bottom: var(--s-3);
+}
+.gscope-main .gscope-tube { width: 78%; }
+.gscope-guide .gscope-tube { width: 42%; }
+
+/* field-of-view box: main is small/narrow, guide is large/wide */
+.gscope-fov {
+  position: relative;
+  border: 1px solid var(--c-line);
+  border-radius: var(--radius-sm);
+  background: var(--c-bg);
+}
+.gscope-main .gscope-fov {
+  width: 44%;
+  aspect-ratio: 3 / 2;
+}
+.gscope-guide .gscope-fov {
+  width: 82%;
+  aspect-ratio: 3 / 2;
+}
+
+.gscope-star {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--c-ink-soft);
+  transform: translate(-50%, -50%);
+}
+.gscope-star.gscope-dim {
+  background: var(--c-ink-faint);
+  opacity: .6;
+}
+
+/* the marked guide star — the single amber accent */
+.gscope-guidestar {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  box-shadow: 0 0 8px 2px var(--c-accent-soft);
+  transform: translate(-50%, -50%);
+}
+.gscope-reticle {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--c-accent-deep);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  opacity: .8;
+}
+
+@keyframes gscope-pulse {
+  0%, 100% { box-shadow: 0 0 6px 1px var(--c-accent-soft); }
+  50% { box-shadow: 0 0 12px 4px var(--c-accent-soft); }
+}
+@keyframes gscope-drift {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(2px, -1px); }
+}
+@keyframes gscope-rise {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* animated entrance for tubes + fov boxes */
+.precis-topic.in .gscope-tube,
+.precis-topic.in .gscope-fov {
+  animation: gscope-rise .55s var(--ease) both;
+}
+.precis-topic.in .gscope-main .gscope-tube { animation-delay: .18s; }
+.precis-topic.in .gscope-main .gscope-fov  { animation-delay: .30s; }
+.precis-topic.in .gscope-guide .gscope-tube { animation-delay: .30s; }
+.precis-topic.in .gscope-guide .gscope-fov  { animation-delay: .42s; }
+
+/* subtle differential-flex wobble on the main panel's field */
+.precis-topic.in .gscope-main .gscope-fov {
+  transform-origin: center;
+}
+.precis-topic.in .gscope-flexer {
+  animation: gscope-drift 6s var(--ease-soft) .9s infinite;
+}
+
+/* the guide star pulses gently once the field is in */
+.precis-topic.in .gscope-guidestar {
+  animation: gscope-pulse 2.4s var(--ease-soft) .9s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .precis-topic.in .gscope-tube,
+  .precis-topic.in .gscope-fov,
+  .precis-topic.in .gscope-flexer,
+  .precis-topic.in .gscope-guidestar {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+<!--/STYLE-->
+<!--BODY-->
+<section class="precis-topic" id="gscope" data-nav="Guide Scope">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">08</span> Guiding Optics</p>
+    <h2 class="reveal">Why the guide scope isn't the main scope</h2>
+    <p class="def reveal" style="--reveal-delay:.06s">Guiding gets its own small, short-focal-length scope and camera, separate from the imaging train.</p>
+    <dl class="facts reveal" style="--reveal-delay:.12s">
+      <dt>Wide field</dt>
+      <dd>A short guide scope sees a wide patch of sky, so it almost always finds a <span class="stat">usable guide star</span>.</dd>
+      <dt>Main scope</dt>
+      <dd>Long focal length, narrow field, tuned for the target — a poor place to go hunting for guide stars.</dd>
+      <dt>Cost vs flexure</dt>
+      <dd>A piggybacked guide scope is cheap and light, but any flex between the two tubes shows up as drift.</dd>
+      <dt>Alternative</dt>
+      <dd>An off-axis guider (OAG) picks a star out of the main scope's own light, removing flexure, at the cost of a dim, cramped field.</dd>
+    </dl>
+    <figure class="gscope-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
+      <div class="gscope-stage">
+        <div class="gscope-panel gscope-main">
+          <span class="gscope-label">Main</span>
+          <div class="gscope-tube"></div>
+          <div class="gscope-fov gscope-flexer">
+            <span class="gscope-star" style="top:42%; left:46%"></span>
+            <span class="gscope-star gscope-dim" style="top:64%; left:62%"></span>
+          </div>
+        </div>
+        <div class="gscope-panel gscope-guide">
+          <span class="gscope-label">Guide</span>
+          <div class="gscope-tube"></div>
+          <div class="gscope-fov">
+            <span class="gscope-star" style="top:24%; left:30%"></span>
+            <span class="gscope-star" style="top:70%; left:22%"></span>
+            <span class="gscope-star gscope-dim" style="top:38%; left:74%"></span>
+            <span class="gscope-star" style="top:80%; left:66%"></span>
+            <span class="gscope-star gscope-dim" style="top:18%; left:58%"></span>
+            <span class="gscope-reticle" style="top:52%; left:50%"></span>
+            <span class="gscope-guidestar" style="top:52%; left:50%"></span>
+          </div>
+        </div>
+      </div>
+    </figure>
+    <p class="caption">Wide guide field, narrow imaging field — same sky, different jobs.</p>
+    <p class="stakes reveal">Differential flexure makes guiding look perfect on its own star while the main image quietly drifts.</p>
+    <p class="hook reveal">AstroDeck resolves the <code>guider</code> role and its guide camera separately from the imaging camera.</p>
+    <p class="aside">The guide camera is the cheapest, ugliest sensor in the rig, and it never has to look pretty.</p>
+  </article>
+</section>
+<!--/BODY-->
+<!--SCRIPT-->
+<!--/SCRIPT-->
