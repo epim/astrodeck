@@ -1,0 +1,169 @@
+<!--STYLE-->
+  /* slug: polar */
+  .polar-fig {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-2);
+    margin-top: var(--s-3);
+  }
+  @media (max-width: 540px) { .polar-fig { grid-template-columns: 1fr; } }
+
+  .polar-panel {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border: 1px solid var(--c-line);
+    border-radius: var(--radius-sm);
+    background: var(--c-bg-sunk);
+    overflow: clip;
+  }
+  .polar-panel .polar-cap {
+    position: absolute;
+    left: 0.55rem; top: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--c-ink-faint);
+    z-index: 2;
+  }
+
+  /* ---- left panel: misaligned vs aligned star path ---- */
+  .polar-orbit {
+    position: absolute;
+    inset: 0;
+  }
+  .polar-svg { width: 100%; height: 100%; display: block; }
+  .polar-arc {
+    fill: none;
+    stroke: var(--c-warn);
+    stroke-width: 2;
+    stroke-linecap: round;
+    /* draw-on of the smeared arc; resting state = fully drawn */
+    stroke-dasharray: 1 0;
+  }
+  .polar-star-bad {
+    fill: var(--c-warn);
+  }
+  /* the aligned, locked pinpoint */
+  .polar-star-good {
+    fill: var(--c-accent);
+    opacity: 1;
+  }
+
+  /* ---- right panel: a bullseye + error dot converging ---- */
+  .polar-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid var(--c-line);
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+  }
+  .polar-ring.polar-r1 { width: 78%; height: 78%; }
+  .polar-ring.polar-r2 { width: 50%; height: 50%; }
+  .polar-ring.polar-r3 { width: 22%; height: 22%; border-color: color-mix(in srgb, var(--c-accent) 50%, var(--c-line)); }
+  .polar-cross::before, .polar-cross::after {
+    content: "";
+    position: absolute;
+    background: var(--c-line);
+    left: 50%; top: 50%;
+  }
+  .polar-cross::before { width: 1px; height: 70%; transform: translate(-50%, -50%); }
+  .polar-cross::after  { width: 70%; height: 1px; transform: translate(-50%, -50%); }
+
+  .polar-err {
+    position: absolute;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--c-accent);
+    box-shadow: 0 0 8px var(--c-accent);
+    left: 50%; top: 50%;
+    /* resting / reduced-motion-safe: converged at center */
+    transform: translate(-50%, -50%);
+  }
+
+  /* ---- the convergence animation, gated on .in so it REPLAYS ---- */
+  @keyframes polar-converge {
+    0%   { transform: translate(calc(-50% + 64px), calc(-50% - 48px)); }
+    55%  { transform: translate(calc(-50% - 30px), calc(-50% + 22px)); }
+    100% { transform: translate(-50%, -50%); }
+  }
+  .precis-topic.in .polar-err {
+    animation: polar-converge calc(var(--dur) * 2.2) var(--ease) both;
+  }
+
+  /* the smeared arc draws on as the error shows; the locked dot
+     blinks in once at the end. Both gated on .in. */
+  @keyframes polar-draw {
+    from { stroke-dasharray: 0 160; }
+    to   { stroke-dasharray: 160 0; }
+  }
+  .precis-topic.in .polar-arc {
+    animation: polar-draw var(--dur) var(--ease) both;
+  }
+  @keyframes polar-pop {
+    0%, 60% { opacity: 0; transform: scale(0.2); }
+    100%    { opacity: 1; transform: scale(1); }
+  }
+  .precis-topic.in .polar-lock {
+    transform-origin: center;
+    animation: polar-pop calc(var(--dur) * 1.6) var(--ease) both;
+  }
+<!--/STYLE-->
+
+<!--BODY-->
+<section class="precis-topic" id="polar" data-nav="Polar Alignment">
+  <article class="precis-card">
+    <p class="kicker"><span class="num">03</span> Aiming the Axis</p>
+    <h2>Polar alignment</h2>
+    <p class="def reveal" style="--reveal-delay: .08s">Pointing the mount's spin axis at
+      the <b>celestial pole</b> (near Polaris, north) so tracking actually cancels the
+      drift.</p>
+
+    <dl class="facts reveal" style="--reveal-delay: .16s">
+      <dt>Target</dt><dd>The celestial pole — within a degree of <b>Polaris</b> in the
+        north.</dd>
+      <dt>Goal</dt><dd>Dial alt/az to a bullseye until error <span class="stat">&lt; ~30
+        arcsec</span>.</dd>
+      <dt>Method</dt><dd>A routine <b>plate-solves</b> the sky to measure the error; you
+        turn two knobs to zero it.</dd>
+    </dl>
+
+    <div class="polar-fig bleed-wide reveal" style="--reveal-delay: .24s" aria-hidden="true">
+      <div class="polar-panel">
+        <span class="polar-cap">misaligned &rarr; aligned</span>
+        <div class="polar-orbit">
+          <svg class="polar-svg" viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet">
+            <!-- smeared arc: a star tracing an arc because of pole error -->
+            <path class="polar-arc" d="M 30 86 A 46 46 0 0 1 96 44" />
+            <circle class="polar-star-bad" cx="96" cy="44" r="3.2" />
+            <!-- the aligned, locked pinpoint near center -->
+            <g class="polar-lock">
+              <circle class="polar-star-good" cx="60" cy="62" r="3.4" />
+            </g>
+          </svg>
+        </div>
+      </div>
+
+      <div class="polar-panel polar-cross">
+        <span class="polar-cap">bullseye error</span>
+        <div class="polar-ring polar-r1"></div>
+        <div class="polar-ring polar-r2"></div>
+        <div class="polar-ring polar-r3"></div>
+        <div class="polar-err"></div>
+      </div>
+    </div>
+    <p class="caption reveal" style="--reveal-delay: .3s">Left: an arc means error — the
+      pinpoint is what aligned looks like. Right: nudge the dot into the center ring.</p>
+
+    <p class="stakes reveal">Error <b>rotates the whole field</b> around the pole; stars smear
+      into arcs that no later processing can salvage.</p>
+    <p class="hook reveal">AstroDeck's <b>polar bullseye</b> screen: an amber error-dot, rings
+      that tighten as the error drops, and live alt/az nudge cues until you hit center.</p>
+    <p class="aside">You are aiming at a hinge you cannot see, by adjusting two screws you
+      can barely reach.</p>
+  </article>
+</section>
+<!--/BODY-->
+
+<!--SCRIPT-->
+<!--/SCRIPT-->
