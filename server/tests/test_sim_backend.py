@@ -76,6 +76,25 @@ async def test_guide_camera_exposed_as_extra():
 
 
 @pytest.mark.asyncio
+async def test_guide_camera_reachable_via_protocol_accessor():
+    """The guide camera is reachable through the contracted BackendSession
+    .guide_camera() Protocol METHOD (W1.3) -- the seam the orchestrator uses to
+    surface ConnectResult.guide_camera, not a SimSession-only property."""
+    session = await SimBackend().open(ConnSpec(backend="sim"))
+    gc = session.guide_camera()                      # METHOD, not a property
+    assert gc is not None
+    assert isinstance(gc.name, str) and gc.name
+    # it is the same object the rig dict carries under "guide_camera".
+    assert gc is await session.get_device("guide_camera", ConnSpec(backend="sim"))
+
+
+def test_sim_backend_is_hostless():
+    """SimBackend.hostless is True so the orchestrator coalesces every sim role
+    into one ('sim', None, None) session regardless of stray addressing."""
+    assert SimBackend().hostless is True
+
+
+@pytest.mark.asyncio
 async def test_unknown_role_raises_keyerror():
     session = await SimBackend().open(ConnSpec(backend="sim"))
     with pytest.raises(KeyError):
@@ -94,9 +113,21 @@ async def test_native_guider_not_none_and_sync():
 
 
 @pytest.mark.asyncio
-async def test_native_solver_none_and_sync():
+async def test_native_solver_is_guarded_simsolver_bound_to_session(registry=None):
+    """native_solver() now yields a guarded SimSolver bound to THIS session's
+    SimRig (W1.3/W1.5 provenance seam), SYNC and cached. mode='sim' so the
+    per-role guard treats the frame as fake; on a real rig the camera session
+    returns None and the hub falls back to ASTAP, so the SimSolver never runs
+    against a real mount."""
+    from astrodeck.solve import SimSolver
+
     session = await SimBackend().open(ConnSpec(backend="sim"))
-    assert session.native_solver() is None          # NOT awaited -- sync by contract
+    s = session.native_solver()                     # NOT awaited -- sync by contract
+    assert isinstance(s, SimSolver)
+    assert s.mode == "sim"
+    # bound to the session's shared SimRig, and cached across calls.
+    assert s.sim_rig is session.shared_state
+    assert session.native_solver() is s
 
 
 @pytest.mark.asyncio

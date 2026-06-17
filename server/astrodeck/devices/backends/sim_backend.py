@@ -36,6 +36,7 @@ class SimSession:
         # the "guide_camera" device and the "_rig" shared-state object.
         self._rig = rig
         self._guider: object | None = None
+        self._solver: object | None = None
 
     @property
     def shared_state(self) -> object | None:
@@ -44,11 +45,12 @@ class SimSession:
         setting ``self.sim_rig`` without reaching into a private attribute."""
         return self._rig.get("_rig")
 
-    @property
     def guide_camera(self) -> object | None:
         """The sim's dedicated guide-camera device (the rig's ``"guide_camera"``
-        entry), or None. It is NOT a canonical ROLE, so the hub reads it here to
-        keep populating ``self.devices['guide_camera']`` exactly as before."""
+        entry), or None. Protocol accessor (W1.3): the orchestrator calls this on
+        the camera-role session and surfaces it as ``ConnectResult.guide_camera``,
+        so the hub keeps populating ``self.devices['guide_camera']`` without
+        reaching the (now-removed) ``SimSession``-only property. SYNC by contract."""
         return self._rig.get("guide_camera")
 
     async def get_device(self, role: str, conn: ConnSpec) -> object:
@@ -79,9 +81,22 @@ class SimSession:
         return self._guider
 
     def native_solver(self) -> object | None:
-        """The sim has no native plate solver -- the hub chooses one via
-        ``solve.get_solver``. SYNC by contract."""
-        return None
+        """The guarded ``SimSolver`` bound to THIS session's shared ``SimRig``.
+
+        Because it carries the sim rig it knows the frame's provenance is sim, so
+        the orchestrator's ``_pick_solver`` may safely consult it for the CAMERA
+        role's session. A real-camera session (nina/native) returns None from its
+        own ``native_solver``, so the hub falls back to ASTAP / a refusing
+        ``SimSolver`` and the sim solver never runs against a real mount (W1.3/
+        W1.5). ``mode="sim"`` so the per-role guard treats this frame as fake.
+        SYNC by contract; built lazily and once."""
+        if self._solver is None:
+            # Deferred import: keep module import light (solve pulls the solver
+            # stack) and avoid a cycle just to register the backend.
+            from ...solve import SimSolver
+
+            self._solver = SimSolver(self._rig.get("_rig"), mode="sim")
+        return self._solver
 
     async def health(self) -> dict | None:
         """The sim has no out-of-band link to report on."""
@@ -103,6 +118,10 @@ class SimBackend:
     label = "Simulator"
     roles = ROLES
     discoverable = False
+    #: Endpoint-less: one shared SimRig per open, so the orchestrator coalesces
+    #: every sim role into the single key ``("sim", None, None)`` regardless of
+    #: stray host/port on an override (W1.3).
+    hostless = True
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Build one coherent sim rig and return a session over it.

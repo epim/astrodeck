@@ -28,6 +28,7 @@ from .devices.base import (
     Switch,
     Telescope,
 )
+from .devices.backend import ROLES
 from .devices.nina import build_nina_rig, pick as nina_pick
 from .events import bus
 from .guide import Guider, PHD2Guider
@@ -47,21 +48,26 @@ from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
 from .solve import get_solver
 
-ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety")
+#: The device roles a rig fills. Imported from ``devices.backend`` (the single
+#: source of truth, a 7-tuple INCLUDING ``guider``) so hub and backend can never
+#: drift. ``guider`` is resolved via the guider-role session, NOT a get_device
+#: device-loop placement, so the role loops below skip it (it never appears in
+#: ``result.rig``).
+DEVICE_ROLES = ROLES
 
 
 def _harness():
     """Lazily import the pluggable-backend harness (Stage A).
 
-    Returns ``(RigSpec, ConnSpec, assemble)``. Imported lazily inside the connect
-    methods (not at module top) so the device backends register their adapters
-    without risking an import cycle through ``hub`` -- importing
+    Returns ``(RigSpec, ConnSpec, connect_profile)``. Imported lazily inside the
+    connect methods (not at module top) so the device backends register their
+    adapters without risking an import cycle through ``hub`` -- importing
     ``devices.backends`` self-registers ``sim``/``nina``/``native``/``phd2`` in the
     registry, and ``devices.backend``/``orchestrator`` import nothing from here."""
     from .devices import backends as _backends  # noqa: F401  (registration side effect)
     from .devices.backend import ConnSpec, RigSpec
-    from .devices.orchestrator import assemble
-    return RigSpec, ConnSpec, assemble
+    from .devices.orchestrator import connect_profile
+    return RigSpec, ConnSpec, connect_profile
 
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
 #: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
@@ -170,12 +176,14 @@ class Hub:
         # role, the guide camera and the SimGuider, sets self.sim_rig, and derives
         # self.mode = "sim".
         await self.disconnect_all()
-        RigSpec, ConnSpec, assemble = _harness()       # noqa: N806 (lazy import)
-        result = await assemble(RigSpec(primary="sim"))
-        # the lone sim session owns the shared SimRig state and the guide camera.
+        RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
+        result = await connect_profile(RigSpec(primary="sim"))
+        # the lone sim session owns the shared SimRig state; the guide camera is
+        # surfaced through the contracted BackendSession.guide_camera() accessor
+        # into ConnectResult.guide_camera (W1.3), not the SimSession-only property.
         session = next(iter(result.sessions.values()))
         self.sim_rig = session.shared_state
-        guide_cam = session.guide_camera
+        guide_cam = result.guide_camera
         for role in ROLES:
             dev = result.rig.get(role)
             if dev is None:
@@ -203,30 +211,41 @@ class Hub:
         (``monkeypatch.setattr(hub, 'build_nina_rig', ...)``) keeps working."""
         await self.disconnect_all()
         self._bridge_ready = False             # warming-up until first heartbeat
-        RigSpec, ConnSpec, assemble = _harness()       # noqa: N806 (lazy import)
+        RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
+        from .devices.backend import get_backend
         # One ConnSpec (this host/port + the monkeypatchable builder) shared by
-        # every role, so all roles resolve to a SINGLE NINA session/client. Map
-        # EVERY canonical role (not just NinaBackend.roles) to NINA so a
-        # NINA-connected switch is still picked up, matching the old loop over
-        # rig["devices"]; roles NINA did not report land in failures and are
-        # skipped. primary="nina" makes the unlisted guider role resolve here too.
+        # every role NINA can fill, so all roles resolve to a SINGLE NINA
+        # session/client. Request exactly NinaBackend.roles (NOT blindly all of
+        # ROLES) so the harness never asks NINA for the ``safety`` role it cannot
+        # fill; primary="nina" still resolves these to the one NINA session.
         conn = ConnSpec(backend="nina", host=host, port=port,
                         extra={"build_rig": build_nina_rig})
-        spec = RigSpec(primary="nina", roles={r: conn for r in ROLES})
-        result = await assemble(spec)
-        # Fail-fast preservation: assemble() swallows a failed backend.open() into
-        # per-role failures. If NINA was unreachable no session came up at all, so
-        # re-raise the recorded reason as a DeviceError (matching build_nina_rig's
-        # old propagated "cannot reach NINA ..." error) instead of leaking an
-        # opaque StopIteration from the empty-sessions case.
-        if not result.sessions:
-            reason = next(iter(result.failures.values()), "could not open NINA session")
+        spec = RigSpec(primary="nina",
+                       roles={r: conn for r in get_backend("nina").roles})
+        result = await connect_profile(spec)
+        # Fail-fast preservation: connect_profile swallows a failed backend.open()
+        # into per-role results (no session for that endpoint). If NINA was
+        # unreachable no session opened for the primary, so re-raise the recorded
+        # reason as a DeviceError (matching build_nina_rig's old propagated
+        # "cannot reach NINA ..." error) instead of leaking an opaque
+        # StopIteration from the empty-sessions case. ``failures`` is now a
+        # derived alias, so read the reason from the not-ok ``results``.
+        if not any(key[0] == "nina" for key in result.sessions):
+            # Prefer a DEVICE-role (non-guider) error: when open() raises, every
+            # device role records the real reason ("cannot reach NINA ..."),
+            # whereas the guider role only ever carries the generic "no guider"
+            # placeholder (it is resolved post-loop, not from open()). Fall back
+            # to any not-ok reason, then a default.
+            not_ok = [rr for rr in result.results if not rr.ok and rr.error]
+            reason = next(
+                (rr.error for rr in not_ok if rr.role != "guider"),
+                next((rr.error for rr in not_ok), "could not open NINA session"))
             raise DeviceError(reason)
         session = next(iter(result.sessions.values()))
         self.nina_client = session.client
         self.mode = "nina"                              # derived from primary backend
-        # only roles NINA reported connected appear in result.rig (the rest land
-        # in result.failures and are skipped) — same set the old loop populated.
+        # only roles NINA reported connected appear in result.rig (the rest are
+        # not-ok RoleResults and are skipped) — same set the old loop populated.
         for role in ROLES:
             dev = result.rig.get(role)
             if dev is not None:
@@ -244,9 +263,10 @@ class Hub:
                                     dev_type: str, dev_num: int, name: str) -> dict:
         # Stage A: route the single-role Alpaca connect through the NativeBackend
         # (RigSpec/registry) instead of calling alpaca.make_device directly. The
-        # native session's get_device(role, conn) wraps the SAME make_device call,
-        # so behavior is preserved exactly (same device object/connection).
-        _RigSpec, ConnSpec, _assemble = _harness()     # noqa: N806 (lazy import)
+        # native session's get_device(role, conn) builds the device against the
+        # session's shared AlpacaConnection, sets dev.role and awaits connect(),
+        # so behavior is preserved (the connect()/role set below are idempotent).
+        _RigSpec, ConnSpec, _connect_profile = _harness()  # noqa: N806 (lazy import)
         from .devices.backend import get_backend
         conn = ConnSpec(backend="native", host=host, port=port,
                         dev_type=dev_type, dev_num=dev_num, role=role,

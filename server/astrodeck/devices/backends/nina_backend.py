@@ -69,6 +69,11 @@ class NinaSession:
         connected guider. SYNC by contract."""
         return self._rig.get("guider")
 
+    def guide_camera(self) -> object | None:
+        """NINA exposes no dedicated guide-camera device to AstroDeck; None per
+        the Protocol default. SYNC by contract."""
+        return None
+
     def native_solver(self) -> object | None:
         """NINA has no native plate solver exposed here -- NINA mode solves via
         the local solver in the hub. SYNC by contract."""
@@ -125,8 +130,11 @@ class NinaBackend:
 
     name = "nina"
     label = "NINA"
-    roles = ("camera", "telescope", "focuser", "filterwheel", "guider")
+    # ``switch`` is fillable (devices/nina.py bridges NINA's switch hub); only
+    # ``safety`` stays unfillable (NINA exposes no SafetyMonitor class). W1.2/W1.9.
+    roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "guider")
     discoverable = True
+    hostless = False                # NINA is a network endpoint (host:port)
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Probe NINA at ``conn.host``/``conn.port`` and return a session.

@@ -33,6 +33,9 @@ class DummySession:
     def native_guider(self):
         return None
 
+    def guide_camera(self):
+        return None
+
     def native_solver(self):
         return None
 
@@ -48,6 +51,7 @@ class DummyBackend:
     label = "Dummy Backend"
     roles = ("camera", "telescope")
     discoverable = False
+    hostless = False                 # required Backend Protocol member (W1.1)
 
     async def open(self, conn):
         return DummySession()
