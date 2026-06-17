@@ -17,7 +17,6 @@ from typing import Any
 import numpy as np
 
 from .config import config_store, fov_deg, image_scale_arcsec_px, redacted
-from .devices import alpaca as alpaca_backend
 from .devices.base import (
     Camera,
     DeviceError,
@@ -30,9 +29,8 @@ from .devices.base import (
     Telescope,
 )
 from .devices.nina import build_nina_rig, pick as nina_pick
-from .devices.sim import build_sim_rig
 from .events import bus
-from .guide import Guider, PHD2Guider, SimGuider
+from .guide import Guider, PHD2Guider
 from .imaging import (
     auto_levels,
     compute_histogram,
@@ -50,6 +48,20 @@ from .profiles import Profile, ProfileDevice, profiles
 from .solve import get_solver
 
 ROLES = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety")
+
+
+def _harness():
+    """Lazily import the pluggable-backend harness (Stage A).
+
+    Returns ``(RigSpec, ConnSpec, assemble)``. Imported lazily inside the connect
+    methods (not at module top) so the device backends register their adapters
+    without risking an import cycle through ``hub`` -- importing
+    ``devices.backends`` self-registers ``sim``/``nina``/``native``/``phd2`` in the
+    registry, and ``devices.backend``/``orchestrator`` import nothing from here."""
+    from .devices import backends as _backends  # noqa: F401  (registration side effect)
+    from .devices.backend import ConnSpec, RigSpec
+    from .devices.orchestrator import assemble
+    return RigSpec, ConnSpec, assemble
 
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
 #: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
@@ -151,35 +163,78 @@ class Hub:
     # ------------------------------------------------------------ connection
 
     async def connect_sim(self) -> dict:
+        # Stage A: route through the pluggable harness (RigSpec -> assemble ->
+        # SimBackend) instead of calling build_sim_rig() directly. Behavior is
+        # preserved exactly: the orchestrator hands out the SAME sim device
+        # objects (sharing one SimRig state), and this method still connects each
+        # role, the guide camera and the SimGuider, sets self.sim_rig, and derives
+        # self.mode = "sim".
         await self.disconnect_all()
-        rig = build_sim_rig()
-        self.sim_rig = rig.pop("_rig")
-        guide_cam = rig.pop("guide_camera")
-        for role, dev in rig.items():
+        RigSpec, ConnSpec, assemble = _harness()       # noqa: N806 (lazy import)
+        result = await assemble(RigSpec(primary="sim"))
+        # the lone sim session owns the shared SimRig state and the guide camera.
+        session = next(iter(result.sessions.values()))
+        self.sim_rig = session.shared_state
+        guide_cam = session.guide_camera
+        for role in ROLES:
+            dev = result.rig.get(role)
+            if dev is None:
+                continue
             await dev.connect()
             self.devices[role] = dev
             self._last_connect[role] = {"backend": "sim"}
         await guide_cam.connect()
         self.devices["guide_camera"] = guide_cam
-        self.guider = SimGuider()
+        # native guider from the assembled rig (the SimGuider), connected here.
+        self.guider = result.guider
         await self.guider.connect()
-        self.mode = "sim"
+        self.mode = "sim"                               # derived from primary backend
         bus.log("info", "simulator rig connected", "hub")
         self.ensure_status_poller()
         return self.summary()
 
     async def connect_nina(self, host: str, port: int = 1888) -> dict:
-        """Bridge to a running NINA instance (Advanced API plugin)."""
+        """Bridge to a running NINA instance (Advanced API plugin).
+
+        Stage A: routed through the pluggable harness (RigSpec -> assemble ->
+        NinaBackend) while preserving exact behavior. The hub's OWN module-level
+        ``build_nina_rig`` reference is passed into the backend via
+        ``ConnSpec.extra['build_rig']`` so the existing test monkeypatch seam
+        (``monkeypatch.setattr(hub, 'build_nina_rig', ...)``) keeps working."""
         await self.disconnect_all()
         self._bridge_ready = False             # warming-up until first heartbeat
-        rig = await build_nina_rig(host, port)
-        self.nina_client = rig["client"]
-        self.mode = "nina"
-        for role, dev in rig["devices"].items():
-            self.devices[role] = dev
-        if rig["guider"]:
-            self.guider = rig["guider"]
-        roles = ", ".join(rig["devices"]) or "no equipment connected in NINA"
+        RigSpec, ConnSpec, assemble = _harness()       # noqa: N806 (lazy import)
+        # One ConnSpec (this host/port + the monkeypatchable builder) shared by
+        # every role, so all roles resolve to a SINGLE NINA session/client. Map
+        # EVERY canonical role (not just NinaBackend.roles) to NINA so a
+        # NINA-connected switch is still picked up, matching the old loop over
+        # rig["devices"]; roles NINA did not report land in failures and are
+        # skipped. primary="nina" makes the unlisted guider role resolve here too.
+        conn = ConnSpec(backend="nina", host=host, port=port,
+                        extra={"build_rig": build_nina_rig})
+        spec = RigSpec(primary="nina", roles={r: conn for r in ROLES})
+        result = await assemble(spec)
+        # Fail-fast preservation: assemble() swallows a failed backend.open() into
+        # per-role failures. If NINA was unreachable no session came up at all, so
+        # re-raise the recorded reason as a DeviceError (matching build_nina_rig's
+        # old propagated "cannot reach NINA ..." error) instead of leaking an
+        # opaque StopIteration from the empty-sessions case.
+        if not result.sessions:
+            reason = next(iter(result.failures.values()), "could not open NINA session")
+            raise DeviceError(reason)
+        session = next(iter(result.sessions.values()))
+        self.nina_client = session.client
+        self.mode = "nina"                              # derived from primary backend
+        # only roles NINA reported connected appear in result.rig (the rest land
+        # in result.failures and are skipped) — same set the old loop populated.
+        for role in ROLES:
+            dev = result.rig.get(role)
+            if dev is not None:
+                self.devices[role] = dev
+        if result.guider:
+            self.guider = result.guider
+        connected = [r for r in ROLES if r in self.devices]
+        roles = ", ".join(connected) or "no equipment connected in NINA"
         bus.log("info", f"bridged to NINA at {host}:{port} — {roles}", "nina")
         self.ensure_status_poller()
         self._start_nina_ws()
@@ -187,7 +242,17 @@ class Hub:
 
     async def connect_alpaca_device(self, role: str, host: str, port: int,
                                     dev_type: str, dev_num: int, name: str) -> dict:
-        dev = alpaca_backend.make_device(host, port, dev_type, dev_num, name)
+        # Stage A: route the single-role Alpaca connect through the NativeBackend
+        # (RigSpec/registry) instead of calling alpaca.make_device directly. The
+        # native session's get_device(role, conn) wraps the SAME make_device call,
+        # so behavior is preserved exactly (same device object/connection).
+        _RigSpec, ConnSpec, _assemble = _harness()     # noqa: N806 (lazy import)
+        from .devices.backend import get_backend
+        conn = ConnSpec(backend="native", host=host, port=port,
+                        dev_type=dev_type, dev_num=dev_num, role=role,
+                        extra={"name": name})
+        session = await get_backend("native").open(conn)
+        dev = await session.get_device(role, conn)
         await dev.connect()
         dev.role = role                        # device identity for Profiles (A.6)
         old = self.devices.get(role)
