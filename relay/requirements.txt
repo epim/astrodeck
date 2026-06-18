@@ -1,0 +1,7 @@
+# AstroDeck relay -- runtime deps (kept SEPARATE from the server venv).
+# Minimal, host-agnostic. The pure protocol/proxy/registry/oidc core needs only
+# the stdlib + cryptography; starlette/uvicorn/websockets are the server shell.
+starlette>=0.37
+uvicorn[standard]>=0.30
+websockets>=12.0
+cryptography>=42.0
