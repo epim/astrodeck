@@ -130,6 +130,22 @@ def configure_provider_from_auth(auth_cfg) -> AuthProvider:
 
 # ----------------------------------------------------------------- resolver
 
+def _scope_is_remote(request: Request) -> bool:
+    """True iff this request/ws was relay-tunneled (the W3 remote flag).
+
+    Reads ``request.scope['state']['astrodeck_remote']`` -- ASGI scope STATE set
+    by the scope-side relay client on every replayed request/ws (NOT a header, so
+    an on-LAN attacker cannot forge it; a real uvicorn-borne request has no such
+    key). Safe on any scope shape (missing ``state``/key => False). A ``Request``
+    and a ``WebSocket`` both expose ``.scope``, so this works for the /ws gate too.
+    Kept here (not importing ``remote.relay_client``) so ``deps`` stays
+    import-light and cycle-free."""
+    state = request.scope.get("state")
+    if not isinstance(state, dict):
+        return False
+    return bool(state.get("astrodeck_remote", False))
+
+
 async def resolve_principal(request: Request, *, remote: bool = False) -> Principal | None:
     """Resolve a request to a ``Principal`` via the active provider, or None.
 
@@ -148,8 +164,9 @@ async def get_principal(request: Request) -> Principal:
 
     Standalone (no capability gate) -- used by ``GET /api/me`` and any route
     that just needs the resolved identity. FAIL-CLOSED: a None resolution is a
-    401, never a default-admin."""
-    principal = await resolve_principal(request)
+    401, never a default-admin. ``remote=`` is derived from the ASGI scope flag so
+    a relay-tunneled caller can never resolve to the open-default admin."""
+    principal = await resolve_principal(request, remote=_scope_is_remote(request))
     if principal is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return principal
@@ -163,7 +180,7 @@ def require(cap: str) -> Callable[[Request], Awaitable[Principal]]:
     a handler can run field-level checks. Under the ``none`` provider every
     caller is admin, so this always passes when nothing is configured."""
     async def _dep(request: Request) -> Principal:
-        principal = await resolve_principal(request)
+        principal = await resolve_principal(request, remote=_scope_is_remote(request))
         if principal is None:
             raise HTTPException(status_code=401, detail="authentication required")
         if not principal.has(cap):
@@ -185,6 +202,7 @@ requires = require
 
 __all__ = [
     "require", "requires", "get_principal", "resolve_principal",
+    "_scope_is_remote",
     "set_active_provider", "get_active_provider", "reset_active_provider",
     "build_provider", "configure_provider_from_auth",
     # re-export the cap strings most routes reference, so app.py can import the

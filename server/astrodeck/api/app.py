@@ -27,8 +27,9 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
-                    CAP_VIEW_STATUS, Principal, configure_provider_from_auth,
-                    get_principal, require, resolve_principal)
+                    CAP_VIEW_STATUS, Principal, _scope_is_remote,
+                    configure_provider_from_auth, get_principal, require,
+                    resolve_principal)
 from ..auth.rbac import assert_route_capabilities, declare
 from ..catalog import search_catalog
 from ..catalog.survey import router as survey_router
@@ -101,6 +102,18 @@ async def _lifespan(app: "FastAPI"):
     except Exception as e:  # noqa: BLE001 - degrade to open-default, never crash boot
         bus.log("error", f"auth provider init failed (open-default): {e}", "auth")
     task = asyncio.create_task(dispatcher.run())
+    # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
+    # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
+    # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
+    # loop never raises, and we additionally swallow any launch error here -- a
+    # relay problem must never brick boot; the home degrades to local-only.
+    relay_client = None
+    try:
+        from ..remote.relay_client import run_relay_client
+        relay_client = await run_relay_client(
+            app, lambda: config_store.cfg().remote)
+    except Exception as e:  # noqa: BLE001 - degrade to local-only, never crash boot
+        bus.log("error", f"relay client launch failed (local-only): {e}", "remote")
     # Boot auto-connect the active profile (no-op on first run / no active
     # profile). MUST swallow every failure - a raise here bricks the whole UI.
     if not _boot_autoconnect_disabled():
@@ -117,6 +130,12 @@ async def _lifespan(app: "FastAPI"):
             await task
         except (asyncio.CancelledError, Exception):
             pass
+        # Stop the relay dial-out (best-effort; never raises out of shutdown).
+        if relay_client is not None:
+            try:
+                relay_client.stop()
+            except Exception:
+                pass
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
@@ -1534,10 +1553,22 @@ def create_app() -> FastAPI:
 
         async def plain_goto():
             tel = hub.require("telescope")
-            if await tel.is_parked():
-                await tel.unpark()
-            await tel.set_tracking(True)
-            await tel.slew(body.ra_hours, body.dec_deg)
+            # Motion fence (W3.7): serialize the device-touching commit under the
+            # hub motion lock and re-check the epoch immediately before dispatch,
+            # so a STOP/abort that lands while this is awaiting (e.g. a stale
+            # REMOTE goto racing a LOCAL abort) is fenced out at the mount.
+            epoch = hub._motion_epoch
+            async with hub._motion_lock:
+                if not hub._motion_committed_clean(epoch):
+                    bus.log("warning", "goto abandoned: aborted before motion", "mount")
+                    return
+                if await tel.is_parked():
+                    await tel.unpark()
+                await tel.set_tracking(True)
+                if not hub._motion_committed_clean(epoch):
+                    bus.log("warning", "goto abandoned: aborted before slew", "mount")
+                    return
+                await tel.slew(body.ra_hours, body.dec_deg)
             bus.publish("mount", action="slew_complete")
         return _spawn("goto", plain_goto())
 
@@ -1586,7 +1617,23 @@ def create_app() -> FastAPI:
             # tel.stop() on a non-moving axis (harmless), and a rate-0 stop leaves
             # the deadman idle so there is no spurious halt.
             hub.note_move(body.axis, rate)
-            await tel.move_axis(body.axis, rate)
+            # Motion fence (W3.7): serialize the jog's device touch with every
+            # other motion path under the hub lock. A rate-0 STOP is itself an
+            # abort, so it BUMPS the fence first (so a concurrent slew is fenced)
+            # and is always allowed; a non-zero jog re-checks the fence at the
+            # pre-dispatch point so a STOP that landed mid-call wins.
+            if rate == 0.0:
+                hub.bump_motion_epoch()
+                async with hub._motion_lock:
+                    await tel.move_axis(body.axis, rate)
+            else:
+                epoch = hub._motion_epoch
+                async with hub._motion_lock:
+                    if not hub._motion_committed_clean(epoch):
+                        bus.log("warning", "jog abandoned: aborted before motion",
+                                "mount")
+                        return {"ok": True, "aborted": True}
+                    await tel.move_axis(body.axis, rate)
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
@@ -1598,6 +1645,12 @@ def create_app() -> FastAPI:
             tel = hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
+        # Motion fence (W3.7): BUMP the epoch FIRST, then cancel + stop. The bump
+        # fences any in-flight (or just-accepted-but-still-awaiting) slew so a
+        # stale REMOTE goto cannot fire AFTER this LOCAL abort -- even if its task
+        # was already past the cancel point and sitting in ``tel.slew``'s await,
+        # its pre-dispatch re-check sees the advanced epoch and abandons.
+        hub.bump_motion_epoch()
         for name in ("goto", "solve"):
             t = hub._busy.get(name)
             if t and not t.done():
@@ -1628,7 +1681,17 @@ def create_app() -> FastAPI:
             hub.require("telescope")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("goto", hub.require("telescope").park())
+        # Park is a motion-committing abort: bump the fence FIRST so an in-flight
+        # goto is abandoned, then run park under the motion lock (serialized with
+        # every other device-touching motion path). Replaces the bare "goto"
+        # task so a prior goto is also cancelled by the named-task guard.
+        hub.bump_motion_epoch()
+
+        async def _park():
+            tel = hub.require("telescope")
+            async with hub._motion_lock:
+                await tel.park()
+        return _spawn("goto", _park())
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.unpark"})
@@ -2129,7 +2192,11 @@ def create_app() -> FastAPI:
         # the default LAN path is byte-for-byte today. A principal lacking
         # ``view.status`` (or an unauthenticated caller under a real provider) is
         # closed 1008 BEFORE accept, never joining the bus.
-        principal = await resolve_principal(websocket)
+        # W3 remote flag: a relay-tunneled /ws scope is marked remote, so an open
+        # ``none`` provider hard-denies the subscribe over a relay (the send-only
+        # status stream is never served to an unauthenticated remote viewer).
+        principal = await resolve_principal(
+            websocket, remote=_scope_is_remote(websocket))
         if principal is None or not principal.has(CAP_VIEW_STATUS):
             await websocket.close(code=1008)
             return

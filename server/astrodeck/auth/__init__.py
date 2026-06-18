@@ -43,10 +43,10 @@ from .capabilities import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                            DESTRUCTIVE_CAPS, RETIRED_CAPS, ROLES, ROLES_CAP,
                            VIEWER_LINK_CAPS, caps_for_role, has_capability,
                            role_rank)
-from .deps import (build_provider, configure_provider_from_auth,
-                   get_active_provider, get_principal, require, requires,
-                   reset_active_provider, resolve_principal,
-                   set_active_provider)
+from .deps import (_scope_is_remote, build_provider,
+                   configure_provider_from_auth, get_active_provider,
+                   get_principal, require, requires, reset_active_provider,
+                   resolve_principal, set_active_provider)
 from .passwords import (PasswordTooLongError, hash_password, verify_password)
 from .principal import Principal, admin_principal, principal_for_role
 from .providers import (AuthProvider, DEFAULT_PROVIDER, GoogleAuthProvider,
@@ -80,6 +80,7 @@ __all__ = [
     "secret_is_default", "SECRET_ENV_VAR", "DEV_DEFAULT_SECRET", "SessionError",
     # deps / enforcement
     "require", "requires", "get_principal", "resolve_principal",
+    "_scope_is_remote",
     "set_active_provider", "get_active_provider", "reset_active_provider",
     "build_provider", "configure_provider_from_auth",
 ]

@@ -1,0 +1,71 @@
+# Fly.io config for the AstroDeck relay.
+#
+# WHY Fly.io (not Cloud Run): the relay holds a HOME's persistent outbound WSS
+# open for hours and every remote browser for that home must reach the SAME
+# instance (affinity). Cloud Run's request-scoped lifetime + scale-to-zero +
+# instance recycling fight a kept-open bidi WSS + in-memory registry. Fly.io is
+# always-on, Anycast, and suited to long-lived bidi streams. Single-instance to
+# start (one machine holds the registry); scale out later via a shared bus.
+#
+# Deploy:
+#   fly launch --no-deploy            # create the app, accept this fly.toml
+#   fly secrets set ...               # see README "Deploy" (tokens are FILES,
+#                                     # so mount them or pass via a secret volume)
+#   fly deploy
+#
+# Provision device tokens + signing seeds as MOUNTED FILES (never in the image):
+# use a Fly volume or a secrets-as-files mechanism and point the RELAY_*_FILE
+# env vars at them.
+
+app = "astrodeck-relay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RELAY_BIND_PORT = "8080"
+  RELAY_HTTPS = "1"
+  RELAY_PING_INTERVAL_S = "10"
+  RELAY_PING_MAX_MISSES = "3"
+  # RELAY_ORIGIN is set per-deploy to the public hostname (Set-Cookie rewrite):
+  #   fly secrets set RELAY_ORIGIN=relay.example.com   (or set here once known)
+  RELAY_DEVICE_TOKENS_FILE = "/secrets/device_tokens.json"
+  RELAY_OIDC_SEED_FILE = "/secrets/oidc_seed.bin"
+  RELAY_VIEWER_SEED_FILE = "/secrets/viewer_seed.bin"
+
+# ONE always-on machine holds the home registry (single-instance affinity).
+# Do NOT scale to zero: a home's persistent WSS must stay pinned.
+[[services]]
+  internal_port = 8080
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  # Long-lived WSS: generous idle timeout so a quiet tunnel is not reaped
+  # between keepalive PINGs.
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 800
+
+[[services.http_checks]]
+  interval = "15s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "get"
+  path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

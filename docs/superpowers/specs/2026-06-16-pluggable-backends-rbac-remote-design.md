@@ -17,7 +17,7 @@ ones but do not block their own internal staging.
 |---|---|---|---|
 | **W1** | Pluggable backend harness + device support + managed PHD2 | — (foundation) | The plugin seam (`devices/backend.py`, already committed) so a new backend FILLING AN EXISTING ROLE = new module + one `register()` call, zero hub edits (new roles are a known multi-file change, W1.9). Retire the `self.mode`/`sim_rig`/`nina_client` branches. Add server-side sun-exclusion safety (W1.10). AstroDeck owns PHD2 as a supervised internal service. |
 | **W2** | RBAC (capability-based) | W1 (so `config.backend` is a real capability) | Capability-gated routes + WS; pluggable auth provider (`none` default, `google` OIDC). Builds on the existing `ASTRODECK_TOKEN` infra. |
-| **W3** | Remote access (gRPC cloud relay) | W2 (relay terminates OAuth; tags role) | Home server dials OUTBOUND to a relay; remote browsers reach it over HTTPS + Connect; the existing HTTP/WS is **tunnelled** (not rewritten). RBAC enforced at relay AND home. |
+| **W3** | Remote access (PLAIN HTTP/WS tunnel over ONE outbound WSS — **NO gRPC, NO Tailscale**) | W2 (home re-auths every tunnelled request) | The scope dials ONE OUTBOUND persistent **WSS** to a small PUBLIC relay; a remote browser hits the relay over HTTPS+WSS and the relay TUNNELS the WHOLE app (SPA + API + `/ws`) down the scope link as **opaque framed bytes**. The home re-authenticates + re-authorizes **EVERY** tunnelled request (`remote=True`). The relay holds NO signing secret and forwards bytes only. RBAC/safety enforce **AT THE HOME**. |
 | **W4** | Native drivers / in-process guider (roadmap) | W1 (Backend protocol) | `NativeGuider` (no PHD2 binary), native/INDI/Rust drivers as additional `Backend` registrations, the eventual NINA→Rust port. Brief only. |
 
 **Why this order:** W1 creates the abstraction every later feature builds against (W4 drivers are just more `Backend`
@@ -947,39 +947,79 @@ So the sun-exclusion check is enforced **inside the hub/orchestrator device-moti
 inherit it**, regardless of which route initiated them. The `/api/mount/*` routes call those same methods, so they are
 covered too; the route-level check (if any) is convenience, not the floor.
 
-Add an explicit **sun-exclusion** guard that:
-- Rejects any **goto/center** AND any **manual move** (`/api/mount/move`, the SlewPad) whose **target OR current**
-  alt-az falls within a configurable **sun-exclusion cone** (default ~30°) of the computed sun position. **Reuse the
-  EXISTING sun helpers — do NOT add a new sun-position function:** `sun_radec` (`catalog/coords.py:81`), `sun_altaz`
-  (`catalog/coords.py:103`), and `dark_window` (`catalog/coords.py:115`) already exist and are used by `app.py` and
-  `sequence/schedule.py`. The guard computes `sun_altaz(lat, lon, unix_time)` (pass `unix_time` so it is test-clockable,
-  §T1 sun-guard tests) and adds ONLY the **separation-cone** check (angular distance target-alt-az ↔ sun-alt-az < cone);
-  reference the existing `sun_altaz`/`sun_radec` call site in `sequence/schedule.py` for the pattern.
-- Is **INDEPENDENT of `site.is_default`** — a default/unconfigured site still gets a usable (if approximate)
-  sun-avoidance using the best-known location, because the daytime-bench accident is exactly the default-site case.
-- Is bypassable **only** by a separately **capability-gated daytime/solar override** (W2 `config.solar_override`, NOT
-  `control.capture`), explicitly set by an authenticated human.
-- **`/api/mount/goto` `force=true` MUST NOT bypass the sun guard** (it may still bypass the visible-horizon check, but
-  the sun cone is a hard floor unless `config.solar_override` is held).
-- **`POST /api/sequence/start` `force=true` IS subject to the sun cone.** Because the guard sits inside
-  `goto_and_center`, a forced sequence that bypasses the route-level `_horizon_block` (`app.py:1323`) STILL hits the sun
-  cone on every per-target slew and meridian-flip re-slew. A sequence may bypass the sun cone ONLY when the caller holds
-  `config.solar_override` (the same hard floor as `goto`) — this closes the dawn-during-unattended-sequence path.
-- **A PERIODIC sun-proximity check on the status poller catches a TRACKING mount drifting into the cone — the
-  motion-boundary guard alone structurally cannot.** The sun-exclusion guard above is **slew-triggered** (it fires at
-  goto/move/connect), so it cannot see a target that was CLEAR at flip/slew time **drift into the cone over the following
-  hour via sidereal tracking** — the dawn-overtakes-a-tracking-mount path on an unattended run. Add a **periodic check on
-  the status poller** that reuses `sun_altaz` with the **current mount alt-az** (same cone, same `unix_time`-clockable
-  helper) and, when a **tracking** mount's current alt-az crosses INTO the cone, fires the **SAME connect-time SAFE-ING
-  halt** (stop tracking, optionally park, escalate to the persistent chip + alerts/escalation sink, resume gated by
-  `config.solar_override`). This makes the sun floor cover BOTH the slew-initiated case (motion boundary) AND the
-  drift-over-time case (poller), so a clear-at-flip target overtaken by dawn during an unattended sequence is halted, not
-  cooked.
+**Solar-scope aware: ON by default, deliberately disableable for solar astronomy.** The cone protects normal deep-sky
+gear from the Sun, but a **solar scope behind a proper full-aperture solar filter WANTS to point at the Sun** — so the
+gate is not an immovable hard floor, it is a **default-on safety that an authenticated admin can turn OFF for a solar
+session**. Two distinct config knobs on `SafetyConfig` (`config.py:85`):
+- `solar_avoidance: bool = True` — the master enable. `True` (default) = cone armed; `False` = solar-astronomy mode,
+  cone inert. **Flipping it (in either direction) requires `config.solar_override`** (route-level, like other
+  privileged config writes — see the field-level RBAC below), so it is a deliberate admin toggle, never a stray
+  capture-tier write.
+- `solar_exclusion_deg: float = 30.0` — the cone half-angle. `30` is grounded in the W1.10 arch-page sun-cone note
+  (the diagram labels a "~30° exclusion cone"); `ge=0, le=90`. Also gated by `config.solar_override`.
 
-**UI:** a distinct, loud, persistent **`DAYTIME / SUN-EXCLUSION`** state (its own banner/state, not a generic toast)
-that names the blocked target's separation from the sun and the override path. This ties directly to the W1.6
-auto-connect posture (mount comes online PARKED, tracking OFF; a discovered tracking-into-the-sun mount is HALTED) so a
-boot never slews toward the sun unattended.
+Add an explicit **`_check_solar`** guard (`hub.py`, signature `_check_solar(ra_hours, dec_deg, *, force=False)`) that:
+- Is **INERT when `solar_avoidance is False`** (solar-session mode) and a no-op when `solar_exclusion_deg <= 0`.
+- Rejects any **goto/center** AND any **manual move** (`/api/mount/move`, the SlewPad) whose **target OR current**
+  pointing falls within the **sun-exclusion cone** (`solar_exclusion_deg`) of the computed Sun position.
+- **Computes the separation in RA/Dec, NOT alt-az — so it is genuinely site-independent.** The Sun's apparent RA/Dec
+  is date-only (observer parallax is ~8.8 arcsec, negligible against a 30° cone), so the cone works on a default site
+  with no lat/lon. **Reuse the EXISTING sun helper — do NOT add a new sun-position function:** `sun_radec`
+  (`catalog/coords.py:81`) returns `(ra_hours, dec_deg)` from `unix_time` alone and already backs `sun_altaz`/
+  `dark_window` used by `app.py` and `sequence/schedule.py`. The guard calls `sun_radec(unix_time)` (pass `unix_time`
+  so it is test-clockable, §T1 sun-guard tests) and reuses the EXISTING `_ang_sep_deg(ra1_h, dec1, ra2_h, dec2)`
+  (`hub.py:1587`) for the great-circle separation `sep = _ang_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)`; reject when
+  `sep < solar_exclusion_deg`. (The poller-drift case below reuses the same `sun_radec` against the mount's CURRENT
+  RA/Dec — no alt-az, no lat/lon dependency anywhere in the gate.)
+- Is **INDEPENDENT of `site.is_default`** — because it is RA/Dec-based it needs no site at all, and the daytime-bench
+  accident is exactly the default-site case the old `_check_horizon` skips.
+- The `force=True` argument **does NOT bypass the cone** — it is threaded only so callers share one signature with
+  `_check_horizon`; the sun cone is bypassed ONLY by `solar_avoidance=False` (admin-set via `config.solar_override`),
+  never by a per-call `force`.
+- **`/api/mount/goto` `force=true` MUST NOT bypass the sun guard** (it may still bypass the visible-horizon check, but
+  the sun cone stands unless `solar_avoidance` is False).
+- **`POST /api/sequence/start` `force=true` IS subject to the sun cone.** Because `_check_solar` sits inside
+  `goto_and_center` (the motion boundary, `hub.py:1186`), a forced sequence that bypasses the route-level
+  `_horizon_block` (`app.py:1733`) STILL hits the sun cone on every per-target slew and meridian-flip re-slew. A
+  sequence runs into a sun-adjacent target ONLY when `solar_avoidance` is already False (admin-set via
+  `config.solar_override`) — `force` alone cannot disarm it. This closes the dawn-during-unattended-sequence path.
+- **A PERIODIC sun-proximity check on the status poller catches a TRACKING mount drifting into the cone — the
+  motion-boundary guard alone structurally cannot.** `_check_solar` is **slew-triggered** (it fires at goto/move/
+  connect), so it cannot see a target that was CLEAR at flip/slew time **drift into the cone over the following hour via
+  sidereal tracking** — the dawn-overtakes-a-tracking-mount path on an unattended run. Add a **periodic check on the
+  status poller** (`_status_loop`, `hub.py:1324`) that reuses `sun_radec` against the mount's **current RA/Dec** (same
+  cone half-angle, same `unix_time`-clockable helper) and, when `solar_avoidance` is True and a **tracking** mount's
+  current pointing crosses INTO the cone, fires a **SAFE-ING halt** (stop tracking, optionally park, escalate to the
+  persistent chip + alerts/escalation sink). Resume from that halt is gated by `config.solar_override` (re-arming
+  motion in a daytime sky is a privileged action). This makes the sun floor cover BOTH the slew-initiated case (motion
+  boundary) AND the drift-over-time case (poller), so a clear-at-flip target overtaken by dawn during an unattended
+  sequence is halted, not cooked. The poller halt is also inert when `solar_avoidance` is False (a solar session
+  legitimately tracks the Sun).
+
+**Override semantics (decided).** The gate has exactly ONE disarm path and ONE privileged action:
+- **Disarm = `solar_avoidance=False`**, written through `POST /api/config` `safety` block. The `safety` block already
+  requires `config.safety`; the TWO sun fields (`solar_avoidance`, `solar_exclusion_deg`) carry an ADDITIONAL
+  field-level requirement of `config.solar_override` (mirroring the existing `site.horizon_min_deg → config.safety`
+  nested field-level rule in `_check_config_caps`, `app.py:806`). So toggling sun-avoidance needs BOTH `config.safety`
+  (the block) AND `config.solar_override` (the field) — admin-only, deliberate.
+- **No per-call `force` bypass.** Neither `goto force=true` nor `sequence/start force=true` disarms the cone — they only
+  bypass the visible-horizon check. The cone is governed solely by the persisted `solar_avoidance` flag.
+- **Resume-after-halt** (connect-time SAFE-ING halt and the poller-drift halt) is gated by `config.solar_override` as
+  before. Disarming via `solar_avoidance=False` is the standing solar-session mode; the resume cap is the per-incident
+  unblock.
+
+**UI:** two surfaces, both pinned to EXISTING components (no new component):
+- A distinct, loud, persistent **`DAYTIME / SUN-EXCLUSION`** state (its own banner/state, not a generic toast) that
+  names the blocked target's separation from the Sun and the override path. Required to remain shape/letter
+  distinguishable from REAL-MOTION at night (the §6 red-on-red note).
+- A **"Solar astronomy mode (disable sun avoidance)" toggle in Settings → Safety**, beside the horizon/pier floor
+  controls, rendered as a DESTRUCTIVE-tier toggle (`config.solar_override` is in `DESTRUCTIVE_CAPS`,
+  `capabilities.py:45`) so it double-confirms and names the consequence ("the mount may now slew at the Sun — only do
+  this with a solar filter installed"). Shown disabled-with-explanation when the caller lacks `config.solar_override`.
+
+This ties directly to the W1.6 auto-connect posture (mount comes online PARKED, tracking OFF; a discovered
+tracking-into-the-sun mount is HALTED when `solar_avoidance` is True) so a boot never slews toward the Sun unattended,
+while a deliberately-configured solar rig (`solar_avoidance=False`) is left free to track it.
 
 ### W1.11 Per-role capability advertisement (cooling / dew / pier-side / FOV provenance)
 
@@ -1370,8 +1410,8 @@ must FAIL boot).
     "WS" is the **relay's per-`ws_id` projection off ONE home-side `bus.subscribe()`** (W3.3 single-subscriber model) —
     the home re-checks auth only on NEW requests and holds **no per-viewer socket** to tear down; only the **relay** knows
     which `ws_id` maps to which `jti`. So: the **relay maintains the `ws_id`→`jti` map** and EITHER **polls the home's
-    `revoked_jti`** OR **receives a home-pushed revocation event** (over a `HomeFrame`, W3.3 revocation-propagation path),
-    then **drops the matching per-`ws_id` projection** within the **same bounded interval as the home-direct case
+    `revoked_jti`** OR **receives a home-pushed revocation event** (a `REVOKE` control frame on reserved `stream_id=0`,
+    W3.2 / W3.3 revocation-propagation path), then **drops the matching per-`ws_id` projection** within the **same bounded interval as the home-direct case
     (≤ 30 s)** — state this relayed-case max revocation-propagation latency explicitly, mirroring the direct ≤ 30 s bound.
   - **Renewal is contingent on a LIVE home stream + a bounded-age revocation snapshot.** Viewer-link "renew-while-
     connected" (W3.3) must NOT keep renewing access during a relay redial/backoff when the relay cannot see the home's
@@ -1791,306 +1831,316 @@ then resets without importing `api.app`; a `config.alerts`-only principal CANNOT
 
 ---
 
-## W3 — REMOTE ACCESS (gRPC cloud relay)
+## W3 — REMOTE ACCESS (PLAIN HTTP/WS tunnel over ONE outbound WSS — NO gRPC, NO Tailscale)
 
-### W3.1 Approach — TUNNEL the existing HTTP/WS (chosen over a native-gRPC rewrite)
+> **OWNER DECISION (build EXACTLY this).** **NO Tailscale. NO gRPC.** Remote access is **plain HTTP/WS**. The **SCOPE**
+> dials ONE **OUTBOUND persistent WSS** to a small **PUBLIC RELAY** (so no home port-forwarding / NAT pain). A remote
+> browser hits the RELAY over **HTTPS + WSS**; the relay **TUNNELS** the request down the scope connection to the home
+> app, and streams the response back. **The home serves the WHOLE app — SPA + API + `/ws` — so the relay forwards
+> EVERYTHING** (the previous "frontend on a CDN, relay separate" split from the 2026-06-17 ADR is SUPERSEDED for the
+> shipped design: the relay forwards the static SPA bytes too, because the home already serves them at `/`). The HOME
+> **re-authenticates + re-authorizes EVERY tunnelled request** (`remote=True`, so the open `none` default is DENIED
+> remotely) and the sun / RBAC / safety gates still enforce **at the home**. The relay **holds NO signing secret and
+> CANNOT forge a principal** — it only forwards bytes. **FULL remote control for an authenticated ADMIN; friends are
+> view-only via RBAC.** The relay is **HOST-AGNOSTIC** (Docker + a Fly.io config; the owner deploys it).
 
-The Web UI + REST/WS are **unchanged**; remote is purely a transport. The home server **dials OUTBOUND** to a small
-cloud relay and holds a **persistent gRPC bidi stream** — **no home port-forwarding**. Remote browsers reach the relay
-over HTTPS + **grpc-web / Connect**; the relay brokers each request to the home server over the stream, tagging it with
-an **authenticated role** (RBAC enforced at **both** relay and home — defense in depth).
+This **supersedes the prior gRPC framing** (Connect / `.proto` / grpc-web are GONE). The transport is a SINGLE WebSocket
+the scope opens to the relay; many concurrent browser HTTP exchanges and nested WS streams are **multiplexed** inside it
+with a tiny self-described binary framing (length-prefixed header + payload). No code-gen, no protobuf toolchain, no
+second port. The home FastAPI app in `api/app.py` is **unchanged in surface**; remote is purely transport + a
+principal-injection seam.
 
-> **Decision: tunnel, don't rewrite.** We frame the existing HTTP requests and WS frames inside the gRPC stream and
-> replay them against the home server's own ASGI app (the FastAPI in `api/app.py`). This **reuses the entire current UI
-> + REST surface + W2 RBAC** with no parallel API. A full native-gRPC API would mean re-implementing every endpoint and
-> the WS event bus as proto RPCs — rejected as duplicate surface area for no user benefit.
+### W3.1 Approach — TUNNEL the existing HTTP/WS over ONE outbound WSS (chosen over gRPC and over Tailscale)
 
-### W3.2 Protobuf service sketch — `proto/relay.proto` (NEW)
+The Web UI + REST/WS are **unchanged**; remote is purely a transport. The **scope** opens ONE **outbound WSS** to the
+relay and keeps it open forever — **no home port-forwarding, no inbound at the home**. A remote browser reaches the
+relay over HTTPS+WSS; the relay frames each browser request/response (and each nested browser `/ws`) and forwards it
+down the scope's single WSS as **opaque bytes**. The scope replays each framed HTTP request **against its own in-process
+ASGI app** (`app(scope, receive, send)` — no network hop, no second port) and streams the response back up.
 
-**Bodies MUST stream in bounded chunks, not as one atomic `bytes`.** The home serves full-res PNG
-(`GET /api/preview/{id}/lossless.png`, `app.py:1021`) and **raw FITS** (`FileResponse`, tens of MB, `app.py:1057`) as
-single `Response`s. Modeling a body as one `bytes body` field would force the home to read the entire blob into RAM,
-the relay to buffer it, and the browser to buffer it AGAIN (triple-buffering a multi-MB blob on a Pi-class box), and a
-40 MB message would **monopolize the single multiplexed stream's flow-control window**, freezing interleaved
-status/guide events for seconds (head-of-line blocking). So bodies are chunked, and bulk media runs on a **separate
-stream class** from the event channel.
+> **Decision: tunnel opaque bytes, don't rewrite, don't buy a tunnel.** We frame the existing HTTP requests and WS
+> frames inside one WSS and replay them against the home's own ASGI app. This **reuses the entire current UI + REST
+> surface + W2 RBAC** with no parallel API. **gRPC is rejected** — browsers can't speak raw gRPC (would need
+> grpc-web/Connect + a proxy), and a native-gRPC control API would duplicate ~40 routes + the safety gates into a second
+> contract. **Tailscale/Cloudflare Tunnel are rejected** — the owner wants to own the relay (host-agnostic Docker +
+> Fly.io) and the per-principal/viewer-link boundary, not expose the whole LAN service behind a third-party tunnel's own
+> auth. The relay is a **dumb byte-forwarder**; all auth/RBAC/safety is re-decided at the home.
 
-```protobuf
-service Relay {
-  // Home server dials this and keeps it open forever. Bidi: relay pushes
-  // inbound remote requests DOWN; home pushes responses + WS event frames UP.
-  // ONE Tunnel RPC PER STREAM-CLASS: the home opens N concurrent Tunnel streams,
-  // one each for {event, control, bulk-media}. Distinct HTTP/2 streams give TRUE
-  // per-class flow control, so bulk media (FITS/PNG) can never HOL-block the
-  // status/guide event channel. A `stream_class` FIELD on a SINGLE shared Tunnel
-  // would NOT — frames sharing one stream share one HTTP/2 flow-control window.
-  // So the class is realized as SEPARATE RPCs/streams, not a routing field.
-  rpc Tunnel(stream HomeFrame) returns (stream RelayFrame);
-}
+### W3.2 Tunnel protocol — ONE WSS, multiplexed binary frames (`server/astrodeck/remote/protocol.py` — NEW)
 
-message RelayFrame {                 // relay -> home
-  oneof kind {
-    HttpRequest      request    = 1; // a remote browser's framed HTTP call (head only; body via chunks)
-    HttpRequestChunk req_chunk  = 5; // bounded request-body piece (uploads)
-    WsOpen           ws_open    = 2; // a remote browser opened /ws
-    WsClose          ws_close   = 3;
-    Ping             ping       = 4; // keepalive ping (see interval/miss-count below)
-  }
-  string corr_id = 10;               // correlates request/response
-  // role/email are NOT trusted as plaintext — see W3.3: the principal is carried
-  // as a relay-SIGNED token the home verifies; these strings are advisory only.
-  string principal_token = 11;       // relay-signed (or home-verifiable) principal
-  uint32 stream_class    = 12;       // SELF-DESCRIBING TAG only (event|control|bulk-media). The actual per-class
-                                     // flow control comes from WHICH Tunnel RPC this frame is on (one RPC per class),
-                                     // NOT this field. Optional / may be dropped.
-}
-message HomeFrame {                  // home -> relay
-  oneof kind {
-    HttpResponse      response   = 1; // response HEAD (status + headers); body follows as chunks
-    HttpResponseChunk resp_chunk = 5; // bounded 64-256 KB body piece; eof marks the last
-    WsEvent           ws_event   = 2; // one bus event for a tunnelled /ws
-    Hello             hello      = 3; // device-token auth + stream generation on open
-    Pong              pong       = 4;
-    RevokeSignal      revoke     = 6; // CONTROL frame: home PUSHES jti/ws_id invalidation (W3.3 revocation push,
-                                      //   lines 1373, 1744-1745). NOT a response to any request — carries NO corr_id.
-  }
-  string corr_id      = 10;
-  uint32 stream_class = 12;          // self-describing tag; per-class flow control is per-RPC (see service note)
-}
-message RevokeSignal {               // home -> relay revocation PUSH (W3.3): close matching OPEN per-ws_id projections
-  repeated string jti    = 1;        // revoked jti(s) — the relay drops every per-ws_id projection whose ws_id maps to one
-  repeated string ws_id  = 2;        // OR explicit ws_id(s) to close directly (e.g. on logout of a specific viewer link)
-}
-message HttpRequest  {
-  string method = 1;
-  string path   = 2;
-  string query  = 3;                 // query string — routes depend on it: /api/discover/alpaca?host=&port=,
-                                     //   /ws?token=, preview crop ?x=&y= (fold into path ONLY if documented)
-  repeated Header headers = 4;       // REPEATED, not map — Set-Cookie / multi-value headers must survive
-  bool   has_body = 5;               // body arrives as HttpRequestChunk frames
-}
-message HttpResponse { uint32 status = 1; repeated Header headers = 2; bool has_body = 3; }
-message HttpRequestChunk  { bytes data = 1; bool eof = 2; }
-message HttpResponseChunk { bytes data = 1; bool eof = 2; }   // bounded 64-256 KB; eof = last piece
-message Header { string key = 1; string value = 2; }          // repeated -> multi-value headers preserved
-message WsEvent { string ws_id = 1; bytes json = 2; uint64 seq = 3; }  // json: SCOPE-SPECIFIC bus JSON (per-ws_id redaction, W3.3);
-                                                                       // seq: assigned at the per-ws_id FAN-OUT point, monotonic
-                                                                       // PER VIEWER, incremented only for frames delivered to THIS
-                                                                       // ws_id; intentional coalescing advances seq by exactly 1.
-message Hello   {                    // first frame each side sends on stream open
-  string device_token      = 1;
-  string home_id           = 2;
-  uint64 stream_generation = 3;      // monotonic, restart-surviving HOME-SESSION fencing token, SHARED across all N
-                                     // class-streams of one dial. G+1 on ANY class-stream evicts ALL streams of
-                                     // generation <=G for this home_id (GROUP eviction); home re-opens the full set.
-  uint32 proto_version     = 4;      // home & relay deploy independently — reject-vs-degrade per the policy below
-  uint64 feature_bits      = 5;      // capability bitset (signed-URL bypass, multi-stream, etc.)
-}
+**This replaces `proto/relay.proto`. There is NO protobuf.** The wire format is a minimal length-prefixed binary frame
+the scope and relay both speak; nothing else needs it. One scope↔relay WSS carries ALL of: many concurrent browser HTTP
+request/response exchanges, many nested browser `/ws` streams, bulk media, keepalive, and home→relay control pushes
+(revocation). Concurrency is by a **stream id** namespace; message **type** says what each frame is.
+
+**Frame on the wire (both directions, inside ONE WSS binary message):**
+
+```
+  ┌────────┬──────────┬──────────────┬───────────────────────────────────────────┐
+  │ type   │ stream_id│ header_len   │ header(JSON, header_len bytes) │ payload   │
+  │ 1 byte │ 8 bytes  │ 4 bytes (BE) │ (small, type-specific metadata)│ (bytes)   │
+  └────────┴──────────┴──────────────┴───────────────────────────────────────────┘
 ```
 
-- **Max-message-size is set explicitly on BOTH ends** (e.g. 1 MB) so a chunk can never exceed the window; bulk bodies
-  are many small chunks, never one large message.
-- **Large-media bypass (option) — the signed URL is ITSELF a one-shot scoped capability, re-validated at redemption, or
-  it is dropped.** The home MAY return a **short-lived signed URL** for `lossless.png`/FITS the browser fetches directly,
-  keeping multi-MB blobs off the multiplexed event stream. **But a bare signed URL is a standalone BEARER capability that
-  is NOT re-checked against the live principal caps or `revoked_jti` at fetch time** — so a **revoked** viewer, or one
-  **lacking `view.media`**, could still pull tens-of-MB raw FITS (leaking full plate-solved telemetry) for the URL TTL,
-  contradicting W3.3 step 4 (home check authoritative), the view-split (raw-FITS NOT in the default viewer set), and
-  W3.2's "`jti` always re-validated at home." So **specify the signed URL as a one-shot scoped capability**: **bound to
-  the requesting `jti` + `view.media`**, a **very short TTL**, and **re-validated server-side AT REDEMPTION** against
-  `revoked_jti` AND the required capability; it is **NEVER issued to a viewer-link principal lacking `view.media`**. If
-  this binding/re-validation is not implemented, **drop the bypass entirely and keep ONLY the chunked path** (which is
-  already principal-checked at the home like any other tunnelled request). Decide per deployment; the chunked path is the
-  always-available fallback.
-- **Keepalive:** `Ping`/`Pong` on a fixed interval with a **miss-count → stream teardown → reconnect**, so a half-open
-  NAT'd residential stream doesn't sit dead for minutes.
-- **ONE Tunnel RPC PER STREAM-CLASS — the `stream_class` FIELD alone does NOT give per-class flow control (contradiction
-  resolved).** The prose requires multiple concurrent streams to defeat HOL-blocking, but a `stream_class` field on
-  frames sharing a SINGLE `Tunnel` RPC creates **no separate HTTP/2 flow-control windows** — all frames on one RPC share
-  one window, so a 40 MB FITS still stalls the event frames behind it. **Pick and state ONE model: open one `Tunnel` RPC
-  PER stream-class** — the home dials `event`, `control`, and `bulk-media` as **three concurrent `Tunnel` streams** — so
-  HTTP/2 gives **true per-class flow control** and bulk media has its own window. With this model `stream_class` is no
-  longer a routing field; keep it only as a **self-describing tag** (or drop it). (The class is realized by WHICH RPC the
-  frame travels on, not by a field on a shared RPC.)
-- **CHUNKED-RESPONSE ORDERING INVARIANT — a corr_id is pinned to ONE class-stream for its lifetime.** gRPC guarantees
-  order only WITHIN one stream. A chunked response (an `HttpResponse` head + N `HttpResponseChunk` sharing a `corr_id`)
-  reassembles correctly **only if every frame for that corr_id travels on the SAME class-stream**. State the invariant:
-  **the head frame establishes the corr_id→class-stream binding and ALL chunks for that corr_id follow it on that
-  stream** — the relay never guesses which stream a corr_id's chunks use. **Stream-class assignment:** `event` (WS
-  `WsEvent`s + status), `control` (small request/response), `bulk-media` (FITS/PNG chunks) — realized as the three
-  separate `Tunnel` RPCs above. A `corr_id`'s chunks NEVER migrate class-streams mid-response.
-- **`stream_generation` is a HOME-SESSION-level fencing token SHARED across all N class-streams of one dial generation,
-  and eviction is by GROUP.** Because one home dial now opens N concurrent `Tunnel` streams (event/control/bulk-media),
-  `stream_generation` is NOT per-stream — it is a **per-home-session** token that every class-stream of the same dial
-  carries identically. **GROUP eviction rule:** a `Hello` with generation **G+1 on ANY class-stream** of a `home_id`
-  **evicts ALL streams of generation ≤ G** for that `home_id`, and the home **re-opens the full set (event + control +
-  bulk-media) ATOMICALLY** at G+1 — there is never a mix of generations serving one home (which would split-brain route a
-  request to a half-dead stream). A **partial redial** (the home re-dials only some class-streams after a transient drop)
-  must NOT leave older-generation siblings live: the home bumps the generation for the WHOLE set and re-opens all of
-  them. Add a **§T7 partial-redial fencing case:** a home that re-dials with G+1 on one class-stream while older
-  G streams are still open → the relay evicts ALL of that home's G streams (not just the redialed one), and the home is
-  expected to re-open the full set at G+1.
-- **Stream-class partitioning applies SYMMETRICALLY in BOTH directions — the DOWN direction (relay→home) carries bulk
-  too.** The HOL-blocking analysis and `stream_class` split above are framed for the UP direction (home→relay events +
-  response chunks), but the SAME bidi stream carries the DOWN direction: `HttpRequest` + `HttpRequestChunk` **uploads**.
-  A large inbound upload-body chunk stream (or many concurrent remote viewers issuing requests at once) can HOL-block
-  inbound **control** requests just as symmetrically. So **partition inbound traffic by stream class too** (inbound
-  bulk/upload vs inbound control on separate classes), and the **in-flight `corr_id` cap + per-chunk idle timeout govern
-  the DOWN direction as well**, not only UP. **If uploads are rare** (AstroDeck has few large client→home uploads), say
-  so and **bound inbound body size small enough it cannot starve control** — but make the decision explicit rather than
-  leaving the DOWN direction's fairness unmodeled.
-- **PROTOCOL GAPS to close in the proto/relay design** (home and relay deploy independently):
-  - **Version/feature handshake:** `Hello.proto_version` + `Hello.feature_bits` on BOTH sides' first frame, with a
-    **reject-vs-degrade compatibility policy** (refuse incompatible majors; degrade missing optional features).
-  - **`corr_id` allocation, namespace, and collision domain — PINNED.** **The RELAY allocates `corr_id`** for every
-    inbound browser request (monotonic-per-class-stream or a UUID); it is **OPAQUE to the home and only echoed back** on
-    the response/chunks. **The home NEVER mints a `corr_id`.** **`corr_id` and `ws_id` are SEPARATE namespaces:** a
-    `WsEvent` is keyed by `ws_id` (the browser↔WS binding), never by `corr_id`; an HTTP request/response is keyed by
-    `corr_id`, never by `ws_id`. They never collide because they are never compared. **Collision rules:** (1) a relay
-    receiving a SECOND `HttpRequest` head with a `corr_id` **already live on that class-stream REJECTS the new one** (does
-    not overwrite the in-flight request); (2) the home **REJECTS a response/request chunk whose `corr_id` has no open head
-    (orphan-chunk → error)** — a `resp_chunk`/`req_chunk` for an unknown/closed `corr_id` is an error, never silently
-    buffered. This closes the silent-body-corruption hazard the §T7(1) byte-for-byte reassembly test otherwise assumes
-    away (two requests reusing a `corr_id` would interleave bodies). **EXEMPTION — CONTROL frames carry no `corr_id`.**
-    The `HomeFrame.revoke` (`RevokeSignal`) is a home→relay PUSH, not a reply to any request: it **bears NO `corr_id`** and
-    is therefore **NOT subject to the orphan-chunk reject rule above** (it is neither a head nor a chunk). The relay routes
-    it by `jti`/`ws_id`, not by `corr_id`, and never rejects it as an orphan chunk.
-  - **Pi-class home DoS protection:** a **max concurrent in-flight `corr_id`s per home**; a **per-request total + per-chunk
-    idle timeout** that cancels the ASGI replay and frees the corr_id; a **max request-body size** enforced at BOTH relay
-    AND home; and **corr_id collision handling** (reject a duplicate live corr_id, per the namespace rule above) — so a
-    flood of partial `req_chunk`s can't exhaust the home.
-  - **Header allow/deny transform (BOTH directions):** strip/recompute `Content-Length` and `Transfer-Encoding` for
-    chunked bodies, drop hop-by-hop headers, and **rewrite `Set-Cookie` `Domain`/`Path`/`Secure`** so a home-issued
-    session cookie is valid on the **relay origin the browser actually talks to** (else cookie auth silently breaks
-    remotely).
-  - **`jti` source of truth:** the **home is authoritative**; the viewer principal is ALWAYS re-validated AT HOME against
-    the home-held `revoked_jti` so a stale relay cache can never grant access. Define the revocation propagation path
-    (home → relay signal to drop open streams, W2.2).
-  - **The WS/event PUSH path has an INDEPENDENT revocation enforcement point — the per-request `requires()` re-check
-    structurally cannot cover a long-lived `/ws`.** A revoked viewer whose tunnelled `/ws` makes NO further requests would
-    keep receiving live status/preview forever, because `requires()` only re-checks on a NEW request and the push path has
-    none. So the **relay's per-`ws_id` projection re-checks the `ws_id`'s `jti`** against a **home-PUSHED revocation set**
-    (push, not only poll) and **tears down the browser WS within a stated SLA (≤ N s, the same ≤ 30 s bound as the
-    home-direct case, W2.2) on revoke/logout**. The **home emits a revoke SIGNAL on `jti` invalidation** (the
-    `HomeFrame.revoke` / `RevokeSignal` control variant — carrying the revoked `jti`(s) and/or affected `ws_id`(s), with
-    NO `corr_id`) that **closes matching OPEN streams**, not only future requests — so revocation reaches an already-open
-    viewer stream that issues no more requests **independent of any in-flight `corr_id`**. Add the bound to the §T test that today only covers the per-request 403,
-    so **"revocable before `exp`" holds for an already-OPEN viewer stream** (not just for the next request): assert an open
-    tunnelled `/ws` for a revoked `jti` is **torn down within the bound** after a home-pushed revoke, with no further
-    `WsEvent` delivered.
-  - **Clock-skew leeway + restart-surviving generation:** a bounded **clock-skew leeway** on all `exp`/`nbf` checks
-    (NTP-synced hosts), and a **monotonic, restart-surviving `stream_generation`** so a restarted home never dials in with
-    a generation the relay treats as stale (use persisted/clock-derived monotonic, not a per-process counter).
-  - **The WS tunnel is INTENTIONALLY server→client-only — adding a client→server WS frame is a KNOWN proto+relay change,
-    not a free addition.** The home `/ws` is **send-only today** (`app.py:1525-1527` loops `q.get()`→`send_json` and
-    **never calls `receive()`**), so the tunnel models `WsEvent` as home→relay→browser only — there is no
-    browser→home WS frame in `RelayFrame`/`HomeFrame`. Flag this so a FUTURE interactive-WS feature (a `WsClientMessage`
-    in `RelayFrame` for subscribe filters / client acks / interactive WS controls) is recognized as a **proto change AND
-    a relay change AND a home `/ws`-receive change** — not mistaken for a drop-in. Reserved, not specced here.
+- `type` (1 byte) — one of the **frame types** below.
+- `stream_id` (uint64) — the multiplex key. **The RELAY allocates `stream_id`** for every inbound browser HTTP request
+  and for every browser `/ws`; it is **OPAQUE to the home and only echoed back**. The home NEVER mints a stream id
+  except for the reserved control id `0` (keepalive/revoke, see below). HTTP and WS share the SAME id space but never
+  collide because each id is opened exactly once with a single open-frame.
+- `header` — small JSON metadata for this frame type (method/path/status/headers/ws_id/etc.). JSON, not protobuf, so it
+  is debuggable and needs no codegen; it is bounded (a few KB) and never carries the body.
+- `payload` — raw bytes (an HTTP body chunk, a `/ws` JSON event, etc.). **Bounded per frame** (default 64 KiB) so one
+  big body never monopolizes the socket.
+
+**Frame types (the `type` byte):**
+
+| type | name | dir | header carries | payload |
+|------|------|-----|----------------|---------|
+| `0x01` | `REQ_OPEN` | relay→scope | `{method, path, query, headers[], has_body}` | — |
+| `0x02` | `REQ_DATA` | relay→scope | `{eof}` | request-body chunk (uploads) |
+| `0x03` | `REQ_ABORT` | relay→scope | `{reason}` | — (browser hung up before EOF) |
+| `0x04` | `RESP_HEAD` | scope→relay | `{status, headers[]}` | — |
+| `0x05` | `RESP_DATA` | scope→relay | `{eof}` | response-body chunk (streamed) |
+| `0x06` | `WS_OPEN` | relay→scope | `{path, query, headers[], ws_id}` | — (browser opened `/ws`) |
+| `0x07` | `WS_DATA` | scope→relay | `{ws_id, seq}` | one `/ws` JSON event (server→client) |
+| `0x08` | `WS_CLOSE` | both | `{ws_id, code}` | — |
+| `0x10` | `PING` / `0x11` `PONG` | both | `{ts}` | — keepalive (on reserved `stream_id=0`) |
+| `0x12` | `HELLO` | scope→relay | `{device_token, home_id, generation, proto_version}` | — first frame |
+| `0x13` | `HELLO_ACK` | relay→scope | `{ok, endpoint, reason}` | — relay confirms registration |
+| `0x14` | `REVOKE` | relay→scope **and** scope→relay | `{jti[], ws_id[]}` | — revocation push (on `stream_id=0`) |
+| `0x15` | `WINDOW` | both | `{stream_id, credit}` | — flow-control credit grant (see backpressure) |
+
+- **Multiplexing.** Each browser HTTP exchange = one `stream_id`: `REQ_OPEN` → optional `REQ_DATA…(eof)` →
+  `RESP_HEAD` → `RESP_DATA…(eof)`. Each browser `/ws` = one `stream_id` opened with `WS_OPEN`, carrying `WS_DATA`
+  frames (one bus event each) until `WS_CLOSE`. Many of each interleave on the one WSS, distinguished by `stream_id`.
+- **Ordering invariant.** WebSocket guarantees in-order delivery within the one socket, so frames for a given
+  `stream_id` arrive in order; the scope reassembles a body by concatenating that id's `RESP_DATA`/`REQ_DATA` payloads
+  in arrival order until `eof`. **A `stream_id`'s frames never interleave with another id's body** because each frame is
+  self-delimited (length-prefixed) and tagged with its id — a slow body for id A is sliced into bounded chunks so id B's
+  frames get their turn on the socket.
+- **Keepalive.** `PING`/`PONG` on the reserved `stream_id=0` at a fixed interval (~10 s) with a **miss-count → tear down
+  the WSS → reconnect**, so a half-open NAT'd residential socket doesn't sit dead for minutes. Liveness of the tunnel is
+  kept **separate** from rig telemetry liveness (a legitimate 3-minute exposure is not a dead tunnel).
+- **Flow control / backpressure (no protobuf HTTP/2 window, so we add a tiny credit scheme).** Because everything rides
+  ONE WSS there is no per-stream HTTP/2 window; a 125 MB FITS body could starve the 2 s status poll. So:
+  - **Per-`stream_id` credit.** The receiver grants `WINDOW{stream_id, credit}` (bytes it will accept); the sender may
+    only have `credit` unacked body bytes in flight on that id. When a slow WAN browser stops draining, the relay stops
+    granting credit on its bulk id; the scope's ASGI `send` shim **`await`s** the next `RESP_DATA` until credit frees,
+    which **back-pressures the home's file iterator** instead of buffering the whole FITS in RAM.
+  - **Class fairness without separate sockets.** Tag each stream with a **class** in `REQ_OPEN`/`WS_OPEN` header
+    (`event` = `/ws`; `control` = small request/response; `bulk` = FITS/PNG/large GET). The scope's writer **round-robins
+    frames across ready streams** and caps each `bulk` stream's per-turn quota, so a 125 MB FITS is interleaved with
+    status/guide `event` frames and never head-of-line-blocks them. (This is the ONE-socket equivalent of the prior
+    three-RPC split; the class is a scheduling hint on one WSS, not a separate connection.)
+  - **Drop policy on the `/ws` path.** `event` streams are drop-tolerant: on per-viewer buffer overflow **drop oldest
+    STATUS** but **keep the LATEST preview/sequence** (coalesce). `control` request/response and log bodies are
+    **never dropped** (deliver-or-error). This mirrors the existing `EventBus` `maxsize=500` drop-oldest
+    (`events.py:32`/`46`).
+- **Large media stays chunked + pull-based.** The two heaviest responses are STREAMED off disk, NOT materialized:
+  `GET /api/preview/{id}/fits` is a **`FileResponse`** (`app.py:1460`) and the SPA/static UI is **`StaticFiles` +
+  `FileResponse`** (`app.py:2162`/`2168`). The scope ASGI `send` shim emits a `RESP_HEAD` on `http.response.start` and
+  one bounded `RESP_DATA{eof = not more_body}` per `http.response.body` event, **awaiting credit before each chunk**, so
+  the relay streams pass-through (no whole-object buffering) and bulk media never balloons scope or relay memory.
+- **NO direct/signed-URL media bypass in the shipped design.** Every byte goes through the tunnel so it is
+  principal-checked at the home like any other request; there is no separate signed-URL fetch path to re-validate. (A
+  future optimization could add one, but it would be a NEW capability bound to `jti` + `view.media` + short TTL,
+  re-validated at redemption — out of scope here.)
+- **`stream_id` collision + orphan rules.** (1) A scope receiving a SECOND `REQ_OPEN`/`WS_OPEN` for a `stream_id`
+  already live **rejects the new one** (does not overwrite the in-flight stream). (2) A `REQ_DATA`/`RESP_DATA`/`WS_DATA`
+  for an unknown/closed `stream_id` is an **error, never silently buffered** (orphan-chunk reject), closing the
+  body-corruption hazard. (3) **Control frames (`PING`/`PONG`/`REVOKE`) ride reserved `stream_id=0`** and are exempt
+  from the orphan rule — they are routed by type/`jti`, not by a per-request id.
+- **Header transform (BOTH directions), done at the SCOPE replay shim.**
+  - **STRIP every inbound auth/identity header** from the tunnelled `REQ_OPEN` headers before building the ASGI scope:
+    `authorization`, `x-auth-token`, and any session cookie. `ASTRODECK_TOKEN`/header auth is **NOT a valid carrier over
+    the tunnel** (it would let a compromised relay forge admin). The principal is injected by the scope-state mechanism
+    in W3.3, never by a forwardable header.
+  - **Recompute `Content-Length`/`Transfer-Encoding`** for the chunked body; drop hop-by-hop headers.
+  - **Rewrite `Set-Cookie` `Domain`/`Path`/`Secure`/`SameSite`** so a home-issued session cookie is valid on the
+    **relay origin the browser actually talks to** (else cookie auth silently breaks remotely). `ad_session` flips
+    `SameSite=Strict → Lax` for the cross-origin relay web case (W2.3).
+- **Version handshake.** `HELLO.proto_version` (+ optional feature bits) on the first frame, with a reject-incompatible-
+  major / degrade-missing-optional policy, so the scope and relay deploy independently.
+- **The WS tunnel is INTENTIONALLY server→client-only.** The home `/ws` is **send-only today** (`app.py:2140-2142`
+  loops `q.get()`→`send_json` and **never calls `receive()`**), so the tunnel models `WS_DATA` as scope→relay→browser
+  only — there is **no browser→home WS frame**. A FUTURE interactive-WS feature (a client→server `WS_DATA` direction for
+  subscribe filters / acks) is a **protocol change AND a relay change AND a home `/ws`-receive change** — not a drop-in.
+  Reserved, not specced here. **Commands stay on the cap-gated REST path** so each is individually `require(cap)`-checked;
+  never add an inbound command channel over `/ws` to "simplify the tunnel" — it would bypass RBAC (invariant §4.5).
 
 ### W3.3 Components
 
-- **Home-side dial-out client** — `server/astrodeck/remote/relay_client.py` (NEW). On boot (gated by
-  `RemoteConfig.enabled`), opens `Tunnel`, sends `Hello{device_token, stream_generation}`, then loops: for each
-  `RelayFrame.request`, **build an ASGI scope and replay against the in-process app** (`app(scope, receive, send)` —
-  no network hop, no second port); for each `ws_open`, subscribe to `bus` and stream `WsEvent`s up.
+#### W3.3.0 The scope client (the home-side outbound dialer) — `server/astrodeck/remote/relay_client.py` (NEW)
+
+A **lifespan background task**, **OPT-IN**: it only dials when a relay is configured AND enabled
+(`RemoteConfig.enabled and RemoteConfig.relay_url`). It is launched from `_lifespan` (`app.py:79`) **alongside** the
+existing `dispatcher.run()` task, and — exactly like that task — it is **ISOLATED: it can NEVER block or crash
+`_lifespan` or local serving.** A relay outage degrades to **local-only autonomy**; LAN access is 100% unaffected
+(invariant §4.7). On boot, if disabled/unconfigured, it is a no-op (so today's behavior is byte-for-byte).
+
+When enabled it: opens ONE WSS to `RemoteConfig.relay_url`, sends `HELLO{device_token, home_id, generation}`, awaits
+`HELLO_ACK`, then loops reading frames. For each `REQ_OPEN` it **builds an ASGI scope and replays against the
+in-process app** (`app(scope, receive, send)` — no network hop, no second port); for each `WS_OPEN` it subscribes to
+`bus` ONCE (see backpressure) and streams `WS_DATA` events up.
+
+- **The scope client invokes the in-process ASGI app directly.** `create_app()` returns the FastAPI app
+  (`__main__.py:138` runs it via `uvicorn.run(app, ...)`); the relay client closes over the SAME app object and calls
+  `await app(scope, receive, send)` with a hand-built `scope`. This is the crux of the remote-flag mechanism (W3.3.2):
+  the scope dict carries `state` the home reads, with NO network header an on-LAN attacker could forge.
+- **The `send` shim chunks a STREAMING response — the two heaviest responses are NOT materialized bytes.** The two
+  biggest responses are STREAMED off disk: `GET /api/preview/{id}/fits` is a **`FileResponse`** (`app.py:1460`) and the
+  SPA/static UI is **`StaticFiles` + `FileResponse`** (`app.py:2162`/`2168`) — both emit their body via repeated
   - **The `send` shim chunks a STREAMING response — the two heaviest responses are NOT materialized bytes.** Do NOT frame
     chunking as "the relay slices an already-materialized `Response.body`": the two biggest responses are STREAMED off
-    disk. `GET /api/preview/{id}/fits` is a **`FileResponse`** (`app.py:1057`) and the SPA/static UI is
-    **`StaticFiles` + `FileResponse`** (`app.py:1535-1543`) — both emit their body via **repeated
-    `send({'type':'http.response.body', ..., 'more_body':True})`**. So specify the `relay_client` ASGI `send` shim
-    concretely: on `http.response.start` → emit a `HomeFrame.HttpResponse` head (status + headers); on each
-    `http.response.body` → emit a `HttpResponseChunk{data, eof = not more_body}`. **Apply REAL backpressure: `await` the
-    relay-stream send of each chunk BEFORE returning control to the ASGI body iterator** (do not pull the next
-    `http.response.body` event until the prior chunk is on the wire) — so a slow WAN viewer **throttles the home's file
-    iterator** instead of buffering the entire FITS in RAM. Call out `FileResponse` and `StaticFiles` explicitly as the
-    streaming cases this shim must handle. Symmetrically, the **`receive` callable feeds tunnelled `HttpRequestChunk`
-    frames as `http.request` events** (with `more_body`) for upload bodies, so request bodies stream in too.
-  - **Principal-injection contract (the security crux).** The home app already has `_auth_mw` (`app.py:351`) trusting
-    `x-auth-token`/`authorization` headers, and the relay controls EVERY byte of the replayed scope. So:
-    1. **STRIP all inbound auth/identity headers** (`authorization`, `x-auth-token`, any cookie carrying a session)
-       from the tunnelled `HttpRequest` before building the scope. `ASTRODECK_TOKEN`/header auth is **NOT a valid
-       carrier over the tunnel**.
-    2. **Inject the principal ONLY from a relay-SIGNED token** (`RelayFrame.principal_token`, a home-verifiable JWT —
-       per W2.3 either home-issued or relay-asymmetric-signed), **never** from the plaintext `role`/`email` strings
-       (trivially spoofable if `device_token`/the relay is compromised).
-    3. **Teach `_auth_mw`/`requires()` to trust that injected principal ONLY on the in-process replay path**, and mark
-       the tunnelled scope as **REMOTE / untrusted origin** (`scope` flagged so loopback-privileged shortcuts never
-       apply — a tunnelled request is never treated as LAN/localhost-trusted).
-    4. **Defense in depth:** even with the injected viewer principal, a control route 403s AT HOME (the `requires()`
-       dependency re-checks) — the relay's role stamp is advisory, the home's check is authoritative.
-  - **`device_token` blast radius:** document rotation; a leaked token lets an attacker impersonate the home's stream —
-    consider **mTLS** for the home↔relay stream in addition to the token.
-  - **RESIDUAL TRUST: the relay is a plaintext MITM — state this as an ACCEPTED RISK.** TLS terminates AT the relay, so a
-    **compromised relay can READ all tunnelled traffic** (request/response bodies, raw FITS/PNG, the principal, cookies)
-    and **act as any already-authenticated VIEWER in real time** — even though token MINTING is withheld from it by
-    asymmetric/home-issued signing (W2.3). Name this trust-boundary property explicitly. Mitigations / scoping:
-    **(a) mTLS** home↔relay; **(b) scope what the home exposes OVER THE TUNNEL** — `admin`/`config.*` routes are
-    **unreachable over the tunnel regardless of principal** (a defense BEYOND the per-request 403: the home refuses these
-    routes on any REMOTE-flagged scope, W3.3 step 3). **This tunnel-block list NAMES the privilege-defining writes
-    explicitly: `POST /api/auth/config`, `POST /api/remote/config`, and any `auth`/`remote` block on `POST /api/config`
-    (W2.2) are NEVER reachable over the tunnel** — so even a compromised relay forwarding a forged-admin principal cannot
-    flip `provider=none` or re-enable/re-key the relay from the WAN. The `admin.users` revoke/unrevoke API
-    (`revoked_jti`, W2.3) is likewise tunnel-blocked. **(c)** treat `control.mount`/`control.power` as requiring a
-    **directly-exposed (TLS-reverse-proxied) home, or disable them remotely** by default — a viewer-grade relay
-    compromise must not yield real-mount motion.
-  - **Backpressure — the relay subscribes to the bus EXACTLY ONCE, never once-per-viewer.** `events.py` hands out one
-    `asyncio.Queue(maxsize=500)` per `bus.subscribe()` call with a shared **drop-oldest** policy (`events.py:32`/`46`).
-    Subscribing once-per-viewer would put **M `maxsize=500` queues + M JSON fan-outs in the synchronous publish loop on a
-    Pi** — pathological. **Pin the model:** the relay `relay_client` is a **SINGLE bus subscriber** (one queue), then
-    maintains its OWN **per-viewer bounded buffer keyed by `ws_id`** with drop-or-disconnect happening THERE — never M
-    real bus subscribers. A slow viewer's per-`ws_id` buffer fills and **that viewer alone is dropped/disconnected**;
-    it NEVER blocks the shared stream (one stuck consumer applying HTTP/2 flow-control backpressure to the single shared
-    stream would stall every other viewer AND the request path). **Per-viewer buffer bound + per-event-type drop policy:**
-    a bounded per-`ws_id` buffer (e.g. ~200 events); on overflow **drop oldest STATUS events** (tolerable) but **keep the
-    LATEST preview/sequence** event (at-least-latest-state — coalesce, don't drop the newest). Use per-viewer (or
-    per-class) UP-direction streams for delivery isolation, but ONE bus subscription behind them all.
+    `send({'type':'http.response.body', ..., 'more_body':True})`. So the scope-client ASGI `send` shim is concrete: on
+    `http.response.start` → emit a `RESP_HEAD` (status + headers); on each `http.response.body` → emit a
+    `RESP_DATA{eof = not more_body}`. **Apply REAL backpressure: `await` the WSS send of each chunk (and await tunnel
+    flow-control credit, W3.2) BEFORE returning control to the ASGI body iterator** — so a slow WAN viewer **throttles
+    the home's file iterator** instead of buffering the entire FITS in RAM. `FileResponse` and `StaticFiles` are the
+    streaming cases this shim must handle. Symmetrically, the **`receive` callable feeds tunnelled `REQ_DATA` frames as
+    `http.request` events** (with `more_body`) for upload bodies, so request bodies stream in too.
+
+#### W3.3.1 What the relay forwards: the WHOLE app (SPA + API + `/ws`)
+
+Because the home already serves the SPA at `/`, all static assets under `/assets`, the REST API under `/api`, the auth
+dance under `/auth`, and the `/ws` event stream (`app.py:2159-2169`, `:2107`), **the relay forwards EVERYTHING** — a
+remote browser loads `index.html`, the JS bundle, makes API calls, and opens `/ws`, all down the one scope WSS. There
+is no separate frontend host: the relay is a pure transport in front of the home origin. (This is the deliberate
+simplification of the 2026-06-17 ADR's frontend/relay split — fewer moving parts, one origin, the same byte-identical
+bundle the LAN serves.)
+
+#### W3.3.2 The REMOTE-FLAG mechanism (CRITICAL — must NOT be LAN-spoofable)
+
+This is the single most important security seam. A tunnelled request must reach the home marked **`remote=True`** so
+`resolve_principal(request, remote=True)` (`auth/deps.py:133-143`) **HARD-DENIES the open `none` provider** — an open
+LAN default can never be served remotely. The mechanism MUST NOT be forgeable by an on-LAN attacker.
+
+**PINNED: carry `remote` in the ASGI request scope, NOT in any network header.** The scope client builds the replay
+scope with `scope['state']['astrodeck_remote'] = True` (ASGI `scope["state"]`, the lifespan-state slot Starlette
+exposes per-request). The home reads it through the principal seam; because it lives in the in-process scope dict the
+scope client constructs, **there is NO network header an on-LAN attacker could set** to forge it. Concretely:
+
+1. **STRIP all inbound auth/identity headers** (`authorization`, `x-auth-token`, any session cookie) from the tunnelled
+   `REQ_OPEN` headers before building the scope (W3.2 header transform). `ASTRODECK_TOKEN`/header auth is **NOT a valid
+   carrier over the tunnel**.
+2. **Set `scope['state']['astrodeck_remote'] = True`** on EVERY replayed request and on the tunnelled `/ws` scope.
+3. **Wire the flag into the auth seam (the home-side change, small + surgical):**
+   - `resolve_principal(request, *, remote=False)` already exists and already hard-denies `none` when `remote=True`.
+     The gap is that `require(cap)._dep`, `get_principal`, and the `/ws` handler call it WITHOUT `remote=`
+     (`deps.py:152`, `:166`; `app.py:2132`), so they always pass `remote=False` today.
+   - **Change those three call sites to derive `remote` from the request scope:** add a one-line helper
+     `_scope_is_remote(request) -> bool` that reads `request.scope.get("state", {}).get("astrodeck_remote", False)`
+     and pass its result as `remote=` into `resolve_principal`. The WS gate reads the same flag off `websocket.scope`.
+     This is the WHOLE wiring — no route signatures change; the flag rides the scope the relay client built.
+   - **A header fallback is AVOIDED.** If a header is ever unavoidable, it is trusted ONLY on the loopback relay-client
+     injection path and **stripped from any real inbound request** by `_auth_mw` — but the scope-state path above needs
+     no header, so the shipped design uses no trusted header at all (closing the LAN-spoof hole by construction).
+4. **Defense in depth:** even with an injected principal, a control route 403s AT HOME (the `require(cap)` dependency
+   re-derives caps) — the relay's role stamp is advisory, the home's check is authoritative. The `none` provider is
+   inert remotely because of step 3, so "admin-for-all over the WAN" is structurally impossible.
+
+**Principal injection (who the remote caller is).** The relay proves identity (Google OIDC, or a viewer link it minted)
+and forwards a **home-verifiable principal token** in the `REQ_OPEN` header (`principal_token`). The home injects the
+principal ONLY from that token (verified against `relay_pubkey` / `viewer_link_pubkey`, W2.3), **never** from plaintext
+`role`/`email` strings, and **never** from a session cookie/header (stripped in step 1). The relay holds **only a public
+key** — it can drop obviously-bad attempts but can NEVER mint or escalate; the home re-verifies every request. **The
+relay holds NO signing secret and CANNOT forge a principal** (owner invariant).
+
+- **`device_token` blast radius:** document rotation; a leaked `device_token` lets an attacker impersonate the home's
+  WSS to the relay — bind the scope→relay dial with **mTLS or a rotatable per-home device cert** in addition to the
+  token (the relay binds a tunnel to a KNOWN scope). mTLS authenticates the PIPE; it is NEVER an input to AstroDeck
+  authorization (that is always re-decided at the home).
+- **RESIDUAL TRUST: the relay is a plaintext MITM — ACCEPTED RISK (named explicitly).** TLS terminates AT the relay, so
+  a compromised relay can READ all tunnelled traffic (bodies, raw FITS/PNG, the principal, cookies) and act as an
+  already-authenticated VIEWER in real time — even though token MINTING is withheld from it (public-key-only). Document
+  this in `SECURITY.md`. Mitigations: **(a)** mTLS scope↔relay; **(b) tunnel-block the privilege-defining writes** —
+  `admin`/`config.*` routes are **unreachable over the tunnel regardless of principal** (the home refuses them on any
+  REMOTE-flagged scope, BEYOND the per-request 403). **Named explicitly: `POST /api/auth/config`,
+  `POST /api/remote/config`, the `auth`/`remote` blocks on `POST /api/config` (W2.2), and the `admin.users`
+  revoke/unrevoke API are NEVER reachable over the tunnel** — so even a compromised relay forwarding a forged-admin
+  principal cannot flip `provider=none` or re-key/disable the relay from the WAN. **(c)** the owner's decision is
+  **FULL remote control for an authenticated ADMIN** (including `control.mount`/`control.power`) gated behind a
+  **fresh, short-TTL step-up** for DESTRUCTIVE_CAPS (`capabilities.py:45`), so a long-idle remote session cannot slew or
+  open the roof without re-auth; **friends are view-only via RBAC**.
+
+#### W3.3.3 Backpressure + resync (scope side)
+
+- **The scope client subscribes to the bus EXACTLY ONCE, never once-per-viewer.** `events.py` hands out one
+  `asyncio.Queue(maxsize=500)` per `bus.subscribe()` with a shared **drop-oldest** policy (`events.py:32`/`46`).
+  Subscribing once-per-viewer would put M `maxsize=500` queues + M JSON fan-outs in the synchronous publish loop on a
+  Pi — pathological. **Pin the model:** the `relay_client` is a **SINGLE bus subscriber** (one queue), then maintains
+  its OWN **per-viewer bounded buffer keyed by `ws_id`** with drop-or-disconnect THERE — never M real bus subscribers.
+  A slow viewer's per-`ws_id` buffer fills and **that viewer alone is dropped/disconnected**; it NEVER blocks the shared
+  WSS (one stuck consumer applying tunnel flow-control backpressure to the single socket would stall every other viewer
+  AND the request path). **Per-viewer buffer bound + per-event-type drop policy:** a bounded per-`ws_id` buffer (~200
+  events); on overflow **drop oldest STATUS** (tolerable) but **keep the LATEST preview/sequence** (coalesce, don't drop
+  the newest). Per-viewer `WS_DATA` streams give delivery isolation, but ONE bus subscription sits behind them all.
   - **The RELAY→BROWSER leg has its OWN symmetric per-browser bounded EGRESS buffer — a second, distinct buffer from the
-    home-side one.** The home-side per-`ws_id` buffer (above) protects the HOME's single bus subscription. But a slow
+    scope-side one.** The scope-side per-`ws_id` buffer (above) protects the HOME's single bus subscription. But a slow
     BROWSER reading from the RELAY is a separate hazard: if the relay had no egress bound, one slow browser would
-    back-pressure the relay's READ of the home stream (stalling every sibling viewer of that home) and balloon relay
+    back-pressure the relay's READ of the scope WSS (stalling every sibling viewer of that home) and balloon relay
     memory (a multi-tenant DoS — one slow browser degrades other tenants). So the **relay service maintains a per-browser
     (per-`ws_id`) bounded EGRESS buffer** with the **same drop/coalesce policy** (drop-oldest STATUS, keep-latest
-    preview/sequence) and **disconnects a browser on sustained overflow**. **State the two buffers are DISTINCT:** the
-    home-side per-`ws_id` buffer protects the bus subscription; the **relay-side per-`ws_id` egress buffer protects the
-    relay's read of the home stream AND other tenants**. **The per-viewer `seq` survives BOTH buffers**, so a relay-side
-    drop is a **detectable gap** (the browser sees a non-contiguous per-viewer `seq` and re-snapshots) — a relay drop is
-    not silent. Add a **§T7 relay-service case:** a **stalled browser is dropped** while a **sibling on the SAME home keeps
-    receiving all events** (assert the slow browser's egress buffer overflows and it is disconnected, and the fast sibling
-    receives the full event stream — the relay's read of the home stream never stalls).
+    preview/sequence) and **disconnects a browser on sustained overflow**. **The two buffers are DISTINCT:** the
+    scope-side per-`ws_id` buffer protects the bus subscription; the **relay-side per-`ws_id` egress buffer protects the
+    relay's read of the scope WSS AND other tenants**. **The per-viewer `seq` survives BOTH buffers**, so a relay-side
+    drop is a **detectable gap** (the browser sees a non-contiguous per-viewer `seq` and re-snapshots) — not silent. Add
+    a **§T7 relay-service case:** a **stalled browser is dropped** while a **sibling on the SAME home keeps receiving all
+    events** (the slow browser's egress buffer overflows and it is disconnected; the fast sibling gets the full stream —
+    the relay's read of the scope WSS never stalls).
   - **Resync on reconnect — concrete protocol, no lost-update race.** The `/ws` handler sends the `hub.summary()` hello
-    AFTER `bus.subscribe()` (`app.py:1522-1524`), so any event published between the snapshot read and the first
+    AFTER `bus.subscribe()` (`app.py:2137-2139`), so any event published between the snapshot read and the first
     `q.get()` (or, over the relay, between re-subscribe and re-hello to a reconnecting browser on a high-latency WAN) is
     silently dropped. Define the resync concretely — adopt BOTH:
     - **Per-VIEWER monotonic `seq` assigned at the per-`ws_id` FAN-OUT point** (NOT a per-Event counter stamped at the
-      shared bus). This distinction is load-bearing and the two earlier phrasings were INCOMPATIBLE: a `seq` stamped once
-      per `Event` at the shared bus is a **GLOBAL** counter, but the relay is a **SINGLE bus subscriber** whose per-`ws_id`
-      buffers join at different times and **drop/coalesce independently** (drop oldest STATUS, keep latest preview) — so
+      shared bus). A `seq` stamped once per `Event` at the shared bus is a **GLOBAL** counter, but the scope client is a
+      **SINGLE bus subscriber** whose per-`ws_id` buffers join at different times and **drop/coalesce independently** — so
       every legitimate per-viewer drop would look like a gap and fire a **spurious re-snapshot**. Therefore `seq` is
-      assigned **after the single `bus.subscribe()`, in the `relay_client` per-`ws_id` projection**: monotonic **per
-      viewer**, incremented **only for frames actually delivered to that `ws_id`**. **Intentional coalescing advances
-      `seq` by exactly 1** carrying only the latest frame — it is NOT a gap. A viewer detects a real gap only as a
-      non-contiguous per-viewer `seq` and requests a re-snapshot. (The "per-event seq on `Event`" phrasing is removed.)
+      assigned **after the single `bus.subscribe()`, in the `relay_client` per-`ws_id` projection** (carried in the
+      `WS_DATA` header): monotonic **per viewer**, incremented **only for frames actually delivered to that `ws_id`**.
+      **Intentional coalescing advances `seq` by exactly 1** carrying only the latest frame — NOT a gap. A viewer detects
+      a real gap only as a non-contiguous per-viewer `seq` and requests a re-snapshot.
     - **Buffer-before-snapshot + dedupe:** the relay buffers incoming events into the per-viewer buffer BEFORE sending
       the snapshot, and the snapshot (`hub.summary()`) is **authoritative for all at-least-latest classes**
       (status / sequence / preview-id) so a missed intermediate event is harmless.
     - **"Resync without duplicating"** = re-attach the SAME single bus subscription (never add a second), re-send
       `hub.summary()` per browser, and **RESET (not duplicate) the per-viewer buffers** for the reconnecting `ws_id`s.
-  - **Isolation + reconnect.** The relay client runs as an **ISOLATED background task that can NEVER block or crash
-    `_lifespan` or local serving — LAN access is 100% unaffected by a relay outage.** Reconnect uses capped backoff
-    (reuse the `_RECONNECT_BACKOFF` / `_nina_ws_loop` pattern, `hub.py:1022`) **with FULL JITTER and a duration cap +
-    max-retry/alert policy** so many homes redialing one relay after a deploy don't cause a thundering-herd storm. On
-    redial send a higher `stream_generation` (fencing token) so the relay **evicts the home's stale stream** (no
-    split-brain routing to a half-dead stream).
-  - **Idempotency:** define a `corr_id` **dedup window**; mark non-idempotent control POSTs (e.g. `mount goto`) so a
-    lost-response-after-reconnect surfaces as an **error**, not a silent retry.
-- **Relay service** (NEW repo/dir `relay/`, deployed separately — Go or Python+Connect):
-  - **Auth of the home device** via a `device_token` (issued once, stored in `RemoteConfig`; rotatable; mTLS optional).
-  - **Auth of remote users** via Google OIDC (the SAME provider config as W2; the relay owns the public
-    `/auth/google/callback`). It forwards a **home-verifiable principal** (W2.3: home-issued JWT, or relay-asymmetric
-    signed with a key the home holds the PUBLIC half of) — it does **NOT** hold a shared HS256 secret that could mint
-    home-trusted admin tokens.
-  - **Role tagging** — stamps `RelayFrame.principal_token` from the validated session; the home re-derives the role.
+  - **Isolation + reconnect.** The scope client runs as an **ISOLATED lifespan background task that can NEVER block or
+    crash `_lifespan` or local serving — LAN access is 100% unaffected by a relay outage** (invariant §4.7). Reconnect
+    uses capped exponential backoff + **FULL JITTER** (~15 s cap; mirror `ws.ts`) **with a max-retry/alert policy** so
+    many homes redialing one relay after a deploy don't thundering-herd. On redial send a higher `generation` (the
+    restart-surviving fencing token in `HELLO`) so the relay **evicts the home's stale WSS** — reconnect-safe, no
+    split-brain routing to a half-dead socket. **Degrades to local-only if the relay is down.**
+  - **Idempotency:** define a `stream_id` **dedup window**; mark non-idempotent control POSTs (e.g. `mount/goto`) so a
+    lost-response-after-reconnect surfaces as an **error**, not a silent retry. (The mount-motion lock in §4.10 is the
+    backstop that prevents a stale REMOTE slew from firing after a LOCAL abort regardless of retry behavior.)
+
+#### W3.3.4 DEVICE REGISTRATION + AUTH (scope ↔ relay)
+
+- **The scope authenticates to the relay with a `device_token`** (a SECRET on `RemoteConfig`, issued once, rotatable).
+  On `HELLO{device_token, home_id, generation}` the relay validates the token and **maps it to a stable scope
+  endpoint** — a path or subdomain (`home_id` in the URL, e.g. `https://relay.example/h/<home_id>/...` or
+  `<home_id>.relay.example`) so a remote browser has a stable address for THIS scope.
+- **One scope per token; reconnect-safe.** A second live WSS presenting the same `device_token` with a HIGHER
+  `generation` **evicts the older socket** (the fencing token); an EQUAL-or-lower generation is rejected. A restart
+  re-dials with a monotonic, restart-surviving generation (clock-derived or persisted) so a rebooted scope is never
+  treated as stale.
+- **`device_token` blast radius** (restated): a leaked token lets an attacker impersonate the home's WSS — bind the dial
+  with **mTLS or a rotatable per-home device cert** so the relay binds a tunnel to a KNOWN scope. mTLS authenticates the
+  PIPE only; never an AstroDeck-authorization input.
+
+#### W3.3.5 The relay SERVICE (standalone, minimal deps, host-agnostic) — `relay/` (NEW, deployed separately)
+
+A small standalone service (its own `relay/` dir; lean **Python+`websockets`/`uvicorn`** or **Go** — the owner deploys
+it). **Minimal deps; HOST-AGNOSTIC: ships a Dockerfile + a Fly.io config.** Responsibilities:
+
+  - **Terminate browser HTTPS+WSS** and the scope WSS; map a browser HTTP/WS connection to tunnel frames and back
+    (`stream_id` ↔ browser request; `ws_id` ↔ browser `/ws`), fanning `WS_DATA` out to the right browser.
+  - **Device registration** (W3.3.4): validate `device_token`, pin `home_id → live scope WSS`, fence by `generation`.
+  - **Identity termination for remote users** via Google OIDC (the SAME provider config as W2; the relay owns the public
+    `/auth/google/callback` since the LAN home has no public callback URL). It forwards a **home-verifiable principal
+    token** (W2.3: home-issued, or signed with a key the home holds the PUBLIC half of). **It holds NO signing secret
+    that could mint home-trusted admin** — public-key-only. The home re-derives the role and 403s independently.
   - **Viewer-link issuance** — a scoped, expiring link that mints a **viewer-only** session for a friend (no Google
     account required): `GET /share/{token}` → short-lived `viewer` JWT **signed with the SEPARATE viewer-link key**
     (W2.3) so a link-minting bug can never forge an admin/config session. The viewer JWT carries an **explicit
@@ -2113,70 +2163,174 @@ message Hello   {                    // first frame each side sends on stream op
     run.** Three lenses converge into a leak with **no implementation seam** as written: (1) `hub.summary()`
     (`hub.py:404`/`:409`, verified) **unconditionally** embeds full site `lat`/`lon` AND `redacted(config_store.cfg())`
     — and `redacted()` keeps **precise coords, alert destination hosts, AND the full safety/escalation block**; (2) that
-    summary is the `/ws` **hello** (`app.py:1524`) and is **re-broadcast on every config-bus event**; (3) the relay models
-    `WsEvent` as **verbatim opaque bytes** (`proto WsEvent.json`), so a redaction step bolted onto the relay frame has
-    nothing to act on. So make redaction a **server-side property of snapshot/event generation**: add a
+    summary is the `/ws` **hello** (`app.py:2139`) and is **re-broadcast on every config-bus event**; (3) the tunnel
+    carries `/ws` JSON as **verbatim opaque payload bytes** (the `WS_DATA` payload), so a redaction step bolted onto the
+    relay has nothing to act on. So make redaction a **server-side property of snapshot/event generation**: add a
     **`principal`/`scope`/`caps` parameter to `hub.summary()`** (and to the `'config'` bus emission) so a caller **lacking
     `view.site_precise`** (coarsen coordinates to grid/hemisphere) **and lacking `config.site_optics`** (strip the
     `site`/`alert`/`safety` blocks from the embedded config) gets the coarsened/stripped frame **BEFORE it reaches the
-    queue**. Because the **relay is a SINGLE bus subscriber** fanning out per `ws_id` (W3.3 backpressure), it **cannot
-    rely on one shared redacted snapshot** — the per-viewer coarsening happens in the **relay's per-`ws_id` projection**,
-    so **`WsEvent.json` is scope-specific, NOT globally identical** across viewers (document this explicitly; an admin's
-    `ws_id` carries precise coords, a viewer-link `ws_id` carries the coarsened frame). The two new view capabilities —
-    **`view.site_precise`** (precise lat/lon) and re-use of **`config.site_optics`** for the site/alert/safety config
+    queue**. Because the **scope client is a SINGLE bus subscriber** fanning out per `ws_id` (W3.3.3 backpressure), it
+    **cannot rely on one shared redacted snapshot** — the per-viewer coarsening happens in the **`relay_client`
+    per-`ws_id` projection**, so the **`WS_DATA` payload is scope-specific, NOT globally identical** across viewers (an
+    admin's `ws_id` carries precise coords, a viewer-link `ws_id` carries the coarsened frame). The two view capabilities
+    — **`view.site_precise`** (precise lat/lon) and re-use of **`config.site_optics`** for the site/alert/safety config
     subset — are EXCLUDED from the default viewer-link set. **§T test:** a viewer-capability WS hello AND a `config` bus
-    event contain **NO precise lat/lon and NO alert/safety config** (assert the coarsened/stripped shape), while an admin
-    hello carries them.
-  - **Browser ↔ relay** over HTTPS + Connect; the relay maps a browser HTTP/WS connection to `RelayFrame`s and back
-    (`ws_id` ↔ browser WS), and fans `WsEvent`s UP-direction out to the right browser.
-- **Browser Connect client** — the UI's `api.ts`/`ws.ts` are unchanged for the home (LAN) case; for the remote case the
-  base URL points at the relay and a tiny Connect shim wraps fetch/WS. No component changes.
-- **Deployment / scalability (design invariant, decide before C8).** A home's persistent stream AND every remote
-  browser for that home must reach the **SAME relay instance** (affinity), OR introduce a **shared pub/sub
-  (Redis/NATS)** so any instance can route to the one holding the stream. **Cloud Run is likely disqualified** — its
-  max-request-duration / instance-recycling is hostile to a kept-open bidi stream + in-memory registry; this biases the
-  open hosting decision toward Fly.io/VPS. Single-instance is fine to start, but the in-memory-registry-vs-shared-bus
-  choice shapes the relay's internal architecture, so resolve it as part of W3.
-- **Browser RE-ROUTING after a relay-INSTANCE outage — specify it, don't leave it implicit.** When the relay instance
-  holding a home's stream dies, the home re-dials (its capped-backoff redial) and the browsers must find the home again.
-  Pick ONE: **(a)** a **shared pub/sub (Redis/NATS)** so ANY instance serves a browser by `home_id → current-stream-
-  holder` lookup, OR **(b)** a **stable routing key** (`home_id` in the path/subdomain) + an **LB that re-pins** to the
-  instance now holding that home's stream, PLUS a **browser reconnect-backoff that RE-RESOLVES** (re-does the `home_id`
-  lookup / re-hits the LB) rather than blindly retrying the dead instance. State the **bounded window** where
-  home-reconnected-but-browsers-not-yet is EXPECTED (the home re-dials faster than browsers notice), and that **browser
-  reconnect re-runs the resync** (`hub.summary()` hello + per-viewer `seq` reset) so no events are lost across the
-  failover. Tie this to the §T7(5) single-instance-affinity test by adding an **instance-FAILOVER case:** the
-  stream-holding instance drops, the home re-dials to a new instance, and a browser **re-resolves and resyncs** (hello +
+    event contain **NO precise lat/lon and NO alert/safety config** (the coarsened/stripped shape), while an admin hello
+    carries them.
+  - **Browser ↔ relay** over **HTTPS + WSS** (plain — no Connect/grpc-web); the relay maps a browser HTTP/WS connection
+    to tunnel frames and back (`stream_id` ↔ browser request, `ws_id` ↔ browser WS), and fans `WS_DATA` out to the right
+    browser.
+- **Browser client — ZERO component changes.** The UI's `api.ts`/`ws.ts` are byte-identical for the LAN case (relative
+  same-origin stays default). For the remote case the browser simply loads the SPA from the relay origin and talks plain
+  `fetch`/`WebSocket` to that SAME origin — the relay reverse-proxies `/`, `/assets`, `/api`, `/auth`, `/ws` down the
+  tunnel, so there is no API-base indirection and no CORS. (`ad_session` flips `SameSite=Strict → Lax`, W2.3, the one
+  server-side cookie change the cross-origin relay web case needs.)
+- **Deployment / scalability — persistent connections ⇒ Fly.io / VPS, NOT Cloud Run.** A home's persistent WSS AND every
+  remote browser for that home must reach the **SAME relay instance** (affinity), OR a **shared pub/sub (Redis/NATS)**
+  lets any instance route to the one holding the socket. **Cloud Run is disqualified** — its request-scoped lifetime +
+  scale-to-zero + instance-recycling fight a kept-open bidi WSS + in-memory registry. **Target Fly.io (always-on,
+  Anycast, suited to long-lived bidi streams) or a VPS.** Single-instance is fine to start; the
+  in-memory-registry-vs-shared-bus choice shapes the relay's internals, so resolve it in W3. The relay ships a
+  **Dockerfile + a `fly.toml`**; the owner deploys it (HOST-AGNOSTIC).
+- **Browser RE-ROUTING after a relay-INSTANCE outage.** When the relay instance holding a home's WSS dies, the scope
+  re-dials (its capped-backoff redial) and browsers must find the home again. Pick ONE: **(a)** a **shared pub/sub
+  (Redis/NATS)** so ANY instance serves a browser by `home_id → current-socket-holder` lookup, OR **(b)** a **stable
+  routing key** (`home_id` in the path/subdomain) + an **LB that re-pins** to the instance now holding that home's WSS,
+  PLUS a **browser reconnect-backoff that RE-RESOLVES** (re-does the `home_id` lookup / re-hits the LB) rather than
+  blindly retrying the dead instance. State the **bounded window** where home-reconnected-but-browsers-not-yet is
+  EXPECTED (the scope re-dials faster than browsers notice), and that **browser reconnect re-runs the resync**
+  (`hub.summary()` hello + per-viewer `seq` reset) so no events are lost across the failover. Tie this to the §T7(5)
+  single-instance-affinity test with an **instance-FAILOVER case:** the socket-holding instance drops, the scope
+  re-dials to a new instance, and a browser **re-resolves and resyncs** (hello +
   seq reset) rather than erroring on the dead instance.
 
-### W3.4 Build-vs-buy (the user chose custom)
+### W3.4 Build-vs-buy (the owner chose a custom WS relay — NO Tailscale)
 
-An off-the-shelf tunnel (Tailscale, Cloudflare Tunnel) would expose the whole LAN service with **less control over
-per-user role tagging and viewer-link scoping**. The **custom relay was chosen** to own the auth/role boundary end to
-end (it terminates OAuth, mints scoped viewer links, and tags every frame with a role the home re-checks). An interim
-off-the-shelf tunnel remains an OPEN DECISION (see below) as a stopgap before the relay is built.
+**Tailscale / Cloudflare Tunnel are REJECTED (owner decision).** They would expose the whole LAN service behind a
+third-party tunnel's own auth, with **less control over per-user role tagging and viewer-link scoping**, and bind the
+deployment to that vendor. The **custom plain-WSS relay is chosen** so the owner owns the auth/role boundary end to end
+(it terminates OIDC, mints scoped viewer links, forwards a home-verified principal) AND owns the host (Docker + Fly.io).
+The relay is a **dumb byte-forwarder**; it holds no signing secret and re-checks nothing — the home is the sole
+authorizer. There is no interim third-party tunnel: the relay is the shipped transport.
 
 ### W3.5 Staging
 
-A) `relay.proto` (chunked bodies + repeated headers + query + keepalive) + home dial-out client replaying **chunked**
-HTTP against the in-process ASGI app with **header-stripping + relay-signed principal injection** (local relay stub;
-`device_token` auth; isolated background task). B) WS tunnelling (`ws_open` → `bus` subscription → `WsEvent` stream)
-with **per-viewer backpressure isolation** (drop-or-disconnect, never block the shared stream). C) relay Google-OIDC
-termination + **home-verifiable** principal token + role tagging (depends on W2 done; resolve the affinity-vs-shared-bus
-architecture decision here). D) viewer-link issuance (separate signing key + `jti` revocation + explicit caps + TTL/
-renew/max-viewers/audit) + scoped `viewer` sessions; deploy target chosen (Cloud Run likely disqualified — see OPEN
-DECISIONS).
+A) **Tunnel protocol + scope client** — `remote/protocol.py` (the binary framing of W3.2: length-prefixed frames,
+`stream_id` multiplex, REQ/RESP/WS/PING/HELLO/REVOKE/WINDOW types, per-stream credit flow-control) + `remote/relay_client.py`
+(the OPT-IN lifespan task: dial ONE WSS, `HELLO{device_token}`, replay **chunked** HTTP against the in-process ASGI app
+with **header-stripping + `scope['state']['astrodeck_remote']=True` injection** + the auth-seam wiring of W3.3.2;
+isolated background task; degrades to local-only). Tested OFF-WIRE against a fake in-memory frame channel.
+B) **WS tunnelling** (`WS_OPEN` → single `bus.subscribe()` → per-`ws_id` `WS_DATA` stream) with **per-viewer
+backpressure isolation** (drop-or-disconnect, never block the shared WSS) + the per-viewer `seq`/resync.
+C) **Relay service** — `relay/` (browser HTTPS+WSS termination, device registration + `generation` fencing, Google-OIDC
+termination, **home-verifiable** principal token, affinity-vs-shared-bus decision resolved here).
+D) **Viewer-link issuance** (separate signing key + `jti` revocation + explicit caps + TTL/renew/max-viewers/audit) +
+scoped `viewer` sessions; **deploy target = Fly.io/VPS (Cloud Run disqualified)**; the relay ships a Dockerfile + `fly.toml`.
 
 > **Relay green-each-stage gate (C8-C9) — language decision + gate command + integration-test classification.** The
 > relay lives in its own `relay/` dir (deployed separately). **Decide the language up front** because it determines the
-> test runner: **Go** (`go test ./...`) **OR Python+Connect** (`pytest relay/`) — *lean: Python+Connect, to reuse the
-> repo's pytest + fakes discipline and the shared OIDC helper, unless Go's gRPC tooling wins decisively.* The **per-stage
-> unit gate is the OFF-WIRE `relay/test_*.py` (or `*_test.go`) files** run by that command (browser↔frame round-trip,
-> header transform, OIDC termination, fan-out isolation, affinity/failover — all over a fake in-memory `HomeFrame`/
-> `RelayFrame` channel, no gRPC on wire). **The single ON-WIRE gRPC integration test is a SEPARATE integration gate** — a
-> **named fixture** (local relay + local home), run **on demand / a dedicated CI job**, NOT part of the per-stage unit
-> gate. So a stage goes green on the off-wire unit files; the on-wire test is an additional scheduled check that does not
-> block the fast inner loop.
+> test runner: **Go** (`go test ./...`) **OR Python+`websockets`** (`pytest relay/`) — *lean: Python, to reuse the repo's
+> pytest + fakes discipline and the shared OIDC helper.* The **per-stage unit gate is the OFF-WIRE `relay/test_*.py` (or
+> `*_test.go`) files** run by that command (browser↔frame round-trip, header transform, OIDC termination, fan-out
+> isolation, affinity/failover — all over a **fake in-memory tunnel-frame channel, no WSS on wire**). **The single
+> ON-WIRE WSS integration test is a SEPARATE integration gate** — a **named fixture** (local relay + local home), run **on
+> demand / a dedicated CI job**, NOT part of the per-stage unit gate. So a stage goes green on the off-wire unit files;
+> the on-wire WSS test is an additional scheduled check that does not block the fast inner loop.
+
+### W3.6 CONFIG fields — `RemoteConfig` on `AppConfig` (`config.py`)
+
+A NEW `RemoteConfig` block, appended to `AppConfig` exactly like the `auth` block (additive — old config files without
+it load fine; pydantic fills the default). With `enabled=False` (the default) the scope NEVER dials, so today's behavior
+is byte-for-byte. The `device_token` is a SECRET and MUST be redacted out of every WS/REST config dump.
+
+```python
+class RemoteConfig(BaseModel):
+    enabled: bool = False        # OPT-IN: the scope dials ONLY when True AND relay_url is set
+    relay_url: str = ""          # wss://relay.example/...  (the public relay the scope dials)
+    device_token: str = ""       # SECRET: authenticates this scope to the relay (rotatable)
+    home_id: str = ""            # stable id the relay pins (path/subdomain); generated on first enable
+    # (mTLS material — device cert/key — may live here later; keep it a SECRET like device_token)
+
+class AppConfig(BaseModel):
+    ...
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)   # appended; old configs load fine
+```
+
+- **Redaction (extend `redacted()`, `config.py:492`).** Add a `remote` branch mirroring the `auth` branch: blank
+  `device_token`, surface a `remote_token_configured` / `remote_configured` boolean. The `redacted()` dump already
+  scrubs `auth` secrets; `device_token` joins them. **§T:** assert a config dump never contains `device_token`.
+- **Mutation is `admin.users`-gated AND tunnel-blocked.** `RemoteConfig` is written ONLY through a dedicated
+  `admin.users`-gated `POST /api/remote/config` (NEVER via the general `POST /api/config` merge — `ConfigPatchBody` is
+  `extra="forbid"`, `app.py:369`, so a stray `remote` block 422s at binding, exactly as `auth` does). That route is on
+  the **tunnel-block list** (W3.3.2) so a compromised relay can never re-key/disable the relay from the WAN.
+- **`config_store.set_remote(remote)`** is the typed setter (mirrors `set_auth`, `config.py:402`): bump version, write
+  atomically. Enabling it generates a `home_id` if empty.
+
+### W3.7 NON-NEGOTIABLE invariants the HOME enforces (hold even if the relay is fully compromised)
+
+These restate §4 of the council ADR, pinned to this WS-tunnel design. The relay is untrusted infrastructure.
+
+1. **Sun-avoidance is a hardware-safety gate BELOW the API** — `hub._check_solar` (`hub.py:711`) on the slew /
+   `set_tracking` / manual-jog / sequence-start chokepoints (`app.py:1529`, `:1569`, inside `goto_and_center`
+   `hub.py:1226`). It is NOT bypassed by `force`; disarming needs `config.solar_override` + a config write. No client
+   path — remote, relay, or buggy — may point optics at the sun. (W1.10; already landed.)
+2. **The open `none` provider can NEVER be served remotely.** Every tunnelled request and the tunnelled `/ws` accept set
+   `scope['state']['astrodeck_remote']=True`, which `resolve_principal(..., remote=True)` reads to HARD-DENY `none`
+   (`deps.py:141-143`). This is the W3.3.2 wiring — derived from the in-process scope, NOT a forgeable header. **§T:** a
+   tunnelled request under `provider=none` resolves to **None (401/deny), never admin**; the scope client REFUSES to
+   forward any frame while `provider=="none"`.
+3. **The relay can never forge a principal or an admin command.** The home is the sole token issuer; the relay holds
+   only a PUBLIC key (`relay_pubkey`/`viewer_link_pubkey`). No `X-Forwarded-User`-style trusted header.
+4. **RBAC is re-checked at the home on EVERY request** (`require(cap)`, `deps.py:158`), never decided at the edge. Caps
+   fail closed for unknown roles. The remote surface is a deliberate subset (tunnel-block list, W3.3.2);
+   **DESTRUCTIVE_CAPS** (`capabilities.py:45`) require a fresh short-TTL step-up so a long-idle remote session cannot
+   slew or open the roof.
+5. **The `/ws` channel stays send-only.** Commands stay on the cap-gated REST path. Never add an inbound command channel
+   over `/ws` (`app.py:2140-2142` never calls `receive()`).
+6. **Mount limits / horizon / safety floors are independent of auth.** Remote bypasses neither.
+7. **Loss of the relay degrades to safe local autonomy.** The scope client is an isolated lifespan task; a relay outage
+   never blocks `_lifespan` or local serving. The home's `on_unsafe` abort/park/warm is the backstop.
+8. **A local-only kill switch** tears down the outbound WSS instantly (set `RemoteConfig.enabled=False` locally; the
+   scope client stops dialing) — master revocation needing no relay cooperation, unreachable from the remote path.
+9. **Per-principal audit + rate-limit at the home tunnel-ingress.** Every relay-borne command is logged at the home with
+   the VERIFIED principal (role/email/jti from the signed token), append-only.
+
+10. **MOTION SERIALIZATION — a single mount-motion lock so a stale REMOTE slew cannot fire after a LOCAL abort (owner
+    invariant). WHERE IT LIVES: in the `hub`, as a process-global `asyncio.Lock` (`hub._motion_lock`) plus a monotonic
+    `hub._motion_epoch` counter — co-located with the existing single-mount state (`hub._busy`, the move-axis deadman
+    `hub.last_move_ts`, `hub.py:168-171`). This is the ONE place every motion path already funnels through.**
+    - **Today's de-facto serialization (verify, then HARDEN).** Mount motion already funnels through ONE named task
+      lane: every slew/park/centering runs as the single `"goto"`-named task via `_spawn("goto", ...)` (`app.py:1533`,
+      `:1542`, `:1631`), and `_spawn` **409s a second `"goto"`** while one is live (`app.py:130-131`). `POST /api/mount/stop`
+      (`app.py:1594`) **cancels the `"goto"` task** and zeroes the axes; `move_axis` (`app.py:1555`) is a direct await
+      guarded by the 250 ms deadman. So concurrent slews are ALREADY rejected — but this is a per-NAME guard, not a true
+      motion lock, and it does NOT order an abort against an in-flight start, which is the exact remote-vs-local race.
+    - **THE RACE to close.** A LOCAL operator hits abort/stop at the same moment a REMOTE admin's slew is being accepted.
+      Cancelling the `"goto"` task does not, by itself, guarantee the device-level `slew()` call already dispatched into
+      the driver is countermanded — a slew command in flight to the mount could still execute AFTER the local stop
+      returns. The fix is an explicit lock + epoch fence around the device-touching critical section.
+    - **THE LOCK CONTRACT (define + enforce at the hub motion boundary).**
+      - Every motion-committing hub method — `goto_and_center` / plain slew, `park`/`unpark`, `set_tracking(True)`,
+        `move_axis(non-zero)`, and the engine's per-target slew+center+meridian-flip — **acquires `hub._motion_lock`
+        around the device call**, reads the current `_motion_epoch` BEFORE the await, and **re-checks the epoch is
+        unchanged immediately before issuing the device command**; if the epoch advanced, it **abandons the motion**
+        (does not dispatch) and raises a cancelled/aborted result.
+      - **Any STOP/abort/park path — `POST /api/mount/stop`, `engine.abort()`, an `on_unsafe` safety abort, and the
+        move-axis deadman halt — BUMPS `_motion_epoch` FIRST** (fencing every in-flight or queued slew), then cancels
+        the `"goto"` task, then issues `tel.stop()`. The epoch bump is what makes a slew that was accepted-but-not-yet-
+        dispatched (the remote race) **abort instead of fire** — it sees the advanced epoch at its pre-dispatch check.
+      - **A STOP wins ties deterministically:** because STOP bumps the epoch and a queued slew re-reads it under the same
+        lock before dispatch, a slew can NEVER win a race against a stop that has already bumped. A stale REMOTE slew
+        accepted just before a LOCAL abort is fenced out by the epoch advance.
+      - **The lock guards the device-touching section only** (not the whole long centering loop) so STOP can always
+        acquire it promptly to bump the epoch + call `tel.stop()`; the long-running centering loop checks the epoch
+        between steps and bails when it advances. The deadman (`hub.py:165-170`) remains the independent hardware
+        backstop for manual jog.
+    - **RBAC controls WHO; this lock controls concurrent conflicting WHATS.** They are orthogonal: RBAC may admit the
+      remote admin's slew, and this lock+epoch still guarantees a subsequent (or concurrent) LOCAL abort fences it.
+    - **§T motion-race test:** start a (sim) slew, fire a stop/abort that bumps the epoch mid-flight, and assert the
+      device `slew()` is **abandoned at its pre-dispatch epoch check** (no post-abort device motion); assert a second
+      concurrent slew is rejected; assert `move_axis` non-zero respects the same lock/epoch.
 
 ---
 
@@ -2224,13 +2378,14 @@ registrations — zero hub edits.**
 
 ## OPEN DECISIONS
 
-1. **Relay hosting target** — Fly.io vs a small VPS. **Cloud Run is likely disqualified** (its max-request-duration /
-   instance-recycling is hostile to a kept-open bidi stream + in-memory registry, W3.3). Affects sticky-routing of
-   `home_id`→instance and whether a shared pub/sub (Redis/NATS) is needed for multi-instance routing. *Lean: Fly.io or a
-   VPS for cheap always-on; this must be resolved as part of W3.C because it shapes the in-memory-registry-vs-shared-bus
-   architecture, not deferred.*
-2. **Interim off-the-shelf tunnel?** — whether to ship a Tailscale/Cloudflare-Tunnel stopgap for remote access before
-   the custom relay (W3) is built. Trades the per-user role boundary for speed-to-remote. *Open.*
+1. **Relay hosting target** — Fly.io vs a small VPS. **Cloud Run is DISQUALIFIED (owner decision)** — its request-scoped
+   lifetime + scale-to-zero + instance-recycling fight a kept-open bidi WSS + in-memory registry (W3.3 / W3.5). The relay
+   ships HOST-AGNOSTIC: a **Dockerfile + a `fly.toml`** (the owner deploys it). The only remaining sub-decision is
+   sticky-routing of `home_id`→instance vs a shared pub/sub (Redis/NATS) for multi-instance routing — resolved in W3.C
+   because it shapes the in-memory-registry-vs-shared-bus architecture. *Decided: Fly.io/VPS; single-instance to start.*
+2. **Interim off-the-shelf tunnel?** — **CLOSED (owner decision): NO.** No Tailscale / Cloudflare-Tunnel stopgap. The
+   custom plain-WSS relay (W3) IS the shipped transport; the owner owns the per-user role boundary and the host end to
+   end. *Closed.*
 3. **Native-guider ambition timing** — does `NativeGuider` (W4) land soon enough to skip investing in managed-PHD2
    polish (W1.7), or is managed PHD2 the supported path for the foreseeable future? **The real cost driver is that
    NativeGuider must RE-IMPLEMENT calibration** (per-axis mount-response measurement) that PHD2 provides for free, plus
@@ -2255,8 +2410,8 @@ green (`pytest` + `npm run build`).
 | **C5** | W1.7 | managed PHD2 supervisor (allowlisted spawn, on-disk profile write, set_connected/find_star/loop/cal-status RPCs, watchdog) | injected-launcher supervisor tests (§T5) |
 | **C6** | W2.A–B | `AuthProvider("none")` + `requires()` + route table + **boot `app.routes` assertion** + accept-time WS gate + asymmetric session JWT + `jti` + allowlist API + client role model | every existing test green (admin default) + RBAC dependency/WS/JWT tests (§T6) |
 | **C7** | W2.C–D | Google OIDC provider (state/nonce/email_verified/hd) + login UI + `operator` role | OIDC verify (faked JWKS, no live Google) + 403 matrix per role (§T6) |
-| **C8** | W3.A–B | `relay.proto` (chunked bodies, repeated headers, query, keepalive) + home dial-out replaying HTTP/WS against the in-process ASGI app | off-wire relay_client scope/framing/replay + home-side 403 re-check + reconnect (§T7) |
-| **C9** | W3.C–D | relay OIDC termination + principal-token role tagging + viewer links (separate key, jti, caps) + backpressure isolation; deploy target | relay JWT-minting/viewer-link unit tests; gRPC transport integration (§T7) |
+| **C8** | W3.A–B | `remote/protocol.py` (binary tunnel framing: `stream_id` multiplex, REQ/RESP/WS/PING/HELLO/REVOKE/WINDOW, per-stream credit) + `remote/relay_client.py` (OPT-IN lifespan dial-out over ONE WSS, chunked HTTP/WS replay against the in-process ASGI app, `scope['state']['astrodeck_remote']=True` injection + `RemoteConfig`) + the mount-motion lock/epoch (W3.7.10) | off-wire relay_client scope/framing/replay + `remote=True` deny-`none` + home-side 403 re-check + reconnect + motion-race (§T7) |
+| **C9** | W3.C–D | relay service (`relay/`: browser HTTPS+WSS, device registration + generation fencing, OIDC termination, home-verifiable principal token, viewer links: separate key/jti/caps) + backpressure isolation; deploy = Fly.io/VPS (Docker + `fly.toml`) | relay JWT-minting/viewer-link unit tests (off-wire); ONE on-wire WSS transport integration (§T7) |
 | **C10** | W4 | (roadmap) `NativeGuider` (+ `flip_calibration`) + native/INDI/Rust backends as new registrations | — |
 
 **Critical path:** C1 (the seam) unblocks everything; its ENTRY gate is the §T3 characterization snapshots taken BEFORE
@@ -2533,72 +2688,76 @@ seam, W1.6 — asserted as the bus event, NOT a real `httpx` send) while an **id
 (no bus event published) — the W1.6 escalation rule, asserted via the same recording-fake-bus pattern the connect-time
 SAFE-ING and PAUSED-PENDING-ACK cases use.
 
-**§T7 — relay client / viewer-link auth, OFF-WIRE (W3 / C8-C9).** Home-side `relay_client.py` (no gRPC): feed a
-constructed `RelayFrame.request` through the scope-builder and assert the correct ASGI scope (method/path/query/headers/
-body), the framed-back response (status/headers/body), and that a **viewer-tagged request to a control route 403s AT
-HOME** (defense-in-depth re-check) even if the relay said viewer; `ws_open` tests with a fake bus assert subscribe +
-`WsEvent` emission + unsubscribe on `ws_close`; a reconnect/backoff test (failing transport, jittered cap). Add a
-**`provider=="none"` + REMOTE-flagged scope → hard-DENY** test (the per-request WAN interlock, W2.3) and a
-**`relay_client` refuses to forward any frame while `provider=="none"`** test. Relay service: unit-test JWT
-minting/signing, role stamping from a validated session, and viewer-link issuance producing a **viewer-only** JWT that
-cannot carry `admin`/config caps. **gRPC transport stays integration-level; framing/replay/auth logic is unit-tested
-off-wire.**
+**§T7 — scope client / viewer-link auth, OFF-WIRE (W3 / C8-C9).** Home-side `relay_client.py` (no WSS on wire): feed a
+constructed `REQ_OPEN` (+ `REQ_DATA`) through the scope-builder and assert the correct ASGI scope (method/path/query/
+headers/body) **with `scope['state']['astrodeck_remote']=True`**, the framed-back response (`RESP_HEAD`/`RESP_DATA`,
+status/headers/body), and that a **viewer-tagged request to a control route 403s AT HOME** (defense-in-depth re-check)
+even if the relay said viewer; `WS_OPEN` tests with a fake bus assert subscribe + `WS_DATA` emission + unsubscribe on
+`WS_CLOSE`; a reconnect/backoff test (failing transport, jittered cap). Add a **`provider=="none"` + REMOTE-flagged scope
+→ hard-DENY** test (the per-request WAN interlock, W3.3.2 / W3.7.2) and a **`relay_client` refuses to forward any frame
+while `provider=="none"`** test. Relay service: unit-test JWT minting/signing, role stamping from a validated session,
+and viewer-link issuance producing a **viewer-only** JWT that cannot carry `admin`/config caps. **WSS transport stays
+integration-level; framing/replay/auth logic is unit-tested off-wire.**
 
-**§T7 (relay HEADER TRANSFORM / Set-Cookie rewrite — pure-function, currently untested).** W3.2 requires a bidirectional
-header transform, but the §T7 transport-edge cases test only chunk reassembly, not the header transform — and a broken
-`Set-Cookie` rewrite is a **silent remote-only auth break LAN tests cannot catch**. Add an **off-wire** case feeding a
-`HomeFrame.HttpResponse` carrying `Set-Cookie` (`Domain=home.local`), `Content-Length`, and a hop-by-hop header (e.g.
-`Connection`) through the transform: assert **`Set-Cookie` `Domain` rewritten to the relay origin** (and `Path`/`Secure`
-applied), **`Content-Length` recomputed/stripped for the chunked path**, **`Transfer-Encoding` handled**, and
-**hop-by-hop dropped**. Pure-function logic, fully unit-testable without gRPC.
+**§T7 (MOTION-RACE — the owner invariant, W3.7.10).** Assert the mount-motion lock/epoch fences a stale REMOTE slew
+against a LOCAL abort: start a (sim) slew via `_spawn("goto", ...)`, fire a `POST /api/mount/stop` (or `engine.abort()` /
+`on_unsafe`) that **bumps `hub._motion_epoch` mid-flight**, and assert the device `slew()` is **abandoned at its
+pre-dispatch epoch check** — **no device motion occurs after the abort**. Also assert: a SECOND concurrent slew is
+rejected (the existing `_spawn` 409); a non-zero `move_axis` respects the same lock/epoch; a STOP that bumps the epoch
+**always wins the tie** against a queued slew re-reading it under the lock.
 
-**§T7 (relay_client isolation-from-`_lifespan` invariant — asserted in prose, currently untested).** W3.3 states the
-relay client "can NEVER block or crash `_lifespan` or local serving — LAN access is 100% unaffected by a relay outage",
-and §T7 tests reconnect/backoff + generation fencing but NOT the isolation invariant itself (mirroring the C2
-boot-connect-failure-isolation test that IS specified for backends, §T4(1)). Add a case analogous to §T4(1): start the
-app with `RemoteConfig.enabled=true` and a **relay dial that immediately raises/refuses** (patch the relay transport to
-raise, as §T4 patches a backend `open()`); assert **`_lifespan` completes**, **`/api/status` returns 200**, **LAN routes
-work**, and the **relay task is retrying in the background** (not crashed / un-awaited).
+**§T7 (REMOTE-FLAG is scope-borne, NOT header-spoofable).** Build a replay scope WITHOUT setting
+`scope['state']['astrodeck_remote']` and inject an `X-Forwarded`-style / `authorization` / `x-auth-token` header that an
+on-LAN attacker might forge; assert it is **STRIPPED** and does **NOT** flip `remote` (the flag comes only from
+`scope['state']`). Then set the state flag and assert `resolve_principal` receives `remote=True` and hard-denies `none`.
 
-**§T7 (relay_client STREAMING send/receive shim + BACKPRESSURE — the most RAM-critical novel piece, currently untested).**
-The §T7 transport-edge cases test only chunk REASSEMBLY (relay side); the home-side ASGI `send`/`receive` SHIM that
-PRODUCES the chunks — the no-RAM-blowup streaming path for `FileResponse`/`StaticFiles` — has no test. Drive the shim
-with a **fake ASGI app** that emits `http.response.start` then **several `http.response.body` events** (`more_body=True`
-… `more_body=True` … then `more_body=False`):
-- **Framing:** assert the shim emits **exactly ONE `HttpResponse` head** (status + headers) then **N
-  `HttpResponseChunk`s**, with **`eof=true` ONLY on the last** (the `more_body=False` event) and `eof=false` on the rest
-  — the `FileResponse` (FITS, `app.py:1057`) / `StaticFiles` (`app.py:1535-1543`) streaming case.
-- **Backpressure invariant (the no-RAM-blowup guarantee):** with a **relay-send awaitable that BLOCKS**, assert the shim
-  does **NOT request the next `http.response.body` event until the prior chunk's relay send completes** — i.e. a slow WAN
-  viewer **throttles the home's file iterator** instead of the home buffering the whole FITS in RAM. (Assert the ASGI
-  app's body-iterator is not advanced while the relay send is pending.)
-- **Receive mirror:** tunnelled `HttpRequestChunk` frames surface as `http.request` events with the **correct
-  `more_body`** (True for all but the `eof` chunk, False on `eof`), so upload bodies stream IN symmetrically.
+**§T7 (header TRANSFORM / Set-Cookie rewrite — pure-function).** W3.2 requires a bidirectional header transform; a broken
+`Set-Cookie` rewrite is a **silent remote-only auth break LAN tests cannot catch**. Feed a `RESP_HEAD` carrying
+`Set-Cookie` (`Domain=home.local`), `Content-Length`, and a hop-by-hop header (e.g. `Connection`) through the transform:
+assert **`Set-Cookie` `Domain` rewritten to the relay origin** (and `Path`/`Secure`/`SameSite=Lax` applied),
+**`Content-Length` recomputed/stripped for the chunked path**, **`Transfer-Encoding` handled**, **hop-by-hop dropped**,
+and **inbound `authorization`/`x-auth-token`/cookie STRIPPED** before the scope is built. Pure-function, fully off-wire.
 
-**§T7 (transport edge, OFF-WIRE).** (1) **Chunk reassembly:** feed N `HttpResponseChunk`s ending `eof=true` and assert
-the reassembled body is **byte-for-byte** the original; a **missing-eof** and an **out-of-order chunk** case **ERROR
-rather than truncate**. (2) **Per-viewer backpressure:** a fake bus + two viewer buffers where one never drains → the
-**slow one is dropped/disconnected and the fast one still receives ALL events** (the "never block the shared stream"
-invariant; assert exactly ONE real bus subscription behind both — W3.3). (3) **Generation fencing:** a second `Hello`
-with `stream_generation+1` **evicts the prior stream**. (4) **Ping-miss teardown:** a `Pong`-starved stream tears down
-after the miss count. (5) **corr_id dedup:** a duplicate `corr_id` for a `mount goto` is **rejected/surfaced as error**
-within the dedup window. Keep gRPC-on-wire at integration level.
+**§T7 (scope-client isolation-from-`_lifespan`).** W3.3.0 states the scope client "can NEVER block or crash `_lifespan`
+or local serving — LAN access is 100% unaffected by a relay outage" (mirroring the §T4(1) backend boot-isolation case).
+Start the app with `RemoteConfig.enabled=true` and a **relay dial that immediately raises/refuses** (patch the WSS dial
+to raise); assert **`_lifespan` completes**, **`/api/status` returns 200**, **LAN routes work**, and the **scope task is
+retrying in the background** (not crashed / un-awaited). Also assert that with `RemoteConfig.enabled=false` (default) the
+scope client **never dials** (byte-for-byte today's behavior).
 
-**§T7 (RELAY SERVICE — `relay/` dir — its own harness, mocking strategy, named files).** §T7 above unit-tests the
-HOME-side `relay_client` thoroughly, but the relay SERVICE's core responsibilities have **no test plan, no named file,
-no mocking strategy** — fill that gap. With a **fake home stream** (an in-memory `HomeFrame`/`RelayFrame` channel; no
-gRPC on wire) and named files under `relay/` (e.g. `relay/test_proxy.py`, `relay/test_headers.py`, `relay/test_oidc.py`,
-`relay/test_fanout.py`): **(1) browser↔frame round-trip** — a browser HTTP request becomes a `RelayFrame` and a
-`RelayFrame` response becomes the browser response (method/path/**repeated headers** survive; `ws_id`↔browser binding
-correct). **(2) bidirectional header transform** — `Content-Length`/`Transfer-Encoding` recompute, hop-by-hop drop, and
-**`Set-Cookie` `Domain`/`Path`/`Secure` rewrite to the relay origin** (assert a home-issued cookie is valid on the relay
-origin). **(3) OIDC termination** produces a **home-verifiable principal token** (NOT a shared HS256 secret) — and runs
-the §T6 callback-handler `state`/`nonce`/PKCE/`email_verified`/`hd` cases against the relay's `/auth/google/callback`.
-**(4) fan-out isolation** — a `WsEvent` for `ws_id` A goes **ONLY** to browser A, never to browser B
-(per-`ws_id` projection correctness). **(5) single-instance-affinity routing** — a `home_id`'s browser request routes to
-the instance holding that home's stream. **PLUS exactly ONE concrete ON-WIRE gRPC integration test** (local relay +
-local home, a **named fixture**, explicit pass/fail assertion on a tunnelled request round-trip) — replacing the bare
-"integration-level" label with a real test.
+**§T7 (STREAMING send/receive shim + BACKPRESSURE — the most RAM-critical novel piece).** Drive the home-side ASGI
+`send`/`receive` shim with a **fake ASGI app** that emits `http.response.start` then several `http.response.body` events
+(`more_body=True` … then `more_body=False`):
+- **Framing:** the shim emits **exactly ONE `RESP_HEAD`** then **N `RESP_DATA`s**, with **`eof=true` ONLY on the last**
+  — the `FileResponse` (FITS, `app.py:1460`) / `StaticFiles` (`app.py:2162`/`2168`) streaming case.
+- **Backpressure (no-RAM-blowup):** with a relay-send awaitable that BLOCKS (or zero tunnel `WINDOW` credit), assert the
+  shim does **NOT request the next `http.response.body` event until the prior chunk's send completes** — a slow WAN
+  viewer **throttles the home's file iterator** instead of buffering the whole FITS in RAM.
+- **Receive mirror:** tunnelled `REQ_DATA` frames surface as `http.request` events with the correct `more_body` (True
+  for all but the `eof` chunk, False on `eof`), so upload bodies stream IN symmetrically.
+
+**§T7 (transport edge, OFF-WIRE).** (1) **Chunk reassembly:** feed N `RESP_DATA`s ending `eof=true` and assert the
+reassembled body is **byte-for-byte** original; a **missing-eof** and an **orphan/unknown-`stream_id` chunk** case
+**ERROR rather than truncate** (W3.2 orphan-reject). (2) **Per-viewer backpressure:** a fake bus + two viewer buffers
+where one never drains → the **slow one is dropped/disconnected and the fast one still receives ALL events** (the "never
+block the shared WSS" invariant; assert exactly ONE real bus subscription behind both — W3.3.3). (3) **Generation
+fencing:** a second `HELLO` with `generation+1` **evicts the prior WSS** (reconnect-safe). (4) **Ping-miss teardown:** a
+`PONG`-starved socket tears down after the miss count. (5) **`stream_id` dedup:** a duplicate live `stream_id` `REQ_OPEN`
+for a `mount/goto` is **rejected/surfaced as error**. Keep WSS-on-wire at integration level.
+
+**§T7 (RELAY SERVICE — `relay/` dir — its own harness, named files).** With a **fake scope WSS** (an in-memory tunnel-
+frame channel; no WSS on wire) and named files under `relay/` (e.g. `relay/test_proxy.py`, `relay/test_headers.py`,
+`relay/test_oidc.py`, `relay/test_fanout.py`, `relay/test_registration.py`): **(1) browser↔frame round-trip** — a
+browser HTTP request becomes a `REQ_OPEN` and a `RESP_HEAD`/`RESP_DATA` becomes the browser response (method/path/
+**repeated headers** survive; `ws_id`↔browser binding correct). **(2) bidirectional header transform** —
+`Content-Length`/`Transfer-Encoding` recompute, hop-by-hop drop, and **`Set-Cookie` rewrite to the relay origin**.
+**(3) OIDC termination** produces a **home-verifiable principal token** (NOT a shared HS256 secret) — and runs the §T6
+callback-handler `state`/`nonce`/PKCE/`email_verified`/`hd` cases against the relay's `/auth/google/callback`.
+**(4) fan-out isolation** — a `WS_DATA` for `ws_id` A goes **ONLY** to browser A. **(5) device registration + fencing**
+— a `HELLO{device_token}` pins `home_id`; a duplicate token with a higher `generation` **evicts** the older socket, a
+lower one is rejected; a bad token is refused. **(6) single-instance-affinity routing** — a `home_id`'s browser request
+routes to the instance holding that home's WSS. **PLUS exactly ONE concrete ON-WIRE WSS integration test** (local relay +
+local home, a **named fixture**, explicit pass/fail on a tunnelled request round-trip).
 
 **§T8 — UI tests (W1.C / W2.C / C3).** `ui/` has no test runner — EITHER (a) wire **vitest + @testing-library/react +
 jsdom** as an explicit prerequisite deliverable and write component tests, OR (b) **extract the pure logic** (RigSpec
@@ -2639,6 +2798,45 @@ the CaptureView selector returns "connected" — proving `equipConnected` is per
   hardcoded strings.
 
 ---
+
+## Review revision r9 — W3 re-pinned to the owner's no-gRPC WS-tunnel design (2026-06-18)
+
+The owner ruled out **gRPC** and **Tailscale**. W3 is fully rewritten to **plain HTTP/WS tunnelled over ONE outbound WSS**
+the **scope** dials to a small **public relay** the owner hosts (Docker + Fly.io). Grounded against the committed tree
+(`api/app.py` ASGI app + `/ws` send-only handler `:2107` + SPA serving `:2159` + `_auth_mw` `:514`; `auth/deps.py`
+`resolve_principal(remote=)` `:133`; `config.py` `AppConfig`/`redacted()`; `hub.py` motion paths + `_spawn("goto")`
+lane + deadman `:168`; `events.py` single bus). What changed:
+
+- **Transport replaced.** `proto/relay.proto` / Connect / grpc-web are GONE. W3.2 is now a **binary tunnel framing**
+  (`remote/protocol.py`): length-prefixed `{type, stream_id, header(JSON), payload}` frames multiplexing many browser
+  HTTP exchanges + nested `/ws` streams + bulk media + keepalive + revocation over ONE WSS. Added a per-`stream_id`
+  **credit (`WINDOW`) flow-control** scheme (replaces HTTP/2 per-stream windows) and a **class round-robin** scheduler so
+  a 125 MB FITS never HOL-blocks the status poll. Deleted the entire stale protobuf block + the three-RPC-per-class model.
+- **Relay forwards the WHOLE app (W3.3.1).** The 2026-06-17 ADR's frontend-on-CDN/relay split is SUPERSEDED for the
+  shipped design: the home already serves SPA+API+`/ws`, so the relay reverse-proxies EVERYTHING down the tunnel — one
+  origin, zero UI component changes, no CORS.
+- **REMOTE-FLAG mechanism PINNED (W3.3.2, the security crux).** The scope client invokes the in-process ASGI app
+  directly and sets `scope['state']['astrodeck_remote']=True` — read by `resolve_principal(..., remote=True)` so the open
+  `none` provider hard-denies remotely. **No network header an on-LAN attacker could forge.** Pinned the small home-side
+  wiring: a `_scope_is_remote(request)` helper feeding `remote=` into the three `resolve_principal` call sites
+  (`require._dep`, `get_principal`, the `/ws` gate). Inbound `authorization`/`x-auth-token`/cookie are STRIPPED.
+- **Device registration + auth (W3.3.4)** and the **relay service shape (W3.3.5)** specced: `device_token` (SECRET) →
+  stable `home_id` endpoint; one scope per token; `generation` fencing for reconnect-safety; relay holds only a PUBLIC
+  key (can't mint/forge); OIDC termination + viewer-link issuance with a SEPARATE key + `jti` revocation.
+- **CONFIG (W3.6):** added `RemoteConfig{enabled, relay_url, device_token[SECRET], home_id}` on `AppConfig` (additive;
+  default `enabled=False` = byte-for-byte today), redacted like `auth`, written only via an `admin.users`-gated
+  `POST /api/remote/config` that is itself tunnel-blocked.
+- **MOTION SERIALIZATION (W3.7.10):** defined the single mount-motion lock — `hub._motion_lock` + a monotonic
+  `hub._motion_epoch`, co-located with the existing single-mount state. Verified today's de-facto serialization (the
+  `_spawn("goto")` name lane + the stop-cancels-goto path + the 250 ms deadman) and HARDENED it: every STOP/abort bumps
+  the epoch FIRST, every motion-committing call re-checks the epoch under the lock immediately before dispatching the
+  device command and abandons if it advanced — so **a stale REMOTE slew accepted just before a LOCAL abort is fenced
+  out** (the owner invariant). Added the §T motion-race test.
+- **Deploy:** Cloud Run DISQUALIFIED → **Fly.io/VPS** (Docker + `fly.toml`). OPEN DECISIONS 1-2 closed.
+- **Tests + milestones re-pinned:** §T7 rewritten to WS-tunnel terminology (`REQ_OPEN`/`RESP_DATA`/`WS_DATA`/`HELLO`/
+  `REVOKE`/`WINDOW`), added the remote-flag-not-header-spoofable test + the motion-race test; C8/C9 milestone rows updated;
+  off-wire unit gate keeps `pytest`, the single on-wire test is now **WSS** not gRPC. Older revision notes (r1-r8) are
+  left intact as history; where they describe the prior gRPC framing they are superseded by this entry and the W3 body.
 
 ## Review revision r1
 

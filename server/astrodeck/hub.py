@@ -169,6 +169,19 @@ class Hub:
         self._move_rates_seen: dict[str, float] = {"ra": 0.0, "dec": 0.0}
         self._move_watchdog_task: asyncio.Task | None = None
         self._busy: dict[str, asyncio.Task] = {}
+        # --- motion serialization (W3.7 owner invariant) -----------------------
+        # The single mount has ONE motion authority. ``_motion_lock`` serializes
+        # the device-touching section of every motion-committing path (slew/park/
+        # move/center step) so two commits can never interleave on the wire.
+        # ``_motion_epoch`` is a monotonic fence: a long path reads it before its
+        # await and re-checks it UNCHANGED immediately before dispatching the
+        # device command, abandoning if it advanced. Every STOP/abort/park/
+        # on_unsafe/deadman bumps the epoch FIRST (``bump_motion_epoch``), so a
+        # stale REMOTE slew accepted just before a LOCAL abort sees the advanced
+        # epoch and never reaches the mount. Co-located with the single-mount
+        # deadman state above.
+        self._motion_lock: asyncio.Lock = asyncio.Lock()
+        self._motion_epoch: int = 0
         self.polar = PolarAlignSession(self)
         # cache of the active Profile, keyed by its id, so the 2s status poll's
         # effective_optics() never does a blocking disk read on the event loop.
@@ -771,6 +784,29 @@ class Hub:
                 pass
             await asyncio.sleep(5.0)
 
+    # ----------------------------------------------------- motion serialization
+
+    def bump_motion_epoch(self) -> int:
+        """Advance the motion fence (W3.7). EVERY abort path -- explicit STOP, a
+        safety/on_unsafe halt, park, or the deadman -- calls this FIRST (before it
+        cancels the ``goto`` task / calls ``tel.stop()``), so a motion-committing
+        path that read the prior epoch and is now awaiting will see the value has
+        advanced and ABANDON its device command at the pre-dispatch re-check
+        (``_motion_committed_clean``). Returns the new epoch (the value the next
+        commit will read at entry). Synchronous + lock-free: a single ``int +=``
+        on the event loop, so an abort can fence even while ``_motion_lock`` is
+        held by the slew it is racing."""
+        self._motion_epoch += 1
+        return self._motion_epoch
+
+    def _motion_committed_clean(self, epoch_at_entry: int) -> bool:
+        """True iff no abort has bumped the fence since ``epoch_at_entry`` was read.
+        A motion path reads ``_motion_epoch`` BEFORE its setup awaits, then calls
+        this immediately before dispatching the actual device command; a False
+        result means a STOP/abort landed mid-flight and the command MUST be
+        abandoned (the stale-remote-slew-after-local-abort race)."""
+        return self._motion_epoch == epoch_at_entry
+
     # ----------------------------------------------------- move-axis deadman
 
     def note_move(self, axis: str, rate: float) -> None:
@@ -820,6 +856,10 @@ class Hub:
             # that makes the stop HTTP call fail) leave the seen-rates non-zero
             # and last_move_ts stale, so the next 250ms tick RETRIES the halt
             # rather than silently giving up while an axis may still be driving.
+            # Motion fence (W3.7): a deadman halt is an abort -- bump the epoch
+            # FIRST so any motion path racing this auto-halt is fenced out before
+            # the stop, exactly like an explicit STOP.
+            self.bump_motion_epoch()
             try:
                 await tel.stop()              # zeroes both axes (alpaca/base)
             except Exception as e:
@@ -1224,13 +1264,35 @@ class Hub:
         # meridian_flip (which calls back into goto_and_center) -- inherits it.
         # Checked before unpark/track so a daytime target never even starts.
         self._check_solar(ra_hours, dec_deg)
-        if await tel.is_parked():
-            await tel.unpark()
-        await tel.set_tracking(True)
+        # Motion fence (W3.7): snapshot the epoch BEFORE the first await. Each
+        # device-committing slew below re-checks it under ``_motion_lock`` and
+        # abandons if an abort advanced it. The long solve/center loop also polls
+        # it between attempts, so a STOP cancels the loop AND fences a slew that
+        # was already mid-flight when the abort landed.
+        epoch = self._motion_epoch
+        async with self._motion_lock:
+            if not self._motion_committed_clean(epoch):
+                bus.log("warning", "goto abandoned: aborted before motion", "mount")
+                return {"centered": False, "error_arcmin": None,
+                        "attempts": 0, "aborted": True}
+            if await tel.is_parked():
+                await tel.unpark()
+            await tel.set_tracking(True)
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
-            await tel.slew(ra_hours, dec_deg)
+            # Re-acquire the motion lock per slew and re-check the fence at the
+            # pre-dispatch point: a STOP/abort that bumped the epoch (and cancels
+            # this task) wins the race even if we were already awaiting here.
+            async with self._motion_lock:
+                if not self._motion_committed_clean(epoch):
+                    bus.log("warning",
+                            f"goto re-slew abandoned at attempt {attempt}: aborted",
+                            "mount")
+                    return {"centered": False,
+                            "error_arcmin": (last_err or 0) * 60 if last_err else None,
+                            "attempts": attempt - 1, "aborted": True}
+                await tel.slew(ra_hours, dec_deg)
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.

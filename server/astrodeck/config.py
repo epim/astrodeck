@@ -189,6 +189,28 @@ class AuthConfig(BaseModel):
         return [m for m in ("local", "google") if m in self.methods]
 
 
+# ------------------------------------------------------- remote relay (W3.6)
+#
+# Scope-side dial-out config. APPENDED to AppConfig (additive — old config files
+# without a ``remote`` block load fine; pydantic fills the default). When
+# ``enabled`` is False (the default) the scope NEVER dials a relay, so a LAN-only
+# install is byte-for-byte today. ``device_token`` is the ONLY secret here — the
+# relay validates it to register this home; it is scrubbed by ``redacted()``
+# before the config goes over WS/REST (exactly like the auth/telegram secrets).
+#
+# This is HALF of the W3 remote pairing: the home verifies a relay-forwarded
+# principal against ``AuthConfig.relay_pubkey`` / ``viewer_link_pubkey`` (already
+# present), while THIS block is the outbound transport (where to dial + the token
+# proving which home is dialing). They are split because the pubkeys are
+# auth-resolution material and the relay coordinates are pure transport.
+
+class RemoteConfig(BaseModel):
+    enabled: bool = False        # master kill switch; False => never dial (today's default)
+    relay_url: str = ""          # outbound WSS endpoint, e.g. wss://relay.example/scope
+    device_token: str = ""       # SECRET: registers this home with the relay (scrubbed in redacted())
+    home_id: str = ""            # stable home identifier the relay pins a path/subdomain to
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -201,6 +223,8 @@ class AppConfig(BaseModel):
     deadman_url: str = ""              # external healthcheck ping URL (C2-9)
     # --- auth / RBAC (W2; appended — old configs load fine) ---
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    # --- remote relay (W3; appended — old configs load fine) ---
+    remote: RemoteConfig = Field(default_factory=RemoteConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -414,6 +438,20 @@ class ConfigStore:
         cfg.auth = auth
         return self.bump_and_save()
 
+    # -- remote relay mutation (W3) --------------------------------------------
+
+    def set_remote(self, remote: RemoteConfig) -> AppConfig:
+        """Persist a new ``RemoteConfig`` (admin.users-gated at the API layer).
+
+        Mirrors ``set_auth``: a typed setter so the relay/remote knobs are written
+        through one place (NOT the ``extra="forbid"`` ``POST /api/config`` merge).
+        A blank ``device_token`` means 'unchanged' is resolved at the API layer
+        (the UI only ever sees the redacted block), not here -- this setter writes
+        exactly what it is given."""
+        cfg = self.cfg()
+        cfg.remote = remote
+        return self.bump_and_save()
+
 
 def validate_auth_config(auth: AuthConfig, current: AuthConfig | None = None) -> None:
     """Validate an ``AuthConfig`` before persistence. Raises ``ValueError`` (→ 400
@@ -545,6 +583,20 @@ def redacted(cfg: AppConfig) -> dict:
             auth.get("google_client_id") and gclient_secret)
         auth["session_signing_configured"] = bool(sess_priv)
         data["auth"] = auth
+    # W3 remote block: the ``device_token`` is a secret (it authenticates this home
+    # to the relay). Blank it and surface a ``remote_token_configured`` boolean so
+    # the UI can show 'configured' without the secret. ``relay_url`` / ``home_id``
+    # / ``enabled`` are non-secret transport coordinates and pass through; a
+    # convenience ``remote_configured`` marks 'enabled AND a relay_url set'.
+    # Rebuilt defensively — a missing/malformed remote dict can't slip the token.
+    remote = data.get("remote")
+    if isinstance(remote, dict):
+        dev_tok = remote.get("device_token") or ""
+        remote["device_token"] = ""
+        remote["remote_token_configured"] = bool(dev_tok)
+        remote["remote_configured"] = bool(
+            remote.get("enabled") and remote.get("relay_url"))
+        data["remote"] = remote
     return data
 
 

@@ -1546,12 +1546,26 @@ class SequenceEngine:
             tel = self.hub.devices.get("telescope")
             if tel and tel.connected:
                 bus.log("info", "parking mount", "sequence")
+                # Motion fence (W3.7): the wind-down park is an abort -- BUMP the
+                # hub motion epoch FIRST so any in-flight (or just-accepted) slew is
+                # fenced out and cannot drive the mount AFTER we begin parking. Then
+                # park under the hub motion lock so the park itself is serialized
+                # with every other device-touching motion path. Best-effort: a
+                # missing bump primitive (older hub) degrades to the raw park.
+                bump = getattr(self.hub, "bump_motion_epoch", None)
+                if callable(bump):
+                    bump()
                 # a park failure/timeout must NOT abort the wind-down (else the
                 # cooler would never warm and, on an orphaned shielded teardown,
                 # this would surface as an 'exception never retrieved') — log +
                 # continue.
                 try:
-                    await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+                    lock = getattr(self.hub, "_motion_lock", None)
+                    if lock is not None:
+                        async with lock:
+                            await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+                    else:
+                        await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
                 except asyncio.TimeoutError:
                     bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s "
                                        "during wind-down — continuing", "sequence")
