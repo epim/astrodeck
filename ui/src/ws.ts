@@ -1,5 +1,6 @@
 import { useStore } from "./store";
 import { api } from "./api";
+import { computeTelemetryStale } from "./lib/telemetry";
 import type { LogLine } from "./types";
 
 let socket: WebSocket | null = null;
@@ -69,9 +70,16 @@ export function connectWs(): void {
 function tickStale(): void {
   const s = useStore.getState();
   if (s.wsPhase !== "up") return;
-  // Stale ONLY if the socket is up, frames stopped, AND the backend is not in a
-  // known long op (slew/solve/AF/capture legitimately block the 2s poll).
-  const busy = s.status?.busy ?? null;
-  const stale = busy === null && Date.now() - s.wsLastEvent > STALE_MS;
+  // Stale ONLY if a rig is connected, the socket is up, frames stopped, AND the
+  // backend is not in a known long op (slew/solve/AF/capture legitimately block
+  // the 2s poll). The connected gate matters because the server's status poller
+  // only runs WHILE a rig is connected — with nothing connected the socket goes
+  // quiet by design, so without this gate the age timer would falsely alarm.
+  const stale = computeTelemetryStale({
+    connected: s.equipConnected,
+    busy: s.status?.busy ?? null,
+    ageMs: Date.now() - s.wsLastEvent,
+    staleMs: STALE_MS,
+  });
   if (s.telemetryStale !== stale) s.setTelemetryStale(stale);
 }
