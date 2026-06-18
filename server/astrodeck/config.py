@@ -93,6 +93,13 @@ class SafetyConfig(BaseModel):
     nogo_box: list[dict] | None = None     # optional [{az_min,az_max,alt_max}] pier guard
     enforce_pier_limits: bool = False      # only settable if mount reports pier side
     twilight_deg: float = -12.0            # nautical default (C1-26)
+    # Sun-exclusion cone (W1.10). ON by default to protect deep-sky gear; a
+    # deliberate solar-astronomy session disarms it via solar_avoidance=False
+    # (route-gated behind config.solar_override). RA/Dec-based => site-independent
+    # (works on a default site with no lat/lon). Additive: legacy configs without
+    # these keys deserialize with the protective defaults (avoidance ON).
+    solar_avoidance: bool = True           # master enable; True = cone armed (deep-sky default)
+    solar_exclusion_deg: float = Field(30.0, ge=0, le=90)  # cone half-angle; <=0 = inert
     # advanced (driven by the active preset unless preset == "custom")
     on_unsafe: str = "pause"               # abort_park_warm | park | pause | warn
     unsafe_consecutive: int = 3

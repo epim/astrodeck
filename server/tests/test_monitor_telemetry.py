@@ -16,6 +16,12 @@ from astrodeck.sequence.engine import COOLER_AT_TARGET_C, ETA_MIN_FRAMES
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # Disarm the W1.10 sun-exclusion cone for these date-independent ETA/telemetry
+    # mechanics tests (fixed M42 target). The cone is covered by test_sun_guard.py;
+    # without this the engine would (correctly) sun-abort whenever the real Sun is
+    # within 30 deg of M42. monkeypatch restores the field afterward.
+    _safety = hub_module.config_store.cfg().safety
+    monkeypatch.setattr(_safety, "solar_avoidance", False)
     h = Hub()
     await h.connect_sim()
     yield h

@@ -8,6 +8,7 @@
 
 import { api } from "../api";
 import type {
+  AppConfig,
   AuthMethods,
   AuthState,
   BackendInfo,
@@ -17,6 +18,7 @@ import type {
   Profile,
   ProfileRow,
   RigSpec,
+  SafetyConfig,
   User,
 } from "../types";
 
@@ -173,3 +175,13 @@ export const deleteUser = (id: string): Promise<{ ok: boolean }> =>
  *  the toggle panel sends the full set of fields it owns. */
 export const setAuthConfig = (auth: Partial<AuthState> & Record<string, unknown>):
   Promise<AuthState> => api.post<AuthState>("/api/auth/config", auth);
+
+// ------------------------------------------------------ safety config (W1.10)
+/** POST /api/config {safety} → persist the WHOLE safety block (the server's
+ *  set_safety REPLACES SafetyConfig, so the caller MUST echo the full current
+ *  block with its edits applied — exactly like the auth panel). Requires
+ *  config.safety; touching solar_avoidance/solar_exclusion_deg ALSO requires
+ *  config.solar_override (server field-level rule). Returns the merged AppConfig.
+ *  A 403 {code:"forbidden"} surfaces when the override cap is missing. */
+export const setSafetyConfig = (safety: SafetyConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config", { safety });

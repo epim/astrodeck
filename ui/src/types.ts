@@ -528,6 +528,11 @@ export interface SafetyConfig {
   horizon: [number, number][] | null;   // sorted (az,alt) control points
   enforce_pier_limits: boolean;         // only settable when mount reports pier side
   twilight_deg: number;                 // nautical −12 default (C1-26)
+  // Sun-exclusion cone (W1.10). ON by default to protect deep-sky gear; a
+  // deliberate solar-astronomy session disarms it via solar_avoidance=false
+  // (route-gated behind config.solar_override). RA/Dec-based ⇒ site-independent.
+  solar_avoidance: boolean;             // master enable; true = cone armed (deep-sky default)
+  solar_exclusion_deg: number;          // cone half-angle (deg); 0..90, ≤0 = inert
   on_unsafe: "abort_park_warm" | "park" | "pause" | "warn";
   unsafe_consecutive: number;
   resume_when_safe: boolean;

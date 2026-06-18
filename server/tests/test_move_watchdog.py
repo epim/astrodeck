@@ -271,7 +271,14 @@ async def test_alpaca_shaped_stop_zeroes_both_axes():
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
+    # Disarm the W1.10 sun-exclusion cone so the sequence-start force tests below
+    # are date-independent: their dummy (0,0) target sits ~0.4 deg from the Sun
+    # near the vernal equinox and would otherwise 409 with sun_exclusion instead
+    # of the horizon code they assert. The cone is covered by test_sun_guard.py;
+    # the move tests here don't depend on it. monkeypatch restores it afterward.
+    from astrodeck.config import config_store as _cs
+    monkeypatch.setattr(_cs.cfg().safety, "solar_avoidance", False)
     app = app_module.create_app()
     with TestClient(app) as c:
         yield c

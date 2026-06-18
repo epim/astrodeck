@@ -708,6 +708,36 @@ class Hub:
             raise DeviceError(
                 f"target is below the visible horizon (alt {alt:.0f}°)")
 
+    def _check_solar(self, ra_hours: float, dec_deg: float, *,
+                     force: bool = False) -> None:
+        """Sun-exclusion cone guard (defense in depth, W1.10).
+
+        ON by default to protect normal deep-sky gear from a daytime slew at the
+        Sun. Computes the Sun's apparent RA/Dec from the DATE (observer parallax
+        ~8.8 arcsec is negligible vs a degrees-wide cone) so the gate works even
+        on a default site with no lat/lon -- unlike ``_check_horizon`` it is NOT
+        inert on a default site. Inert only when a deliberate solar-astronomy
+        session disarms it (``solar_avoidance`` False) or the cone is zeroed.
+
+        ``force`` is threaded for one shared signature with ``_check_horizon`` but
+        does NOT bypass the cone: a per-call goto/sequence ``force`` clears only
+        the visible-horizon check, never sun avoidance (disarming requires the
+        admin ``config.solar_override`` capability + a config write)."""
+        safety = config_store.cfg().safety
+        if not getattr(safety, "solar_avoidance", True):
+            return
+        cone = getattr(safety, "solar_exclusion_deg", 30.0)
+        if cone <= 0:
+            return
+        from .catalog.coords import sun_radec
+        sun_ra, sun_dec = sun_radec()
+        sep = _ang_sep_deg(ra_hours, dec_deg, sun_ra, sun_dec)
+        if sep < cone:
+            raise DeviceError(
+                f"target is within {sep:.0f} deg of the Sun (exclusion "
+                f"{cone:.0f} deg) - enable a solar session "
+                f"(config.solar_override) to override")
+
     # ----------------------------------------------------------- reliability
 
     @property
@@ -1189,6 +1219,11 @@ class Hub:
                               solve_exposure_s: float = 3.0) -> dict:
         """Slew, then iterate solve→sync→re-slew until on target."""
         tel: Telescope = self.require("telescope")
+        # Sun-exclusion cone (W1.10) at the MOTION boundary, so every re-slew
+        # path -- /api/mount/goto?center, each sequence per-target slew, and
+        # meridian_flip (which calls back into goto_and_center) -- inherits it.
+        # Checked before unpark/track so a daytime target never even starts.
+        self._check_solar(ra_hours, dec_deg)
         if await tel.is_parked():
             await tel.unpark()
         await tel.set_tracking(True)
