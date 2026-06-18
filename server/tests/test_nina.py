@@ -311,6 +311,11 @@ async def test_hub_goto_and_center_through_nina(monkeypatch, tmp_path):
     solver = _AstapLikeSolver(state.rig)
     monkeypatch.setattr(hub_module, "get_solver",
                         lambda sim_rig=None, mode=None: solver)
+    # Disarm the W1.10 sun cone: this fixed (10h, +30) target falls within 30 deg
+    # of the Sun for a few weeks each year (late Aug). The cone is covered by
+    # test_sun_guard.py; here we test NINA goto-center mechanics date-independently.
+    monkeypatch.setattr(hub_module.config_store.cfg().safety,
+                        "solar_avoidance", False)
     h = hub_module.Hub()
     try:
         await h.connect_nina("nina.test", 1888)
@@ -366,6 +371,11 @@ async def test_nina_solve_refuses_without_astap(monkeypatch, tmp_path):
     # carrying mode="nina".
     import astrodeck.solve as solve_pkg
     monkeypatch.setattr(solve_pkg, "find_astap", lambda: None)
+    # Disarm the W1.10 sun cone (see test_hub_goto_and_center_through_nina): the
+    # (10h, +30) target is seasonally within the cone; here we test the no-ASTAP
+    # graceful-degrade path, not sun avoidance.
+    monkeypatch.setattr(hub_module.config_store.cfg().safety,
+                        "solar_avoidance", False)
     h = hub_module.Hub()
     try:
         await h.connect_nina("nina.test", 1888)

@@ -24,7 +24,8 @@ from pydantic import BaseModel, ConfigDict
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
-                    CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
+                    CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
+                    CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
                     CAP_VIEW_STATUS, Principal, configure_provider_from_auth,
                     get_principal, require, resolve_principal)
@@ -752,6 +753,20 @@ def create_app() -> FastAPI:
                     "code": "below_horizon", "preflight": pf}
         return None
 
+    def _solar_block(ra_hours: float, dec_deg: float) -> dict | None:
+        """Return a 409 detail dict if a GOTO should be blocked by the sun-
+        exclusion cone (W1.10), else None. Unlike the horizon check this is
+        site-independent (Sun RA/Dec is date-based) and is NOT bypassed by
+        ``force`` -- disarming requires a solar session (config.solar_override)."""
+        check = getattr(hub, "_check_solar", None)
+        if not callable(check):
+            return None
+        try:
+            check(ra_hours, dec_deg)
+        except (DeviceError, ValueError) as e:
+            return {"detail": str(e), "code": "sun_exclusion"}
+        return None
+
     def _merge_alert_verified(incoming: list[AlertSink]) -> list[AlertSink]:
         """Reset ``verified`` to False on any sink whose delivery identity
         (url/token/chat_id/kind) changed vs. the stored copy, so a re-pointed
@@ -849,6 +864,19 @@ def create_app() -> FastAPI:
                 raise HTTPException(403, detail={
                     "detail": "config.safety required to set site.horizon_min_deg",
                     "code": "forbidden"})
+        # Nested: toggling the sun-exclusion cone (solar_avoidance /
+        # solar_exclusion_deg) is the single disarm path for W1.10. It ALSO
+        # requires config.solar_override (admin-only; an operator never holds it),
+        # so disarming sun avoidance needs BOTH config.safety + config.solar_override
+        # and can only be a deliberate solar-astronomy toggle.
+        if "safety" in present and body.safety is not None:
+            solar_fields = {"solar_avoidance", "solar_exclusion_deg"}
+            if solar_fields & body.safety.model_fields_set:
+                if not principal.has(CAP_CONFIG_SOLAR_OVERRIDE):
+                    raise HTTPException(403, detail={
+                        "detail": "config.solar_override required to change "
+                                  "sun avoidance (solar session)",
+                        "code": "forbidden"})
 
     @app.get("/api/config", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -1495,6 +1523,12 @@ def create_app() -> FastAPI:
             blocked = _horizon_block(body.ra_hours, body.dec_deg)
             if blocked is not None:
                 raise HTTPException(409, detail=blocked)
+        # Sun-exclusion cone (W1.10). The centered path inherits this inside
+        # goto_and_center; the plain path does NOT route through it, so gate it
+        # here. force does NOT bypass the cone (only the horizon check above).
+        solar = _solar_block(body.ra_hours, body.dec_deg)
+        if solar is not None:
+            raise HTTPException(409, detail=solar)
         if body.center:
             return _spawn("goto", hub.goto_and_center(body.ra_hours, body.dec_deg))
 
@@ -1526,6 +1560,24 @@ def create_app() -> FastAPI:
             # repositioning is GOTO's job; no 2-4°/s manual band exists.
             rate = max(-TOUCH_MAX_RATE_DEG_S,
                        min(TOUCH_MAX_RATE_DEG_S, body.rate_deg_s))
+            # Sun-exclusion cone (W1.10) for manual jog: a non-zero move while the
+            # mount is ALREADY pointed inside the cone would dwell/drive at the
+            # Sun. Gate on the CURRENT pointing (best-effort: if we can't read the
+            # position, fall through rather than block a stop). A rate-0 stop is
+            # always allowed. force has no meaning here -- only a solar session
+            # (solar_avoidance=False) makes _check_solar inert.
+            check_solar = getattr(hub, "_check_solar", None)
+            if rate != 0.0 and callable(check_solar):
+                try:
+                    cur_ra, cur_dec = await tel.get_position()
+                except Exception:
+                    cur_ra = cur_dec = None
+                if cur_ra is not None:
+                    try:
+                        check_solar(cur_ra, cur_dec)
+                    except DeviceError as e:
+                        raise HTTPException(409, detail={
+                            "detail": str(e), "code": "sun_exclusion"})
             # F-A1 (safety-of-motion): arm the deadman with the actual (clamped)
             # rate BEFORE the move await, so the watchdog already covers the axis
             # if move_axis is cancelled/raises mid-flight (no uncovered moving
@@ -1735,6 +1787,22 @@ def create_app() -> FastAPI:
                     blocked = dict(blocked)
                     blocked["target"] = getattr(t, "name", "")
                     raise HTTPException(409, detail=blocked)
+        # Sun-exclusion pre-flight (W1.10) runs REGARDLESS of ``force`` -- a
+        # forced run bypasses only the visible-horizon 409, never sun avoidance.
+        # Disarming requires a solar session (config.solar_override), which makes
+        # _check_solar inert. Calibration targets never slew, so skip them.
+        for t in plan.targets:
+            if t.calibration:
+                continue
+            ra = getattr(t, "ra_hours", None)
+            dec = getattr(t, "dec_deg", None)
+            if ra is None or dec is None:
+                continue
+            solar = _solar_block(ra, dec)
+            if solar is not None:
+                solar = dict(solar)
+                solar["target"] = getattr(t, "name", "")
+                raise HTTPException(409, detail=solar)
         try:
             hub.require("camera")
             engine.start(plan)
