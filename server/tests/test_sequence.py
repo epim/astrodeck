@@ -11,6 +11,14 @@ from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Targe
 @pytest.fixture
 async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    # These tests slew to FIXED sky targets (M42, etc.). The W1.10 sun-exclusion
+    # cone is ON by default and (correctly) blocks a slew whenever the real Sun is
+    # within 30 deg of the target -- which depends on today's date and would make
+    # these sequence-MECHANICS tests flaky a few weeks a year. The cone itself is
+    # covered by test_sun_guard.py; here we disarm it so the mechanics are tested
+    # date-independently. monkeypatch restores the field after the test.
+    _safety = hub_module.config_store.cfg().safety
+    monkeypatch.setattr(_safety, "solar_avoidance", False)
     h = Hub()
     await h.connect_sim()
     yield h

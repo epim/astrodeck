@@ -23,8 +23,9 @@ import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
+import SafetyPanel from "./SafetyPanel";
 
-type Tab = "connect" | "profiles" | "account" | "users" | "auth";
+type Tab = "connect" | "profiles" | "safety" | "account" | "users" | "auth";
 
 export default function SettingsView(): JSX.Element {
   const [tab, setTab] = useState<Tab>("connect");
@@ -40,6 +41,7 @@ export default function SettingsView(): JSX.Element {
   const TABS: { value: Tab; label: string }[] = [
     { value: "connect", label: "Connect" },
     { value: "profiles", label: "Profiles" },
+    { value: "safety", label: "Safety" },
     { value: "account", label: "Account" },
     ...(canAdminUsers
       ? ([
@@ -81,8 +83,12 @@ export default function SettingsView(): JSX.Element {
       )}
 
       {/* read-only banner for viewers (W2.5: passive copy, not 403-on-tap). Hidden
-          on the admin-only Users/Auth tabs (those are admin-gated already). */}
-      {!canConfig && activeTab !== "users" && activeTab !== "auth" && (
+          on the admin-only Users/Auth tabs (those are admin-gated already) and on
+          Safety (it carries its own config.solar_override read-only note). */}
+      {!canConfig &&
+        activeTab !== "users" &&
+        activeTab !== "auth" &&
+        activeTab !== "safety" && (
         <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs">
           <Icon name="lock" size={14} className="text-dim shrink-0" />
           <span className="text-dim">
@@ -92,6 +98,9 @@ export default function SettingsView(): JSX.Element {
           </span>
         </div>
       )}
+
+      {/* ------------------------------------------------------------- SAFETY */}
+      {activeTab === "safety" && <SafetyPanel />}
 
       {/* ------------------------------------------------------------ ACCOUNT */}
       {activeTab === "account" && <AccountPanel />}

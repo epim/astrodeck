@@ -46,7 +46,13 @@ def temp_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-async def sim_hub(temp_store):
+async def sim_hub(temp_store, monkeypatch):
+    # Disarm the W1.10 sun-exclusion cone at the hub-method level so it survives
+    # the per-test ``set_safety(SafetyConfig(...))`` resets and the FIXED M42
+    # targets aren't date-dependently sun-blocked. The cone is covered by
+    # test_sun_guard.py; here we isolate the timeout/escalation mechanics.
+    monkeypatch.setattr(Hub, "_check_solar",
+                        lambda self, ra, dec, *, force=False: None)
     h = Hub()
     await h.connect_sim()
     yield h

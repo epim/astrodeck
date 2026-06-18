@@ -718,6 +718,23 @@ class SequenceEngine:
         # with no safety device configured — §1.9-A).
         await self._safety_gate(context="slew", target=target)
 
+        # Sun-exclusion cone (W1.10) at the engine MOTION boundary. The centered
+        # branch re-checks inside goto_and_center, but the NON-centered slew below
+        # (tel.slew) bypasses goto_and_center — and a target's window can open
+        # hours after the route-level sequence-start pre-flight, by which time the
+        # Sun has marched ~15 deg/hr into a once-clear field. So re-check HERE, at
+        # the moment of motion, for BOTH branches. Unlike _safety_gate this is NOT
+        # gated on plan.safety_check: _check_solar self-gates on solar_avoidance
+        # (ON by default; inert only for a deliberate solar session) and on the
+        # cone half-angle, so a daytime/dawn target is caught even when the weather
+        # safety monitor is off. A hit raises SafetyAbort to tear the run down
+        # through the shielded park/warm wind-down (never silently skip the Sun).
+        if "telescope" in self.hub.devices:
+            try:
+                self.hub._check_solar(target.ra_hours, target.dec_deg)
+            except DeviceError as e:
+                raise SafetyAbort(f"slew blocked by sun-exclusion cone: {e}") from e
+
         if "telescope" in self.hub.devices:
             if target.center:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
