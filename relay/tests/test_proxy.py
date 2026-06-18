@@ -1,0 +1,125 @@
+"""§T7(1) browser<->frame round-trip + orphan/dedup rules (W3.3.5).
+
+A browser HTTP request becomes a ``REQ_OPEN`` (+ ``REQ_DATA``); a
+``RESP_HEAD``/``RESP_DATA`` becomes the browser response. Method/path/repeated
+headers survive; the ``ws_id``<->browser binding is correct. Orphan and
+duplicate-stream frames ERROR rather than truncate."""
+from __future__ import annotations
+
+import pytest
+
+from relay import protocol
+from relay.protocol import FrameType
+from relay.proxy import ProxyError, TunnelMultiplexer
+from relay.registry import HomeRegistration
+
+from conftest import FakeScopeTunnel
+
+
+def _mux(tunnel: FakeScopeTunnel) -> TunnelMultiplexer:
+    reg = HomeRegistration(home_id="h1", generation=1, tunnel=tunnel)
+    return TunnelMultiplexer(reg)
+
+
+async def _drive_request(mux, *, method="GET", path="/api/status",
+                         query="x=1", headers=None, body=b""):
+    """Open a request, collect the response via the callbacks."""
+    got = {"status": None, "headers": None, "body": b"", "eofs": 0}
+
+    async def on_head(status, hdrs):
+        got["status"] = status
+        got["headers"] = hdrs
+
+    async def on_data(chunk, eof):
+        got["body"] += chunk
+        if eof:
+            got["eofs"] += 1
+
+    sid = await mux.open_request(method, path, query, headers or [],
+                                 has_body=bool(body), on_head=on_head,
+                                 on_data=on_data)
+    if body:
+        await mux.send_request_body(sid, body, eof=True)
+    return sid, got
+
+
+async def test_request_becomes_req_open(fake_tunnel):
+    mux = _mux(fake_tunnel)
+    sid, _ = await _drive_request(
+        mux, method="POST", path="/api/mount/goto", query="ra=1",
+        headers=[["x-thing", "a"], ["x-thing", "b"]], body=b"payload",
+    )
+    opens = fake_tunnel.of_type(FrameType.REQ_OPEN)
+    assert len(opens) == 1
+    h = opens[0].header
+    assert h["method"] == "POST"
+    assert h["path"] == "/api/mount/goto"
+    assert h["query"] == "ra=1"
+    # Repeated headers survive in order.
+    assert h["headers"] == [["x-thing", "a"], ["x-thing", "b"]]
+    assert opens[0].stream_id == sid
+    # Body framed as a REQ_DATA with eof.
+    datas = fake_tunnel.of_type(FrameType.REQ_DATA)
+    assert datas[-1].payload == b"payload"
+    assert datas[-1].eof() is True
+
+
+async def test_response_reassembles_byte_for_byte(fake_tunnel):
+    mux = _mux(fake_tunnel)
+    sid, got = await _drive_request(mux)
+    await mux.on_tunnel_frame(
+        protocol.resp_head(sid, 201, [["content-type", "text/plain"]])
+    )
+    await mux.on_tunnel_frame(protocol.resp_data(sid, b"abc", eof=False))
+    await mux.on_tunnel_frame(protocol.resp_data(sid, b"def", eof=False))
+    await mux.on_tunnel_frame(protocol.resp_data(sid, b"ghi", eof=True))
+    assert got["status"] == 201
+    assert got["headers"] == [["content-type", "text/plain"]]
+    assert got["body"] == b"abcdefghi"
+    assert got["eofs"] == 1
+
+
+async def test_orphan_resp_data_errors(fake_tunnel):
+    """A RESP_DATA for an unknown stream_id is an ERROR, never silently
+    buffered (W3.2 orphan reject)."""
+    mux = _mux(fake_tunnel)
+    with pytest.raises(ProxyError):
+        await mux.on_tunnel_frame(protocol.resp_data(999, b"x", eof=True))
+
+
+async def test_resp_data_before_head_errors(fake_tunnel):
+    mux = _mux(fake_tunnel)
+    sid, _ = await _drive_request(mux)
+    with pytest.raises(ProxyError):
+        await mux.on_tunnel_frame(protocol.resp_data(sid, b"x", eof=True))
+
+
+async def test_duplicate_resp_head_errors(fake_tunnel):
+    mux = _mux(fake_tunnel)
+    sid, _ = await _drive_request(mux)
+    await mux.on_tunnel_frame(protocol.resp_head(sid, 200, []))
+    with pytest.raises(ProxyError):
+        await mux.on_tunnel_frame(protocol.resp_head(sid, 200, []))
+
+
+async def test_stream_ids_are_unique_per_request(fake_tunnel):
+    """The relay allocates a fresh stream_id per browser exchange (never 0)."""
+    mux = _mux(fake_tunnel)
+    sid1, _ = await _drive_request(mux)
+    sid2, _ = await _drive_request(mux)
+    assert sid1 != sid2
+    assert sid1 != 0 and sid2 != 0
+
+
+async def test_large_body_chunked_under_max_payload(fake_tunnel):
+    """A body larger than MAX_PAYLOAD streams up in bounded chunks (the
+    server shell slices; here we verify the proxy forwards a pre-sliced
+    stream and that each chunk is within bound when the caller slices)."""
+    mux = _mux(fake_tunnel)
+    sid, _ = await _drive_request(mux)
+    big = b"y" * protocol.MAX_PAYLOAD
+    # one max-size chunk is accepted (boundary).
+    await mux.send_request_body(sid, big, eof=False)
+    last = fake_tunnel.of_type(FrameType.REQ_DATA)[-1]
+    assert len(last.payload) == protocol.MAX_PAYLOAD
+    assert last.eof() is False
