@@ -28,6 +28,17 @@ from astrodeck.update.state import update_state
 pytestmark = pytest.mark.selftest
 
 
+@pytest.fixture(autouse=True)
+def _reset_update_state():
+    # this module mutates the global update_state; clean up so file order can't
+    # leak `update_available` into other test files.
+    yield
+    update_state.current = "0.1.0"
+    update_state.set_available(None, "")
+    update_state.set_phase("idle")
+    update_state.set_result(None)
+
+
 # ----------------------------------------------------------------- helpers
 
 def _free_port() -> int:

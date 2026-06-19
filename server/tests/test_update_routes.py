@@ -4,9 +4,11 @@ from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
 from astrodeck.config import ConfigStore
-from astrodeck.update import github
+from astrodeck.update import github, signing
 from astrodeck.update import service as SVC
 from astrodeck.update.state import update_state
+
+_, PUB = signing.generate_keypair()  # a real 32-byte base64 Ed25519 public key
 
 
 @pytest.fixture(autouse=True)
@@ -66,11 +68,11 @@ def test_check_updates_status(client, monkeypatch):
 def test_set_update_config(client):
     c, store = client
     r = c.post("/api/update/config",
-               json={"channel": "prerelease", "signing_pubkey": "KEY",
+               json={"channel": "prerelease", "signing_pubkey": PUB,
                      "repo": "epim/astrodeck"})
     assert r.status_code == 200
     assert r.json()["update"]["channel"] == "prerelease"
-    assert store.cfg().update.signing_pubkey == "KEY"
+    assert store.cfg().update.signing_pubkey == PUB
 
 
 def test_set_update_config_rejects_bad_channel(client):
