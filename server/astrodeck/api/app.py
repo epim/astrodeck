@@ -581,7 +581,7 @@ def create_app() -> FastAPI:
     # /api/version surfaces the update-subsystem snapshot (current vs latest-known,
     # availability, channel, last check, last apply result). Non-secret; the poller
     # (update service) populates ``latest`` / ``update_available``.
-    @app.get("/api/version")
+    @app.get("/api/version", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     async def api_version():
         return update_state.snapshot()
 
@@ -590,7 +590,8 @@ def create_app() -> FastAPI:
     # admin-only system.update capability. apply additionally passes the rig-idle
     # safety gate (apply_preconditions -> hub.restart_blocker) at the home, so a
     # remote admin can never interrupt an exposure/slew/sequence.
-    @app.get("/api/update/status")
+    @app.get("/api/update/status",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
     async def update_status():
         svc = get_update_service()
         ok, reason = svc.apply_preconditions()

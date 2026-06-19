@@ -84,7 +84,7 @@ export default function UpdatePanel(): JSX.Element {
   };
 
   const onUpgrade = async () => {
-    if (busy || !status?.latest) return;
+    if (busy || !status?.latest || !status.update_available) return;
     const ok = await confirmDialog({
       title: `Update to ${status.latest}?`,
       body: (
@@ -131,6 +131,7 @@ export default function UpdatePanel(): JSX.Element {
         repo: uc?.repo ?? "epim/astrodeck",
         signing_pubkey: pubkey.trim(),
         health_timeout_s: uc?.health_timeout_s ?? 60,
+        last_check_ts: uc?.last_check_ts ?? null,
       };
       await setUpdateConfig(body);
       await useStore.getState().loadConfig();

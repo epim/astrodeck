@@ -1,8 +1,21 @@
 """Phase-1 self-update endpoints: open /healthz and /api/version snapshot."""
+import pytest
 from fastapi.testclient import TestClient
 
 from astrodeck import __version__
 from astrodeck.api import create_app
+from astrodeck.update.state import update_state
+
+
+@pytest.fixture(autouse=True)
+def _clean_update_state():
+    # /api/version reflects the shared update_state singleton; reset so a prior
+    # test file's "update available" can't leak into these assertions.
+    update_state.current = __version__
+    update_state.set_available(None, "")
+    update_state.set_phase("idle")
+    update_state.set_result(None)
+    yield
 
 
 def test_healthz_is_open_and_reports_version():
