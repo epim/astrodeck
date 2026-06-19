@@ -34,6 +34,9 @@ export function connectWs(): void {
     // {methods:[]} ⇒ NO login screen (LAN UI unchanged); when a method is enabled
     // and the principal can't resolve, App shows the Login gate.
     void st.loadAuthMethods();
+    // Hydrate the self-update snapshot (current/latest/availability). Cheap GET;
+    // thereafter the `update` WS event keeps it live. Fail-quiet.
+    void st.loadUpdate();
     // Reconcile after any gap: the bus drops frames under backpressure, so the
     // drawer/badge could be missing log lines that arrived while we were away.
     try {

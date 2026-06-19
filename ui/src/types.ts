@@ -466,6 +466,40 @@ export interface AppConfig {
   //     booleans + role allowlist. Optional: the WS `hello` bootstrap config may
   //     omit it; the first `config` event / REST GET carries it. ---
   auth?: AuthState;
+  // --- self-update (Phase 3; additive). Non-secret (signing_pubkey is PUBLIC). ---
+  update?: UpdateConfig;
+}
+
+// ---------------------------------------------------------------- self-update
+// UpdateConfig is the persisted config block; UpdateStatus is the live snapshot
+// the server pushes over the `update` WS event and returns from GET /api/version
+// and /api/update/status. Holds no secret (the signing key here is public).
+export interface UpdateConfig {
+  enabled: boolean;
+  auto_check: boolean;
+  check_interval_hours: number;
+  channel: "stable" | "prerelease";
+  repo: string;
+  signing_pubkey: string;
+  health_timeout_s: number;
+  last_check_ts?: number | null;
+}
+
+export interface UpdateStatus {
+  current: string;
+  latest: string | null;
+  update_available: boolean;
+  notes_md: string;
+  channel: string;
+  last_check_ts: number | null;
+  phase: string; // idle | checking | downloading | verifying | staging | applying
+  progress: number;
+  error: string | null;
+  last_result: { ok: boolean; version?: string; from?: string; reason?: string } | null;
+  // only on /api/update/status (not the raw snapshot):
+  supervised?: boolean;
+  can_apply?: boolean;
+  apply_blocked_reason?: string;
 }
 
 // ============================================================================
@@ -874,7 +908,8 @@ export type Capability =
   | "config.backend"
   | "config.site_optics"
   | "config.alerts"
-  | "admin.users";
+  | "admin.users"
+  | "system.update";
 
 export type PrincipalRole = "viewer" | "operator" | "admin";
 

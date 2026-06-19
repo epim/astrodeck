@@ -15,8 +15,13 @@ import { useState, type JSX } from "react";
 import { Segmented } from "../Segmented";
 import { Panel } from "../ui";
 import { Icon } from "../icons";
-import { useBackendLinks, useBootConnectFailed } from "../../store";
-import { useCanConfigBackend, useCanAdminUsers, useIsViewer } from "../../lib/caps";
+import { useBackendLinks, useBootConnectFailed, useUpdate } from "../../store";
+import {
+  useCanConfigBackend,
+  useCanAdminUsers,
+  useCanSystemUpdate,
+  useIsViewer,
+} from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import BackendPicker from "./BackendPicker";
 import ProfileList from "./ProfileList";
@@ -24,8 +29,16 @@ import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
 import SafetyPanel from "./SafetyPanel";
+import UpdatePanel from "./UpdatePanel";
 
-type Tab = "connect" | "profiles" | "safety" | "account" | "users" | "auth";
+type Tab =
+  | "connect"
+  | "profiles"
+  | "safety"
+  | "updates"
+  | "account"
+  | "users"
+  | "auth";
 
 export default function SettingsView(): JSX.Element {
   const [tab, setTab] = useState<Tab>("connect");
@@ -33,6 +46,8 @@ export default function SettingsView(): JSX.Element {
   const bootFailed = useBootConnectFailed();
   const canConfig = useCanConfigBackend();
   const canAdminUsers = useCanAdminUsers();
+  const canSystemUpdate = useCanSystemUpdate();
+  const update = useUpdate();
   const isViewer = useIsViewer();
 
   // Admin-only tabs (W2.6) appear ONLY for the `admin.users` capability. Under the
@@ -42,6 +57,14 @@ export default function SettingsView(): JSX.Element {
     { value: "connect", label: "Connect" },
     { value: "profiles", label: "Profiles" },
     { value: "safety", label: "Safety" },
+    ...(canSystemUpdate
+      ? ([
+          {
+            value: "updates",
+            label: update?.update_available ? "Updates •" : "Updates",
+          },
+        ] as { value: Tab; label: string }[])
+      : []),
     { value: "account", label: "Account" },
     ...(canAdminUsers
       ? ([
@@ -53,7 +76,10 @@ export default function SettingsView(): JSX.Element {
 
   // If the cap is lost while sitting on an admin tab (e.g. signed out), fall back.
   const activeTab: Tab =
-    (tab === "users" || tab === "auth") && !canAdminUsers ? "connect" : tab;
+    ((tab === "users" || tab === "auth") && !canAdminUsers) ||
+    (tab === "updates" && !canSystemUpdate)
+      ? "connect"
+      : tab;
 
   return (
     <div className="flex flex-col gap-4 w-full">
@@ -101,6 +127,9 @@ export default function SettingsView(): JSX.Element {
 
       {/* ------------------------------------------------------------- SAFETY */}
       {activeTab === "safety" && <SafetyPanel />}
+
+      {/* ------------------------------------------------------------ UPDATES */}
+      {activeTab === "updates" && canSystemUpdate && <UpdatePanel />}
 
       {/* ------------------------------------------------------------ ACCOUNT */}
       {activeTab === "account" && <AccountPanel />}

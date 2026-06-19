@@ -27,6 +27,7 @@ import type {
   Toast,
   ToastLevel,
   TouchSettings,
+  UpdateStatus,
   ViewName,
   Viewport,
   WsPhase,
@@ -330,6 +331,9 @@ interface AppState {
 
   // --- config / plan (settings + atlas, reconciled) ---
   config: AppConfig | null;
+  // self-update snapshot (Phase 3). null until loadUpdate()/the first `update`
+  // event lands. Non-secret; drives the Settings → Updates panel.
+  update: UpdateStatus | null;
   // RBAC principal (W2.5). null = UNRESOLVED → treat as viewer (fail-closed) until
   // loadPrincipal() lands. Under the `none` provider this resolves to admin +
   // ALL caps, so the default LAN UI is unchanged. The cap-gate hooks (lib/caps.ts)
@@ -424,6 +428,8 @@ interface AppState {
 
   // --- actions: config / plan / site ---
   loadConfig: () => Promise<void>;
+  // GET /api/update/status → hydrate the `update` slice (boot + after a check).
+  loadUpdate: () => Promise<void>;
   // GET /api/me → principal. On ApiError 401 (fail-closed server resolution) set a
   // viewer sentinel {role:"viewer",email:null,caps:[]} so the UI degrades to
   // read-only instead of hanging unresolved. Call from ws.ts onopen next to
@@ -514,6 +520,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- config / plan ---
   config: null,
+  update: null,
   principal: null, // unresolved → fail-closed viewer until loadPrincipal()
   authMethods: null, // unresolved → no login gate until loadAuthMethods() lands
   plan: loadPlan(),
@@ -597,6 +604,15 @@ export const useStore = create<AppState>((set, get) => ({
       set({ config });
     } catch {
       /* leave config as-is; UI shows loading/defaults */
+    }
+  },
+
+  loadUpdate: async () => {
+    try {
+      const update = await api.get<UpdateStatus>("/api/update/status");
+      set({ update });
+    } catch {
+      /* leave as-is; the panel shows a loading/unknown state */
     }
   },
 
@@ -962,6 +978,10 @@ export const useStore = create<AppState>((set, get) => ({
         // re-GET, never partial-merge (settings spec C1-H28/C2-12)
         void get().loadConfig();
         break;
+      case "update":
+        // the self-update poller/pipeline pushes the whole snapshot; replace it.
+        set({ update: ev.data as unknown as UpdateStatus });
+        break;
       case "safety": {
         // SafetyMonitor reading (engine §1.9-A / status §1.11). A `stale` read means
         // the device dropped or the cached read timed out — treat as NOT connected.
@@ -1138,6 +1158,7 @@ export const useUnseenError = () => useStore((s) => s.unseenError);
 export const useNotifyEnabled = () => useStore((s) => s.notifyEnabled);
 
 export const useConfig = () => useStore((s) => s.config);
+export const useUpdate = () => useStore((s) => s.update);
 export const usePlan = () => useStore((s) => s.plan);
 
 // ============================================================================
