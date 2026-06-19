@@ -4,6 +4,10 @@ import json
 import pytest
 
 from astrodeck.config import AppConfig, ConfigStore, UpdateConfig, redacted
+from astrodeck.update import signing
+
+# a real 32-byte base64 Ed25519 public key (set_update_config validates the shape)
+_, PUB = signing.generate_keypair()
 
 
 def test_defaults():
@@ -23,10 +27,13 @@ def test_set_update_config_persists_and_validates(tmp_path):
     store.cfg()
     with pytest.raises(ValueError):
         store.set_update_config(UpdateConfig(channel="weird"))
+    # a malformed signing key is rejected (must be 32-byte base64 Ed25519)
+    with pytest.raises(ValueError):
+        store.set_update_config(UpdateConfig(signing_pubkey="not-a-real-key"))
     cfg = store.set_update_config(
-        UpdateConfig(channel="prerelease", signing_pubkey="PUB", auto_check=True))
+        UpdateConfig(channel="prerelease", signing_pubkey=PUB, auto_check=True))
     assert cfg.update.channel == "prerelease"
-    assert cfg.update.signing_pubkey == "PUB"
+    assert cfg.update.signing_pubkey == PUB
     # survives a reload from disk
     assert ConfigStore(path=tmp_path / "astrodeck.json").cfg().update.auto_check is True
 

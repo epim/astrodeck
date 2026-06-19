@@ -48,6 +48,8 @@ class Supervisor:
         self.max_backoff_s = max_backoff_s
         self.initial_version = initial_version
         self._log = log or (lambda m: print(f"[supervisor] {m}", flush=True))
+        # per-update health-check window from pending-update.json (None => default).
+        self._probe_timeout: "float | None" = None
 
     # -- helpers ---------------------------------------------------------------
     def _resolve_target(self) -> str:
@@ -61,7 +63,7 @@ class Supervisor:
 
     def _await_health(self, proc, version: str) -> bool:
         """Poll until the probed version is healthy, the child dies, or timeout."""
-        deadline = self.now_fn() + self.health_timeout_s
+        deadline = self.now_fn() + (self._probe_timeout or self.health_timeout_s)
         while self.now_fn() < deadline:
             if proc.poll() is not None:
                 return False  # child exited before becoming healthy
@@ -101,6 +103,7 @@ class Supervisor:
 
             self._log(f"launching {target}")
             proc = self.launch_fn(target)
+            launch_ts = self.now_fn()
 
             if probing:
                 if self._await_health(proc, target):
@@ -111,6 +114,7 @@ class Supervisor:
                         "ok": True, "version": target, "from": prev_version,
                         "reason": "", "ts": self.now_fn()})
                     probing = False
+                    self._probe_timeout = None
                     backoff = 1.0
                     # fall through to wait for the next clean exit / crash
                 else:
@@ -124,6 +128,7 @@ class Supervisor:
                     self.layout.set_current(last_good)
                     target = last_good
                     probing = False
+                    self._probe_timeout = None
                     continue  # relaunch the rolled-back version
 
             code = proc.wait()
@@ -142,12 +147,18 @@ class Supervisor:
                     self.layout.set_current(nv)
                     target = nv
                     probing = True
+                    self._probe_timeout = pend.get("health_timeout_s")
                     self._log(f"applying staged update {prev_version} -> {nv}")
                     continue
                 self._log("apply requested but no valid pending update; relaunching")
                 continue
 
-            # any other exit code => crash; relaunch the SAME version with backoff
+            # any other exit code => crash; relaunch the SAME version with backoff.
+            # Reset the backoff if this version had run stably (longer than the cap)
+            # before crashing, so a long-healthy version isn't penalized by an old
+            # crash series.
+            if self.now_fn() - launch_ts > self.max_backoff_s:
+                backoff = 1.0
             self._log(f"server exited {code}; relaunching in {backoff:.0f}s")
             self.sleep_fn(backoff)
             backoff = min(self.max_backoff_s, backoff * 2)

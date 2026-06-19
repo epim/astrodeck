@@ -483,6 +483,17 @@ class ConfigStore:
         is written through this typed setter like the other config blocks."""
         if update.channel not in ("stable", "prerelease"):
             raise ValueError(f"unknown update channel: {update.channel!r}")
+        # A non-empty signing key must be a valid 32-byte base64 Ed25519 public
+        # key (reject garbage that would later silently fail every verification).
+        pk = (update.signing_pubkey or "").strip()
+        if pk:
+            import base64
+            try:
+                raw = base64.b64decode(pk, validate=True)
+            except Exception:
+                raise ValueError("signing_pubkey must be valid base64")
+            if len(raw) != 32:
+                raise ValueError("signing_pubkey must decode to 32 bytes (Ed25519)")
         cfg = self.cfg()
         cfg.update = update
         return self.bump_and_save()

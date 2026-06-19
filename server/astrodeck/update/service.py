@@ -10,6 +10,7 @@ supervisor swaps ``current`` and relaunches into the new version.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import time
 from pathlib import Path
@@ -46,6 +47,11 @@ def reset_exit_state() -> None:  # test seam
     global _server, _exit_code
     _server = None
     _exit_code = 0
+
+
+# A version used as a filesystem path component (releases/<v>/) must be safe even
+# though the semver parser already sanitizes it -- defense in depth before staging.
+_SAFE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
 
 
 class UpdateError(Exception):
@@ -95,7 +101,8 @@ class UpdateService:
         else:
             update_state.set_available(rel.version, rel.notes_md, ts=ts,
                                        channel=cfg.channel)
-        self._publish("checked")
+        # back to idle once the check completes (no ongoing operation to show).
+        self._publish("idle")
         return update_state.snapshot()
 
     # -- preconditions ---------------------------------------------------------
@@ -119,8 +126,8 @@ class UpdateService:
         ok, reason = self.apply_preconditions()
         if not ok:
             raise UpdateError(reason)
-        if self._apply_lock.locked():
-            raise UpdateError("an update is already in progress")
+        # the asyncio lock serializes concurrent applies (the route also dedups via
+        # hub._busy["system.update"]); no separate racy locked() pre-check.
         async with self._apply_lock:
             cfg = self._cfg()
             assert self._root is not None
@@ -130,6 +137,8 @@ class UpdateService:
                     cfg.repo, channel=cfg.channel, current=update_state.current)
                 if rel is None:
                     raise UpdateError("update no longer available")
+                if not (_SAFE_VERSION.match(rel.version) and ".." not in rel.version):
+                    raise UpdateError(f"unsafe version string: {rel.version!r}")
 
                 workdir = layout.state / "download"
                 artifact = workdir / f"astrodeck-{rel.version}.tar.gz"
@@ -151,9 +160,20 @@ class UpdateService:
 
                 self._publish("staging")
                 staged = stage.stage_release(artifact, layout.releases, rel.version)
-                _ok, deps_reason = stage.reconcile_deps(staged, sys.executable)
+                deps_ok, deps_reason = stage.reconcile_deps(staged, sys.executable)
+                if not deps_ok:
+                    bus.log("warning", f"update dependency reconcile: {deps_reason}",
+                            "update")
 
-                layout.write_pending(rel.version, ts=self._now())
+                # POINT OF NO RETURN: re-check the rig-idle gate. The download/stage
+                # took time; if a sequence/slew/exposure started meanwhile, abort
+                # rather than restart into the new version mid-activity (spec sec 6).
+                blocker = self._hub.restart_blocker
+                if blocker:
+                    raise UpdateError(f"aborted before restart: {blocker}")
+
+                layout.write_pending(rel.version, ts=self._now(),
+                                     health_timeout_s=cfg.health_timeout_s)
                 self._publish("applying", progress=1.0)
                 bus.log("warning",
                         f"applying update {update_state.current} -> {rel.version}; "

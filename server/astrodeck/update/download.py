@@ -31,18 +31,23 @@ async def download(url: str, dest: Path, *, on_progress=None,
     """Stream ``url`` to ``dest``. Raises ``ValueError`` past ``max_bytes``.
     ``on_progress(fraction)`` is called as bytes arrive when a length is known."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        async with client.stream("GET", url, headers=_headers(token)) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("Content-Length") or 0)
-            written = 0
-            with open(dest, "wb") as f:
-                async for chunk in r.aiter_bytes(65536):
-                    written += len(chunk)
-                    if written > max_bytes:
-                        raise ValueError(
-                            f"artifact exceeds {max_bytes} byte ceiling")
-                    f.write(chunk)
-                    if on_progress and total:
-                        on_progress(min(1.0, written / total))
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=_headers(token)) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("Content-Length") or 0)
+                written = 0
+                with open(dest, "wb") as f:
+                    async for chunk in r.aiter_bytes(65536):
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise ValueError(
+                                f"artifact exceeds {max_bytes} byte ceiling")
+                        f.write(chunk)
+                        if on_progress and total:
+                            on_progress(min(1.0, written / total))
+    except BaseException:
+        # never leave a partial/oversized artifact on a storage-limited scope.
+        dest.unlink(missing_ok=True)
+        raise
     return dest

@@ -89,6 +89,9 @@ python -m supervisor.supervisor \
   `systemctl daemon-reload && systemctl enable --now astrodeck`.
   (The supervisor must be importable — run from the repo/install dir, or
   `pip install` the supervisor package.)
+  If `<root>/current` might be absent on first boot, add
+  `--initial-version <version>` to `ExecStart` so the supervisor can seed the
+  pointer instead of exiting with "no 'current' pointer".
 - **Windows (current rig):** run the supervisor command in a startup task, or
   wrap it as a service with [NSSM](https://nssm.cc/). The supervisor itself does
   the swap/rollback; NSSM just keeps the supervisor process alive.

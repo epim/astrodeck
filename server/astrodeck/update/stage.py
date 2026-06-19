@@ -34,8 +34,12 @@ def safe_extract(tarball: Path, dest: Path) -> None:
                 raise ValueError(f"refusing path-traversal member: {m.name}")
         try:  # py3.12+: the 'data' filter independently enforces the same.
             tf.extractall(dest, filter="data")  # type: ignore[arg-type]
-        except TypeError:  # pragma: no cover - older pythons
-            tf.extractall(dest)
+        except TypeError:  # python < 3.12 has no 'data' filter
+            # extract the already-validated members one by one (the pre-scan above
+            # rejected links + traversal, so no malicious member survives); this
+            # avoids extractall's symlink-following on the pre-3.12 path.
+            for m in tf.getmembers():
+                tf.extract(m, dest)
 
 
 def stage_release(tarball: Path, releases_dir: Path, version: str) -> Path:

@@ -83,12 +83,18 @@ class InstallLayout:
         return v or None
 
     def write_pending(self, version: str, *, path: "str | None" = None,
-                      ts: "float | None" = None) -> None:
-        """Stage the apply request the supervisor will act on after exit-92."""
+                      ts: "float | None" = None,
+                      health_timeout_s: "float | None" = None) -> None:
+        """Stage the apply request the supervisor will act on after exit-92.
+
+        ``health_timeout_s`` (from UpdateConfig) is carried so the supervisor uses
+        the operator-configured probe window for THIS update."""
+        self.pending.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self.pending, {
             "version": version,
             "path": path or str(self.release(version)),
             "ts": ts,
+            "health_timeout_s": health_timeout_s,
         })
 
     def read_result(self) -> "dict | None":
