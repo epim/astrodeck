@@ -32,19 +32,20 @@ CAP_CONFIG_BACKEND = "config.backend"          # backend/profile connect & apply
 CAP_CONFIG_SITE_OPTICS = "config.site_optics"  # site coords + optics
 CAP_CONFIG_ALERTS = "config.alerts"            # alert sinks, escalation, deadman_url (SSRF/exfil sink)
 CAP_ADMIN_USERS = "admin.users"                # auth/remote config, role allowlist, jti revoke
+CAP_SYSTEM_UPDATE = "system.update"            # DESTRUCTIVE: download + restart into a new release
 
 ALL_CAPS = frozenset({
     CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_MEDIA, CAP_VIEW_SITE_PRECISE,
     CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT, CAP_CONTROL_GUIDE, CAP_CONTROL_POWER,
     CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONFIG_BACKEND,
-    CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS,
+    CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS, CAP_SYSTEM_UPDATE,
 })
 
 # DESTRUCTIVE group (UI double-confirms even for admin; W2.4/W2.5). Pinned here
 # so the future viewer/operator UI reads it from one place.
 DESTRUCTIVE_CAPS = frozenset({
     CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE,
-    CAP_CONTROL_MOUNT, CAP_CONTROL_POWER, CAP_ADMIN_USERS,
+    CAP_CONTROL_MOUNT, CAP_CONTROL_POWER, CAP_ADMIN_USERS, CAP_SYSTEM_UPDATE,
 })
 
 # Retired capability strings. The boot-time route assertion fails create_app()
