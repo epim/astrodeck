@@ -127,6 +127,8 @@ export const useCanControlPower = () => useCapability("control.power");
 export const useCanConfigBackend = () => useCapability("config.backend");
 /** admin.users — gates the Users panel + the auth-method config panel (W2.6). */
 export const useCanAdminUsers = () => useCapability("admin.users");
+/** system.update — admin-only; gates the Updates panel (self-update). */
+export const useCanSystemUpdate = () => useCapability("system.update");
 
 /** True when the caller is a viewer (or unresolved). Drives the "View-only"
  *  badge + read-only surfaces (controls HIDDEN/disabled, not 403-on-tap). */

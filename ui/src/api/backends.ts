@@ -19,6 +19,8 @@ import type {
   ProfileRow,
   RigSpec,
   SafetyConfig,
+  UpdateConfig,
+  UpdateStatus,
   User,
 } from "../types";
 
@@ -185,3 +187,22 @@ export const setAuthConfig = (auth: Partial<AuthState> & Record<string, unknown>
  *  A 403 {code:"forbidden"} surfaces when the override cap is missing. */
 export const setSafetyConfig = (safety: SafetyConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config", { safety });
+
+// ----------------------------------------------------------------- self-update
+/** GET /api/update/status → live snapshot + can_apply/supervised/blocked reason. */
+export const getUpdateStatus = (): Promise<UpdateStatus> =>
+  api.get<UpdateStatus>("/api/update/status");
+
+/** POST /api/update/check → force a GitHub poll (system.update). */
+export const checkUpdate = (): Promise<UpdateStatus> =>
+  api.post<UpdateStatus>("/api/update/check");
+
+/** POST /api/update/apply → start the download/verify/stage/restart pipeline
+ *  (system.update + rig-idle safety gate). Returns {started} immediately; phases
+ *  stream over the `update` WS event and the scope restarts via the supervisor. */
+export const applyUpdate = (): Promise<{ started: string }> =>
+  api.post<{ started: string }>("/api/update/apply");
+
+/** POST /api/update/config → persist the UpdateConfig block (system.update). */
+export const setUpdateConfig = (cfg: UpdateConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/update/config", cfg);
