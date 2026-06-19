@@ -160,6 +160,9 @@ def _real_launcher(layout: "P.Layout", python_exe: str, host: str, port: int):
         server_dir = layout.release(version) / "server"
         env = os.environ.copy()
         env["PYTHONPATH"] = str(server_dir) + os.pathsep + env.get("PYTHONPATH", "")
+        # Tell the server it is supervised so self-update apply is available and it
+        # writes pending-update.json / reads update-result.json under this root.
+        env["ASTRODECK_INSTALL_ROOT"] = str(layout.root)
         cmd = [python_exe, "-m", "astrodeck", "run", "--host", host, "--port", str(port)]
         return subprocess.Popen(cmd, env=env)
     return launch
