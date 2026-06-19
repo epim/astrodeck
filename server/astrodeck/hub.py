@@ -768,6 +768,19 @@ class Hub:
                 return label
         return None
 
+    @property
+    def restart_blocker(self) -> "str | None":
+        """A human reason the controller must NOT restart right now, or None when
+        idle. The self-update safety gate consults this so an update can never
+        interrupt an exposure, slew, or running sequence (spec section 6)."""
+        label = self.busy_label
+        if label is not None:
+            return f"rig is {label}"
+        eng = self.engine
+        if eng is not None and getattr(eng, "running", False):
+            return "a sequence is running"
+        return None
+
     async def _nina_heartbeat(self) -> None:
         """Every 5s, ping NINA ``/version`` so ``last_ok`` stays honest even when
         a multi-minute capture means no other NINA traffic. Never fatal."""

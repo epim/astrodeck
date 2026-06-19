@@ -128,16 +128,26 @@ def _cmd_create_admin(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    """``run`` front-end (and the bare-invocation default): start uvicorn."""
+    """``run`` front-end (and the bare-invocation default): start uvicorn.
+
+    Returns the process exit code: ``0`` on a normal shutdown, or
+    ``EXIT_APPLY_UPDATE`` (92) when a self-update was applied -- the supervisor
+    reads that code to swap ``current`` and relaunch the new version. We build the
+    ``uvicorn.Server`` explicitly (instead of ``uvicorn.run``) so the update
+    service can request a graceful shutdown and arm the exit code."""
     # Lazy import so create-admin never pulls in the full app / uvicorn.
     import uvicorn
 
     from .api import create_app
+    from .update import service as update_service
 
     _security_banner(args.host, args.port)
     app = create_app()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    return 0
+    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info")
+    server = uvicorn.Server(config)
+    update_service.bind_server(server)  # enables graceful exit-92 on self-update
+    server.run()
+    return update_service.consume_exit_code()
 
 
 def _build_parser() -> argparse.ArgumentParser:

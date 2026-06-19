@@ -211,6 +211,26 @@ class RemoteConfig(BaseModel):
     home_id: str = ""            # stable home identifier the relay pins a path/subdomain to
 
 
+# ------------------------------------------------------- self-update (Phase 3)
+#
+# Config for the in-app self-update subsystem (spec 2026-06-19). APPENDED to
+# AppConfig (additive — old config files load fine). Holds NO secret: the
+# ``signing_pubkey`` is a PUBLIC Ed25519 key the scope verifies releases against
+# (the matching private key lives only in CI). ``auto_check`` is opt-in and only
+# governs background polling — applying an update ALWAYS requires explicit admin
+# consent (system.update) and passes the rig-idle safety gate.
+
+class UpdateConfig(BaseModel):
+    enabled: bool = True                  # master switch for the update subsystem
+    auto_check: bool = False              # poll GitHub on a timer (opt-in); apply stays manual
+    check_interval_hours: int = Field(24, ge=1, le=720)
+    channel: str = "stable"               # stable | prerelease
+    repo: str = "epim/astrodeck"          # GitHub releases source (owner/repo)
+    signing_pubkey: str = ""              # PUBLIC Ed25519 key (base64); REQUIRED to apply
+    health_timeout_s: int = Field(60, ge=5, le=600)
+    last_check_ts: float | None = None    # bookkeeping (set by the poller)
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -225,6 +245,8 @@ class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     # --- remote relay (W3; appended — old configs load fine) ---
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
+    # --- self-update (Phase 3; appended — old configs load fine) ---
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -450,6 +472,19 @@ class ConfigStore:
         exactly what it is given."""
         cfg = self.cfg()
         cfg.remote = remote
+        return self.bump_and_save()
+
+    # -- self-update mutation (Phase 3) ----------------------------------------
+
+    def set_update_config(self, update: "UpdateConfig") -> AppConfig:
+        """Persist a new ``UpdateConfig`` (system.update-gated at the API layer).
+
+        Validates the channel; holds no secret (the signing key is public), so it
+        is written through this typed setter like the other config blocks."""
+        if update.channel not in ("stable", "prerelease"):
+            raise ValueError(f"unknown update channel: {update.channel!r}")
+        cfg = self.cfg()
+        cfg.update = update
         return self.bump_and_save()
 
 

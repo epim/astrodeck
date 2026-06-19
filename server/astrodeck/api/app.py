@@ -26,8 +26,8 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
-                    CAP_CONTROL_POWER, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
-                    CAP_VIEW_STATUS, Principal, _scope_is_remote,
+                    CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
+                    CAP_VIEW_PREVIEW, CAP_VIEW_STATUS, Principal, _scope_is_remote,
                     configure_provider_from_auth, get_principal, require,
                     resolve_principal)
 from ..auth.rbac import assert_route_capabilities, declare
@@ -36,10 +36,11 @@ from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
-                      EscalationConfig, Optics, SafetyConfig, Site,
+                      EscalationConfig, Optics, SafetyConfig, Site, UpdateConfig,
                       config_store, redacted)
 from .. import __version__
 from ..update.state import update_state
+from ..update.service import UpdateError, get_service as get_update_service
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
@@ -116,6 +117,17 @@ async def _lifespan(app: "FastAPI"):
             app, lambda: config_store.cfg().remote)
     except Exception as e:  # noqa: BLE001 - degrade to local-only, never crash boot
         bus.log("error", f"relay client launch failed (local-only): {e}", "remote")
+    # Self-update (Phase 3): surface the last apply outcome on boot, and start the
+    # OPT-IN poller ONLY when auto_check is enabled (default off => no task, so a
+    # LAN-only install is unchanged). Never raises out of boot.
+    try:
+        _us = get_update_service()
+        _us.load_boot_result()
+        _ucfg = config_store.cfg().update
+        if _ucfg.enabled and _ucfg.auto_check:
+            _us.start_poller()
+    except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+        bus.log("error", f"update service init failed: {e}", "update")
     # Boot auto-connect the active profile (no-op on first run / no active
     # profile). MUST swallow every failure - a raise here bricks the whole UI.
     if not _boot_autoconnect_disabled():
@@ -138,6 +150,11 @@ async def _lifespan(app: "FastAPI"):
                 relay_client.stop()
             except Exception:
                 pass
+        # Stop the self-update poller (best-effort; never raises out of shutdown).
+        try:
+            get_update_service().stop_poller()
+        except Exception:
+            pass
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
@@ -567,6 +584,50 @@ def create_app() -> FastAPI:
     @app.get("/api/version")
     async def api_version():
         return update_state.snapshot()
+
+    # ------------------------------------------------------------ self-update
+    # status is a read (no cap); check/apply/config MUTATE and require the
+    # admin-only system.update capability. apply additionally passes the rig-idle
+    # safety gate (apply_preconditions -> hub.restart_blocker) at the home, so a
+    # remote admin can never interrupt an exposure/slew/sequence.
+    @app.get("/api/update/status")
+    async def update_status():
+        svc = get_update_service()
+        ok, reason = svc.apply_preconditions()
+        snap = update_state.snapshot()
+        snap["supervised"] = svc.supervised
+        snap["can_apply"] = ok
+        snap["apply_blocked_reason"] = "" if ok else reason
+        return snap
+
+    @app.post("/api/update/check",
+              dependencies=[Depends(require(CAP_SYSTEM_UPDATE))])
+    @declare(CAP_SYSTEM_UPDATE)
+    async def update_check():
+        return await get_update_service().check()
+
+    @app.post("/api/update/apply",
+              dependencies=[Depends(require(CAP_SYSTEM_UPDATE))])
+    @declare(CAP_SYSTEM_UPDATE)
+    async def update_apply():
+        svc = get_update_service()
+        ok, reason = svc.apply_preconditions()
+        if not ok:
+            raise HTTPException(409, reason)
+        # long pipeline runs in the background and streams phases over WS; on
+        # success it asks the supervisor (via graceful exit 92) to swap + restart.
+        return _spawn("system.update", svc.apply())
+
+    @app.post("/api/update/config",
+              dependencies=[Depends(require(CAP_SYSTEM_UPDATE))])
+    @declare(CAP_SYSTEM_UPDATE)
+    async def update_set_config(body: UpdateConfig):
+        try:
+            cfg = config_store.set_update_config(body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return cfg
 
     # ------------------------------------------------------------ equipment
 

@@ -13,7 +13,30 @@ permissions:
   contents: write
 
 jobs:
+  # Gate every release on the self-update apply + rollback path, on BOTH the
+  # current Windows rig and Linux (spec section 8). A failure here blocks publish.
+  selftest:
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+      - name: Real-I/O apply + verify-reject + launcher/health probe
+        run: pytest -m selftest -q
+      - name: Supervisor swap + rollback state machine
+        run: pytest tests/test_supervisor.py tests/test_supervisor_protocol_parity.py -q
+
   release:
+    needs: selftest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
