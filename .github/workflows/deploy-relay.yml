@@ -1,0 +1,27 @@
+name: deploy-relay
+
+# Auto-deploy the relay to Fly.io on any change under relay/. One-time bootstrap
+# (fly launch, volume, mounted secret files) stays manual -- see
+# docs/relay-deploy.md and docs/infrastructure/. Requires the FLY_API_TOKEN repo
+# secret (GitHub Actions secrets are write-only: rotate, don't read).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'relay/**'
+      - '.github/workflows/deploy-relay.yml'
+
+concurrency: deploy-relay
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy relay
+        working-directory: relay
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only

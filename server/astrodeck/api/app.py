@@ -38,6 +38,8 @@ from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
                       EscalationConfig, Optics, SafetyConfig, Site,
                       config_store, redacted)
+from .. import __version__
+from ..update.state import update_state
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
@@ -427,7 +429,7 @@ AUTH_ENV_VAR = "ASTRODECK_TOKEN"
 # and must be reachable pre-session; ``/auth/logout`` is NOT here (it needs a
 # session). The RBAC boot assertion exempts these same auth-login paths.
 _AUTH_OPEN_PREFIXES = ("/assets", "/auth/login", "/auth/google/callback")
-_AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json"}
+_AUTH_OPEN_EXACT = {"/", "/index.html", "/favicon.ico", "/manifest.json", "/healthz"}
 
 
 def auth_token() -> str:
@@ -526,7 +528,7 @@ def _path_is_open(path: str) -> bool:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="AstroDeck", version="0.1.0", lifespan=_lifespan)
+    app = FastAPI(title="AstroDeck", version=__version__, lifespan=_lifespan)
 
     # Optional shared-token gate (P0-4). A pure pass-through when ASTRODECK_TOKEN
     # is unset, so default LAN behavior is byte-for-byte unchanged.
@@ -550,6 +552,21 @@ def create_app() -> FastAPI:
     app.include_router(survey_router)
     app.include_router(framing_router)
     app.include_router(visibility_router)
+
+    # ---------------------------------------------------- health + version
+    # /healthz is OPEN (no token, no session): the supervisor health-checks it on
+    # every restart and a relay / load balancer liveness-probes it. It discloses
+    # only the running version -- no identity, no rig state.
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True, "version": __version__}
+
+    # /api/version surfaces the update-subsystem snapshot (current vs latest-known,
+    # availability, channel, last check, last apply result). Non-secret; the poller
+    # (update service) populates ``latest`` / ``update_available``.
+    @app.get("/api/version")
+    async def api_version():
+        return update_state.snapshot()
 
     # ------------------------------------------------------------ equipment
 

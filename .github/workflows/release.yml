@@ -1,0 +1,61 @@
+name: release
+
+# Cut a release by bumping astrodeck.__version__ + pyproject, committing, then:
+#   git tag v0.2.0 && git push origin v0.2.0
+# This builds the UI, bundles a signed artifact, and publishes a GitHub Release.
+# The scope's self-update poller consumes the published artifact + .sig + .sha256.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build deps
+        run: pip install "cryptography>=42.0"
+
+      - name: Verify tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(python -c "import sys; sys.path.insert(0,'server'); import astrodeck; print(astrodeck.__version__)")
+          echo "tag=$TAG package=$PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag $TAG does not match astrodeck.__version__ $PKG (bump the version before tagging)"
+            exit 1
+          fi
+
+      - name: Build release bundle
+        run: python scripts/build_release.py --version "${GITHUB_REF_NAME#v}" --out dist
+
+      - name: Sign artifact (Ed25519 + SHA256 sidecars)
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: python scripts/sign_release.py "dist/astrodeck-${GITHUB_REF_NAME#v}.tar.gz"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/astrodeck-*.tar.gz
+            dist/astrodeck-*.tar.gz.sha256
+            dist/astrodeck-*.tar.gz.sig
