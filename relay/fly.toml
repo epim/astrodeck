@@ -18,7 +18,9 @@
 # env vars at them.
 
 app = "astrodeck-relay"
-primary_region = "iad"
+# San Jose, CA - next to a California scope + owner (lowest latency); use "lax"
+# (Los Angeles) or "sea" (Seattle) as nearby alternates.
+primary_region = "sjc"
 
 [build]
   dockerfile = "Dockerfile"
