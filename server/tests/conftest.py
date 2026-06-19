@@ -18,3 +18,9 @@ if _RELAY_DIR.is_dir():
     p = str(_RELAY_DIR)
     if p not in sys.path:
         sys.path.insert(0, p)
+
+# Repo root on sys.path so the standalone ``supervisor`` package (which lives at
+# the repo root, outside the installed ``astrodeck`` package) imports in tests.
+_root_str = str(_REPO_ROOT)
+if _root_str not in sys.path:
+    sys.path.insert(0, _root_str)
