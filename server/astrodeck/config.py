@@ -17,6 +17,7 @@ Longitude sign convention — load-bearing:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -27,7 +28,12 @@ from .persist import ensure_dir, read_json, write_json_atomic
 
 # --------------------------------------------------------------------- locations
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"   # server/config/
+# Persistent state (config + profiles + plans) lives OUTSIDE the versioned package
+# dir when ``ASTRODECK_CONFIG_DIR`` is set -- the supervisor points it at
+# ``<install-root>/config`` so site/optics/profiles/auth/remote SURVIVE a
+# self-update that swaps the release dir. Unset (dev) => the in-tree server/config/.
+_CONFIG_ENV = (os.environ.get("ASTRODECK_CONFIG_DIR") or "").strip()
+CONFIG_DIR = Path(_CONFIG_ENV) if _CONFIG_ENV else (Path(__file__).resolve().parents[1] / "config")
 CONFIG_FILE = CONFIG_DIR / "astrodeck.json"
 PLANS_DIR = CONFIG_DIR / "plans"
 PROFILES_DIR = CONFIG_DIR / "profiles"

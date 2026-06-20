@@ -174,6 +174,10 @@ def _real_launcher(layout: "P.Layout", python_exe: str, host: str, port: int):
         # Tell the server it is supervised so self-update apply is available and it
         # writes pending-update.json / reads update-result.json under this root.
         env["ASTRODECK_INSTALL_ROOT"] = str(layout.root)
+        # Persist config/profiles/plans + captured images OUTSIDE the versioned
+        # release dir so they survive an update that swaps it.
+        env["ASTRODECK_CONFIG_DIR"] = str(layout.root / "config")
+        env["ASTRODECK_CAPTURE_DIR"] = str(layout.root / "captures")
         cmd = [python_exe, "-m", "astrodeck", "run", "--host", host, "--port", str(port)]
         return subprocess.Popen(cmd, env=env)
     return launch

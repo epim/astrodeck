@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 from dataclasses import dataclass, field, replace
@@ -86,7 +87,8 @@ SAFETY_READ_TIMEOUT_S = 8.0
 #: reading all night (C1-12/C1-15).
 SAFETY_STALE_SLACK_S = 5.0
 
-CAPTURE_DIR = Path(__file__).resolve().parents[2] / "captures"
+_CAPTURE_ENV = (os.environ.get("ASTRODECK_CAPTURE_DIR") or "").strip()
+CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().parents[2] / "captures")
 
 #: Touch-safety motion constants (master plan §A.7 / §C-Risk-5). The manual-move
 #: rate cap (the server clamp in ``/api/mount/move`` imports this) and the
