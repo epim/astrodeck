@@ -91,36 +91,59 @@ class RelayConfig:
 
 
 def load_device_tokens(path: str = "") -> dict:
-    """Load the ``{device_token: home_id}`` provisioning map from a JSON file.
+    """Load the ``{device_token: home_id}`` provisioning map.
 
-    Returns an empty map if the path is unset/missing (a relay with no tokens
-    accepts no homes -- fail-closed). NEVER bake tokens into the image; mount
-    them as a secret file."""
+    Source precedence: the mounted JSON file named by ``RELAY_DEVICE_TOKENS_FILE``,
+    else the inline ``RELAY_DEVICE_TOKENS`` env var (Fly/most-PaaS secrets-as-env),
+    else an empty map (a relay with no tokens accepts no homes -- fail-closed).
+    NEVER bake tokens into the image."""
     path = path or _env("RELAY_DEVICE_TOKENS_FILE", "")
-    if not path or not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as fh:
-        data = json.load(fh)
+    if path and os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    else:
+        inline = _env("RELAY_DEVICE_TOKENS", "").strip()
+        if not inline:
+            return {}
+        data = json.loads(inline)
     if not isinstance(data, dict):
-        raise ValueError("device tokens file must be a JSON object {token: home_id}")
+        raise ValueError("device tokens must be a JSON object {token: home_id}")
     return {str(k): str(v) for k, v in data.items()}
 
 
-def load_seed(env_var: str) -> bytes:
-    """Load a 32-byte Ed25519 seed from the file named by ``env_var`` (raw or
-    hex). Returns b"" if unset (the relay then falls back to the LOUD dev-HMAC
-    signer -- acceptable only for local dev)."""
-    path = _env(env_var, "")
-    if not path or not os.path.exists(path):
-        return b""
-    raw = open(path, "rb").read().strip()
+def _decode_seed(raw: bytes, name: str) -> bytes:
+    """Decode a 32-byte Ed25519 seed from raw bytes, 64 hex chars, or base64."""
     if len(raw) == 32:
         return raw
-    # Accept hex too (64 chars).
+    s = raw.decode("ascii", "ignore").strip()
     try:
-        decoded = bytes.fromhex(raw.decode("ascii"))
-        if len(decoded) == 32:
-            return decoded
-    except (ValueError, UnicodeDecodeError):
+        d = bytes.fromhex(s)
+        if len(d) == 32:
+            return d
+    except ValueError:
         pass
-    raise ValueError(f"{env_var}: seed must be 32 raw bytes or 64 hex chars")
+    try:
+        import base64
+        d = base64.b64decode(s, validate=True)
+        if len(d) == 32:
+            return d
+    except Exception:
+        pass
+    raise ValueError(f"{name}: seed must be 32 raw bytes, 64 hex chars, or base64-32")
+
+
+def load_seed(env_var: str) -> bytes:
+    """Load a 32-byte Ed25519 seed.
+
+    Source precedence: the mounted file named by ``env_var`` (e.g.
+    ``RELAY_OIDC_SEED_FILE``), else the inline env var with the ``_FILE`` suffix
+    stripped (``RELAY_OIDC_SEED``, for secrets-as-env). Returns b"" if neither is
+    set (the relay then falls back to the LOUD dev-HMAC signer -- local dev only)."""
+    path = _env(env_var, "")
+    if path and os.path.exists(path):
+        return _decode_seed(open(path, "rb").read().strip(), env_var)
+    inline_var = env_var[:-5] if env_var.endswith("_FILE") else env_var + "_INLINE"
+    inline = _env(inline_var, "").strip()
+    if inline:
+        return _decode_seed(inline.encode("ascii"), inline_var)
+    return b""

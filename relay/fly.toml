@@ -30,11 +30,12 @@ primary_region = "sjc"
   RELAY_HTTPS = "1"
   RELAY_PING_INTERVAL_S = "10"
   RELAY_PING_MAX_MISSES = "3"
-  # RELAY_ORIGIN is set per-deploy to the public hostname (Set-Cookie rewrite):
-  #   fly secrets set RELAY_ORIGIN=relay.example.com   (or set here once known)
-  RELAY_DEVICE_TOKENS_FILE = "/secrets/device_tokens.json"
-  RELAY_OIDC_SEED_FILE = "/secrets/oidc_seed.bin"
-  RELAY_VIEWER_SEED_FILE = "/secrets/viewer_seed.bin"
+  RELAY_ORIGIN = "astrodeck-relay.fly.dev"   # public host (Set-Cookie rewrite)
+  # SECRET-MINIMAL posture: the ONLY runtime secret is the device-token map,
+  # injected as an env var via `fly secrets set` (encrypted at rest, never in the
+  # image):  RELAY_DEVICE_TOKENS = {"<token>":"home-1"}
+  # NO signing seeds are set -- relay-terminated OIDC + viewer links are unused, so
+  # the relay holds no signing key (it can sign nothing). See docs/infrastructure/.
 
 # ONE always-on machine holds the home registry (single-instance affinity).
 # Do NOT scale to zero: a home's persistent WSS must stay pinned.
