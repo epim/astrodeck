@@ -16,10 +16,11 @@
 // guider is PHD2 with no frame, or no guide camera attached).
 import { useEffect, useRef, useState } from "react";
 import { useStatus } from "../store";
+import { u } from "../lib/base";
 import { Icon } from "./icons";
 import { Toggle } from "./ui";
 
-const FRAME_URL = "/api/guide/frame.png";
+const FRAME_URL = u("/api/guide/frame.png");
 const POLL_MS = 2500;
 
 type FrameState = "loading" | "image" | "unavailable";
