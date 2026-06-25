@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import type { JSX } from "react";
-import { useStore, useBrightness, type ViewName } from "./store";
+import { useStore, useBrightness, useAuthMethods, type ViewName } from "./store";
+import Logo from "./components/Logo";
 import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
 import { Led } from "./components/ui";
@@ -128,6 +129,17 @@ export default function App() {
   // enabled this is ALWAYS false, so the open LAN UI is byte-for-byte unchanged.
   const showLogin = useShouldShowLogin();
 
+  // Auth-resolving splash: until the login signal (authMethods) has loaded once,
+  // show a neutral splash instead of flashing the console shell before the gate
+  // decides (W2.6 polish). Fail OPEN after a short grace so a transport blip never
+  // traps the LAN tablet behind a spinner — matching the gate's load-time posture.
+  const authMethods = useAuthMethods();
+  const [authGraceElapsed, setAuthGraceElapsed] = useState(false);
+  useEffect(() => {
+    const t = window.setTimeout(() => setAuthGraceElapsed(true), 4000);
+    return () => window.clearTimeout(t);
+  }, []);
+
   // Hold a screen wake lock while a sequence is running OR monitorAwake is on —
   // NOT while locked (touch §8.3, R13). Reads its own narrow selectors.
   useMonitorWakeLock();
@@ -179,6 +191,21 @@ export default function App() {
   // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
   // and the gate dissolves the moment a session is minted — no reload. Toasts +
   // the confirm host stay mounted so login errors and dialogs still surface.
+  if (authMethods === null && !authGraceElapsed) {
+    return (
+      <div className="h-full dim-content flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-dim">
+          <Logo className="w-10 h-10 opacity-80" />
+          <span className="text-[11px] tracking-[0.22em] uppercase">Loading…</span>
+        </div>
+        <div className="overlay-top">
+          <Toasts />
+        </div>
+        <ConfirmHost />
+      </div>
+    );
+  }
+
   if (showLogin) {
     return (
       <div className="h-full">
