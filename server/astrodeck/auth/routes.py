@@ -205,6 +205,23 @@ async def auth_login(request: Request):
 
 # -------------------------------------------------------- /auth/google/callback
 
+def _post_login_path(auth_cfg: Any) -> str:
+    """Where to land after a successful login. Derived from the configured
+    ``google_redirect_uri`` by stripping the ``/auth/google/callback`` suffix, so a
+    RELAY-tunnelled deployment (redirect_uri ``.../h/<home>/auth/google/callback``)
+    returns to ``/h/<home>/`` instead of the relay root (which 404s). A plain LAN
+    redirect_uri (``.../auth/google/callback``) yields ``/``. Falls back to ``/``."""
+    from urllib.parse import urlsplit
+    ru = (getattr(auth_cfg, "google_redirect_uri", "") or "").strip()
+    suffix = "/auth/google/callback"
+    if ru:
+        path = urlsplit(ru).path
+        if path.endswith(suffix):
+            base = path[: -len(suffix)]
+            return f"{base}/" if base else "/"
+    return _POST_LOGIN_PATH
+
+
 @router.get("/auth/google/callback")
 async def auth_callback(request: Request, code: str = "", state: str = "",
                         error: str = ""):
@@ -249,7 +266,7 @@ async def auth_callback(request: Request, code: str = "", state: str = "",
     jti = _new_jti()
     token = sign_session(role, email=email, jti=jti, ttl_s=_SESSION_TTL_S)
 
-    resp = RedirectResponse(url=_POST_LOGIN_PATH, status_code=302)
+    resp = RedirectResponse(url=_post_login_path(auth_cfg), status_code=302)
     secure = _is_secure(request)
     # Session cookie: SameSite=Strict (never needed cross-site) + HttpOnly.
     _set_cookie(resp, SESSION_COOKIE, token, max_age=_SESSION_TTL_S,
