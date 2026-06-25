@@ -10,6 +10,7 @@
 //  - Tap => selectPreview(id). The currently-shown frame gets a focus ring.
 import { useEffect, useRef } from "react";
 import type { PreviewInfo } from "../../types";
+import { u } from "../../lib/base";
 import { EmptyState } from "../ui";
 
 function ageStr(tsSec: number, nowMs: number): string {
@@ -87,7 +88,7 @@ export function FrameFilmstrip({
             title={`Frame #${p.id} · HFR ${p.hfr?.toFixed(2) ?? "—"} · ${ageStr(p.ts, nowMs)} ago`}
           >
             <img
-              src={`/api/preview/${p.id}/thumb.jpg`}
+              src={u(`/api/preview/${p.id}/thumb.jpg`)}
               alt=""
               className="astro w-full h-full object-cover"
               loading="lazy"

@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo } from "../../types";
 import { Icon, type IconName } from "../icons";
+import { u } from "../../lib/base";
 
 function Toggle({
   on,
@@ -167,7 +168,7 @@ export function PreviewToolbar({
             {pngAvailable ? (
               <a
                 role="menuitem"
-                href={`/api/preview/${id}/png`}
+                href={u(`/api/preview/${id}/png`)}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >
@@ -186,7 +187,7 @@ export function PreviewToolbar({
             {hasLossless && (
               <a
                 role="menuitem"
-                href={`/api/preview/${id}/lossless.png`}
+                href={u(`/api/preview/${id}/lossless.png`)}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >
@@ -196,7 +197,7 @@ export function PreviewToolbar({
             {savedLocal ? (
               <a
                 role="menuitem"
-                href={`/api/preview/${id}/fits`}
+                href={u(`/api/preview/${id}/fits`)}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >

@@ -22,6 +22,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { u } from "../lib/base";
 import { Icon, type IconName } from "./icons";
 import { HoldButton as UiHoldButton, Led, Stat } from "./ui";
 import { stateMeta, type StateTone } from "../lib/stateMeta";
@@ -570,7 +571,7 @@ export const PreviewTile = memo(function PreviewTile({
                 frames + evicted older sim frames stay live, not 404→STALE. */}
             <img
               key={previewId}
-              src={`/api/preview/${previewId}/thumb.jpg`}
+              src={u(`/api/preview/${previewId}/thumb.jpg`)}
               alt=""
               className="astro absolute inset-0 w-full h-full object-contain"
               style={{ filter: `brightness(${brightness})` }}
@@ -583,7 +584,7 @@ export const PreviewTile = memo(function PreviewTile({
             {/* fallback: last good frame stays visible if the new one failed */}
             {loadError && shownId != null && shownId !== previewId && (
               <img
-                src={`/api/preview/${shownId}/thumb.jpg`}
+                src={u(`/api/preview/${shownId}/thumb.jpg`)}
                 alt=""
                 className="astro absolute inset-0 w-full h-full object-contain"
                 style={{ filter: `brightness(${brightness})` }}
