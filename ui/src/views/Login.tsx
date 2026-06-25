@@ -17,6 +17,7 @@ import { useState, type FormEvent, type JSX } from "react";
 import { useStore, useAuthMethods } from "../store";
 import { localLogin, setupLocalAdmin } from "../api/backends";
 import { ApiError } from "../api";
+import { u } from "../lib/base";
 import { Icon } from "../components/icons";
 import Logo from "../components/Logo";
 
@@ -274,7 +275,7 @@ function GoogleButton(): JSX.Element {
       className="btn min-h-[44px] inline-flex items-center justify-center gap-2"
       // Full-page redirect through the server OAuth dance (NOT a fetch).
       onClick={() => {
-        window.location.href = "/auth/login";
+        window.location.href = u("/auth/login");
       }}
     >
       <Icon name="user" size={15} />

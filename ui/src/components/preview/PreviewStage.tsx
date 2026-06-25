@@ -21,6 +21,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo, StarMark, StretchParams, Viewport } from "../../types";
 import { Icon } from "../icons";
 import Logo from "../Logo";
+import { u } from "../../lib/base";
 import { usePreviewGestures } from "./usePreviewGestures";
 import { useImageRemap } from "./useImageRemap";
 import { Reticle } from "./Reticle";
@@ -175,7 +176,7 @@ export function PreviewStage(props: Props) {
   // buffer, then promote (no blank, ever — decisions #17). On a slow loop / pause
   // / long exposure we cross-fade; on a fast loop we snap (0ms fade). A newer
   // frame arriving mid-fade cancels the in-flight one by replacing backUrl.
-  const displayUrl = preview ? `/api/preview/${preview.id}` : null;
+  const displayUrl = preview ? u(`/api/preview/${preview.id}`) : null;
   const [frontUrl, setFrontUrl] = useState<string | null>(displayUrl);
   const [backUrl, setBackUrl] = useState<string | null>(null);
   const [backVisible, setBackVisible] = useState(false);

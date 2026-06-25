@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { u } from "../lib/base";
 import {
   useSeq,
   useGuideRecent,
@@ -161,7 +162,7 @@ export default function MonitorView() {
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
             ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
             : undefined;
-        const res = await fetch("/api/monitor/snapshot", signal ? { signal } : undefined);
+        const res = await fetch(u("/api/monitor/snapshot"), signal ? { signal } : undefined);
         if (!res.ok || cancelled) return;
         const snap = (await res.json()) as MonitorSnapshot;
         if (cancelled) return;
@@ -234,7 +235,7 @@ export default function MonitorView() {
   };
   const abort = () =>
     act(() =>
-      fetch("/api/sequence/abort", {
+      fetch(u("/api/sequence/abort"), {
         method: "POST",
         signal:
           typeof AbortSignal !== "undefined" && "timeout" in AbortSignal

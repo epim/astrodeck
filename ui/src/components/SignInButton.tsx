@@ -16,6 +16,7 @@ import { useState } from "react";
 import { Icon } from "./icons";
 import { useStore, useConfig, usePrincipal } from "../store";
 import { logout } from "../api/backends";
+import { u } from "../lib/base";
 
 export default function SignInButton() {
   const config = useConfig();
@@ -36,7 +37,7 @@ export default function SignInButton() {
 
   const onSignIn = () => {
     // Full-page redirect through the server OAuth dance (NOT a fetch).
-    window.location.href = "/auth/login";
+    window.location.href = u("/auth/login");
   };
 
   const onSignOut = async () => {

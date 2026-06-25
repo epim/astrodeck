@@ -1,5 +1,6 @@
 import { useStore } from "./store";
 import { api } from "./api";
+import { BASE } from "./lib/base";
 import { computeTelemetryStale } from "./lib/telemetry";
 import type { LogLine } from "./types";
 
@@ -14,7 +15,7 @@ export function connectWs(): void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const s = useStore.getState();
   s.setWsPhase(everConnected ? "reconnecting" : "connecting");
-  socket = new WebSocket(`${proto}://${location.host}/ws`);
+  socket = new WebSocket(`${proto}://${location.host}${BASE}/ws`);
 
   socket.onopen = async () => {
     retryMs = 1000;
