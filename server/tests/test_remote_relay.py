@@ -347,9 +347,12 @@ def test_inbound_auth_headers_stripped(tmp_path, monkeypatch):
     })
     scope = client._build_http_scope(frame)
     names = {n for n, _ in scope["headers"]}
-    assert b"authorization" not in names
+    assert b"authorization" not in names  # forgeable bearer carriers stripped
     assert b"x-auth-token" not in names
-    assert b"cookie" not in names
+    # cookie PASSES THROUGH: home-terminated auth (e.g. Google OIDC over the relay)
+    # needs it; it is HMAC-signed by the home, so a forged/unsigned cookie reaches
+    # the home but never validates (verified, not stripped).
+    assert b"cookie" in names
     assert b"x-custom" in names  # non-auth headers pass through
 
 

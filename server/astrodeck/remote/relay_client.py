@@ -46,10 +46,17 @@ from .protocol import (DEFAULT_MAX_PAYLOAD, PROTO_VERSION, Frame, FrameType,
 # A real uvicorn request never sets this, so it is NOT LAN-spoofable.
 REMOTE_SCOPE_KEY = "astrodeck_remote"
 
-# Request/response headers an on-LAN attacker (or the relay) must NOT be able to
-# use as an auth carrier over the tunnel. Stripped from every replayed request.
+# Forgeable BEARER carriers stripped from every replayed request: ``authorization``
+# / ``x-auth-token`` are the shared ASTRODECK_TOKEN, which the relay or an on-LAN
+# attacker could inject as a guessed admin credential -- never a valid tunnel
+# carrier. The ``cookie`` is DELIBERATELY NOT stripped: the session/login cookie is
+# HMAC-SIGNED by the home (the relay holds no signing secret, so it cannot forge
+# one), and home-terminated auth -- e.g. Google OIDC over the relay -- carries
+# identity in that cookie. (A compromised TLS-terminating relay could REPLAY a
+# captured cookie: the accepted trusted-transport interim risk; the blind-relay
+# E2E future removes plaintext exposure entirely.)
 _STRIPPED_INBOUND_HEADERS = frozenset({
-    b"authorization", b"x-auth-token", b"cookie",
+    b"authorization", b"x-auth-token",
 })
 
 # Reconnect backoff: capped exponential with FULL jitter. Starts ~0.5s, caps at

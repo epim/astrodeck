@@ -330,9 +330,12 @@ def test_remote_flag_unspoofable_by_lan_header(tmp_path, monkeypatch):
     # IS a tunneled request) -- but it came from scope STATE, not the header.
     assert scope["state"][REMOTE_SCOPE_KEY] is True
     names = {n for n, _ in scope["headers"]}
-    assert b"authorization" not in names  # inbound auth carriers stripped
+    assert b"authorization" not in names  # forgeable bearer carriers stripped
     assert b"x-auth-token" not in names
-    assert b"cookie" not in names
+    # the cookie PASSES THROUGH (home-terminated auth, e.g. Google OIDC, needs it):
+    # it is HMAC-signed by the home, so a forged/unsigned cookie reaches the home
+    # but never validates -- carried by the home's verification, not by stripping.
+    assert b"cookie" in names
 
     # And a plain (non-tunneled) scope with the SAME spoof headers is NOT remote
     # (this is what a real on-LAN attacker actually controls): they cannot set
@@ -350,7 +353,8 @@ async def test_relay_cannot_forge_admin(tmp_path, monkeypatch):
     """relayCannotForge: the relay holds NO home signing secret. Even if the relay
     injects a forged ``principal_token`` AND forged auth headers into REQ_OPEN, the
     home -- under the open ``none`` provider, remotely -- still hard-denies, because
-    (a) the home strips inbound auth headers and (b) no installed provider trusts an
+    (a) the forgeable bearer headers are stripped and the forged (unsigned) cookie
+    fails the home's HMAC verification, and (b) no installed provider trusts an
     unverified relay-supplied token to mint admin. So the forged identity yields 401,
     not a 200 admin action."""
     _store, app = _make_app(tmp_path, monkeypatch)  # none provider (open on LAN)
@@ -363,8 +367,9 @@ async def test_relay_cannot_forge_admin(tmp_path, monkeypatch):
                           ["Cookie", "ad_session=admin"]]
         status, _h, _b = await rig.http(
             "GET", "/api/status", headers=forged_headers)
-        # The home never elevated: the forged carriers are stripped + the open
-        # default is denied remotely. A destructive admin route is likewise denied.
+        # The home never elevated: the forged bearer headers are stripped, the
+        # forged cookie fails HMAC verification, and the open default is denied
+        # remotely. A destructive admin route is likewise denied.
         assert status == 401, f"relay forged-admin must 401, got {status}"
         # A mutating admin-gated route is ALSO denied (not merely the view route).
         st2, _h2, _b2 = await rig.http(
