@@ -228,11 +228,95 @@ fn hfr_matches_analytic_gaussian() {
     let p = StarDetectionParams::default();
     let hfr = measure_hfr(&img, &bounds, (cx, cy), &plane, 0.0, &p).expect("hfr");
     let truth = sigma * (std::f64::consts::FRAC_PI_2).sqrt();
+    // Re-derived analytic value is unchanged by the bbox-edge fix below (this
+    // config's dropped/added sample coincidentally carries ~zero aperture weight,
+    // see `hfr_includes_full_bbox_edge_samples` for a config that isn't coincidental);
+    // observed relative error is ~0.37%, so 2% is a reliable, tight bound.
     assert!(
-        (hfr - truth).abs() / truth < 0.05,
+        (hfr - truth).abs() / truth < 0.02,
         "hfr {} truth {}",
         hfr,
         truth
+    );
+}
+
+// Regression test for the off-by-one HFR sampling-grid bound bug (dossier §7,
+// `MeasureStar`): the grid must sample all the way to the bbox's INCLUSIVE
+// right/bottom edge — `bounds.right()` = X+Width, `bounds.bottom()` = Y+Height,
+// matching the C# reference's `x <= star.StarBoundingBox.Right` loop — not stop one
+// grid step short at `X+Width-1` / `Y+Height-1`. The buggy code silently dropped the
+// outermost +x column and +y row of samples while keeping the -x/-y edges, biasing
+// HFR low whenever those edge samples carry nonzero aperture weight.
+//
+// Note: a "flip the frame and compare HFR" invariance check (as one might first
+// reach for) does NOT discriminate this bug: the buggy `X+Width-1` bound is a
+// genuine closed pixel range `[X, X+Width-1]` and is therefore *exactly*
+// mirror-symmetric by construction, while the correct `X+Width`-inclusive bound
+// (matching the C# reference) is only *approximately* mirror-symmetric — so a
+// mirror test would spuriously fail on the fixed code for tight apertures without
+// ever failing on the buggy code. Instead this test isolates a single known grid
+// sample with a delta-function "star" so the expected HFR is an exact rational
+// number.
+#[test]
+fn hfr_includes_full_bbox_edge_samples() {
+    let (fw, fh) = (30usize, 30usize);
+    // step = AnalysisSamplingSize default (1.0) and cx-left = 5 (an exact multiple
+    // of step) ⇒ the sampling grid lands exactly on integer pixel coordinates.
+    let bounds = Rect {
+        x: 10,
+        y: 10,
+        w: 10,
+        h: 10,
+    };
+    let (cx, cy) = (15.0, 15.0);
+    let p = StarDetectionParams::default();
+    let plane = BackgroundPlane::flat(0.0, cx, cy);
+
+    // Baseline: a single unit spike at the centroid ⇒ HFR = 0 exactly (dist 0).
+    let mut base = vec![0.0_f64; fw * fh];
+    base[15 * fw + 15] = 1.0;
+
+    // bounds.right() = 20 = X+Width, the inclusive right edge (old buggy bound was
+    // 19 = X+Width-1 and never visited this column). dist from centroid = 5.0 =
+    // aperture_radius exactly ⇒ partial-pixel weight 0.5 (dossier §7:
+    // `w = 1 - max(0, dist - (aperture_radius - 0.5))`).
+    let mut right_edge = base.clone();
+    right_edge[15 * fw + 20] = 1.0;
+
+    // bounds.bottom() = 20 = Y+Height, same geometry on the y-axis.
+    let mut bottom_edge = base.clone();
+    bottom_edge[20 * fw + 15] = 1.0;
+
+    let hfr_of = |data: Vec<f64>| {
+        let img = WorkImage {
+            data,
+            width: fw,
+            height: fh,
+        };
+        measure_hfr(&img, &bounds, (cx, cy), &plane, 0.0, &p).expect("hfr")
+    };
+
+    let base_hfr = hfr_of(base);
+    let right_hfr = hfr_of(right_edge);
+    let bottom_hfr = hfr_of(bottom_edge);
+
+    assert_eq!(
+        base_hfr, 0.0,
+        "baseline (centroid-only) HFR must be exactly 0"
+    );
+
+    // Exact expected value: num = 0.5*1*5 (edge point) + 1*1*0 (centroid point);
+    // den = 0.5*1 + 1*1 ⇒ hfr = 2.5 / 1.5 = 5/3. If `right`/`bottom` regress to the
+    // old `X+Width-1`/`Y+Height-1` formula, this sample is never visited and both
+    // results collapse back to 0.0, failing these assertions.
+    let expected = 2.5_f64 / 1.5_f64;
+    assert!(
+        (right_hfr - expected).abs() < 1e-9,
+        "right-edge HFR {right_hfr} != expected {expected} (bounds.right() sample not included)"
+    );
+    assert!(
+        (bottom_hfr - expected).abs() < 1e-9,
+        "bottom-edge HFR {bottom_hfr} != expected {expected} (bounds.bottom() sample not included)"
     );
 }
 
