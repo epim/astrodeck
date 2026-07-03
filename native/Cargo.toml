@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/astro-star",
+    "crates/astro-focus",
+    "crates/astro-tppa",
+    "crates/astrodeck-native",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MPL-2.0"
+rust-version = "1.85"
