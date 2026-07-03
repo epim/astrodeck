@@ -960,7 +960,16 @@ class Hub:
                     dev_num=getattr(d, "dev_num", 0), name=d.name))
             elif self.mode == "nina":
                 devs.append(ProfileDevice(role=role, backend="nina", name=d.name))
-        p = Profile(name=name, devices=devs,
+        # Record the primary explicitly: a captured rig must NEVER fall back to
+        # the sim primary, or every role not captured (safety, guider, ...) would
+        # silently resolve to a simulator on the next activate (fail-open safety).
+        if self.nina_client is not None:
+            primary = "nina"
+        elif any(d.backend == "alpaca" for d in devs):
+            primary = "native"
+        else:
+            primary = "sim" if self.mode == "sim" else ""
+        p = Profile(name=name, devices=devs, primary_backend=primary,
                     nina_host=(self.nina_client.host if self.nina_client else None),
                     site_name=self.site.get("name"))
         profiles.save(p)

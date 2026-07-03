@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .config import PROFILES_DIR, Optics
 from .persist import ensure_dir, list_json, read_json_or, write_json_atomic
@@ -67,11 +67,12 @@ class Profile(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))  # immutable identity
     name: str = "New Profile"    # display only; mutable; may collide → prompt
     # Stage B: the RigSpec primary (default backend for any role with no explicit
-    # per-device override). Old profiles on disk lack this key → pydantic defaults
-    # to "sim", but ``to_rigspec`` derives a better primary for legacy shapes
-    # (nina_host-only → "nina", any device row → "native") so the literal default
-    # only bites a genuinely empty profile.
-    primary_backend: str = "sim"
+    # per-device override). Old profiles on disk lack this key → the empty
+    # default is falsy so ``to_rigspec`` derives the primary for legacy shapes
+    # (nina_host-only → "nina", any device row → "native", empty rig → "sim").
+    # A truthy default here would silently resolve every unlisted role of a REAL
+    # rig to the simulator backend — including a fail-open sim SafetyMonitor.
+    primary_backend: str = ""
     devices: list[ProfileDevice] = []
     nina_host: str | None = None
     nina_port: int = 1888
@@ -79,6 +80,21 @@ class Profile(BaseModel):
     phd2_port: int = 4400
     optics: Optics | None = None       # per-rig override; resolved at read time
     site_name: str | None = None
+
+    @model_validator(mode="after")
+    def _heal_sim_primary(self) -> "Profile":
+        """Heal profiles written while ``primary_backend`` defaulted to ``"sim"``.
+
+        A ``"sim"`` primary combined with REAL device rows is (near-certainly) an
+        artifact of that old default, and it is dangerous: connecting such a
+        profile fills every unlisted role — including ``safety`` — with a
+        simulator, so the safety gate reads a fail-open always-SAFE monitor while
+        a real mount runs. Coerce back to the derived primary; a genuinely all-sim
+        profile (no real rows) keeps ``"sim"``."""
+        if self.primary_backend == "sim" and any(
+                d.backend not in ("", "sim") for d in self.devices):
+            self.primary_backend = self._derived_primary()
+        return self
 
     @property
     def mode(self) -> str:
