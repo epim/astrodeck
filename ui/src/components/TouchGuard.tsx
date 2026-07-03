@@ -216,6 +216,9 @@ export default function TouchGuard() {
   const lastInteractRef = useRef(Date.now());
   const idleTimer = useRef<number | null>(null);
   const countdownTimer = useRef<number | null>(null);
+  // Mirrors `countdown` for the interval's `check` closure WITHOUT being a
+  // dependency of the arming effect below — see the effect's comment.
+  const countdownRef = useRef(false);
 
   const setLockedRef = useRef(setLocked);
   setLockedRef.current = setLocked;
@@ -228,11 +231,13 @@ export default function TouchGuard() {
   useEffect(() => {
     // disabled when no auto-lock configured, gate not available, or already locked.
     if (!autoLockMs || !lockAvailable || locked) {
+      countdownRef.current = false;
       setCountdown(false);
       return;
     }
     const bump = () => {
       lastInteractRef.current = Date.now();
+      countdownRef.current = false;
       setCountdown(false);
       if (countdownTimer.current != null) {
         clearTimeout(countdownTimer.current);
@@ -245,7 +250,14 @@ export default function TouchGuard() {
     const check = () => {
       const idle = Date.now() - lastInteractRef.current;
       // require the full grace AND the configured idle window before counting down.
-      if (idle >= Math.max(autoLockMs, MANUAL_GRACE_MS) && !countdown) {
+      // `countdownRef` (not the `countdown` state) gates re-arming: reading state
+      // here would need `countdown` in the dep array below, and the resulting
+      // re-run's cleanup would clearTimeout() the 5s lock timer the INSTANT it's
+      // armed (React tears down the previous effect before the new one runs) —
+      // lockNow() would then be unreachable via the idle path. The ref lets the
+      // single long-lived interval track countdown state without re-arming.
+      if (idle >= Math.max(autoLockMs, MANUAL_GRACE_MS) && !countdownRef.current) {
+        countdownRef.current = true;
         setCountdown(true);
         countdownTimer.current = window.setTimeout(lockNow, COUNTDOWN_MS);
       }
@@ -258,9 +270,10 @@ export default function TouchGuard() {
       if (idleTimer.current != null) clearInterval(idleTimer.current);
       if (countdownTimer.current != null) clearTimeout(countdownTimer.current);
     };
-  }, [autoLockMs, lockAvailable, locked, countdown, lockNow]);
+  }, [autoLockMs, lockAvailable, locked, lockNow]);
 
   const cancelCountdown = () => {
+    countdownRef.current = false;
     setCountdown(false);
     lastInteractRef.current = Date.now();
     if (countdownTimer.current != null) {

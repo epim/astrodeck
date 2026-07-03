@@ -7,6 +7,7 @@ The hub is the single place that knows which physical device fills each role
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -107,6 +108,45 @@ PREVIEW_THUMB_KEEP = 50
 PREVIEW_LINEAR_KEEP = 2
 
 
+def precess_j2000_to_jnow(ra_hours: float, dec_deg: float,
+                          when: float | None = None) -> tuple[float, float]:
+    """Precess an ICRS/J2000 (RA hours, Dec deg) to topocentric-apparent JNOW.
+
+    The whole app above the device layer works in J2000 (the curated catalog and
+    ASTAP both return J2000/ICRS), but real ASCOM/Alpaca mounts are almost
+    universally topocentric (JNOW): in mid-2026 the J2000->JNOW offset is ~20
+    arcmin and grows ~50 arcsec/yr, so feeding raw J2000 to a JNOW mount lands a
+    long-FL rig outside the frame and corrupts its sync/alignment model. We use
+    astropy's IAU-2006 precession/nutation (ICRS -> TETE, "true equator true
+    equinox of date" = apparent place) at the observation time.
+
+    Imported lazily: astropy is a real dependency but pulling it into the hub's
+    import graph at module load slows an unrelated import path."""
+    from astropy.coordinates import ICRS, TETE
+    from astropy.time import Time
+    import astropy.units as u
+
+    t = Time(when if when is not None else time.time(), format="unix")
+    c = ICRS(ra=ra_hours * 15.0 * u.deg, dec=dec_deg * u.deg)
+    apparent = c.transform_to(TETE(obstime=t))
+    return apparent.ra.hourangle % 24.0, float(apparent.dec.deg)
+
+
+def precess_jnow_to_j2000(ra_hours: float, dec_deg: float,
+                          when: float | None = None) -> tuple[float, float]:
+    """Inverse of :func:`precess_j2000_to_jnow`: topocentric-apparent JNOW back to
+    ICRS/J2000, so a JNOW mount's reported position can be reasoned about in the
+    J2000 frame everything else uses."""
+    from astropy.coordinates import ICRS, TETE
+    from astropy.time import Time
+    import astropy.units as u
+
+    t = Time(when if when is not None else time.time(), format="unix")
+    c = TETE(ra=ra_hours * 15.0 * u.deg, dec=dec_deg * u.deg, obstime=t)
+    icrs = c.transform_to(ICRS())
+    return icrs.ra.hourangle % 24.0, float(icrs.dec.deg)
+
+
 @dataclass
 class PreviewEntry:
     """One ring slot. Replaces the old ``tuple[bytes, str]`` — carries the bytes
@@ -158,6 +198,32 @@ class Hub:
         # a manual disconnect. The legacy connect_sim/connect_nina/connect_alpaca_device
         # paths leave it None (they predate this surface and report via self.devices).
         self.last_connect_result: ConnectResult | None = None
+        # per-role BackendSession opened by the legacy single-role Alpaca connect
+        # path (connect_alpaca_device). Retained so the httpx client each one owns
+        # is aclosed when the role is replaced or the rig is torn down, instead of
+        # leaking a keep-alive socket pool per reconnect (session-leak fix).
+        self._alpaca_sessions: dict[str, Any] = {}
+        # single-lane connect serialization (connect-race fix): every connect path
+        # AND the teardown acquire this so two overlapping connects can never
+        # interleave disconnect_all/connect and leave hub.devices a union of two
+        # rigs with orphaned (still-connected) device objects.
+        self._connect_lock: asyncio.Lock = asyncio.Lock()
+        # single-camera mutual exclusion (capture-interlock fix): the live loop,
+        # single capture, autofocus, sequence and solve exposures all acquire this
+        # for the duration of the actual expose() so two coroutines can never poll
+        # the shared imageready flag at once (cross-downloaded frames / stamped
+        # with the wrong exposure metadata / InvalidOperation).
+        self._capture_lock: asyncio.Lock = asyncio.Lock()
+        self._capture_busy: str | None = None
+        # cached EquatorialSystem verdict for the connected Alpaca mount: True when
+        # it expects topocentric (JNOW) coordinates and the hub must precess
+        # J2000<->JNOW at the slew/sync boundary. None until first probed; reset on
+        # teardown. Only consulted in native ("alpaca") mode.
+        self._mount_wants_jnow: bool | None = None
+        # boot auto-connect background task (boot-serves-immediately fix): the
+        # lifespan spawns connect_active here instead of awaiting it inline, so the
+        # HTTP/WS surface comes up at once even against an unreachable rig.
+        self._boot_connect_task: asyncio.Task | None = None
         self._nina_ws_task: asyncio.Task | None = None
         self._nina_hb_task: asyncio.Task | None = None   # 5s NINA heartbeat
         self._bridge_ready = False              # false until first successful NINA poll
@@ -194,13 +260,20 @@ class Hub:
     # ------------------------------------------------------------ connection
 
     async def connect_sim(self) -> dict:
+        # Serialize with every other connect / teardown (connect-race fix): the
+        # single-lane lock is held across the whole disconnect+connect so an
+        # overlapping connect can't interleave and union two rigs together.
+        async with self._connect_lock:
+            return await self._connect_sim_unlocked()
+
+    async def _connect_sim_unlocked(self) -> dict:
         # Stage A: route through the pluggable harness (RigSpec -> assemble ->
         # SimBackend) instead of calling build_sim_rig() directly. Behavior is
         # preserved exactly: the orchestrator hands out the SAME sim device
         # objects (sharing one SimRig state), and this method still connects each
         # role, the guide camera and the SimGuider, sets self.sim_rig, and derives
         # self.mode = "sim".
-        await self.disconnect_all()
+        await self._teardown()
         RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
         result = await connect_profile(RigSpec(primary="sim"))
         # the lone sim session owns the shared SimRig state; the guide camera is
@@ -234,7 +307,11 @@ class Hub:
         ``build_nina_rig`` reference is passed into the backend via
         ``ConnSpec.extra['build_rig']`` so the existing test monkeypatch seam
         (``monkeypatch.setattr(hub, 'build_nina_rig', ...)``) keeps working."""
-        await self.disconnect_all()
+        async with self._connect_lock:
+            return await self._connect_nina_unlocked(host, port)
+
+    async def _connect_nina_unlocked(self, host: str, port: int = 1888) -> dict:
+        await self._teardown()
         self._bridge_ready = False             # warming-up until first heartbeat
         RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
         from .devices.backend import get_backend
@@ -286,6 +363,13 @@ class Hub:
 
     async def connect_alpaca_device(self, role: str, host: str, port: int,
                                     dev_type: str, dev_num: int, name: str) -> dict:
+        async with self._connect_lock:
+            return await self._connect_alpaca_device_unlocked(
+                role, host, port, dev_type, dev_num, name)
+
+    async def _connect_alpaca_device_unlocked(self, role: str, host: str, port: int,
+                                              dev_type: str, dev_num: int,
+                                              name: str) -> dict:
         # Stage A: route the single-role Alpaca connect through the NativeBackend
         # (RigSpec/registry) instead of calling alpaca.make_device directly. The
         # native session's get_device(role, conn) builds the device against the
@@ -301,12 +385,23 @@ class Hub:
         await dev.connect()
         dev.role = role                        # device identity for Profiles (A.6)
         old = self.devices.get(role)
+        old_session = self._alpaca_sessions.get(role)
+        self.devices[role] = dev
+        self._mount_wants_jnow = None          # re-probe EquatorialSystem after a mount swap
+        # retain the session so its httpx client is aclosed when this role is later
+        # replaced or the rig torn down (session-leak fix); close the one we are
+        # replacing so its keep-alive sockets don't accumulate per reconnect.
+        self._alpaca_sessions[role] = session
         if old:
             try:
                 await old.disconnect()
             except Exception:
                 pass
-        self.devices[role] = dev
+        if old_session is not None:
+            try:
+                await old_session.close()
+            except Exception:
+                pass
         # record enough to replay this connection (reconnect_role / escalation).
         self._last_connect[role] = {"backend": "alpaca", "host": host, "port": port,
                                     "dev_type": dev_type, "dev_num": dev_num,
@@ -343,7 +438,14 @@ class Hub:
 
         NEVER initiates motion: it only opens device connections (no unpark / slew
         / set_tracking)."""
-        await self.disconnect_all()
+        async with self._connect_lock:
+            return await self._connect_rigspec_unlocked(
+                spec, set_active=set_active, profile=profile)
+
+    async def _connect_rigspec_unlocked(self, spec: "RigSpec", *,
+                                        set_active: str | None = None,
+                                        profile: "Profile | None" = None) -> dict:
+        await self._teardown()
         RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
         result = await connect_profile(spec)
         summary = await self._apply_connect_result(result, primary=spec.primary)
@@ -470,6 +572,18 @@ class Hub:
         return out
 
     async def disconnect_all(self) -> None:
+        """Public teardown entry (routes / shutdown). Serialized with every
+        connect path through ``_connect_lock`` so a disconnect can't interleave a
+        connect that is mid-flight."""
+        async with self._connect_lock:
+            await self._teardown()
+
+    async def _teardown(self) -> None:
+        """The actual rig teardown. MUST be called with ``_connect_lock`` held (via
+        ``disconnect_all`` or from inside a locked connect path) so it never races
+        a concurrent connect. Defense-in-depth: skip ``asyncio.current_task()`` in
+        the busy-cancel loop so a driver that runs teardown as its first step (the
+        legacy apply path) can never cancel itself."""
         self.stop_loop()
         await self.polar.stop()
         if self._status_task and not self._status_task.done():
@@ -492,8 +606,10 @@ class Hub:
         self.last_move_ts = None
         self._move_rates_seen = {"ra": 0.0, "dec": 0.0}
         self._bridge_ready = False
+        current = asyncio.current_task()
         for task in self._busy.values():
-            task.cancel()
+            if task is not current:
+                task.cancel()
         self._busy.clear()
         for dev in self.devices.values():
             try:
@@ -501,6 +617,7 @@ class Hub:
             except Exception:
                 pass
         self.devices.clear()
+        self._mount_wants_jnow = None
         if self.guider:
             try:
                 await self.guider.disconnect()
@@ -513,6 +630,22 @@ class Hub:
             except Exception:
                 pass
             self.nina_client = None
+        # Close the native httpx clients we still hold, so a profile switch /
+        # repeated reconnect leaks no keep-alive socket pool (session-leak fix):
+        # the retained RigSpec-connect sessions AND the per-role legacy-Alpaca
+        # sessions. Best-effort — one failing aclose must not strand the others.
+        if self.last_connect_result is not None:
+            for session in self.last_connect_result.sessions.values():
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+        for session in self._alpaca_sessions.values():
+            try:
+                await session.close()
+            except Exception:
+                pass
+        self._alpaca_sessions.clear()
         self.sim_rig = None
         self.mode = "none"
         # a manual disconnect clears the boot-LED grid (no stale tri-state).
@@ -895,26 +1028,42 @@ class Hub:
     async def apply_profile(self, p: Profile) -> dict:
         """Replay a profile's connection intent, returning a per-device outcome
         (never a lying "all connected" toast). Auto-detected camera optics are
-        persisted back so a later disconnected apply still has a real FOV."""
-        await self.disconnect_all()
+        persisted back so a later disconnected apply still has a real FOV.
+
+        Serialized under ``_connect_lock`` (connect-race fix) and driven via the
+        internal ``*_unlocked`` workers so the nested connects don't re-acquire it.
+        NOTE: this runs on the ``_spawn_connect`` lane (see the apply route), NOT
+        ``_busy``, so the first ``_teardown`` here can never cancel its own driver
+        task (the historical apply self-cancel)."""
+        async with self._connect_lock:
+            return await self._apply_profile_unlocked(p)
+
+    async def _apply_profile_unlocked(self, p: Profile) -> dict:
+        await self._teardown()
         results: list[dict] = []
+        # Connect NINA FIRST, then the Alpaca rows: connect_nina tears down the
+        # whole rig as its first step, so connecting it AFTER the Alpaca devices
+        # (as the old order did) wiped every Alpaca device just connected in this
+        # same apply while still reporting them ok=True. Alpaca rows go through the
+        # single-role path, which replaces only its own role (no teardown), so the
+        # NINA devices survive (mixed-rig fix).
+        if p.nina_host and any(d.backend == "nina" for d in p.devices):
+            try:
+                await self._connect_nina_unlocked(p.nina_host, p.nina_port)
+                results.append({"role": "nina", "ok": True})
+            except Exception as e:
+                results.append({"role": "nina", "ok": False, "error": str(e)})
         for d in p.devices:
             if d.backend != "alpaca":
                 continue
             try:
-                await self.connect_alpaca_device(
+                await self._connect_alpaca_device_unlocked(
                     d.role, d.host, d.port, d.dev_type, d.dev_num,
                     d.name or f"{d.dev_type} #{d.dev_num}")
                 results.append({"role": d.role, "ok": True})
             except Exception as e:
                 results.append({"role": d.role, "ok": False, "error": str(e)})
                 bus.log("warning", f"profile '{p.name}': {d.role} failed: {e}", "profile")
-        if p.nina_host and any(d.backend == "nina" for d in p.devices):
-            try:
-                await self.connect_nina(p.nina_host, p.nina_port)
-                results.append({"role": "nina", "ok": True})
-            except Exception as e:
-                results.append({"role": "nina", "ok": False, "error": str(e)})
         if p.phd2_host:
             try:
                 await self.connect_phd2(p.phd2_host, p.phd2_port)
@@ -977,13 +1126,102 @@ class Hub:
 
     # --------------------------------------------------------------- capture
 
+    @contextlib.asynccontextmanager
+    async def exposure_guard(self, label: str):
+        """Serialize the single camera across every capture path (live loop,
+        single capture, autofocus, sequence, plate-solve). The lock is held ONLY
+        for the duration of the actual ``expose()`` — long enough that two
+        exposures can't poll the shared ``imageready`` flag at once, short enough
+        that the between-frame work (save, solve, slew) doesn't hold it.
+
+        Non-blocking: if the camera is already exposing for another path, raise
+        ``DeviceError`` (which the API maps to 409) with the busy label rather than
+        queueing behind it — mirrors the ``_spawn`` busy pattern. Single-threaded
+        acquire has no gap between the ``locked()`` check and ``acquire`` (the lock
+        grants synchronously when free), so this is race-free on the event loop."""
+        if self._capture_lock.locked():
+            raise DeviceError(
+                f"camera is busy ({self._capture_busy or 'exposing'}); "
+                f"{label} refused")
+        async with self._capture_lock:
+            self._capture_busy = label
+            try:
+                yield
+            finally:
+                self._capture_busy = None
+
+    async def _mount_expects_jnow(self, tel) -> bool:
+        """True when the connected mount expects topocentric-apparent (JNOW)
+        coordinates, so the hub must precess J2000<->JNOW at the slew/sync
+        boundary. Only native ("alpaca") mounts are converted: the sim/NINA mounts
+        are treated as already-consistent with the J2000 catalog (no conversion),
+        which keeps sim tests and NINA framing unchanged.
+
+        Best-effort EquatorialSystem probe (cached): ASCOM ``EquatorialSystem`` is
+        0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
+        unreadable — real ASCOM mounts are overwhelmingly topocentric, and a mount
+        that already reports J2000 (==2) is left un-precessed so we never double-
+        precess it."""
+        if self.mode != "alpaca":
+            return False
+        if self._mount_wants_jnow is not None:
+            return self._mount_wants_jnow
+        wants = True
+        get = getattr(tel, "_get", None)
+        if get is not None:
+            try:
+                equ = await get("equatorialsystem")
+                # only a definitive J2000 (2) / B1950 (3) report disables it.
+                wants = int(equ) not in (2, 3)
+            except Exception:
+                wants = True
+        self._mount_wants_jnow = wants
+        return wants
+
+    async def to_mount_frame(self, tel, ra_hours: float,
+                             dec_deg: float) -> tuple[float, float]:
+        """Convert a J2000 target into the frame the mount expects, for slew/sync.
+        No-op unless the mount is a JNOW Alpaca mount (see ``_mount_expects_jnow``).
+
+        Fail-safe: if the astropy transform raises (e.g. an IERS hiccup on an
+        offline Pi), fall back to the raw coordinates and log — a precession
+        failure must never abort an unattended slew. The plate-solve center loop
+        still corrects the residual, so worst case is one slightly-off first slew,
+        not a dead night."""
+        if not await self._mount_expects_jnow(tel):
+            return ra_hours, dec_deg
+        try:
+            return await asyncio.to_thread(precess_j2000_to_jnow, ra_hours, dec_deg)
+        except Exception as e:  # noqa: BLE001 - availability over precision here
+            bus.log("warning", f"J2000->JNOW precession failed ({e}); "
+                               "slewing raw coordinates", "mount")
+            return ra_hours, dec_deg
+
+    async def from_mount_frame(self, tel, ra_hours: float,
+                               dec_deg: float) -> tuple[float, float]:
+        """Convert a mount-reported position back to J2000. No-op unless the mount
+        is a JNOW Alpaca mount. Same fail-safe fallback as ``to_mount_frame``."""
+        if not await self._mount_expects_jnow(tel):
+            return ra_hours, dec_deg
+        try:
+            return await asyncio.to_thread(precess_jnow_to_j2000, ra_hours, dec_deg)
+        except Exception as e:  # noqa: BLE001 - availability over precision here
+            bus.log("warning", f"JNOW->J2000 precession failed ({e}); "
+                               "using raw coordinates", "mount")
+            return ra_hours, dec_deg
+
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
                       frame_type: str = "Light") -> dict:
         cam: Camera = self.require("camera")
-        frame = await cam.expose(exposure_s, gain, offset, binning,
-                                 light=(frame_type.upper() != "DARK"),
-                                 save=save, target=target)
+        # Serialize the exposure against every other capture path (loop / single /
+        # autofocus / sequence / solve) so two coroutines can't poll the shared
+        # camera imageready flag at once (cross-downloaded frames / mis-stamped
+        # metadata / InvalidOperation).
+        async with self.exposure_guard(f"capture {frame_type.lower()}"):
+            frame = await cam.expose(exposure_s, gain, offset, binning,
+                                     light=(frame_type.upper() != "DARK"),
+                                     save=save, target=target)
         self.last_frame = frame
         # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
         # preview so the first `preview` event already carries the correct
@@ -1006,9 +1244,13 @@ class Hub:
                     filt = fw.filter_names[await fw.get_position()]
                 except Exception:
                     pass
-            save_fits(frame, local_save_path, target=target, filter_name=filt,
-                      frame_type=frame_type, ra_hours=ra, dec_deg=dec,
-                      instrument=cam.name)
+            # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
+            # freezes the event loop for seconds every frame (WS/preview stall,
+            # queued guide events, delayed STOP) — same as solve_and_sync's write.
+            await asyncio.to_thread(
+                save_fits, frame, local_save_path, target=target, filter_name=filt,
+                frame_type=frame_type, ra_hours=ra, dec_deg=dec,
+                instrument=cam.name)
             # carry the path on the frame so _publish_preview reports a correct
             # saved_path/saved_local in the very first event (no stale re-publish).
             frame.saved_path = str(local_save_path)
@@ -1196,9 +1438,19 @@ class Hub:
         self._frame_counter = getattr(self, "_frame_counter", 0) + 1
         return CAPTURE_DIR / safe / f"{frame_type}_{safe}_{stamp}_{self._frame_counter:04d}.fits"
 
-    def start_loop(self, exposure_s: float, gain: int, offset: int,
-                   binning: int = 1) -> None:
+    async def start_loop(self, exposure_s: float, gain: int, offset: int,
+                         binning: int = 1) -> None:
+        # AWAIT the previous loop's cancellation before spawning the replacement.
+        # Without this, the old task's `except CancelledError: await abort_exposure`
+        # could land AFTER the new loop's startexposure and abort the new loop's
+        # first frame. Awaiting also lets the old expose release the capture lock,
+        # so the new loop's first capture doesn't 409 against a still-tearing-down
+        # predecessor.
+        old = self._loop_task
         self.stop_loop()
+        if old is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await old
 
         async def _loop() -> None:
             while True:
@@ -1218,6 +1470,17 @@ class Hub:
             self._loop_task.cancel()
         self._loop_task = None
         bus.publish("capture_loop", running=False)
+
+    async def stop_loop_and_wait(self) -> None:
+        """Stop the live loop AND await its cancellation, so the caller (sequence
+        start / a single capture) knows the loop's in-flight expose has fully
+        released the camera + capture lock before it starts its own — no overlap,
+        no 409 against a still-tearing-down predecessor."""
+        old = self._loop_task
+        self.stop_loop()
+        if old is not None:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await old
 
     @property
     def looping(self) -> bool:
@@ -1239,12 +1502,17 @@ class Hub:
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
         # Pointing hint from the mount -- drives ASTAP's near search and lets a
-        # refusing SimSolver fail without inventing a centered solution.
+        # refusing SimSolver fail without inventing a centered solution. The mount
+        # reports JNOW on a real Alpaca mount, so bring it back to J2000 (the frame
+        # ASTAP solves in and the FITS header records); a no-op for sim/NINA.
         try:
             ra_hint, dec_hint = await tel.get_position()
+            if ra_hint is not None:
+                ra_hint, dec_hint = await self.from_mount_frame(tel, ra_hint, dec_hint)
         except Exception:
             ra_hint = dec_hint = None
-        frame = await cam.expose(exposure_s, 200, 30, binning=2)
+        async with self.exposure_guard("plate solve"):
+            frame = await cam.expose(exposure_s, 200, 30, binning=2)
         self.last_frame = frame
         await self._publish_preview(frame)
         # Save the captured frame to a temp FITS for the local solver. Works for
@@ -1271,9 +1539,15 @@ class Hub:
                                     fov_deg_hint=fov_hint)
         if not result.success:
             raise DeviceError(f"plate solve failed: {result.message}")
-        await tel.sync(result.ra_hours, result.dec_deg)
+        # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
+        # real Alpaca mount, else unchanged) so a plate-solve sync does not corrupt
+        # a JNOW mount's alignment model by ~20 arcmin. The returned dict stays
+        # J2000 — the caller's centering error math compares against a J2000 target.
+        sync_ra, sync_dec = await self.to_mount_frame(
+            tel, result.ra_hours, result.dec_deg)
+        await tel.sync(sync_ra, sync_dec)
         bus.log("info", f"solved & synced: RA {result.ra_hours:.4f}h "
-                        f"Dec {result.dec_deg:+.3f}°", "solve")
+                        f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
 
@@ -1316,7 +1590,13 @@ class Hub:
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
                             "attempts": attempt - 1, "aborted": True}
-                await tel.slew(ra_hours, dec_deg)
+                # Slew in the mount's own frame: a JNOW Alpaca mount would
+                # otherwise interpret the J2000 target as JNOW and land ~20 arcmin
+                # off. Converting inside the loop (not once up front) keeps the
+                # apparent place current across a long multi-attempt center; a
+                # no-op for sim/NINA. The centering error below stays in J2000.
+                slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
+                await tel.slew(slew_ra, slew_dec)
             # A plate-solve failure or timeout must DEGRADE to a raw GoTo, not
             # hang or propagate (live bug): the mount has already slewed, so we
             # return the un-centered result with a warning rather than aborting.

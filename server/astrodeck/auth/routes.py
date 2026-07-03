@@ -48,7 +48,8 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..config import config_store
-from .deps import configure_provider_from_auth, resolve_principal
+from .deps import (_scope_is_remote, configure_provider_from_auth,
+                   resolve_principal)
 from .google import (GoogleOIDCClient, GoogleOIDCConfig, OIDCError, new_nonce,
                      new_pkce_verifier, new_state, pkce_challenge)
 from .session import session_secret, sign_session, verify_session
@@ -357,8 +358,14 @@ def _revoke_jti(jti: str) -> None:
 async def auth_me(request: Request):
     """The resolved Principal for the caller. FAIL-CLOSED: an unauthenticated
     caller is 401 (NEVER default-admin) under a real provider; under the open
-    ``none`` provider the active provider resolves admin as usual."""
-    principal = await resolve_principal(request)
+    ``none`` provider the active provider resolves admin as usual.
+
+    W3 remote interlock: the ``remote`` flag is derived from the ASGI scope
+    (mirroring ``/api/me`` and the ``/ws`` gate). A relay-tunnelled caller must
+    NEVER resolve to the open ``none`` provider's admin-for-all -- so a remote
+    request under the open default 401s here instead of disclosing that the rig
+    is in fully-open admin mode."""
+    principal = await resolve_principal(request, remote=_scope_is_remote(request))
     if principal is None:
         raise HTTPException(status_code=401, detail="authentication required")
     return principal.to_public()

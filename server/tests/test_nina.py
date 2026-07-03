@@ -165,23 +165,56 @@ async def test_meridian_flip_survives_guider_without_flip(nina_hub):
     assert g.started            # guiding still restarted despite no flip method
 
 
-async def test_engine_flip_only_when_due(nina_hub):
+async def test_engine_flip_triggers_on_server_ha_not_device(nina_hub, monkeypatch):
+    """The REAL trigger path (not the old faked ``state.ttf = -0.01``): the engine
+    computes hours-to-flip server-side from the hour angle and flips when the
+    target crosses the meridian — even though the NINA device reports a large
+    POSITIVE time-to-flip (its value wraps ~0→12h at the crossing and is never
+    negative, which is exactly why the old ``ttf <= 0`` device gate could never
+    fire on real gear).
+    """
+    from astrodeck.catalog.coords import lst_hours
+
     h, state = nina_hub
     h.devices.pop("focuser", None)          # skip post-flip autofocus for speed
+    # a real GEM past the meridian still reports a POSITIVE wrapped value here.
+    state.ttf = 11.9
+    # the target-near-the-meridian coords below land wherever the sky is now, so
+    # disarm the W1.10 sun cone (covered by test_sun_guard) to keep this test
+    # date/time independent.
+    monkeypatch.setattr(hub_module.config_store.cfg().safety,
+                        "solar_avoidance", False)
+
+    flips: list[tuple] = []
+    real_flip = h.meridian_flip
+
+    async def spy_flip(ra, dec):
+        flips.append((ra, dec))
+        return await real_flip(ra, dec)
+
+    monkeypatch.setattr(h, "meridian_flip", spy_flip)
+
     engine = SequenceEngine(h)
     engine.plan = SequencePlan(meridian_flip=True)
-    target = Target(name="M81", ra_hours=9.9258, dec_deg=69.0653, steps=[])
+    # _setup_target arms the flip when a target is acquired EAST of the meridian;
+    # simulate that here (we call _maybe_meridian_flip directly, bypassing setup).
+    engine._flip_armed = True
+    lon = h.site["longitude"]
 
-    state.ttf = 5.0                         # not due
-    await engine._maybe_meridian_flip(target)
-    assert state.flip_count == 0
+    # target still ~3h EAST of the meridian (HA = -3h) → server countdown +3h,
+    # far beyond the frame window → NOT due, no flip, despite the +11.9h device.
+    east = Target(name="east", ra_hours=(lst_hours(lon) + 3.0) % 24.0,
+                  dec_deg=45.0, steps=[])
+    await engine._maybe_meridian_flip(east, next_exposure_s=1.0)
+    assert flips == []
 
-    state.ttf = -0.01                       # due
-    await engine._maybe_meridian_flip(target)
-    assert state.flip_count == 1
-    # ttf reset by the flip → no second flip
-    await engine._maybe_meridian_flip(target)
-    assert state.flip_count == 1
+    # target just PAST the meridian (HA ~ +3 min, server countdown < 0) → due →
+    # the engine flips even though the device still says +11.9h.
+    west = Target(name="west", ra_hours=(lst_hours(lon) - 0.05) % 24.0,
+                  dec_deg=45.0, steps=[])
+    await engine._maybe_meridian_flip(west, next_exposure_s=1.0)
+    assert flips, ("engine must flip on the server hour-angle countdown even when "
+                   "the device reports a positive (wrapped) time-to-flip")
 
 
 async def test_build_registers_connected_devices(nina):

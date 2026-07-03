@@ -144,3 +144,66 @@ def test_schedule_order_sorts_by_start():
     t_later = _target(start_mode="time", start_time=later)
     ordered = sch.schedule_order([t_later, soon], MID, -12.0, now)
     assert ordered[0] is soon and ordered[1] is t_later
+
+
+# ------------------------------------------------ window freeze / backward search
+
+def test_resolve_window_dusk_already_past_opens_tonight():
+    """A dusk-start window evaluated AFTER dusk must resolve to tonight's dusk (in
+    the past), not tomorrow's — the ~23h-in-the-future re-resolution bug. We pin
+    `now` to 1h after a real dusk crossing and assert the resolved start is that
+    same (past) dusk."""
+    ref = time.time()
+    dusk = sch.next_sun_event(MID["latitude"], MID["longitude"], -12.0, ref,
+                              rising=False)
+    assert dusk is not None
+    now = dusk + 3600.0                      # 1h into the night
+    t = _target(start_mode="dusk")
+    start, _stop = sch.resolve_window(t.schedule, MID, -12.0, now)
+    # start is tonight's dusk (in the past), NOT ~a day ahead.
+    assert start == pytest.approx(dusk, abs=120.0)
+    assert start < now
+
+
+def test_resolve_window_stop_dawn_is_this_nights_dawn():
+    """A dawn-stop window evaluated at night resolves to the coming dawn (forward),
+    which the engine then freezes; a live `now` past it closes the window."""
+    ref = time.time()
+    dawn = sch.next_sun_event(MID["latitude"], MID["longitude"], -12.0, ref,
+                              rising=True)
+    assert dawn is not None
+    now = dawn - 3600.0                       # 1h before dawn, still dark
+    t = _target(stop_mode="dawn")
+    _start, stop = sch.resolve_window(t.schedule, MID, -12.0, now)
+    assert stop == pytest.approx(dawn, abs=120.0)
+    assert stop > now
+
+
+def test_gating_uses_frozen_window_to_close():
+    """gating_status must honor the engine's FROZEN (start, stop) verbatim: a live
+    `now` past a frozen stop is window_closed, even though re-resolving the same
+    dusk/dawn schedule would roll the boundary forward to tomorrow (the freeze
+    fix — dawn cutoff / max_run become reachable again)."""
+    now = time.time()
+    frozen = (now - 3600.0, now - 60.0)       # window that ended a minute ago
+    t = _target(start_mode="dusk", stop_mode="dawn")
+    st = sch.gating_status(t, MID, -12.0, now, window=frozen)
+    assert st["state"] == "window_closed"
+    assert st["stop_ts"] == pytest.approx(now - 60.0)
+
+
+# ----------------------------------------------------------- meridian HA countdown
+
+def test_hours_to_meridian_flip_sign():
+    """Server-side hours-to-flip from the hour angle: 0 at the meridian, positive
+    while EAST of it (counting down), negative once past (flip due)."""
+    from astrodeck.catalog.coords import lst_hours
+    now = 1_700_000_000.0
+    lon = MID["longitude"]
+    lst = lst_hours(lon, now)
+    # target transiting now → HA 0 → ttf ~0.
+    assert sch.hours_to_meridian_flip(lst % 24.0, lon, now) == pytest.approx(0.0, abs=1e-3)
+    # 3h east (RA ahead of LST) → still 3h to the flip.
+    assert sch.hours_to_meridian_flip((lst + 3.0) % 24.0, lon, now) == pytest.approx(3.0, abs=1e-3)
+    # 3h west (RA behind LST) → 3h past the meridian → due (negative).
+    assert sch.hours_to_meridian_flip((lst - 3.0) % 24.0, lon, now) == pytest.approx(-3.0, abs=1e-3)

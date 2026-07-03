@@ -294,6 +294,110 @@ async def test_default_schedule_plan_runs_in_order_no_waiting(sim_hub, temp_stor
 
 # --------------------------------------------------- mount-floor guard on slew
 
+async def test_resume_re_enables_tracking_after_pause(sim_hub, temp_store):
+    """CRITICAL: a safety pause turns tracking OFF (park-hold); the safe-again
+    resume MUST re-run target setup so tracking comes back ON (and the target is
+    re-acquired) before capturing continues — otherwise the rest of the night is
+    shot with the mount not tracking (star trails, drifted field)."""
+    set_safety(temp_store, enabled=True, on_unsafe="pause",
+               unsafe_consecutive=1, resume_safe_consecutive=1,
+               max_pause_min=0, min_alt_deg=0.0)
+    force_cached_unsafe(sim_hub, "cloud")
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())               # center=False → plain slew + tracking
+    assert await wait_for(lambda: engine.state.get("state") == "paused"), engine.state
+    # park-hold turned tracking off during the pause.
+    assert (await sim_hub.require("telescope").get_tracking()) is False
+
+    force_cached_safe(sim_hub)
+    assert await wait_for(lambda: engine.state.get("state") == "complete", timeout=40)
+    # the resume re-acquired the target: tracking is back ON (the bug left it OFF
+    # for the entire remainder of the run).
+    assert (await sim_hub.require("telescope").get_tracking()) is True
+
+
+async def test_center_solve_failure_does_not_crash_run(sim_hub, temp_store, monkeypatch):
+    """CRITICAL: goto_and_center returns error_arcmin=None on the solve-failure /
+    motion-fence abort paths (it degrades to a raw GoTo). Formatting None with
+    :.1f used to raise TypeError and end the whole night at its first target.
+    Here the run must simply log 'solve failed' and continue capturing."""
+    set_safety(temp_store, enabled=False)
+
+    async def degraded(ra_hours, dec_deg, **kw):
+        return {"centered": False, "error_arcmin": None, "attempts": 1,
+                "solve_failed": True}
+    monkeypatch.setattr(sim_hub, "goto_and_center", degraded)
+
+    plan = light_plan(targets=[Target(
+        name="M42", ra_hours=5.5881, dec_deg=-5.3911, center=True,
+        autofocus_first=False,
+        steps=[ExposureStep(filter="L", exposure_s=0.05, count=2)])])
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") == "complete", timeout=40), engine.state
+    assert engine._frames_done == 2          # did not die at the first target
+
+
+async def test_meridian_flip_triggers_via_server_ha_on_sim(sim_hub, temp_store, monkeypatch):
+    """Sim/Alpaca mounts report ``time_to_meridian_flip() -> None``; the engine
+    must fall back to the server hour-angle countdown to ever flip a GEM. A target
+    3h east is not flipped; a target just past the meridian is."""
+    from astrodeck.catalog.coords import lst_hours
+
+    flips: list[tuple] = []
+
+    async def rec_flip(ra_hours, dec_deg):
+        flips.append((ra_hours, dec_deg))
+        return {"centered": True, "error_arcmin": 0.0}
+    monkeypatch.setattr(sim_hub, "meridian_flip", rec_flip)
+
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(meridian_flip=True)   # _cfg stays None → gate no-op
+    # _setup_target arms the flip when a target is acquired east of the meridian;
+    # simulate that (we call _maybe_meridian_flip directly, bypassing setup).
+    engine._flip_armed = True
+    lon = sim_hub.site["longitude"]
+
+    east = Target(name="e", ra_hours=(lst_hours(lon) + 3.0) % 24.0,
+                  dec_deg=20.0, steps=[])
+    await engine._maybe_meridian_flip(east, next_exposure_s=1.0)
+    assert flips == []
+
+    west = Target(name="w", ra_hours=(lst_hours(lon) - 0.05) % 24.0,
+                  dec_deg=20.0, steps=[])
+    await engine._maybe_meridian_flip(west, next_exposure_s=1.0)
+    assert len(flips) == 1
+
+
+async def test_meridian_flip_not_armed_when_acquired_west(sim_hub, temp_store, monkeypatch):
+    """A target acquired already WEST of the meridian is on the correct pier side
+    and must NOT flip: arming on the HA sign alone would flip it, and since the
+    server countdown stays negative for the whole ~12h it is west, it would
+    re-flip on EVERY frame (infinite loop). A full meridian_flip=True run over a
+    west target completes with zero flips."""
+    from astrodeck.catalog.coords import lst_hours
+    set_safety(temp_store, enabled=False)
+
+    flips: list[int] = []
+
+    async def rec_flip(ra_hours, dec_deg):
+        flips.append(1)
+        return {"centered": True, "error_arcmin": 0.0}
+    monkeypatch.setattr(sim_hub, "meridian_flip", rec_flip)
+
+    lon = sim_hub.site["longitude"]
+    west = Target(name="w", ra_hours=(lst_hours(lon) - 3.0) % 24.0, dec_deg=20.0,
+                  center=False, autofocus_first=False,
+                  steps=[ExposureStep(filter="L", exposure_s=0.05, count=3)])
+    plan = light_plan(targets=[west], meridian_flip=True)
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") == "complete", timeout=40), engine.state
+    assert flips == []                        # never flipped (already correct side)
+    assert engine._frames_done == 3
+
+
 async def test_mount_floor_blocks_slew_below_floor(sim_hub, temp_store):
     """With a high safety floor and the mount parked at the pole (or pointing
     low), a slew gate that projects the mount below the configured floor raises a

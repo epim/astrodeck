@@ -27,7 +27,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..catalog.coords import altaz, sun_altaz
+from ..catalog.coords import altaz, lst_hours, sun_altaz
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; only needed for typing
     from .models import Schedule, Target
@@ -87,6 +87,56 @@ def next_sun_event(lat: float, lon: float, alt_deg: float, after_t: float,
     return None
 
 
+def prev_sun_event(lat: float, lon: float, alt_deg: float, before_t: float,
+                   rising: bool) -> float | None:
+    """Unix ts the sun last crossed ``alt_deg`` *before* ``before_t``.
+
+    The backward twin of :func:`next_sun_event`: same forward-time crossing
+    convention (``rising=True`` => altitude increasing through ``alt_deg``,
+    ``rising=False`` => sinking through it) but the search walks backward in
+    coarse steps. This is what lets ``resolve_window`` anchor a boundary to
+    *tonight* — a dusk that already happened this evening still opens the current
+    window instead of rolling to tomorrow (the live re-resolution bug). Returns
+    ``None`` (hard-bounded, polar-safe) when no crossing is found within a
+    sidereal day.
+    """
+    steps = int(_SIDEREAL_DAY_S / _SUN_STEP_S) + 2
+    next_t = before_t
+    next_alt = sun_altitude(lat, lon, next_t)
+    for i in range(1, steps + 1):
+        cur_t = before_t - i * _SUN_STEP_S
+        cur_alt = sun_altitude(lat, lon, cur_t)
+        # evaluate the crossing in forward-time terms (cur_t -> next_t).
+        crossed_up = cur_alt < alt_deg <= next_alt
+        crossed_down = cur_alt > alt_deg >= next_alt
+        if (rising and crossed_up) or (not rising and crossed_down):
+            return _refine_crossing(lat, lon, alt_deg, cur_t, next_t)
+        next_t, next_alt = cur_t, cur_alt
+    return None
+
+
+def _night_dawn(lat: float, lon: float, twilight_deg: float,
+                now: float) -> float | None:
+    """The dawn (sun rising through the twilight angle) that ends the current or
+    imminent night — the next dawn at/after ``now``."""
+    return next_sun_event(lat, lon, twilight_deg, now, rising=True)
+
+
+def _night_dusk(lat: float, lon: float, twilight_deg: float,
+                now: float) -> float | None:
+    """The dusk (sun setting through the twilight angle) that *opens* the current
+    or imminent night. Anchored to the paired dawn so it is the same night's dusk:
+    the last dusk before the next dawn. When ``now`` is already inside the dark
+    span this returns the dusk that is now in the PAST (so the frozen window is
+    open, not ~23h in the future); when ``now`` is in daylight it returns the
+    coming evening's dusk. Falls back to the next forward dusk if no dawn resolves
+    (polar)."""
+    dawn = _night_dawn(lat, lon, twilight_deg, now)
+    if dawn is None:
+        return next_sun_event(lat, lon, twilight_deg, now, rising=False)
+    return prev_sun_event(lat, lon, twilight_deg, dawn, rising=False)
+
+
 def _refine_crossing(lat: float, lon: float, alt_deg: float,
                      lo_t: float, hi_t: float) -> float:
     """Bisect a bracketed sun-altitude crossing to ~second precision."""
@@ -143,30 +193,35 @@ def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | Non
 
 def _resolve_event_ts(mode: str, offset_min: int, time_str: str | None,
                       lat: float, lon: float, twilight_deg: float,
-                      now: float, *, dawn_rising: bool) -> float | None:
-    """Resolve one schedule boundary (dusk/dawn/time) to a unix ts.
+                      now: float) -> float | None:
+    """Resolve one schedule boundary (dusk/dawn/time) to a unix ts *for tonight*.
 
-    ``dawn_rising`` picks the sun-crossing direction: dusk = sun setting through
-    the twilight angle (``rising=False``); dawn = sun rising through it
-    (``rising=True``). ``time`` parses ``"HH:MM"`` into the next occurrence at or
-    after ``now`` (UTC-naive wall clock via :func:`time.localtime`)."""
+    dusk/dawn anchor to the current-or-imminent night's bracketing sun events
+    (:func:`_night_dusk` / :func:`_night_dawn`), searching backward as well as
+    forward so a dusk that already passed still opens the window (fixes the
+    ~23h-in-the-future re-resolution). ``time`` resolves ``"HH:MM"`` to the
+    occurrence nearest ``now`` (within ±12h), so an evening start already past
+    stays tonight instead of rolling to tomorrow."""
     if mode == "now":
         return now
     if mode == "none":
         return None
-    if mode in ("dusk", "dawn"):
-        rising = (mode == "dawn")
-        base = next_sun_event(lat, lon, twilight_deg, now, rising=rising)
-        if base is None:
-            return None
-        return base + offset_min * 60.0
+    if mode == "dusk":
+        base = _night_dusk(lat, lon, twilight_deg, now)
+        return None if base is None else base + offset_min * 60.0
+    if mode == "dawn":
+        base = _night_dawn(lat, lon, twilight_deg, now)
+        return None if base is None else base + offset_min * 60.0
     if mode == "time":
-        return _next_clock_time(time_str, now)
+        return _clock_time_near_now(time_str, now)
     return None
 
 
-def _next_clock_time(time_str: str | None, now: float) -> float | None:
-    """The unix ts of the next local ``HH:MM`` at or after ``now``."""
+def _clock_time_near_now(time_str: str | None, now: float) -> float | None:
+    """The unix ts of local ``HH:MM`` on the occurrence *nearest* ``now`` (within
+    ±12h). Unlike a strictly-forward roll, an evening start-time a few minutes
+    past ``now`` resolves to tonight (in the past) rather than +23h tomorrow — so
+    a frozen window opens correctly (§1.6 window-freeze fix)."""
     if not time_str:
         return None
     try:
@@ -176,7 +231,10 @@ def _next_clock_time(time_str: str | None, now: float) -> float | None:
     lt = time.localtime(now)
     candidate = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hh, mm, 0,
                              0, 0, -1))
-    if candidate < now:
+    # snap to the occurrence within (now-12h, now+12h] — the "tonight" instance.
+    while candidate - now > 43200.0:
+        candidate -= 86400.0
+    while now - candidate > 43200.0:
         candidate += 86400.0
     return candidate
 
@@ -190,19 +248,47 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
     ``none`` => no stop (``None``); ``dawn``/``time`` similarly. ``max_run_min``,
     when set, also caps the stop to ``start + max_run_min`` (whichever is sooner).
     A boundary that cannot be resolved (e.g. polar dusk) yields ``None`` there.
+
+    NB: boundaries anchor to *tonight* (backward + forward sun search / nearest
+    clock occurrence). The engine resolves this ONCE at run start and freezes the
+    ``(start, stop)`` pair, then compares live ``now`` against the frozen window —
+    so a dawn that passes mid-run closes the window instead of re-resolving into
+    tomorrow (§1.6 / gating_status ``window=`` param).
     """
     lat, lon = _lat_lon(site)
     start = _resolve_event_ts(sched.start_mode, sched.start_offset_min,
-                              sched.start_time, lat, lon, twilight_deg, now,
-                              dawn_rising=False)
+                              sched.start_time, lat, lon, twilight_deg, now)
     stop = _resolve_event_ts(sched.stop_mode, sched.stop_offset_min,
-                             sched.stop_time, lat, lon, twilight_deg, now,
-                             dawn_rising=True)
+                             sched.stop_time, lat, lon, twilight_deg, now)
     # max_run_min caps the window relative to the resolved start.
     if sched.max_run_min and start is not None:
         cap = start + sched.max_run_min * 60.0
         stop = cap if stop is None else min(stop, cap)
     return start, stop
+
+
+# --------------------------------------------------------------------- meridian
+
+def hours_to_meridian_flip(ra_hours: float, lon_deg: float,
+                           now: float | None = None) -> float:
+    """Server-side hours until the target at ``ra_hours`` reaches the meridian
+    flip point, derived from the hour angle ``HA = LST - RA``.
+
+    This is the SAME math the hub's Monitor uses (``hub._compute_meridian``): the
+    single source of the flip countdown so the engine and the UI agree. It is the
+    *authoritative* countdown because no production mount driver reports a usable
+    value — NINA's ``TimeToMeridianFlip`` is provably never negative (it wraps
+    ~0→12h at the crossing) and Alpaca/sim report ``None`` — so an engine that
+    waited for the device to report ``<= 0`` would never flip (the live bug that
+    tracks a GEM counterweight-up into the pier).
+
+    Sign convention (wrapped to ``(-12, 12]``): **positive** while the target is
+    still EAST of the meridian (counting down to the flip); **<= 0** once it has
+    crossed and a German mount is tracking counterweight-up and must flip.
+    """
+    lst = lst_hours(lon_deg, now)
+    ha = ((lst - ra_hours + 12.0) % 24.0) - 12.0    # HA in [-12, 12)
+    return -ha
 
 
 # --------------------------------------------------------------------- target alt
@@ -238,7 +324,9 @@ def target_max_altitude(ra_h: float, dec_deg: float, lat: float, lon: float,
 # --------------------------------------------------------------------- gating
 
 def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
-                  now: float, target_alt: float | None = None) -> dict[str, Any]:
+                  now: float, target_alt: float | None = None,
+                  window: tuple[float | None, float | None] | None = None
+                  ) -> dict[str, Any]:
     """Decide whether ``target`` is runnable right now.
 
     Returns ``{state, reason, eta_s, start_ts, stop_ts}`` where ``state`` is one
@@ -254,10 +342,19 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
 
     ``target_alt`` may be passed in (the engine already has a fresh altitude);
     otherwise it is computed at ``now``.
+
+    ``window`` is the engine's FROZEN ``(start_ts, stop_ts)`` for this run — when
+    supplied it is used verbatim instead of re-resolving, so a live ``now`` past a
+    frozen dawn closes the window (instead of the boundary re-resolving into
+    tomorrow every scheduler tick — the §1.6 window-freeze bug). When ``None``
+    (pre-flight / one-shot callers) it resolves the window at ``now`` as before.
     """
     lat, lon = _lat_lon(site)
     sched = target.schedule
-    start_ts, stop_ts = resolve_window(sched, site, twilight_deg, now)
+    if window is not None:
+        start_ts, stop_ts = window
+    else:
+        start_ts, stop_ts = resolve_window(sched, site, twilight_deg, now)
     gate = float(sched.min_altitude_deg or 0.0)
     if target_alt is None:
         target_alt = target_altitude(target.ra_hours, target.dec_deg, lat, lon, now)

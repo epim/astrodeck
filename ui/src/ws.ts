@@ -2,7 +2,7 @@ import { useStore } from "./store";
 import { api } from "./api";
 import { BASE } from "./lib/base";
 import { computeTelemetryStale } from "./lib/telemetry";
-import type { LogLine } from "./types";
+import type { LogLine, MonitorSnapshot } from "./types";
 
 let socket: WebSocket | null = null;
 let retryMs = 1000;
@@ -44,6 +44,21 @@ export function connectWs(): void {
       st.reconcileLogs(await api.get<LogLine[]>("/api/logs"));
     } catch {
       /* ignore */
+    }
+    // Rehydrate status/sequence from the monitor snapshot on every (re)connect.
+    // `hello` (hub.summary()) carries no `sequence` key, and terminal sequence
+    // transitions (complete/aborted/error) publish exactly once on the bus with
+    // no history — if the socket was down when one fired, the store's `sequence`
+    // slice is stuck on the last state it saw (e.g. RUNNING) forever. Reuse the
+    // same cold-load path MonitorView uses, routed through handleEvent so the
+    // WS path stays the single source of truth for how state gets applied.
+    try {
+      const snap = await api.get<MonitorSnapshot>("/api/monitor/snapshot");
+      const ts = Date.now() / 1000;
+      if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
+      if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+    } catch {
+      /* ignore — WS status polling will catch up within ~2s */
     }
   };
 

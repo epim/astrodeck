@@ -136,6 +136,25 @@ def _client(env):
     return TestClient(app)
 
 
+def _wait_status(c, predicate, timeout: float = 5.0):
+    """Poll /api/status until ``predicate(body)`` holds, or fail after ``timeout``.
+
+    Boot auto-connect now runs as a BACKGROUND task (so the UI serves immediately
+    instead of blocking the lifespan for minutes against an unreachable rig), so a
+    test must wait for it to land rather than reading status once. Polling from the
+    test thread drives the app's event loop, letting the background connect
+    progress."""
+    import time as _t
+    deadline = _t.time() + timeout
+    body: dict = {}
+    while _t.time() < deadline:
+        body = c.get("/api/status").json()
+        if predicate(body):
+            return body
+        _t.sleep(0.05)
+    return body
+
+
 # ---------------------------------------------------------- first-run no-op
 
 def test_boot_first_run_no_active_profile_starts_disconnected(env):
@@ -158,9 +177,8 @@ def test_boot_connects_active_sim_profile(env):
     store.set_active_profile(prof.id)
 
     with _client(env) as c:
-        r = c.get("/api/status")
-        assert r.status_code == 200, r.text
-        body = r.json()
+        # boot connect is a background task now — wait for it to land.
+        body = _wait_status(c, lambda b: b.get("mode") == "sim")
         # the sim rig auto-connected on boot.
         assert body.get("mode") == "sim"
         assert not body.get("boot_connect_failed", False)
@@ -187,10 +205,9 @@ def test_boot_swallows_connect_failure_and_degrades(env):
     store.set_active_profile(prof.id)
 
     with _client(env) as c:
-        # the app started despite the failing open.
-        r = c.get("/api/status")
-        assert r.status_code == 200, r.text
-        body = r.json()
+        # the app started despite the failing open; wait for the background boot
+        # connect to land its degraded (partial) rig.
+        body = _wait_status(c, lambda b: b.get("boot_connect_failed") is True)
         links = {row["role"]: row for row in body.get("backend_links", [])}
         assert links, "expected backend_links on the status poll"
         # the working roles came up; the failed one is not-ok.

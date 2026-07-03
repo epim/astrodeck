@@ -148,6 +148,45 @@ async def test_reconnect_after_socket_drop(phd2):
     assert srv.methods.count("stop_capture") >= 1
 
 
+async def test_disconnect_cancels_reconnect_loop(phd2):
+    """disconnect() while the reconnect loop is running must cancel that loop,
+    not leave an orphaned task racing to revive a discarded guider (P1-6)."""
+    srv, g = phd2
+    await g.connect()
+    assert await _wait(lambda: srv.client_connected.is_set())
+    # Drop the client AND stop the server so reconnect keeps failing and stays
+    # parked in its backoff loop.
+    srv.drop_client()
+    await srv.stop()
+    assert await _wait(
+        lambda: g._reconnect_task is not None and not g._reconnect_task.done())
+    await g.disconnect()
+    assert g._reconnect_task is None
+    assert g.connected is False
+
+
+async def test_reconnect_aborts_if_disconnect_races_open(phd2):
+    """If disconnect() flips _closing while _reconnect is parked inside _open(),
+    the freshly opened socket must be discarded rather than reviving the guider
+    (which would double-connect and duplicate guide events forever, P1-6)."""
+    srv, g = phd2
+    await g.connect()
+    # Simulate the race: _open succeeds, but _closing is set during it.
+    orig_open = g._open
+
+    async def open_then_closing():
+        await orig_open()
+        g._closing = True
+
+    g._open = open_then_closing
+    g.connected = False
+    g._listen_task = None
+    await g._reconnect()
+    # The abandoned reconnect must NOT have revived the guider.
+    assert g.connected is False
+    assert g._listen_task is None
+
+
 async def test_pending_rpc_fails_on_drop_not_leak(phd2):
     srv, g = phd2
     # Tell the fake server to never answer this RPC so it stays in-flight.
@@ -163,6 +202,48 @@ async def test_pending_rpc_fails_on_drop_not_leak(phd2):
     with pytest.raises((ConnectionError, RuntimeError)):
         await task
     assert await _wait(lambda: not g._pending)
+
+
+# -------------------------------------------------- guiding-state reachability
+
+async def test_guidestep_event_marks_guiding(phd2):
+    """A real PHD2 sends AppState only in its initial connect burst; a later
+    start-guiding arrives as GuideStep/StartGuiding. is_active()/stats().guiding
+    must become True from those, or per-frame recovery + meridian-flip restart
+    break for the whole night."""
+    srv, g = phd2
+    await g.connect()
+    assert g.stats().guiding is False
+    await srv.push_event({"Event": "GuideStep", "RADistanceRaw": 0.1,
+                          "DECDistanceRaw": -0.2, "SNR": 20})
+    assert await _wait(lambda: g.stats().guiding is True)
+    assert await g.is_active() is True
+
+
+async def test_start_guiding_event_marks_guiding(phd2):
+    srv, g = phd2
+    await g.connect()
+    await srv.push_event({"Event": "StartGuiding"})
+    assert await _wait(lambda: g.stats().guiding is True)
+
+
+async def test_looping_and_stop_events_clear_guiding(phd2):
+    srv, g = phd2
+    await g.connect()
+    await srv.push_event({"Event": "StartGuiding"})
+    assert await _wait(lambda: g.stats().guiding is True)
+    await srv.push_event({"Event": "GuidingStopped"})
+    assert await _wait(lambda: g.stats().guiding is False)
+
+
+async def test_connect_queries_real_app_state(phd2):
+    """On (re)connect we ask PHD2 for its real state via get_app_state rather
+    than assuming "Stopped" — a reconnect mid-guiding must not report idle."""
+    srv, g = phd2
+    srv.rpc_result_for["get_app_state"] = "Guiding"
+    await g.connect()
+    assert "get_app_state" in srv.methods
+    assert g.stats().guiding is True
 
 
 async def test_stats_not_guiding_after_drop(phd2):

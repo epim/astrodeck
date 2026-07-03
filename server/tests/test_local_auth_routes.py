@@ -196,6 +196,55 @@ def test_first_run_404_when_flag_off(tmp_path, monkeypatch):
         assert r.status_code == 404
 
 
+# --------------------------------------------------- W3 remote interlock (relay)
+
+def _remote_asgi(app):
+    """Wrap ``app`` so every HTTP request carries the W3 remote scope flag --
+    EXACTLY as the relay client stamps a tunneled request (ASGI scope STATE, not a
+    forgeable header). Non-http scopes (lifespan) pass straight through."""
+    async def _wrapped(scope, receive, send):
+        if scope.get("type") == "http":
+            scope.setdefault("state", {})["astrodeck_remote"] = True
+        await app(scope, receive, send)
+    return _wrapped
+
+
+def test_first_run_setup_denied_over_relay(tmp_path, monkeypatch):
+    """W3: first-run admin bootstrap is LAN-ONLY. A relay-tunneled POST is 404'd
+    BEFORE the store is touched, so a remote attacker cannot seize the rig during
+    the first-run window -- while the SAME request over the LAN still succeeds."""
+    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    assert users.is_empty()
+    # relay-tunneled attempt: hard-denied, store left untouched.
+    with TestClient(_remote_asgi(app)) as rc:
+        r = rc.post("/auth/setup/local",
+                    json={"username": "attacker", "password": "pwned123"})
+        assert r.status_code == 404, r.text
+    assert users.is_empty(), "remote setup must NOT have created an admin"
+    # the SAME request over the LAN (no remote flag) still creates the admin.
+    with TestClient(app) as c:
+        ok = c.post("/auth/setup/local",
+                    json={"username": "root", "password": "s3cret"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["username"] == "root"
+    assert users.is_empty() is False
+
+
+def test_auth_me_remote_denied_on_open_default(tmp_path, monkeypatch):
+    """W3: /auth/me must never serve the open ``none`` provider's admin identity
+    over the relay. A LAN caller sees admin (open default); a relay-tunneled caller
+    is 401 so the SPA shows login instead of learning the rig is fully open."""
+    app, _users, _ = _make_app(tmp_path, monkeypatch, methods=[])
+    # LAN: the open default resolves to admin.
+    with TestClient(app) as c:
+        me = c.get("/auth/me")
+        assert me.status_code == 200
+        assert me.json()["role"] == "admin"
+    # relay-tunneled: hard-denied (never leaks the open-admin identity).
+    with TestClient(_remote_asgi(app)) as rc:
+        assert rc.get("/auth/me").status_code == 401
+
+
 # ------------------------------------------------------- user CRUD is admin-gated
 
 def test_user_crud_denied_for_viewer(tmp_path, monkeypatch):

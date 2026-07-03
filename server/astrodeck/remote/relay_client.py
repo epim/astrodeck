@@ -34,7 +34,7 @@ import asyncio
 import contextlib
 import random
 from typing import Any, Awaitable, Callable, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from ..config import RemoteConfig
 from ..events import Event, bus
@@ -59,11 +59,26 @@ _STRIPPED_INBOUND_HEADERS = frozenset({
     b"authorization", b"x-auth-token",
 })
 
+# The shared ASTRODECK_TOKEN also rides as a ``?token=`` QUERY param: the transport
+# middleware (api/app.py) and TokenAdminProvider both accept it from the query, and
+# because those providers are not named ``none`` the W3 remote hard-deny interlock
+# does NOT fire on them. So the header strip alone is not enough -- a tunneled
+# ``?token=<ASTRODECK_TOKEN>`` would escalate a captured/guessed shared token to
+# full admin, exactly the carrier the header strip is meant to close. Strip it from
+# the tunneled query too, so the shared token is never a valid tunnel carrier in
+# ANY form (only the home-signed cookie / signed principal_token remain).
+_STRIPPED_QUERY_PARAMS = frozenset({"token"})
+
 # Reconnect backoff: capped exponential with FULL jitter. Starts ~0.5s, caps at
 # ~15s (the pinned ceiling). Full jitter (random in [0, computed]) avoids a
 # thundering-herd reconnect if many homes share a relay restart.
 _BACKOFF_BASE_S = 0.5
 _BACKOFF_CAP_S = 15.0
+# Clamp the exponent so ``2 ** attempt`` can never overflow float on a long
+# outage (attempt keeps climbing until a clean session). 40 already puts the
+# raw term at ~5e11 s, so the cap fully dominates; the clamp is purely an
+# overflow guard, not a behavior change below the cap.
+_BACKOFF_MAX_EXP = 40
 
 # Per-viewer /ws fanout buffer (drop-oldest). A slow remote viewer must never
 # stall the single shared bus subscription that feeds every viewer.
@@ -83,9 +98,33 @@ def scope_is_remote(scope: dict) -> bool:
 
 
 def _backoff_delay(attempt: int) -> float:
-    """Capped-exponential FULL-jitter backoff for redial ``attempt`` (0-based)."""
-    ceiling = min(_BACKOFF_CAP_S, _BACKOFF_BASE_S * (2 ** attempt))
+    """Capped-exponential FULL-jitter backoff for redial ``attempt`` (0-based).
+
+    The exponent is clamped BEFORE the shift: ``attempt`` grows by one per failed
+    dial and only resets on a clean session, so during a long relay outage (~2h
+    at the 15s cap) it reaches four digits. ``2 ** attempt`` then materializes a
+    huge int that ``min`` converts to float -- at attempt>=1024 that conversion
+    raises OverflowError, which would escape the (documented never-raising) run()
+    supervisor and permanently kill reconnection. Clamping to ``_BACKOFF_MAX_EXP``
+    (well past the point the cap dominates) keeps the shift bounded and cheap."""
+    exp = min(attempt, _BACKOFF_MAX_EXP)
+    ceiling = min(_BACKOFF_CAP_S, _BACKOFF_BASE_S * (2 ** exp))
     return random.uniform(0.0, ceiling)
+
+
+def _strip_query_token(query: str) -> str:
+    """Drop shared-token carriers (``?token=``) from a tunneled query string,
+    preserving every other param (and their order/repetition). This closes the
+    query form of the shared ASTRODECK_TOKEN over the tunnel just like the header
+    strip closes the header forms -- remote requests must never carry local-trust
+    credentials. A blank/malformed query yields a blank query (never raises)."""
+    if not query:
+        return ""
+    # keep_blank_values so value-less params (``?foo``) survive; strict_parsing off
+    # so a malformed query degrades to best-effort rather than raising.
+    kept = [(k, v) for k, v in parse_qsl(query, keep_blank_values=True)
+            if k not in _STRIPPED_QUERY_PARAMS]
+    return urlencode(kept)
 
 
 def _headers_to_scope(header_list: Iterable[Any]) -> list[tuple[bytes, bytes]]:
@@ -250,7 +289,14 @@ class RelayClient:
                         f"retrying local-only", "remote")
             if self._stop.is_set():
                 break
-            delay = _backoff_delay(attempt)
+            # Belt-and-braces: the backoff math is now overflow-safe, but this
+            # call sits OUTSIDE the _serve_once try/except, so any future slip
+            # here would escape the never-raising supervisor and kill reconnect
+            # forever. Fall back to the cap on any arithmetic error rather than die.
+            try:
+                delay = _backoff_delay(attempt)
+            except Exception:  # noqa: BLE001 - never let backoff math kill the loop
+                delay = _BACKOFF_CAP_S
             attempt += 1
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
@@ -380,7 +426,8 @@ class RelayClient:
             "scheme": "https",
             "path": str(hdr.get("path", "/")),
             "raw_path": str(hdr.get("path", "/")).encode("latin-1", "replace"),
-            "query_string": str(hdr.get("query", "")).encode("latin-1", "replace"),
+            "query_string": _strip_query_token(
+                str(hdr.get("query", ""))).encode("latin-1", "replace"),
             "root_path": "",
             "headers": _headers_to_scope(hdr.get("headers", [])),
             "client": ("relay", 0),
