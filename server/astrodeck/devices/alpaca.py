@@ -413,13 +413,16 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         if dt is None or rank not in (2, 3):
             raise DeviceError(f"unsupported ImageBytes format (type={tx_type}, rank={rank})")
         arr = np.frombuffer(buf, dtype=dt, offset=data_start)
+        # ImageBytes is the flat memory dump of the .NET row-major array
+        # int[dim1, dim2(, dim3)] — the RIGHTMOST index varies fastest, so
+        # buf[k] = pixel(x = k // dim2, y = k % dim2). C-order reshape gives
+        # arr[x][y] (matching the JSON ImageArray convention).
         shape = (dim1, dim2) if rank == 2 else (dim1, dim2, dim3)
-        arr = arr.reshape(shape, order="F" if rank == 2 else "C")
+        arr = arr.reshape(shape, order="C")
         if rank == 3:
             arr = arr[:, :, 0]
         # Alpaca image arrays are [x][y]; transpose to row-major [y][x].
-        if rank == 2:
-            arr = arr.T
+        arr = arr.T
         return np.clip(arr.astype(np.int32), 0, 65535).astype(np.uint16)
 
     async def abort_exposure(self) -> None:

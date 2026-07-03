@@ -106,6 +106,14 @@ class _FakeAlpacaDev:
         self.connected = True
 
 
+class _FakeSimDev:
+    """Stands in for a connected sim device (backend='sim', no host/port)."""
+    def __init__(self):
+        self.backend = "sim"
+        self.name = "Sim Camera"
+        self.connected = True
+
+
 # ---------------------------------------------------------- path-traversal guard
 
 # Decoded forms of the exploit ids (the API layer / Starlette decode %2F, %5C
@@ -204,7 +212,13 @@ def test_to_rigspec_legacy_alpaca_aliases_to_native():
         ],
     }
     prof = Profile(**legacy_json)            # old JSON still deserializes
-    assert prof.primary_backend == "sim"     # field defaulted (forward-compat)
+    # ``primary_backend`` now defaults to "" (empty), NOT "sim" -- a truthy
+    # "sim" default would silently resolve every unlisted role of a REAL rig
+    # (including safety) to the simulator. A missing key on disk deserializes
+    # to "", which is not "sim", so the ``_heal_sim_primary`` validator does
+    # NOT fire here (it only heals a *stored* "sim" + real device rows); the
+    # blank default is healed by derivation instead, in ``to_rigspec`` below.
+    assert prof.primary_backend == ""
     spec = prof.to_rigspec()
     # every alpaca device is now on the ``native`` backend (the alias), and that
     # backend is registered (no KeyError).
@@ -216,12 +230,11 @@ def test_to_rigspec_legacy_alpaca_aliases_to_native():
     cam = spec.roles["camera"]
     assert cam.host == "10.0.0.5" and cam.port == 11111 and cam.dev_type == "camera"
     assert cam.extra.get("name") == "ASI2600"
-    # An old-schema dict deserializes with the default primary_backend="sim"
-    # (truthy), so the pinned ``primary or derived`` keeps "sim". The per-role
-    # native overrides above still drive the device connections; the primary is
-    # only the fallback for roles WITHOUT an override. The derivation path is
-    # exercised explicitly below via an empty primary_backend.
-    assert spec.primary == "sim"
+    # primary_backend is blank, so to_rigspec derives it from the device shape:
+    # real device rows present -> "native" (NEVER "sim" -- a legacy Alpaca rig
+    # must never inherit a sim primary that would fill unlisted roles, including
+    # safety, with simulators).
+    assert spec.primary == "native"
 
 
 def test_to_rigspec_derives_native_when_primary_blank():
@@ -278,17 +291,24 @@ def test_profile_new_fields_round_trip(tmp_path):
     assert spec.roles["guider"].backend == "phd2"
     assert spec.roles["guider"].extra.get("pixel_scale_arcsec") == 1.5
     # an OLD profile json with neither new key still loads (defaults fill in).
+    # ``primary_backend`` defaults to "" (NOT "sim") -- a real device row must
+    # never inherit a sim primary, which would fill unlisted roles (including
+    # safety) with simulators. to_rigspec() derives "native" from the row.
     old = Profile(**{"id": "33333333-3333-3333-3333-333333333333",
                      "name": "Old", "devices": [
                          {"role": "camera", "backend": "alpaca"}]})
-    assert old.primary_backend == "sim"
+    assert old.primary_backend == ""
     assert old.devices[0].extra == {}
+    assert old.to_rigspec().primary == "native"
 
 
 def test_to_rigspec_empty_profile_defaults_to_sim():
-    """A genuinely empty profile (no devices, no nina_host) keeps the literal
-    primary_backend default of 'sim' -- the empty-rig fallback."""
-    spec = Profile(name="empty").to_rigspec()
+    """A genuinely empty profile (no devices, no nina_host) has a blank literal
+    ``primary_backend`` default (""), and to_rigspec() derives "sim" for it --
+    the empty-rig fallback (nothing real to protect from a sim primary)."""
+    p = Profile(name="empty")
+    assert p.primary_backend == ""
+    spec = p.to_rigspec()
     assert spec.primary == "sim"
     assert spec.roles == {}
 
@@ -302,6 +322,40 @@ def test_to_rigspec_explicit_primary_wins_over_derived():
     spec = p.to_rigspec()
     assert spec.primary == "nina"               # explicit field, not derived
     assert spec.roles["camera"].backend == "native"  # device row still aliased
+
+
+# --------------------------------------------- _heal_sim_primary validator
+#
+# A ``primary_backend="sim"`` stored ALONGSIDE real (non-sim) device rows is
+# (near-certainly) a fail-open artifact of the old default -- it would fill
+# every unlisted role, including ``safety``, with a simulator. The validator
+# heals it back to the derived primary at construction time (not just inside
+# to_rigspec), and leaves a genuinely all-sim profile alone.
+
+def test_heal_sim_primary_coerces_to_derived_when_real_rows_present():
+    """Profile(primary_backend='sim', devices=[a real alpaca row]) is healed to
+    the derived primary ('native') right at construction."""
+    p = Profile(primary_backend="sim", devices=[
+        ProfileDevice(role="camera", backend="alpaca", host="h", port=1)])
+    assert p.primary_backend == "native"
+    # and to_rigspec sees the already-healed value, not "sim".
+    assert p.to_rigspec().primary == "native"
+
+
+def test_heal_sim_primary_leaves_all_sim_profile_alone():
+    """A genuinely all-sim profile (no device rows at all) keeps 'sim' --
+    nothing real to protect from a sim primary."""
+    p = Profile(primary_backend="sim")
+    assert p.primary_backend == "sim"
+    assert p.to_rigspec().primary == "sim"
+
+
+def test_heal_sim_primary_leaves_sim_backed_device_rows_alone():
+    """Device rows that are themselves backend='sim' (or blank) don't count as
+    'real' -- the healing check only fires on a REAL (non-sim) backend row."""
+    p = Profile(primary_backend="sim", devices=[
+        ProfileDevice(role="camera", backend="sim")])
+    assert p.primary_backend == "sim"
 
 
 @pytest.mark.asyncio
@@ -348,5 +402,38 @@ async def test_capture_profile_reads_device_identity(tmp_path, monkeypatch):
     assert p.devices[0].backend == "alpaca"
     assert p.devices[0].host == "192.168.1.50"
     assert p.devices[0].dev_type == "camera"
+    # the primary is stamped explicitly from the connected rig shape: a real
+    # alpaca device row -> "native", NEVER left to fall back to "sim" (which
+    # would silently fill unlisted roles, including safety, with simulators).
+    assert p.primary_backend == "native"
     # persisted to the temp library
     assert lib.get(p.id).name == "My Rig"
+
+
+@pytest.mark.asyncio
+async def test_capture_profile_stamps_sim_primary_for_sim_rig(tmp_path, monkeypatch):
+    """The counterpart of the alpaca capture above: a genuinely sim-mode rig
+    (backend='sim' devices, no nina_client) captures with primary_backend
+    stamped explicitly to 'sim' -- not left to inherit any stale default."""
+    import astrodeck.config as config_mod
+    import astrodeck.profiles as profiles_mod
+    from astrodeck.config import ConfigStore
+    from astrodeck.hub import Hub
+
+    lib = ProfileLibrary(directory=tmp_path / "profiles")
+    monkeypatch.setattr(profiles_mod, "profiles", lib)
+    import astrodeck.hub as hub_mod
+    monkeypatch.setattr(hub_mod, "profiles", lib)
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_mod, "config_store", temp_store)
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+
+    hub = Hub()
+    hub.devices = {"camera": _FakeSimDev()}
+    hub.mode = "sim"
+    p = await hub.capture_profile("Sim Rig")
+    # a sim device isn't captured as a per-device row (only alpaca/nina rows
+    # are), but the primary is still explicitly stamped "sim" for this mode.
+    assert p.devices == []
+    assert p.primary_backend == "sim"
+    assert lib.get(p.id).primary_backend == "sim"
