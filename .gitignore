@@ -11,3 +11,5 @@ captures/
 *.egg-info/
 server/config/
 ui/tsconfig.tsbuildinfo
+references/
+native/target/
