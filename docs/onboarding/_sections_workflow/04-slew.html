@@ -134,7 +134,7 @@
       <dt>The miss</dt>
       <dd>An uncalibrated model lands the star off-centre, sometimes outside the frame entirely.</dd>
       <dt>Plate-solve + sync</dt>
-      <dd>Image the field, solve where the scope actually points, and sync the model to truth.</dd>
+      <dd>Image the field, <b>plate-solve</b> it — match its star pattern to a catalogue to find where the scope truly points — and sync the model to truth.</dd>
       <dt>Park</dt>
       <dd>A known home reference (the sim parks near the pole at Dec <span class="stat">+89.5°</span>).</dd>
     </dl>
@@ -158,6 +158,7 @@
     </figure>
     <p class="caption">First GoTo lands close, not centred; the plate-solve fixes the rest.</p>
     <p class="stakes reveal">Trust an unsynced model and the target sits outside the sensor — you expose empty sky and never notice.</p>
+    <p class="guard reveal">A plate-solve <b>sync</b> corrects the model, and the engine retries solve → sync → re-slew up to three times; horizon and Sun-exclusion guards refuse a dangerous slew outright.</p>
     <p class="hook reveal">MountView has a <code>Slew Pad</code>, a <code>Pointing</code> panel (RA / Dec / Alt / Az / State) and a <code>Target Catalog</code>; a plate-solve syncs the model to where it truly points.</p>
     <p class="aside">The mount is confident and wrong; the camera is how it learns.</p>
   </article>

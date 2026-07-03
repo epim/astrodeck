@@ -234,6 +234,7 @@
   .precis-legend b { color: var(--c-ink-soft); font-weight: 500; }
   .precis-legend .precis-legend-arrow { color: var(--c-ink-faint); opacity: 0.7; }
   .precis-legend .precis-legend-breaks { color: var(--c-warn); }
+  .precis-legend .precis-legend-guard { color: var(--c-good); }
   .precis-legend .precis-legend-ui { color: var(--c-accent); }
 
   /* ---- shared topic furniture ---- */
@@ -349,6 +350,27 @@
   }
   .hook b, .hook strong { color: var(--c-ink); font-weight: 500; }
   .hook code { color: var(--c-accent-soft); }
+
+  /* the "what the software does about it" line — pairs with .stakes/BREAKS */
+  .guard {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .guard::before {
+    content: "GUARD";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-good);
+    line-height: 1.5;
+  }
+  .guard b, .guard strong { color: var(--c-ink); font-weight: 500; }
+  .guard code { color: var(--c-accent-soft); }
 
   /* a dry one-line aside, set apart, never load-bearing */
   .aside {
@@ -667,8 +689,9 @@
       <b>does</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b>facts</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b class="precis-legend-breaks">BREAKS</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-guard">GUARD</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b class="precis-legend-ui">UI</b>
-      <span>— what you do, the numbers that matter, what goes wrong if you skip it, and where it lives in AstroDeck.</span>
+      <span>— what you do, the numbers that matter, what goes wrong if you skip it, what the software does about it, and where it lives in AstroDeck.</span>
     </p>
   </header>
 
