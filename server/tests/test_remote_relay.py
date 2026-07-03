@@ -356,6 +356,42 @@ def test_inbound_auth_headers_stripped(tmp_path, monkeypatch):
     assert b"x-custom" in names  # non-auth headers pass through
 
 
+def test_inbound_query_token_stripped(tmp_path, monkeypatch):
+    """The shared ASTRODECK_TOKEN also rides as ``?token=`` and is accepted from
+    the query by the transport middleware / TokenAdminProvider (neither named
+    ``none``, so the remote hard-deny interlock does NOT fire). The header strip
+    alone leaves that carrier open, so the tunnel MUST strip ``token`` from the
+    query too -- otherwise a tunneled ``?token=<ASTRODECK_TOKEN>`` escalates to
+    full admin. Other params survive untouched."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    channel = FakeChannel()
+    client = _make_relay_client(app, channel)
+    frame = Frame(type=FrameType.REQ_OPEN, stream_id=3, header={
+        "method": "GET", "path": "/api/status",
+        "query": "foo=1&token=breakglass-tok&bar=two", "headers": [],
+    })
+    scope = client._build_http_scope(frame)
+    qs = scope["query_string"].decode("latin-1")
+    from urllib.parse import parse_qs
+    parsed = parse_qs(qs, keep_blank_values=True)
+    assert "token" not in parsed          # shared-token carrier closed
+    assert parsed["foo"] == ["1"]         # siblings preserved
+    assert parsed["bar"] == ["two"]
+
+
+def test_inbound_bare_token_query_stripped(tmp_path, monkeypatch):
+    """A query that is ONLY ``token=...`` reduces to an empty query (no leak)."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    channel = FakeChannel()
+    client = _make_relay_client(app, channel)
+    frame = Frame(type=FrameType.REQ_OPEN, stream_id=4, header={
+        "method": "GET", "path": "/api/status",
+        "query": "token=breakglass-tok", "headers": [],
+    })
+    scope = client._build_http_scope(frame)
+    assert scope["query_string"] == b""
+
+
 # ============================================================ backoff / resilience
 
 def test_backoff_capped_and_jittered():
@@ -363,6 +399,62 @@ def test_backoff_capped_and_jittered():
     for attempt in range(0, 12):
         d = _backoff_delay(attempt)
         assert 0.0 <= d <= 15.0
+
+
+def test_backoff_never_overflows_at_high_attempt():
+    """A long relay outage drives ``attempt`` into the thousands (it only resets
+    on a clean session). ``2 ** attempt`` must not materialize a huge int that
+    overflows the float conversion inside min() -- previously _backoff_delay(1024)
+    raised OverflowError, which escaped the never-raising run() supervisor and
+    permanently killed reconnection. The clamped exponent keeps it bounded."""
+    # The historical crash point and well beyond it must all stay within the cap.
+    for attempt in (1023, 1024, 4096, 100_000, 2 ** 20):
+        d = _backoff_delay(attempt)
+        assert 0.0 <= d <= 15.0
+
+
+def test_run_loop_survives_high_attempt_backoff():
+    """Regression for the overflow: run() must keep retrying (not crash) even after
+    thousands of consecutive failed dials. We seed a high attempt count via a
+    connect that always fails and a near-zero cap so it spins fast, and assert the
+    supervisor is still alive and dialing after crossing the old 1024 crash point."""
+    attempts = {"n": 0}
+
+    async def _bad_connect(url):
+        attempts["n"] += 1
+        raise ConnectionError("relay down")
+
+    cfg = RemoteConfig(enabled=True, relay_url="wss://relay.test/scope",
+                       device_token="tok")
+
+    async def _scenario():
+        client = RelayClient(_noop_app, lambda: cfg, connect=_bad_connect)
+        # Force the run loop straight into the historical crash region: a backoff
+        # that computes the REAL (now overflow-safe) delay for a huge attempt, then
+        # collapses it to ~0 so the loop spins fast. If _backoff_delay overflowed,
+        # this would raise out of run() and the task would be done() with an exc.
+        import astrodeck.remote.relay_client as rc
+        orig = rc._backoff_delay
+
+        def _fast_but_real(attempt):
+            _ = rc.__dict__  # keep ref
+            real = orig(attempt + 5000)  # exercise the real math past attempt=1024
+            assert 0.0 <= real <= 15.0
+            return 0.001
+
+        rc._backoff_delay = _fast_but_real
+        try:
+            task = asyncio.create_task(client.run())
+            await asyncio.sleep(0.05)
+            assert attempts["n"] >= 2  # still dialing, not crashed
+            assert not task.done()     # supervisor alive
+            client.stop()
+            await asyncio.wait_for(task, timeout=2.0)
+            assert task.exception() is None  # ended cleanly, never raised
+        finally:
+            rc._backoff_delay = orig
+
+    asyncio.run(_scenario())
 
 
 def test_run_loop_never_raises_on_connect_failure():

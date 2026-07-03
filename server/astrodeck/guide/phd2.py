@@ -69,6 +69,10 @@ class PHD2Guider(Guider):
         self._rpc_id = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
         self._listen_task: asyncio.Task | None = None
+        # The auto-reconnect loop, tracked so disconnect() can cancel it — an
+        # untracked reconnect could otherwise revive a guider the hub has
+        # already discarded and republish duplicate guide events forever (P1-6).
+        self._reconnect_task: asyncio.Task | None = None
         self._settle_done: asyncio.Event = asyncio.Event()
         self._settle_error: str | None = None
         self._app_state = "Stopped"
@@ -91,11 +95,38 @@ class PHD2Guider(Guider):
         await self._open()
         self._listen_task = asyncio.create_task(self._listen())
         self.connected = True
+        await self._refresh_app_state()
         bus.log("info", f"connected to PHD2 at {self.host}:{self.port}", "guide")
+
+    async def _refresh_app_state(self) -> None:
+        """Query PHD2's real state instead of assuming it. PHD2 sends an
+        ``AppState`` event only in its initial burst when a client connects;
+        after that, state changes arrive as discrete events. On a (re)connect
+        that lands mid-session we must not assume "Stopped", so we ask PHD2
+        directly via ``get_app_state``. Best-effort: a backend that doesn't
+        answer just keeps the last known state (never raises out of connect)."""
+        try:
+            state = await self._rpc("get_app_state", timeout=5)
+        except Exception:
+            return
+        if isinstance(state, str) and state:
+            self._app_state = state
 
     async def disconnect(self) -> None:
         self._closing = True
         self.connected = False
+        # Cancel any in-flight reconnect loop FIRST. Setting _closing alone is
+        # not enough: _reconnect can be parked inside `await self._open()`, and
+        # if the open succeeds it would spawn a fresh listener + set connected on
+        # a guider the hub has already discarded (duplicate-events race, P1-6).
+        rtask = self._reconnect_task
+        self._reconnect_task = None
+        if rtask:
+            rtask.cancel()
+            try:
+                await rtask
+            except (asyncio.CancelledError, Exception):
+                pass
         task = self._listen_task
         self._listen_task = None
         if task:
@@ -162,7 +193,8 @@ class PHD2Guider(Guider):
             if self._closing:
                 return
             bus.log("error", f"PHD2 connection lost: {e}; reconnecting", "guide")
-            asyncio.create_task(self._reconnect())
+            # Track the reconnect task so disconnect() can cancel it (P1-6).
+            self._reconnect_task = asyncio.create_task(self._reconnect())
 
     async def _reconnect(self) -> None:
         """Re-open the socket with capped exponential backoff and restart the
@@ -180,8 +212,20 @@ class PHD2Guider(Guider):
                 bus.log("warning",
                         f"PHD2 reconnect attempt {i + 1} failed: {e}", "guide")
                 continue
+            # disconnect() may have flipped _closing while we were parked in the
+            # TCP connect above. Re-check AFTER the open succeeds: if we're
+            # closing, throw away the freshly opened socket instead of reviving
+            # an abandoned guider (would double-connect + duplicate events, P1-6).
+            if self._closing:
+                if self._writer is not None:
+                    try:
+                        self._writer.close()
+                    except Exception:
+                        pass
+                return
             self._listen_task = asyncio.create_task(self._listen())
             self.connected = True
+            await self._refresh_app_state()
             bus.log("info", f"reconnected to PHD2 at {self.host}:{self.port}",
                     "guide")
             return
@@ -189,11 +233,35 @@ class PHD2Guider(Guider):
     def _handle_event(self, ev: dict[str, Any]) -> None:
         kind = ev.get("Event")
         if kind == "GuideStep":
+            # A GuideStep is emitted ONLY while PHD2 is actively guiding. Real
+            # PHD2 sends AppState only in the initial connect burst, never on a
+            # later StartGuiding, so treat an arriving GuideStep as proof of
+            # guiding — otherwise is_active()/stats().guiding would stay False
+            # all night even as the graph updates (breaking per-frame recovery
+            # and meridian-flip guiding restart).
+            self._app_state = "Guiding"
             ra = float(ev.get("RADistanceRaw", 0)) * self.pixel_scale
             dec = float(ev.get("DECDistanceRaw", 0)) * self.pixel_scale
             self._snr = float(ev.get("SNR", 0))
             sample = {"t": time.time(), "ra": ra, "dec": dec}
             self._samples.append(sample)
+            bus.publish("guide", **self.stats().__dict__)
+        elif kind in ("StartGuiding", "GuidingDithered"):
+            # Explicit guiding-start / dither-resume state changes PHD2 sends
+            # after the initial burst. Reach "Guiding" without waiting for the
+            # first GuideStep.
+            self._app_state = "Guiding"
+            bus.publish("guide", **self.stats().__dict__)
+        elif kind == "Paused":
+            self._app_state = "Paused"
+            bus.publish("guide", **self.stats().__dict__)
+        elif kind == "Resumed":
+            self._app_state = "Guiding"
+            bus.publish("guide", **self.stats().__dict__)
+        elif kind == "LoopingExposures":
+            self._app_state = "Looping"
+        elif kind == "LoopingExposuresStopped":
+            self._app_state = "Stopped"
             bus.publish("guide", **self.stats().__dict__)
         elif kind == "AppState":
             self._app_state = ev.get("State", "Stopped")

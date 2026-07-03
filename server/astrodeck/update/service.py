@@ -53,6 +53,11 @@ def reset_exit_state() -> None:  # test seam
 # though the semver parser already sanitizes it -- defense in depth before staging.
 _SAFE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]*$")
 
+# Pre-update ``pip freeze`` snapshot the supervisor pip-syncs back to on rollback.
+# Lives under state/ and is read by ``supervisor.supervisor`` (which cannot import
+# this package); the SAME literal is mirrored there -- keep them in lockstep.
+ROLLBACK_FREEZE_FILE = "rollback-freeze.txt"
+
 
 class UpdateError(Exception):
     """A precondition/pipeline failure surfaced to the API (-> 409) and WS."""
@@ -70,6 +75,7 @@ class UpdateService:
         self._initial_delay_s = initial_delay_s
         self._apply_lock = asyncio.Lock()
         self._poll_task: "asyncio.Task | None" = None
+        self._result_watch: "asyncio.Task | None" = None
 
     @property
     def supervised(self) -> bool:
@@ -151,29 +157,48 @@ class UpdateService:
                 sig_text = (await download.fetch_text(rel.sig_url)
                             if rel.sig_url else None)
 
+                # verify + stage are blocking (full-file hash, tar extract, rmtree);
+                # run them OFF the event loop so /healthz, the safety poller, the WS
+                # feed and STOP stay responsive during an apply.
                 self._publish("verifying", progress=1.0)
-                vok, vreason = verify.verify_download(
-                    artifact, cfg.signing_pubkey,
+                vok, vreason = await asyncio.to_thread(
+                    verify.verify_download, artifact, cfg.signing_pubkey,
                     sha256_text=sha_text, signature_text=sig_text)
                 if not vok:
                     raise UpdateError(f"verification failed: {vreason}")
 
                 self._publish("staging")
-                staged = stage.stage_release(artifact, layout.releases, rel.version)
-                deps_ok, deps_reason = stage.reconcile_deps(staged, sys.executable)
-                if not deps_ok:
-                    bus.log("warning", f"update dependency reconcile: {deps_reason}",
-                            "update")
+                staged = await asyncio.to_thread(
+                    stage.stage_release, artifact, layout.releases, rel.version)
 
                 # POINT OF NO RETURN: re-check the rig-idle gate. The download/stage
                 # took time; if a sequence/slew/exposure started meanwhile, abort
                 # rather than restart into the new version mid-activity (spec sec 6).
+                # This MUST come before reconcile_deps mutates the SHARED venv --
+                # otherwise an abort here would leave the still-running old server on
+                # a half-upgraded venv it can crash on at the next lazy import.
                 blocker = self._hub.restart_blocker
                 if blocker:
                     raise UpdateError(f"aborted before restart: {blocker}")
 
                 layout.write_pending(rel.version, ts=self._now(),
                                      health_timeout_s=cfg.health_timeout_s)
+
+                # Snapshot the venv BEFORE reconcile mutates it so the supervisor can
+                # pip-sync back to it on rollback. The venv is shared across every
+                # release (protocol.py), so a code-only rollback of the ``current``
+                # pointer would otherwise leave the rolled-back version running
+                # against the new version's deps -- both dead for the night.
+                freeze = await asyncio.to_thread(stage.snapshot_env, sys.executable)
+                if freeze is not None:
+                    self._write_rollback_freeze(layout, freeze)
+
+                deps_ok, deps_reason = await asyncio.to_thread(
+                    stage.reconcile_deps, staged, sys.executable)
+                if not deps_ok:
+                    bus.log("warning", f"update dependency reconcile: {deps_reason}",
+                            "update")
+
                 self._publish("applying", progress=1.0)
                 bus.log("warning",
                         f"applying update {update_state.current} -> {rel.version}; "
@@ -187,6 +212,13 @@ class UpdateService:
                 self._publish("idle", error=f"apply failed: {e}")
                 raise UpdateError(f"apply failed: {e}") from e
 
+    def _write_rollback_freeze(self, layout: InstallLayout, freeze: str) -> None:
+        """Persist the pre-update venv snapshot under state/ for the supervisor to
+        restore on rollback (see ROLLBACK_FREEZE_FILE)."""
+        path = layout.state / ROLLBACK_FREEZE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(freeze, encoding="utf-8")
+
     # -- boot: surface the last attempt's outcome ------------------------------
     def load_boot_result(self) -> None:
         if self._root is None:
@@ -196,6 +228,35 @@ class UpdateService:
         if res is not None:
             update_state.set_result(res)
             layout.clear_result()
+            return
+        # No result at boot: on the SUCCESS path the supervisor writes
+        # update-result.json only AFTER its post-relaunch health probe passes,
+        # which is necessarily after this boot already ran. Watch briefly (within
+        # the probe window) so a successful update surfaces on THIS boot instead of
+        # resurfacing stale on some later unrelated restart.
+        self._start_result_watch(layout)
+
+    def _start_result_watch(self, layout: InstallLayout) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # not on an event loop (sync/test context): nothing to poll
+        window = max(5.0, float(self._cfg().health_timeout_s) + 5.0)
+        self._result_watch = loop.create_task(self._watch_result(layout, window))
+
+    async def _watch_result(self, layout: InstallLayout, window_s: float) -> None:
+        deadline = self._now() + window_s
+        try:
+            while self._now() < deadline:
+                await asyncio.sleep(1.0)
+                res = layout.read_result()
+                if res is not None:
+                    update_state.set_result(res)
+                    layout.clear_result()
+                    bus.publish("update", **update_state.snapshot())
+                    return
+        except asyncio.CancelledError:
+            pass
 
     # -- poller (opt-in) -------------------------------------------------------
     async def run_poller(self) -> None:
@@ -225,6 +286,8 @@ class UpdateService:
     def stop_poller(self) -> None:
         if self._poll_task is not None:
             self._poll_task.cancel()
+        if self._result_watch is not None:
+            self._result_watch.cancel()
 
 
 # --------------------------------------------------- module singleton (lazy)

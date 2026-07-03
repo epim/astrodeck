@@ -235,7 +235,17 @@ class TunnelMultiplexer:
         ws_id = frame.ws_id()
         viewer = self._viewers.get(ws_id)
         if viewer is None:
-            raise ProxyError(f"WS_DATA for unknown ws_id {ws_id!r} (orphan)")
+            # A WS_DATA for a ws_id no longer in self._viewers is the EXPECTED
+            # close race, NOT a protocol violation: when a browser /ws drops we
+            # pop the viewer + send WS_CLOSE down (close_ws), but the home's
+            # _run_ws keeps emitting queued/in-flight WS_DATA until the WS_CLOSE
+            # reaches it and cancels the task. Those trailing frames must be a
+            # benign DROP -- raising here would propagate ProxyError out through
+            # the scope read loop and tear down the WHOLE multiplexed home tunnel
+            # (every sibling viewer 502s, every in-flight tunneled HTTP aborts,
+            # the home redials). The orphan-stream FATAL rule is for RESP_*
+            # streams; a WS_DATA racing a WS_CLOSE is normal, so drop + move on.
+            return
         seq = int(frame.header.get("seq", 0))
         self._enqueue_viewer(viewer, seq, frame.payload)
 

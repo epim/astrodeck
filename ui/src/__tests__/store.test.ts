@@ -26,9 +26,17 @@ class MemStorage {
 const g = globalThis as unknown as {
   localStorage?: Storage;
   document?: unknown;
+  window?: unknown;
 };
 if (typeof g.localStorage === "undefined") {
   g.localStorage = new MemStorage() as unknown as Storage;
+}
+
+// lib/base.ts (imported transitively via api.ts) reads window.location.pathname
+// at module load to compute the relay mount BASE. Stub a root-mounted location
+// so the module loads under tsx/node where there is no DOM.
+if (typeof g.window === "undefined") {
+  g.window = { location: { pathname: "/", host: "localhost", protocol: "http:" } };
 }
 
 // The store touches `document` at import time (applyTouchSizing on the root class +
@@ -86,9 +94,23 @@ test("P2-7: defaultPlan reconciled values (Tonight/guide/cool_to/flip/dither)", 
   const plan = useStore.getState().plan;
   eq(plan.name, "Tonight", "name");
   eq(plan.guide, true, "guide");
-  eq(plan.cool_to, -10, "cool_to");
+  eq(plan.cool_to, null, "cool_to");
   eq(plan.meridian_flip, true, "meridian_flip");
   eq(plan.dither_pixels, 3, "dither_pixels");
+});
+
+// ------------------------------------------------ defaultPlan backend parity
+// defaultPlan() must mirror server/astrodeck/sequence/models.py SequencePlan
+// defaults exactly: the full plan is POSTed to /api/sequence/start and
+// overrides the backend's pydantic defaults for every UI-started run, so a
+// divergence here silently disables dithering / filter-offset refocus /
+// guide-loss recovery for a whole unattended night.
+test("defaultPlan mirrors backend SequencePlan defaults (dither_every/apply_filter_offsets/recover_guiding)", () => {
+  localStorage.removeItem("astrodeck-plan");
+  const plan = useStore.getState().plan;
+  eq(plan.dither_every, 3, "dither_every");
+  eq(plan.apply_filter_offsets, true, "apply_filter_offsets");
+  eq(plan.recover_guiding, true, "recover_guiding");
 });
 
 // --------------------------------------------------------- P2-7 setPlan SSOT

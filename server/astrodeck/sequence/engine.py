@@ -65,6 +65,12 @@ SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
+# --- meridian-flip trigger (server HA countdown) ---------------------------
+# Slack added to the next exposure when deciding "would this frame cross the flip
+# point?": we never START an exposure that cannot finish (plus download/settle
+# slop) before the meridian, matching NINA's wait-don't-straddle semantics.
+FLIP_FRAME_MARGIN_S = 30.0
+FLIP_WAIT_STEP_S = 5.0          # cancel/pause-responsive hold step near the flip
 
 # --- device-I/O timeout bounds (P0-2) --------------------------------------
 # Every engine await on a device call is bounded so a wedged Alpaca/NINA/PHD2
@@ -84,6 +90,14 @@ GUIDE_START_TIMEOUT_S = 180.0   # start_guiding incl. settle
 GUIDE_OP_TIMEOUT_S = 120.0      # dither / stop-guiding / quick guider ops
 COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
+FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
+FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
+
+# --- inter-target teardown -------------------------------------------------
+# Before a scheduler wait longer than this we stop tracking (park-hold) so the
+# finished target isn't tracked down into the pier/tripod for hours; the next
+# ready target's _setup_target restores tracking + re-slews (review §1.9).
+WAIT_TEARDOWN_S = 120.0
 
 
 async def _bounded(awaitable, timeout_s: float, what: str):
@@ -132,6 +146,14 @@ class SequenceEngine:
         self._last_focus_temp: float | None = None
         self._recent_hfr: list[float] = []
         self._rejected = 0
+        # Meridian-flip arming latch. A GEM flip is owed only when a target is
+        # tracked from EAST across the meridian; a target acquired already-west
+        # was slewed counterweight-down on the correct side and needs no flip.
+        # Armed per-target in _setup_target (only if acquired east) and cleared
+        # after a flip, so the server HA countdown — which stays negative for the
+        # whole ~12h the target is west — flips at most ONCE per crossing instead
+        # of re-flipping every frame.
+        self._flip_armed = False
         self._done: dict[str, int] = {}   # "ti:si" -> frames completed
         self._started_at = 0.0
         # --- paused-aware elapsed + deterministic ETA bookkeeping (spec §5) ---
@@ -151,6 +173,17 @@ class SequenceEngine:
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._last_frame_at = 0.0           # wall time of the last recorded frame
+        # Watchdog gate: True ONLY while frames are expected to be flowing (inside
+        # the active capture loop). During a slew/center/AF setup, a scheduled
+        # inter-target wait, or cooling — all of which legitimately produce no
+        # frames for minutes-to-hours while state stays 'running' — this is False,
+        # so the no-progress watchdog can't page a false UNSAFE (review §1.9-F).
+        self._progress_expected = False
+        # Per-run FROZEN {id(target): (start_ts, stop_ts)} windows, set by
+        # _run_scheduled. Consulted at every FRAME boundary so a stop/dawn/max-run
+        # boundary that passes mid-target actually stops the target (it was only
+        # checked at target SELECTION before — the running target shot into dawn).
+        self._frozen: dict[int, tuple[float | None, float | None]] = {}
         self._watchdog_task: asyncio.Task | None = None
         self._retakes_per_target: dict[int, int] = {}   # ti -> retakes spent
         self._cfg = None                    # config snapshot taken at start()
@@ -175,6 +208,7 @@ class SequenceEngine:
         self._last_focus_temp = None
         self._recent_hfr = []
         self._rejected = 0
+        self._flip_armed = False
         self._paused.set()
         self._started_at = time.time()
         self._paused_accum_s = 0.0
@@ -205,6 +239,8 @@ class SequenceEngine:
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._last_frame_at = self._started_at
+        self._progress_expected = False
+        self._frozen = {}
         self._retakes_per_target = {}
         self._dawn_cutoff = False
         self._task = asyncio.create_task(self._run())
@@ -621,8 +657,23 @@ class SequenceEngine:
         # the _done "ti:si" keys keep referring to the PLAN order, not the sorted
         # order (resume + skip semantics depend on the plan index).
         index_of = {id(t): i for i, t in enumerate(plan.targets)}
-        order = schedule.schedule_order(plan.targets, site, twilight, time.time())
+        run_start = time.time()
+        order = schedule.schedule_order(plan.targets, site, twilight, run_start)
         remaining = list(order)
+        # Freeze each target's [start, stop] window ONCE, at run start (§1.6). The
+        # scheduler compares the LIVE now against this frozen pair for the rest of
+        # the night — so a dawn/stop boundary that passes mid-run actually CLOSES
+        # the window. Re-resolving every tick (the bug) rolls a past dawn forward
+        # to tomorrow, so window_closed / dawn_cutoff / max_run were unreachable
+        # and a dusk-start evaluated after dusk waited ~23h. resolve_window now
+        # searches backward too, so a dusk already past still opens tonight.
+        frozen = {id(t): schedule.resolve_window(t.schedule, site, twilight,
+                                                 run_start)
+                  for t in plan.targets}
+        # publish the frozen windows so _run_step can re-check each target's stop
+        # boundary at every frame boundary (not just at selection — the running
+        # target used to shoot straight through dawn / past max_run_min).
+        self._frozen = frozen
 
         while remaining:
             await self._checkpoint()
@@ -631,7 +682,8 @@ class SequenceEngine:
             earliest = None         # (start_ts, target) of the soonest waiter
             all_closed = True
             for target in remaining:
-                gs = schedule.gating_status(target, site, twilight, now)
+                gs = schedule.gating_status(target, site, twilight, now,
+                                            window=frozen.get(id(target)))
                 state = gs["state"]
                 if state == "ready":
                     ready = target
@@ -687,6 +739,14 @@ class SequenceEngine:
                               "eta_s": round(gs.get("eta_s", 0.0)),
                               "start_ts": gs.get("start_ts"),
                               "stop_ts": gs.get("stop_ts")})
+                # Between-target teardown (review §1.9): a previous target left the
+                # mount TRACKING its coordinates. Before a long wait, stop tracking
+                # (park-hold) so we don't track a finished, setting target down into
+                # the pier/tripod for hours; the next ready target's _setup_target
+                # re-slews + restores tracking. Skip the teardown for short re-eval
+                # waits (the mount is about to move again).
+                if start_ts - now > WAIT_TEARDOWN_S:
+                    await self._park_hold()
                 await self._wait_until(start_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
@@ -697,10 +757,21 @@ class SequenceEngine:
 
     async def _wait_until(self, deadline_ts: float) -> None:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
-        re-evaluation tick). The mount is NOT tracking while waiting (§2.4 copy:
-        "safe to leave; mount is parked") — we never started a slew yet."""
+        re-evaluation tick).
+
+        The caller stops tracking (park-hold) before a long wait, so the mount is
+        idle here rather than tracking a finished target into the pier. We also run
+        the safety gate every tick — a wait used to be a safety blind spot (the gate
+        only ran per frame/slew), so rain during a multi-hour inter-target wait
+        produced no reaction. No frames flow while waiting, so clear the watchdog's
+        progress-expected flag (else it pages a false 'no progress' UNSAFE)."""
+        self._progress_expected = False
         while time.time() < deadline_ts:
             await self._checkpoint()
+            # weather still matters while idle between targets — pause/abort on a
+            # sustained unsafe reading at the poll cadence (target=None: no floor
+            # check, nothing to re-acquire yet).
+            await self._safety_gate(context="frame")
             remaining = deadline_ts - time.time()
             if remaining <= 0:
                 return
@@ -711,7 +782,26 @@ class SequenceEngine:
         done = sum(self._done.get(f"{ti}:{si}", 0) for si in range(len(target.steps)))
         return total > 0 and done >= total
 
+    def _enforce_stop_boundary(self, target: Target) -> None:
+        """Raise :class:`StopTarget` when the target's FROZEN stop boundary has
+        passed (§1.6). ``resolve_window`` folds ``stop_mode`` (dawn/time) AND
+        ``max_run_min`` into a single frozen ``stop_ts`` at run start; the scheduler
+        only consulted it when SELECTING a target, so once a target was running the
+        stop boundary was dead — the engine shot every remaining frame straight
+        through dawn into daylight. Re-checking it here, at each frame boundary,
+        stops the target the moment its window closes (the in-flight exposure is
+        allowed to finish; no new one starts)."""
+        win = self._frozen.get(id(target))
+        if not win:
+            return
+        stop_ts = win[1]
+        if stop_ts is not None and time.time() >= stop_ts:
+            raise StopTarget("observing window closed (stop time / max run / dawn)")
+
     async def _setup_target(self, ti: int, target: Target) -> None:
+        # A slew + plate-solve + initial autofocus legitimately produces no frames
+        # for minutes; keep the no-progress watchdog quiet until capture begins.
+        self._progress_expected = False
         self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}")
         bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: {target.name}", "sequence")
         # pre-slew safety + mount-floor gate (mount-alt floor is enforced even
@@ -743,8 +833,15 @@ class SequenceEngine:
                     self.hub.goto_and_center(target.ra_hours, target.dec_deg),
                     GOTO_TIMEOUT_S, f"goto+center {target.name}")
                 if not result["centered"]:
-                    bus.log("warning", f"{target.name}: centering converged to "
-                                       f"{result['error_arcmin']:.1f}' — continuing", "sequence")
+                    # error_arcmin is None on the solve-failure and motion-fence
+                    # abort paths (hub.goto_and_center degrades to a raw GoTo) —
+                    # formatting None with :.1f would raise TypeError and kill the
+                    # whole run at its first target. Only format a real number.
+                    err = result.get("error_arcmin")
+                    detail = (f"converged to {err:.1f}'" if err is not None
+                              else "plate solve failed — used raw GoTo")
+                    bus.log("warning", f"{target.name}: centering {detail} — "
+                                       "continuing", "sequence")
             else:
                 tel = self.hub.require("telescope")
                 if await _bounded(tel.is_parked(), MOUNT_QUERY_TIMEOUT_S,
@@ -785,6 +882,27 @@ class SequenceEngine:
                 bus.log("warning", f"guiding failed to start: {e} — continuing unguided",
                         "sequence")
 
+        # Arm the meridian flip for THIS target iff we acquired it east of the
+        # meridian (server HA countdown > 0), so a GEM tracking east→west across
+        # the meridian flips exactly once when it crosses. A target acquired
+        # already-west is on the correct pier side and stays disarmed (arming on
+        # HA sign alone would otherwise flip it, or re-flip every frame — the
+        # server countdown stays negative for the whole ~12h it is west).
+        self._flip_armed = False
+        if self.plan.meridian_flip and "telescope" in self.hub.devices:
+            try:
+                lon = self.hub.site["longitude"]
+                self._flip_armed = schedule.hours_to_meridian_flip(
+                    target.ra_hours, lon) > 0
+            except Exception:
+                self._flip_armed = False
+
+        # setup complete — capture is about to begin. Arm the no-progress watchdog
+        # and anchor its clock to NOW so a slow slew/solve/AF that just finished
+        # doesn't instantly read as a stall against the last target's frame stamp.
+        self._last_frame_at = time.time()
+        self._progress_expected = True
+
     async def _capture(self, step, target: Target) -> dict:
         """Bounded ``hub.capture`` (P0-2). The timeout is exposure-relative: the
         exposure itself plus a generous fixed margin for download/save/detect, so
@@ -799,6 +917,9 @@ class SequenceEngine:
     async def _run_calibration(self, ti: int, target: Target) -> None:
         self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}")
         bus.log("info", f"calibration target: {target.name}", "sequence")
+        # calibration frames flow immediately — arm the watchdog + anchor its clock.
+        self._last_frame_at = time.time()
+        self._progress_expected = True
         for si, step in enumerate(target.steps):
             key = f"{ti}:{si}"
             for i in range(self._done.get(key, 0), step.count):
@@ -830,10 +951,15 @@ class SequenceEngine:
 
         for i in range(self._done.get(key, 0), step.count):
             await self._checkpoint()
+            # stop the target the instant its FROZEN window closes (dawn / stop_mode
+            # time / max_run_min) — checked between frames so the in-flight exposure
+            # finishes but no new one starts into daylight (§1.6). Raises StopTarget
+            # → the scheduler skips ahead / finalizes the night at dawn.
+            self._enforce_stop_boundary(target)
             await self._safety_gate(context="frame", target=target)
             # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
             await self._frame_alerts_tick()
-            await self._maybe_meridian_flip(target)
+            await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding()
 
             if plan.dither_every and self._frames_since_dither >= plan.dither_every \
@@ -954,9 +1080,10 @@ class SequenceEngine:
             self._frame_had_event = True   # retake wall-time is not per-frame overhead
             self._begin_frame(*(self._active_step or (ti, 0)), step.exposure_s)
             new_info = await self._capture(step, target)
-            # the rejected original already appended its HFR to the running window;
-            # don't double-append the retake's sample (P3-17).
-            accepted = self._check_quality(new_info, record=False)
+            # the rejected original was NOT folded into the running median (only
+            # ACCEPTED frames anchor it now), so let an accepted retake contribute
+            # its single good sample — one logical frame, at most one median sample.
+            accepted = self._check_quality(new_info)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
                 self._record_frame(key, i)
@@ -1029,9 +1156,16 @@ class SequenceEngine:
                     await self._on_unsafe("safety read stale/unavailable", stale=True,
                                           target=target)
                 elif not reading.is_safe:
-                    self._unsafe_streak += 1
-                    self._safe_streak = 0
-                    if self._unsafe_streak >= max(1, cfg.safety.unsafe_consecutive):
+                    # Debounce at the SAFETY-POLLER cadence, NOT the frame cadence.
+                    # This gate only runs once per frame boundary, and a light sub
+                    # is minutes long — so counting one unsafe reading per frame
+                    # meant ``unsafe_consecutive`` FRAMES (10+ min of rain on open
+                    # gear) before acting, not the few seconds of glitch-absorption
+                    # it was meant to be. Confirm the verdict by re-sampling the
+                    # hub's own-cadence cache ``unsafe_consecutive`` times at the
+                    # poll cadence right here, so ~N × poll seconds of sustained
+                    # unsafe (not N frames) trips the action.
+                    if await self._confirm_unsafe(cfg):
                         await self._on_unsafe(reading.reason or reading.source or
                                               "unsafe condition reported",
                                               target=target)
@@ -1058,6 +1192,38 @@ class SequenceEngine:
             await asyncio.sleep(SAFETY_SEED_STEP_S)
             reading = await self.hub.safety_reading()
         return reading
+
+    async def _confirm_unsafe(self, cfg) -> bool:
+        """Confirm a sustained-unsafe verdict by re-sampling the hub's cached safety
+        reading at the POLLER cadence, up to ``unsafe_consecutive`` readings. The
+        already-taken unsafe reading counts as sample 1; each further sample waits
+        ``SAFETY_PAUSE_POLL_S`` (the poll cadence) and re-reads. Returns ``True``
+        only when every sample stays unsafe (a disconnected/stale/failed read is
+        fail-closed to unsafe); a single safe re-read means a transient glitch and
+        returns ``False`` (do not act).
+
+        This makes the debounce measure ~``unsafe_consecutive × poll`` seconds of
+        real weather — the intended glitch filter — instead of that many FRAME
+        boundaries, which at minutes-per-sub let genuine rain run for many
+        exposures on open equipment (the bug)."""
+        need = max(1, cfg.safety.unsafe_consecutive)
+        self._unsafe_streak = 1
+        self._safe_streak = 0
+        while self._unsafe_streak < need:
+            await self._checkpoint()
+            await asyncio.sleep(SAFETY_PAUSE_POLL_S)
+            mon = self.hub.devices.get("safety")
+            if mon is not None and not getattr(mon, "connected", False):
+                self._unsafe_streak += 1            # disconnected → unsafe
+                continue
+            reading = await self._read_safety()
+            if reading is None or reading.stale or not reading.is_safe:
+                self._unsafe_streak += 1
+            else:
+                self._unsafe_streak = 0             # glitch cleared → not sustained
+                self._safe_streak = 1
+                return False
+        return True
 
     async def _on_unsafe(self, reason: str, *, stale: bool = False,
                          action: str | None = None,
@@ -1112,6 +1278,22 @@ class SequenceEngine:
                     bus.publish("safety", is_safe=True, reason="safe again",
                                 action="resume", stale=False)
                     self._unsafe_streak = 0
+                    # CRITICAL: _park_hold turned TRACKING OFF (and stopped
+                    # guiding) when we paused, and the sky kept moving while the
+                    # mount sat fixed — the target has drifted out of frame. Just
+                    # returning into the capture loop would shoot the rest of the
+                    # night with tracking off (star trails, wrong field) and every
+                    # guiding-recovery attempt failing against a static mount. So
+                    # re-run the full target setup: unpark + tracking on, re-center
+                    # (goto_and_center) or re-slew, and restart guiding per plan —
+                    # exactly as if we were acquiring the target fresh. For a
+                    # calibration target (no mount) there is nothing to restore.
+                    if target is not None and not target.calibration:
+                        ti = self._index_of_target(target)
+                        bus.log("info", f"re-acquiring {target.name} after pause "
+                                        "(tracking on, re-center, restart guiding)",
+                                "sequence")
+                        await self._setup_target(ti, target)
                     self._set_state(state="running", detail="resumed (safe)")
                     return
             else:
@@ -1141,11 +1323,17 @@ class SequenceEngine:
     async def _enforce_mount_floor(self, *, projected: bool, target: Target) -> None:
         """Mount-altitude floor + pier guard before a slew (§1.9-A/E).
 
-        Reads the mount's CURRENT pointing → alt/az, compares against
-        ``max(min_alt_deg, interp(horizon, az))``. ``projected`` advances time by
-        a slew+solve margin so a setting target isn't accepted right as it drops.
-        A definite unsafe destination pier side (when ``enforce_pier_limits`` and
-        the mount reports it) is an active pier-collision risk → SafetyAbort."""
+        Evaluates the slew DESTINATION (``target.ra_hours``/``dec_deg``) → alt/az
+        against ``max(min_alt_deg, interp(horizon, az))``. ``projected`` advances
+        time by a slew+solve margin so a setting target isn't accepted right as it
+        drops below the floor during the slew. A definite unsafe destination pier
+        side (when ``enforce_pier_limits`` and the mount reports it) is an active
+        pier-collision risk → SafetyAbort.
+
+        Historically this read the mount's CURRENT pointing (``get_position``),
+        which is the WRONG end of the slew: it could pass a slew to a low target
+        (mount currently high) AND abort the whole night when the mount was parked
+        horizon-pointing (alt ~0). Guarding the destination fixes both."""
         cfg = self._cfg
         if cfg is None:
             return
@@ -1182,14 +1370,13 @@ class SequenceEngine:
         if floor_base <= 0.0 and not horizon:
             return      # no floor configured → nothing to enforce
 
-        # current mount pointing → alt/az now (and projected forward).
-        try:
-            ra, dec = await tel.get_position()
-        except Exception:
-            return
+        # DESTINATION alt/az now (and projected forward across the slew+solve), so
+        # the guard blocks a slew TO a low target and never trips on where the
+        # mount happens to point right now (e.g. a horizon-pointing park position).
         from ..catalog import altaz
         lat = self.hub.site["latitude"]
         lon = self.hub.site["longitude"]
+        ra, dec = target.ra_hours, target.dec_deg
         now = time.time()
         alt_now, az_now = altaz(ra, dec, lat, lon, now)
         worst_alt, worst_az = alt_now, az_now
@@ -1200,8 +1387,8 @@ class SequenceEngine:
         floor = max(floor_base, schedule.effective_floor(floor_base, horizon, worst_az))
         if worst_alt < floor:
             raise SafetyAbort(
-                f"mount altitude {worst_alt:.0f}° below safety floor {floor:.0f}° "
-                f"(az {worst_az:.0f}°)")
+                f"target {target.name} altitude {worst_alt:.0f}° below safety floor "
+                f"{floor:.0f}° (az {worst_az:.0f}°)")
 
     # ----------------------------------------------------------- watchdog (§1.9-F)
 
@@ -1231,29 +1418,39 @@ class SequenceEngine:
         try:
             while True:
                 await asyncio.sleep(WATCHDOG_TICK_S)
-                if self.paused or self.state.get("state") != "running":
-                    warned = False
-                    continue
-                idle = time.time() - self._last_frame_at
-                if idle > threshold:
-                    if not warned:
-                        bus.log("error",
-                                f"no frame in {idle / 60:.0f} min — possible stall",
-                                "safety")
-                        bus.publish("safety", is_safe=False,
-                                    reason=f"no progress in {idle / 60:.0f} min",
-                                    action="warn", stale=False)
-                        if self.reporter is not None:
-                            try:
-                                self.reporter.record_safety(
-                                    "no-progress watchdog", "warn")
-                            except Exception:
-                                pass
-                        warned = True
-                else:
-                    warned = False
+                warned = self._watchdog_check(threshold, warned)
         except asyncio.CancelledError:
             raise
+
+    def _watchdog_check(self, threshold: float, warned: bool) -> bool:
+        """One watchdog evaluation (pure of sleeping — unit-testable). Returns the
+        next ``warned`` latch state, publishing the no-progress ``warn`` edge once
+        per stall.
+
+        Only fires while frames are EXPECTED to flow (``_progress_expected``): the
+        engine deliberately stays state='running' with no frames during a scheduled
+        inter-target wait, a slew/center/AF setup, and cooling. Firing there paged
+        a false 'UNSAFE: no progress' at 1am mid-plan AND flipped the AlertDispatcher
+        safe/unsafe latch, corrupting later real safety alerts (review §1.9-F)."""
+        if self.paused or self.state.get("state") != "running" \
+                or not self._progress_expected:
+            return False
+        idle = time.time() - self._last_frame_at
+        if idle > threshold:
+            if not warned:
+                bus.log("error",
+                        f"no frame in {idle / 60:.0f} min — possible stall",
+                        "safety")
+                bus.publish("safety", is_safe=False,
+                            reason=f"no progress in {idle / 60:.0f} min",
+                            action="warn", stale=False)
+                if self.reporter is not None:
+                    try:
+                        self.reporter.record_safety("no-progress watchdog", "warn")
+                    except Exception:
+                        pass
+            return True
+        return False
 
     def _begin_frame(self, ti: int, si: int, exposure_s: float) -> None:
         """Mark the in-flight exposure for the sub-frame bar + ETA off-by-one
@@ -1364,11 +1561,18 @@ class SequenceEngine:
             bus.log("warning", f"filter '{step.filter}' not in wheel — skipping move", "sequence")
             return
         new_slot = fw.filter_names.index(step.filter)
-        old_slot = await fw.get_position()
+        # P0-2: every device await here is BOUNDED. AlpacaFilterWheel.set_position
+        # polls ``while position == -1`` where each HTTP request SUCCEEDS, so a
+        # jammed wheel reporting -1 forever never trips a transport timeout — it
+        # would hang the whole night inside this await. A _bounded timeout escalates
+        # through the SafetyAbort teardown like any other wedged device I/O.
+        old_slot = await _bounded(fw.get_position(), FILTER_MOVE_TIMEOUT_S,
+                                  "filter get_position")
         if new_slot == old_slot:
             return
         self._set_state(detail=f"filter → {step.filter}")
-        await fw.set_position(new_slot)
+        await _bounded(fw.set_position(new_slot), FILTER_MOVE_TIMEOUT_S,
+                       f"filter → {step.filter}")
         # shift focus by the per-filter offset delta (offsets are relative, so
         # an incremental delta keeps focus correct as long as we step through changes)
         offsets = getattr(fw, "filter_offsets", []) or []
@@ -1377,25 +1581,55 @@ class SequenceEngine:
             delta = offsets[new_slot] - offsets[old_slot]
             if delta:
                 foc = self.hub.require("focuser")
-                pos = await foc.get_position()
-                await foc.move_to(pos + delta)
+                pos = await _bounded(foc.get_position(), FOCUSER_MOVE_TIMEOUT_S,
+                                     "focuser get_position")
+                await _bounded(foc.move_to(pos + delta), FOCUSER_MOVE_TIMEOUT_S,
+                               "focuser offset move")
                 bus.log("info", f"applied filter offset {delta:+d} for {step.filter}", "sequence")
 
-    async def _maybe_meridian_flip(self, target: Target) -> None:
-        if not self.plan.meridian_flip:
+    async def _maybe_meridian_flip(self, target: Target,
+                                   next_exposure_s: float = 0.0) -> None:
+        if not self.plan.meridian_flip or not self._flip_armed:
             return
         tel = self.hub.devices.get("telescope")
         if not tel or not tel.connected:
             return
+        # authoritative countdown = server HA math (the device value alone never
+        # goes negative, so it can't detect the crossing — the live bug).
         try:
-            ttf = await _bounded(tel.time_to_meridian_flip(),
+            lon = self.hub.site["longitude"]
+            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
+        except Exception:
+            return
+        # fold in the device's own value ONLY when it reports a sooner positive
+        # countdown (a mount enforcing a tighter minutes-after-meridian limit
+        # must be allowed to flip earlier — never later, so a wrapped ~12h device
+        # value can't push the flip past the meridian).
+        try:
+            dev = await _bounded(tel.time_to_meridian_flip(),
                                  MOUNT_QUERY_TIMEOUT_S, "meridian-flip query")
         except SafetyAbort:
             raise
         except Exception:
+            dev = None
+        if dev is not None and dev > 0 and dev < ttf_h:
+            ttf_h = dev
+
+        ttf_s = ttf_h * 3600.0
+        # frame-window gate: a flip comfortably beyond the next exposure (+ slack)
+        # is not our concern this frame — expose normally.
+        window_s = max(0.0, float(next_exposure_s)) + FLIP_FRAME_MARGIN_S
+        if ttf_s > window_s:
             return
-        if ttf is None or ttf > 0:
-            return
+        # the flip falls within the upcoming frame. If the target has NOT yet
+        # crossed (ttf still > 0), WAIT it out rather than starting an exposure
+        # that would straddle the meridian (NINA PassMeridian semantics) — a
+        # premature flip while still east of the meridian would swing the mount
+        # counterweight-up on the far side. The mount keeps tracking through this
+        # short (≤ one frame) cancel/pause-responsive hold.
+        if ttf_s > 0:
+            await self._wait_for_flip_point(target)
+
         # pre-flip safety + mount-floor gate (the flip is a slew — §1.9-B).
         await self._safety_gate(context="slew", target=target)
         self._set_state(detail="meridian flip")
@@ -1404,6 +1638,10 @@ class SequenceEngine:
         # so a wedged flip can't hang the night mid-slew across the meridian.
         await _bounded(self.hub.meridian_flip(target.ra_hours, target.dec_deg),
                        FLIP_TIMEOUT_S, "meridian flip")
+        # one flip per meridian crossing: the target now tracks counterweight-down
+        # on the far side and the server countdown stays negative for hours, so
+        # disarm until the next target re-arms in _setup_target.
+        self._flip_armed = False
         self._record_event_cost("flip", time.time() - _t0)
         # the flip wall-time is accounted analytically (events_cost_s), so flag
         # this frame to exclude it from the per-frame overhead EMA — matching the
@@ -1411,6 +1649,30 @@ class SequenceEngine:
         self._frame_had_event = True
         if "focuser" in self.hub.devices:
             await self._autofocus("post-flip autofocus")
+
+    async def _wait_for_flip_point(self, target: Target) -> None:
+        """Hold (cancel/pause-responsive) until the target actually reaches the
+        meridian flip point (server HA countdown ``<= 0``).
+
+        Entered only when the flip falls inside the upcoming frame window but the
+        target has not yet crossed, so we never START an exposure that would
+        straddle the meridian and we never flip a GEM counterweight-up while it is
+        still east of the meridian (NINA PassMeridian). Bounded by construction:
+        the caller only waits when the remaining countdown is ≤ one frame window."""
+        try:
+            lon = self.hub.site["longitude"]
+        except Exception:
+            return
+        while True:
+            await self._checkpoint()            # honor a concurrent pause
+            ttf_h = schedule.hours_to_meridian_flip(target.ra_hours, lon)
+            if ttf_h <= 0:
+                return
+            self._set_state(detail=f"holding for meridian "
+                                   f"({ttf_h * 60.0:.1f} min)")
+            # sleep the smaller of the step and the remaining time, with a small
+            # floor so we don't busy-spin as the countdown approaches zero.
+            await asyncio.sleep(max(0.2, min(FLIP_WAIT_STEP_S, ttf_h * 3600.0)))
 
     async def _maybe_recover_guiding(self) -> None:
         if not (self.plan.guide and self.plan.recover_guiding):
@@ -1457,29 +1719,35 @@ class SequenceEngine:
         rejected frame is still kept+recorded, so the legacy behavior (flag only)
         is exactly preserved when escalation is at its default.
 
-        ``record=False`` evaluates the gate WITHOUT folding this frame's HFR into
-        the running-median window. The retake path uses it so one logical frame
-        that was rejected-then-retaken contributes a single sample (its rejected
-        original already appended), not two — which would bias the median (P3-17)."""
+        ``record=False`` evaluates the gate WITHOUT ever folding this frame's HFR
+        into the running-median window — a pure read-only check for any path that
+        must not perturb the good-frame history."""
         factor = self.plan.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
         if not factor or hfr is None:
             return True
-        if record:
-            self._recent_hfr.append(float(hfr))
-            self._recent_hfr = self._recent_hfr[-12:]
-            window = self._recent_hfr[:-1]
-        else:
-            # do not append; compare against the current window as-is.
-            window = self._recent_hfr
+        # Gate against the median of the frames ALREADY accepted (the current
+        # window). We have NOT appended this frame yet, so the window is exactly the
+        # good-frame history.
+        window = self._recent_hfr
+        accepted = True
         if len(window) >= 4:
             med = median(window)
             if med > 0 and hfr > med * factor:
                 self._rejected += 1
                 bus.log("warning", f"frame HFR {hfr:.2f} >> median {med:.2f} — "
                                    "possible cloud / poor frame", "sequence")
-                return False
-        return True
+                accepted = False
+        # Anchor the running median to GOOD frames only: append the HFR ONLY when
+        # the frame is ACCEPTED. Feeding rejected (cloudy) HFRs into the window let
+        # the median climb toward the cloud level over ~6 bad frames until
+        # ``hfr > med × factor`` stopped firing and every subsequent cloudy frame
+        # was silently re-admitted into the stack (the bug — NINA-style references
+        # exclude rejected samples from the reference statistic for this reason).
+        if accepted and record:
+            self._recent_hfr.append(float(hfr))
+            self._recent_hfr = self._recent_hfr[-12:]
+        return accepted
 
     async def _autofocus(self, label: str) -> None:
         self._set_state(detail=label)

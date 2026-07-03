@@ -4,8 +4,10 @@ Deterministic: the process + health + clock + sleep are all injected, so no real
 subprocess or socket is touched."""
 import json
 
+import pytest
+
 from supervisor import protocol as P
-from supervisor.supervisor import Supervisor
+from supervisor.supervisor import ROLLBACK_FREEZE_FILE, Supervisor, _health_url
 
 
 class FakeProc:
@@ -29,11 +31,11 @@ class FakeProc:
 
 
 def _make_sup(root, procs, health, *, sleeps=None, initial_version=None,
-              health_timeout_s=3.0):
+              health_timeout_s=3.0, launch_fn=None, restore_fn=None):
     it = iter(procs)
     launches = []
 
-    def launch(version):
+    def default_launch(version):
         launches.append(version)
         return next(it)
 
@@ -48,7 +50,8 @@ def _make_sup(root, procs, health, *, sleeps=None, initial_version=None,
             sleeps.append(s)
 
     sup = Supervisor(
-        root, launch_fn=launch, health_fn=health, sleep_fn=sleep, now_fn=now,
+        root, launch_fn=launch_fn or default_launch, health_fn=health,
+        restore_fn=restore_fn, sleep_fn=sleep, now_fn=now,
         health_timeout_s=health_timeout_s, health_poll_s=0.0, max_backoff_s=8.0,
         initial_version=initial_version, log=lambda m: None)
     sup.launches = launches
@@ -164,3 +167,110 @@ def test_crash_triggers_backoff_relaunch(tmp_path):
     assert kind == "stopped" and ver == "0.1.0"
     assert sup.launches == ["0.1.0", "0.1.0"]
     assert sleeps and sleeps[0] > 0  # backed off before relaunch
+
+
+# --------------------------------------------------- health-probe host (finding)
+
+@pytest.mark.parametrize("host,expect", [
+    ("0.0.0.0", "http://127.0.0.1:8800/healthz"),
+    ("", "http://127.0.0.1:8800/healthz"),
+    ("*", "http://127.0.0.1:8800/healthz"),
+    ("::", "http://[::1]:8800/healthz"),
+    ("127.0.0.1", "http://127.0.0.1:8800/healthz"),
+    ("192.168.1.5", "http://192.168.1.5:8800/healthz"),
+    ("::1", "http://[::1]:8800/healthz"),
+])
+def test_health_url_normalizes_wildcard_bind(host, expect):
+    # A wildcard bind (0.0.0.0/::) is not connectable as a peer (WSAEADDRNOTAVAIL
+    # on Windows); the probe must dial loopback or every update rolls back.
+    assert _health_url(host, 8800) == expect
+
+
+# --------------------------------------------------- venv rollback (finding)
+
+def _write_freeze(root, text="httpx==0.27.0\n"):
+    lay = P.Layout(root)
+    lay.ensure()
+    (lay.state / ROLLBACK_FREEZE_FILE).write_text(text, encoding="utf-8")
+
+
+def test_rollback_restores_venv_and_clears_snapshot(tmp_path):
+    P.Layout(tmp_path).set_current("0.1.0")
+    _stage(tmp_path, "0.2.0")
+    _write_pending(tmp_path, "0.2.0")
+    _write_freeze(tmp_path, "httpx==0.27.0\n")
+    restored = []
+    procs = [FakeProc(P.EXIT_APPLY_UPDATE), FakeProc(0, alive=True), FakeProc(P.EXIT_STOP)]
+    sup = _make_sup(tmp_path, procs, health=lambda v: False, health_timeout_s=3.0,
+                    restore_fn=lambda text: restored.append(text))
+    kind, ver = sup.run_forever(max_iterations=8)
+    assert kind == "stopped" and ver == "0.1.0"
+    assert restored == ["httpx==0.27.0\n"]  # venv synced back to pre-update snapshot
+    assert not (P.Layout(tmp_path).state / ROLLBACK_FREEZE_FILE).exists()
+
+
+def test_commit_clears_snapshot_without_restoring(tmp_path):
+    P.Layout(tmp_path).set_current("0.1.0")
+    _stage(tmp_path, "0.2.0")
+    _write_pending(tmp_path, "0.2.0")
+    _write_freeze(tmp_path)
+    restored = []
+    procs = [FakeProc(P.EXIT_APPLY_UPDATE), FakeProc(P.EXIT_STOP)]
+    sup = _make_sup(tmp_path, procs, health=lambda v: v == "0.2.0",
+                    restore_fn=lambda text: restored.append(text))
+    kind, ver = sup.run_forever(max_iterations=6)
+    assert kind == "stopped" and ver == "0.2.0"
+    assert restored == []  # committed: no venv revert
+    assert not (P.Layout(tmp_path).state / ROLLBACK_FREEZE_FILE).exists()
+
+
+# --------------------------------------------------- rejected apply result (finding)
+
+def test_rejected_failed_version_writes_result(tmp_path):
+    lay = P.Layout(tmp_path)
+    lay.set_current("0.1.0")
+    _stage(tmp_path, "0.2.0")
+    lay.ensure()
+    lay.mark_failed("0.2.0", "earlier failure")
+    _write_pending(tmp_path, "0.2.0")
+    procs = [FakeProc(P.EXIT_APPLY_UPDATE), FakeProc(P.EXIT_STOP)]
+    sup = _make_sup(tmp_path, procs, health=lambda v: True)
+    kind, ver = sup.run_forever(max_iterations=6)
+    assert kind == "stopped" and ver == "0.1.0"
+    res = _result(tmp_path)  # server surfaces the failure instead of a silent no-op
+    assert res["ok"] is False and res["version"] == "0.2.0"
+    assert "previously failed" in res["reason"]
+
+
+def test_rejected_unstaged_version_writes_result(tmp_path):
+    P.Layout(tmp_path).set_current("0.1.0")
+    _write_pending(tmp_path, "0.2.0")  # pending, but releases/0.2.0 not staged
+    procs = [FakeProc(P.EXIT_APPLY_UPDATE), FakeProc(P.EXIT_STOP)]
+    sup = _make_sup(tmp_path, procs, health=lambda v: True)
+    kind, ver = sup.run_forever(max_iterations=6)
+    assert kind == "stopped" and ver == "0.1.0"
+    res = _result(tmp_path)
+    assert res["ok"] is False and res["version"] == "0.2.0"
+    assert "not staged" in res["reason"]
+
+
+# --------------------------------------------------- loop containment (finding)
+
+def test_loop_survives_transient_launch_error(tmp_path):
+    P.Layout(tmp_path).set_current("0.1.0")
+    sleeps = []
+    procs = iter([FakeProc(P.EXIT_STOP)])
+    calls = {"n": 0}
+
+    def flaky_launch(version):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("WinError 32: state file held open by scanner")
+        return next(procs)
+
+    sup = _make_sup(tmp_path, [], health=lambda v: True, sleeps=sleeps,
+                    launch_fn=flaky_launch)
+    kind, ver = sup.run_forever(max_iterations=6)
+    # the watchdog did NOT die on the transient OSError; it backed off and recovered
+    assert kind == "stopped" and ver == "0.1.0"
+    assert calls["n"] == 2 and sleeps and sleeps[0] > 0

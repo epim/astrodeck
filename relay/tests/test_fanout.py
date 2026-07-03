@@ -51,10 +51,42 @@ async def test_ws_data_fans_only_to_its_browser(fake_tunnel):
     assert b.received == ['{"type":"status","v":2}']
 
 
-async def test_orphan_ws_data_errors(fake_tunnel):
+async def test_orphan_ws_data_is_benign_noop(fake_tunnel):
+    """A WS_DATA for an unknown/already-closed ws_id is the EXPECTED close race
+    (the home streams trailing frames until WS_CLOSE reaches it), NOT a protocol
+    violation. It must be DROPPED silently -- raising would propagate out of the
+    scope read loop and tear down the whole shared home tunnel."""
     mux = _mux(fake_tunnel)
-    with pytest.raises(Exception):
-        await mux.on_tunnel_frame(protocol.ws_data(0, "ws-nope", 1, b"{}"))
+    # Must not raise (previously raised ProxyError, killing the tunnel).
+    await mux.on_tunnel_frame(protocol.ws_data(0, "ws-nope", 1, b"{}"))
+
+
+async def test_ws_data_after_close_does_not_tear_down_tunnel(fake_tunnel):
+    """The end-to-end race: a browser /ws drops (close_ws pops the viewer + sends
+    WS_CLOSE), then trailing in-flight WS_DATA for that ws_id arrives. Those frames
+    must be dropped without raising, so a sibling viewer's stream is unaffected."""
+    mux = _mux(fake_tunnel)
+    gone = FakeBrowserWS()
+    sibling = FakeBrowserWS()
+    ws_gone = await mux.open_ws(gone, "/ws", "", [])
+    ws_sib = await mux.open_ws(sibling, "/ws", "", [])
+    await _settle()
+
+    # Browser drops: the relay pops the viewer and sends WS_CLOSE down.
+    await mux.close_ws(ws_gone, 1006)
+
+    # Home's _run_ws had already queued frames for ws_gone -> they arrive orphaned.
+    for i in range(5):
+        await mux.on_tunnel_frame(
+            protocol.ws_data(0, ws_gone, i + 1, b'{"type":"status"}'))
+    # A WS_CLOSE for the same (already-gone) ws_id is likewise a benign no-op.
+    await mux.on_tunnel_frame(protocol.ws_close(0, ws_gone, 1000))
+
+    # The sibling's tunnel is intact: a normal WS_DATA still fans through.
+    await mux.on_tunnel_frame(
+        protocol.ws_data(0, ws_sib, 1, b'{"type":"status","ok":1}'))
+    await _settle()
+    assert sibling.received == ['{"type":"status","ok":1}']
 
 
 async def test_slow_browser_dropped_sibling_keeps_full_stream(fake_tunnel):

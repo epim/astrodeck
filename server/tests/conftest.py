@@ -11,8 +11,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# server/tests/conftest.py -> parents[2] is the git root (C:\Users\bear\astro).
+# server/tests/conftest.py -> parents[1] is server/, parents[2] the git root.
+_SERVER_DIR = Path(__file__).resolve().parents[1]
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The ``server/`` dir on sys.path so ``tools.mock_nina`` (server/tools/, a package
+# OUTSIDE the installed ``astrodeck`` package -- setuptools find only includes
+# ``astrodeck*``) imports at COLLECTION time. Without this the suite errors under
+# CI's `pip install -e . && pytest` (the `pytest` console script does NOT add the
+# CWD to sys.path, unlike `python -m pytest`), turning the whole server gate red.
+# conftest.py is imported before the test modules in this dir, so the shim lands
+# before test_nina.py's `from tools.mock_nina import ...` is collected.
+_server_str = str(_SERVER_DIR)
+if _server_str not in sys.path:
+    sys.path.insert(0, _server_str)
+
 _RELAY_DIR = _REPO_ROOT / "relay"
 if _RELAY_DIR.is_dir():
     p = str(_RELAY_DIR)
