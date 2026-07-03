@@ -128,18 +128,25 @@ impl Backlash {
 
     fn plan_absolute(&mut self, from: i32, target: i32) -> Vec<i32> {
         let adjusted = target + self.offset;
-        // Clamp branches reset the offset and move straight to the bound.
+        // Clamp branches reset the offset and move straight to the bound,
+        // then go through the same base-move direction update as the normal
+        // path below (dossier §8.2): with `offset` already reset to 0 here,
+        // that is `direction(from - self.offset, raw_target)`.
         if adjusted < 0 {
             self.offset = 0;
-            self.last_direction = nonkeep(direction(from, 0), self.last_direction);
+            self.last_direction = nonkeep(direction(from - self.offset, 0), self.last_direction);
             return vec![0];
         }
         if adjusted > self.max_step {
             self.offset = 0;
-            self.last_direction = nonkeep(direction(from, self.max_step), self.last_direction);
+            self.last_direction = nonkeep(
+                direction(from - self.offset, self.max_step),
+                self.last_direction,
+            );
             return vec![self.max_step];
         }
-        // Direction of the (pre-compensation) adjusted target vs current raw.
+        // Direction of the (pre-compensation) adjusted target vs current raw
+        // — used only to pick the compensation on a direction REVERSAL.
         let dir = match direction(from, adjusted) {
             Direction::Keep => self.last_direction,
             d => d,
@@ -152,11 +159,16 @@ impl Backlash {
         } else {
             0
         };
-        self.offset += comp;
+        self.offset += comp; // BEFORE the stored-direction computation below.
         let raw_target = adjusted + comp;
-        if dir != Direction::Keep {
-            self.last_direction = dir;
-        }
+        // Quirk to reproduce exactly (dossier §8.2): the decorator base move
+        // recomputes the stored direction from the *offset-adjusted* reported
+        // position — using the offset that was JUST updated above — against
+        // the raw target, not from the pre-compensation `dir` computed above.
+        self.last_direction = nonkeep(
+            direction(from - self.offset, raw_target),
+            self.last_direction,
+        );
         vec![raw_target]
     }
 }
@@ -209,6 +221,38 @@ mod tests {
         assert_eq!(b.plan_move(5100, 5050), vec![4950]);
         // reported = raw - offset = 4950 - (-100) = 5050 (compensation hidden).
         assert_eq!(b.reported_position(4950), 5050);
+    }
+
+    #[test]
+    fn absolute_stored_direction_uses_post_update_offset_quirk() {
+        // Dossier §8.2 worked example: accumulated offset=-140, last_direction=In,
+        // raw from=4000, backlash_in=100, backlash_out=60, small OUT move to
+        // logical target 4142.
+        let mut b = Backlash::new(BacklashModel::Absolute, 100, 60, 100_000, Direction::Out);
+        b.offset = -140;
+        b.last_direction = Direction::In;
+
+        let plan = b.plan_move(4000, 4142);
+        // adjusted = 4142 + (-140) = 4002; dir(4000, 4002) = Out reverses the
+        // stored In -> comp = +60; offset_new = -80; raw_target = 4062.
+        assert_eq!(plan, vec![4062], "raw_target");
+        assert_eq!(b.offset, -80, "offset after the move");
+        // Quirk: the stored direction is direction(from - offset_new, raw_target)
+        // = direction(4080, 4062) = In — NOT the pre-compensation `dir` (Out).
+        assert_eq!(b.last_direction, Direction::In, "stored direction");
+
+        // Follow-up move: NINA's next reversal check must use the (correct)
+        // stored In direction, not the wrong Out a buggy implementation would
+        // have stored. From the new raw position (4062) to a further-OUT
+        // target, dir is Out again, which — against a stored direction of In —
+        // is a reversal and re-applies backlash_out. (A buggy implementation
+        // that stored Out here would see no reversal and comp=0, moving
+        // straight to 4120 instead of 4180.)
+        let plan2 = b.plan_move(4062, 4200);
+        // adjusted = 4200 + (-80) = 4120; dir(4062, 4120) = Out; reversal vs
+        // last_direction=In -> comp = +60; offset -80+60 = -20; raw_target = 4180.
+        assert_eq!(plan2, vec![4180], "raw_target of the follow-up move");
+        assert_eq!(b.offset, -20, "offset after the follow-up move");
     }
 
     #[test]

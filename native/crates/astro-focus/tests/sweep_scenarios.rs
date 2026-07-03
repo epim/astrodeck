@@ -128,6 +128,62 @@ fn extends_left_when_left_quota_unmet() {
 }
 
 #[test]
+fn left_extension_clamps_to_position_zero_and_measures_once() {
+    // Dossier §3.1/§12: a real focuser can't go below position 0. When the
+    // true minimum sits at/near 0 there is no reachable "left of the
+    // minimum" data (the initial sweep and every left extension stay >= 0),
+    // so NINA's left-extension step clamps its target to 0, still MEASURES
+    // there, adds the point to the curve, and only then breaks out of the
+    // extension loop (`focuser.position() == 0`) rather than repeatedly
+    // trying to push further left forever.
+    let cfg = FocusConfig {
+        step_size: 30,
+        offset_steps: 2,
+        curve_fitting: CurveFitting::Hyperbolic,
+        r_squared_threshold: 0.0,
+        ..FocusConfig::default()
+    };
+    // Initial pass (non-reverse, offset=2, step=30) measures start+60,
+    // start+30, start -> 100, 70, 40: all strictly right of the true
+    // minimum at 0, so the left side starts (and stays) starved.
+    let start = 40;
+    let mut sweep = FocusSweep::new(cfg, start);
+
+    let mut zero_moves = 0usize;
+    let mut result = None;
+    for _ in 0..10_000 {
+        match sweep.next() {
+            Step::MoveTo(pos) => {
+                assert!(pos >= 0, "focuser target went negative: {pos}");
+                if pos == 0 {
+                    zero_moves += 1;
+                }
+                let (hfr, sd, n) = v_curve(0, 0.01)(pos);
+                sweep.add_measurement(pos, hfr, sd, n);
+            }
+            step => {
+                result = Some(step);
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        zero_moves, 1,
+        "the clamped position 0 must be visited (and measured) exactly once"
+    );
+    let zero_points = sweep.points().iter().filter(|p| p.position == 0.0).count();
+    assert_eq!(
+        zero_points, 1,
+        "exactly one point at position 0 in the curve"
+    );
+    assert!(
+        result.is_some(),
+        "sweep must terminate (not loop forever re-clamping to 0)"
+    );
+}
+
+#[test]
 fn fails_when_max_points_exhausted_monotonic() {
     // A monotonic (no-minimum) curve never brackets a minimum: the machine
     // keeps extending the low side until the max-points cap, then fits and

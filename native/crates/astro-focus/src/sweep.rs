@@ -112,6 +112,12 @@ pub struct FocusSweep {
     sweep_positions: Vec<i32>,
     sweep_idx: usize,
 
+    /// Set once a left-extension move has clamped to and measured position 0
+    /// (dossier §3.1/§12: "focuser reached position 0" break). Checked at the
+    /// start of the next extension decision so repeated left extensions at
+    /// the lower bound cannot loop forever.
+    hit_focuser_zero: bool,
+
     final_point: Option<(f64, f64)>,
     final_fits: Option<FocusFits>,
     final_move: i32,
@@ -137,6 +143,7 @@ impl FocusSweep {
             last_measurement: None,
             sweep_positions: Vec::new(),
             sweep_idx: 0,
+            hit_focuser_zero: false,
             final_point: None,
             final_fits: None,
             final_move: start_position,
@@ -264,6 +271,14 @@ impl FocusSweep {
     }
 
     fn decide_extension(&mut self) -> Step {
+        // NINA's "focuser reached position 0" break (dossier §3.1/§12): the
+        // previous extension move already clamped to and measured position 0.
+        // Stop collecting and proceed straight to fitting, even if a quota
+        // was not met — checked before anything else so this can't loop.
+        if self.hit_focuser_zero {
+            self.stage = Stage::Validate;
+            return self.decide();
+        }
         let trend = match self.trend.clone() {
             Some(t) => t,
             None => {
@@ -309,19 +324,23 @@ impl FocusSweep {
 
         let step = self.cfg.step_size;
         let target = if left < offset && zeros_left < offset {
-            self.points.first().unwrap().position.round_ties_even() as i32 - step
+            let raw = self.points.first().unwrap().position.round_ties_even() as i32 - step;
+            if raw <= 0 {
+                // A real focuser clamps to its lower bound; NINA still
+                // measures the clamped point and adds it to the curve, only
+                // breaking out of the extension loop on the *next* check
+                // (dossier §3.1/§12: `focuser.position() == 0` break).
+                self.hit_focuser_zero = true;
+                0
+            } else {
+                raw
+            }
         } else if right < offset && zeros_right < offset {
             self.points.last().unwrap().position.round_ties_even() as i32 + step
         } else {
             self.stage = Stage::Validate;
             return self.decide();
         };
-
-        // Focuser would reach/pass position 0 -> stop collecting, still fit.
-        if target <= 0 {
-            self.stage = Stage::Validate;
-            return self.decide();
-        }
 
         self.pending = Pending::Point;
         Step::MoveTo(target)
@@ -399,6 +418,7 @@ impl FocusSweep {
             self.trend = None;
             self.sweep_positions.clear();
             self.sweep_idx = 0;
+            self.hit_focuser_zero = false;
             self.final_point = None;
             self.final_fits = None;
             self.stage = Stage::Init;
