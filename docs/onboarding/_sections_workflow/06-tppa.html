@@ -174,7 +174,7 @@
       <dt>No Polaris needed</dt>
       <dd>It's computed from any solvable star field, not a sight line to Polaris.</dd>
       <dt>Result</dt>
-      <dd>Azimuth and altitude error in arcminutes; you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
+      <dd>Azimuth and altitude error in arcminutes (a full moon spans about 30 of them); you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
     </dl>
     <figure class="tppa-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
       <div class="tppa-stage">
@@ -202,6 +202,7 @@
     </figure>
     <p class="caption">Three solved points define the spin axis; the reticle shows how far it misses the pole.</p>
     <p class="stakes reveal">Skip it and long exposures show field rotation — stars trail in little arcs even with guiding running perfectly.</p>
+    <p class="guard reveal">TPPA makes "good enough" <b>objective</b> — the az/alt error ticks down live in arcminutes as you turn the knobs; software can't move the bolts, but it tells you exactly how close you are.</p>
     <p class="hook reveal">AstroDeck drives a TPPA routine (via NINA) and publishes one <code>polar</code> reading — az / alt / total error in arcmin — to a live reticle, with pause/resume.</p>
     <p class="aside">The old way needed a clear sightline to Polaris; plate-solving doesn't — good news for everyone south of the equator, behind a tree, or otherwise invited to check their privilege.</p>
   </article>

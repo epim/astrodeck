@@ -53,8 +53,8 @@
     <dl class="facts reveal" style="--reveal-delay:.12s">
       <dt>Loop</dt><dd>Measure the guide star's offset, pulse the mount to push it back,
         repeat every <span class="stat">~1&ndash;3 s</span>.</dd>
-      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds; smaller means
-        rounder stars.</dd>
+      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds — 1/60 of an
+        arcminute, a tiny fraction of a moon-width; smaller means rounder stars.</dd>
       <dt>Dither</dt><dd>Shift a few pixels between frames so stacking rejects hot pixels
         and walking noise.</dd>
       <dt>PHD2</dt><dd>The de-facto guiding engine AstroDeck drives.</dd>
@@ -76,6 +76,7 @@
 
     <p class="stakes reveal">Without guiding, the field slowly walks during long sub-exposures
       and stars smear into ovals.</p>
+    <p class="guard reveal">The loop pulses corrections every <span class="stat">~1&ndash;3&nbsp;s</span>; if the star is lost the sequence can <b>auto-recover</b> guiding, and a meridian flip mirrors the calibration so corrections never run backwards.</p>
     <p class="hook reveal">AstroDeck reports live guide <code>RMS</code> and exposes a
       <code>dither</code> setting in the sequence Automation.</p>
   </article>

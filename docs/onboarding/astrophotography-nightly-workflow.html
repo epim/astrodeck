@@ -234,6 +234,7 @@
   .precis-legend b { color: var(--c-ink-soft); font-weight: 500; }
   .precis-legend .precis-legend-arrow { color: var(--c-ink-faint); opacity: 0.7; }
   .precis-legend .precis-legend-breaks { color: var(--c-warn); }
+  .precis-legend .precis-legend-guard { color: var(--c-good); }
   .precis-legend .precis-legend-ui { color: var(--c-accent); }
 
   /* ---- shared topic furniture ---- */
@@ -349,6 +350,27 @@
   }
   .hook b, .hook strong { color: var(--c-ink); font-weight: 500; }
   .hook code { color: var(--c-accent-soft); }
+
+  /* the "what the software does about it" line — pairs with .stakes/BREAKS */
+  .guard {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.7em;
+    align-items: baseline;
+    margin-top: var(--s-2);
+    font-size: var(--t-sm);
+    color: var(--c-ink-soft);
+  }
+  .guard::before {
+    content: "GUARD";
+    font-family: var(--font-mono);
+    font-size: var(--t-xs);
+    letter-spacing: 0.18em;
+    color: var(--c-good);
+    line-height: 1.5;
+  }
+  .guard b, .guard strong { color: var(--c-ink); font-weight: 500; }
+  .guard code { color: var(--c-accent-soft); }
 
   /* a dry one-line aside, set apart, never load-bearing */
   .aside {
@@ -1706,8 +1728,9 @@
       <b>does</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b>facts</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b class="precis-legend-breaks">BREAKS</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
+      <b class="precis-legend-guard">GUARD</b><span class="precis-legend-arrow" aria-hidden="true">&rarr;</span>
       <b class="precis-legend-ui">UI</b>
-      <span>— what you do, the numbers that matter, what goes wrong if you skip it, and where it lives in AstroDeck.</span>
+      <span>— what you do, the numbers that matter, what goes wrong if you skip it, what the software does about it, and where it lives in AstroDeck.</span>
     </p>
   </header>
 
@@ -1745,7 +1768,8 @@
       </div>
     </figure>
     <p class="caption">Coarse setup by hand; the software refines it later.</p>
-    <p class="stakes reveal">A tilted or mis-aimed mount makes polar alignment and every GoTo start from a bad reference — you fight it the rest of the night.</p>
+    <p class="stakes reveal">A tilted or mis-aimed mount makes polar alignment (aiming the mount's axis at the sky's pivot) and every GoTo (a slew to a named target) start from a bad reference — you fight it the rest of the night.</p>
+    <p class="guard reveal">AstroDeck can't level your tripod — but a plate-solve sync and TPPA later <b>measure</b> the pointing error and correct for it, and a mount-altitude floor refuses slews below the horizon even with no safety sensor.</p>
     <p class="hook reveal">AstroDeck assumes a roughly polar-aligned mount and reads your site latitude/longitude from config (<code>site</code>) to compute where everything is in the sky.</p>
     <p class="aside">This is the one step no API call can do for you.</p>
   </article>
@@ -1797,6 +1821,7 @@
 
     <p class="stakes reveal">A device that fails to connect — or connects to the wrong
       backend — stalls the run before the first frame.</p>
+    <p class="guard reveal">A failed role is <b>flagged</b> in the tri-state status while the others still connect; boot auto-connect degrades gracefully and best-effort reconnects a dropped link, so one bad device doesn't silently stall the night.</p>
     <p class="hook reveal">AstroDeck shows a backend + profile picker and a tri-state
       connection status per role; viewers get a read-only view with no control.</p>
     <p class="aside">The simulator backend connects instantly and never clouds over.</p>
@@ -1832,6 +1857,7 @@
     </figure>
     <p class="caption">Drag the set-point — the grain is dark current you can't fully subtract away.</p>
     <p class="stakes reveal">A warm sensor buries faint nebulosity in thermal noise; cooling too far or too fast can frost the sensor with condensation.</p>
+    <p class="guard reveal">The cooler holds the set-point to within <span class="stat">±1&nbsp;°C</span> and can warm gently at dawn — but there's <b>no automatic frost guard</b>, so pick a set-point the cooler can actually hold.</p>
     <p class="hook reveal">AstroDeck's monitor shows live sensor temperature and cooler power %, and the sequence can warm the cooler gently at the end of the night (<code>warm_cooler_when_done</code>).</p>
     <p class="aside">−10 °C isn't sacred; it just has to be repeatable, so your dark frames match.</p>
   </article>
@@ -1849,7 +1875,7 @@
       <dt>The miss</dt>
       <dd>An uncalibrated model lands the star off-centre, sometimes outside the frame entirely.</dd>
       <dt>Plate-solve + sync</dt>
-      <dd>Image the field, solve where the scope actually points, and sync the model to truth.</dd>
+      <dd>Image the field, <b>plate-solve</b> it — match its star pattern to a catalogue to find where the scope truly points — and sync the model to truth.</dd>
       <dt>Park</dt>
       <dd>A known home reference (the sim parks near the pole at Dec <span class="stat">+89.5°</span>).</dd>
     </dl>
@@ -1873,6 +1899,7 @@
     </figure>
     <p class="caption">First GoTo lands close, not centred; the plate-solve fixes the rest.</p>
     <p class="stakes reveal">Trust an unsynced model and the target sits outside the sensor — you expose empty sky and never notice.</p>
+    <p class="guard reveal">A plate-solve <b>sync</b> corrects the model, and the engine retries solve → sync → re-slew up to three times; horizon and Sun-exclusion guards refuse a dangerous slew outright.</p>
     <p class="hook reveal">MountView has a <code>Slew Pad</code>, a <code>Pointing</code> panel (RA / Dec / Alt / Az / State) and a <code>Target Catalog</code>; a plate-solve syncs the model to where it truly points.</p>
     <p class="aside">The mount is confident and wrong; the camera is how it learns.</p>
   </article>
@@ -1899,6 +1926,7 @@
     </figure>
     <p class="caption">Autofocus samples the V and drives the focuser to its floor.</p>
     <p class="stakes reveal">Soft focus fattens every star and drowns faint detail — no amount of processing puts it back.</p>
+    <p class="guard reveal">Autofocus <b>measures</b> HFR and solves for the V-curve minimum; it fails loudly ("widen the sweep") rather than settling on a bad spot, and refocuses per filter and on temperature drift.</p>
     <p class="hook reveal">FocusView shows a <code>Live Preview</code>, an <code>Autofocus</code> routine (exposure, step size) and a <code>V-Curve · HFR vs Position</code> plot; Automation can autofocus every N frames, apply filter offsets, and refocus on a temperature delta.</p>
   </article>
 </section>
@@ -1917,7 +1945,7 @@
       <dt>No Polaris needed</dt>
       <dd>It's computed from any solvable star field, not a sight line to Polaris.</dd>
       <dt>Result</dt>
-      <dd>Azimuth and altitude error in arcminutes; you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
+      <dd>Azimuth and altitude error in arcminutes (a full moon spans about 30 of them); you turn the mount's alt/az knobs to drive them toward <span class="stat">zero</span>.</dd>
     </dl>
     <figure class="tppa-figure reveal" style="--reveal-delay:.16s; background:var(--c-bg-sunk); border-radius:var(--radius-sm); box-shadow:var(--ring); margin-top:var(--s-3); overflow:hidden; aspect-ratio:16/9;" aria-hidden="true">
       <div class="tppa-stage">
@@ -1945,6 +1973,7 @@
     </figure>
     <p class="caption">Three solved points define the spin axis; the reticle shows how far it misses the pole.</p>
     <p class="stakes reveal">Skip it and long exposures show field rotation — stars trail in little arcs even with guiding running perfectly.</p>
+    <p class="guard reveal">TPPA makes "good enough" <b>objective</b> — the az/alt error ticks down live in arcminutes as you turn the knobs; software can't move the bolts, but it tells you exactly how close you are.</p>
     <p class="hook reveal">AstroDeck drives a TPPA routine (via NINA) and publishes one <code>polar</code> reading — az / alt / total error in arcmin — to a live reticle, with pause/resume.</p>
     <p class="aside">The old way needed a clear sightline to Polaris; plate-solving doesn't — good news for everyone south of the equator, behind a tree, or otherwise invited to check their privilege.</p>
   </article>
@@ -1962,8 +1991,8 @@
     <dl class="facts reveal" style="--reveal-delay:.12s">
       <dt>Loop</dt><dd>Measure the guide star's offset, pulse the mount to push it back,
         repeat every <span class="stat">~1&ndash;3 s</span>.</dd>
-      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds; smaller means
-        rounder stars.</dd>
+      <dt>RMS</dt><dd>Guiding quality is the residual error in arcseconds — 1/60 of an
+        arcminute, a tiny fraction of a moon-width; smaller means rounder stars.</dd>
       <dt>Dither</dt><dd>Shift a few pixels between frames so stacking rejects hot pixels
         and walking noise.</dd>
       <dt>PHD2</dt><dd>The de-facto guiding engine AstroDeck drives.</dd>
@@ -1985,6 +2014,7 @@
 
     <p class="stakes reveal">Without guiding, the field slowly walks during long sub-exposures
       and stars smear into ovals.</p>
+    <p class="guard reveal">The loop pulses corrections every <span class="stat">~1&ndash;3&nbsp;s</span>; if the star is lost the sequence can <b>auto-recover</b> guiding, and a meridian flip mirrors the calibration so corrections never run backwards.</p>
     <p class="hook reveal">AstroDeck reports live guide <code>RMS</code> and exposes a
       <code>dither</code> setting in the sequence Automation.</p>
   </article>
@@ -2033,6 +2063,7 @@
     </figure>
     <p class="caption">Wide guide field, narrow imaging field — same sky, different jobs.</p>
     <p class="stakes reveal">Differential flexure makes guiding look perfect on its own star while the main image quietly drifts.</p>
+    <p class="guard reveal">Software can't remove flexure — <b>dithering</b> between subs and frame rejection hide slow drift in the stack, but a stiff mounting or an off-axis guider is the real fix.</p>
     <p class="hook reveal">AstroDeck resolves the <code>guider</code> role and its guide camera separately from the imaging camera.</p>
     <p class="aside">The guide camera is the cheapest, ugliest sensor in the rig, and it never has to look pretty.</p>
   </article>
@@ -2093,6 +2124,7 @@
     <p class="stakes reveal">Forget to refocus per filter or to match each filter's exposure
       to its throughput and a channel comes back soft or starved — the composite is
       unusable.</p>
+    <p class="guard reveal">Per-filter focus <b>offsets</b> shift focus automatically on each change, HFR-spike rejection flags bad frames, and exposure and gain are set per filter in the plan.</p>
     <p class="hook reveal">AstroDeck moves the wheel by slot
       (<code>/api/filterwheel/position</code>), names the slots
       <code>L R G B Ha OIII SII</code>, and applies per-filter focus offsets in
@@ -2152,6 +2184,7 @@
     </figure>
     <p class="caption">Best signal near the meridian; the run flips the mount as the target crosses it.</p>
     <p class="stakes reveal">Pick a target too low (or behind a tree), or run past the meridian without a flip, and you lose the subs — or crash the mount into the pier.</p>
+    <p class="guard reveal">A preflight altitude check warns on targets that never rise; the mount-altitude floor and pier guard <b>abort</b> a slew that would hit the pier; the flip is automatic and safety fails closed — a stale reading pauses the run.</p>
     <p class="hook reveal">SequenceView holds the <code>Plan</code> (frames, integration), a <code>Targets</code> list, and <code>Automation</code> (meridian flip, HFR spike rejection, dither, filter offsets).</p>
     <p class="aside">Most imagers plan before dark; it sits last here because it's the part you keep tuning all night.</p>
   </article>
