@@ -139,6 +139,7 @@
 
     <p class="stakes reveal">A device that fails to connect — or connects to the wrong
       backend — stalls the run before the first frame.</p>
+    <p class="guard reveal">A failed role is <b>flagged</b> in the tri-state status while the others still connect; boot auto-connect degrades gracefully and best-effort reconnects a dropped link, so one bad device doesn't silently stall the night.</p>
     <p class="hook reveal">AstroDeck shows a backend + profile picker and a tri-state
       connection status per role; viewers get a read-only view with no control.</p>
     <p class="aside">The simulator backend connects instantly and never clouds over.</p>
