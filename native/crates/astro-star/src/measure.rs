@@ -509,8 +509,8 @@ pub fn measure_hfr(
     let aperture_radius = (bounds.w.min(bounds.h) as f64) / 2.0;
     let left = bounds.x as f64;
     let top = bounds.y as f64;
-    let right = (bounds.x + bounds.w - 1) as f64;
-    let bottom = (bounds.y + bounds.h - 1) as f64;
+    let right = bounds.right() as f64;
+    let bottom = bounds.bottom() as f64;
     let start_x = cx - step * ((cx - left) / step).floor();
     let start_y = cy - step * ((cy - top) / step).floor();
     let tau = effective_clip_multiplier(p, bounds.w.max(bounds.h)) * sigma;
