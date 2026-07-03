@@ -21,7 +21,11 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     hdr["XBINNING"] = frame.binning
     hdr["YBINNING"] = frame.binning
     hdr["IMAGETYP"] = frame_type
-    hdr["DATE-OBS"] = datetime.fromtimestamp(frame.timestamp, tz=timezone.utc).isoformat()
+    # FITS 4.0 sec 4.4.2 requires 'YYYY-MM-DDThh:mm:ss[.s...]' with NO timezone
+    # designator (UTC is implied) -- isoformat() on a tz-aware datetime would
+    # append '+00:00', which astropy's Time(..., format='fits') and other
+    # strict FITS parsers reject.
+    hdr["DATE-OBS"] = datetime.fromtimestamp(frame.timestamp, tz=timezone.utc).replace(tzinfo=None).isoformat()
     if frame.temperature_c is not None:
         hdr["CCD-TEMP"] = (frame.temperature_c, "Sensor temperature (C)")
     if frame.bayer_pattern:

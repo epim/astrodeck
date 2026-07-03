@@ -50,9 +50,17 @@ class PolarAlignSession:
         if self.running:
             raise RuntimeError("polar alignment is already running")
         self.state = self._idle()
+        # Resolve the driver and record the source SYNCHRONOUSLY, before we
+        # return. create_task only schedules the driver; its body (and its first
+        # _publish(source=...)) hasn't run when the API handler reads
+        # state["source"] for the {"started": true, "source": ...} response — so
+        # without this a REST client always saw source=null and could not tell
+        # whether the real NINA TPPA or the simulator was started.
         if self.hub.nina_client is not None:
+            self.state["source"] = "nina"
             self._task = asyncio.create_task(self._run_nina())
         else:
+            self.state["source"] = "sim"
             self._task = asyncio.create_task(self._run_sim())
 
     async def stop(self) -> None:
@@ -100,6 +108,7 @@ class PolarAlignSession:
         url = f"ws://{client.host}:{client.port}/v2/tppa"
         self._publish(state="running", source="nina", progress=0.0,
                       message="connecting to NINA TPPA…")
+        got_measurement = False
         try:
             async with websockets.connect(url, open_timeout=10, ping_interval=20) as ws:
                 self._ws = ws
@@ -107,7 +116,8 @@ class PolarAlignSession:
                 bus.log("info", "NINA TPPA started", "polar")
                 async for raw in ws:
                     try:
-                        self._handle_nina(json.loads(raw))
+                        if self._handle_nina(json.loads(raw)):
+                            got_measurement = True
                     except (ValueError, TypeError):
                         continue
         except asyncio.CancelledError:
@@ -116,15 +126,36 @@ class PolarAlignSession:
             self._publish(state="error", source="nina",
                           message=f"TPPA connection failed: {e}")
             bus.log("error", f"NINA TPPA: {e}", "polar")
+            return
         finally:
             self._ws = None
+        # The `async for` above ends WITHOUT an exception when NINA closes the
+        # TPPA websocket cleanly (alignment finished/stopped on the NINA side,
+        # plugin reload, or shutdown with a normal close frame). Nothing in the
+        # loop publishes a terminal state, so the last event still says
+        # "running" — the UI would stick on a blinking "running" with Start
+        # disabled forever. Publish a terminal state now: "done" if TPPA
+        # produced at least one measurement (it actually ran to a result),
+        # otherwise "error" for a socket that closed before any alignment data.
+        if got_measurement:
+            self._publish(state="done", progress=1.0, message="alignment complete")
+            bus.log("info", "NINA TPPA finished", "polar")
+        else:
+            self._publish(state="error",
+                          message="NINA closed the TPPA connection")
+            bus.log("warning",
+                    "NINA TPPA connection closed before any measurement", "polar")
 
-    def _handle_nina(self, msg: dict) -> None:
+    def _handle_nina(self, msg: dict) -> bool:
+        """Apply one NINA TPPA message. Returns True if it carried an alignment
+        measurement (proof TPPA actually ran) — the caller uses that to decide
+        the terminal state when the websocket later closes cleanly."""
         resp = msg.get("Response", msg) if isinstance(msg, dict) else {}
         az = pick(resp, "AzimuthError")
         alt = pick(resp, "AltitudeError")
         tot = pick(resp, "TotalError")
-        if az is not None or alt is not None or tot is not None:
+        got_measurement = az is not None or alt is not None or tot is not None
+        if got_measurement:
             self._publish(
                 state="running",
                 az_error=round(float(az or 0) * _DEG_TO_MIN, 2),
@@ -152,6 +183,7 @@ class PolarAlignSession:
                     kw["progress"] = max(0.0, min(1.0, p))
         if kw:
             self._publish(**kw)
+        return got_measurement
 
     # --------------------------------------------------------------- sim driver
 

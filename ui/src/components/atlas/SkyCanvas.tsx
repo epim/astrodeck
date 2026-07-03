@@ -21,6 +21,7 @@ import {
 } from "react";
 import type { CatalogEntry, Optics } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint } from "../../lib/framing";
+import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
 
 const VIEW = 1000; // SVG viewBox edge (geometry units)
@@ -75,7 +76,7 @@ function surveyUrl(
     survey,
     stretch,
   });
-  return `/api/survey/cutout.jpg?${q.toString()}`;
+  return u(`/api/survey/cutout.jpg?${q.toString()}`);
 }
 
 // Format an angular size for the HTML labels (arcmin under 1°, else degrees).

@@ -24,6 +24,7 @@ mid-run is always internally consistent.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 from statistics import median
@@ -264,6 +265,14 @@ class SessionReporter:
         self._ended_at: float | None = None
         self._end_reason: str | None = None
         self._lock = asyncio.Lock()
+        # Serializes the ACTUAL disk write across threads. record_frame's snapshot
+        # runs _persist on a worker thread (asyncio.to_thread) while finalize() runs
+        # _persist synchronously on the event-loop thread WITHOUT the asyncio lock —
+        # so both could open the identical fixed ``<id>.json.tmp`` at once and
+        # os.replace a truncated/interleaved file over the report. A threading.Lock
+        # (works across both threads) makes the two _persist calls mutually
+        # exclusive on the shared temp path.
+        self._persist_lock = threading.Lock()
 
     # -- ids / paths -----------------------------------------------------------
 
@@ -324,7 +333,11 @@ class SessionReporter:
     def _persist(self, report: SessionReport) -> None:
         try:
             ensure_dir(_reports_dir())
-            write_json_atomic(self._path(), report.model_dump())
+            # hold the cross-thread lock across the whole atomic write so a
+            # concurrent finalize() (loop thread) and snapshot (worker thread) can
+            # never both be writing the shared ``<id>.json.tmp`` at the same time.
+            with self._persist_lock:
+                write_json_atomic(self._path(), report.model_dump())
         except OSError as e:  # never let a disk hiccup kill the run
             bus.log("warning", f"session report write failed: {e}", "report")
 
@@ -411,6 +424,7 @@ class SessionReporter:
         r._ended_at = rep.ended_at
         r._end_reason = rep.end_reason
         r._lock = asyncio.Lock()
+        r._persist_lock = threading.Lock()
         return r
 
     @staticmethod

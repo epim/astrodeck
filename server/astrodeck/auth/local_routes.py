@@ -54,7 +54,7 @@ from pydantic import BaseModel
 from ..config import config_store
 from . import users as users_mod
 from .capabilities import CAP_ADMIN_USERS, ROLES
-from .deps import require
+from .deps import _scope_is_remote, require
 from .passwords import PasswordTooLongError, PasswordTooShortError
 from .session import sign_session
 
@@ -212,7 +212,17 @@ async def setup_local_admin(body: SetupLocal, request: Request):
 
     This is anti-lockout #3: it lets you create the first admin from the LAN
     without the CLI, and it cannot be used to add a second backdoor admin
-    later."""
+    later.
+
+    W3 remote interlock: first-run admin bootstrap is LAN-ONLY. A relay-tunnelled
+    request (scope ``astrodeck_remote``) 404s here, mirroring the ``none``-provider
+    remote hard-deny -- otherwise, during the first-run window (local enabled +
+    store empty), a remote attacker could seize the rig by POSTing the initial
+    admin before the operator does."""
+    if _scope_is_remote(request):
+        # Bootstrap must never be reachable over the relay; 404 (indistinguishable
+        # from "route not present" to the untrusted remote caller).
+        raise HTTPException(status_code=404, detail="not found")
     auth_cfg = _auth_cfg()
     if not _local_enabled(auth_cfg):
         raise HTTPException(status_code=404, detail="local auth not enabled")

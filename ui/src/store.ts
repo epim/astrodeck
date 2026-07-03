@@ -88,20 +88,24 @@ const EMPTY_NINA_HEALTH: NinaHealth = { active: false, ageMs: null, state: "na",
 
 const PLAN_KEY = "astrodeck-plan";
 
+// Mirrors server/astrodeck/sequence/models.py SequencePlan defaults exactly —
+// the full plan is POSTed to /api/sequence/start and overrides the backend's
+// pydantic defaults, so a divergence here silently degrades every UI-started
+// run (no dithering, no filter-offset refocus, no guide-loss recovery).
 function defaultPlan(): SequencePlan {
   return {
     name: "Tonight",
     targets: [],
     guide: true,
-    dither_every: 0,
+    dither_every: 3,
     dither_pixels: 3,
     autofocus_every: 0,
-    cool_to: -10,
+    cool_to: null,
     cool_timeout_s: 600,
-    apply_filter_offsets: false,
+    apply_filter_offsets: true,
     refocus_on_temp_delta_c: 0,
     meridian_flip: true,
-    recover_guiding: false,
+    recover_guiding: true,
     hfr_reject_factor: 0,
     park_when_done: false,
     warm_cooler_when_done: false,

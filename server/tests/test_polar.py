@@ -1,9 +1,39 @@
 """Polar alignment session: sim convergence + NINA message parsing."""
 import asyncio
+import json
 
 import pytest
 
 from astrodeck.hub import Hub
+
+
+class _FakeWS:
+    """Minimal async-context-manager / async-iterator NINA TPPA websocket:
+    yields the given raw messages then ends the `async for` cleanly (a normal
+    close), exercising the terminal-state path."""
+
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.sent: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def send(self, data):
+        self.sent.append(data)
+
+    def __aiter__(self):
+        self._it = iter(self._messages)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
 
 
 async def _wait(predicate, timeout=45.0):
@@ -35,6 +65,59 @@ async def test_sim_polar_stop():
     await h.polar.stop()
     assert not h.polar.running
     assert h.polar.state["state"] == "idle"
+
+
+async def test_sim_source_set_synchronously():
+    """start() must resolve the driver source BEFORE returning, so the REST
+    handler that reads state["source"] right after start() sees "sim"/"nina"
+    (the driver task body hasn't run yet)."""
+    h = Hub()  # no nina → sim
+    try:
+        await h.polar.start()
+        assert h.polar.state["source"] == "sim"
+    finally:
+        await h.polar.stop()
+
+
+async def test_nina_source_set_synchronously(monkeypatch):
+    import websockets
+    h = Hub()
+    h.nina_client = type("N", (), {"host": "127.0.0.1", "port": 1})()
+    # A websocket that never yields; we only assert the synchronous source set.
+    monkeypatch.setattr(websockets, "connect", lambda url, **kw: _FakeWS([]))
+    try:
+        await h.polar.start()
+        assert h.polar.state["source"] == "nina"
+    finally:
+        await h.polar.stop()
+
+
+async def test_nina_clean_close_publishes_done(monkeypatch):
+    """When NINA closes the TPPA websocket cleanly after producing a
+    measurement, the session must reach a terminal "done" — never stick on
+    "running" forever."""
+    import websockets
+    h = Hub()
+    h.nina_client = type("N", (), {"host": "127.0.0.1", "port": 1})()
+    msgs = [json.dumps({"Response": {"AzimuthError": 0.05, "AltitudeError": 0.03,
+                                     "TotalError": 0.058}})]
+    monkeypatch.setattr(websockets, "connect", lambda url, **kw: _FakeWS(msgs))
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state["state"] == "done")
+    assert h.polar.state["progress"] == 1.0
+    assert not h.polar.running
+
+
+async def test_nina_clean_close_without_measurement_errors(monkeypatch):
+    """A TPPA socket that closes before any measurement must land on a terminal
+    "error", not linger on "running"."""
+    import websockets
+    h = Hub()
+    h.nina_client = type("N", (), {"host": "127.0.0.1", "port": 1})()
+    monkeypatch.setattr(websockets, "connect", lambda url, **kw: _FakeWS([]))
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state["state"] == "error")
+    assert not h.polar.running
 
 
 def test_nina_tppa_parsing_deg_to_arcmin():

@@ -15,7 +15,25 @@ on:
 concurrency: deploy-relay
 
 jobs:
+  test:
+    # Gate the deploy on the relay's own test suite -- ci.yml's `relay` job
+    # runs on the same push event but in a parallel workflow, so it can't be
+    # relied on to block this one. Run pytest here so a broken relay never
+    # reaches the production Fly deploy that fronts every home's remote tunnel.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

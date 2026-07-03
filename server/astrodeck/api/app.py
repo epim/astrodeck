@@ -27,7 +27,8 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
-                    CAP_VIEW_PREVIEW, CAP_VIEW_STATUS, Principal, _scope_is_remote,
+                    CAP_VIEW_PREVIEW, CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
+                    Principal, _scope_is_remote,
                     configure_provider_from_auth, get_principal, require,
                     resolve_principal)
 from ..auth.rbac import assert_route_capabilities, declare
@@ -65,6 +66,13 @@ dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
 engine.dispatcher = dispatcher
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
+
+# How often the long-lived /ws socket RE-authenticates its principal (seconds).
+# Auth is otherwise only checked at accept, so a revoked jti (POST /api/auth/revoke)
+# or an expired session would keep streaming for the whole all-night run. We
+# re-resolve at least this often and close 4401 the moment the principal no longer
+# resolves or loses view.status. Module-level so a test can shrink it.
+WS_AUTH_RECHECK_S = 60.0
 
 
 # Boot auto-connect opt-out (W1.6 test seam). When ``ASTRODECK_NO_AUTOCONNECT``
@@ -129,12 +137,21 @@ async def _lifespan(app: "FastAPI"):
     except Exception as e:  # noqa: BLE001 - degrade, never crash boot
         bus.log("error", f"update service init failed: {e}", "update")
     # Boot auto-connect the active profile (no-op on first run / no active
-    # profile). MUST swallow every failure - a raise here bricks the whole UI.
+    # profile), as a BACKGROUND task rather than awaited inline: a native profile
+    # pointing at a powered-off host would otherwise serially burn a 30s httpx
+    # timeout PER ROLE before the lifespan reaches `yield`, leaving the whole HTTP/
+    # WS surface unreachable for minutes after a reboot. Spawning it lets the UI
+    # serve immediately and degrade role-by-role (boot_connect_failed / backend_
+    # links) as the connect progresses. MUST swallow every failure — a raise here
+    # would only crash the background task, but we log it for parity with the old
+    # inline path. The handle is retained so shutdown can cancel a slow connect.
     if not _boot_autoconnect_disabled():
-        try:
-            await hub.connect_active()
-        except Exception as e:  # noqa: BLE001 - degrade, never crash boot
-            bus.log("error", f"boot auto-connect failed: {e}", "hub")
+        async def _boot_connect() -> None:
+            try:
+                await hub.connect_active()
+            except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+                bus.log("error", f"boot auto-connect failed: {e}", "hub")
+        hub._boot_connect_task = asyncio.create_task(_boot_connect())
     try:
         yield
     finally:
@@ -155,6 +172,15 @@ async def _lifespan(app: "FastAPI"):
             get_update_service().stop_poller()
         except Exception:
             pass
+        # Stop a still-running boot auto-connect before tearing the rig down, so a
+        # slow connect can't race disconnect_all on shutdown (best-effort).
+        bt = getattr(hub, "_boot_connect_task", None)
+        if bt is not None and not bt.done():
+            bt.cancel()
+            try:
+                await bt
+            except (asyncio.CancelledError, Exception):
+                pass
         # Clean teardown of an auto-connected rig (best-effort; never raises).
         try:
             await hub.disconnect_all()
@@ -162,11 +188,19 @@ async def _lifespan(app: "FastAPI"):
             pass
 
 
-def _spawn(name: str, coro) -> dict:
-    """Run a long operation as a named background task (one per name)."""
+def _spawn(name: str, coro, *, replace: bool = False) -> dict:
+    """Run a long operation as a named background task (one per name).
+
+    ``replace=True`` cancels an existing same-named task instead of 409-ing — used
+    by park, which is a motion-committing ABORT that must supersede an in-flight
+    goto rather than be rejected by it. The cancelled goto unwinds (its slew abort
+    + motion-fence bump already fenced it), releasing ``_motion_lock`` before the
+    replacement acquires it, so the two never touch the mount at once."""
     existing = hub._busy.get(name)
     if existing and not existing.done():
-        raise HTTPException(409, f"'{name}' is already running")
+        if not replace:
+            raise HTTPException(409, f"'{name}' is already running")
+        existing.cancel()
 
     async def wrapped():
         try:
@@ -786,15 +820,17 @@ def create_app() -> FastAPI:
         await hub.disconnect_all()
         return {"ok": True}
 
-    @app.get("/api/status", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/status")
     @declare(CAP_VIEW_STATUS)
-    async def status():
-        return await hub.poll_status()
+    async def status(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        # ``require`` returns the resolved principal so we can coarsen the site
+        # fix for callers lacking view.site_precise (viewer/operator).
+        return _redact_site_for(await hub.poll_status(), principal)
 
-    @app.get("/api/summary", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/summary")
     @declare(CAP_VIEW_STATUS)
-    async def summary():
-        return hub.summary()
+    async def summary(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        return _redact_site_for(hub.summary(), principal)
 
     # ------------------------------------------------------ config / site / optics
 
@@ -808,6 +844,75 @@ def create_app() -> FastAPI:
         alerts/deadman_url) appended to AppConfig."""
         cfg = config_store.cfg()
         return redacted(cfg) | {"optics_computed": hub.effective_optics()}
+
+    # ---------------------------------------------------- site-precision redaction
+    # ``view.site_precise`` (admin-only; EXCLUDED from viewer/operator) is the
+    # access-control decision for the observatory's EXACT GPS fix. The serving
+    # payloads (poll_status / summary / redacted config) are built without a
+    # principal, so we coarsen at the seam: any principal LACKING the cap sees
+    # lat/lon rounded to ~0.1 deg (~11 km -- enough to place the sky region for
+    # altaz sanity, but not the operator's home), while a holder gets full
+    # precision. This is the ONLY place the cap is enforced, so every precise-site
+    # surface (REST status/summary/config + the WS hello frame and status pushes)
+    # must route through here.
+    _SITE_LATLON_KEYS = ("latitude", "longitude")
+
+    def _coarsen_latlon(site: dict) -> None:
+        """Round a site dict's lat/lon to ~0.1 deg IN PLACE (safe: every caller
+        hands us a freshly-built dict, never shared/persisted state)."""
+        for k in _SITE_LATLON_KEYS:
+            v = site.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                site[k] = round(float(v), 1)
+
+    def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
+        """Coarsen precise site coords in ``payload`` unless ``principal`` holds
+        ``view.site_precise``. Handles the top-level ``site`` block AND the
+        duplicate copy inside an embedded ``config`` block (summary/hello frame).
+        Mutates + returns ``payload`` (which is always a fresh per-call dict)."""
+        if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
+            return payload  # holder: full precision, untouched
+        if isinstance(payload, dict):
+            site = payload.get("site")
+            if isinstance(site, dict):
+                _coarsen_latlon(site)
+            cfg = payload.get("config")
+            if isinstance(cfg, dict):
+                cfg_site = cfg.get("site")
+                if isinstance(cfg_site, dict):
+                    _coarsen_latlon(cfg_site)
+        return payload
+
+    def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
+        """Coarsen precise site coords in a broadcast WS event for a principal
+        lacking ``view.site_precise``. The bus ``Event.data`` is SHARED across
+        every subscriber, so we must NEVER mutate it in place -- we copy only the
+        nodes we change (status carries ``data.site``; config carries
+        ``data.config.site``). A holder sees the event verbatim (no copy)."""
+        if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
+            return ev_json
+        data = ev_json.get("data")
+        if not isinstance(data, dict):
+            return ev_json
+        new_data: dict | None = None
+        site = data.get("site")
+        if isinstance(site, dict) and any(k in site for k in _SITE_LATLON_KEYS):
+            new_data = dict(data)
+            new_site = dict(site)
+            _coarsen_latlon(new_site)
+            new_data["site"] = new_site
+        cfg = data.get("config")
+        if isinstance(cfg, dict) and isinstance(cfg.get("site"), dict):
+            base = new_data if new_data is not None else dict(data)
+            new_cfg = dict(cfg)
+            new_cfg_site = dict(cfg["site"])
+            _coarsen_latlon(new_cfg_site)
+            new_cfg["site"] = new_cfg_site
+            base["config"] = new_cfg
+            new_data = base
+        if new_data is None:
+            return ev_json  # nothing site-bearing in this event
+        return {**ev_json, "data": new_data}
 
     def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
         """Live altitude verdict for a target from the current site. Returns
@@ -976,10 +1081,10 @@ def create_app() -> FastAPI:
                                   "sun avoidance (solar session)",
                         "code": "forbidden"})
 
-    @app.get("/api/config", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/config")
     @declare(CAP_VIEW_STATUS)
-    async def get_config():
-        return _config_payload()
+    async def get_config(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        return _redact_site_for(_config_payload(), principal)
 
     @app.post("/api/config")
     @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY,
@@ -1335,7 +1440,12 @@ def create_app() -> FastAPI:
                 "code": "running"})
         if force and engine.running:
             await engine.abort()
-        return _spawn("profile", hub.apply_profile(prof))
+        # Route through _spawn_connect (NOT _spawn): apply_profile's first step is
+        # a full teardown, and _spawn would park this driver in hub._busy["profile"]
+        # — which the teardown's busy-cancel loop then cancels, so apply always
+        # cancelled itself mid-teardown (zombie half-connected rig). _spawn_connect
+        # keeps the driver OUT of _busy (same single lane as activate).
+        return _spawn_connect(hub.apply_profile(prof))
 
     @app.post("/api/profiles/{profile_id}/activate", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
     @declare(CAP_CONFIG_BACKEND)
@@ -1442,6 +1552,12 @@ def create_app() -> FastAPI:
     async def capture(body: CaptureBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
+        # Camera mutual exclusion: a running sequence owns the camera all night, so
+        # a stray single capture must not interleave its exposures (mis-stamped /
+        # cross-downloaded frames). The hub exposure guard is the last line of
+        # defense; reject up front for a clear error.
+        if engine.running:
+            raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")
         except DeviceError as e:
@@ -1455,11 +1571,16 @@ def create_app() -> FastAPI:
     async def capture_loop(body: CaptureBody):
         if hub.polar.running:
             raise HTTPException(409, "polar alignment in progress")
+        if engine.running:
+            raise HTTPException(409, "a sequence is running")
         try:
             hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning)
+        # start_loop awaits the previous loop's teardown before spawning the
+        # replacement, so a rapid restart can't leave the old loop's cancel-abort
+        # racing the new loop's first frame.
+        await hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning)
         return {"looping": True}
 
     @app.post("/api/capture/stop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -1762,15 +1883,17 @@ def create_app() -> FastAPI:
             raise _err(e)
         # Park is a motion-committing abort: bump the fence FIRST so an in-flight
         # goto is abandoned, then run park under the motion lock (serialized with
-        # every other device-touching motion path). Replaces the bare "goto"
-        # task so a prior goto is also cancelled by the named-task guard.
+        # every other device-touching motion path). replace=True CANCELS a prior
+        # goto/center rather than 409-ing after the epoch bump already sabotaged it
+        # (the old code bumped the fence and then _spawn 409'd, so the mount kept
+        # slewing to the wrong target and never parked).
         hub.bump_motion_epoch()
 
         async def _park():
             tel = hub.require("telescope")
             async with hub._motion_lock:
                 await tel.park()
-        return _spawn("goto", _park())
+        return _spawn("goto", _park(), replace=True)
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.unpark"})
@@ -1796,6 +1919,13 @@ def create_app() -> FastAPI:
     @app.post("/api/focuser/autofocus", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def autofocus(body: AutofocusBody):
+        # Camera mutual exclusion: autofocus exposes the camera, so it must not run
+        # while the live loop or a sequence is exposing (interleaved imageready
+        # polls). Pass the hub exposure guard so each sweep frame is serialized
+        # against the other capture paths too.
+        if engine.running or hub.looping:
+            raise HTTPException(409, "camera is busy (a capture loop or sequence "
+                                     "is running)")
         try:
             cam = hub.require("camera")
             foc = hub.require("focuser")
@@ -1803,7 +1933,8 @@ def create_app() -> FastAPI:
             raise _err(e)
         return _spawn("autofocus", run_autofocus(
             cam, foc, exposure_s=body.exposure_s, gain=body.gain,
-            step=body.step, steps_each_side=body.steps_each_side))
+            step=body.step, steps_each_side=body.steps_each_side,
+            expose_guard=hub.exposure_guard))
 
     @app.post("/api/focuser/halt", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
@@ -1945,6 +2076,12 @@ def create_app() -> FastAPI:
                 solar = dict(solar)
                 solar["target"] = getattr(t, "name", "")
                 raise HTTPException(409, detail=solar)
+        # Auto-stop the live preview loop before the run owns the camera (the
+        # natural ASIAIR-style flow: frame with the loop, then hit Start Plan).
+        # Awaited so the loop's in-flight expose fully releases the camera +
+        # capture lock before the engine's first exposure.
+        if hub.looping:
+            await hub.stop_loop_and_wait()
         try:
             hub.require("camera")
             engine.start(plan)
@@ -2281,11 +2418,41 @@ def create_app() -> FastAPI:
             return
         await websocket.accept()
         q = bus.subscribe()
+        # Periodic re-authentication (revocation + session-exp enforcement). Auth
+        # is otherwise only checked at accept, so once the socket is up neither
+        # POST /api/auth/revoke (revoked jti) nor a lapsed session TTL would ever
+        # terminate it -- it would keep streaming status/preview/precise-site for
+        # the whole unattended run. We re-resolve at least every WS_AUTH_RECHECK_S
+        # (SessionCookieProvider.resolve re-reads the live provider's deny set +
+        # the exp claim) and close 4401 the instant it no longer resolves or loses
+        # view.status. Re-resolving also refreshes ``principal`` so a still-valid
+        # but role-downgraded caller's site-precision redaction tracks its caps.
+        import time as _t
+        next_check = _t.monotonic() + WS_AUTH_RECHECK_S
         try:
-            await websocket.send_json({"type": "hello", "data": hub.summary(), "ts": 0})
+            await websocket.send_json(
+                {"type": "hello",
+                 "data": _redact_site_for(hub.summary(), principal), "ts": 0})
             while True:
-                ev = await q.get()
-                await websocket.send_json(ev.to_json())
+                # Wake for either the next event or the recheck deadline, so a
+                # quiet socket is still re-validated on schedule (not only when
+                # traffic happens to arrive).
+                timeout = max(0.0, next_check - _t.monotonic())
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    ev = None
+                if _t.monotonic() >= next_check:
+                    principal = await resolve_principal(
+                        websocket, remote=_scope_is_remote(websocket))
+                    if principal is None or not principal.has(CAP_VIEW_STATUS):
+                        # 4401 = application "unauthorized"; the SPA re-opens login.
+                        await websocket.close(code=4401)
+                        return
+                    next_check = _t.monotonic() + WS_AUTH_RECHECK_S
+                if ev is not None:
+                    await websocket.send_json(
+                        _redact_ws_event(ev.to_json(), principal))
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

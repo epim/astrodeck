@@ -356,3 +356,120 @@ def test_auth_revoke_viewer_forbidden(tmp_path, monkeypatch):
     _install(principal_for_role("viewer"))
     with TestClient(app) as c:
         assert c.post("/api/auth/revoke", json={"jti": "abc"}).status_code == 403
+
+
+# ==================================== T-RBAC-13 view.site_precise coarsening
+# view.site_precise (admin-only; EXCLUDED from viewer/operator) gates the
+# observatory's EXACT GPS fix. A principal lacking it must see lat/lon coarsened
+# to ~0.1 deg on EVERY precise-site surface (REST status/summary/config + the WS
+# hello frame); a holder sees full precision.
+
+_PRECISE_LAT = 40.123456
+_PRECISE_LON = -74.654321
+
+
+def _seed_precise_site(store):
+    from astrodeck.config import Site
+    store.set_site(Site(name="home", latitude=_PRECISE_LAT,
+                        longitude=_PRECISE_LON, elevation_m=12.0))
+
+
+def test_site_precise_coarsened_for_viewer(tmp_path, monkeypatch):
+    """A viewer (no view.site_precise) gets lat/lon rounded to 0.1 deg on status,
+    config, summary AND the WS hello frame (both the top-level site block and the
+    duplicate copy inside the embedded config)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    coarse_lat = round(_PRECISE_LAT, 1)
+    coarse_lon = round(_PRECISE_LON, 1)
+    assert coarse_lat != _PRECISE_LAT  # the rounding is observable
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        st = c.get("/api/status").json()["site"]
+        assert st["latitude"] == coarse_lat and st["longitude"] == coarse_lon
+        cfg = c.get("/api/config").json()["site"]
+        assert cfg["latitude"] == coarse_lat and cfg["longitude"] == coarse_lon
+        summ = c.get("/api/summary").json()
+        assert summ["site"]["latitude"] == coarse_lat
+        assert summ["config"]["site"]["latitude"] == coarse_lat
+        with c.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert hello["type"] == "hello"
+            assert hello["data"]["site"]["latitude"] == coarse_lat
+            assert hello["data"]["site"]["longitude"] == coarse_lon
+            assert hello["data"]["config"]["site"]["latitude"] == coarse_lat
+
+
+def test_site_precise_full_for_admin(tmp_path, monkeypatch):
+    """An admin holds view.site_precise -> exact lat/lon everywhere, untouched."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        st = c.get("/api/status").json()["site"]
+        assert st["latitude"] == _PRECISE_LAT and st["longitude"] == _PRECISE_LON
+        assert c.get("/api/config").json()["site"]["latitude"] == _PRECISE_LAT
+        with c.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert hello["data"]["site"]["latitude"] == _PRECISE_LAT
+            assert hello["data"]["config"]["site"]["latitude"] == _PRECISE_LAT
+
+
+# ==================================== T-RBAC-14 WS periodic re-authentication
+# Auth on the long-lived /ws is otherwise checked ONLY at accept, so a revoked
+# session / expired token would keep streaming for the whole all-night run. The
+# send loop re-resolves the principal every WS_AUTH_RECHECK_S and closes 4401 the
+# moment it stops resolving.
+
+class _SwitchProvider:
+    """Resolves ``self.principal`` -- flip it mid-connection to model a revoke."""
+    name = "fake"
+
+    def __init__(self, principal):
+        self.principal = principal
+
+    async def resolve(self, request):
+        return self.principal
+
+
+def test_ws_revoked_principal_closes_4401(tmp_path, monkeypatch):
+    """A live socket whose principal STOPS resolving (revoked jti / expired exp)
+    is closed with 4401 by the periodic re-auth, not left streaming forever."""
+    from starlette.websockets import WebSocketDisconnect
+    monkeypatch.setattr(app_module, "WS_AUTH_RECHECK_S", 0.05)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    prov = _SwitchProvider(principal_for_role("viewer"))
+    set_active_provider(prov)
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            # revocation: the live provider now resolves nobody.
+            prov.principal = None
+            with pytest.raises(WebSocketDisconnect) as ei:
+                for _ in range(500):
+                    ws.receive_json()
+            assert ei.value.code == 4401
+
+
+def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
+    """A still-valid principal is NOT false-closed by the periodic re-auth: with a
+    tiny recheck interval the loop re-resolves many times, then a bus event pushed
+    FROM the event loop still reaches the socket -- proving it stayed open."""
+    monkeypatch.setattr(app_module, "WS_AUTH_RECHECK_S", 0.02)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            # Drive a bus event through the app's OWN event loop (portal) so it is
+            # enqueued thread-safely on the WS subscriber queue. It arrives only if
+            # the socket survived the several rechecks that fired before this ran.
+            from astrodeck.events import bus
+            c.portal.call(bus.log, "info", "still-alive", "test")
+            got = None
+            for _ in range(50):
+                ev = ws.receive_json()
+                if ev.get("type") == "log":
+                    got = ev
+                    break
+            assert got is not None and got["data"]["message"] == "still-alive"
