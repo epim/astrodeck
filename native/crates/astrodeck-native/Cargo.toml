@@ -1,0 +1,17 @@
+[package]
+name = "astrodeck-native"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "astrodeck_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py311"] }
+numpy = "0.22"
+astro-star = { path = "../astro-star" }
+astro-focus = { path = "../astro-focus" }
+astro-tppa = { path = "../astro-tppa" }

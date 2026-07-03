@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "astrodeck-native"
+version = "0.1.0"
+description = "Rust-native astronomy algorithm engine for AstroDeck (star detection, autofocus, TPPA polar alignment)"
+requires-python = ">=3.11"
+license = { text = "MPL-2.0" }
+
+[tool.maturin]
+module-name = "astrodeck_native"
+features = ["pyo3/extension-module"]

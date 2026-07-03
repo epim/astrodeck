@@ -1,0 +1,12 @@
+[package]
+name = "astro-tppa"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# No external dependencies: the SOFA refraction model (iauRefco) and the
+# equatorial<->topocentric transforms are hand-rolled (erfa 0.2.1 does not
+# expose the high-level iauAtco13/iauAtoc13/iauRefco routines the dossier
+# assumed). See the crate-level docs for the scope note.
+[dependencies]
