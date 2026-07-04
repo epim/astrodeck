@@ -28,7 +28,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
-from astrodeck.auth import (Principal, principal_for_role, reset_active_provider,
+import astrodeck.api.redact as redact_module
+from astrodeck.auth import (CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS, Principal,
+                            principal_for_role, reset_active_provider,
                             set_active_provider)
 from astrodeck.auth.deps import _scope_is_remote
 from astrodeck.config import AppConfig, ConfigStore, RemoteConfig, redacted
@@ -529,10 +531,13 @@ def test_generation_increments_on_each_dial(tmp_path, monkeypatch):
 # ============================================================ tunneled /ws fanout
 
 def test_tunneled_ws_streams_bus_events(tmp_path, monkeypatch):
-    """WS_OPEN -> the client subscribes to the bus and streams a hello + each
-    published event down as WS_DATA with monotonic per-ws seq (send-only)."""
+    """WS_OPEN -> the client AUTHORIZES the viewer, subscribes to the bus and
+    streams a hello + each published event down as WS_DATA with monotonic per-ws
+    seq (send-only). An authorized viewer is required now (the open ``none``
+    provider is hard-denied over the tunnel), so install a real principal."""
     _store, app = _make_client(tmp_path, monkeypatch)
-    reset_active_provider()
+    # A resolvable principal holding view.status is required to join the fanout.
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
 
     async def _scenario():
         channel = FakeChannel()
@@ -561,6 +566,243 @@ def test_tunneled_ws_streams_bus_events(tmp_path, monkeypatch):
         assert first["type"] == "hello"
         types = [json.loads(f.payload)["type"] for f in ws_data]
         assert "status" in types
+
+    asyncio.run(_scenario())
+
+
+# ==================================================== tunneled /ws PER-VIEWER AUTH
+# The relay-tunneled /ws must authorize + redact + re-check EXACTLY like the on-LAN
+# /ws handler (api/app.py). Before this, _run_ws subscribed to the bus and streamed
+# everything (incl. precise site coords) to any relay-opened ws_id with NO principal
+# resolution -- a revoked/downgraded remote viewer kept receiving full data until
+# the tunnel happened to drop. These tests pin the fixed model.
+
+_PRECISE_LAT = 40.123456
+_PRECISE_LON = -74.654321
+
+
+def _seed_precise_site(store):
+    from astrodeck.config import Site
+    store.set_site(Site(name="home", latitude=_PRECISE_LAT,
+                        longitude=_PRECISE_LON, elevation_m=12.0))
+
+
+class _FixedPrincipalProvider:
+    """Resolves ``self.principal`` for every request (mirrors the ``_SwitchProvider``
+    used in tests/test_rbac_enforcement.py). ``name != "none"`` so the W3 remote
+    hard-deny interlock treats it as a real provider; flip ``.principal`` to model a
+    mid-stream revoke (-> None) or downgrade (-> lesser caps)."""
+
+    name = "fake"
+
+    def __init__(self, principal):
+        self.principal = principal
+
+    async def resolve(self, request):
+        return self.principal
+
+
+async def _ws_data_payloads(channel):
+    """Decode every WS_DATA frame's JSON payload, in send order."""
+    return [json.loads(f.payload) for f in channel.sent_frames()
+            if f.type == FrameType.WS_DATA]
+
+
+async def _wait_for_frame(channel, predicate, *, timeout=5.0):
+    """Poll the channel's sent frames until ``predicate(frame)`` matches one."""
+    async def _poll():
+        while True:
+            for f in channel.sent_frames():
+                if predicate(f):
+                    return f
+            await asyncio.sleep(0.01)
+    return await asyncio.wait_for(_poll(), timeout=timeout)
+
+
+def test_tunneled_ws_coarsens_site_for_viewer(tmp_path, monkeypatch):
+    """A viewer LACKING view.site_precise: the hello AND every streamed status
+    event have site lat/lon COARSENED to 0.1 deg (the precise fix never leaks
+    over the relay to a viewer that lost/never had the cap)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    coarse_lat = round(_PRECISE_LAT, 1)
+    coarse_lon = round(_PRECISE_LON, 1)
+    assert coarse_lat != _PRECISE_LAT  # rounding is observable
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("viewer")))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsA"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.05)  # authorize + hello + enter loop
+        from astrodeck.events import bus
+        bus.publish("status",
+                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        hello = payloads[0]
+        assert hello["type"] == "hello"
+        assert hello["data"]["site"]["latitude"] == coarse_lat
+        assert hello["data"]["site"]["longitude"] == coarse_lon
+        # the duplicate copy inside the embedded config is coarsened too
+        assert hello["data"]["config"]["site"]["latitude"] == coarse_lat
+        status = [p for p in payloads if p["type"] == "status"]
+        assert status, "expected a status event"
+        assert status[0]["data"]["site"]["latitude"] == coarse_lat
+        assert status[0]["data"]["site"]["longitude"] == coarse_lon
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_precise_site_for_holder(tmp_path, monkeypatch):
+    """A viewer HOLDING view.site_precise: the hello AND every streamed event
+    carry FULL-precision site coords, byte-for-byte (no coarsening)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    holder = Principal(role="viewer", email=None,
+                       caps=frozenset({CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE}),
+                       jti=None)
+    set_active_provider(_FixedPrincipalProvider(holder))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsB"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.05)
+        from astrodeck.events import bus
+        bus.publish("status",
+                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        hello = payloads[0]
+        assert hello["data"]["site"]["latitude"] == _PRECISE_LAT
+        assert hello["data"]["config"]["site"]["latitude"] == _PRECISE_LAT
+        status = [p for p in payloads if p["type"] == "status"]
+        assert status and status[0]["data"]["site"]["latitude"] == _PRECISE_LAT
+        assert status[0]["data"]["site"]["longitude"] == _PRECISE_LON
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_unauthenticated_closes_4401_no_leak(tmp_path, monkeypatch):
+    """No resolvable principal (the open ``none`` provider is hard-denied remotely):
+    the client sends WS_CLOSE 4401 and NEVER subscribes -- an event published after
+    the (refused) open produces NO WS_DATA, so nothing leaks."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    reset_active_provider()  # open ``none`` provider -> remote hard-deny
+
+    async def _scenario():
+        from astrodeck.events import bus
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        subs_before = len(bus._subscribers)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsC"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        # the refusal is immediate; wait for the 4401 close to land
+        await _wait_for_frame(
+            channel,
+            lambda f: f.type == FrameType.WS_CLOSE and f.header.get("code") == 4401)
+        # publish an event that WOULD have streamed had it subscribed
+        bus.publish("status",
+                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        frames = channel.sent_frames()
+        closes = [f for f in frames if f.type == FrameType.WS_CLOSE]
+        assert closes and closes[0].header.get("code") == 4401
+        ws_data = [f for f in frames if f.type == FrameType.WS_DATA]
+        assert ws_data == [], "unauthorized viewer must receive NO event frames"
+        # never joined the fanout (subscriber set returns to baseline / never grew)
+        assert len(bus._subscribers) == subs_before
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_revoked_midstream_closes_4401(tmp_path, monkeypatch):
+    """A live tunneled viewer whose principal STOPS resolving (revoked jti /
+    expired session) is closed 4401 by the periodic re-auth within a recheck,
+    not left streaming forever."""
+    monkeypatch.setattr(redact_module, "WS_AUTH_RECHECK_S", 0.05)
+    store, app = _make_client(tmp_path, monkeypatch)
+    prov = _FixedPrincipalProvider(principal_for_role("viewer"))
+    set_active_provider(prov)
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsD"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        # hello delivered -> the viewer is streaming
+        await _wait_for_frame(channel, lambda f: f.type == FrameType.WS_DATA)
+        # revoke: the live provider now resolves nobody
+        prov.principal = None
+        # the next recheck closes 4401
+        close = await _wait_for_frame(
+            channel,
+            lambda f: f.type == FrameType.WS_CLOSE and f.header.get("code") == 4401)
+        assert close.header["ws_id"] == "wsD"
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_downgrade_midstream_coarsens(tmp_path, monkeypatch):
+    """A viewer that stays valid (keeps view.status) but LOSES view.site_precise
+    mid-stream: events AFTER the downgrade recheck become coarsened, even though
+    earlier events were full-precision -- redaction tracks the refreshed caps."""
+    monkeypatch.setattr(redact_module, "WS_AUTH_RECHECK_S", 0.05)
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    coarse_lat = round(_PRECISE_LAT, 1)
+    holder = Principal(role="viewer", email=None,
+                       caps=frozenset({CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE}),
+                       jti=None)
+    prov = _FixedPrincipalProvider(holder)
+    set_active_provider(prov)
+
+    async def _scenario():
+        from astrodeck.events import bus
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsE"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.03)  # authorize + hello + enter loop
+        # event BEFORE downgrade -> full precision
+        bus.publish("status",
+                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+        await asyncio.sleep(0.03)
+        # downgrade: drop view.site_precise but keep view.status (still allowed)
+        prov.principal = principal_for_role("viewer")
+        await asyncio.sleep(0.15)  # let >=1 recheck refresh the cached principal
+        # event AFTER downgrade -> coarsened
+        bus.publish("status",
+                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        status = [p for p in payloads if p["type"] == "status"]
+        assert len(status) >= 2, "expected a pre- and post-downgrade status event"
+        assert status[0]["data"]["site"]["latitude"] == _PRECISE_LAT   # before
+        assert status[-1]["data"]["site"]["latitude"] == coarse_lat    # after
 
     asyncio.run(_scenario())
 

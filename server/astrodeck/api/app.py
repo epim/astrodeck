@@ -27,11 +27,18 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
-                    CAP_VIEW_PREVIEW, CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
+                    CAP_VIEW_PREVIEW, CAP_VIEW_STATUS,
                     Principal, _scope_is_remote,
                     configure_provider_from_auth, get_principal, require,
                     resolve_principal)
 from ..auth.rbac import assert_route_capabilities, declare
+# Site-precision redaction helpers + the WS re-auth cadence live in a neutral,
+# import-light module so BOTH the LAN /ws handler (here) and the relay-tunneled
+# /ws handler (remote.relay_client) share ONE implementation. They cannot live
+# here as nested closures: app.py imports remote.relay_client, so relay_client
+# importing them back out of app.py would be a circular import.
+from .redact import (WS_AUTH_RECHECK_S, _redact_site_for,  # re-exported at module scope
+                     _redact_ws_event)
 from ..catalog import search_catalog
 from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
@@ -67,12 +74,11 @@ engine.dispatcher = dispatcher
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
-# How often the long-lived /ws socket RE-authenticates its principal (seconds).
-# Auth is otherwise only checked at accept, so a revoked jti (POST /api/auth/revoke)
-# or an expired session would keep streaming for the whole all-night run. We
-# re-resolve at least this often and close 4401 the moment the principal no longer
-# resolves or loses view.status. Module-level so a test can shrink it.
-WS_AUTH_RECHECK_S = 60.0
+# ``WS_AUTH_RECHECK_S`` (the WS re-auth cadence) is re-exported at module scope so
+# the LAN /ws handler reads it as a module global and a test can shrink it via
+# ``monkeypatch.setattr(app_module, "WS_AUTH_RECHECK_S", ...)``. Its definition
+# and the site-precision redaction helpers now live in ``.redact`` (imported at
+# the top of this module) -- see that import for why.
 
 
 # Boot auto-connect opt-out (W1.6 test seam). When ``ASTRODECK_NO_AUTOCONNECT``
@@ -871,65 +877,9 @@ def create_app() -> FastAPI:
     # altaz sanity, but not the operator's home), while a holder gets full
     # precision. This is the ONLY place the cap is enforced, so every precise-site
     # surface (REST status/summary/config + the WS hello frame and status pushes)
-    # must route through here.
-    _SITE_LATLON_KEYS = ("latitude", "longitude")
-
-    def _coarsen_latlon(site: dict) -> None:
-        """Round a site dict's lat/lon to ~0.1 deg IN PLACE (safe: every caller
-        hands us a freshly-built dict, never shared/persisted state)."""
-        for k in _SITE_LATLON_KEYS:
-            v = site.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                site[k] = round(float(v), 1)
-
-    def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
-        """Coarsen precise site coords in ``payload`` unless ``principal`` holds
-        ``view.site_precise``. Handles the top-level ``site`` block AND the
-        duplicate copy inside an embedded ``config`` block (summary/hello frame).
-        Mutates + returns ``payload`` (which is always a fresh per-call dict)."""
-        if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
-            return payload  # holder: full precision, untouched
-        if isinstance(payload, dict):
-            site = payload.get("site")
-            if isinstance(site, dict):
-                _coarsen_latlon(site)
-            cfg = payload.get("config")
-            if isinstance(cfg, dict):
-                cfg_site = cfg.get("site")
-                if isinstance(cfg_site, dict):
-                    _coarsen_latlon(cfg_site)
-        return payload
-
-    def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
-        """Coarsen precise site coords in a broadcast WS event for a principal
-        lacking ``view.site_precise``. The bus ``Event.data`` is SHARED across
-        every subscriber, so we must NEVER mutate it in place -- we copy only the
-        nodes we change (status carries ``data.site``; config carries
-        ``data.config.site``). A holder sees the event verbatim (no copy)."""
-        if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
-            return ev_json
-        data = ev_json.get("data")
-        if not isinstance(data, dict):
-            return ev_json
-        new_data: dict | None = None
-        site = data.get("site")
-        if isinstance(site, dict) and any(k in site for k in _SITE_LATLON_KEYS):
-            new_data = dict(data)
-            new_site = dict(site)
-            _coarsen_latlon(new_site)
-            new_data["site"] = new_site
-        cfg = data.get("config")
-        if isinstance(cfg, dict) and isinstance(cfg.get("site"), dict):
-            base = new_data if new_data is not None else dict(data)
-            new_cfg = dict(cfg)
-            new_cfg_site = dict(cfg["site"])
-            _coarsen_latlon(new_cfg_site)
-            new_cfg["site"] = new_cfg_site
-            base["config"] = new_cfg
-            new_data = base
-        if new_data is None:
-            return ev_json  # nothing site-bearing in this event
-        return {**ev_json, "data": new_data}
+    # must route through here. The helpers (_redact_site_for / _redact_ws_event)
+    # are imported from .redact at module scope -- shared with the relay-tunneled
+    # /ws handler so both /ws lanes redact identically.
 
     def _preflight_alt(ra_hours: float, dec_deg: float) -> dict:
         """Live altitude verdict for a target from the current site. Returns
