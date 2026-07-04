@@ -482,7 +482,10 @@ class RelayClient:
         if ws_id is None or ws_id in self._ws_streams:
             return
         wire_stream_id = frame.stream_id
-        task = asyncio.create_task(self._run_ws(ws_id, wire_stream_id))
+        # Thread the WHOLE WS_OPEN frame into the ws task: its header carries the
+        # browser's cookie/headers + an optional home-verifiable principal_token
+        # that _run_ws needs to AUTHORIZE this viewer before it joins the bus.
+        task = asyncio.create_task(self._run_ws(ws_id, wire_stream_id, frame))
         self._ws_streams[ws_id] = task
 
     def _close_ws(self, frame: Frame) -> None:
@@ -493,32 +496,103 @@ class RelayClient:
         if task is not None:
             task.cancel()
 
-    async def _run_ws(self, ws_id, wire_stream_id: int) -> None:
-        """Mirror the on-LAN /ws: subscribe to the bus and stream each event down
-        as WS_DATA (server->client ONLY -- there is NO upstream control channel,
-        exactly like the send-only /ws). Per-ws monotonic ``seq`` lets the relay /
-        browser detect a drop; the local buffer drops oldest under backpressure.
+    def _ws_auth_request(self, frame: Frame):
+        """Build a Starlette ``Request`` for per-viewer authorization from a
+        WS_OPEN frame, reusing the SAME remote-flagged scope machinery as the
+        replayed HTTP requests (``_build_http_scope``): the W3 remote flag in
+        ``state`` (NOT LAN-spoofable), the cookie header passed through, the
+        forgeable bearer carriers stripped, the ``?token=`` query stripped, and
+        the home-verifiable ``principal_token`` (if any) parked in scope state.
+
+        A WS_OPEN header has no ``method`` (``_build_http_scope`` defaults GET) but
+        carries path/query/headers/principal_token, so the http scope is well-
+        formed for ``resolve_principal`` (which only reads cookies/headers/query,
+        never the request body -- so no ``receive`` is needed)."""
+        from starlette.requests import Request
+        return Request(self._build_http_scope(frame))
+
+    async def _run_ws(self, ws_id, wire_stream_id: int, frame: Frame) -> None:
+        """Mirror the on-LAN /ws: AUTHORIZE the viewer, then subscribe to the bus
+        and stream each REDACTED event down as WS_DATA (server->client ONLY -- there
+        is NO upstream control channel, exactly like the send-only /ws). Per-ws
+        monotonic ``seq`` lets the relay / browser detect a drop; the local buffer
+        drops oldest under backpressure.
+
+        Unlike a LAN client, a remote viewer is authorized PER SOCKET here (the LAN
+        handler's accept-gate is not reached over the tunnel): we resolve the
+        principal from the WS_OPEN frame with ``remote=True`` (so the open ``none``
+        provider hard-denies), refuse (WS_CLOSE 4401) without EVER subscribing if it
+        lacks ``view.status``, redact every frame for a principal lacking
+        ``view.site_precise``, and RE-resolve every ``WS_AUTH_RECHECK_S`` so a
+        revoked/expired/downgraded viewer is dropped (4401) or tightened mid-stream.
 
         ``ws_id`` is the relay's opaque (string) browser id, carried in the WS_DATA
         header; ``wire_stream_id`` is the integer stream the frame actually rides
         (frames are keyed on the wire by stream_id, which MUST be a valid uint64)."""
+        from ..api import redact
+        from ..auth import resolve_principal
+        from ..auth.capabilities import CAP_VIEW_STATUS
+
+        req = self._ws_auth_request(frame)
+        # Accept-time gate: an unauthorized remote viewer must NEVER join the bus.
+        # ``remote=True`` makes the open ``none`` provider hard-deny, so an
+        # unauthenticated remote viewer is refused here (returns None).
+        principal = await resolve_principal(req, remote=True)
+        if principal is None or not principal.has(CAP_VIEW_STATUS):
+            # 4401 = application "unauthorized" (the SPA re-opens login). Send it
+            # WITHOUT subscribing, then drop the stream bookkeeping and return.
+            with contextlib.suppress(Exception):
+                await self._send_frame(Frame(
+                    type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
+                    header={"ws_id": ws_id, "code": 4401}))
+            self._ws_streams.pop(ws_id, None)
+            return
+
         q = bus.subscribe()
         seq = 0
+        # Periodic re-authentication (revocation + session-exp + downgrade). Auth is
+        # otherwise only resolved at open, so a revoked jti / lapsed session would
+        # keep streaming for the whole unattended run. Re-resolve at least every
+        # WS_AUTH_RECHECK_S and close 4401 the instant it stops resolving / loses
+        # view.status; a still-valid but downgraded viewer's redaction tracks its
+        # refreshed caps. Read the cadence live (a test shrinks it).
+        import time as _t
+        next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
         try:
-            # Mirror the on-LAN hello frame so a remote viewer renders immediately.
+            # Mirror the on-LAN hello frame (REDACTED) so a remote viewer renders
+            # immediately without leaking precise site coords it may not hold.
             from ..hub import hub
             seq += 1
             await self._send_frame(Frame(
                 type=FrameType.WS_DATA, stream_id=wire_stream_id,
                 header={"ws_id": ws_id, "seq": seq},
-                payload=_event_payload({"type": "hello", "data": hub.summary(), "ts": 0})))
+                payload=_event_payload({
+                    "type": "hello",
+                    "data": redact._redact_site_for(hub.summary(), principal),
+                    "ts": 0})))
             while True:
-                ev: Event = await q.get()
-                seq += 1
-                await self._send_frame(Frame(
-                    type=FrameType.WS_DATA, stream_id=wire_stream_id,
-                    header={"ws_id": ws_id, "seq": seq},
-                    payload=_event_payload(ev.to_json())))
+                # Wake for either the next event or the recheck deadline, so a quiet
+                # socket is still re-validated on schedule (not only on traffic).
+                timeout = max(0.0, next_check - _t.monotonic())
+                try:
+                    ev: Event | None = await asyncio.wait_for(q.get(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    ev = None
+                if _t.monotonic() >= next_check:
+                    principal = await resolve_principal(req, remote=True)
+                    if principal is None or not principal.has(CAP_VIEW_STATUS):
+                        await self._send_frame(Frame(
+                            type=FrameType.WS_CLOSE, stream_id=wire_stream_id,
+                            header={"ws_id": ws_id, "code": 4401}))
+                        return
+                    next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
+                if ev is not None:
+                    seq += 1
+                    await self._send_frame(Frame(
+                        type=FrameType.WS_DATA, stream_id=wire_stream_id,
+                        header={"ws_id": ws_id, "seq": seq},
+                        payload=_event_payload(
+                            redact._redact_ws_event(ev.to_json(), principal))))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - close just this ws stream
