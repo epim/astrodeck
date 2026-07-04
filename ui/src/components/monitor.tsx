@@ -34,6 +34,13 @@ import {
   SPARKLINE_SCALE_ARCSEC,
 } from "../lib/eta";
 import type { SequenceState } from "../types";
+import { deriveHealthIssues, type HealthIssue } from "../lib/health";
+// re-exported so existing imports of `deriveHealthIssues`/`HealthIssue` from
+// "../components/monitor" (this module's canonical home for presentational
+// cells) keep working; the pure logic itself lives in lib/health.ts (DOM-free,
+// so it can run directly under `npx tsx` — this file eagerly touches `window`
+// via lib/base's `u()`, which a plain node/tsx run has none of).
+export { deriveHealthIssues, type HealthIssue };
 
 // ----------------------------------------------------------------- motion gate
 /** One reactive read of `prefers-reduced-motion`. Decorative motion (blink,
@@ -667,6 +674,59 @@ export function RmsVerdict({ rms }: { rms: number | null | undefined }) {
         <Icon name={glyph} size={12} />
         {rms.toFixed(2)}″ <span className="text-xs">{word}</span>
       </span>
+    </div>
+  );
+}
+
+// ============================================================ HEALTH STRIP
+// The single "is my night OK?" verdict (implementation brief §5 / doc 03 §5 /
+// doc 04 §6 rec 1). `deriveHealthIssues` (the pure fold of safety/disk/
+// backend_links/meridian/nina_link/status.providers/end_reason) lives in
+// lib/health.ts — DOM-free, so it's unit-testable directly with `npx tsx`
+// (re-exported above for existing/legacy imports from this module).
+
+/** Renders `deriveHealthIssues` output: Tier-2 as sticky red banners (one per
+ *  issue, never auto-dismissed — doc 03 §5), Tier-1 as a row of amber chips,
+ *  Tier-0 (empty) as one calm ambient line. Shape+word carry every verdict
+ *  (never color alone). */
+export function HealthStrip({ issues }: { issues: HealthIssue[] }) {
+  const acts = issues.filter((i) => i.tier === 2);
+  const notices = issues.filter((i) => i.tier === 1);
+
+  if (acts.length === 0 && notices.length === 0) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-dim" role="status">
+        <Icon name="check" size={13} className="text-good shrink-0" />
+        <span>Night looks OK</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      {acts.map((iss, i) => (
+        <div
+          key={`act-${i}`}
+          role="alert"
+          className="flex items-center gap-2 border border-bad/60 bg-bad/10 px-3 py-2 text-xs text-bad"
+        >
+          <Icon name={iss.icon} size={14} className="shrink-0" />
+          <span className="font-semibold">{iss.text}</span>
+        </div>
+      ))}
+      {notices.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap" role="status">
+          {notices.map((iss, i) => (
+            <span
+              key={`note-${i}`}
+              className="inline-flex items-center gap-1.5 border border-warn/50 bg-warn/10 px-2 py-1 text-[11px] text-warn"
+            >
+              <Icon name={iss.icon} size={11} className="shrink-0" />
+              {iss.text}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

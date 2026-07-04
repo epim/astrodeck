@@ -468,6 +468,23 @@ export interface AppConfig {
   auth?: AuthState;
   // --- self-update (Phase 3; additive). Non-secret (signing_pubkey is PUBLIC). ---
   update?: UpdateConfig;
+  // --- capability providers (native parity; additive). Per-capability routing
+  //     override persisted server-side (config.py ProvidersConfig); "auto" lets
+  //     providers.resolve() pick, "backend"/"astrodeck" pin a family. Optional:
+  //     an old WS `hello` bootstrap predates the field. ---
+  providers?: ProvidersConfig;
+}
+
+// ------------------------------------------------------- capability providers
+// Mirrors server/astrodeck/config.py ProviderKind/ProvidersConfig — the CONFIG
+// (write) side. Distinct from the store's ProvidersStatus (the RESOLVED read
+// side riding on `status.providers`): this is the user's override, that is what
+// actually ran. "auto" | "backend" (force the connected backend's own, e.g.
+// NINA) | "astrodeck" (force the native Rust engine / simulator).
+export type ProviderKind = "auto" | "backend" | "astrodeck";
+export interface ProvidersConfig {
+  autofocus: ProviderKind;
+  polar_align: ProviderKind;
 }
 
 // ---------------------------------------------------------------- self-update

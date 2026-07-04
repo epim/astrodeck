@@ -17,6 +17,7 @@ import type {
   PrincipalRole,
   Profile,
   ProfileRow,
+  ProvidersConfig,
   RigSpec,
   SafetyConfig,
   UpdateConfig,
@@ -206,3 +207,11 @@ export const applyUpdate = (): Promise<{ started: string }> =>
 /** POST /api/update/config → persist the UpdateConfig block (system.update). */
 export const setUpdateConfig = (cfg: UpdateConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/update/config", cfg);
+
+// ------------------------------------------------------- capability providers
+/** POST /api/config/providers → persist the ProvidersConfig block (native
+ *  parity — Settings → Connect "Capabilities" card override dropdowns).
+ *  config.backend-gated, same cap as the rest of the backend/connect surface.
+ *  Returns the full merged AppConfig (mirrors setSafetyConfig/setUpdateConfig). */
+export const setProvidersConfig = (cfg: ProvidersConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config/providers", cfg);

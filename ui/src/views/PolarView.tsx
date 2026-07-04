@@ -1,116 +1,222 @@
 import { api } from "../api";
-import { useStore, useStatus, usePolar } from "../store";
-import { PolarReticle } from "../components/polar";
+import { useStore, usePolar } from "../store";
+import { PolarReticle, knobHint, polarTier, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
-import { Panel } from "../components/ui";
+import { Panel, Led } from "../components/ui";
+import ProviderBadge from "../components/ProviderBadge";
 import { useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
+import type { PolarState } from "../types";
+
+/* Fields the native TPPA engine (server/astrodeck/polar/native.py) adds to the
+   canonical `polar` payload beyond PolarState. The store forwards the whole
+   event object, so they're present at runtime; typed here (this view owns the
+   wizard) since the shared PolarState is intentionally backend-agnostic. */
+type NativePolar = PolarState & {
+  phase?: "measuring" | "adjusting";
+  point_index?: number;
+  az_direction?: KnobDir | null;
+  alt_direction?: KnobDir | null;
+  flags?: string[];
+};
 
 export default function PolarView() {
-  const polar = usePolar();
-  const status = useStatus();
+  const polar = usePolar() as NativePolar;
   const showToast = useStore((s) => s.showToast);
   const canMount = useCanControlMount(); // polar alignment slews the mount
   const running = polar.state === "running" || polar.state === "paused";
+
+  const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
+  const src = polar.source as string | null;
+
+  // A fitted error exists once we've left the measuring phase (native emits
+  // phase:"measuring" during the 3 solves; NINA/sim leave phase undefined and
+  // just start streaming a non-zero error).
+  const hasReading =
+    polar.phase !== "measuring" && (total > 0 || polar.state === "done");
+  const measuring = polar.phase === "measuring";
+
+  // Measure→Adjust progress. point_index advances 0..2 as each solve lands;
+  // adjusting (or any streamed reading) means all three are in.
+  const measured = polar.phase === "adjusting"
+    ? 3
+    : polar.phase === "measuring"
+      ? Math.min(3, (polar.point_index ?? -1) + 1)
+      : hasReading ? 3 : 0;
+  const adjusting = polar.phase === "adjusting" || (polar.phase === undefined && hasReading);
+  const showPhase = polar.state !== "idle";
+
+  // Tiered verdict (spec §HERO2): <2′ excellent · 2–10′ good · >10′ keep going.
+  const tier = polarTier(total);
+  const verdict = tier === "excellent"
+    ? { led: "on" as const, tone: "text-good", text: "Excellent — stop here" }
+    : tier === "good"
+      ? { led: "warn" as const, tone: "text-warn", text: "Good — keep refining" }
+      : { led: "bad" as const, tone: "text-bad", text: "Keep going" };
+
+  const azHint = hasReading ? knobHint(polar.az_direction, az, "az") : null;
+  const altHint = hasReading ? knobHint(polar.alt_direction, alt, "alt") : null;
+
+  const sourceLabel = src === "nina" ? "NINA TPPA"
+    : src === "native" ? "AstroDeck native"
+    : src === "sim" ? "simulator" : null;
 
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
   };
 
-  const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
-  const tone = total < 1 ? "good" : total < 5 ? "warn" : "bad";
-  const hasError = polar.state !== "idle";
-
-  // direction conventions (validated against a live TPPA run when on-sky)
-  const azDir = az < 0 ? "E" : "W";
-  const azArrow = az < 0 ? "◀" : "▶";
-  const altWord = alt > 0 ? "lower scope" : "raise scope";
-  const altArrow = alt > 0 ? "▼" : "▲";
-
-  const sourceLabel = polar.source === "nina" ? "NINA TPPA"
-    : polar.source === "sim" ? "simulator" : null;
-  const willUseNina = !!status?.connected?.telescope && status?.mode === "nina";
-
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
-      <Panel title="Polar Alignment"
-        right={
-          <span className={`text-[11px] tracking-widest uppercase ${
-            polar.state === "done" ? "text-good"
-              : polar.state === "running" ? "text-accent blink"
-              : polar.state === "paused" ? "text-warn"
-              : polar.state === "error" ? "text-bad" : "text-dim"}`}>
-            {polar.state}{sourceLabel ? ` · ${sourceLabel}` : ""}
-          </span>
-        }>
-        <PolarReticle az={az} alt={alt} />
-        <p className="text-center text-xs text-dim mt-2 min-h-4">{polar.message || " "}</p>
-      </Panel>
+    <div className="flex flex-col gap-4">
+      {/* Tier-2 (doc 04 §6): a solve/geometry failure is sticky and unmissable —
+          shape (square Led) + word, not color alone, so it survives night. */}
+      {polar.state === "error" && (
+        <div className="flex items-start gap-3 border border-bad bg-bad/10 px-4 py-3 rounded"
+          role="alert">
+          <Led state="bad" label="alignment error" />
+          <div className="min-w-0">
+            <p className="text-bad text-sm font-medium">Polar alignment stopped</p>
+            <p className="text-dim text-xs mt-0.5">{polar.message || "the alignment could not complete"}</p>
+          </div>
+        </div>
+      )}
 
-      <div className="flex flex-col gap-4">
-        <Panel title="Error">
-          <div className="flex items-baseline justify-center gap-3 mb-4">
-            <span className="label">total</span>
-            <span className={`font-display font-semibold text-4xl mono ${
-              tone === "good" ? "text-good" : tone === "warn" ? "text-warn" : "text-bad"}`}>
-              {hasError ? `${total.toFixed(1)}'` : "—"}
-            </span>
-          </div>
-          <div className="flex flex-col">
-            <div className="flex items-center gap-3 border-t border-line py-2.5">
-              <span className="label w-16">Azimuth</span>
-              <span className="text-dim text-xs">turn AZ knob</span>
-              <span className="text-accent text-base ml-auto">{hasError ? azArrow : ""}</span>
-              <span className="mono text-sm w-16 text-right">
-                {hasError ? `${Math.abs(az).toFixed(1)}' ${azDir}` : "—"}
+      <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+        <Panel title="Polar Alignment"
+          right={
+            <div className="flex items-center gap-2">
+              <ProviderBadge cap="polar_align" />
+              <span className={`text-[11px] tracking-widest uppercase ${
+                polar.state === "done" ? "text-good"
+                  : polar.state === "running" ? "text-accent blink"
+                  : polar.state === "paused" ? "text-warn"
+                  : polar.state === "error" ? "text-bad" : "text-dim"}`}>
+                {polar.state}
               </span>
             </div>
-            <div className="flex items-center gap-3 border-t border-line py-2.5">
-              <span className="label w-16">Altitude</span>
-              <span className="text-dim text-xs">{hasError ? altWord : "alt bolt"}</span>
-              <span className="text-accent text-base ml-auto">{hasError ? altArrow : ""}</span>
-              <span className="mono text-sm w-16 text-right">
-                {hasError ? `${Math.abs(alt).toFixed(1)}'` : "—"}
-              </span>
-            </div>
-          </div>
-          {polar.progress > 0 && polar.progress < 1 && (
-            <div className="progress-track mt-4">
-              <div className="progress-fill" style={{ width: `${polar.progress * 100}%` }} />
-            </div>
-          )}
+          }>
+          <PolarReticle
+            az={az}
+            alt={alt}
+            azDir={polar.az_direction}
+            altDir={polar.alt_direction}
+            active={hasReading}
+          />
+          <p className="text-center text-xs text-dim mt-2 min-h-4">{polar.message || " "}</p>
         </Panel>
 
-        <Panel title="Control" right={!canMount && <ReadOnlyBadge />}>
-          <p className="text-xs text-dim mb-3 leading-relaxed">
-            {willUseNina
-              ? "Runs NINA's Three-Point Polar Alignment on your rig: it rotates in RA, plate-solves, and streams the live error here as you adjust the mount's altitude/azimuth bolts."
-              : "No NINA rig bridged — this runs the built-in simulator so you can see the full alignment flow. Bridge to NINA on the Rig page to align real hardware."}
-          </p>
-          <div className="flex flex-col gap-2">
-            <button className="btn btn-accent" disabled={!canMount || running}
-              onClick={() => act(() => api.post("/api/polar/start"))}>
-              ⊕ Start Alignment
-            </button>
-            <div className="grid grid-cols-2 gap-2">
-              {polar.state === "paused" ? (
-                <button className="btn" disabled={!canMount || !running}
-                  onClick={() => act(() => api.post("/api/polar/resume"))}>Resume</button>
-              ) : (
-                <button className="btn" disabled={!canMount || !running}
-                  onClick={() => act(() => api.post("/api/polar/pause"))}>Pause</button>
+        <div className="flex flex-col gap-4">
+          {/* Phase wizard: Measure (3 solve tiles) → Adjust */}
+          {showPhase && (
+            <Panel title="Phase" right={sourceLabel && (
+              <span className="text-[11px] tracking-widest uppercase text-dim">{sourceLabel}</span>
+            )}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  {[1, 2, 3].map((n) => {
+                    const filled = measured >= n;
+                    return (
+                      <span key={n}
+                        className={`led-letter ${filled ? "bg-good text-accent-ink" : "border border-line text-faint"}`}
+                        aria-label={`solve ${n} ${filled ? "done" : "pending"}`}>
+                        {n}
+                      </span>
+                    );
+                  })}
+                </div>
+                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-dim" : "text-accent"}`}>
+                  measure
+                </span>
+                <span className="text-faint">→</span>
+                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-accent" : "text-faint"}`}>
+                  adjust
+                </span>
+              </div>
+              {measuring && (
+                <p className="text-xs text-dim mt-2">Plate-solving the mount's axis — hold steady.</p>
               )}
-              <button className="btn btn-danger" disabled={!canMount || !running}
-                onClick={() => act(() => api.post("/api/polar/stop"))}>Stop</button>
-            </div>
-          </div>
-          {polar.state === "done" && (
-            <p className="text-good text-xs mono mt-3">✓ aligned to {total.toFixed(1)}' total error</p>
+            </Panel>
           )}
-        </Panel>
 
-        {/* Guide view so the user can watch the field during alignment. */}
-        <GuideFramePreview compact />
+          <Panel title="Total error">
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className={`font-display font-semibold text-5xl mono tabular-nums ${
+                hasReading ? verdict.tone : "text-faint"}`}>
+                {hasReading ? total.toFixed(1) : "—"}
+              </span>
+              <span className="text-dim text-sm">arcmin</span>
+            </div>
+
+            {hasReading ? (
+              <div className="flex items-center gap-2 mt-2">
+                <Led state={verdict.led} label={verdict.text} />
+                <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mt-2">
+                <Led state="busy" label="measuring" />
+                <span className="text-sm text-dim">{measuring ? "Measuring axis…" : "Waiting for solve…"}</span>
+              </div>
+            )}
+
+            {/* Which way to turn each bolt — arrow + magnitude + word, from the
+                native engine's knob labels (fallback: the error's sign). */}
+            <div className="flex flex-col mt-4">
+              <div className="flex items-center gap-3 border-t border-line py-2.5">
+                <span className="label w-16">Azimuth</span>
+                <span className="text-accent text-base w-4 text-center">{azHint?.arrow ?? ""}</span>
+                <span className="text-dim text-xs">{azHint?.text ?? "az bolt"}</span>
+                <span className="mono text-sm tabular-nums ml-auto">
+                  {hasReading ? `${Math.abs(az).toFixed(1)}′` : "—"}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 border-t border-line py-2.5">
+                <span className="label w-16">Altitude</span>
+                <span className="text-accent text-base w-4 text-center">{altHint?.arrow ?? ""}</span>
+                <span className="text-dim text-xs">{altHint?.text ?? "alt bolt"}</span>
+                <span className="mono text-sm tabular-nums ml-auto">
+                  {hasReading ? `${Math.abs(alt).toFixed(1)}′` : "—"}
+                </span>
+              </div>
+            </div>
+
+            {polar.progress > 0 && polar.progress < 1 && (
+              <div className="progress-track mt-4">
+                <div className="progress-fill" style={{ width: `${polar.progress * 100}%` }} />
+              </div>
+            )}
+          </Panel>
+
+          <Panel title="Control" right={!canMount && <ReadOnlyBadge />}>
+            <p className="text-xs text-dim mb-3 leading-relaxed">
+              Runs three-point polar alignment: rotate in RA, plate-solve, and stream the
+              live error here as you turn the mount's altitude / azimuth bolts. The engine in
+              use is shown in the header.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button className="btn btn-accent" disabled={!canMount || running}
+                onClick={() => act(() => api.post("/api/polar/start"))}>
+                ⊕ Start Alignment
+              </button>
+              <div className="grid grid-cols-2 gap-2">
+                {polar.state === "paused" ? (
+                  <button className="btn" disabled={!canMount || !running}
+                    onClick={() => act(() => api.post("/api/polar/resume"))}>Resume</button>
+                ) : (
+                  <button className="btn" disabled={!canMount || !running}
+                    onClick={() => act(() => api.post("/api/polar/pause"))}>Pause</button>
+                )}
+                <button className="btn btn-danger" disabled={!canMount || !running}
+                  onClick={() => act(() => api.post("/api/polar/stop"))}>Stop</button>
+              </div>
+            </div>
+            {polar.state === "done" && (
+              <p className="text-good text-xs mono mt-3">✓ aligned to {total.toFixed(1)}′ total error</p>
+            )}
+          </Panel>
+
+          {/* Guide view so the user can watch the field during alignment. */}
+          <GuideFramePreview compact />
+        </div>
       </div>
     </div>
   );
