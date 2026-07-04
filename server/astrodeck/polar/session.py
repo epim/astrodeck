@@ -14,6 +14,7 @@ from typing import Any
 
 from ..devices.nina import pick
 from ..events import bus
+from ..providers import resolve
 
 # NINA's TPPA AzimuthError/AltitudeError/TotalError are doubles in DEGREES;
 # we present arcminutes. (Single constant — easy to flip if a live TPPA run
@@ -26,6 +27,10 @@ class PolarAlignSession:
         self.hub = hub
         self._task: asyncio.Task | None = None
         self._ws: Any = None
+        # Pause flag polled ONLY by the native driver (``polar/native.py``): the
+        # NINA/sim drivers pause via their own mechanism (a ws message / ignored),
+        # so this stays False for them and changes nothing about their behavior.
+        self._native_paused = False
         self.state: dict[str, Any] = self._idle()
 
     @staticmethod
@@ -50,15 +55,37 @@ class PolarAlignSession:
         if self.running:
             raise RuntimeError("polar alignment is already running")
         self.state = self._idle()
+        self._native_paused = False
         # Resolve the driver and record the source SYNCHRONOUSLY, before we
         # return. create_task only schedules the driver; its body (and its first
         # _publish(source=...)) hasn't run when the API handler reads
         # state["source"] for the {"started": true, "source": ...} response — so
         # without this a REST client always saw source=null and could not tell
         # whether the real NINA TPPA or the simulator was started.
-        if self.hub.nina_client is not None:
+        #
+        # THREE-WAY provider resolution (native-parity spec §5): the capability
+        # resolver decides who runs polar alignment for this rig —
+        #   backend  -> NINA's TPPA plugin (existing _run_nina)
+        #   astrodeck (native) -> the Rust TPPA engine (polar/native.run_native)
+        #   astrodeck (Simulator fallback) / unavailable -> the built-in _run_sim
+        # The resolver labels the native engine "AstroDeck native" and the
+        # simulator fallback "Simulator", both under kind "astrodeck", so we split
+        # them by label. Resolution never fatally fails here (any error degrades
+        # to the simulator) — polar align always has a driver.
+        try:
+            choice = resolve("polar_align", self.hub)
+        except Exception:
+            choice = None
+
+        if self.hub.nina_client is not None and (
+                choice is None or choice.kind == "backend"):
             self.state["source"] = "nina"
             self._task = asyncio.create_task(self._run_nina())
+        elif (choice is not None and choice.kind == "astrodeck"
+              and choice.label != "Simulator"):
+            from .native import run_native
+            self.state["source"] = "native"
+            self._task = asyncio.create_task(run_native(self, self.hub))
         else:
             self.state["source"] = "sim"
             self._task = asyncio.create_task(self._run_sim())
@@ -80,6 +107,9 @@ class PolarAlignSession:
         self._publish(state="idle", message="stopped", progress=0.0)
 
     async def pause(self) -> None:
+        # Native driver: raise the pause flag it polls so it stops capturing
+        # (a no-op for NINA/sim, which don't read it).
+        self._native_paused = True
         if self._ws is not None:
             try:
                 await self._ws.send(json.dumps({"Action": "pause-alignment"}))
@@ -88,6 +118,7 @@ class PolarAlignSession:
         self._publish(state="paused", message="paused")
 
     async def resume(self) -> None:
+        self._native_paused = False
         if self._ws is not None:
             try:
                 await self._ws.send(json.dumps({"Action": "resume-alignment"}))

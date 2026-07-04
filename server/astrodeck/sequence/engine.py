@@ -1756,7 +1756,7 @@ class SequenceEngine:
         try:
             cam = self.hub.require("camera")
             foc = self.hub.require("focuser")
-            result = await run_autofocus(cam, foc)
+            result = await run_autofocus(cam, foc, hub=self.hub)
             if not result.success:
                 bus.log("warning", f"{label} failed: {result.message}", "sequence")
                 failed_reason = result.message or "autofocus failed"

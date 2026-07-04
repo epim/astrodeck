@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..devices.base import Camera, Focuser
+from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..imaging.stars import median_hfr
 
@@ -30,14 +30,44 @@ class AutofocusResult:
 async def run_autofocus(camera: Camera, focuser: Focuser, *,
                         exposure_s: float = 2.0, gain: int = 120,
                         step: int = 350, steps_each_side: int = 4,
-                        binning: int = 2, expose_guard=None) -> AutofocusResult:
+                        binning: int = 2, expose_guard=None,
+                        hub=None, provider=None) -> AutofocusResult:
     """Run a V-curve autofocus sweep.
 
     ``expose_guard`` (optional): an async context-manager *factory* taking one
     label argument, used to serialize the single camera against the live loop /
     single capture / sequence exposures (hub-level capture guard). When None the
     exposures run unguarded (direct unit-test / native-autofocus paths).
+
+    Provider routing (spec §5): who runs autofocus is a per-capability choice
+    (auto|backend|astrodeck). Callers that have a ``hub`` pass it (or a resolved
+    ``provider`` ProviderChoice) so the provider layer decides: ``backend`` →
+    the connected backend's own autofocus (NINA); ``astrodeck`` → the native Rust
+    V-curve engine. Callers WITHOUT a hub/provider (direct unit tests) fall
+    through to the legacy behaviour below, so the existing signature and its
+    default numpy sweep keep working unchanged.
     """
+    # --- provider routing ---------------------------------------------------
+    choice = provider
+    if choice is None and hub is not None:
+        # Lazy import to avoid an import cycle (providers → devices → …).
+        from ..providers import resolve
+        # May raise a user-presentable DeviceError when nothing can run AF.
+        choice = resolve("autofocus", hub)
+    if choice is not None:
+        if choice.kind == "backend":
+            return await _run_native_autofocus(focuser)
+        if choice.kind == "astrodeck":
+            from ..providers import NATIVE_AVAILABLE
+            if not NATIVE_AVAILABLE:
+                raise DeviceError("native engine not installed")
+            from .native import run_native_autofocus
+            return await run_native_autofocus(
+                camera, focuser, exposure_s=exposure_s, gain=gain, step=step,
+                steps_each_side=steps_each_side, binning=binning,
+                expose_guard=expose_guard)
+
+    # --- legacy path (no provider context) ----------------------------------
     if getattr(focuser, "supports_native_autofocus", False):
         return await _run_native_autofocus(focuser)
 

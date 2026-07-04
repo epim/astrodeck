@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, model_validator
@@ -237,6 +238,24 @@ class UpdateConfig(BaseModel):
     last_check_ts: float | None = None    # bookkeeping (set by the poller)
 
 
+# ------------------------------------------------- capability providers (native)
+#
+# Per-capability routing override. APPENDED to AppConfig (additive — old config
+# files without a ``providers`` block load fine; pydantic fills the default).
+# Each capability is ``auto`` (let ``providers.resolve()`` pick the best
+# implementation for the connected rig), ``backend`` (force the backend's own —
+# NINA), or ``astrodeck`` (force the native Rust engine). ``ProviderKind`` is
+# mirrored INLINE here (rather than imported from ``providers``) to avoid an
+# import cycle: ``providers`` imports ``config_store`` from this module.
+
+ProviderKind = Literal["auto", "backend", "astrodeck"]
+
+
+class ProvidersConfig(BaseModel):
+    autofocus: ProviderKind = "auto"
+    polar_align: ProviderKind = "auto"
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -253,6 +272,8 @@ class AppConfig(BaseModel):
     remote: RemoteConfig = Field(default_factory=RemoteConfig)
     # --- self-update (Phase 3; appended — old configs load fine) ---
     update: UpdateConfig = Field(default_factory=UpdateConfig)
+    # --- capability providers (native parity; appended — old configs load fine) ---
+    providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -502,6 +523,23 @@ class ConfigStore:
                 raise ValueError("signing_pubkey must decode to 32 bytes (Ed25519)")
         cfg = self.cfg()
         cfg.update = update
+        return self.bump_and_save()
+
+    # -- capability providers mutation (native parity) -------------------------
+
+    def set_providers(self, providers: "ProvidersConfig") -> AppConfig:
+        """Persist a new ``ProvidersConfig`` (per-capability routing override).
+
+        Validated like the other config sections — pydantic's ``Literal`` already
+        rejects an unknown kind at construction, so this typed setter just re-checks
+        each capability is one of the three allowed values (belt-and-braces against
+        a raw dict slipping past) and writes through the one versioned path."""
+        for cap in ("autofocus", "polar_align"):
+            v = getattr(providers, cap, "auto")
+            if v not in ("auto", "backend", "astrodeck"):
+                raise ValueError(f"unknown provider kind for {cap}: {v!r}")
+        cfg = self.cfg()
+        cfg.providers = providers
         return self.bump_and_save()
 
 
