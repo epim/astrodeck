@@ -1874,6 +1874,18 @@ class Hub:
             self.last_connect_result is not None
             and any(not rr.ok and rr.attempted
                     for rr in self.last_connect_result.results))
+        # Per-capability provider resolution (native parity) so the UI can badge
+        # every panel ("AF · NINA", "TPPA · native"). resolve_all is already
+        # non-raising, but wrap it anyway: a resolution bug must NEVER 500 the 2s
+        # status poll — degrade to an explicit "unavailable" row instead.
+        try:
+            from . import providers as _providers
+            out["providers"] = _providers.resolve_all(self)
+        except Exception as e:
+            out["providers"] = {
+                cap: {"kind": "unavailable", "label": "Unavailable",
+                      "reason": f"resolution error: {e}"}
+                for cap in ("autofocus", "polar_align")}
         try:
             du = shutil.disk_usage(CAPTURE_DIR)
             free_gb = du.free / 1e9

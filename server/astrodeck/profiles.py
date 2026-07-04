@@ -80,6 +80,15 @@ class Profile(BaseModel):
     phd2_port: int = 4400
     optics: Optics | None = None       # per-rig override; resolved at read time
     site_name: str | None = None
+    # Per-rig capability routing override (native parity). JSON-able dict keyed by
+    # capability ("autofocus" | "polar_align") -> "auto" | "backend" | "astrodeck".
+    # Read at resolve time by ``providers.resolve()`` (which reads the ACTIVE
+    # profile), so a NINA rig can pin native autofocus without touching global
+    # config. Additive + backward-compatible: old profiles lack the key -> None,
+    # which resolve() treats as "no per-rig override, fall through to config".
+    # Not threaded into ``to_rigspec`` — it is a capability preference, not a
+    # connection intent, so it never affects which devices connect.
+    providers: dict | None = None
 
     @model_validator(mode="after")
     def _heal_sim_primary(self) -> "Profile":
