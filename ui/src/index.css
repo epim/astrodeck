@@ -26,8 +26,8 @@
   --text-dim: #97a6c2;        /* ~6.5:1 on --bg — AA for small text */
   --text-faint: #5d6c85;      /* decoration ONLY — gridlines/ghost strokes, never readable text */
 
-  --accent: #7dd3fc;          /* interactive cyan */
-  --accent-dim: #38709c;      /* borders / large-text ONLY (3.78:1, fails as small text) */
+  --accent: #46e0c8;          /* phosphor aqua — the design-reference accent */
+  --accent-dim: #2a7d70;      /* borders / large-text ONLY (~3.78:1, fails as small text) */
 
   /* status — day values all pass AA as small text */
   --good: #4ade80;
@@ -35,7 +35,7 @@
   --bad:  #f87171;
   --danger-ink: var(--bad);   /* destructive-button chrome; day == --bad */
 
-  --glow: #7dd3fc55;
+  --glow: #46e0c855;
 
   /* --- native-parity additions (ProviderBadge + hero data series). ONE accent
      stays --accent; --sky is the SEPARATE data hue (spec §0.4). --accent-fill is
