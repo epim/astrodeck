@@ -10,14 +10,17 @@ import {
   useLivePreviewId,
   useNight,
   useOverlays,
+  usePlan,
   usePreviews,
   useSelectedPreviewId,
   useStretch,
   useViewport,
 } from "../store";
-import { VCurve } from "../components/graphs";
+import type { FocusEvent } from "../types";
+import { VCurve, type FocusFit } from "../components/graphs";
+import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
-import { FocusVerdict } from "../components/preview/FocusVerdict";
+import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Panel, Stat } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
@@ -57,9 +60,21 @@ export default function FocusView() {
   const [afExposure, setAfExposure] = useState("2");
   const [afStep, setAfStep] = useState("350");
 
+  const plan = usePlan();
   const foc = status?.focuser;
   const pos = foc?.position ?? 0;
   const running = focus?.state === "running";
+
+  // The additive `fit` (method/R²/curve/trendlines) + `message` ride on the raw
+  // `focus` event; types.ts FocusEvent stays untouched, so read them via a cast —
+  // same pattern the store uses for `status.providers` (useProviders).
+  const focusExt = focus as (FocusEvent & { fit?: FocusFit | null; message?: string }) | null;
+  const focusFit = focusExt?.fit ?? null;
+  const focusMessage = focusExt?.message ?? null;
+  // Pixel scale for the arcsec HFR in the verdict: prefer computed optics, fall
+  // back to the live frame's scale when the sensor reports it.
+  const pixelScale = status?.optics?.image_scale_arcsec_px ?? shown?.pixel_scale_arcsec ?? null;
+  const refocusArmed = plan.autofocus_every > 0 || plan.refocus_on_temp_delta_c > 0;
 
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
@@ -99,15 +114,26 @@ export default function FocusView() {
         </Panel>
 
         <Panel title="V-Curve · HFR vs Position"
-          right={running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}>
-          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} />
-          {focus?.state === "done" && focus.best && (
-            <p className="text-good text-xs mono mt-2">
-              ✓ best focus {focus.best.position}{focus.best.hfr ? ` · HFR ${focus.best.hfr.toFixed(2)} px` : ""}
-            </p>
-          )}
-          {focus?.state === "failed" && (
-            <p className="text-bad text-xs mono mt-2">✗ autofocus failed — check stars in frame</p>
+          right={
+            <div className="flex items-center gap-2">
+              {running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}
+              <ProviderBadge cap="autofocus" />
+            </div>
+          }>
+          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} fit={focusFit} />
+          {(focus?.state === "done" || focus?.state === "failed") && (
+            <div className="mt-3">
+              <AutofocusVerdict
+                state={focus.state}
+                hfr={focus.best?.hfr ?? null}
+                r2={focusFit?.r2 ?? null}
+                method={focusFit?.method ?? null}
+                pixelScaleArcsec={pixelScale}
+                hfrGood={hfrGood}
+                hfrWarn={hfrWarn}
+                message={focusMessage}
+              />
+            </div>
           )}
         </Panel>
       </div>
@@ -160,6 +186,13 @@ export default function FocusView() {
           <p className="text-[11px] text-dim mt-3 leading-relaxed">
             Sweeps 4 steps each side of current position, measures star HFR,
             fits the V-curve and drives to its minimum.
+          </p>
+          <p className="mono text-[11px] text-faint mt-2">
+            {refocusArmed
+              ? `Refocus armed:${plan.autofocus_every > 0 ? ` every ${plan.autofocus_every} frames` : ""}` +
+                `${plan.autofocus_every > 0 && plan.refocus_on_temp_delta_c > 0 ? " ·" : ""}` +
+                `${plan.refocus_on_temp_delta_c > 0 ? ` Δtemp ${plan.refocus_on_temp_delta_c}°C` : ""}`
+              : "Refocus: manual only (set cadence in the plan)"}
           </p>
         </Panel>
       </div>

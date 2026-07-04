@@ -1,55 +1,172 @@
-/** Polar alignment bullseye reticle (treatment A).
- *  Center = perfect alignment; the dot is the mount's pole; the vector is the
- *  skew. Rings are arcminute tolerance bands and auto-zoom as error shrinks.
+/** Polar alignment bullseye reticle (HERO 2 — the TPPA wizard's spatial view).
+ *  Center = the true pole; the dot is the mount's axis; the vector is the skew.
+ *  Rings are the arcminute TIER thresholds the verdict is built on — 2′ (stop /
+ *  excellent) and 10′ (the keep-going boundary) — so the ring you are inside IS
+ *  the verdict, read spatially. The vector CONVERGES toward center as the user
+ *  turns the knobs: this is one of the two sanctioned motion moments (spec §0.6),
+ *  so readings are eased between (a real tween of successive server readings, NOT
+ *  a canned demo loop) and the whole thing snaps to the final state under
+ *  prefers-reduced-motion.
  *
- *  The reticle must always read as a CRISP concentric bullseye regardless of the
- *  error magnitude (0', 5', or 110' total). We therefore cap the visible rings to
- *  ~4 evenly spaced bands: the outer ring is the boundary (its label == smax) and
- *  we pick a "nice" arcmin step so that smax/step lands around 3–5 rings. */
+ *  Everything is token-driven (no hardcoded hex) so it redshifts in .night and
+ *  lightens on the light ground with no component change. */
+import { useEffect, useRef, useState } from "react";
 
-function zoneColor(total: number): string {
-  return total < 1 ? "var(--good)" : total < 5 ? "var(--warn)" : "var(--bad)";
+/* Knob-direction hint. The native engine emits an authoritative knob label
+   (astro-tppa error_det → knob_label): which way to physically turn each bolt.
+   NINA/sim don't, so we fall back to the signed error's sense. Exported so the
+   Align view's stat row and this reticle decode identically (one source). */
+export type KnobDir =
+  | "up" | "down" | "left_west" | "left_east" | "right_west" | "right_east";
+
+export interface Hint {
+  arrow: string; // ◀ ▶ ▲ ▼
+  text: string; // "turn W" | "raise" | …
 }
 
-// Nice-number ladder: choose the smallest step whose count (smax/step) is <= ~5,
-// so a small smax gives a 1'/2' step and a huge smax (e.g. ~150') gives a 30–50'
-// step. Guarantees ~3–5 clean rings at any zoom instead of a dense moiré.
-const _STEP_LADDER = [1, 2, 5, 10, 20, 30, 50, 100, 150];
-function niceStep(smax: number): number {
-  for (const s of _STEP_LADDER) {
-    if (smax / s <= 5) return s;
+export function knobHint(
+  dir: KnobDir | null | undefined,
+  signedArcmin: number,
+  axis: "az" | "alt",
+): Hint | null {
+  if (axis === "alt") {
+    // authoritative native label, else the signed error's sense
+    if (dir === "up") return { arrow: "▲", text: "raise" };
+    if (dir === "down") return { arrow: "▼", text: "lower" };
+    if (dir === "left_west" || dir === "left_east" || dir === "right_west" || dir === "right_east")
+      return null; // wrong-axis label; ignore
+    if (!Number.isFinite(signedArcmin) || signedArcmin === 0) return null;
+    return signedArcmin > 0 ? { arrow: "▼", text: "lower" } : { arrow: "▲", text: "raise" };
   }
-  return _STEP_LADDER[_STEP_LADDER.length - 1];
+  // azimuth
+  if (dir === "left_west") return { arrow: "◀", text: "turn W" };
+  if (dir === "left_east") return { arrow: "◀", text: "turn E" };
+  if (dir === "right_west") return { arrow: "▶", text: "turn W" };
+  if (dir === "right_east") return { arrow: "▶", text: "turn E" };
+  if (dir === "up" || dir === "down") return null; // wrong-axis label
+  if (!Number.isFinite(signedArcmin) || signedArcmin === 0) return null;
+  return signedArcmin < 0
+    ? { arrow: "◀", text: "turn E" }
+    : { arrow: "▶", text: "turn W" };
 }
 
-export function PolarReticle({ az, alt, autoZoom = true }: {
-  az: number; alt: number; autoZoom?: boolean;
+/* Verdict tier from total error (spec §HERO2): <2′ excellent · 2–10′ good ·
+   >10′ keep going. Drives the vector/zone hue (tokened good/warn/bad — the
+   shape/length + the panel's verdict text carry meaning where night collapses
+   the hue). Exported so the panel verdict and the reticle agree on the tier. */
+export type PolarTier = "excellent" | "good" | "keepgoing";
+export function polarTier(total: number): PolarTier {
+  return total < 2 ? "excellent" : total < 10 ? "good" : "keepgoing";
+}
+function tierColor(t: PolarTier): string {
+  return t === "excellent" ? "var(--good)" : t === "good" ? "var(--warn)" : "var(--bad)";
+}
+
+// Zoom-out ladder: the 2′/10′ tier rings stay fixed until the error exceeds the
+// 10′ boundary, then the boundary steps out to a nice round arcmin so a huge
+// error (e.g. 45′) still reads on-screen with the tier rings nested inside.
+const _CEIL_LADDER = [10, 15, 20, 30, 50, 75, 100, 150, 200, 300];
+function boundaryArcmin(total: number): number {
+  const want = total * 1.08;
+  for (const s of _CEIL_LADDER) if (s >= want) return s;
+  return _CEIL_LADDER[_CEIL_LADDER.length - 1];
+}
+
+/** prefers-reduced-motion, live. Under reduce we snap to final readings (spec
+ *  §0.6: show the final state, no convergence animation). */
+function usePrefersReducedMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReduce(mq.matches);
+    const on = () => setReduce(mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+  return reduce;
+}
+
+/** Ease the (az, alt) point from the last reading to the new one over ~600ms so
+ *  the vector visibly CONVERGES between successive plate-solve updates instead
+ *  of teleporting. This is a tween of REAL readings, not a scripted loop: each
+ *  new prop pair starts a fresh ease from wherever the dot currently sits. Snaps
+ *  instantly when animation is off (reduced motion / no rAF). */
+function useEasedPoint(az: number, alt: number, animate: boolean): [number, number] {
+  const [pt, setPt] = useState<[number, number]>([az, alt]);
+  const cur = useRef<[number, number]>([az, alt]);
+  const raf = useRef<number | null>(null);
+  useEffect(() => {
+    if (!animate || typeof requestAnimationFrame === "undefined") {
+      cur.current = [az, alt];
+      setPt([az, alt]);
+      return;
+    }
+    const from = cur.current;
+    const to: [number, number] = [az, alt];
+    const t0 = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    const dur = 600;
+    const tick = (now: number) => {
+      const raw = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - raw, 3); // easeOutCubic — quick then settling
+      const p: [number, number] = [
+        from[0] + (to[0] - from[0]) * e,
+        from[1] + (to[1] - from[1]) * e,
+      ];
+      cur.current = p;
+      setPt(p);
+      if (raw < 1) raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+    return () => {
+      if (raf.current != null) cancelAnimationFrame(raf.current);
+    };
+  }, [az, alt, animate]);
+  return pt;
+}
+
+export function PolarReticle({
+  az,
+  alt,
+  azDir,
+  altDir,
+  active = true,
+}: {
+  az: number;
+  alt: number;
+  azDir?: KnobDir | null;
+  altDir?: KnobDir | null;
+  /** false while idle/measuring (no fitted error yet): draw the empty target. */
+  active?: boolean;
 }) {
+  const reduce = usePrefersReducedMotion();
+  const [eAz, eAlt] = useEasedPoint(az, alt, active && !reduce);
+
   const size = 380, cx = size / 2, cy = size / 2, R = 165;
-  const total = Math.hypot(az, alt);
-  // Outer ring (smax) is a "nice" round arcmin just past the error so the dot
-  // sits inside the boundary. autoZoom shrinks it as you converge.
-  const smax = autoZoom ? Math.max(2, Math.ceil((total * 1.35) / 2) * 2) : 10;
+  const total = Math.hypot(eAz, eAlt);
+  const tier = polarTier(total);
+  const col = tierColor(tier);
+
+  // Fixed 2′/10′ tier scale; only zoom OUT past 10′ so the tier rings keep their
+  // meaning (a shrinking ring would make "2′" a moving target).
+  const smax = boundaryArcmin(total);
   const k = R / smax;
-  const col = zoneColor(total);
 
-  // clamp the dot to the outer ring so a large error still reads on-screen
-  const rawD = Math.hypot(az * k, alt * k);
+  // clamp the dot to the boundary so a large error still points the right way
+  const rawD = Math.hypot(eAz * k, eAlt * k);
   const scale = rawD > R ? R / rawD : 1;
-  const dx = cx + az * k * scale;
-  const dy = cy - alt * k * scale;
+  const dx = cx + eAz * k * scale;
+  const dy = cy - eAlt * k * scale;
 
-  // Build at most ~5 evenly spaced rings on the nice step, then always force the
-  // outermost band to be exactly smax (the boundary). This keeps a clean bullseye
-  // — the previous code emitted ~75 rings at large errors (a moiré).
-  const step = niceStep(smax);
-  const rings: number[] = [];
-  for (let m = step; m < smax; m += step) rings.push(m);
-  rings.push(smax); // boundary ring is always present + labelled with smax
+  // rings: the two tier thresholds, plus the zoom boundary when it exceeds 10′.
+  const rings: { r: number; boundary: boolean }[] = [
+    { r: 2, boundary: smax === 2 },
+    { r: 10, boundary: smax === 10 },
+  ];
+  if (smax > 10) rings.push({ r: smax, boundary: true });
 
-  // Halo so axis + ring labels stay readable over rings/vector in day AND night:
-  // paint a --bg stroke UNDER the fill (paint-order:stroke) for a subtle dark
-  // outline on the light --text fill.
+  // Halo so labels stay legible over rings/vector in day AND night (paint a --bg
+  // stroke UNDER the fill).
   const labelHalo = {
     paintOrder: "stroke" as const,
     stroke: "var(--bg)",
@@ -57,59 +174,92 @@ export function PolarReticle({ az, alt, autoZoom = true }: {
     strokeLinejoin: "round" as const,
   };
 
-  const labels: [number, number, string, string][] = [
-    [cx, cy - R + 2, "ALT +", "middle"],
-    [cx, cy + R - 1, "ALT −", "middle"],
-    [cx - R + 2, cy - 5, "AZ E", "start"],
-    [cx + R - 2, cy - 5, "AZ W", "end"],
-  ];
+  const azHint = active ? knobHint(azDir, az, "az") : null;
+  const altHint = active ? knobHint(altDir, alt, "alt") : null;
+
+  // vector/dot glide: the eased point already moves smoothly; a short CSS
+  // transition on the dot's radius keeps the settle from snapping.
+  const dotTrans = reduce ? undefined : "r 200ms ease-out";
 
   return (
     <svg viewBox={`0 0 ${size} ${size}`} className="w-full max-w-[420px] mx-auto block instr-fit"
-      style={{ aspectRatio: "1 / 1" }}>
+      style={{ aspectRatio: "1 / 1" }}
+      role="img"
+      aria-label={
+        active
+          ? `Polar error ${total.toFixed(1)} arcminutes${azHint ? `, azimuth ${azHint.text}` : ""}${altHint ? `, altitude ${altHint.text}` : ""}`
+          : "Polar alignment reticle — no measurement yet"
+      }>
       <defs>
         <marker id="pa-arrow" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
           <path d="M0,0 L6,3 L0,6 Z" fill={col} />
         </marker>
       </defs>
 
-      {/* tolerance fills — clamp to smax so they never exceed the boundary ring */}
-      <circle cx={cx} cy={cy} r={Math.min(5, smax) * k} fill="var(--bad)" fillOpacity={0.05} />
-      <circle cx={cx} cy={cy} r={Math.min(1, smax) * k} fill="var(--good)" fillOpacity={0.09} />
+      {/* tier zones — bad annulus (outside 10′), good disk (inside 2′). Clamped
+          to the boundary so they never spill past the outer ring. Subtle. */}
+      <circle cx={cx} cy={cy} r={R} fill="var(--bad)" fillOpacity={0.05} />
+      <circle cx={cx} cy={cy} r={Math.min(10, smax) * k} fill="var(--warn)" fillOpacity={0.05} />
+      <circle cx={cx} cy={cy} r={Math.min(2, smax) * k} fill="var(--good)" fillOpacity={0.1} />
 
-      {/* rings (inner = dashed gridlines, outer = solid boundary) */}
-      {rings.map((m) => (
-        <circle key={m} cx={cx} cy={cy} r={m * k} fill="none" stroke="var(--line-bright)"
-          strokeWidth={m === smax ? 1.2 : 0.7} strokeDasharray={m === smax ? "" : "2 5"} />
+      {/* tier rings (2′ accent-target, 10′ boundary, + zoom boundary if any) */}
+      {rings.map(({ r, boundary }) => (
+        <circle key={r} cx={cx} cy={cy} r={r * k} fill="none"
+          stroke={r === 2 ? "var(--accent)" : "var(--line-bright)"}
+          strokeWidth={boundary ? 1.2 : r === 2 ? 1.2 : 0.8}
+          strokeOpacity={r === 2 ? 0.7 : 1}
+          strokeDasharray={boundary ? "" : "2 5"} />
       ))}
 
       {/* crosshair */}
       <line x1={cx - R} y1={cy} x2={cx + R} y2={cy} stroke="var(--line)" />
       <line x1={cx} y1={cy - R} x2={cx} y2={cy + R} stroke="var(--line)" />
 
-      {/* arcmin ring labels — drawn AFTER rings, with a dark halo, readable text
-          color, and nudged off the vertical crosshair so they don't sit on the
-          dot/vector. */}
-      {rings.map((m) => (
-        <text key={m} x={cx + 6} y={cy - m * k + 12} fill="var(--text)" fontSize={11}
-          fontFamily="IBM Plex Mono" style={labelHalo}>{m}'</text>
-      ))}
+      {/* tier labels along the top vertical, echoing the verdict tiers */}
+      <text x={cx + 6} y={cy - 2 * k - 4} fill="var(--accent)" fontSize={11}
+        fontFamily="IBM Plex Mono" style={labelHalo}>2′ stop</text>
+      <text x={cx + 6} y={cy - 10 * k + 13} fill="var(--text)" fontSize={11}
+        fontFamily="IBM Plex Mono" style={labelHalo}>10′ keep going</text>
+      {smax > 10 && (
+        <text x={cx + 6} y={cy - smax * k + 13} fill="var(--text-dim)" fontSize={10}
+          fontFamily="IBM Plex Mono" style={labelHalo}>{smax}′</text>
+      )}
 
-      {/* skew vector + error dot */}
-      <line x1={cx} y1={cy} x2={dx} y2={dy} stroke={col} strokeWidth={2} markerEnd="url(#pa-arrow)" />
-      <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke={col} strokeWidth={2} />
-      <circle cx={dx} cy={dy} r={2.5} fill={col} />
+      {/* orientation axis labels (kept minimal so the knob hints stand out) */}
+      <text x={cx - R + 2} y={cy - 5} fill="var(--text-dim)" fontSize={10} fontFamily="Chakra Petch"
+        letterSpacing="2" textAnchor="start" style={labelHalo}>AZ E</text>
+      <text x={cx} y={cy + R - 1} fill="var(--text-dim)" fontSize={10} fontFamily="Chakra Petch"
+        letterSpacing="2" textAnchor="middle" style={labelHalo}>ALT −</text>
+
+      {/* knob-direction hints — the actionable "which way" cue, from the native
+          engine's knob labels (fallback: the error's sign). Top = altitude bolt,
+          right = azimuth bolt, matching the design reference. */}
+      {altHint && (
+        <text x={cx} y={cy - R + 1} fill={col} fontSize={11} fontFamily="IBM Plex Mono"
+          fontWeight={600} textAnchor="middle" style={labelHalo}>
+          {altHint.arrow} ALT {altHint.text}
+        </text>
+      )}
+      {azHint && (
+        <text x={cx + R - 2} y={cy + 13} fill={col} fontSize={11} fontFamily="IBM Plex Mono"
+          fontWeight={600} textAnchor="end" style={labelHalo}>
+          {azHint.arrow} AZ {azHint.text}
+        </text>
+      )}
+
+      {/* skew vector + error dot (converges toward center as the user adjusts) */}
+      {active && total > 0.02 && (
+        <>
+          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke={col} strokeWidth={2} markerEnd="url(#pa-arrow)" />
+          <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke={col} strokeWidth={2}
+            style={{ transition: dotTrans }} />
+          <circle cx={dx} cy={dy} r={2.5} fill={col} style={{ transition: dotTrans }} />
+        </>
+      )}
 
       {/* true-pole target */}
       <circle cx={cx} cy={cy} r={3} fill="none" stroke="var(--good)" strokeWidth={1.2} />
       <circle cx={cx} cy={cy} r={1} fill="var(--good)" />
-
-      {/* axis labels — drawn LAST (above rings/vector) with halo + readable text */}
-      {labels.map(([x, y, t, anchor], i) => (
-        <text key={i} x={x} y={y} fill="var(--text)" fontSize={11} fontFamily="Chakra Petch"
-          letterSpacing="2" textAnchor={anchor as "middle" | "start" | "end"}
-          style={labelHalo}>{t}</text>
-      ))}
     </svg>
   );
 }

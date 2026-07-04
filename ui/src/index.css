@@ -36,6 +36,16 @@
   --danger-ink: var(--bad);   /* destructive-button chrome; day == --bad */
 
   --glow: #7dd3fc55;
+
+  /* --- native-parity additions (ProviderBadge + hero data series). ONE accent
+     stays --accent; --sky is the SEPARATE data hue (spec §0.4). --accent-fill is
+     the subtle accent-tinted SURFACE (the reference's `--accent-dim` role) kept
+     distinct from the app's border-role --accent-dim so neither overloads the
+     other; --accent-ink is readable text ON a solid --accent fill. --- */
+  --sky: #5b9dff;             /* DATA blue — telemetry series hue kept DISTINCT from --accent */
+  --accent-ink: #062b25;      /* text ON a solid --accent fill (primary buttons / solid chips) */
+  --accent-fill: #123029;     /* accent-tinted SURFACE — native ProviderBadge background */
+
   --img-filter: none;
 
   /* live-preview / atlas surface tokens (consumed by those surfaces; defined
@@ -50,6 +60,41 @@
      at runtime (clamp-on-read in store). Floor defaults so first paint is sane. */
   --screen-brightness: 1;
   --scrim-opacity: 0;
+}
+
+/* LIGHT ground (spec §0.5 "three grounds"). Dark `:root` above is the identity
+   (the untouched default); light is reachable purely by a token swap via a root
+   `.light` class or `[data-theme="light"]` — no component changes. Placed BEFORE
+   `.night` so night always wins if both classes are ever present. Values ported
+   from the design reference's light palette, mapped onto the app's token names. */
+:root.light,
+:root[data-theme="light"] {
+  --bg: #f4f6f9;
+  --bg-raise: #f7f9fc;
+  --bg-panel: #ffffffe6;
+  --line: #d6dde8;
+  --line-bright: #c3ccdb;
+
+  --text: #10151d;            /* ~15:1 on --bg */
+  --text-dim: #47566b;        /* ~7:1 on --bg — AA small text */
+  --text-faint: #7c8aa0;      /* decoration ONLY */
+
+  --accent: #0f9e88;          /* phosphor teal, readable on light */
+  --accent-dim: #5cbfab;      /* borders / large-text / panel corner brackets */
+
+  --good: #15803d;            /* re-derived for light bg (day #4ade80 fails as small text on white) */
+  --warn: #b5730a;
+  --bad:  #d4342c;
+  --danger-ink: var(--bad);
+
+  --glow: transparent;        /* no phosphor bloom on a light ground */
+  --halo: #00000099;          /* image labels/reticle still sit over dark frames */
+  --survey-filter: grayscale(0);
+  --img-filter: none;
+
+  --sky: #2f6bd6;
+  --accent-ink: #053f36;
+  --accent-fill: #c9efe7;     /* pale accent tint — native ProviderBadge background */
 }
 
 :root.night {
@@ -77,6 +122,9 @@
   --danger-ink: #ff8f8f;     /* button text/border: bright readable red, decoupled from status ladder */
 
   --glow: #ff5d5d44;
+  --sky: #ff7a4a;             /* night: DATA series collapses to warm red-orange (dark-adapt safe) */
+  --accent-ink: #1a0500;      /* text on a solid night --accent fill */
+  --accent-fill: #2a0800;     /* accent-tinted surface — native ProviderBadge bg at night */
   --halo: #1a000099;
   /* atlas survey cutout — a true low-luminance red (spec §8): monochrome HiPS
      pushed deep red so the brightest survey element on screen never destroys
@@ -105,6 +153,9 @@
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-danger: var(--danger-ink);
+  --color-sky: var(--sky);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-fill: var(--accent-fill);
   --font-display: "Chakra Petch", sans-serif;
   --font-sans: "IBM Plex Sans", sans-serif;
   --font-mono: "IBM Plex Mono", monospace;
@@ -331,6 +382,29 @@ select.field { appearance: none; }
 @keyframes blink-alert { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 .blink-alert { animation: blink-alert 0.7s steps(2, end) infinite; }
 .blink { animation: pulse-glow 1.6s ease-in-out infinite; }
+
+/* ===================================================================== CSS-PROV
+   Provider badge — the native-parity signal (spec §2). Accent-filled = AstroDeck
+   native; muted .prov-ext = an external backend (NINA / Alpaca); faint .prov-na =
+   unavailable / not-yet-resolved. Pill per the design reference; tokens only so it
+   redshifts at night and lightens on the light ground with no hardcoded hex. The
+   dot rides `currentColor` so it tracks each variant's ink automatically. */
+.prov {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px; letter-spacing: 0.03em; line-height: 1; white-space: nowrap;
+  padding: 4px 9px 4px 7px; border-radius: 999px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  background: var(--accent-fill);
+}
+.prov-ext { border-color: var(--line-bright); color: var(--text-dim); background: var(--bg-raise); }
+.prov-na  { border-color: var(--line-bright); color: var(--text-faint); background: var(--bg-raise); }
+.prov .dot {
+  width: 6px; height: 6px; border-radius: 999px; flex: none;
+  background: currentColor; box-shadow: 0 0 6px currentColor;
+}
 
 /* ===================================================================== CSS-ALERT
    Safety alert pulse — the ONE animation kept even in night mode (touch §8, R22):

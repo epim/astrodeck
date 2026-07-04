@@ -43,6 +43,26 @@ import { getMe, getAuthMethods } from "./api/backends";
 // `import type { ViewName } from "./store"` keep working.
 export type { ViewName } from "./types";
 
+// ---------------------------------------------------------------- providers
+// Per-capability provider resolution surfaced by poll_status (native parity).
+// Shape mirrors server/astrodeck/providers.py resolve_all(): each capability
+// resolves to {kind,label,reason}. `kind` is the resolved family — "astrodeck"
+// (our native/sim engine), "backend" (the connected backend, e.g. NINA/Alpaca),
+// or "unavailable" (nothing can run it; `reason` names what's missing). Lives as
+// a store view-model type because `providers` is attached to poll_status
+// ADDITIVELY (hub.poll_status) and is not declared on RigStatus — useProviders
+// reads it via a cast so this slice owns the shape without editing types.ts.
+export type ResolvedProviderKind = "astrodeck" | "backend" | "unavailable";
+export interface ProviderChoiceView {
+  kind: ResolvedProviderKind;
+  label: string;
+  reason: string;
+}
+export interface ProvidersStatus {
+  autofocus?: ProviderChoiceView;
+  polar_align?: ProviderChoiceView;
+}
+
 // ---------------------------------------------------------------- toast policy
 const TOAST_MAX = 3; // hard cap; on phone effectively 1-2
 const TTL: Record<ToastLevel, number> = {
@@ -1181,6 +1201,19 @@ export const useBackendLinks = (): BackendLink[] =>
   useStore(useShallow((s) => s.status?.backend_links ?? []));
 export const useBootConnectFailed = (): boolean =>
   useStore((s) => s.status?.boot_connect_failed ?? false);
+// Per-capability provider resolution (native parity). `providers` rides on the
+// `status` object (poll_status attaches it additively; not on RigStatus, so read
+// via a cast). useShallow so only a status poll — not a guide/focus tick, which
+// leaves `status` by-reference unchanged — re-renders the badges. null until the
+// first status carrying `providers` lands.
+export const useProviders = (): ProvidersStatus | null =>
+  useStore(
+    useShallow(
+      (s) =>
+        (s.status as (RigStatus & { providers?: ProvidersStatus }) | null)
+          ?.providers ?? null,
+    ),
+  );
 export const useFraming = () => useStore((s) => s.framing);
 export const useAtlasHandoff = () => useStore((s) => s.atlasHandoff);
 export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending);
