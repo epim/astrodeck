@@ -1,0 +1,487 @@
+<style>
+  /* ============================================================
+     AstroDeck — Native-parity UI design reference
+     "Observatory instrument": deep-space dark, phosphor-aqua accent,
+     tabular telemetry, boldness spent on two live visualizations.
+     Production type = IBM Plex Sans + IBM Plex Mono (CSP blocks the
+     webfont here; the stacks below fall back to Plex if installed).
+     ============================================================ */
+  :root {
+    --bg:        #f4f6f9;   --bg-grad: #eef1f6;
+    --panel:     #ffffff;   --panel-2: #f7f9fc;
+    --line:      #d6dde8;   --line-2:  #c3ccdb;
+    --ink:       #10151d;   --ink-2:   #47566b;   --ink-3: #7c8aa0;
+    --accent:    #0f9e88;   --accent-ink:#053f36;  --accent-dim:#c9efe7;
+    --sky:       #2f6bd6;
+    --notice:    #b5730a;   --act:     #d4342c;
+    --glow:      transparent;
+    --r: 10px;  --r-sm: 7px;
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', monospace;
+    --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#080a0f; --bg-grad:#0b0f17; --panel:#0e1219; --panel-2:#141a24;
+      --line:#1e2836; --line-2:#2b3a4e; --ink:#e8eef6; --ink-2:#95a6bd; --ink-3:#5d6d84;
+      --accent:#46e0c8; --accent-ink:#062b25; --accent-dim:#123029; --sky:#5b9dff;
+      --notice:#f2b13d; --act:#ff5a52; --glow:rgba(70,224,200,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f6f9; --bg-grad:#eef1f6; --panel:#fff; --panel-2:#f7f9fc; --line:#d6dde8; --line-2:#c3ccdb;
+    --ink:#10151d; --ink-2:#47566b; --ink-3:#7c8aa0; --accent:#0f9e88; --accent-ink:#053f36;
+    --accent-dim:#c9efe7; --sky:#2f6bd6; --notice:#b5730a; --act:#d4342c; --glow:transparent;
+  }
+  :root[data-theme="dark"]{
+    --bg:#080a0f; --bg-grad:#0b0f17; --panel:#0e1219; --panel-2:#141a24; --line:#1e2836; --line-2:#2b3a4e;
+    --ink:#e8eef6; --ink-2:#95a6bd; --ink-3:#5d6d84; --accent:#46e0c8; --accent-ink:#062b25;
+    --accent-dim:#123029; --sky:#5b9dff; --notice:#f2b13d; --act:#ff5a52; --glow:rgba(70,224,200,.35);
+  }
+  /* Scotopic red night mode — preserves dark-adapted vision. Everything
+     collapses to a red monochrome scale; only severity red stays. */
+  :root.night{
+    --bg:#050100; --bg-grad:#0a0200; --panel:#120400; --panel-2:#1a0700;
+    --line:#3a0f00; --line-2:#571700; --ink:#ff6b52; --ink-2:#b83c25; --ink-3:#7d2814;
+    --accent:#ff5a3c; --accent-ink:#1a0500; --accent-dim:#2a0800; --sky:#ff7a4a;
+    --notice:#ff8a3c; --act:#ff3b2f; --glow:rgba(255,90,60,.3);
+  }
+
+  *{ box-sizing:border-box; }
+  body{ margin:0; }
+  .page{
+    font-family:var(--sans); color:var(--ink);
+    background:radial-gradient(120% 90% at 50% -10%, var(--bg-grad), var(--bg) 60%);
+    min-height:100vh; line-height:1.5; -webkit-font-smoothing:antialiased;
+    padding-bottom:5rem;
+  }
+  .wrap{ max-width:1120px; margin:0 auto; padding:0 24px; }
+
+  /* ---- top bar ---- */
+  .bar{
+    position:sticky; top:0; z-index:20; backdrop-filter:blur(10px);
+    background:color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom:1px solid var(--line);
+  }
+  .bar-in{ display:flex; align-items:center; gap:14px; padding:13px 24px; max-width:1120px; margin:0 auto; }
+  .mark{ width:26px; height:26px; flex:none; color:var(--accent); filter:drop-shadow(0 0 6px var(--glow)); }
+  .word{ font-weight:600; letter-spacing:.02em; font-size:1.02rem; }
+  .word b{ color:var(--accent); font-weight:600; }
+  .bar-sub{ color:var(--ink-3); font-size:.76rem; letter-spacing:.04em; margin-left:2px; }
+  .bar-spacer{ flex:1; }
+  .tbtn{
+    font-family:var(--sans); font-size:.72rem; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line);
+    border-radius:99px; padding:7px 13px; cursor:pointer; transition:.15s;
+  }
+  .tbtn:hover{ color:var(--ink); border-color:var(--line-2); }
+  .tbtn[aria-pressed="true"]{ color:var(--accent); border-color:var(--accent); background:var(--accent-dim); }
+  .tbtn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  /* ---- section scaffolding ---- */
+  section{ padding-top:52px; }
+  .eyebrow{
+    font-family:var(--mono); font-size:.7rem; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--accent); display:flex; align-items:center; gap:10px; margin:0 0 6px;
+  }
+  .eyebrow::before{ content:""; width:22px; height:1px; background:var(--accent); opacity:.7; }
+  h2{ font-size:1.5rem; font-weight:600; margin:0 0 6px; letter-spacing:-.01em; text-wrap:balance; }
+  h2 + p{ color:var(--ink-2); margin:0 0 22px; max-width:62ch; }
+
+  /* ---- panel primitive ---- */
+  .panel{
+    background:linear-gradient(180deg, var(--panel), color-mix(in srgb,var(--panel) 88%, var(--bg)));
+    border:1px solid var(--line); border-radius:var(--r); padding:16px 18px;
+  }
+  .panel-hd{ display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .panel-title{
+    font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3); font-weight:600;
+  }
+  .panel-hd .rt{ margin-left:auto; }
+
+  /* ---- provider badge (the native-parity signal) ---- */
+  .prov{
+    display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:.68rem;
+    letter-spacing:.03em; padding:4px 9px 4px 7px; border-radius:99px;
+    border:1px solid var(--accent); color:var(--accent); background:var(--accent-dim);
+  }
+  .prov.ext{ border-color:var(--line-2); color:var(--ink-2); background:var(--panel-2); }
+  .prov .dot{ width:6px; height:6px; border-radius:99px; background:currentColor; box-shadow:0 0 6px currentColor; }
+
+  /* ---- LED primitive: shape + LETTER, never color alone ---- */
+  .led{ display:inline-flex; align-items:center; gap:7px; font-size:.8rem; color:var(--ink-2); }
+  .led i{
+    width:15px; height:15px; border-radius:99px; display:grid; place-items:center; font-style:normal;
+    font-family:var(--mono); font-size:.6rem; font-weight:700; color:var(--bg);
+  }
+  .led.ok i{ background:var(--accent); box-shadow:0 0 8px var(--glow); }
+  .led.warn i{ background:var(--notice); }
+  .led.off i{ background:transparent; border:1.5px solid var(--line-2); color:var(--ink-3); }
+  .led.act i{ background:var(--act); }
+
+  /* ---- stat readout: tabular mono, label above ---- */
+  .stat .k{ font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3); }
+  .stat .v{ font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:1.28rem; color:var(--ink); line-height:1.2; }
+  .stat .v small{ font-size:.7rem; color:var(--ink-3); margin-left:3px; }
+  .statrow{ display:flex; gap:26px; flex-wrap:wrap; }
+
+  /* ---- verdict chip: word first, number second ---- */
+  .verdict{ display:inline-flex; align-items:baseline; gap:10px; padding:9px 14px; border-radius:var(--r-sm);
+    border:1px solid var(--line); background:var(--panel-2); }
+  .verdict b{ font-size:.82rem; letter-spacing:.06em; text-transform:uppercase; }
+  .verdict .num{ font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink-2); font-size:.82rem; }
+  .verdict.good{ border-color:var(--accent); background:var(--accent-dim); }
+  .verdict.good b{ color:var(--accent); }
+  .verdict.notice{ border-color:color-mix(in srgb,var(--notice) 60%,var(--line)); }
+  .verdict.notice b{ color:var(--notice); }
+  .verdict.act{ border-color:var(--act); } .verdict.act b{ color:var(--act); }
+
+  /* ---- buttons ---- */
+  .btn{ font-family:var(--sans); font-weight:500; font-size:.82rem; border-radius:var(--r-sm); padding:10px 16px;
+    border:1px solid var(--line-2); background:var(--panel-2); color:var(--ink); cursor:pointer; }
+  .btn.primary{ background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  .btn.ghost{ background:transparent; }
+  .btn.danger{ color:var(--act); border-color:color-mix(in srgb,var(--act) 55%, var(--line)); background:transparent; }
+  .hold{ position:relative; overflow:hidden; }
+  .hold::after{ content:""; position:absolute; inset:0 66% 0 0; background:color-mix(in srgb,var(--act) 22%, transparent); }
+
+  /* ---- grids ---- */
+  .grid{ display:grid; gap:16px; }
+  .g-tokens{ grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); }
+  .g-hero{ grid-template-columns:1.55fr 1fr; }
+  .g-mon{ grid-template-columns:repeat(4,1fr); }
+  @media (max-width:820px){ .g-hero,.g-mon{ grid-template-columns:1fr; } }
+
+  .swatch{ border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; }
+  .swatch .chip{ height:52px; } .swatch .cap{ padding:7px 9px; font-family:var(--mono); font-size:.66rem; color:var(--ink-2); display:flex; justify-content:space-between; }
+  .spec{ font-family:var(--mono); }
+
+  /* ---- viz frames ---- */
+  .viz{ background:
+      linear-gradient(180deg, color-mix(in srgb,var(--bg) 70%, #000 0%), var(--panel));
+    border:1px solid var(--line); border-radius:var(--r); position:relative; }
+  svg{ display:block; width:100%; height:auto; }
+  .glowdot{ filter:drop-shadow(0 0 5px var(--glow)); }
+
+  /* motion — the two orchestrated moments only */
+  .vpt{ opacity:0; animation:pop .4s ease forwards; }
+  @keyframes pop{ from{ opacity:0; transform:translateY(6px);} to{ opacity:1; transform:none; } }
+  .fitline{ stroke-dasharray:900; stroke-dashoffset:900; animation:draw 1.5s .5s ease forwards; }
+  @keyframes draw{ to{ stroke-dashoffset:0; } }
+  .bestmark{ opacity:0; animation:pop .5s 1.7s ease forwards; }
+  .errvec{ animation:converge 2.2s .3s cubic-bezier(.5,.05,.2,1) forwards; }
+  @keyframes converge{ 0%{ transform:translate(56px,-44px);} 100%{ transform:translate(11px,-7px);} }
+  .pulse{ animation:pulse 2.6s ease .6s infinite; }
+  @keyframes pulse{ 0%,100%{ opacity:.5; } 50%{ opacity:1; } }
+  @media (prefers-reduced-motion:reduce){
+    .vpt,.bestmark{ opacity:1; animation:none; }
+    .fitline{ stroke-dashoffset:0; animation:none; }
+    .errvec{ transform:translate(11px,-7px); animation:none; } .pulse{ animation:none; }
+  }
+
+  .foot{ color:var(--ink-3); font-size:.82rem; border-top:1px solid var(--line); margin-top:56px; padding-top:22px; }
+  .foot b{ color:var(--ink-2); font-weight:600; }
+  .tag{ font-family:var(--mono); font-size:.68rem; color:var(--ink-3); }
+  ul.clean{ margin:8px 0 0; padding-left:18px; } ul.clean li{ margin:4px 0; color:var(--ink-2); }
+</style>
+
+<div class="page">
+  <div class="bar">
+    <div class="bar-in">
+      <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.4" opacity=".55"/>
+        <circle cx="12" cy="12" r="2.3" fill="currentColor"/>
+        <path d="M12 1.5v3.2M12 19.3v3.2M1.5 12h3.2M19.3 12h3.2" stroke="currentColor" stroke-width="1.4"/>
+      </svg>
+      <span class="word">Astro<b>Deck</b></span>
+      <span class="bar-sub">Native-parity control surface · design reference</span>
+      <span class="bar-spacer"></span>
+      <button class="tbtn" id="theme">Theme</button>
+      <button class="tbtn" id="night" aria-pressed="false">Night</button>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <!-- ===== Thesis ===== -->
+    <section id="top">
+      <p class="eyebrow">The instrument</p>
+      <h2 style="font-size:1.9rem; max-width:20ch;">A control surface you'd trust with a mount at 2&nbsp;a.m.</h2>
+      <p>AstroDeck runs unattended for hours, driving expensive gear in the cold and the dark. So the interface behaves like a precision instrument, not an app: a calm dark field, telemetry set in tabular figures that never jitter, state you read at a glance, and one confident accent — a phosphor aqua, the color of a guide star locked on. Two moments earn motion: an autofocus curve <em>drawing itself</em> as the sweep runs, and a polar-alignment error vector <em>visibly converging</em> as you turn the knobs. Everything else stays still, so those two moments land.</p>
+    </section>
+
+    <!-- ===== Design system ===== -->
+    <section id="system">
+      <p class="eyebrow">01 · Design system</p>
+      <h2>The vocabulary</h2>
+      <p>Three grounds, one accent, three severities — semantic color kept strictly separate from the accent hue. Every status carries a shape and a letter, never color alone, so it survives red night mode and color-blind eyes.</p>
+
+      <div class="grid g-tokens" style="margin-bottom:18px;">
+        <div class="swatch"><div class="chip" style="background:var(--bg)"></div><div class="cap"><span>ground</span><span>--bg</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--panel)"></div><div class="cap"><span>panel</span><span>--panel</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--accent)"></div><div class="cap"><span>accent</span><span>guide★</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--sky)"></div><div class="cap"><span>data</span><span>--sky</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--notice)"></div><div class="cap"><span>notice</span><span>tier 1</span></div></div>
+        <div class="swatch"><div class="chip" style="background:var(--act)"></div><div class="cap"><span>act</span><span>tier 2</span></div></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1.1fr 1fr; gap:16px;">
+        <div class="panel">
+          <div class="panel-hd"><span class="panel-title">Type — set the numbers in mono</span></div>
+          <div style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:2.1rem; letter-spacing:-.01em;">18h 42m 09s <span style="color:var(--accent)">+38°47′</span></div>
+          <div class="tag" style="margin:2px 0 14px;">IBM Plex Mono · tabular — RA/Dec/HFR/RMS never reflow</div>
+          <div style="font-size:1.25rem; font-weight:600;">IBM Plex Sans</div>
+          <div style="color:var(--ink-2);">Labels, controls, prose. Uppercase labels get <span style="letter-spacing:.14em; text-transform:uppercase; font-size:.72rem; color:var(--ink-3)">tracked small caps</span>.</div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><span class="panel-title">Primitives</span></div>
+          <div style="display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center;">
+            <span class="led ok"><i>C</i>Camera</span>
+            <span class="led ok"><i>M</i>Mount</span>
+            <span class="led warn"><i>F</i>Focuser</span>
+            <span class="led off"><i>S</i>Safety</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+            <span class="prov"><span class="dot"></span>AF · AstroDeck native</span>
+            <span class="prov ext"><span class="dot"></span>AF · NINA</span>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+            <button class="btn primary">Run Autofocus</button>
+            <button class="btn danger hold">Hold to Abort</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== HERO 1 — Autofocus ===== -->
+    <section id="focus">
+      <p class="eyebrow">02 · Hero — Autofocus</p>
+      <h2>The V-curve draws itself</h2>
+      <p>As the focuser steps through the sweep, each measured point lands with its error whisker; the fitted hyperbola sweeps across; the minimum drops in with a soft glow. The verdict speaks in plain language first, the raw numbers second — and a badge names exactly who did the focusing.</p>
+
+      <div class="grid g-hero">
+        <div class="viz">
+          <svg viewBox="0 0 520 300" role="img" aria-label="Autofocus V-curve, best focus at position 19,800, HFR 1.82 arcseconds">
+            <defs>
+              <linearGradient id="fitg" x1="0" x2="1">
+                <stop offset="0" stop-color="var(--accent)" stop-opacity=".5"/>
+                <stop offset=".5" stop-color="var(--accent)"/>
+                <stop offset="1" stop-color="var(--accent)" stop-opacity=".5"/>
+              </linearGradient>
+            </defs>
+            <!-- grid -->
+            <g stroke="var(--line)" stroke-width="1">
+              <line x1="50" y1="40" x2="50" y2="258"/><line x1="50" y1="258" x2="500" y2="258"/>
+              <line x1="50" y1="200" x2="500" y2="200" opacity=".5"/>
+              <line x1="50" y1="140" x2="500" y2="140" opacity=".5"/>
+              <line x1="50" y1="80"  x2="500" y2="80"  opacity=".5"/>
+            </g>
+            <text x="12" y="84" fill="var(--ink-3)" font-size="10" font-family="var(--mono)">5.0</text>
+            <text x="12" y="204" fill="var(--ink-3)" font-size="10" font-family="var(--mono)">2.5</text>
+            <text x="42" y="272" fill="var(--ink-3)" font-size="10" font-family="var(--mono)" text-anchor="end">HFR″</text>
+            <!-- fitted curve -->
+            <path class="fitline" d="M60,63 C 160,150 224,231 275,231 C 330,231 402,150 490,58"
+                  fill="none" stroke="url(#fitg)" stroke-width="2.4"/>
+            <!-- measured points + whiskers -->
+            <g stroke="var(--ink-3)" stroke-width="1.3">
+              <line class="vpt" style="animation-delay:.0s"  x1="60"  y1="60"  x2="60"  y2="75"/>
+              <line class="vpt" style="animation-delay:.1s"  x1="114" y1="120" x2="114" y2="133"/>
+              <line class="vpt" style="animation-delay:.2s"  x1="168" y1="171" x2="168" y2="182"/>
+              <line class="vpt" style="animation-delay:.3s"  x1="221" y1="213" x2="221" y2="222"/>
+              <line class="vpt" style="animation-delay:.4s"  x1="275" y1="227" x2="275" y2="234"/>
+              <line class="vpt" style="animation-delay:.5s"  x1="329" y1="209" x2="329" y2="218"/>
+              <line class="vpt" style="animation-delay:.6s"  x1="382" y1="167" x2="382" y2="178"/>
+              <line class="vpt" style="animation-delay:.7s"  x1="436" y1="112" x2="436" y2="123"/>
+              <line class="vpt" style="animation-delay:.8s"  x1="490" y1="53"  x2="490" y2="63"/>
+            </g>
+            <g fill="var(--ink)">
+              <circle class="vpt" style="animation-delay:.0s" cx="60"  cy="67"  r="3.4"/>
+              <circle class="vpt" style="animation-delay:.1s" cx="114" cy="126" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.2s" cx="168" cy="177" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.3s" cx="221" cy="218" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.4s" cx="275" cy="230" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.5s" cx="329" cy="213" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.6s" cx="382" cy="172" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.7s" cx="436" cy="117" r="3.4"/>
+              <circle class="vpt" style="animation-delay:.8s" cx="490" cy="58"  r="3.4"/>
+            </g>
+            <!-- best focus -->
+            <g class="bestmark">
+              <line x1="275" y1="230" x2="275" y2="258" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="3 3"/>
+              <circle class="glowdot" cx="275" cy="230" r="6" fill="var(--accent)"/>
+              <text x="275" y="26" fill="var(--accent)" font-size="11" font-family="var(--mono)" text-anchor="middle">BEST 19,800</text>
+            </g>
+          </svg>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <div class="panel">
+            <div class="panel-hd"><span class="panel-title">Result</span>
+              <span class="rt prov"><span class="dot"></span>AF · native</span></div>
+            <div class="verdict good" style="margin-bottom:12px;">
+              <b>Focus — excellent</b><span class="num">HFR 1.82″ · R² 0.997</span>
+            </div>
+            <div class="statrow">
+              <div class="stat"><div class="k">Position</div><div class="v">19,800</div></div>
+              <div class="stat"><div class="k">Δ from start</div><div class="v">+340</div></div>
+              <div class="stat"><div class="k">Method</div><div class="v" style="font-size:1rem;">hyperbolic</div></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd"><span class="panel-title">Focuser</span>
+              <span class="rt led ok"><i>F</i></span></div>
+            <div class="statrow">
+              <div class="stat"><div class="k">Position</div><div class="v">19,800</div></div>
+              <div class="stat"><div class="k">Temp</div><div class="v">4.2<small>°C</small></div></div>
+            </div>
+            <div style="display:flex; gap:8px; margin-top:14px;">
+              <button class="btn primary" style="flex:1;">Run Autofocus</button>
+              <button class="btn ghost">Jog</button>
+            </div>
+            <div class="tag" style="margin-top:10px;">Refocus armed: every 12 frames · Δtemp 1.5°C</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== HERO 2 — Polar alignment ===== -->
+    <section id="polar">
+      <p class="eyebrow">03 · Hero — Polar alignment (TPPA)</p>
+      <h2>Turn the knob; watch the error fall</h2>
+      <p>Three plate-solves fix the mount's true axis. Then the reticle shows exactly how far off the pole you are and which way to turn each bolt — the error vector shrinks toward center in real time as you adjust. The verdict tells a beginner when to stop: <em>keep going</em>, <em>good</em>, or <em>excellent — stop here</em>.</p>
+
+      <div class="grid g-hero">
+        <div class="viz" style="display:grid; place-items:center; padding:14px;">
+          <svg viewBox="0 0 300 300" role="img" aria-label="Polar alignment reticle, total error 0.9 arcminutes, turn azimuth left and raise altitude">
+            <!-- tolerance rings -->
+            <circle cx="150" cy="150" r="118" fill="none" stroke="var(--line)" stroke-width="1"/>
+            <circle cx="150" cy="150" r="72"  fill="none" stroke="var(--line-2)" stroke-width="1" stroke-dasharray="2 4"/>
+            <circle cx="150" cy="150" r="30"  fill="none" stroke="var(--accent)" stroke-width="1.2" opacity=".7"/>
+            <text x="150" y="46" fill="var(--ink-3)" font-size="9.5" font-family="var(--mono)" text-anchor="middle">10′ · keep going</text>
+            <text x="150" y="90" fill="var(--ink-3)" font-size="9.5" font-family="var(--mono)" text-anchor="middle">good</text>
+            <text x="150" y="126" fill="var(--accent)" font-size="9.5" font-family="var(--mono)" text-anchor="middle">2′ · stop</text>
+            <!-- crosshair + pole -->
+            <line x1="150" y1="34" x2="150" y2="266" stroke="var(--line)" stroke-width="1"/>
+            <line x1="34" y1="150" x2="266" y2="150" stroke="var(--line)" stroke-width="1"/>
+            <circle cx="150" cy="150" r="3" fill="var(--ink-2)"/>
+            <!-- knob-direction hints -->
+            <text x="272" y="146" fill="var(--ink-3)" font-size="9" font-family="var(--mono)" text-anchor="end">◀ AZ W</text>
+            <text x="150" y="30" fill="var(--ink-3)" font-size="9" font-family="var(--mono)" text-anchor="middle">▲ ALT up</text>
+            <!-- converging error vector (group animates translate) -->
+            <g class="errvec">
+              <line x1="150" y1="150" x2="150" y2="150" stroke="var(--accent)" stroke-width="0"/>
+              <circle class="glowdot" cx="150" cy="150" r="6.5" fill="var(--accent)"/>
+            </g>
+            <line x1="150" y1="150" x2="161" y2="143" stroke="var(--accent)" stroke-width="1.6" opacity=".55"/>
+          </svg>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <div class="panel">
+            <div class="panel-hd">
+              <span class="panel-title">Phase</span>
+              <span class="rt prov"><span class="dot"></span>TPPA · native</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:.8rem;">
+              <span class="led ok" style="gap:5px;"><i>1</i></span><span class="led ok" style="gap:5px;"><i>2</i></span><span class="led ok" style="gap:5px;"><i>3</i></span>
+              <span style="color:var(--ink-3);">measure</span>
+              <span style="color:var(--line-2);">→</span>
+              <span style="color:var(--accent); letter-spacing:.06em;">ADJUST</span>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd"><span class="panel-title">Total error</span></div>
+            <div style="font-family:var(--mono); font-variant-numeric:tabular-nums; font-size:3rem; line-height:1; color:var(--accent);">0.9<span style="font-size:1rem; color:var(--ink-3); margin-left:4px;">arcmin</span></div>
+            <div class="verdict good" style="margin-top:12px;"><b>Excellent — stop here</b></div>
+            <div class="statrow" style="margin-top:14px;">
+              <div class="stat"><div class="k">Azimuth</div><div class="v" style="font-size:1.05rem;">◀ 0.7′ <small>turn W</small></div></div>
+              <div class="stat"><div class="k">Altitude</div><div class="v" style="font-size:1.05rem;">▲ 0.6′ <small>raise</small></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== HERO 3 — Monitor glance ===== -->
+    <section id="monitor">
+      <p class="eyebrow">04 · Hero — The 2 a.m. glance</p>
+      <h2>Is my night OK?</h2>
+      <p>The unattended dashboard answers that in one look. Ambient when all is well; a persistent amber chip when something wants noticing; a sticky red banner only when the night is genuinely at risk. Numbers stay in mono so a half-asleep glance from bed reads true.</p>
+
+      <div class="panel" style="margin-bottom:14px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+        <span class="verdict good" style="font-size:.9rem;"><b>Running</b><span class="num">target 2 / 4</span></span>
+        <span style="color:var(--ink-2);">M31 · Ha 300s · <span class="spec" style="color:var(--ink)">frame 14/40</span></span>
+        <span class="bar-spacer" style="flex:1;"></span>
+        <span class="led ok"><i>▲</i>finishes 04:52</span>
+        <button class="btn ghost">Pause</button>
+        <button class="btn danger hold">Hold to Abort</button>
+      </div>
+
+      <div class="grid g-mon">
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:10px;">Progress</div>
+          <div class="stat"><div class="v">35<small>%</small></div></div>
+          <svg viewBox="0 0 200 26" style="margin-top:8px;"><rect x="0" y="9" width="200" height="8" rx="4" fill="var(--panel-2)"/><rect x="0" y="9" width="70" height="8" rx="4" fill="var(--accent)"/></svg>
+          <div class="tag" style="margin-top:6px;">14/40 · 1 rejected</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:10px;">Guiding</div>
+          <div class="stat"><div class="v">0.61<small>″ RMS</small></div></div>
+          <svg viewBox="0 0 200 40" style="margin-top:6px;"><path d="M0,22 L20,20 40,24 60,19 80,23 100,18 120,21 140,20 160,22 180,19 200,21" fill="none" stroke="var(--sky)" stroke-width="1.6"/></svg>
+          <div class="verdict good" style="margin-top:4px; padding:5px 9px;"><b>Locked</b></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:10px;">Thermal</div>
+          <div class="stat"><div class="v">−10.0<small>°C</small></div></div>
+          <svg viewBox="0 0 200 26" style="margin-top:8px;"><rect x="0" y="9" width="200" height="8" rx="4" fill="var(--panel-2)"/><rect x="0" y="9" width="188" height="8" rx="4" fill="var(--sky)"/></svg>
+          <div class="tag" style="margin-top:6px;">at target · 62% power</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:10px;">Meridian</div>
+          <div class="stat"><div class="v">0:38</div></div>
+          <div class="led warn" style="margin-top:10px;"><i>!</i>flip armed</div>
+          <div class="tag" style="margin-top:6px;">auto · pier east</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== principles / handoff ===== -->
+    <section id="principles">
+      <p class="eyebrow">05 · For the build</p>
+      <h2>How this maps to the code</h2>
+      <div class="grid" style="grid-template-columns:1fr 1fr; gap:16px;">
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:8px;">Carried forward, not reinvented</div>
+          <ul class="clean">
+            <li>The existing <span class="spec">Led</span> (shape+letter), <span class="spec">HoldButton</span>, <span class="spec">Panel</span>, <span class="spec">Stat</span>, brightness + NIGHT mode primitives stay.</li>
+            <li>Tokens above become CSS variables / Tailwind theme extensions; light + dark + <span class="spec">.night</span> all driven by token swaps.</li>
+            <li>All telemetry uses <span class="spec">tabular-nums</span> mono; labels are tracked small caps.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <div class="panel-title" style="margin-bottom:8px;">New, bound to real API</div>
+          <ul class="clean">
+            <li><b>Provider badges</b> ← <span class="spec">status.providers.{autofocus,polar_align}.label</span>.</li>
+            <li><b>V-curve + fit</b> ← <span class="spec">focus.points</span>, <span class="spec">focus.fit{method,r2,curve,trendlines}</span>, <span class="spec">focus.best</span>.</li>
+            <li><b>TPPA wizard</b> ← <span class="spec">polar{phase,az_error,alt_error,total_error,directions}</span> (arcmin).</li>
+          </ul>
+        </div>
+      </div>
+      <p class="foot">Design reference for the AstroDeck native-parity UI. Spend the boldness on the two live visualizations; keep everything around them quiet. <b>Verdict first, raw number second. Shape and letter, never color alone. The night mode is not a theme afterthought — it is the instrument's real operating mode.</b></p>
+    </section>
+  </div>
+</div>
+
+<script>
+  (function(){
+    var root=document.documentElement;
+    function cur(){ return root.getAttribute('data-theme') || (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'); }
+    document.getElementById('theme').addEventListener('click', function(){
+      root.setAttribute('data-theme', cur()==='dark'?'light':'dark');
+    });
+    var nb=document.getElementById('night');
+    nb.addEventListener('click', function(){
+      var on=root.classList.toggle('night');
+      nb.setAttribute('aria-pressed', on?'true':'false');
+      if(on) root.setAttribute('data-theme','dark');
+    });
+  })();
+</script>
