@@ -37,8 +37,8 @@ from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
-                      EscalationConfig, Optics, SafetyConfig, Site, UpdateConfig,
-                      config_store, redacted)
+                      EscalationConfig, Optics, ProvidersConfig, SafetyConfig,
+                      Site, UpdateConfig, config_store, redacted)
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
@@ -663,6 +663,23 @@ def create_app() -> FastAPI:
             raise HTTPException(400, str(e))
         bus.publish("config", config=redacted(cfg))
         return cfg
+
+    # ---------------------------------------------------- capability providers
+    # Global per-capability routing override (native parity — Settings → Connect
+    # "Capabilities" card). ``config.backend`` gated, same cap as every other
+    # backend/connect write: choosing which implementation runs autofocus/TPPA is
+    # a backend-shape decision, not a safety one. Broadcasts the redacted union so
+    # every open client's ProviderBadge / Capabilities card updates immediately.
+    @app.post("/api/config/providers",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def set_providers_config(body: ProvidersConfig):
+        try:
+            cfg = await asyncio.to_thread(config_store.set_providers, body)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload()
 
     # ------------------------------------------------------------ equipment
 
@@ -1934,7 +1951,7 @@ def create_app() -> FastAPI:
         return _spawn("autofocus", run_autofocus(
             cam, foc, exposure_s=body.exposure_s, gain=body.gain,
             step=body.step, steps_each_side=body.steps_each_side,
-            expose_guard=hub.exposure_guard))
+            expose_guard=hub.exposure_guard, hub=hub))
 
     @app.post("/api/focuser/halt", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)

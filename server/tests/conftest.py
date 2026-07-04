@@ -8,8 +8,11 @@ the e2e test ``importorskip``s.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+
+import pytest
 
 # server/tests/conftest.py -> parents[1] is server/, parents[2] the git root.
 _SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -37,3 +40,23 @@ if _RELAY_DIR.is_dir():
 _root_str = str(_REPO_ROOT)
 if _root_str not in sys.path:
     sys.path.insert(0, _root_str)
+
+
+@pytest.fixture(autouse=True)
+def _reset_hub_singleton_locks():
+    """Test-isolation seam: ``astrodeck.hub.hub`` is a process-wide singleton, but
+    many tests each spin up their own ``TestClient(app)`` (own event loop) or their
+    own ``asyncio.run``-driven async test (pytest-asyncio, also its own loop)
+    against that SAME singleton. A plain ``asyncio.Lock`` permanently binds to
+    whichever event loop first acquires it (see ``asyncio.mixins._LoopBoundMixin``)
+    and never rebinds, so a lock touched by one test's loop raises
+    ``RuntimeError: ... is bound to a different event loop`` when a later test's
+    loop touches it again -- a cross-test-order flake, not a real bug (a real
+    process only ever has one event loop for its whole lifetime). Give every test
+    a fresh set of locks so the singleton never leaks loop affinity across tests."""
+    import astrodeck.hub as hub_mod
+    h = hub_mod.hub
+    h._connect_lock = asyncio.Lock()
+    h._capture_lock = asyncio.Lock()
+    h._motion_lock = asyncio.Lock()
+    yield

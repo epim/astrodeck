@@ -28,6 +28,143 @@ from .base import (
 )
 
 
+# --------------------------------------------------------------------------
+# Polar-misalignment forward model (native-TPPA test support)
+#
+# A misaligned German-equatorial mount rotates its optics about an RA axis that
+# is TILTED from the true celestial pole. As the mount turns in RA, a tracked
+# field traces a small circle about that tilted axis on the celestial sphere;
+# three plate solves at different RA hand ``astrodeck_native.tppa_from_three``
+# exactly the geometry it inverts to recover the tilt. We forward-model that here
+# so the native polar-alignment provider is exercisable end to end with no
+# hardware. The transforms below are the refraction-free geometric equatorial<->
+# horizontal pair the Rust crate uses internally (astro-tppa/src/sky.rs), so a
+# solve generated here round-trips through the engine to the injected error to
+# ~arcsecond accuracy. The sim has no atmosphere, so no refraction is modelled
+# (the provider passes ``pressure_hpa=0`` for sim rigs to match).
+# --------------------------------------------------------------------------
+
+
+def _gmst_deg(jd: float) -> float:
+    """Greenwich Mean Sidereal Time, degrees (IAU 1982), matching the Rust
+    crate's ``gmst_deg`` so forward model and engine agree on sidereal time."""
+    d = jd - 2451545.0
+    t = d / 36525.0
+    g = (280.46061837 + 360.98564736629 * d + 0.000387933 * t * t
+         - (t * t * t) / 38710000.0)
+    return g % 360.0
+
+
+def _jd_from_unix(ts: float) -> float:
+    """UTC Julian Date from a Unix timestamp (matches the PyO3 bridge)."""
+    return ts / 86400.0 + 2440587.5
+
+
+def _neu_from_altaz(alt_deg: float, az_deg: float) -> tuple[float, float, float]:
+    """Topocentric [North, East, Up] unit vector for an (alt, az) direction
+    (azimuth North=0, East=90)."""
+    alt = math.radians(alt_deg)
+    az = math.radians(az_deg)
+    return (math.cos(alt) * math.cos(az),
+            math.cos(alt) * math.sin(az),
+            math.sin(alt))
+
+
+def _altaz_from_neu(v: tuple[float, float, float]) -> tuple[float, float]:
+    n, e, u = v
+    alt = math.degrees(math.asin(max(-1.0, min(1.0, u))))
+    az = math.degrees(math.atan2(e, n)) % 360.0
+    return alt, az
+
+
+def _horiz_to_equ(alt_deg: float, az_deg: float, lat_deg: float, lon_deg: float,
+                  jd: float) -> tuple[float, float]:
+    """Geometric (vacuum) horizontal -> equatorial (RA deg, Dec deg), the exact
+    inverse of the Rust crate's ``horizontal_to_equatorial_geometric``."""
+    alt = math.radians(alt_deg)
+    az = math.radians(az_deg)
+    phi = math.radians(lat_deg)
+    north = math.cos(alt) * math.cos(az)
+    east = math.cos(alt) * math.sin(az)
+    up = math.sin(alt)
+    x_e = -math.sin(phi) * north + math.cos(phi) * up
+    y_e = -east
+    z_e = math.cos(phi) * north + math.sin(phi) * up
+    dec = math.degrees(math.asin(max(-1.0, min(1.0, z_e))))
+    ha = math.degrees(math.atan2(y_e, x_e))
+    lst = (_gmst_deg(jd) + lon_deg) % 360.0
+    ra = (lst - ha) % 360.0
+    return ra, dec
+
+
+def _cross(a: tuple, b: tuple) -> tuple:
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _normalize(a: tuple) -> tuple:
+    n = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+    if n == 0.0:
+        return (0.0, 0.0, 0.0)
+    return (a[0] / n, a[1] / n, a[2] / n)
+
+
+def _rodrigues(v: tuple, k: tuple, theta: float) -> tuple:
+    """Rotate ``v`` about unit axis ``k`` by ``theta`` radians (matches the Rust
+    crate's ``rotate_rodrigues``)."""
+    c = math.cos(theta)
+    s = math.sin(theta)
+    kv = _cross(k, v)
+    kd = k[0] * v[0] + k[1] * v[1] + k[2] * v[2]
+    return (v[0] * c + kv[0] * s + k[0] * kd * (1.0 - c),
+            v[1] * c + kv[1] * s + k[1] * kd * (1.0 - c),
+            v[2] * c + kv[2] * s + k[2] * kd * (1.0 - c))
+
+
+class PolarMisalignment:
+    """A tilted mount RA axis and the small circle its optics trace.
+
+    ``az_arcmin``/``alt_arcmin`` are the injected polar error the engine should
+    recover (the tilt of the RA axis from the true pole); ``rho_deg`` is the
+    angular radius of the traced small circle (the mount's declination-from-axis,
+    arbitrary but well-conditioned at 40°); ``phase_step_deg`` is how far the
+    circle advances per RA rotation the provider commands. ``expected_total_arcmin``
+    lets a test assert recovery against the exact injected magnitude."""
+
+    def __init__(self, *, az_arcmin: float, alt_arcmin: float, lat_deg: float,
+                 lon_deg: float, rho_deg: float = 40.0,
+                 phase_step_deg: float = 15.0) -> None:
+        self.az_arcmin = az_arcmin
+        self.alt_arcmin = alt_arcmin
+        self.lat_deg = lat_deg
+        self.lon_deg = lon_deg
+        self.rho_deg = rho_deg
+        self.phase_step_deg = phase_step_deg
+
+    @property
+    def expected_total_arcmin(self) -> float:
+        return math.hypot(self.az_arcmin, self.alt_arcmin)
+
+    def true_radec(self, phase_deg: float, unix_t: float) -> tuple[float, float]:
+        """True (RA deg, Dec deg) of the optics at tilted-circle ``phase_deg`` and
+        time ``unix_t``. The mount axis sits at (alt = lat + alt_err, az = az_err)
+        in the topocentric frame; a reference point ``rho`` away from it, rotated
+        about the axis by ``phase_deg``, is the pointing — inverse-transformed to
+        equatorial at ``unix_t`` so ``tppa_from_three`` reproduces it exactly."""
+        alt_m = self.lat_deg + self.alt_arcmin / 60.0
+        az_m = self.az_arcmin / 60.0
+        m = _neu_from_altaz(alt_m, az_m)
+        # A stable axis to tilt the mount axis away from itself by rho: the
+        # horizontal direction perpendicular to both the axis and the zenith.
+        tilt_axis = _normalize(_cross(m, (0.0, 0.0, 1.0)))
+        ref = _rodrigues(m, tilt_axis, math.radians(self.rho_deg))
+        u = _rodrigues(ref, m, math.radians(phase_deg))
+        alt, az = _altaz_from_neu(u)
+        return _horiz_to_equ(alt, az, self.lat_deg, self.lon_deg,
+                             _jd_from_unix(unix_t))
+
+
 class SimRig:
     """Shared state tying the simulated devices together."""
 
@@ -41,6 +178,53 @@ class SimRig:
         self.filter_slot = 0
         self.pointing_error_deg = 0.04  # goto lands slightly off until synced
         self.sensor_temp = -9.8
+        # --- native-TPPA test hook: injected polar-axis misalignment ----------
+        # OFF by default (``None``) so the mount is perfectly aligned and every
+        # existing sim test is byte-for-byte unaffected — nothing below runs and
+        # the default pointing behavior is untouched. A test calls
+        # ``set_polar_misalignment(...)`` to tilt the mount's RA axis by a KNOWN
+        # (az, alt) error; ``SimTelescope`` then reports plate-solvable RA/Dec
+        # that trace the tilted small circle as the mount rotates in RA, so the
+        # native TPPA engine can recover the injected error end to end.
+        self.polar_misalignment: PolarMisalignment | None = None
+        self._polar_phase_deg = 0.0
+
+    # ------------------------------------------------------ polar misalignment
+
+    def set_polar_misalignment(self, az_arcmin: float, alt_arcmin: float, *,
+                               lat_deg: float, lon_deg: float,
+                               rho_deg: float = 40.0,
+                               phase_step_deg: float = 15.0) -> None:
+        """Inject a deterministic polar-axis misalignment for native-TPPA tests.
+
+        The mount's RA axis is tilted from the true celestial pole by
+        ``(az_arcmin, alt_arcmin)`` (azimuth: North=0, East=90 — the TPPA
+        convention). From this instant the sim reports the TRUE (plate-solvable)
+        RA/Dec its optics point at; three captures spaced by a ~RA rotation trace
+        the small circle about the tilted axis, which ``tppa_from_three`` inverts
+        back to the injected error. Immediately writes the phase-0 pointing so the
+        very first capture is already on the tilted circle."""
+        self.polar_misalignment = PolarMisalignment(
+            az_arcmin=az_arcmin, alt_arcmin=alt_arcmin, lat_deg=lat_deg,
+            lon_deg=lon_deg, rho_deg=rho_deg, phase_step_deg=phase_step_deg)
+        self._polar_phase_deg = 0.0
+        self._apply_polar_pointing()
+
+    def clear_polar_misalignment(self) -> None:
+        """Remove the injected misalignment (restore a perfectly-aligned mount)."""
+        self.polar_misalignment = None
+        self._polar_phase_deg = 0.0
+
+    def _apply_polar_pointing(self) -> None:
+        """Recompute the true RA/Dec for the current tilted-circle phase at the
+        current instant and publish it as the mount's reported pointing (what a
+        plate solve reads)."""
+        m = self.polar_misalignment
+        if m is None:
+            return
+        ra_deg, dec_deg = m.true_radec(self._polar_phase_deg, time.time())
+        self.ra_hours = (ra_deg / 15.0) % 24.0
+        self.dec_deg = dec_deg
 
 
 class SimCamera(Camera):
@@ -266,6 +450,24 @@ class SimTelescope(Telescope):
     async def slew(self, ra_hours: float, dec_deg: float) -> None:
         if self.rig.parked:
             raise RuntimeError("mount is parked")
+        # Native-TPPA sim path: when a polar misalignment is injected, a slew "in
+        # RA" physically rotates the mount's (tilted) RA axis, so advance the
+        # traced small-circle phase by one step and report the resulting true
+        # pointing. The commanded target is intentionally ignored for the phase
+        # (a real mount would honor it; the sim models only the CONSEQUENCE — the
+        # optics landing on the next point of the tilted circle) so the three
+        # measuring captures are cleanly spaced regardless of the exact RA step
+        # the provider chooses. Recomputed at ``now`` so the reported RA/Dec is
+        # sidereal-time-consistent with the timestamp the provider records.
+        if self.rig.polar_misalignment is not None:
+            self._slewing = True
+            try:
+                await asyncio.sleep(0.05)
+                self.rig._polar_phase_deg += self.rig.polar_misalignment.phase_step_deg
+                self.rig._apply_polar_pointing()
+            finally:
+                self._slewing = False
+            return
         self._slewing = True
         try:
             # Land near the target with a small pointing error (until synced).
