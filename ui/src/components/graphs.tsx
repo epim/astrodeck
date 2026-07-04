@@ -30,47 +30,166 @@ export const Histogram = memo(function Histogram({ data }: { data: number[] }) {
   );
 });
 
-export const VCurve = memo(function VCurve({ points, best }: {
-  points: FocusPoint[];
+// ------------------------------------------------------------------ VCurve
+// Autofocus hero (implementation brief §3 / design-reference §02): measured
+// points WITH error whiskers, the engine's FITTED curve drawn from focus.fit.curve
+// (stroke-dashoffset first-draw animation, reduced-motion => final state), a
+// glowing best-focus marker + "BEST <position>", and the trendline cross when the
+// engine emits focus.fit.trendlines. All strokes/fills are token vars (no hex).
+//
+// FocusFit mirrors the additive `fit` object the native engine publishes on the
+// `focus` topic (server focus/native.py _fit_payload → astrodeck-native FitOutcome
+// serialization). It is read here (and in FocusView) via the store's raw event —
+// types.ts FocusEvent stays untouched, same pattern as `status.providers`.
+export interface FocusFit {
+  method?: string | null;
+  r2?: number | null;
+  r2s?: Record<string, number | null>;
+  curve?: [number, number][]; // [[position, hfr], …] sampled fitted polyline
+  trendlines?: {
+    left?: { slope: number; r2: number };
+    right?: { slope: number; r2: number };
+    intersection?: [number, number] | null; // [position, hfr] of the trend cross
+  } | null;
+}
+
+// A measured point may carry an optional per-point σ (HFR MAD) for the whisker.
+type WhiskerPoint = FocusPoint & { sigma?: number };
+
+export const VCurve = memo(function VCurve({ points, best, fit = null }: {
+  points: WhiskerPoint[];
   best: { position: number; hfr: number | null } | null;
+  fit?: FocusFit | null;
 }) {
-  const w = 420, h = 180, pad = 30;
-  if (points.length === 0) {
+  const w = 520, h = 300;
+  const padL = 52, padR = 22, padT = 30, padB = 40;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+
+  const curve = fit?.curve && fit.curve.length > 1 ? fit.curve : null;
+
+  if (points.length === 0 && !curve) {
     return (
-      <div className="h-[180px] flex items-center justify-center text-dim text-xs tracking-widest uppercase">
+      <div className="h-[220px] flex items-center justify-center text-dim text-xs tracking-widest uppercase">
         no focus data — run autofocus
       </div>
     );
   }
-  const xs = points.map((p) => p.position);
-  const ys = points.map((p) => p.hfr);
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
-  const y0 = Math.min(...ys) * 0.85, y1 = Math.max(...ys) * 1.1;
-  const sx = (x: number) => pad + ((x - x0) / Math.max(x1 - x0, 1)) * (w - 2 * pad);
-  const sy = (y: number) => h - pad - ((y - y0) / Math.max(y1 - y0, 0.01)) * (h - 2 * pad);
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(p.position)},${sy(p.hfr)}`).join(" ");
-  // aspect-locked + centered so fill-grow never distorts the V (asymmetric minimum = misleading)
+
+  // Domain spans points + fitted curve + whisker extents so nothing clips.
+  const xsAll = [
+    ...points.map((p) => p.position),
+    ...(curve ? curve.map((c) => c[0]) : []),
+    ...(best ? [best.position] : []),
+  ];
+  const ysAll = [...points.map((p) => p.hfr), ...(curve ? curve.map((c) => c[1]) : [])];
+  for (const p of points) {
+    const s = p.sigma ?? 0;
+    if (s > 0) { ysAll.push(p.hfr + s); ysAll.push(p.hfr - s); }
+  }
+  const x0 = Math.min(...xsAll), x1 = Math.max(...xsAll);
+  const yMin = Math.min(...ysAll), yMax = Math.max(...ysAll);
+  const yspan = Math.max(yMax - yMin, 0.01);
+  const y0 = Math.max(0, yMin - yspan * 0.12);
+  const y1 = yMax + yspan * 0.12;
+
+  const sx = (x: number) => padL + ((x - x0) / Math.max(x1 - x0, 1)) * plotW;
+  const sy = (y: number) => padT + (1 - (y - y0) / Math.max(y1 - y0, 1e-6)) * plotH;
+
+  const curvePath = curve
+    ? curve.map((c, i) => `${i === 0 ? "M" : "L"}${sx(c[0]).toFixed(1)},${sy(c[1]).toFixed(1)}`).join(" ")
+    : null;
+
+  // Trendline cross (only when the engine bracketed an intersection).
+  const tl = fit?.trendlines ?? null;
+  const cross = tl?.intersection ?? null;
+  const trendLeft = cross && tl?.left ? { x: x0, y: cross[1] + tl.left.slope * (x0 - cross[0]) } : null;
+  const trendRight = cross && tl?.right ? { x: x1, y: cross[1] + tl.right.slope * (x1 - cross[0]) } : null;
+
+  const bestHfr = best?.hfr ?? (cross ? cross[1] : null);
+
   return (
     <svg viewBox={`0 0 ${w} ${h}`} className="w-full block instr-fit" style={{ aspectRatio: `${w} / ${h}` }}>
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line key={f} x1={pad} x2={w - pad} y1={pad + f * (h - 2 * pad)} y2={pad + f * (h - 2 * pad)}
-          stroke="var(--text-faint)" strokeDasharray="2 4" vectorEffect="non-scaling-stroke" />
-      ))}
-      <path d={path} fill="none" stroke="var(--accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-      {points.map((p, i) => (
-        <circle key={i} cx={sx(p.position)} cy={sy(p.hfr)} r={3} fill="var(--bg)"
-          stroke="var(--accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
-      ))}
-      {best && (
-        <g>
-          <line x1={sx(best.position)} x2={sx(best.position)} y1={pad / 2} y2={h - pad}
-            stroke="var(--good)" strokeWidth={1} strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
-          <text x={sx(best.position)} y={pad / 2 - 2} textAnchor="middle" fill="var(--text-dim)"
-            fontSize={12} fontFamily="IBM Plex Mono">{best.position}</text>
+      {/* Scoped motion: the fitted curve draws itself once; the best marker eases
+          in once. prefers-reduced-motion snaps both to their final state. Only
+          hero moment — no other element animates. */}
+      <style>{`
+        .af-fitline{stroke-dasharray:1;stroke-dashoffset:1;animation:af-draw 1.4s .25s ease forwards;}
+        @keyframes af-draw{to{stroke-dashoffset:0;}}
+        .af-bestmark{opacity:0;animation:af-pop .5s 1.5s ease forwards;}
+        @keyframes af-pop{from{opacity:0;transform:translateY(5px);}to{opacity:1;transform:none;}}
+        @media (prefers-reduced-motion:reduce){
+          .af-fitline{stroke-dashoffset:0;animation:none;}
+          .af-bestmark{opacity:1;transform:none;animation:none;}
+        }
+      `}</style>
+      <defs>
+        <linearGradient id="af-fitg" x1="0" x2="1">
+          <stop offset="0" stopColor="var(--accent)" stopOpacity="0.5" />
+          <stop offset="0.5" stopColor="var(--accent)" />
+          <stop offset="1" stopColor="var(--accent)" stopOpacity="0.5" />
+        </linearGradient>
+      </defs>
+
+      {/* horizontal gridlines + HFR tick labels */}
+      {[0, 0.25, 0.5, 0.75, 1].map((f) => {
+        const y = padT + f * plotH;
+        const val = y1 - f * (y1 - y0);
+        return (
+          <g key={f}>
+            <line x1={padL} x2={w - padR} y1={y} y2={y} stroke="var(--text-faint)"
+              strokeDasharray={f === 1 ? undefined : "2 4"} vectorEffect="non-scaling-stroke" />
+            <text x={padL - 6} y={y + 3} textAnchor="end" fill="var(--text-dim)" fontSize={11}
+              fontFamily="IBM Plex Mono">{val.toFixed(1)}</text>
+          </g>
+        );
+      })}
+      <text x={12} y={padT + 4} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">HFR</text>
+
+      {/* trendline cross (data hue, kept distinct from the accent fit) */}
+      {cross && trendLeft && trendRight && (
+        <g stroke="var(--sky)" strokeWidth={1} strokeDasharray="3 4" vectorEffect="non-scaling-stroke" opacity={0.75}>
+          <line x1={sx(trendLeft.x)} y1={sy(trendLeft.y)} x2={sx(cross[0])} y2={sy(cross[1])} />
+          <line x1={sx(cross[0])} y1={sy(cross[1])} x2={sx(trendRight.x)} y2={sy(trendRight.y)} />
         </g>
       )}
-      <text x={pad} y={h - 6} fill="var(--text-dim)" fontSize={12} fontFamily="IBM Plex Mono">{x0}</text>
-      <text x={w - pad} y={h - 6} textAnchor="end" fill="var(--text-dim)" fontSize={12} fontFamily="IBM Plex Mono">{x1}</text>
+
+      {/* fitted curve — the engine's hyperbola, drawn on first appearance */}
+      {curvePath && (
+        <path className="af-fitline" d={curvePath} pathLength={1} fill="none"
+          stroke="url(#af-fitg)" strokeWidth={2.4} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      )}
+
+      {/* measured points + error whiskers (whisker only when σ is known) */}
+      {points.map((p, i) => {
+        const s = p.sigma ?? 0;
+        return (
+          <g key={i}>
+            {s > 0 && (
+              <line x1={sx(p.position)} x2={sx(p.position)} y1={sy(p.hfr - s)} y2={sy(p.hfr + s)}
+                stroke="var(--text-dim)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+            )}
+            <circle cx={sx(p.position)} cy={sy(p.hfr)} r={3.2} fill="var(--bg)"
+              stroke="var(--accent)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          </g>
+        );
+      })}
+
+      {/* glowing best-focus marker + "BEST <position>" */}
+      {best && bestHfr != null && (
+        <g className="af-bestmark">
+          <line x1={sx(best.position)} x2={sx(best.position)} y1={sy(bestHfr)} y2={h - padB}
+            stroke="var(--accent)" strokeWidth={1.2} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+          <circle cx={sx(best.position)} cy={sy(bestHfr)} r={5.5} fill="var(--accent)"
+            style={{ filter: "drop-shadow(0 0 5px var(--glow))" }} />
+          <text x={sx(best.position)} y={padT - 8} textAnchor="middle" fill="var(--accent)"
+            fontSize={12} fontFamily="IBM Plex Mono">BEST {best.position}</text>
+        </g>
+      )}
+
+      {/* x-axis position extents */}
+      <text x={padL} y={h - 6} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">{x0}</text>
+      <text x={w - padR} y={h - 6} textAnchor="end" fill="var(--text-dim)" fontSize={11}
+        fontFamily="IBM Plex Mono">{x1}</text>
     </svg>
   );
 });

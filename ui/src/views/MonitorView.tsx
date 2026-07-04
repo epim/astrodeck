@@ -27,6 +27,10 @@ import {
   useWsConnected,
   useNight,
   useLogs,
+  useSafety,
+  useBackendLinks,
+  useBootConnectFailed,
+  useProviders,
   useStore,
 } from "../store";
 import { Panel, Stat, EmptyState } from "../components/ui";
@@ -34,6 +38,8 @@ import { Icon } from "../components/icons";
 import { useCanControlCapture } from "../lib/caps";
 import {
   CountdownTile,
+  deriveHealthIssues,
+  HealthStrip,
   HoldButton,
   LiveTimer,
   MetricStrip,
@@ -101,6 +107,10 @@ export default function MonitorView() {
   const wsConnected = useWsConnected();
   const night = useNight();
   const logs = useLogs();
+  const safety = useSafety();
+  const backendLinks = useBackendLinks();
+  const bootConnectFailed = useBootConnectFailed();
+  const providers = useProviders();
   const setView = useStore((s) => s.setView);
   // VIEWER-READ-ONLY (W2.5): the Monitor is a glance dashboard; its only writes are
   // Pause/Resume/Abort (sequence run-control = control.capture). A viewer sees the
@@ -244,17 +254,32 @@ export default function MonitorView() {
       }),
     );
 
+  // ----- the single "is my night OK?" verdict (implementation brief §5) -----
+  // Folds safety/disk/backend_links/meridian/nina_link/status.providers/boot +
+  // the engine's end_reason into ranked tier-1 (Notice)/tier-2 (Act) issues.
+  const healthIssues = useMemo(
+    () =>
+      deriveHealthIssues({
+        safety,
+        disk: status?.disk,
+        meridian: status?.meridian,
+        ninaLink: status?.nina_link,
+        backendLinks,
+        bootConnectFailed,
+        providers,
+        seqState: state,
+        endReason: seq.end_reason,
+        wsConnected,
+      }),
+    [safety, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected],
+  );
+
   // ====================================================================== render
   return (
     <div className="px-3 pb-20 sm:px-0 sm:pb-4">
-      {/* WS-down banner: warning chrome stays full-contrast; data dims (P3-18). */}
-      {!wsConnected && (
-        <div className="mb-3 flex items-center gap-2 border border-warn/60 bg-warn/5 px-3 py-2 text-xs text-warn">
-          <Icon name="alert" size={14} className="shrink-0" />
-          <span className="font-semibold tracking-wide">NO LINK</span>
-          <span className="text-warn/90">reconnecting — values may be stale; Abort still sends over HTTP.</span>
-        </div>
-      )}
+      <div className="mb-3">
+        <HealthStrip issues={healthIssues} />
+      </div>
 
       <div
         className={`grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 auto-rows-min

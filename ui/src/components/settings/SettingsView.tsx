@@ -24,6 +24,7 @@ import {
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import BackendPicker from "./BackendPicker";
+import CapabilitiesCard from "./CapabilitiesCard";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
@@ -155,10 +156,11 @@ export default function SettingsView(): JSX.Element {
               </Panel>
             )}
           </div>
-          <div className="order-1 lg:order-2">
+          <div className="order-1 lg:order-2 flex flex-col gap-4">
             <Panel title="Connection Status">
               <BackendLinkGrid links={links} />
             </Panel>
+            <CapabilitiesCard />
           </div>
         </div>
       )}
