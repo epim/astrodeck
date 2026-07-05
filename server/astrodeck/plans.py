@@ -15,7 +15,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from .config import PLANS_DIR
-from .persist import ensure_dir, list_json, read_json, read_json_or, write_json_atomic
+from .persist import (ensure_dir, list_json, read_json, read_json_or,
+                      safe_id_path, write_json_atomic)
 from .sequence import SequencePlan
 
 PLAN_SCHEMA = 1
@@ -65,14 +66,11 @@ class PlanLibrary:
         ``id`` is client-controllable (request body + path param, incl. the
         ``..%5C`` backslash vector on Windows). A value like ``"../../pwned"`` or
         an absolute path would otherwise read/write/delete arbitrary ``*.json``
-        files (e.g. the server's own ``astrodeck.json``). We resolve the candidate
-        and assert its parent is the plans dir; on any mismatch we raise
-        ``KeyError`` (the routes catch ``KeyError`` → 404).
+        files (e.g. the server's own ``astrodeck.json``). ``safe_id_path`` refuses
+        any non-bare-filename id on *any* platform (separators of either OS,
+        drive prefixes, ``..``) → ``KeyError`` (the routes map ``KeyError`` → 404).
         """
-        resolved = (self._dir / f"{plan_id}.json").resolve()
-        if resolved.parent != self._dir.resolve():
-            raise KeyError(plan_id)
-        return resolved
+        return safe_id_path(self._dir, plan_id)
 
     def _envelope(self, plan_id: str) -> dict | None:
         raw = read_json_or(self._path(plan_id))

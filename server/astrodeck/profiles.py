@@ -19,7 +19,8 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from .config import PROFILES_DIR, Optics
-from .persist import ensure_dir, list_json, read_json_or, write_json_atomic
+from .persist import (ensure_dir, list_json, read_json_or, safe_id_path,
+                      write_json_atomic)
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime (backend imports are lazy)
     from .devices.backend import RigSpec
@@ -190,14 +191,12 @@ class ProfileLibrary:
 
         ``id`` is client-controllable (request body + path param); a value like
         ``"../../pwned"`` or an absolute path would otherwise read/write/delete
-        arbitrary ``*.json`` files. We resolve the candidate and assert its parent
-        is the profiles dir; on any mismatch we raise ``KeyError`` (the routes
-        catch ``KeyError`` → 404, so traversal looks like a plain not-found).
+        arbitrary ``*.json`` files. ``safe_id_path`` refuses any non-bare-filename
+        id on *any* platform (separators of either OS, drive prefixes, ``..``) →
+        ``KeyError`` (the routes map ``KeyError`` → 404, so traversal looks like a
+        plain not-found).
         """
-        resolved = (self._dir / f"{profile_id}.json").resolve()
-        if resolved.parent != self._dir.resolve():
-            raise KeyError(profile_id)
-        return resolved
+        return safe_id_path(self._dir, profile_id)
 
     def _all(self) -> list[Profile]:
         out: list[Profile] = []
