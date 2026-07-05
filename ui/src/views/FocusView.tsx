@@ -114,15 +114,17 @@ export default function FocusView() {
         </Panel>
 
         <Panel title="V-Curve · HFR vs Position"
-          right={
-            <div className="flex items-center gap-2">
-              {running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}
-              <ProviderBadge cap="autofocus" />
-            </div>
-          }>
-          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} fit={focusFit} />
-          {(focus?.state === "done" || focus?.state === "failed") && (
-            <div className="mt-3">
+          right={running && <span className="text-accent text-[11px] blink tracking-widest uppercase">measuring…</span>}>
+          <VCurve points={focus?.points ?? []} best={focus?.best ?? null} fit={focusFit} running={running} />
+        </Panel>
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {/* Result panel — the verdict-first outcome lives in the right column
+            above the Focuser, matching the design reference (F5). */}
+        <Panel title="Result" right={<ProviderBadge cap="autofocus" />}>
+          {focus?.state === "done" || focus?.state === "failed" ? (
+            <>
               <AutofocusVerdict
                 state={focus.state}
                 hfr={focus.best?.hfr ?? null}
@@ -133,12 +135,19 @@ export default function FocusView() {
                 hfrWarn={hfrWarn}
                 message={focusMessage}
               />
-            </div>
+              {focus.state === "done" && focus.best && (
+                <div className="mt-3">
+                  <Stat label="best position" value={focus.best.position} />
+                </div>
+              )}
+            </>
+          ) : running ? (
+            <div className="text-accent text-sm blink">Measuring…</div>
+          ) : (
+            <div className="text-faint text-sm">Run autofocus to measure focus quality.</div>
           )}
         </Panel>
-      </div>
 
-      <div className="flex flex-col gap-4">
         <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
           <div className="flex items-end justify-between mb-4">
             <Stat label="position" value={foc ? pos : "—"} />
