@@ -51,15 +51,13 @@ export function knobHint(
 }
 
 /* Verdict tier from total error (spec §HERO2): <2′ excellent · 2–10′ good ·
-   >10′ keep going. Drives the vector/zone hue (tokened good/warn/bad — the
-   shape/length + the panel's verdict text carry meaning where night collapses
-   the hue). Exported so the panel verdict and the reticle agree on the tier. */
+   >10′ keep going. Drives the reticle ZONE hue (tokened good/warn/bad) and the
+   panel's verdict text; the error vector/dot/hints stay --accent (the "guide
+   star") so the mark survives night mode where the hue collapses. Exported so
+   the panel verdict and the reticle zones agree on the tier. */
 export type PolarTier = "excellent" | "good" | "keepgoing";
 export function polarTier(total: number): PolarTier {
   return total < 2 ? "excellent" : total < 10 ? "good" : "keepgoing";
-}
-function tierColor(t: PolarTier): string {
-  return t === "excellent" ? "var(--good)" : t === "good" ? "var(--warn)" : "var(--bad)";
 }
 
 // Zoom-out ladder: the 2′/10′ tier rings stay fixed until the error exceeds the
@@ -144,8 +142,6 @@ export function PolarReticle({
 
   const size = 380, cx = size / 2, cy = size / 2, R = 165;
   const total = Math.hypot(eAz, eAlt);
-  const tier = polarTier(total);
-  const col = tierColor(tier);
 
   // Fixed 2′/10′ tier scale; only zoom OUT past 10′ so the tier rings keep their
   // meaning (a shrinking ring would make "2′" a moving target).
@@ -192,7 +188,7 @@ export function PolarReticle({
       }>
       <defs>
         <marker id="pa-arrow" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
-          <path d="M0,0 L6,3 L0,6 Z" fill={col} />
+          <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent)" />
         </marker>
       </defs>
 
@@ -226,22 +222,22 @@ export function PolarReticle({
       )}
 
       {/* orientation axis labels (kept minimal so the knob hints stand out) */}
-      <text x={cx - R + 2} y={cy - 5} fill="var(--text-dim)" fontSize={10} fontFamily="Chakra Petch"
+      <text x={cx - R + 2} y={cy - 5} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
         letterSpacing="2" textAnchor="start" style={labelHalo}>AZ E</text>
-      <text x={cx} y={cy + R - 1} fill="var(--text-dim)" fontSize={10} fontFamily="Chakra Petch"
+      <text x={cx} y={cy + R - 1} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
         letterSpacing="2" textAnchor="middle" style={labelHalo}>ALT −</text>
 
       {/* knob-direction hints — the actionable "which way" cue, from the native
           engine's knob labels (fallback: the error's sign). Top = altitude bolt,
           right = azimuth bolt, matching the design reference. */}
       {altHint && (
-        <text x={cx} y={cy - R + 1} fill={col} fontSize={11} fontFamily="IBM Plex Mono"
+        <text x={cx} y={cy - R + 1} fill="var(--accent)" fontSize={11} fontFamily="IBM Plex Mono"
           fontWeight={600} textAnchor="middle" style={labelHalo}>
           {altHint.arrow} ALT {altHint.text}
         </text>
       )}
       {azHint && (
-        <text x={cx + R - 2} y={cy + 13} fill={col} fontSize={11} fontFamily="IBM Plex Mono"
+        <text x={cx + R - 2} y={cy + 13} fill="var(--accent)" fontSize={11} fontFamily="IBM Plex Mono"
           fontWeight={600} textAnchor="end" style={labelHalo}>
           {azHint.arrow} AZ {azHint.text}
         </text>
@@ -250,10 +246,10 @@ export function PolarReticle({
       {/* skew vector + error dot (converges toward center as the user adjusts) */}
       {active && total > 0.02 && (
         <>
-          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke={col} strokeWidth={2} markerEnd="url(#pa-arrow)" />
-          <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke={col} strokeWidth={2}
+          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke="var(--accent)" strokeWidth={2} markerEnd="url(#pa-arrow)" />
+          <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke="var(--accent)" strokeWidth={2}
             style={{ transition: dotTrans }} />
-          <circle cx={dx} cy={dy} r={2.5} fill={col} style={{ transition: dotTrans }} />
+          <circle cx={dx} cy={dy} r={2.5} fill="var(--accent)" style={{ transition: dotTrans }} />
         </>
       )}
 

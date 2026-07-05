@@ -56,26 +56,23 @@ export interface FocusFit {
 // A measured point may carry an optional per-point σ (HFR MAD) for the whisker.
 type WhiskerPoint = FocusPoint & { sigma?: number };
 
-export const VCurve = memo(function VCurve({ points, best, fit = null }: {
+export const VCurve = memo(function VCurve({ points, best, fit = null, running = false }: {
   points: WhiskerPoint[];
   best: { position: number; hfr: number | null } | null;
   fit?: FocusFit | null;
+  running?: boolean;
 }) {
   const w = 520, h = 300;
   const padL = 52, padR = 22, padT = 30, padB = 40;
   const plotW = w - padL - padR, plotH = h - padT - padB;
 
   const curve = fit?.curve && fit.curve.length > 1 ? fit.curve : null;
+  const hasData = points.length > 0 || !!curve;
 
-  if (points.length === 0 && !curve) {
-    return (
-      <div className="h-[220px] flex items-center justify-center text-dim text-xs tracking-widest uppercase">
-        no focus data — run autofocus
-      </div>
-    );
-  }
-
-  // Domain spans points + fitted curve + whisker extents so nothing clips.
+  // Domain spans points + fitted curve + whisker extents so nothing clips. With
+  // no data yet (idle, or a run before its first point lands) we keep the axes
+  // frame over a default HFR range rather than unmounting to a text fallback —
+  // so measured points pop into a STABLE grid during the sweep (F6).
   const xsAll = [
     ...points.map((p) => p.position),
     ...(curve ? curve.map((c) => c[0]) : []),
@@ -86,8 +83,8 @@ export const VCurve = memo(function VCurve({ points, best, fit = null }: {
     const s = p.sigma ?? 0;
     if (s > 0) { ysAll.push(p.hfr + s); ysAll.push(p.hfr - s); }
   }
-  const x0 = Math.min(...xsAll), x1 = Math.max(...xsAll);
-  const yMin = Math.min(...ysAll), yMax = Math.max(...ysAll);
+  const x0 = hasData ? Math.min(...xsAll) : 0, x1 = hasData ? Math.max(...xsAll) : 1;
+  const yMin = hasData ? Math.min(...ysAll) : 1, yMax = hasData ? Math.max(...ysAll) : 6;
   const yspan = Math.max(yMax - yMin, 0.01);
   const y0 = Math.max(0, yMin - yspan * 0.12);
   const y1 = yMax + yspan * 0.12;
@@ -144,6 +141,14 @@ export const VCurve = memo(function VCurve({ points, best, fit = null }: {
         );
       })}
       <text x={12} y={padT + 4} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">HFR</text>
+
+      {/* empty frame hint — the grid stays put so points land into it (F6) */}
+      {!hasData && (
+        <text x={padL + plotW / 2} y={padT + plotH / 2} textAnchor="middle"
+          fill="var(--text-faint)" fontSize={11} fontFamily="IBM Plex Mono" letterSpacing="2">
+          {running ? "MEASURING…" : "RUN AUTOFOCUS"}
+        </text>
+      )}
 
       {/* trendline cross (data hue, kept distinct from the accent fit) */}
       {cross && trendLeft && trendRight && (

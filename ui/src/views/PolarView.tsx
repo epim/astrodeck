@@ -140,7 +140,7 @@ export default function PolarView() {
           <Panel title="Total error">
             <div className="flex items-baseline gap-2 mb-1">
               <span className={`font-display font-semibold text-5xl mono tabular-nums ${
-                hasReading ? verdict.tone : "text-faint"}`}>
+                hasReading ? "text-accent" : "text-faint"}`}>
                 {hasReading ? total.toFixed(1) : "—"}
               </span>
               <span className="text-dim text-sm">arcmin</span>
