@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en" class="expert">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AstroDeck — Obsidian &amp; Nebula (revamp mockup)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ============================================================================
+   STRUCTURE + BASELINE THEME.  Claude owns the HTML structure + JS below.
+   ============================================================================
+   ===== VISUAL LAYER — Antigravity owns everything inside this <style> =====
+   Iterate the :root tokens and the component styles freely; the structure and
+   JS hooks (class names / data-* / ids) are the contract, the looks are yours.
+   ========================================================================== */
+:root{
+  --void:#06070B; --carbon:#12141C; --carbon-2:#171a24;
+  --glass:rgba(20,24,34,.55); --glass-2:rgba(28,33,46,.6);
+  --glass-line:rgba(120,140,200,.14); --glass-line-2:rgba(140,160,220,.28);
+  --nebula-blue:#4d7cff; --nebula-purple:#9a5cff;
+  --nebula:linear-gradient(120deg,var(--nebula-blue),var(--nebula-purple));
+  --ink:#e8ecf7; --ink-2:#9aa6c2; --ink-3:#5a6684;
+  --ok:#3ddc97; --notice:#ffb454; --alert:#ff5470;
+  --glow:0 0 18px rgba(90,120,255,.35);
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',ui-sans-serif,system-ui,sans-serif;
+}
+html.night{ --nebula-blue:#ff5a3c; --nebula-purple:#ff3b2f;
+  --ink:#ff6b52; --ink-2:#b83c25; --ink-3:#7d2814; --ok:#ff8a3c; --glow:0 0 18px rgba(255,80,50,.3);
+  --void:#050100; --carbon:#120400; --glass:rgba(30,8,0,.6); --glass-line:rgba(255,90,60,.18);}
+
+*{box-sizing:border-box}
+body{margin:0;font-family:var(--sans);color:var(--ink);background:var(--void);
+  background-image:radial-gradient(120% 80% at 50% -10%,#0d1020 0%,var(--void) 55%);min-height:100vh}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.label{font-size:.64rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3)}
+.nebula-text{background:var(--nebula);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* smoked-glass panel — the core material */
+.glass{background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--glass-line);border-radius:16px}
+.glass-hd{display:flex;align-items:center;gap:8px;padding:11px 15px;border-bottom:1px solid var(--glass-line)}
+.glass-bd{padding:15px}
+.stale{filter:saturate(.35) brightness(.85);opacity:.75} /* liveness: stale panels lose their glow */
+
+/* LED — shape + LETTER, never colour alone */
+.led{width:17px;height:17px;border-radius:50%;display:grid;place-items:center;font:600 .58rem/1 var(--mono);color:#05060a;flex:none}
+.led.ok{background:var(--ok);box-shadow:0 0 9px var(--ok)}
+.led.warn{background:var(--notice)}
+.led.off{background:transparent;border:1.5px solid var(--ink-3);color:var(--ink-3)}
+.led.bad{background:var(--alert);box-shadow:0 0 9px var(--alert)}
+
+/* provider badge — the native-parity signal */
+.prov{display:inline-flex;align-items:center;gap:6px;font:500 .62rem/1 var(--mono);letter-spacing:.02em;
+  padding:4px 9px;border-radius:99px;border:1px solid transparent}
+.prov.native{border-color:var(--nebula-purple);color:#c9b6ff;background:linear-gradient(120deg,rgba(77,124,255,.14),rgba(154,92,255,.16))}
+.prov.ext{border-color:var(--glass-line-2);color:var(--ink-2)}
+.prov .d{width:5px;height:5px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+
+/* segmented control (mode + task switchers) */
+.seg{display:inline-flex;background:var(--carbon);border:1px solid var(--glass-line);border-radius:99px;padding:3px}
+.seg button{font:500 .72rem var(--sans);color:var(--ink-2);padding:6px 14px;border-radius:99px;border:0;background:transparent;cursor:pointer;transition:.15s}
+.seg button[aria-selected=true]{color:#fff;background:var(--nebula);box-shadow:var(--glow)}
+.task-seg button{font-size:.68rem;padding:5px 12px}
+
+/* stat readout */
+.stat .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:1.15rem;line-height:1.15}
+.stat .v small{font-size:.62rem;color:var(--ink-3);margin-left:2px}
+
+/* fiber-optic sparkline — a nebula-gradient stroke with a travelling highlight */
+.fiber path.line{fill:none;stroke:url(#fiber-grad);stroke-width:2}
+.fiber path.flow{fill:none;stroke:#dbe3ff;stroke-width:2.4;stroke-linecap:round;
+  stroke-dasharray:26 400;filter:drop-shadow(0 0 4px var(--nebula-blue));animation:flow 2.6s linear infinite}
+@keyframes flow{to{stroke-dashoffset:-426}}
+.fiber .node{fill:#fff;filter:drop-shadow(0 0 5px var(--nebula-purple))}
+
+/* health ribbon / tier-2 banner */
+.ribbon{min-height:0;transition:min-height .2s}
+.tier2{display:none;align-items:center;gap:12px;padding:11px 16px;border-radius:14px;
+  border:1px solid var(--alert);background:linear-gradient(90deg,rgba(255,84,112,.16),rgba(255,84,112,.05));
+  box-shadow:0 0 22px rgba(255,84,112,.25);animation:breathe 2.4s ease-in-out infinite}
+.tier2.show{display:flex}
+@keyframes breathe{0%,100%{box-shadow:0 0 14px rgba(255,84,112,.18)}50%{box-shadow:0 0 28px rgba(255,84,112,.4)}}
+.chip{display:inline-flex;align-items:center;gap:7px;font-size:.72rem;padding:6px 11px;border-radius:99px;
+  border:1px solid color-mix(in srgb,var(--notice) 55%,transparent);color:var(--notice);background:rgba(255,180,84,.08)}
+
+.btn{font:500 .78rem var(--sans);border-radius:10px;padding:9px 15px;border:1px solid var(--glass-line-2);background:var(--glass-2);color:var(--ink);cursor:pointer}
+.btn.primary{background:var(--nebula);border-color:transparent;color:#fff;font-weight:600;box-shadow:var(--glow)}
+.btn.danger{color:var(--alert);border-color:color-mix(in srgb,var(--alert) 50%,transparent);background:transparent}
+.iconbtn{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;border:1px solid var(--glass-line);background:var(--glass);color:var(--ink-2);cursor:pointer}
+
+/* starfield for the live-view center state */
+.starfield{position:absolute;inset:0;border-radius:14px;overflow:hidden;background:
+  radial-gradient(1px 1px at 20% 30%,#fff,transparent),radial-gradient(1px 1px at 70% 60%,#cdd6ff,transparent),
+  radial-gradient(1.5px 1.5px at 40% 80%,#fff,transparent),radial-gradient(1px 1px at 85% 25%,#aebfff,transparent),
+  radial-gradient(1px 1px at 55% 45%,#fff,transparent),radial-gradient(2px 2px at 30% 65%,#e8ecff,transparent),
+  radial-gradient(1px 1px at 90% 75%,#fff,transparent),radial-gradient(1.5px 1.5px at 12% 55%,#c3d0ff,transparent),
+  radial-gradient(140% 90% at 62% 40%,rgba(90,60,180,.25),transparent 60%),var(--void)}
+
+@media (prefers-reduced-motion:reduce){.fiber path.flow,.tier2{animation:none}}
+/* ===== end VISUAL LAYER ===== */
+
+/* structural grid — Claude owns; Antigravity: tweak gap/spacing but keep the zones */
+.deck{display:grid;grid-template-columns:1fr 300px;grid-template-rows:auto 1fr auto;gap:14px;
+  max-width:1320px;margin:0 auto;padding:14px;min-height:calc(100vh - 62px)}
+.z-ribbon{grid-column:1/-1}
+.z-center{grid-column:1;grid-row:2}
+.z-dock{grid-column:2;grid-row:2/4}
+.z-drawer{grid-column:1;grid-row:3}
+@media (max-width:900px){.deck{grid-template-columns:1fr}.z-dock{grid-column:1;grid-row:auto}.z-center,.z-drawer{grid-column:1}}
+</style>
+</head>
+<body>
+
+<!-- ============================ TOP BAR ============================ -->
+<header class="flex items-center gap-4 px-5 h-[62px] border-b" style="border-color:var(--glass-line);backdrop-filter:blur(10px)">
+  <div class="flex items-center gap-2">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="url(#lg)" stroke-width="1.6"/><circle cx="12" cy="12" r="2.4" fill="url(#lg)"/><defs><linearGradient id="lg" x1="0" x2="1"><stop stop-color="#4d7cff"/><stop offset="1" stop-color="#9a5cff"/></linearGradient></defs></svg>
+    <span class="font-semibold tracking-wide">Astro<span class="nebula-text">Deck</span></span>
+  </div>
+  <span class="label hidden md:inline">Obsidian &amp; Nebula · revamp mockup</span>
+  <div class="flex-1"></div>
+  <div class="seg" role="tablist" aria-label="mode">
+    <button role="tab" aria-selected="false" onclick="setMode('guided')">Guided Night</button>
+    <button role="tab" aria-selected="true" onclick="setMode('expert')">Expert Console</button>
+  </div>
+  <button class="iconbtn" title="Trigger a Tier-2 alert (demo)" onclick="toggleAlert()">!</button>
+  <button class="iconbtn" title="Night mode" onclick="document.documentElement.classList.toggle('night')">☾</button>
+  <span class="mono text-sm" id="clock" style="color:var(--ink-2)">23:41:07</span>
+</header>
+
+<div class="deck">
+
+  <!-- ===================== HEALTH RIBBON (attention spine) ===================== -->
+  <div class="z-ribbon ribbon">
+    <div class="tier2" id="tier2">
+      <span class="led bad">!</span>
+      <div class="flex-1">
+        <div class="font-semibold" style="color:var(--alert)">Unsafe — clouds detected · sequence paused</div>
+        <div class="text-xs" style="color:var(--ink-2)">Tracking &amp; guiding stopped. Will resume after 3 clear reads, or abort in 118 min.</div>
+      </div>
+      <button class="btn danger" onclick="toggleAlert()">Dismiss (demo)</button>
+    </div>
+  </div>
+
+  <!-- ===================== CENTER STAGE (task-adaptive) ===================== -->
+  <section class="z-center glass" style="display:flex;flex-direction:column;position:relative;min-height:420px">
+    <div class="glass-hd">
+      <span class="label" id="center-title">Live View · M31</span>
+      <div class="flex-1"></div>
+      <div class="seg task-seg" role="tablist" aria-label="task">
+        <button role="tab" aria-selected="true" onclick="setTask('live')">Frame</button>
+        <button role="tab" aria-selected="false" onclick="setTask('focus')">Focus</button>
+        <button role="tab" aria-selected="false" onclick="setTask('align')">Align</button>
+      </div>
+    </div>
+    <div class="glass-bd" style="flex:1;position:relative">
+
+      <!-- task: live view -->
+      <div data-task="live" class="task-panel" style="position:absolute;inset:14px">
+        <div class="starfield"></div>
+        <div style="position:absolute;left:14px;bottom:12px;display:flex;gap:16px" class="mono text-xs">
+          <span style="color:var(--ink-2)">RA <b style="color:#fff">00 42 44</b></span>
+          <span style="color:var(--ink-2)">Dec <b style="color:#fff">+41 16 09</b></span>
+          <span style="color:var(--ink-2)">HFR <b class="nebula-text">1.82″</b></span>
+          <span style="color:var(--ink-2)">300s Ha · frame <b style="color:#fff">14/40</b></span>
+        </div>
+      </div>
+
+      <!-- task: autofocus V-curve -->
+      <div data-task="focus" class="task-panel" style="position:absolute;inset:0;display:none;padding:6px 14px">
+        <svg viewBox="0 0 520 300" style="width:100%;height:100%"><defs>
+          <linearGradient id="fiber-grad" x1="0" x2="1"><stop stop-color="#4d7cff"/><stop offset="1" stop-color="#9a5cff"/></linearGradient></defs>
+          <g id="vcurve"></g>
+        </svg>
+        <div style="position:absolute;right:22px;top:14px" class="prov native"><span class="d"></span>AF · AstroDeck native</div>
+      </div>
+
+      <!-- task: TPPA reticle -->
+      <div data-task="align" class="task-panel" style="position:absolute;inset:0;display:none;place-items:center;">
+        <svg viewBox="0 0 300 300" style="width:min(100%,340px)"><g id="reticle"></g></svg>
+        <div style="position:absolute;right:22px;top:14px" class="prov native"><span class="d"></span>TPPA · native</div>
+        <div style="position:absolute;left:22px;bottom:16px">
+          <div class="mono" style="font-size:2.1rem;line-height:1"><span id="tppa-total" class="nebula-text">0.9</span><small style="font-size:.8rem;color:var(--ink-3)"> arcmin</small></div>
+          <div class="text-xs mt-1" style="color:var(--ok)">Excellent — stop here</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== RIGHT DOCK (the rig) ===================== -->
+  <aside class="z-dock flex flex-col gap-3">
+    <div class="glass">
+      <div class="glass-hd"><span class="label">The Rig</span><div class="flex-1"></div><span class="mono text-xs" style="color:var(--ok)">6/7 online</span></div>
+      <div class="glass-bd" style="display:flex;flex-direction:column;gap:11px">
+        <div class="dev"><span class="led ok">C</span><span>Camera</span><span class="devn mono">ASI2600</span></div>
+        <div class="dev"><span class="led ok">M</span><span>Mount</span><span class="devn mono">AM5 · tracking</span></div>
+        <div class="dev"><span class="led ok">F</span><span>Focuser</span><span class="devn mono">EAF · 19800</span></div>
+        <div class="dev"><span class="led ok">W</span><span>Filter</span><span class="devn mono">Ha</span></div>
+        <div class="dev"><span class="led ok">G</span><span>Guider</span><span class="devn mono">PHD2</span></div>
+        <div class="dev"><span class="led warn">P</span><span>Power</span><span class="devn mono">dew 60%</span></div>
+        <div class="dev"><span class="led off">S</span><span>Safety</span><span class="devn mono">none</span></div>
+      </div>
+    </div>
+    <div class="glass">
+      <div class="glass-hd"><span class="label">Capabilities</span></div>
+      <div class="glass-bd" style="display:flex;flex-wrap:wrap;gap:8px">
+        <span class="prov native"><span class="d"></span>AF · native</span>
+        <span class="prov native"><span class="d"></span>TPPA · native</span>
+        <span class="prov ext"><span class="d"></span>Guide · PHD2</span>
+      </div>
+    </div>
+    <div class="glass" style="flex:1">
+      <div class="glass-hd"><span class="label">Cooler</span><div class="flex-1"></div><span class="chip" style="color:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,transparent);background:rgba(61,220,151,.08)">at target</span></div>
+      <div class="glass-bd">
+        <div class="stat"><div class="label">sensor</div><div class="v" id="cooler">−10.0<small>°C</small></div></div>
+        <div class="mt-3"><div class="label">power</div>
+          <div style="height:7px;border-radius:4px;background:var(--carbon);overflow:hidden;margin-top:5px"><div style="height:100%;width:62%;background:var(--nebula)"></div></div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===================== BOTTOM DRAWER (telemetry · fiber-optic) ===================== -->
+  <section class="z-drawer glass">
+    <div class="glass-hd"><span class="label">Telemetry</span><div class="flex-1"></div>
+      <span class="mono text-xs" style="color:var(--ink-3)">live · 2s</span></div>
+    <div class="glass-bd grid gap-4" style="grid-template-columns:repeat(4,1fr)">
+      <div class="tele"><div class="label">Guiding RMS</div><div class="stat"><span class="v" id="rms">0.61<small>″</small></div></div><svg class="fiber" id="fib-rms" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
+      <div class="tele"><div class="label">HFR trend</div><div class="stat"><span class="v" id="hfr">1.82<small>″</small></div></div><svg class="fiber" id="fib-hfr" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
+      <div class="tele"><div class="label">Sensor °C</div><div class="stat"><span class="v" id="temp">−10.0<small>°</small></div></div><svg class="fiber" id="fib-temp" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
+      <div class="tele"><div class="label">Meridian flip</div><div class="stat"><span class="v mono" id="mrd">0:38</span></div>
+        <div class="chip mt-2">armed · pier east</div></div>
+    </div>
+  </section>
+</div>
+
+<style>
+.dev{display:flex;align-items:center;gap:10px;font-size:.86rem}
+.dev .devn{margin-left:auto;font-size:.72rem;color:var(--ink-3)}
+.tele{display:flex;flex-direction:column;gap:2px}
+html.guided .task-seg,html.guided .z-drawer{opacity:.5}
+</style>
+
+<script>
+/* ============================================================================
+   STRUCTURE + BEHAVIOUR — Claude owns.  Simulated live data so the mockup feels
+   alive; in the real app these read the Zustand store / WS topics (see proposal).
+   ============================================================================ */
+
+// ---- task-adaptive Center Stage ----
+const TITLES={live:'Live View · M31',focus:'Autofocus · V-curve',align:'Polar Alignment · TPPA'};
+function setTask(t){
+  document.querySelectorAll('.task-panel').forEach(p=>p.style.display=(p.dataset.task===t)?( t==='align'?'grid':'block'):'none');
+  document.querySelectorAll('.task-seg button').forEach(b=>b.setAttribute('aria-selected', b.textContent.toLowerCase().startsWith(t.slice(0,3))?'true':'false'));
+  document.getElementById('center-title').textContent=TITLES[t];
+  if(t==='focus')drawVCurve(); if(t==='align')drawReticle();
+}
+function setMode(m){document.documentElement.className=(document.documentElement.classList.contains('night')?'night ':'')+m;
+  document.querySelectorAll('header .seg button').forEach(b=>b.setAttribute('aria-selected', b.textContent.toLowerCase().includes(m)?'true':'false'));}
+function toggleAlert(){document.getElementById('tier2').classList.toggle('show');}
+
+// ---- fiber-optic sparkline (nebula stroke + travelling highlight + live node) ----
+function sparkPath(vals){
+  const w=200,h=44,mn=Math.min(...vals),mx=Math.max(...vals),sp=(mx-mn)||1;
+  return vals.map((v,i)=>`${i?'L':'M'}${(i/(vals.length-1)*w).toFixed(1)},${(h-6-((v-mn)/sp)*(h-12)).toFixed(1)}`).join(' ');
+}
+function renderFiber(id,vals){
+  const d=sparkPath(vals),svg=document.getElementById(id),last=vals.length-1;
+  const w=200,h=44,mn=Math.min(...vals),mx=Math.max(...vals),sp=(mx-mn)||1;
+  const cx=w, cy=h-6-((vals[last]-mn)/sp)*(h-12);
+  svg.innerHTML=`<defs><linearGradient id="fiber-grad"><stop stop-color="#4d7cff"/><stop offset="1" stop-color="#9a5cff"/></linearGradient></defs>
+    <path class="line" d="${d}"/><path class="flow" d="${d}"/><circle class="node" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="2.6"/>`;
+}
+
+// ---- autofocus V-curve (fibre draws itself; glowing nodes; pulsing minimum) ----
+function drawVCurve(){
+  const pts=[[60,67],[114,126],[168,177],[221,214],[275,231],[329,212],[382,171],[436,117],[490,58]];
+  const g=document.getElementById('vcurve');
+  const path=`M60,63 C160,150 224,231 275,231 C330,231 402,150 490,58`;
+  g.innerHTML=`
+    <g stroke="rgba(120,140,200,.16)"><line x1="50" y1="258" x2="500" y2="258"/><line x1="50" y1="40" x2="50" y2="258"/>
+      <line x1="50" y1="150" x2="500" y2="150" stroke-dasharray="2 5"/></g>
+    <path d="${path}" fill="none" stroke="url(#fiber-grad)" stroke-width="2.6" stroke-dasharray="900" stroke-dashoffset="900">
+      <animate attributeName="stroke-dashoffset" to="0" dur="1.3s" fill="freeze"/></path>
+    ${pts.map(p=>`<circle cx="${p[0]}" cy="${p[1]}" r="3.4" fill="#dbe3ff" style="filter:drop-shadow(0 0 4px #9a5cff)"/>`).join('')}
+    <circle cx="275" cy="231" r="6" fill="#fff" style="filter:drop-shadow(0 0 8px #4d7cff)">
+      <animate attributeName="r" values="6;8;6" dur="2.2s" repeatCount="indefinite"/></circle>
+    <text x="275" y="26" text-anchor="middle" class="mono" fill="#c9b6ff" font-size="12">BEST 19,800 · HFR 1.36″</text>`;
+}
+
+// ---- TPPA reticle (error vector converges toward centre) ----
+function drawReticle(){
+  const g=document.getElementById('reticle'),cx=150,cy=150;
+  g.innerHTML=`
+    <circle cx="${cx}" cy="${cy}" r="118" fill="none" stroke="rgba(120,140,200,.14)"/>
+    <circle cx="${cx}" cy="${cy}" r="72" fill="none" stroke="rgba(120,140,200,.22)" stroke-dasharray="2 5"/>
+    <circle cx="${cx}" cy="${cy}" r="30" fill="none" stroke="url(#fiber-grad)" stroke-opacity=".7"/>
+    <line x1="${cx-118}" y1="${cy}" x2="${cx+118}" y2="${cy}" stroke="rgba(120,140,200,.12)"/>
+    <line x1="${cx}" y1="${cy-118}" x2="${cx}" y2="${cy+118}" stroke="rgba(120,140,200,.12)"/>
+    <line x1="${cx}" y1="${cy}" x2="${cx+62}" y2="${cy-48}" stroke="url(#fiber-grad)" stroke-width="2.4">
+      <animate attributeName="x2" values="${cx+62};${cx+11}" dur="2.4s" fill="freeze"/>
+      <animate attributeName="y2" values="${cy-48};${cy-7}" dur="2.4s" fill="freeze"/></line>
+    <circle r="6" fill="#fff" style="filter:drop-shadow(0 0 8px #9a5cff)">
+      <animate attributeName="cx" values="${cx+62};${cx+11}" dur="2.4s" fill="freeze"/>
+      <animate attributeName="cy" values="${cy-48};${cy-7}" dur="2.4s" fill="freeze"/></circle>
+    <circle cx="${cx}" cy="${cy}" r="2.5" fill="var(--ink-2)"/>`;
+}
+
+// ---- simulated live data ----
+let rms=[0.6,0.55,0.62,0.58,0.64,0.57,0.61],hfr=[1.9,1.86,1.83,1.85,1.82,1.84,1.82],temp=[-9.7,-9.9,-10,-10,-10,-10,-10];
+function tick(){
+  rms.push(+(0.5+Math.random()*0.25).toFixed(2));rms.shift();
+  hfr.push(+(1.78+Math.random()*0.12).toFixed(2));hfr.shift();
+  temp.push(+(-10+ (Math.random()*.2-.1)).toFixed(1));temp.shift();
+  renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-temp',temp);
+  document.getElementById('rms').childNodes[0].nodeValue=rms[rms.length-1].toFixed(2);
+  document.getElementById('hfr').childNodes[0].nodeValue=hfr[hfr.length-1].toFixed(2);
+  document.getElementById('temp').childNodes[0].nodeValue=temp[temp.length-1].toFixed(1);
+}
+function clock(){const d=new Date();document.getElementById('clock').textContent=d.toTimeString().slice(0,8);}
+renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-temp',temp);
+setInterval(tick,2000);setInterval(clock,1000);clock();
+</script>
+</body>
+</html>
