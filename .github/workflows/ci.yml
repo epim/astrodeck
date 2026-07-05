@@ -46,3 +46,38 @@ jobs:
           node-version: '20'
       - run: npm ci
       - run: npm run build
+
+  # The Rust native engine (star detection / autofocus / TPPA) + its PyO3 wheel.
+  # Without this, a Rust regression sails through and the native-provider tests
+  # skip on CI (no wheel). This job gates the workspace AND builds the wheel so
+  # the three native test files actually run against the real engine.
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: cargo fmt
+        working-directory: native
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        working-directory: native
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        working-directory: native
+        run: |
+          cargo test --workspace
+          cargo test -p astro-star --features parallel
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the astrodeck_native wheel (maturin)
+        run: |
+          pip install "maturin>=1.5,<2.0"
+          maturin build --release -m native/crates/astrodeck-native/Cargo.toml -o wheels
+      - name: Install wheel + server, run native-engine tests (else skipped on CI)
+        run: |
+          pip install -e "./server[dev]"
+          pip install --no-index --find-links wheels astrodeck-native
+          cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py -q
