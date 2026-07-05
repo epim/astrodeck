@@ -6,6 +6,7 @@ name: deploy-relay
 # secret (GitHub Actions secrets are write-only: rotate, don't read).
 
 on:
+  workflow_dispatch: {}   # manual deploy (e.g. after rotating FLY_API_TOKEN)
   push:
     branches: [main]
     paths:
