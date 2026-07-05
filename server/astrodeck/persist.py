@@ -38,6 +38,36 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
+    """Resolve ``base/<ident><suffix>`` for a client-controllable ``ident``,
+    raising ``KeyError`` for anything that is not a single contained filename
+    component on *any* platform (callers/routes map ``KeyError`` → 404).
+
+    The rejection is platform-UNIFORM and does NOT depend on ``os.sep``: an id
+    holding a separator of *either* OS (``/`` or ``\\``), a NUL, a Windows drive
+    prefix (``X:``), or a ``.``/``..`` ref is refused BEFORE touching the
+    filesystem. This matters because a bare ``Path.resolve()`` + parent check
+    only catches the *running* OS's separators — so on Linux ``"..\\victim"`` and
+    ``"C:\\Windows\\..."`` are treated as literal filenames and silently created
+    inside ``base`` (no escape, but not the refusal the security contract and its
+    tests require), while on Windows they escape. Checking both separator sets up
+    front makes a Windows-authored store and a Linux host agree, and keeps the
+    guard's behavior independent of where the server runs. The ``resolve()`` +
+    parent check remains as a belt-and-suspenders backstop (symlinks / odd
+    normalization) once the string-level vectors are excluded."""
+    if (not ident
+            or ident in (".", "..")
+            or "/" in ident
+            or "\\" in ident
+            or "\x00" in ident
+            or (len(ident) >= 2 and ident[1] == ":")):   # X: — Windows drive
+        raise KeyError(ident)
+    resolved = (base / f"{ident}{suffix}").resolve()
+    if resolved.parent != base.resolve():
+        raise KeyError(ident)
+    return resolved
+
+
 def _replace_with_retry(src: Path, dst: Path) -> None:
     """``os.replace(src, dst)`` with a short retry on Windows PermissionError.
 
