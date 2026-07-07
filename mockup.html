@@ -17,19 +17,19 @@
    ========================================================================== */
 :root{
   --void:#06070B; --carbon:#12141C; --carbon-2:#171a24;
-  --glass:rgba(20,24,34,.55); --glass-2:rgba(28,33,46,.6);
-  --glass-line:rgba(120,140,200,.14); --glass-line-2:rgba(140,160,220,.28);
-  --nebula-blue:#4d7cff; --nebula-purple:#9a5cff;
+  --glass:rgba(20,24,34,0.45); --glass-2:rgba(28,33,46,0.5);
+  --glass-line:rgba(120,140,200,0.18); --glass-line-2:rgba(140,160,220,0.35);
+  --nebula-blue:#00D2FF; --nebula-purple:#9B51E0;
   --nebula:linear-gradient(120deg,var(--nebula-blue),var(--nebula-purple));
   --ink:#e8ecf7; --ink-2:#9aa6c2; --ink-3:#5a6684;
   --ok:#3ddc97; --notice:#ffb454; --alert:#ff5470;
-  --glow:0 0 18px rgba(90,120,255,.35);
+  --glow:0 0 22px rgba(0,210,255,0.45);
   --mono:'IBM Plex Mono',ui-monospace,monospace;
   --sans:'IBM Plex Sans',ui-sans-serif,system-ui,sans-serif;
 }
-html.night{ --nebula-blue:#ff5a3c; --nebula-purple:#ff3b2f;
-  --ink:#ff6b52; --ink-2:#b83c25; --ink-3:#7d2814; --ok:#ff8a3c; --glow:0 0 18px rgba(255,80,50,.3);
-  --void:#050100; --carbon:#120400; --glass:rgba(30,8,0,.6); --glass-line:rgba(255,90,60,.18);}
+html.night{ --nebula-blue:#ff3a3a; --nebula-purple:#ff0000;
+  --ink:#ff5555; --ink-2:#b33333; --ink-3:#771111; --ok:#ff6633; --glow:0 0 22px rgba(255,50,50,0.4);
+  --void:#000000; --carbon:#080202; --glass:rgba(20,5,5,0.5); --glass-line:rgba(255,50,50,0.25);}
 
 *{box-sizing:border-box}
 body{margin:0;font-family:var(--sans);color:var(--ink);background:var(--void);
@@ -40,7 +40,7 @@ body{margin:0;font-family:var(--sans);color:var(--ink);background:var(--void);
 
 /* smoked-glass panel — the core material */
 .glass{background:var(--glass);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
-  border:1px solid var(--glass-line);border-radius:16px}
+  border:1px solid var(--glass-line);border-radius:16px;box-shadow:inset 0 1px 1px rgba(255,255,255,0.05), inset 0 -1px 2px rgba(0,0,0,0.5)}
 .glass-hd{display:flex;align-items:center;gap:8px;padding:11px 15px;border-bottom:1px solid var(--glass-line)}
 .glass-bd{padding:15px}
 .stale{filter:saturate(.35) brightness(.85);opacity:.75} /* liveness: stale panels lose their glow */
@@ -229,7 +229,7 @@ body{margin:0;font-family:var(--sans);color:var(--ink);background:var(--void);
     <div class="glass-bd grid gap-4" style="grid-template-columns:repeat(4,1fr)">
       <div class="tele"><div class="label">Guiding RMS</div><div class="stat"><span class="v" id="rms">0.61<small>″</small></div></div><svg class="fiber" id="fib-rms" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
       <div class="tele"><div class="label">HFR trend</div><div class="stat"><span class="v" id="hfr">1.82<small>″</small></div></div><svg class="fiber" id="fib-hfr" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
-      <div class="tele"><div class="label">Sensor °C</div><div class="stat"><span class="v" id="temp">−10.0<small>°</small></div></div><svg class="fiber" id="fib-temp" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
+      <div class="tele"><div class="label">Star Count</div><div class="stat"><span class="v" id="stars">142</span></div><svg class="fiber" id="fib-stars" viewBox="0 0 200 44" preserveAspectRatio="none" style="width:100%;height:40px"></svg></div>
       <div class="tele"><div class="label">Meridian flip</div><div class="stat"><span class="v mono" id="mrd">0:38</span></div>
         <div class="chip mt-2">armed · pier east</div></div>
     </div>
@@ -309,18 +309,18 @@ function drawReticle(){
 }
 
 // ---- simulated live data ----
-let rms=[0.6,0.55,0.62,0.58,0.64,0.57,0.61],hfr=[1.9,1.86,1.83,1.85,1.82,1.84,1.82],temp=[-9.7,-9.9,-10,-10,-10,-10,-10];
+let rms=[0.6,0.55,0.62,0.58,0.64,0.57,0.61],hfr=[1.9,1.86,1.83,1.85,1.82,1.84,1.82],stars=[145,142,140,146,143,141,142];
 function tick(){
   rms.push(+(0.5+Math.random()*0.25).toFixed(2));rms.shift();
   hfr.push(+(1.78+Math.random()*0.12).toFixed(2));hfr.shift();
-  temp.push(+(-10+ (Math.random()*.2-.1)).toFixed(1));temp.shift();
-  renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-temp',temp);
+  stars.push(Math.round(140 + Math.random()*8));stars.shift();
+  renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-stars',stars);
   document.getElementById('rms').childNodes[0].nodeValue=rms[rms.length-1].toFixed(2);
   document.getElementById('hfr').childNodes[0].nodeValue=hfr[hfr.length-1].toFixed(2);
-  document.getElementById('temp').childNodes[0].nodeValue=temp[temp.length-1].toFixed(1);
+  document.getElementById('stars').childNodes[0].nodeValue=stars[stars.length-1];
 }
 function clock(){const d=new Date();document.getElementById('clock').textContent=d.toTimeString().slice(0,8);}
-renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-temp',temp);
+renderFiber('fib-rms',rms);renderFiber('fib-hfr',hfr);renderFiber('fib-stars',stars);
 setInterval(tick,2000);setInterval(clock,1000);clock();
 </script>
 </body>
