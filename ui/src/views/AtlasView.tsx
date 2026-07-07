@@ -88,17 +88,19 @@ function fmtAngle(deg: number): string {
 // nav before picking an object). Free-roam opens centered on the mount/0,0.
 function AtlasEmpty({ onFreeRoam }: { onFreeRoam: () => void }): JSX.Element {
   return (
-    <div className="grid place-items-center min-h-[60vh]">
-      <EmptyState
-        icon="atlas"
-        title="Frame a target"
-        hint="Pick an object from the Mount catalog's Frame button, or free-roam the sky from here. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
-        action={
-          <button type="button" className="btn btn-accent btn-touch" onClick={onFreeRoam}>
-            Free-roam the sky
-          </button>
-        }
-      />
+    <div className="grid place-items-center min-h-[60vh] p-4">
+      <div className="panel p-8 max-w-md text-center">
+        <EmptyState
+          icon="atlas"
+          title="Frame a target"
+          hint="Pick an object from the Mount catalog's Frame button, or free-roam the sky from here. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
+          action={
+            <button type="button" className="btn btn-accent btn-touch mt-2" onClick={onFreeRoam}>
+              Free-roam the sky
+            </button>
+          }
+        />
+      </div>
     </div>
   );
 }

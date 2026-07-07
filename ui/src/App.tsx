@@ -328,7 +328,7 @@ export default function App() {
               hard-disables (no aria-disabled / no-op onClick); instead a small lock
               icon REPLACES the connected-Led slot as a passive "needs connection"
               hint. This matches BottomNav/NavMoreSheet, which never hard-disabled. */}
-          <nav className="hidden sm:flex flex-col w-[72px] border-r border-line bg-raise/40 py-2 shrink-0 overflow-y-auto" aria-label="Primary">
+          <nav className="hidden sm:flex flex-col w-[72px] border border-line bg-panel rounded-[16px] my-4 ml-4 py-2 shrink-0 overflow-y-auto backdrop-blur-md shadow-[inset_0_1px_1px_rgba(255,255,255,0.05),inset_0_-1px_2px_rgba(0,0,0,0.5)]" aria-label="Primary">
             {NAV.map((n) => {
               const gated = !equipConnected && !!GATED[n.id];
               return (

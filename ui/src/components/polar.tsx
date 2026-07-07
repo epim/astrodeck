@@ -178,8 +178,8 @@ export function PolarReticle({
   const dotTrans = reduce ? undefined : "r 200ms ease-out";
 
   return (
-    <svg viewBox={`0 0 ${size} ${size}`} className="w-full max-w-[420px] mx-auto block instr-fit"
-      style={{ aspectRatio: "1 / 1" }}
+    <svg viewBox={`0 0 ${size} ${size}`} className="w-full mx-auto block instr-fit"
+      style={{ aspectRatio: "1 / 1", maxWidth: "338px" }}
       role="img"
       aria-label={
         active
@@ -246,8 +246,8 @@ export function PolarReticle({
       {/* skew vector + error dot (converges toward center as the user adjusts) */}
       {active && total > 0.02 && (
         <>
-          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke="var(--accent)" strokeWidth={2} markerEnd="url(#pa-arrow)" />
-          <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke="var(--accent)" strokeWidth={2}
+          <line x1={cx} y1={cy} x2={dx} y2={dy} stroke="var(--accent)" strokeWidth={2} markerEnd="url(#pa-arrow)" filter="drop-shadow(0 0 4px var(--glow))" />
+          <circle cx={dx} cy={dy} r={7} fill="var(--bg)" stroke="var(--accent)" strokeWidth={2} filter="drop-shadow(0 0 4px var(--glow))"
             style={{ transition: dotTrans }} />
           <circle cx={dx} cy={dy} r={2.5} fill="var(--accent)" style={{ transition: dotTrans }} />
         </>

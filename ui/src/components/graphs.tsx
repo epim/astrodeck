@@ -161,7 +161,7 @@ export const VCurve = memo(function VCurve({ points, best, fit = null, running =
       {/* fitted curve — the engine's hyperbola, drawn on first appearance */}
       {curvePath && (
         <path className="af-fitline" d={curvePath} pathLength={1} fill="none"
-          stroke="url(#af-fitg)" strokeWidth={2.4} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+          stroke="url(#af-fitg)" strokeWidth={2.4} strokeLinecap="round" vectorEffect="non-scaling-stroke" filter="drop-shadow(0 0 6px var(--glow))" />
       )}
 
       {/* measured points + error whiskers (whisker only when σ is known) */}

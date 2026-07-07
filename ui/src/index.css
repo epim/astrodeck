@@ -16,48 +16,35 @@
    most-saturated rung; --good is the calm dim rung. Severity tracks salience.   */
 
 :root {
-  --bg: #06080d;
-  --bg-raise: #0b0f17;
-  --bg-panel: #0d121cdd;
-  --line: #1c2638;
-  --line-bright: #2c3b56;
+  --bg: #06070B;
+  --bg-raise: #12141C;
+  --bg-panel: rgba(12, 14, 22, 0.85);
+  --line: rgba(120, 140, 200, 0.18);
+  --line-bright: rgba(140, 160, 220, 0.35);
 
-  --text: #c8d4e8;            /* ~12:1 on --bg */
-  --text-dim: #97a6c2;        /* ~6.5:1 on --bg — AA for small text */
-  --text-faint: #5d6c85;      /* decoration ONLY — gridlines/ghost strokes, never readable text */
+  --text: #e8ecf7;
+  --text-dim: #9aa6c2;
+  --text-faint: #5a6684;
 
-  --accent: #46e0c8;          /* phosphor aqua — the design-reference accent */
-  --accent-dim: #2a7d70;      /* borders / large-text ONLY (~3.78:1, fails as small text) */
+  --accent: #00D2FF;
+  --accent-dim: #9B51E0;
 
   /* status — day values all pass AA as small text */
-  --good: #4ade80;
-  --warn: #fbbf24;
-  --bad:  #f87171;
-  --danger-ink: var(--bad);   /* destructive-button chrome; day == --bad */
+  --good: #3ddc97;
+  --warn: #ffb454;
+  --bad:  #ff5470;
+  --danger-ink: var(--bad);
 
-  --glow: #46e0c855;
+  --glow: rgba(0, 210, 255, 0.45);
 
-  /* --- native-parity additions (ProviderBadge + hero data series). ONE accent
-     stays --accent; --sky is the SEPARATE data hue (spec §0.4). --accent-fill is
-     the subtle accent-tinted SURFACE (the reference's `--accent-dim` role) kept
-     distinct from the app's border-role --accent-dim so neither overloads the
-     other; --accent-ink is readable text ON a solid --accent fill. --- */
-  --sky: #5b9dff;             /* DATA blue — telemetry series hue kept DISTINCT from --accent */
-  --accent-ink: #062b25;      /* text ON a solid --accent fill (primary buttons / solid chips) */
-  --accent-fill: #123029;     /* accent-tinted SURFACE — native ProviderBadge background */
+  --sky: #4d7cff;
+  --accent-ink: #06070B;
+  --accent-fill: rgba(0, 210, 255, 0.15);
 
   --img-filter: none;
-
-  /* live-preview / atlas surface tokens (consumed by those surfaces; defined
-     here so the canonical pass owns them). */
-  --halo: #00000099;          /* contrast halo behind preview labels/reticle */
-  /* survey-cutout image filter (red-tinted at night). Day is a COMPOSABLE no-op
-     (grayscale(0), NOT `none`) so `.survey { filter: var(--survey-filter) ... }`
-     stays valid CSS when the per-image brightness is appended. */
+  --halo: #00000099;
   --survey-filter: grayscale(0);
 
-  /* global dimmer — store sets --screen-brightness (0.08..1) + --scrim-opacity
-     at runtime (clamp-on-read in store). Floor defaults so first paint is sane. */
   --screen-brightness: 1;
   --scrim-opacity: 0;
 }
@@ -98,43 +85,32 @@
 }
 
 :root.night {
-  --bg: #0a0303;
-  --bg-raise: #140606;
-  --bg-panel: #170808dd;
-  --line: #361010;
-  --line-bright: #571a1a;
+  --bg: #000000;
+  --bg-raise: #080202;
+  --bg-panel: rgba(16, 4, 4, 0.90);
+  --line: rgba(255, 50, 50, 0.25);
+  --line-bright: rgba(255, 80, 80, 0.4);
 
-  --text: #e08a8a;            /* primary, ~6:1 on night --bg */
-  --text-dim: #cc7676;        /* re-derived to ~5.0:1 (was #a85252 = 3.92:1, FAILED) */
-  --text-faint: #6e2a2a;      /* decoration only */
+  --text: #ff5555;
+  --text-dim: #b33333;
+  --text-faint: #771111;
 
-  --accent: #ff5d5d;          /* interactive red, 5.93:1 on --bg */
-  --accent-dim: #a03535;      /* borders / large-text ONLY */
+  --accent: #ff3a3a;
+  --accent-dim: #ff0000;
 
-  /* INVERTED severity ladder — alarm is BRIGHTEST/most-saturated; good is the
-     calm dim rung. All three deep-red (hue-safe for dark adaptation), all >=4.5:1.
-     Shape + glyph + blink (LEDs / Stat) are the PRIMARY differentiator; the
-     luminance ladder is the secondary cue. */
-  --bad:  #ff8f8f;           /* brightest + high-sat — grabs the eye; the alarm. relL 0.43, ~9.3:1 */
-  --warn: #d06a5a;           /* mid rung; deep red-leaning, low green (no amber). relL 0.24, ~5.7:1 */
-  --good: #b86a6a;           /* dim, low-sat red — "fine, ignore me". relL 0.22, ~5.2:1 */
+  --bad:  #ff8f8f;
+  --warn: #ff6633;
+  --good: #ff3333;
 
-  --danger-ink: #ff8f8f;     /* button text/border: bright readable red, decoupled from status ladder */
+  --danger-ink: #ff8f8f;
 
-  --glow: #ff5d5d44;
-  --sky: #ff7a4a;             /* night: DATA series collapses to warm red-orange (dark-adapt safe) */
-  --accent-ink: #1a0500;      /* text on a solid night --accent fill */
-  --accent-fill: #2a0800;     /* accent-tinted surface — native ProviderBadge bg at night */
+  --glow: rgba(255, 50, 50, 0.4);
+  --sky: #ff5a3c;
+  --accent-ink: #1a0500;
+  --accent-fill: rgba(255, 50, 50, 0.15);
   --halo: #1a000099;
-  /* atlas survey cutout — a true low-luminance red (spec §8): monochrome HiPS
-     pushed deep red so the brightest survey element on screen never destroys
-     dark adaptation. Separate from --img-filter (which preserves luminance for
-     focus judgment); the survey is decorative backdrop, not a focus target. */
+  
   --survey-filter: grayscale(1) brightness(0.55) sepia(1) hue-rotate(-25deg) saturate(1.3);
-
-  /* Night image filter — PRESERVES luminance/contrast so a defocused vs sharp
-     star still differ. No grayscale/saturate(6)/brightness(0.55). Focus judgment
-     MUST survive night mode. */
   --img-filter: sepia(0.55) saturate(1.6) hue-rotate(-12deg) brightness(0.9) contrast(1.05);
 }
 
@@ -231,30 +207,10 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
   position: relative;
   background: var(--bg-panel);
   border: 1px solid var(--line);
-  backdrop-filter: blur(6px);
-  /* CSS-BRACKETS — 4 corner marks via a single layered background-image (no
-     extra DOM; ::before/::after only give 2 corners). */
-  background-image:
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim)),
-    linear-gradient(var(--accent-dim), var(--accent-dim));
-  background-repeat: no-repeat;
-  /* horizontal arm = 10x1.5, vertical arm = 1.5x10, at each of 4 corners */
-  background-size:
-    10px 1.5px, 1.5px 10px,   /* top-left */
-    10px 1.5px, 1.5px 10px,   /* top-right */
-    10px 1.5px, 1.5px 10px,   /* bottom-left */
-    10px 1.5px, 1.5px 10px;   /* bottom-right */
-  background-position:
-    -1px -1px, -1px -1px,                 /* top-left */
-    calc(100% + 1px) -1px, calc(100% + 1px) -1px,   /* top-right */
-    -1px calc(100% + 1px), -1px calc(100% + 1px),   /* bottom-left */
-    calc(100% + 1px) calc(100% + 1px), calc(100% + 1px) calc(100% + 1px); /* bottom-right */
+  border-radius: 16px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), inset 0 -1px 2px rgba(0,0,0,0.5);
 }
 
 .panel-title {
@@ -274,6 +230,7 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
   font-size: 12px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  border-radius: 10px;
   border: 1px solid var(--line-bright);
   background: var(--bg-raise);
   color: var(--text);
@@ -281,6 +238,7 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
   cursor: pointer;
   transition: border-color 0.15s, color 0.15s, box-shadow 0.15s, background 0.15s;
   user-select: none;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
 }
 .btn:hover:not(:disabled) {
   border-color: var(--accent);
@@ -536,13 +494,10 @@ select.field { appearance: none; }
    the UI (decoration never out-shines data at floor brightness). Day starfield
    also lives here for the same reason. */
 .dim-content {
-  background-image:
-    radial-gradient(1px 1px at 12% 28%, #ffffff18 50%, transparent 50%),
-    radial-gradient(1px 1px at 78% 12%, #ffffff14 50%, transparent 50%),
-    radial-gradient(1.5px 1.5px at 42% 64%, #ffffff10 50%, transparent 50%),
-    radial-gradient(1px 1px at 91% 81%, #ffffff12 50%, transparent 50%),
-    radial-gradient(1px 1px at 23% 88%, #ffffff0e 50%, transparent 50%),
-    radial-gradient(ellipse 1200px 800px at 70% -10%, #101a2e66, transparent);
+  background-color: var(--void);
+  background-image: url('/bg_nebula.png');
+  background-size: cover;
+  background-position: center;
   background-attachment: fixed;
 }
 :root.night .dim-content {
