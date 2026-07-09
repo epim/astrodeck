@@ -18,6 +18,7 @@ Longitude sign convention — load-bearing:
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -256,6 +257,32 @@ class ProvidersConfig(BaseModel):
     polar_align: ProviderKind = "auto"
 
 
+# ------------------------------------------------------- backend drivers (2026-07-08)
+#
+# GLOBAL configured drivers (equipment-drivers spec §3.1): a driver is "how to
+# reach a backend" (NINA instance, Alpaca server, PHD2), declared ONCE here and
+# referenced by id from profiles/assignments. APPENDED to AppConfig (additive —
+# old config files without a ``drivers`` block load fine; pydantic fills []).
+# Implicit drivers (sim / astrodeck native / astap) are DETECTED, never stored.
+# A DriverEntry holds NO secret (host/port/label only), so ``redacted()`` needs
+# no change for it.
+
+DriverType = Literal["nina", "alpaca", "phd2"]
+
+#: Default port per configurable driver type (NINA Advanced API / Alpaca / PHD2).
+DRIVER_DEFAULT_PORTS: dict[str, int] = {"nina": 1888, "alpaca": 11111, "phd2": 4400}
+
+
+class DriverEntry(BaseModel):
+    id: str                                  # server-minted "<type>-<4hex>", immutable
+    type: DriverType
+    host: str
+    port: int = Field(ge=1, le=65535)
+    enabled: bool = True
+    label: str = ""
+    extra: dict = Field(default_factory=dict)  # driver-typed options (e.g. phd2 managed)
+
+
 class AppConfig(BaseModel):
     version: int = 1                   # bumped on every save (optimistic-concurrency token)
     site: Site = Field(default_factory=Site)
@@ -274,6 +301,8 @@ class AppConfig(BaseModel):
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     # --- capability providers (native parity; appended — old configs load fine) ---
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    # --- backend drivers (equipment-drivers spec; appended — old configs load fine) ---
+    drivers: list[DriverEntry] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------- pure math
@@ -541,6 +570,70 @@ class ConfigStore:
         cfg = self.cfg()
         cfg.providers = providers
         return self.bump_and_save()
+
+    # -- backend drivers mutation (equipment-drivers spec §3.1) -----------------
+
+    def add_driver(self, driver_type: str, host: str, port: int | None = None,
+                   label: str = "", extra: dict | None = None) -> DriverEntry:
+        """Create a configured driver with a server-minted, never-reused id.
+
+        The id is "<type>-<4 hex>" (collision-checked against existing entries)
+        so profiles can reference drivers stably. Port defaults per type; a
+        blank label defaults to "<TYPE> @ <host>". Raises ``ValueError`` (→ 422
+        at the API) on an unknown type or blank host."""
+        if driver_type not in DRIVER_DEFAULT_PORTS:
+            raise ValueError(f"unknown driver type: {driver_type!r}")
+        host = (host or "").strip()
+        if not host:
+            raise ValueError("driver host must not be empty")
+        cfg = self.cfg()
+        existing = {d.id for d in cfg.drivers}
+        while True:
+            new_id = f"{driver_type}-{secrets.token_hex(2)}"
+            if new_id not in existing:
+                break
+        entry = DriverEntry(
+            id=new_id, type=driver_type, host=host,
+            port=port if port is not None else DRIVER_DEFAULT_PORTS[driver_type],
+            label=(label or "").strip() or f"{driver_type.upper()} @ {host}",
+            extra=dict(extra or {}))
+        cfg.drivers.append(entry)
+        self.bump_and_save()
+        return entry
+
+    def update_driver(self, driver_id: str, patch: dict) -> DriverEntry:
+        """Patch host/port/enabled/label/extra on one driver (id/type immutable).
+
+        ``model_copy(update=...)`` does NOT re-validate in pydantic v2, so the
+        patched entry is re-constructed through ``DriverEntry(**...)`` to run
+        the field validators (port range etc). Raises ``KeyError`` for an
+        unknown id (→ 404) and ``ValueError`` for a bad field/value (→ 422)."""
+        allowed = {"host", "port", "enabled", "label", "extra"}
+        unknown = set(patch) - allowed
+        if unknown:
+            raise ValueError(f"unknown driver fields: {sorted(unknown)}")
+        cfg = self.cfg()
+        for i, d in enumerate(cfg.drivers):
+            if d.id != driver_id:
+                continue
+            updated = DriverEntry(**d.model_copy(update=patch).model_dump())
+            if not updated.host.strip():
+                raise ValueError("driver host must not be empty")
+            cfg.drivers[i] = updated
+            self.bump_and_save()
+            return updated
+        raise KeyError(driver_id)
+
+    def delete_driver(self, driver_id: str) -> None:
+        """Remove one driver. Raises ``KeyError`` for an unknown id (→ 404).
+        The id is never reused (add_driver mints fresh hex); a profile still
+        referencing it degrades per the spec's failure-honesty rules."""
+        cfg = self.cfg()
+        keep = [d for d in cfg.drivers if d.id != driver_id]
+        if len(keep) == len(cfg.drivers):
+            raise KeyError(driver_id)
+        cfg.drivers = keep
+        self.bump_and_save()
 
 
 def validate_auth_config(auth: AuthConfig, current: AuthConfig | None = None) -> None:
