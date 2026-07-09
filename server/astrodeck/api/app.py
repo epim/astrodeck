@@ -463,6 +463,24 @@ class JtiBody(BaseModel):
     jti: str
 
 
+class DriverCreateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: str
+    host: str
+    port: int | None = None
+    label: str = ""
+    extra: dict = {}
+
+
+class DriverPatchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str | None = None
+    port: int | None = None
+    enabled: bool | None = None
+    label: str | None = None
+    extra: dict | None = None
+
+
 # ------------------------------------------------------------ optional auth (P0-4)
 # OPTIONAL shared-token auth, OFF BY DEFAULT. The token is read from the
 # ``ASTRODECK_TOKEN`` env var. When it is UNSET (or empty), the server behaves
@@ -730,6 +748,71 @@ def create_app() -> FastAPI:
         from ..devices import backends as _b  # noqa: F401 - registration side-effect
         from ..devices.backend import list_backends
         return list_backends()
+
+    # -------------------------------------------- backend drivers (spec 2026-07-08)
+    # GLOBAL driver config + the merged availability surface. Read = view.status
+    # (same as discovery); write = config.backend (same as every connect write).
+    # describe_all() never raises, so GET /api/drivers can't 500.
+
+    @app.get("/api/drivers", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def list_drivers():
+        from .. import drivers as drivers_mod
+        return await drivers_mod.describe_all()
+
+    @app.post("/api/drivers/{driver_id}/probe",
+              dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def probe_driver(driver_id: str):
+        """Force ONE driver's re-probe (bypasses the 15s cache). Implicit ids
+        (sim/astrodeck/astap) are accepted — they recompute on every describe."""
+        from .. import drivers as drivers_mod
+        known = ({d.id for d in config_store.cfg().drivers}
+                 | {"sim", "astrodeck", "astap"})
+        if driver_id not in known:
+            raise HTTPException(404, "unknown driver")
+        drivers_mod.invalidate(driver_id)
+        return await drivers_mod.describe_all()
+
+    @app.post("/api/config/drivers",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def add_driver(body: DriverCreateBody):
+        try:
+            entry = await asyncio.to_thread(
+                config_store.add_driver, body.type, body.host, body.port,
+                body.label, body.extra)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return {"driver": entry.model_dump(), "config": _config_payload()}
+
+    @app.patch("/api/config/drivers/{driver_id}",
+               dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def patch_driver(driver_id: str, body: DriverPatchBody):
+        patch = {k: v for k, v in body.model_dump().items() if v is not None}
+        try:
+            entry = await asyncio.to_thread(
+                config_store.update_driver, driver_id, patch)
+        except KeyError:
+            raise HTTPException(404, "unknown driver")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        from .. import drivers as drivers_mod
+        drivers_mod.invalidate(driver_id)      # addressing may have changed
+        return {"driver": entry.model_dump(), "config": _config_payload()}
+
+    @app.delete("/api/config/drivers/{driver_id}",
+                dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def delete_driver(driver_id: str):
+        try:
+            await asyncio.to_thread(config_store.delete_driver, driver_id)
+        except KeyError:
+            raise HTTPException(404, "unknown driver")
+        from .. import drivers as drivers_mod
+        drivers_mod.invalidate(driver_id)
+        return {"deleted": driver_id, "config": _config_payload()}
 
     @app.get("/api/discover/{backend}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
