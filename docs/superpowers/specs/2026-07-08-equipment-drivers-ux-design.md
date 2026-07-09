@@ -114,6 +114,16 @@ Returns the full option space the Equipment surface renders from:
                     {"role": "telescope", "name": "EQ6-R"}],
        "tasks": ["autofocus", "polar_align"]
      }},
+    {"id": "alpaca-b2", "type": "alpaca", "label": "Mount-side Alpaca",
+     "enabled": true, "implicit": false,
+     "status": {"reachable": true, "error": null, "probed_at": 1751970000.0},
+     "offers": {
+       "devices": [{"role": "camera", "name": "ASI2600MM",
+                     "dev_type": "camera", "dev_num": 0},
+                    {"role": "focuser", "name": "EAF",
+                     "dev_type": "focuser", "dev_num": 0}],
+       "tasks": []
+     }},
     {"id": "astrodeck", "type": "astrodeck", "label": "AstroDeck native",
      "enabled": true, "implicit": true,
      "status": {"reachable": true, "error": null, "probed_at": 1751970000.0},
@@ -131,8 +141,17 @@ Returns the full option space the Equipment surface renders from:
   `polar_align` when the wheel imports (+ camera/focuser/mount prerequisites
   are reported by the resolver, not here); `astap` → `solve` when the binary
   is found.
+- **Contract rule (review finding 1):** each `offers.devices` entry MUST
+  carry every field the client needs to build that driver's ConnSpec /
+  device selector — for Alpaca that is `dev_type` + `dev_num` (as in the
+  example above); NINA/PHD2/sim entries need only `role` + `name`. The UI
+  never synthesizes addressing.
 - Probe results cached ~15 s; `POST /api/drivers/{id}/probe` forces a
   refresh. Probing never raises: failures land in `status.error`.
+  **Cache-honesty rule (review finding 5):** when a rig connect fails with a
+  driver-unreachable class of error, the server immediately invalidates that
+  driver's probe cache and the UI re-fetches `/api/drivers`, so offers/greying
+  reflect reality right after the failure instead of up to 15 s later.
 - RBAC: `CAP_VIEW_STATUS` to read (viewers see the same surface read-only).
   No precise-site data is involved; hostnames match what `status` already
   exposes.
@@ -143,6 +162,10 @@ Returns the full option space the Equipment surface renders from:
 resolves `driver_id` → the configured driver's host/port/extra, then proceeds
 exactly as today. Raw host/port ConnSpecs (old profiles, scripts, tests)
 continue to work unchanged — `driver_id` is additive back-compat.
+`ConnSpec.from_dict`/`to_dict` read it tolerantly (`d.get("driver_id")`), so
+pre-existing serialized profiles without the key parse unchanged (review
+finding 4); an unknown/deleted `driver_id` at connect time is a per-role
+`RoleResult` error ("driver removed"), never a whole-rig 500.
 
 ### 3.4 Task resolver extensions (`providers.py`)
 
@@ -155,6 +178,18 @@ continue to work unchanged — `driver_id` is additive back-compat.
   accepting** legacy `backend` as an alias for "the connected backend's own
   implementation" — no config rewrite, no migration step; the UI simply
   writes the new vocabulary.
+- **Dynamic validation (review finding 2):** the hardcoded whitelists in
+  `providers.py:_override` and the config-write path
+  (`v in ("auto", "backend", "astrodeck")`) become registry-driven: a value
+  is valid iff it is `auto`, a legacy alias, an implicit driver id
+  (`astrodeck`/`astap`/`sim`), or a currently-configured driver id.
+  Validation runs at write time (reject unknown ids with 422) AND at resolve
+  time (a since-deleted driver id degrades to `auto` with a reason, matching
+  the existing malformed-value behavior).
+- **Mixed-rig solver guard (review finding 6):** `_has_real_solver`'s
+  "SimSolver refuses on real rigs" rule stops keying off the global
+  `hub.mode` (`_REAL_MODES`) — meaningless on a mixed rig — and instead
+  refuses whenever any *connected motion device* (mount/focuser) is non-sim.
 - Resolution policy is unchanged: explicit override wins **only when its
   prerequisites are present**, else fall back to auto; `resolve_all` never
   raises; every choice carries a human `reason`.
@@ -186,6 +221,13 @@ RIG ACTIONS
   typing on this surface, ever**. Row shows live LED (from
   `status.backend_links`), connected device name, inline per-role connect
   error (`RoleResult`).
+- **Guide camera (review finding 3):** ConnectView's special guide-cam row is
+  *not* an assignable slot (it is backend-derived: sim's dedicated device, or
+  the guider's own camera under PHD2/NINA). It carries over as a **read-only
+  status line nested under the guider row** — same
+  `status.guide_camera ?? status.guider` presence logic ConnectView uses
+  today — so "is guiding seeing a camera" stays answerable without inventing
+  a fake assignment.
 - **Task rows:** dropdown = `Auto` + concrete available providers; resolved
   badge (`ProviderBadge`) + the resolver's `reason` always visible.
 - **Rig actions:** Connect Rig compiles assignments → `RigSpec` →
