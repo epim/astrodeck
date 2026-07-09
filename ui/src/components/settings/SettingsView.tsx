@@ -24,6 +24,7 @@ import {
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import BackendPicker from "./BackendPicker";
+import DriversPanel from "./DriversPanel";
 import CapabilitiesCard from "./CapabilitiesCard";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
@@ -144,7 +145,8 @@ export default function SettingsView(): JSX.Element {
       {/* ------------------------------------------------------------ CONNECT */}
       {activeTab === "connect" && (
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
-          <div className="order-2 lg:order-1 min-w-0">
+          <div className="order-2 lg:order-1 min-w-0 flex flex-col gap-4">
+            <DriversPanel />
             {canConfig ? (
               <BackendPicker />
             ) : (
