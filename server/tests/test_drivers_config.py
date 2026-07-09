@@ -47,6 +47,14 @@ def test_update_driver_patches_and_revalidates(store):
     d = store.add_driver("alpaca", "192.168.1.50")
     u = store.update_driver(d.id, {"port": 11112, "enabled": False})
     assert (u.port, u.enabled) == (11112, False)
+    # host is stored stripped on update — symmetric with add_driver
+    assert store.update_driver(d.id, {"host": "  192.168.1.60  "}).host == "192.168.1.60"
+    # a patched extra dict is copied — a caller-retained reference must not
+    # alias into the stored config
+    ext = {"managed": True}
+    store.update_driver(d.id, {"extra": ext})
+    ext["managed"] = False
+    assert store.cfg().drivers[0].extra == {"managed": True}
     with pytest.raises(ValueError):
         store.update_driver(d.id, {"port": 99999})      # out of range
     with pytest.raises(ValueError):
