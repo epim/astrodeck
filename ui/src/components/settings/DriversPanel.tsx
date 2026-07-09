@@ -265,7 +265,7 @@ export default function DriversPanel(): JSX.Element {
         <div className="label mt-1">Built-in</div>
         {implicit.map((d) => (
           <div key={d.id} className="flex items-start gap-3 border border-line bg-bg/60 px-3 py-2.5">
-            <Led state={d.status.reachable ? "on" : "off"} />
+            <Led state={d.status.reachable ? "on" : "off"} label={`${d.label} status`} />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm text-ink">{d.label}</span>

@@ -784,6 +784,7 @@ def create_app() -> FastAPI:
                 body.label, body.extra)
         except ValueError as e:
             raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(config_store.cfg()))
         return {"driver": entry.model_dump(), "config": _config_payload()}
 
     @app.patch("/api/config/drivers/{driver_id}",
@@ -800,6 +801,7 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         from .. import drivers as drivers_mod
         drivers_mod.invalidate(driver_id)      # addressing may have changed
+        bus.publish("config", config=redacted(config_store.cfg()))
         return {"driver": entry.model_dump(), "config": _config_payload()}
 
     @app.delete("/api/config/drivers/{driver_id}",
@@ -812,6 +814,7 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "unknown driver")
         from .. import drivers as drivers_mod
         drivers_mod.invalidate(driver_id)
+        bus.publish("config", config=redacted(config_store.cfg()))
         return {"deleted": driver_id, "config": _config_payload()}
 
     @app.get("/api/discover/{backend}", dependencies=[Depends(require(CAP_VIEW_STATUS))])

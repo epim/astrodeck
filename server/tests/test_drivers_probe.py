@@ -90,6 +90,28 @@ def test_probe_exception_becomes_error_row(store, monkeypatch):
     assert "kaboom" in row["status"]["error"]
 
 
+def test_implicit_rows_exception_degrades_to_empty(store, monkeypatch):
+    """NEVER-raise contract (module docstring): a bug in _implicit_rows()
+    (e.g. OSError from a malformed ASTAP_PATH, or the astrodeck_native import
+    blowing up) must not 500 describe_all() — it degrades to no implicit
+    rows, keeping the configured rows intact."""
+    store.add_driver("nina", "h1")
+
+    async def fake_nina(host, port):
+        return drv._ok([{"role": "camera", "name": "cam"}], [])
+
+    monkeypatch.setitem(drv._PROBES, "nina", fake_nina)
+
+    def boom():
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(drv, "_implicit_rows", boom)
+    out = _run(drv.describe_all())
+    ids = [d["id"] for d in out["drivers"]]
+    assert ids == [out["drivers"][0]["id"]]           # configured row survives
+    assert "sim" not in ids and "astrodeck" not in ids and "astap" not in ids
+
+
 def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     """Review finding 1: Alpaca offers MUST carry the ConnSpec addressing
     (dev_type + dev_num); unmapped DeviceTypes (rotator, until the role exists)
