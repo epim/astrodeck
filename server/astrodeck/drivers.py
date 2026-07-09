@@ -227,4 +227,8 @@ async def describe_all(force: bool = False) -> dict:
                          "offers": {"devices": [], "tasks": []}})
         else:
             rows.append(r)
-    return {"roles": list(ROLES), "drivers": rows + _implicit_rows()}
+    try:
+        implicit = _implicit_rows()
+    except Exception:  # noqa: BLE001 — implicit detection must never 500 describe_all
+        implicit = []
+    return {"roles": list(ROLES), "drivers": rows + implicit}
