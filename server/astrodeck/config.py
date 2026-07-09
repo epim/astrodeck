@@ -612,6 +612,17 @@ class ConfigStore:
         unknown = set(patch) - allowed
         if unknown:
             raise ValueError(f"unknown driver fields: {sorted(unknown)}")
+        # Normalize a COPY of the patch so create/update stay symmetric with
+        # add_driver: host is stored stripped, and a patched extra dict is
+        # copied so a caller-retained reference can't alias into the stored
+        # config. isinstance guards let a wrong-typed value fall through to the
+        # DriverEntry re-construction below (→ ValueError, → 422) instead of
+        # raising AttributeError here.
+        patch = dict(patch)
+        if isinstance(patch.get("host"), str):
+            patch["host"] = patch["host"].strip()
+        if isinstance(patch.get("extra"), dict):
+            patch["extra"] = dict(patch["extra"])
         cfg = self.cfg()
         for i, d in enumerate(cfg.drivers):
             if d.id != driver_id:
