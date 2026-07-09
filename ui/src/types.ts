@@ -473,6 +473,8 @@ export interface AppConfig {
   //     providers.resolve() pick, "backend"/"astrodeck" pin a family. Optional:
   //     an old WS `hello` bootstrap predates the field. ---
   providers?: ProvidersConfig;
+  // --- backend drivers (equipment-drivers spec; global, never per-profile) ---
+  drivers?: DriverEntry[];
 }
 
 // ------------------------------------------------------- capability providers
@@ -485,6 +487,54 @@ export type ProviderKind = "auto" | "backend" | "astrodeck";
 export interface ProvidersConfig {
   autofocus: ProviderKind;
   polar_align: ProviderKind;
+}
+
+// ------------------------------------------------------------- backend drivers
+// Mirrors server/astrodeck/drivers.py describe_all() + config.py DriverEntry
+// (equipment-drivers spec 2026-07-08 §3.1/§3.2). DriverEntry is the CONFIG
+// (write) side; DriverInfo is the READ side (probe status + offers) the
+// Equipment/Settings surfaces render from.
+export type DriverType = "nina" | "alpaca" | "phd2" | "sim" | "astrodeck" | "astap";
+
+export interface DriverEntry {
+  id: string;            // server-minted "<type>-<4hex>", immutable
+  type: DriverType;      // configured entries are only nina|alpaca|phd2
+  host: string;
+  port: number;
+  enabled: boolean;
+  label: string;
+  extra: Record<string, unknown>;
+}
+
+export interface DriverDeviceOffer {
+  role: string;
+  name: string;
+  dev_type?: string;     // Alpaca only — ALWAYS present there (ConnSpec addressing)
+  dev_num?: number;      // Alpaca only
+}
+
+export interface DriverStatus {
+  reachable: boolean;
+  error: string | null;
+  detail: string | null; // NINA API version / ASTAP path / native wheel version
+  probed_at: number;     // unix seconds
+}
+
+export interface DriverInfo {
+  id: string;
+  type: DriverType;
+  label: string;
+  enabled: boolean;
+  implicit: boolean;     // sim/astrodeck/astap = detected built-ins, not stored
+  host?: string;
+  port?: number;
+  status: DriverStatus;
+  offers: { devices: DriverDeviceOffer[]; tasks: string[] };
+}
+
+export interface DriversResponse {
+  roles: string[];       // fed from devices/backend.py ROLES — a new role appears free
+  drivers: DriverInfo[];
 }
 
 // ---------------------------------------------------------------- self-update
