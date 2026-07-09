@@ -13,6 +13,8 @@ import type {
   AuthState,
   BackendInfo,
   ConnectRigResult,
+  DriverEntry,
+  DriversResponse,
   Principal,
   PrincipalRole,
   Profile,
@@ -215,3 +217,38 @@ export const setUpdateConfig = (cfg: UpdateConfig): Promise<AppConfig> =>
  *  Returns the full merged AppConfig (mirrors setSafetyConfig/setUpdateConfig). */
 export const setProvidersConfig = (cfg: ProvidersConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config/providers", cfg);
+
+// ------------------------------------------------------------ backend drivers
+/** GET /api/drivers → configured + implicit drivers with probe status + offers
+ *  (spec 2026-07-08 §3.2). Never 500s: failures land in each row's status. */
+export const listDrivers = (): Promise<DriversResponse> =>
+  api.get<DriversResponse>("/api/drivers");
+
+/** POST /api/drivers/{id}/probe → force ONE driver's re-probe (bypass the 15s
+ *  TTL); returns the full refreshed DriversResponse. 404 unknown id. */
+export const probeDriver = (id: string): Promise<DriversResponse> =>
+  api.post<DriversResponse>(`/api/drivers/${encodeURIComponent(id)}/probe`);
+
+/** POST /api/config/drivers → create (server mints the id; port defaults per
+ *  type). 422 unknown type / blank host. config.backend-gated. */
+export const addDriver = (body: {
+  type: "nina" | "alpaca" | "phd2";
+  host: string;
+  port?: number;
+  label?: string;
+  extra?: Record<string, unknown>;
+}): Promise<{ driver: DriverEntry }> =>
+  api.post<{ driver: DriverEntry }>("/api/config/drivers", body);
+
+/** PATCH /api/config/drivers/{id} → patch host/port/enabled/label/extra
+ *  (id/type immutable). 404 unknown, 422 invalid. */
+export const updateDriver = (
+  id: string,
+  patch: Partial<Pick<DriverEntry, "host" | "port" | "enabled" | "label" | "extra">>,
+): Promise<{ driver: DriverEntry }> =>
+  api.patch<{ driver: DriverEntry }>(
+    `/api/config/drivers/${encodeURIComponent(id)}`, patch);
+
+/** DELETE /api/config/drivers/{id} → {deleted:id}. 404 unknown. */
+export const deleteDriver = (id: string): Promise<{ deleted: string }> =>
+  api.del<{ deleted: string }>(`/api/config/drivers/${encodeURIComponent(id)}`);
