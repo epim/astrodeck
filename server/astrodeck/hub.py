@@ -1924,7 +1924,7 @@ class Hub:
             out["providers"] = {
                 cap: {"kind": "unavailable", "label": "Unavailable",
                       "reason": f"resolution error: {e}"}
-                for cap in ("autofocus", "polar_align")}
+                for cap in ("autofocus", "polar_align", "solve")}
         try:
             du = shutil.disk_usage(CAPTURE_DIR)
             free_gb = du.free / 1e9
