@@ -53,6 +53,11 @@ class ConnSpec:
     dev_type: str | None = None
     dev_num: int | None = None
     role: str | None = None
+    #: Reference to a CONFIGURED driver (AppConfig.drivers[].id). When set, the
+    #: hub resolves it to concrete backend/host/port/extra at connect time
+    #: (drivers.resolve_driver_ids); raw addressing above stays authoritative
+    #: when it is None — additive back-compat (spec §3.3).
+    driver_id: str | None = None
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +69,7 @@ class ConnSpec:
             "dev_type": self.dev_type,
             "dev_num": self.dev_num,
             "role": self.role,
+            "driver_id": self.driver_id,
             "extra": dict(self.extra),
         }
 
@@ -77,6 +83,7 @@ class ConnSpec:
             dev_type=d.get("dev_type"),
             dev_num=d.get("dev_num"),
             role=d.get("role"),
+            driver_id=d.get("driver_id"),
             extra=dict(d.get("extra") or {}),
         )
 

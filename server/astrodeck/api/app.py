@@ -377,6 +377,7 @@ class ConnSpecBody(BaseModel):
     dev_type: str | None = None
     dev_num: int | None = None
     role: str | None = None
+    driver_id: str | None = None
     extra: dict = {}
 
 
@@ -898,10 +899,14 @@ def create_app() -> FastAPI:
         """
         from ..devices import backends as _b  # noqa: F401 - registration side-effect
         from ..devices.backend import RigSpec, ConnSpec, get_backend
-        try:
-            get_backend(body.primary)
-        except KeyError:
-            raise HTTPException(422, f"unknown primary backend {body.primary!r}")
+        # "none" is not a registry backend -- it's the Equipment surface's
+        # explicit-only rig mode (spec §4.1): only `roles` overrides are
+        # requested, so there is no primary to look up in the registry.
+        if body.primary != "none":
+            try:
+                get_backend(body.primary)
+            except KeyError:
+                raise HTTPException(422, f"unknown primary backend {body.primary!r}")
         for role, cs in body.roles.items():
             try:
                 allowed = get_backend(cs.backend).roles
