@@ -260,6 +260,16 @@ class ProvidersConfig(BaseModel):
     solve: str = "auto"
 
 
+class RotatorConfig(BaseModel):
+    """Rotator mechanical range-of-motion + rotate-loop tolerance (spec §3.2).
+    range_type: "full" | "half" | "quarter" — cable-wrap limiting (parity §11.2).
+    range_start_deg is MECHANICAL degrees (set from the UI's "Set to current
+    position"). tolerance_deg is the rotate loop's mod-180 convergence bound."""
+    range_type: str = "full"
+    range_start_deg: float = 0.0
+    tolerance_deg: float = 1.0
+
+
 # ------------------------------------------------------- backend drivers (2026-07-08)
 #
 # GLOBAL configured drivers (equipment-drivers spec §3.1): a driver is "how to
@@ -310,6 +320,8 @@ class AppConfig(BaseModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     # --- backend drivers (equipment-drivers spec; appended — old configs load fine) ---
     drivers: list[DriverEntry] = Field(default_factory=list)
+    # --- rotator ROM/tolerance (rotator/CAA spec §3.2; appended — old configs load fine) ---
+    rotator: RotatorConfig = Field(default_factory=RotatorConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -590,6 +602,23 @@ class ConfigStore:
                     f"driver id")
         cfg = self.cfg()
         cfg.providers = providers
+        return self.bump_and_save()
+
+    # -- rotator ROM/tolerance mutation (rotator/CAA spec §3.2) -----------------
+
+    def set_rotator(self, rotator: "RotatorConfig") -> AppConfig:
+        """Persist the rotator ROM/tolerance config; write-time validated so a
+        junk range never reaches the rotate loop (route maps ValueError→422)."""
+        if rotator.range_type not in ("full", "half", "quarter"):
+            raise ValueError(
+                f"unknown range_type: {rotator.range_type!r} — "
+                f"valid values are full, half, quarter")
+        if not (0.0 <= rotator.range_start_deg < 360.0):
+            raise ValueError("range_start_deg must be in [0, 360)")
+        if not (0.0 < rotator.tolerance_deg <= 45.0):
+            raise ValueError("tolerance_deg must be in (0, 45]")
+        cfg = self.cfg()
+        cfg.rotator = rotator
         return self.bump_and_save()
 
     # -- backend drivers mutation (equipment-drivers spec §3.1) -----------------

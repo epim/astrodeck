@@ -44,8 +44,8 @@ from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
-                      EscalationConfig, Optics, ProvidersConfig, SafetyConfig,
-                      Site, UpdateConfig, config_store, redacted)
+                      EscalationConfig, Optics, ProvidersConfig, RotatorConfig,
+                      SafetyConfig, Site, UpdateConfig, config_store, redacted)
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
@@ -701,6 +701,20 @@ def create_app() -> FastAPI:
     async def set_providers_config(body: ProvidersConfig):
         try:
             cfg = await asyncio.to_thread(config_store.set_providers, body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload()
+
+    # -------------------------------------------------------------- rotator
+    # Rotator mechanical ROM + rotate-loop tolerance (rotator/CAA spec §3.2).
+    # Same cap/broadcast shape as the providers route above.
+    @app.post("/api/config/rotator",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def set_rotator_config(body: RotatorConfig):
+        try:
+            cfg = await asyncio.to_thread(config_store.set_rotator, body)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
