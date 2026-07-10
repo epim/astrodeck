@@ -830,8 +830,10 @@ class SequenceEngine:
                 # GOTO+center is the slew + iterated solve→sync→re-slew loop —
                 # bounded so a hung solve/slew can't stall the night (P0-2).
                 result = await _bounded(
-                    self.hub.goto_and_center(target.ra_hours, target.dec_deg),
-                    GOTO_TIMEOUT_S, f"goto+center {target.name}")
+                    self.hub.goto_and_center(target.ra_hours, target.dec_deg,
+                                             rotation_deg=target.rotation_deg),
+                    GOTO_TIMEOUT_S + (300 if target.rotation_deg is not None else 0),
+                    f"goto+center {target.name}")
                 if not result["centered"]:
                     # error_arcmin is None on the solve-failure and motion-fence
                     # abort paths (hub.goto_and_center degrades to a raw GoTo) —
