@@ -116,7 +116,7 @@ def test_list_backends_shape_and_ordering():
 
 def test_roles_constant_matches_device_roles():
     assert ROLES == ("camera", "telescope", "focuser", "guider",
-                     "filterwheel", "switch", "safety")
+                     "filterwheel", "switch", "safety", "rotator")
 
 
 def test_rigspec_resolve_default_uses_primary():

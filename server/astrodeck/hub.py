@@ -1990,6 +1990,20 @@ class Hub:
                 }
             except Exception:
                 pass
+        rot = self.devices.get("rotator")
+        if rot and rot.connected:
+            try:
+                out["rotator"] = {
+                    "name": rot.name,
+                    "sky_deg": round(await rot.get_position(), 2),
+                    "mech_deg": round(await rot.get_mechanical_position(), 2),
+                    "moving": await rot.is_moving(),
+                    "synced": rot.synced,
+                    "can_reverse": rot.can_reverse,
+                    "reverse": await rot.get_reverse(),
+                }
+            except Exception:
+                pass
         cam = self.devices.get("camera")
         if cam and cam.connected:
             try:
