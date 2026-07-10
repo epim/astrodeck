@@ -73,3 +73,22 @@ async def test_sim_solver_rotation_zero_when_defaults(rig):
     result = await solver.solve(None)
     assert result.success
     assert result.rotation_deg == 0.0
+
+
+@pytest.mark.asyncio
+async def test_poll_status_rotator_block():
+    from astrodeck.hub import Hub
+
+    rig = SimRig()
+    rot = SimRotator(rig)
+    await rot.connect()
+    rig.rotator_mech_deg = 100.0
+    await rot.sync(70.0)
+    h = Hub()
+    h.devices["rotator"] = rot
+    out = await h.poll_status()
+    assert out["rotator"]["mech_deg"] == pytest.approx(100.0)
+    assert out["rotator"]["sky_deg"] == pytest.approx(70.0)
+    assert out["rotator"]["synced"] is True
+    assert out["rotator"]["moving"] is False
+    assert out["rotator"]["can_reverse"] is False

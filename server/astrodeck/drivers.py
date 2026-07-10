@@ -76,12 +76,13 @@ async def _probe_nina(host: str, port: int) -> dict:
 
 
 #: Alpaca DeviceType (lowercased) -> AstroDeck role. Inverse of the native
-#: backend's ``_ROLE_TO_DEV_TYPE``. Unmapped types (e.g. ``rotator`` until that
-#: role exists) are SKIPPED — the CAA spec adds the mapping, not an error here.
+#: backend's ``_ROLE_TO_DEV_TYPE``. ``rotator`` is now mapped (the CAA spec
+#: added the role); genuinely unknown types (e.g. ``dome``) are still SKIPPED,
+#: not an error here.
 _DEV_TYPE_TO_ROLE: dict[str, str] = {
     "camera": "camera", "telescope": "telescope", "focuser": "focuser",
     "filterwheel": "filterwheel", "switch": "switch",
-    "safetymonitor": "safety",
+    "safetymonitor": "safety", "rotator": "rotator",
 }
 
 
