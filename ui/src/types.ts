@@ -919,6 +919,7 @@ export interface ConnSpec {
   dev_type?: string | null;
   dev_num?: number | null;
   role?: string | null;
+  driver_id?: string | null; // reference to AppConfig.drivers[].id (spec §3.3)
   extra?: Record<string, unknown>;
 }
 
