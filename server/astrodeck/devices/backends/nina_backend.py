@@ -132,7 +132,7 @@ class NinaBackend:
     label = "NINA"
     # ``switch`` is fillable (devices/nina.py bridges NINA's switch hub); only
     # ``safety`` stays unfillable (NINA exposes no SafetyMonitor class). W1.2/W1.9.
-    roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "guider")
+    roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "guider", "rotator")
     discoverable = True
     hostless = False                # NINA is a network endpoint (host:port)
 
