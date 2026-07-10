@@ -317,6 +317,7 @@ class GotoBody(BaseModel):
     dec_deg: float
     center: bool = True
     force: bool = False
+    rotation_deg: float | None = None
 
 
 class MoveAxisBody(BaseModel):
@@ -1821,7 +1822,8 @@ def create_app() -> FastAPI:
         if solar is not None:
             raise HTTPException(409, detail=solar)
         if body.center:
-            return _spawn("goto", hub.goto_and_center(body.ra_hours, body.dec_deg))
+            return _spawn("goto", hub.goto_and_center(body.ra_hours, body.dec_deg,
+                                                       rotation_deg=body.rotation_deg))
 
         async def plain_goto():
             tel = hub.require("telescope")

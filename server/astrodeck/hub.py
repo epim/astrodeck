@@ -1686,7 +1686,8 @@ class Hub:
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
                               max_attempts: int = 3,
-                              solve_exposure_s: float = 3.0) -> dict:
+                              solve_exposure_s: float = 3.0,
+                              rotation_deg: float | None = None) -> dict:
         """Slew, then iterate solve→sync→re-slew until on target."""
         tel: Telescope = self.require("telescope")
         # Sun-exclusion cone (W1.10) at the MOTION boundary, so every re-slew
@@ -1708,6 +1709,34 @@ class Hub:
             if await tel.is_parked():
                 await tel.unpark()
             await tel.set_tracking(True)
+        # Rotate BEFORE centering (NINA CenterAndRotate order, spec §3.4): slew
+        # once so the solved field is the target's, run the rotate loop, then
+        # fall through to the normal centering attempts (which re-slew anyway).
+        # A rotate failure DEGRADES — never abort a slew that already happened.
+        rotation_result: dict | None = None
+        rotation_skipped = False
+        rot = self.devices.get("rotator")
+        if rotation_deg is not None and rot is not None and rot.connected:
+            async with self._motion_lock:
+                if not self._motion_committed_clean(epoch):
+                    bus.log("warning", "goto abandoned: aborted before rotation",
+                            "mount")
+                    return {"centered": False, "error_arcmin": None,
+                            "attempts": 0, "aborted": True, "rotation": None}
+                slew_ra, slew_dec = await self.to_mount_frame(tel, ra_hours, dec_deg)
+                await tel.slew(slew_ra, slew_dec)
+            try:
+                rotation_result = await self.rotate_to_pa(
+                    rotation_deg, exposure_s=solve_exposure_s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                bus.log("warning",
+                        f"rotation to PA {rotation_deg:.0f}° failed ({e}); "
+                        f"continuing without rotation", "rotator")
+                rotation_skipped = True
+        _rot_keys = {"rotation": rotation_result,
+                     **({"rotation_skipped": True} if rotation_skipped else {})}
         last_err = None
         for attempt in range(1, max_attempts + 1):
             bus.publish("mount", action="centering", attempt=attempt)
@@ -1721,7 +1750,7 @@ class Hub:
                             "mount")
                     return {"centered": False,
                             "error_arcmin": (last_err or 0) * 60 if last_err else None,
-                            "attempts": attempt - 1, "aborted": True}
+                            "attempts": attempt - 1, "aborted": True} | _rot_keys
                 # Slew in the mount's own frame: a JNOW Alpaca mount would
                 # otherwise interpret the J2000 target as JNOW and land ~20 arcmin
                 # off. Converting inside the loop (not once up front) keeps the
@@ -1741,15 +1770,15 @@ class Hub:
                 bus.log("warning",
                         f"centering: plate solve failed ({e}); using raw GoTo", "solve")
                 return {"centered": False, "error_arcmin": None,
-                        "attempts": attempt, "solve_failed": True}
+                        "attempts": attempt, "solve_failed": True} | _rot_keys
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
             last_err = err
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
-                return {"centered": True, "error_arcmin": err * 60, "attempts": attempt}
+                return {"centered": True, "error_arcmin": err * 60, "attempts": attempt} | _rot_keys
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
-                "attempts": max_attempts}
+                "attempts": max_attempts} | _rot_keys
 
     async def meridian_flip(self, ra_hours: float, dec_deg: float) -> dict:
         """Flip a German equatorial mount across the meridian: stop guiding,
