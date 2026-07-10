@@ -43,6 +43,7 @@ from .base import (
     FilterWheel,
     Focuser,
     PierSide,
+    Rotator,
     Switch,
     SwitchPort,
     Telescope,
@@ -507,6 +508,53 @@ class NinaFocuser(_NinaDevice, Focuser):
                 "best_hfr": best_hfr, "points": points, "message": "ok"}
 
 
+# -------------------------------------------------------------------- rotator
+
+class NinaRotator(_NinaDevice, Rotator):
+    kind = "rotator"
+    info_path = "/equipment/rotator/info"
+
+    async def connect(self) -> None:
+        info = await self.info(force=True)
+        self.connected = bool(pick(info, "Connected", default=False))
+        self.name = pick(info, "Name", "DisplayName", default=self.name)
+        self.can_reverse = bool(pick(info, "CanReverse", default=False))
+
+    async def get_mechanical_position(self) -> float:
+        # NINA reports both; when AstroDeck owns the rotator nobody syncs it
+        # inside NINA, so Position == MechanicalPosition and the fallback is safe.
+        v = pick(await self.info(), "MechanicalPosition", "Position", default=0.0)
+        return float(v or 0.0) % 360.0
+
+    async def is_moving(self) -> bool:
+        return bool(pick(await self.info(force=True), "IsMoving", "Moving",
+                         default=False))
+
+    async def move_mechanical(self, mech_deg: float) -> None:
+        await self.client.get("/equipment/rotator/move-mechanical",
+                              position=float(mech_deg) % 360.0)
+        waited = 0.0
+        try:
+            while await self.is_moving():
+                await asyncio.sleep(0.25)
+                waited += 0.25
+                if waited >= self.MOVE_TIMEOUT_S:
+                    await self.halt()
+                    raise DeviceError(
+                        f"rotator move timed out after {self.MOVE_TIMEOUT_S:.0f}s")
+        except asyncio.CancelledError:
+            await self.halt()
+            raise
+
+    async def halt(self) -> None:
+        # Bridge convention mirrors the focuser's stop-move; best-effort — a
+        # bridge without the endpoint must not crash a cancel path.
+        try:
+            await self.client.get("/equipment/rotator/stop-move")
+        except DeviceError:
+            pass
+
+
 # ------------------------------------------------------------------ filterwheel
 
 class NinaFilterWheel(_NinaDevice, FilterWheel):
@@ -813,6 +861,7 @@ _ROLE_CLASSES = {
     "focuser": (NinaFocuser, "/equipment/focuser/info"),
     "filterwheel": (NinaFilterWheel, "/equipment/filterwheel/info"),
     "switch": (NinaSwitch, "/equipment/switch/info"),
+    "rotator": (NinaRotator, "/equipment/rotator/info"),
 }
 
 
@@ -903,7 +952,7 @@ async def _detail(client: httpx.AsyncClient, host: str, port: int) -> dict:
         pass
     role_paths = [("camera", "camera"), ("telescope", "mount"),
                   ("focuser", "focuser"), ("filterwheel", "filterwheel"),
-                  ("guider", "guider")]
+                  ("guider", "guider"), ("rotator", "rotator")]
     for role, path in role_paths:
         try:
             r = await client.get(f"{base}/equipment/{path}/info")

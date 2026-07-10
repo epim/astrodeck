@@ -89,7 +89,7 @@ def test_backend_metadata_and_protocol():
     assert b.label == "NINA"
     # ``switch`` is fillable (NINA's switch hub); only ``safety`` stays unfillable.
     assert b.roles == ("camera", "telescope", "focuser", "filterwheel",
-                       "switch", "guider")
+                       "switch", "guider", "rotator")
     assert "safety" not in b.roles
     assert b.discoverable is True
     assert b.hostless is False
