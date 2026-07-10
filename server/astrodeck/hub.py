@@ -1195,8 +1195,9 @@ class Hub:
         alpaca.py`` sets ``backend = "alpaca"``), not the global ``hub.mode`` —
         so a mixed rig (e.g. primary NINA with a native Alpaca mount) still
         precesses correctly; sim/NINA mounts (backend ``""``/``"nina"``) stay
-        unconverted as before. The ``_mount_wants_jnow`` cache and its reset
-        points (``hub.py:390``, ``hub.py:659``) are unchanged.
+        unconverted as before. The ``_mount_wants_jnow`` cache is unchanged,
+        reset on device placement in ``_connect_alpaca_device_unlocked`` and
+        on teardown in ``_teardown`` (invoked via ``disconnect_all``).
 
         Best-effort EquatorialSystem probe (cached): ASCOM ``EquatorialSystem`` is
         0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
