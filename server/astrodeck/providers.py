@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .config import IMPLICIT_DRIVER_IDS, ProviderKind, config_store
+from .config import IMPLICIT_DRIVER_IDS, config_store
 from .devices.base import DeviceError
 from .solve import AstapSolver, PlateSolver, SimSolver, find_astap
 

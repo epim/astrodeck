@@ -65,13 +65,15 @@ class PolarAlignSession:
         #
         # THREE-WAY provider resolution (native-parity spec §5): the capability
         # resolver decides who runs polar alignment for this rig —
-        #   backend  -> NINA's TPPA plugin (existing _run_nina)
-        #   astrodeck (native) -> the Rust TPPA engine (polar/native.run_native)
-        #   astrodeck (Simulator fallback) / unavailable -> the built-in _run_sim
-        # The resolver labels the native engine "AstroDeck native" and the
-        # simulator fallback "Simulator", both under kind "astrodeck", so we split
-        # them by label. Resolution never fatally fails here (any error degrades
-        # to the simulator) — polar align always has a driver.
+        #   backend   -> NINA's TPPA plugin (existing _run_nina)
+        #   astrodeck -> the Rust TPPA engine (polar/native.run_native)
+        #   sim / unavailable -> the built-in _run_sim
+        # Since fe9abea the resolver's kind vocabulary maps 1:1 onto that split:
+        # kind "astrodeck" IS the native engine (label "AstroDeck native"), and
+        # the simulator fallback — as well as an explicit sim override — now
+        # resolves to kind "sim", not "astrodeck". Resolution never fatally
+        # fails here (any error degrades to the simulator) — polar align always
+        # has a driver.
         try:
             choice = resolve("polar_align", self.hub)
         except Exception:
@@ -81,6 +83,9 @@ class PolarAlignSession:
                 choice is None or choice.kind == "backend"):
             self.state["source"] = "nina"
             self._task = asyncio.create_task(self._run_nina())
+        # ``choice.label != "Simulator"`` is now redundant — kind "astrodeck"
+        # is exclusively the native engine (the simulator resolves to kind
+        # "sim", see above) — but it's belt-and-braces harmless, so it stays.
         elif (choice is not None and choice.kind == "astrodeck"
               and choice.label != "Simulator"):
             from .native import run_native
