@@ -702,7 +702,7 @@ def create_app() -> FastAPI:
         try:
             cfg = await asyncio.to_thread(config_store.set_providers, body)
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
         return _config_payload()
 

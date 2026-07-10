@@ -243,18 +243,21 @@ class UpdateConfig(BaseModel):
 #
 # Per-capability routing override. APPENDED to AppConfig (additive — old config
 # files without a ``providers`` block load fine; pydantic fills the default).
-# Each capability is ``auto`` (let ``providers.resolve()`` pick the best
-# implementation for the connected rig), ``backend`` (force the backend's own —
-# NINA), or ``astrodeck`` (force the native Rust engine). ``ProviderKind`` is
-# mirrored INLINE here (rather than imported from ``providers``) to avoid an
-# import cycle: ``providers`` imports ``config_store`` from this module.
+# Vocabulary (equipment-drivers spec §3.4, registry-driven): ``auto`` (let
+# ``providers.resolve()`` pick), the LEGACY alias ``backend`` (the connected
+# backend's own implementation — kept working forever, no migration), an
+# implicit driver id (``astrodeck`` / ``astap`` / ``sim``), or a
+# currently-configured driver id (``AppConfig.drivers[].id``). Because the
+# vocabulary is dynamic (driver ids), the fields are plain ``str`` validated in
+# ``ConfigStore.set_providers`` — pydantic ``Literal`` can't express it.
 
-ProviderKind = Literal["auto", "backend", "astrodeck"]
+ProviderKind = str
 
 
 class ProvidersConfig(BaseModel):
-    autofocus: ProviderKind = "auto"
-    polar_align: ProviderKind = "auto"
+    autofocus: str = "auto"
+    polar_align: str = "auto"
+    solve: str = "auto"
 
 
 # ------------------------------------------------------- backend drivers (2026-07-08)
@@ -266,6 +269,10 @@ class ProvidersConfig(BaseModel):
 # Implicit drivers (sim / astrodeck native / astap) are DETECTED, never stored.
 # A DriverEntry holds NO secret (host/port/label only), so ``redacted()`` needs
 # no change for it.
+
+#: The DETECTED (non-configured) driver ids drivers._implicit_rows() serves —
+#: also the implicit half of the provider-override vocabulary (spec §3.4).
+IMPLICIT_DRIVER_IDS: tuple[str, ...] = ("sim", "astrodeck", "astap")
 
 DriverType = Literal["nina", "alpaca", "phd2"]
 
@@ -554,19 +561,33 @@ class ConfigStore:
         cfg.update = update
         return self.bump_and_save()
 
-    # -- capability providers mutation (native parity) -------------------------
+    # -- capability providers mutation (native parity + spec §3.4 vocabulary) --
+
+    def valid_override_values(self) -> set[str]:
+        """Every value ``set_providers`` accepts RIGHT NOW: ``auto``, the legacy
+        ``backend`` alias, the implicit driver ids, and each currently-configured
+        driver id. Registry-driven (spec review finding 2) — deleting a driver
+        removes its id from this set for FUTURE writes; already-stored values
+        degrade to auto at resolve time instead."""
+        return ({"auto", "backend", *IMPLICIT_DRIVER_IDS}
+                | {d.id for d in self.cfg().drivers})
 
     def set_providers(self, providers: "ProvidersConfig") -> AppConfig:
         """Persist a new ``ProvidersConfig`` (per-capability routing override).
 
-        Validated like the other config sections — pydantic's ``Literal`` already
-        rejects an unknown kind at construction, so this typed setter just re-checks
-        each capability is one of the three allowed values (belt-and-braces against
-        a raw dict slipping past) and writes through the one versioned path."""
-        for cap in ("autofocus", "polar_align"):
+        Values are validated against the CURRENT vocabulary (see
+        ``valid_override_values``) so an unknown/typo'd driver id is rejected at
+        write time (the route maps this ValueError to 422) rather than silently
+        resolving to auto forever."""
+        valid = self.valid_override_values()
+        for cap in ("autofocus", "polar_align", "solve"):
             v = getattr(providers, cap, "auto")
-            if v not in ("auto", "backend", "astrodeck"):
-                raise ValueError(f"unknown provider kind for {cap}: {v!r}")
+            if v not in valid:
+                raise ValueError(
+                    f"unknown provider for {cap}: {v!r} — valid values are "
+                    f"auto, backend (legacy), an implicit driver id "
+                    f"({', '.join(IMPLICIT_DRIVER_IDS)}), or a configured "
+                    f"driver id")
         cfg = self.cfg()
         cfg.providers = providers
         return self.bump_and_save()
