@@ -7,7 +7,9 @@ import { useProviders, type ResolvedProviderKind } from "../store";
    (server/astrodeck/providers.py resolve_all → {kind,label,reason}).
 
      kind "astrodeck" → accent-filled `.prov`     (our native / simulator engine)
+     kind "sim"       → accent-filled `.prov`     (the built-in simulator)
      kind "backend"   → muted `.prov-ext`         (the connected backend: NINA/Alpaca)
+     kind "astap"     → muted `.prov-ext`         (the local ASTAP binary)
      kind "unavailable" → faint `.prov-na`        (nothing can run it; reason says why)
      no data yet      → faint `.prov-na` "…" slot (stable header until the first poll)
 
@@ -15,11 +17,12 @@ import { useProviders, type ResolvedProviderKind } from "../store";
    night mode and color-blindness. `reason` is the hover title. All colors come
    from tokens via the `.prov*` classes — no hardcoded hex here. */
 
-type Cap = "autofocus" | "polar_align";
+type Cap = "autofocus" | "polar_align" | "solve";
 
 const CAP_META: Record<Cap, { abbr: string; full: string }> = {
   autofocus: { abbr: "AF", full: "Autofocus" },
   polar_align: { abbr: "TPPA", full: "Polar alignment" },
+  solve: { abbr: "SOLVE", full: "Plate solving" },
 };
 
 export function ProviderBadge({ cap, className = "" }: {
@@ -36,7 +39,11 @@ export function ProviderBadge({ cap, className = "" }: {
   const label = choice?.label ?? "…";
 
   const variant =
-    kind === "astrodeck" ? "" : kind === "backend" ? " prov-ext" : " prov-na";
+    kind === "astrodeck" || kind === "sim"
+      ? ""
+      : kind === "backend" || kind === "astap"
+        ? " prov-ext"
+        : " prov-na";
 
   const a11y =
     kind === "pending"

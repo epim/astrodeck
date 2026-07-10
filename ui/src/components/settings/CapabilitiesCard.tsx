@@ -41,7 +41,7 @@ const OVERRIDE_OPTIONS: { value: ProviderKind; label: string }[] = [
   { value: "astrodeck", label: "AstroDeck native" },
 ];
 
-const DEFAULT_PROVIDERS: ProvidersConfig = { autofocus: "auto", polar_align: "auto" };
+const DEFAULT_PROVIDERS: ProvidersConfig = { autofocus: "auto", polar_align: "auto", solve: "auto" };
 
 export default function CapabilitiesCard(): JSX.Element {
   const config = useConfig();

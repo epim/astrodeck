@@ -478,15 +478,16 @@ export interface AppConfig {
 }
 
 // ------------------------------------------------------- capability providers
-// Mirrors server/astrodeck/config.py ProviderKind/ProvidersConfig — the CONFIG
-// (write) side. Distinct from the store's ProvidersStatus (the RESOLVED read
-// side riding on `status.providers`): this is the user's override, that is what
-// actually ran. "auto" | "backend" (force the connected backend's own, e.g.
-// NINA) | "astrodeck" (force the native Rust engine / simulator).
-export type ProviderKind = "auto" | "backend" | "astrodeck";
+// Mirrors server/astrodeck/config.py ProvidersConfig — the CONFIG (write) side.
+// Vocabulary (spec §3.4, registry-driven): "auto" | "backend" (LEGACY alias for
+// the connected backend's own implementation — kept accepted forever) |
+// "astrodeck" | "astap" | "sim" (implicit driver ids) | a configured driver id
+// ("nina-a3f2"). Dynamic — a plain string; the server 422s unknown values.
+export type ProviderKind = string;
 export interface ProvidersConfig {
   autofocus: ProviderKind;
   polar_align: ProviderKind;
+  solve: ProviderKind;
 }
 
 // ------------------------------------------------------------- backend drivers
@@ -857,6 +858,10 @@ export interface ProfileDevice {
   dev_num: number;
   name: string;
   extra: Record<string, unknown>;
+  // Reference to AppConfig.drivers[].id (spec §3.3/§4.4); server-persisted
+  // (profiles.ProfileDevice.driver_id, default ""). Optional here so
+  // pre-drivers profile payloads type-check unchanged.
+  driver_id?: string;
 }
 
 export interface Profile {
@@ -873,6 +878,10 @@ export interface Profile {
   phd2_port: number;
   optics: Optics | null;
   site_name: string | null;
+  // Per-rig task overrides (spec §4.4) — wins over global config when this
+  // profile is ACTIVE (server providers._override). Partial dict server-side;
+  // absent on old profiles.
+  providers?: Partial<ProvidersConfig> | null;
 }
 
 export interface ProfileRow {

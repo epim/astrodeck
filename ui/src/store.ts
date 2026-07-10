@@ -46,13 +46,20 @@ export type { ViewName } from "./types";
 // ---------------------------------------------------------------- providers
 // Per-capability provider resolution surfaced by poll_status (native parity).
 // Shape mirrors server/astrodeck/providers.py resolve_all(): each capability
-// resolves to {kind,label,reason}. `kind` is the resolved family — "astrodeck"
-// (our native/sim engine), "backend" (the connected backend, e.g. NINA/Alpaca),
-// or "unavailable" (nothing can run it; `reason` names what's missing). Lives as
-// a store view-model type because `providers` is attached to poll_status
-// ADDITIVELY (hub.poll_status) and is not declared on RigStatus — useProviders
-// reads it via a cast so this slice owns the shape without editing types.ts.
-export type ResolvedProviderKind = "astrodeck" | "backend" | "unavailable";
+// resolves to {kind,label,reason}. `kind` answers WHO actually ran it —
+// "astrodeck" (our native/sim engine), "backend" (the connected backend, e.g.
+// NINA/Alpaca), "astap" (the local ASTAP binary), "sim" (the built-in
+// simulator), or "unavailable" (nothing can run it; `reason` names what's
+// missing). Lives as a store view-model type because `providers` is attached
+// to poll_status ADDITIVELY (hub.poll_status) and is not declared on
+// RigStatus — useProviders reads it via a cast so this slice owns the shape
+// without editing types.ts.
+export type ResolvedProviderKind =
+  | "astrodeck"
+  | "backend"
+  | "astap"
+  | "sim"
+  | "unavailable";
 export interface ProviderChoiceView {
   kind: ResolvedProviderKind;
   label: string;
@@ -61,6 +68,7 @@ export interface ProviderChoiceView {
 export interface ProvidersStatus {
   autofocus?: ProviderChoiceView;
   polar_align?: ProviderChoiceView;
+  solve?: ProviderChoiceView;
 }
 
 // ---------------------------------------------------------------- toast policy
