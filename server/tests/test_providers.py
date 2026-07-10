@@ -125,7 +125,7 @@ def test_sim_rig_resolves_polar_simulator_without_wheel(monkeypatch):
     monkeypatch.setattr(providers, "NATIVE_AVAILABLE", False)
     hub = FakeHub(mode="sim", devices=_sim_devices())
     c = providers.resolve("polar_align", hub)
-    assert c.kind == "astrodeck"
+    assert c.kind == "sim"
     assert c.label == "Simulator"
     assert "simulator" in c.reason.lower()
 
@@ -200,7 +200,7 @@ def test_resolve_all_shape_and_never_raises():
     # to the simulator, and resolve_all returns well-formed rows for both.
     hub = FakeHub(mode="none", devices={})
     out = providers.resolve_all(hub)
-    assert set(out) == {"autofocus", "polar_align"}
+    assert set(out) == {"autofocus", "polar_align", "solve"}
     for row in out.values():
         assert set(row) == {"kind", "label", "reason"}
     assert out["autofocus"]["kind"] == "unavailable"
@@ -220,7 +220,7 @@ async def test_poll_status_carries_providers(tmp_path, monkeypatch):
     h = hub_module.Hub()
     status = await h.poll_status()
     assert "providers" in status
-    assert set(status["providers"]) == {"autofocus", "polar_align"}
+    assert set(status["providers"]) == {"autofocus", "polar_align", "solve"}
     # nothing connected -> autofocus unavailable, polar simulator, no exception.
     for row in status["providers"].values():
         assert "kind" in row and "label" in row and "reason" in row
@@ -232,3 +232,111 @@ def test_config_setter_rejects_unknown_kind(tmp_path):
     object.__setattr__(bad, "autofocus", "bogus")  # bypass pydantic to hit the guard
     with pytest.raises(ValueError):
         store.set_providers(bad)
+
+
+# ---------------------------------------------------------------- solve (§3.4)
+
+def test_solve_auto_prefers_astap(monkeypatch):
+    monkeypatch.setattr(providers, "find_astap", lambda: "C:/astap/astap.exe")
+    hub = FakeHub(mode="sim", devices=_sim_devices())
+    c = providers.resolve("solve", hub)
+    assert (c.kind, c.label) == ("astap", "ASTAP")
+    assert "astap" in c.reason.lower()
+
+
+def test_solve_falls_back_to_sim_only_without_real_motion(monkeypatch):
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    hub = FakeHub(mode="sim", devices=_sim_devices())
+    c = providers.resolve("solve", hub)
+    assert (c.kind, c.label) == ("sim", "Simulator")
+
+
+def test_solve_refuses_sim_when_real_motion_connected(monkeypatch):
+    """SAFETY: no ASTAP + a real mount => solve is UNAVAILABLE — a faked solve
+    would fake-center real hardware (spec review finding 6, motion-keyed)."""
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    hub = FakeHub(mode="nina", devices={"telescope": FakeDev(backend="alpaca"),
+                                        "camera": FakeDev(backend="sim")})
+    with pytest.raises(DeviceError) as ei:
+        providers.resolve("solve", hub)
+    assert "astap" in str(ei.value).lower()
+    row = providers.resolve_all(hub)["solve"]
+    assert row["kind"] == "unavailable"
+
+
+def test_solve_sim_override_never_beats_the_motion_guard(monkeypatch, isolated_config):
+    """SAFETY: an explicit ``sim`` override must NOT resolve on a rig with a
+    real focuser — override-with-absent-prerequisites falls back to auto."""
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    isolated_config.set_providers(ProvidersConfig(solve="sim"))
+    hub = FakeHub(mode="alpaca", devices={"focuser": FakeDev(backend="alpaca")})
+    with pytest.raises(DeviceError):
+        providers.resolve("solve", hub)
+
+
+def test_solve_astap_override_without_astap_degrades(monkeypatch, isolated_config):
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    isolated_config.set_providers(ProvidersConfig(solve="astap"))
+    hub = FakeHub(mode="sim", devices=_sim_devices())
+    c = providers.resolve("solve", hub)
+    assert c.kind == "sim"      # auto fallback picked the sim solver
+
+
+# ------------------------------------------------- vocabulary at resolve time
+
+def test_configured_nina_driver_id_forces_backend(isolated_config):
+    d = isolated_config.add_driver("nina", "astrotown.lan")
+    isolated_config.set_providers(ProvidersConfig(autofocus=d.id))
+    hub = FakeHub(mode="nina", nina_client=object(),
+                  devices={"camera": FakeDev(backend="nina"),
+                           "focuser": FakeDev(backend="nina",
+                                              supports_native_autofocus=True)})
+    c = providers.resolve("autofocus", hub)
+    assert (c.kind, c.label) == ("backend", "NINA")
+    assert "override" in c.reason
+
+
+def test_alpaca_driver_id_has_no_task_impl_degrades_to_auto(isolated_config,
+                                                            monkeypatch):
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    d = isolated_config.add_driver("alpaca", "mount-pi.lan")
+    isolated_config.set_providers(ProvidersConfig(autofocus=d.id))
+    hub = FakeHub(mode="sim", devices=_sim_devices())
+    c = providers.resolve("autofocus", hub)
+    assert c.kind == "astrodeck"        # auto resolution, not a crash
+
+
+def test_deleted_driver_id_in_profile_degrades_to_auto(isolated_config,
+                                                       monkeypatch):
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    prof = Profile(name="x", providers={"autofocus": "nina-dead"})
+    hub = FakeHub(mode="sim", devices=_sim_devices(), profile=prof)
+    c = providers.resolve("autofocus", hub)
+    assert c.kind == "astrodeck"        # malformed-value parity: silently auto
+
+
+def test_polar_sim_override_pins_simulator(isolated_config):
+    isolated_config.set_providers(ProvidersConfig(polar_align="sim"))
+    hub = FakeHub(mode="nina", nina_client=object(), devices={})
+    c = providers.resolve("polar_align", hub)
+    assert (c.kind, c.label) == ("sim", "Simulator")
+    assert "override" in c.reason
+
+
+def test_resolve_all_covers_three_capabilities():
+    hub = FakeHub(mode="sim", devices={})
+    out = providers.resolve_all(hub)
+    assert set(out) == {"autofocus", "polar_align", "solve"}
+
+
+# ------------------------------------------------------------- pick_solver
+
+def test_pick_solver_returns_astap_then_sim(monkeypatch):
+    from astrodeck.solve import AstapSolver, SimSolver
+    monkeypatch.setattr(providers, "find_astap", lambda: "C:/astap/astap.exe")
+    hub = FakeHub(mode="sim", devices=_sim_devices())
+    assert isinstance(providers.pick_solver(hub), AstapSolver)
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    s = providers.pick_solver(hub)
+    assert isinstance(s, SimSolver)
+    assert s.mode is None       # resolver is the safety authority now
