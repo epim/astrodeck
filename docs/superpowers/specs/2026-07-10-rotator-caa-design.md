@@ -100,8 +100,10 @@ info payload; there is no bridge sync (client-side offset covers it, §2.1).
 ### 2.4 `SimRotator` — `server/astrodeck/devices/sim.py`
 
 - `SimRig` gains `rotator_mech_deg: float = 0.0` and a hidden ground truth
-  `rotator_pa_offset_deg: float = 30.0` (how the camera is "clocked" relative to
-  mechanical zero — deliberately non-zero so tests must discover it via sync).
+  `rotator_pa_offset_deg: float = 0.0` (how the camera is "clocked" relative to
+  mechanical zero). **Default 0.0 so existing solve/TPPA sim tests are
+  byte-identical** (the `polar_misalignment` opt-in precedent); rotate-loop
+  tests set it non-zero (e.g. 30.0) so they must genuinely discover it via sync.
 - `SimRotator(Rotator)` mirrors `SimFocuser` (`sim.py:554`): `MOVE_RATE = 5.0`
   deg/s, animated `move_mechanical` with an `asyncio.Event` halt.
 - `build_sim_rig()` (`sim.py:690`) gains `"rotator": SimRotator(rig)`.
@@ -258,9 +260,11 @@ out["rotator"] = {"name", "sky_deg", "mech_deg", "moving",
                   "synced", "can_reverse", "reverse"}
 ```
 
-RBAC: motion routes require the same operator capability as mount/focuser
-motion; `config/rotator` gated like `config/providers`. All rotator routes 404
-cleanly ("no rotator in rig") when the role is absent.
+RBAC: motion routes require the same operator capability as focuser motion
+(`CAP_CONTROL_CAPTURE`); `config/rotator` gated like `config/providers`
+(`CAP_CONFIG_BACKEND`). When the role is absent, rotator routes fail cleanly
+with **409** via the existing `hub.require` → `DeviceError` → `_err` mapping —
+the repo convention for missing devices (amended from 404 during planning).
 
 ## 5. UI
 
