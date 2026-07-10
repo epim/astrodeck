@@ -24,7 +24,6 @@ import {
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import DriversPanel from "./DriversPanel";
-import CapabilitiesCard from "./CapabilitiesCard";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
@@ -151,7 +150,6 @@ export default function SettingsView(): JSX.Element {
             <Panel title="Connection Status">
               <BackendLinkGrid links={links} />
             </Panel>
-            <CapabilitiesCard />
           </div>
         </div>
       )}

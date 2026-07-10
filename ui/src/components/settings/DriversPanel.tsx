@@ -7,7 +7,7 @@
 //
 // Data source: GET /api/drivers (probe status + offers, 15s server cache);
 // probeDriver(id) forces a refresh. Writes are config.backend-gated — without
-// the cap the panel renders read-only (same pattern as CapabilitiesCard).
+// the cap the panel renders read-only (same Gated pattern as the rest of Settings).
 import { useEffect, useState, type JSX } from "react";
 import type { DriverInfo, DriversResponse } from "../../types";
 import {
