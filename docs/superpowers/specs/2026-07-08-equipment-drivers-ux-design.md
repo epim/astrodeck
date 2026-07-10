@@ -137,7 +137,8 @@ Returns the full option space the Equipment surface renders from:
 - **Offers per type:** NINA → roles its Advanced API reports connected, plus
   `autofocus`/`polar_align` task offers; Alpaca → enumerated devices (role,
   `dev_type`, `dev_num`, name); PHD2 → `guider` when reachable; sim → every
-  role + both tasks (labelled Simulator); `astrodeck` → `autofocus` +
+  role + `polar_align` + `solve` (labelled Simulator; autofocus on a sim rig
+  is the native engine's offer) *(amended in phase 3)*; `astrodeck` → `autofocus` +
   `polar_align` when the wheel imports (+ camera/focuser/mount prerequisites
   are reported by the resolver, not here); `astap` → `solve` when the binary
   is found.
