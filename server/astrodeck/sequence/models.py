@@ -42,7 +42,7 @@ class Target(BaseModel):
     calibration: bool = False          # darks/bias/flats — skip slew/center/AF/guide
     steps: list[ExposureStep] = []
     # --- atlas (additive; both nullable — existing plans deserialize unchanged) ---
-    rotation_deg: float | None = None  # target camera angle (PA) — guidance only, no rotator
+    rotation_deg: float | None = None  # target camera angle (PA) — enforced when a rotator is connected; guidance otherwise
     mosaic_group: str | None = None    # groups mosaic panels in the Plan UI
     # --- autorun scheduling (Batch 4b; additive — default = run-now) ---
     schedule: Schedule = Field(default_factory=Schedule)
