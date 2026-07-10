@@ -46,9 +46,15 @@ class SimSolver(PlateSolver):
                          f"real ({self.mode}) rig. Install ASTAP or set ASTAP_PATH."))
         await asyncio.sleep(1.2)  # pretend to work
         if self.sim_rig is not None:
+            # Physical truth: the camera's sky PA is the rotator's mechanical
+            # angle plus how the camera is clocked on it. Both default 0.0, so
+            # rigs/tests that never touch the rotator see rotation 0.0 exactly
+            # as before.
+            rot_pa = (getattr(self.sim_rig, "rotator_mech_deg", 0.0)
+                      + getattr(self.sim_rig, "rotator_pa_offset_deg", 0.0)) % 360.0
             return SolveResult(True, ra_hours=self.sim_rig.ra_hours,
                                dec_deg=self.sim_rig.dec_deg,
-                               rotation_deg=0.0, pixel_scale_arcsec=1.55,
+                               rotation_deg=rot_pa, pixel_scale_arcsec=1.55,
                                message="solved (simulator)")
         if ra_hint is not None and dec_hint is not None:
             return SolveResult(True, ra_hours=ra_hint, dec_deg=dec_hint,
