@@ -59,8 +59,11 @@ async def test_solve_uses_vertical_fov_hint(sim_hub, monkeypatch):
     assert opt["fov_h_deg"] != opt["fov_diag_deg"]   # the bug-distinguishing gap
 
     solver = _CapturingSolver()
-    monkeypatch.setattr(hub_module, "get_solver",
-                        lambda sim_rig=None, mode=None: solver)
+    # solve_and_sync now resolves its solver via providers.pick_solver (spec
+    # §3.4), not the removed hub-level get_solver alias; patch the resolver's
+    # own seam so the capturing stand-in is still what gets used.
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "pick_solver", lambda hub: solver)
 
     await h.solve_and_sync(exposure_s=0.05)
 

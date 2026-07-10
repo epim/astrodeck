@@ -147,3 +147,20 @@ def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     devs = out["drivers"][0]["offers"]["devices"]
     assert devs == [{"role": "camera", "name": "ASI2600MM",
                      "dev_type": "camera", "dev_num": 0}]
+
+
+def test_implicit_ids_match_config_constant():
+    """config.IMPLICIT_DRIVER_IDS is the vocabulary source (spec §3.4); the
+    rows drivers serves must never drift from it."""
+    from astrodeck.config import IMPLICIT_DRIVER_IDS
+    from astrodeck.drivers import _implicit_rows
+    assert [r["id"] for r in _implicit_rows()] == list(IMPLICIT_DRIVER_IDS)
+
+
+def test_sim_offers_polar_and_solve_not_autofocus():
+    """Failure honesty (spec §5): the sim driver offers only tasks it actually
+    implements — the built-in polar simulator and the SimSolver. Autofocus on a
+    sim rig is the NATIVE engine's offer (V-curve on sim devices), not sim's."""
+    from astrodeck.drivers import _implicit_rows
+    sim = next(r for r in _implicit_rows() if r["id"] == "sim")
+    assert sim["offers"]["tasks"] == ["polar_align", "solve"]

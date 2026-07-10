@@ -34,7 +34,6 @@ from typing import Any
 
 from ..devices.base import DeviceError
 from ..events import bus
-from ..solve import get_solver
 
 # --- guarded native import -------------------------------------------------
 try:  # pragma: no cover - trivially guarded; exercised both ways in tests
@@ -95,7 +94,8 @@ async def run_native(session: Any, hub: Any) -> None:
 async def _drive(session: Any, hub: Any) -> None:
     tel = hub.require("telescope")
     hub.require("camera")  # fail fast with a clear error if no camera
-    solver = get_solver(getattr(hub, "sim_rig", None), getattr(hub, "mode", None))
+    from .. import providers as _providers
+    solver = _providers.pick_solver(hub)
     site = _site_dict(hub)
 
     # Motion fence (W3.7): snapshot the epoch; a STOP/abort/safety halt bumps it,

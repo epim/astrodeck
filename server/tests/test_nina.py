@@ -77,8 +77,14 @@ async def nina_hub(monkeypatch, tmp_path):
     # captures dir so any centering through this hub converges in tests without a
     # real ASTAP install.
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
-    monkeypatch.setattr(hub_module, "get_solver",
-                        lambda sim_rig=None, mode=None: _AstapLikeSolver(state.rig))
+    # solve_and_sync now resolves its solver via providers.pick_solver (spec
+    # §3.4) instead of the removed hub-level get_solver alias; patch the
+    # resolver's own seam so the ASTAP-like stand-in is still what gets used
+    # (a real NINA-backed rig has no real ASTAP in CI, and the resolver's
+    # motion-keyed guard would otherwise refuse to fake-solve it).
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "pick_solver",
+                        lambda hub: _AstapLikeSolver(state.rig))
     h = hub_module.Hub()
     await h.connect_nina("nina.test", 1888)
     yield h, state
@@ -299,10 +305,12 @@ async def test_hub_connect_capture_and_solve(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     # NINA-mode solve now routes through the local (ASTAP) solver, not NINA's
     # broken /prepared-image/solve (P0-1). Stand in for ASTAP so the test has a
-    # working local solver without a real ASTAP install.
+    # working local solver without a real ASTAP install. solve_and_sync resolves
+    # its solver via providers.pick_solver (spec §3.4), not the removed
+    # hub-level get_solver alias, so patch that seam instead.
     solver = _AstapLikeSolver(state.rig)
-    monkeypatch.setattr(hub_module, "get_solver",
-                        lambda sim_rig=None, mode=None: solver)
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "pick_solver", lambda hub: solver)
     h = hub_module.Hub()
     try:
         summary = await h.connect_nina("nina.test", 1888)
@@ -342,8 +350,10 @@ async def test_hub_goto_and_center_through_nina(monkeypatch, tmp_path):
     monkeypatch.setattr(hub_module, "build_nina_rig", patched)
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     solver = _AstapLikeSolver(state.rig)
-    monkeypatch.setattr(hub_module, "get_solver",
-                        lambda sim_rig=None, mode=None: solver)
+    # solve_and_sync now resolves its solver via providers.pick_solver (spec
+    # §3.4), not the removed hub-level get_solver alias.
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "pick_solver", lambda hub: solver)
     # Disarm the W1.10 sun cone: this fixed (10h, +30) target falls within 30 deg
     # of the Sun for a few weeks each year (late Aug). The cone is covered by
     # test_sun_guard.py; here we test NINA goto-center mechanics date-independently.
@@ -386,10 +396,12 @@ async def test_connect_nina_unreachable_reraises_deviceerror(monkeypatch):
 
 
 async def test_nina_solve_refuses_without_astap(monkeypatch, tmp_path):
-    """No ASTAP installed in NINA mode → the SimSolver fallback REFUSES (review
-    5d): solve_and_sync raises a clear error instead of silently fake-centering
-    the real mount on the pointing hint. goto_and_center then degrades to a raw
-    GoTo (centered=False) rather than reporting a bogus solve."""
+    """No ASTAP installed on a real (NINA) rig → the resolver's motion-keyed
+    guard REFUSES the simulator solver (review finding 6 / spec §3.4):
+    solve_and_sync raises a clear error BEFORE any exposure is wasted, instead
+    of silently fake-centering the real mount on the pointing hint.
+    goto_and_center then degrades to a raw GoTo (centered=False) rather than
+    reporting a bogus solve."""
     from astrodeck.devices.base import DeviceError
 
     client, state = _mock_client()
@@ -400,10 +412,14 @@ async def test_nina_solve_refuses_without_astap(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hub_module, "build_nina_rig", patched)
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
-    # Force the ASTAP-not-found path so get_solver returns the refusing SimSolver
-    # carrying mode="nina".
-    import astrodeck.solve as solve_pkg
-    monkeypatch.setattr(solve_pkg, "find_astap", lambda: None)
+    # Force the ASTAP-not-found path so the resolver's ``solve`` capability
+    # refuses (real motion connected, no trustworthy solver). solve_and_sync
+    # now resolves via providers.pick_solver (spec §3.4), which reads
+    # providers.find_astap — not the removed hub-level get_solver alias — so
+    # patch that binding directly rather than relying on this dev box
+    # genuinely lacking an ASTAP install.
+    import astrodeck.providers as providers_module
+    monkeypatch.setattr(providers_module, "find_astap", lambda: None)
     # Disarm the W1.10 sun cone (see test_hub_goto_and_center_through_nina): the
     # (10h, +30) target is seasonally within the cone; here we test the no-ASTAP
     # graceful-degrade path, not sun avoidance.
@@ -415,6 +431,9 @@ async def test_nina_solve_refuses_without_astap(monkeypatch, tmp_path):
         # direct solve must raise, not echo the hint as a centered solution
         with pytest.raises(DeviceError):
             await h.solve_and_sync(0.05)
+        # resolver-first ordering (spec §3.4): the failure lands BEFORE any
+        # exposure is taken, so no preview was ever published.
+        assert h.previews == {}
         # centering degrades gracefully to a raw GoTo instead of a fake solve
         result = await h.goto_and_center(10.0, 30.0, solve_exposure_s=0.05)
         assert result["centered"] is False

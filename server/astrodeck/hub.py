@@ -48,7 +48,6 @@ from .imaging import (
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
-from .solve import get_solver
 
 if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
     from .devices.backend import ConnSpec, RigSpec
@@ -1534,12 +1533,17 @@ class Hub:
         NINA's ``/prepared-image/solve``, which HANGS on the live rig and left the
         working ``AstapSolver`` orphaned (review 5/5d). Now NINA mode captures a
         frame exactly like sim/Alpaca, writes it to a temp FITS via ``save_fits``,
-        and hands it to the real local solver (ASTAP) with ra/dec/fov hints. If
-        ASTAP isn't installed the solver is a ``SimSolver`` that REFUSES on a real
-        rig (see ``get_solver``/``SimSolver``) -- so a discovery miss surfaces a
-        clear error instead of silently fake-centering the mount."""
+        and hands it to the real local solver (ASTAP) with ra/dec/fov hints. Solver
+        resolution now happens UP FRONT via ``providers.pick_solver`` (spec §3.4),
+        so a rig nothing can trustworthily solve for fails in <1 ms with a clear
+        ``DeviceError`` instead of wasting an exposure first."""
         cam: Camera = self.require("camera")
         tel: Telescope = self.require("telescope")
+        # Resolver-routed (spec §3.4): honors the user's solve override and the
+        # motion-keyed sim-solver guard, and raises a clear DeviceError BEFORE
+        # an exposure is wasted when nothing trustworthy can solve.
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
         # Pointing hint from the mount -- drives ASTAP's near search and lets a
         # refusing SimSolver fail without inventing a centered solution. The mount
         # reports JNOW on a real Alpaca mount, so bring it back to J2000 (the frame
@@ -1563,7 +1567,6 @@ class Hub:
         await asyncio.to_thread(
             save_fits, frame, tmp,
             ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
-        solver = get_solver(self.sim_rig, mode=self.mode)
         # FOV hint from the configured optics (bin-1, bin-independent — correct
         # even though the solve frame is binned 2×). None → ASTAP radius search,
         # preserving the old behavior when optics aren't known.

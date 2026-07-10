@@ -147,7 +147,11 @@ def _implicit_rows() -> list[dict]:
                    "probed_at": now},
         "offers": {"devices": [{"role": r, "name": f"Simulated {r}"}
                                 for r in ROLES],
-                   "tasks": ["autofocus", "polar_align"]},
+                   # Only tasks sim actually implements (spec §5 honesty): the
+                   # built-in polar simulator + the SimSolver. Autofocus on a
+                   # sim rig is the NATIVE engine's V-curve — the astrodeck
+                   # row's offer, not this one's.
+                   "tasks": ["polar_align", "solve"]},
     }]
 
     if NATIVE_AVAILABLE:
