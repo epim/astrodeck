@@ -33,6 +33,7 @@ ROLES: tuple[str, ...] = (
     "filterwheel",
     "switch",
     "safety",
+    "rotator",
 )
 
 

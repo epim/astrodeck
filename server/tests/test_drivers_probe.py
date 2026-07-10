@@ -114,8 +114,8 @@ def test_implicit_rows_exception_degrades_to_empty(store, monkeypatch):
 
 def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     """Review finding 1: Alpaca offers MUST carry the ConnSpec addressing
-    (dev_type + dev_num); unmapped DeviceTypes (rotator, until the role exists)
-    are skipped, not errors."""
+    (dev_type + dev_num); the CAA spec added the mapping so a Rotator row is
+    now returned like any other mapped DeviceType, not skipped."""
     store.add_driver("alpaca", "h")
 
     class _Resp:
@@ -146,7 +146,9 @@ def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     out = _run(drv.describe_all())
     devs = out["drivers"][0]["offers"]["devices"]
     assert devs == [{"role": "camera", "name": "ASI2600MM",
-                     "dev_type": "camera", "dev_num": 0}]
+                     "dev_type": "camera", "dev_num": 0},
+                    {"role": "rotator", "name": "ZWO CAA",
+                     "dev_type": "rotator", "dev_num": 0}]
 
 
 def test_implicit_ids_match_config_constant():

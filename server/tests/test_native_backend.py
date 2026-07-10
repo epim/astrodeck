@@ -76,7 +76,7 @@ def test_backend_identity_and_protocols():
     assert b.label == "Native (direct)"
     # roles EXCLUDE guider (Alpaca has no guider device); safety stays.
     assert b.roles == ("camera", "telescope", "focuser", "filterwheel",
-                       "switch", "safety")
+                       "switch", "safety", "rotator")
     assert "guider" not in b.roles
     assert b.discoverable is True
     assert b.hostless is False

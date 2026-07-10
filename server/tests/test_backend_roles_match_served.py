@@ -64,3 +64,24 @@ def test_no_backend_advertises_a_role_outside_canonical_ROLES():
         b = get_backend(name)
         for role in b.roles:
             assert role in ROLES, f"{name} advertises non-canonical role {role!r}"
+
+
+def test_native_serves_rotator():
+    from astrodeck.devices.backends.native_backend import _ROLE_TO_DEV_TYPE
+    b = get_backend("native")
+    assert "rotator" in b.roles
+    assert _ROLE_TO_DEV_TYPE["rotator"] == "rotator"
+
+
+def test_sim_serves_rotator():
+    from astrodeck.devices.sim import build_sim_rig
+    b = get_backend("sim")
+    assert "rotator" in b.roles          # SimBackend.roles = ROLES → automatic
+    assert "rotator" in build_sim_rig()
+
+
+def test_nina_serves_rotator():
+    from astrodeck.devices.nina import _ROLE_CLASSES
+    b = get_backend("nina")
+    assert "rotator" in b.roles
+    assert "rotator" in _ROLE_CLASSES

@@ -29,6 +29,7 @@ _ROLE_TO_DEV_TYPE: dict[str, str] = {
     "filterwheel": "filterwheel",
     "switch": "switch",
     "safety": "safetymonitor",
+    "rotator": "rotator",
 }
 
 
@@ -148,7 +149,8 @@ class NativeBackend:
     # Explicit fillable set (W1.2 table), EXCLUDING ``guider``: Alpaca has no
     # guider device (no ``guider`` key in ``_ROLE_TO_DEV_TYPE``), so native
     # guiding is done via PHD2. ``safety`` stays -- ``safetymonitor`` is served.
-    roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety")
+    roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety",
+             "rotator")
     discoverable = True
     hostless = False                # Alpaca is a network endpoint (host:port)
 
