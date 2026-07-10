@@ -20,6 +20,7 @@ from .base import (
     FilterWheel,
     Focuser,
     PierSide,
+    Rotator,
     SafetyMonitor,
     SafetyReading,
     Switch,
@@ -176,6 +177,11 @@ class SimRig:
         self.focuser_pos = 19_200
         self.best_focus = 20_000      # the autofocus routine must find this
         self.filter_slot = 0
+        self.rotator_mech_deg = 0.0
+        # hidden ground truth: how the camera is "clocked" vs mechanical zero.
+        # 0.0 by default so every existing sim solve/TPPA test is byte-identical
+        # (the polar_misalignment opt-in precedent); rotate-loop tests set it.
+        self.rotator_pa_offset_deg = 0.0
         self.pointing_error_deg = 0.04  # goto lands slightly off until synced
         self.sensor_temp = -9.8
         # --- native-TPPA test hook: injected polar-axis misalignment ----------
@@ -587,6 +593,56 @@ class SimFocuser(Focuser):
             await asyncio.sleep(abs(step) / self.MOVE_RATE)
 
 
+class SimRotator(Rotator):
+    MOVE_RATE = 5.0  # deg/s
+
+    def __init__(self, rig: SimRig, name: str = "Sim Rotator CAA"):
+        super().__init__(name)
+        self.rig = rig
+        self._halt = asyncio.Event()
+        self._moving = False
+
+    async def connect(self) -> None:
+        await asyncio.sleep(0.05)
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def get_mechanical_position(self) -> float:
+        return self.rig.rotator_mech_deg % 360.0
+
+    async def is_moving(self) -> bool:
+        return self._moving
+
+    async def halt(self) -> None:
+        self._halt.set()
+
+    async def move_mechanical(self, mech_deg: float) -> None:
+        target = mech_deg % 360.0
+        self._halt.clear()
+        self._moving = True
+        try:
+            # shortest signed travel, animated in ~2° steps like SimFocuser.
+            # Computed as raw delta in [0, 360) folded to (-180, 180] rather than
+            # the equivalent-looking ((d + 180) % 360) - 180 form: that version
+            # resolves the exact-180° tie to -180 (Python's % returns [0, 360),
+            # so 360 % 360 == 0 → 0 - 180 == -180), sending the rotator the "long"
+            # way round for an exact opposite target. This form ties to +180.
+            raw = (target - self.rig.rotator_mech_deg) % 360.0
+            delta = raw if raw <= 180.0 else raw - 360.0
+            steps = max(1, int(abs(delta) / 2.0))
+            step = delta / steps
+            for _ in range(steps):
+                if self._halt.is_set():
+                    return
+                self.rig.rotator_mech_deg = (self.rig.rotator_mech_deg + step) % 360.0
+                await asyncio.sleep(abs(step) / self.MOVE_RATE)
+            self.rig.rotator_mech_deg = target
+        finally:
+            self._moving = False
+
+
 class SimFilterWheel(FilterWheel):
     def __init__(self, rig: SimRig, name: str = "Sim Filter Wheel 7x36"):
         super().__init__(name)
@@ -697,6 +753,7 @@ def build_sim_rig() -> dict[str, object]:
         "focuser": SimFocuser(rig),
         "filterwheel": SimFilterWheel(rig),
         "switch": SimSwitch(),
+        "rotator": SimRotator(rig),
         "safety": SimSafetyMonitor(),
         "_rig": rig,
     }

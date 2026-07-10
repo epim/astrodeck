@@ -234,6 +234,60 @@ class Focuser(Device):
         return None
 
 
+class Rotator(Device):
+    """Camera rotator / angle adjuster (e.g. ZWO CAA).
+
+    Driver I/O is MECHANICAL-space only; the sky↔mechanical sync offset lives
+    HERE, client-side (offset = mechanical − sky), exactly like NINA's VM
+    layer (parity §11.2). Never call a driver's own Sync — this behaves
+    identically across Alpaca IRotatorV2/V3, the NINA bridge, and sim.
+    An unsynced rotator is not an error: offset 0 means sky == mechanical.
+    """
+
+    kind = "rotator"
+    can_reverse: bool = False
+    sync_offset_deg: float = 0.0     # mechanical − sky; set by sync()
+    synced: bool = False
+    MOVE_TIMEOUT_S: float = 180.0    # a full CAA revolution is minutes-slow
+
+    @abstractmethod
+    async def get_mechanical_position(self) -> float: ...  # deg [0, 360)
+
+    @abstractmethod
+    async def move_mechanical(self, mech_deg: float) -> None: ...
+    # absolute mechanical move; waits for completion; halts on CancelledError
+
+    @abstractmethod
+    async def halt(self) -> None: ...
+
+    async def is_moving(self) -> bool:
+        return False
+
+    async def get_reverse(self) -> bool:
+        return False
+
+    async def set_reverse(self, value: bool) -> None:
+        raise DeviceError("this rotator does not support reverse")
+
+    # ---- sky-space layer (shared by every backend) ----
+    async def get_position(self) -> float:
+        """Sync-adjusted sky position angle, deg [0, 360)."""
+        from ..rotation import mod360
+        return mod360(await self.get_mechanical_position() - self.sync_offset_deg)
+
+    async def sync(self, sky_deg: float) -> None:
+        """Declare that the CURRENT mechanical position is this sky PA."""
+        from ..rotation import mod360
+        self.sync_offset_deg = mod360(
+            await self.get_mechanical_position() - sky_deg)
+        self.synced = True
+
+    async def move_to(self, sky_deg: float) -> None:
+        """Absolute sky-PA move through the current offset."""
+        from ..rotation import mod360
+        await self.move_mechanical(mod360(sky_deg + self.sync_offset_deg))
+
+
 class FilterWheel(Device):
     kind = "filterwheel"
 
