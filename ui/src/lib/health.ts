@@ -160,6 +160,7 @@ export function deriveHealthIssues(input: {
   for (const [cap, label] of [
     ["autofocus", "Autofocus"],
     ["polar_align", "Polar alignment"],
+    ["solve", "Plate solving"],
   ] as const) {
     const choice = providers?.[cap];
     if (choice?.kind === "unavailable") {

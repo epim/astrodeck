@@ -55,6 +55,23 @@ export function deviceChoices(role: string, driver: DriverInfo): DriverDeviceOff
   return driver.offers.devices.filter((o) => o.role === role);
 }
 
+/** The three task slots the Equipment Tasks section renders (spec §4.1). */
+export type TaskCap = "autofocus" | "polar_align" | "solve";
+export const TASK_CAPS: { cap: TaskCap; label: string }[] = [
+  { cap: "autofocus", label: "Autofocus" },
+  { cap: "polar_align", label: "Polar align" },
+  { cap: "solve", label: "Plate solve" },
+];
+
+/** THE ONE RULE, task edition (spec §4.1): a driver appears in a task row's
+ *  dropdown only when it is enabled, reachable, and its probe actually offers
+ *  that task. */
+export function eligibleTaskDrivers(cap: TaskCap, drivers: DriverInfo[]): DriverInfo[] {
+  return drivers.filter(
+    (d) => d.enabled && d.status.reachable && d.offers.tasks.includes(cap),
+  );
+}
+
 /** Sticky-assignment state (spec §5): the user's choice persists through a
  *  driver outage and re-lights when it returns; a deleted driver reads
  *  "driver-removed" and never silently reconnects elsewhere. */
