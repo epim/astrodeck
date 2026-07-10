@@ -21,7 +21,7 @@ import NavMoreSheet, { OVERFLOW_VIEWS } from "./NavMoreSheet";
 import { haptics } from "../lib/haptics";
 
 const PRIMARY: { id: ViewName; label: string; icon: IconName }[] = [
-  { id: "connect", label: "Rig", icon: "rig" },
+  { id: "connect", label: "Equipment", icon: "rig" },
   { id: "polar", label: "Align", icon: "align" },
   { id: "mount", label: "Mount", icon: "mount" },
   { id: "focus", label: "Focus", icon: "focus" },
