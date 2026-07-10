@@ -25,8 +25,9 @@ import {
   listDrivers,
   listProfiles,
   saveProfile,
+  setProvidersConfig,
 } from "../api/backends";
-import { useStore } from "../store";
+import { useConfig, useStore } from "../store";
 import { useCanConfigBackend } from "../lib/caps";
 import {
   buildRigSpec,
@@ -40,16 +41,11 @@ import {
   type AssignmentMap,
 } from "../lib/equipment";
 import { confirmDialog } from "../components/ConfirmDialog";
+import TasksPanel, { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
 import { EmptyState, Field, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
-
-// The client ProfileDevice type (types.ts) predates the drivers spec and lacks
-// `driver_id`, which the SERVER persists (profiles.ProfileDevice.driver_id) and
-// the Equipment surface round-trips to restore an assignment. We extend it
-// locally rather than edit the shared types.ts (task constraint).
-type EquipProfileDevice = ProfileDevice & { driver_id: string };
 
 const SLOT_WORD: Record<string, { word: string; tone: string }> = {
   unassigned: { word: "UNASSIGNED", tone: "text-faint" },
@@ -63,6 +59,7 @@ export default function EquipmentView(): JSX.Element {
   const status = useStore((s) => s.status);
   const showToast = useStore((s) => s.showToast);
   const canConfig = useCanConfigBackend();
+  const config = useConfig();
 
   const [data, setData] = useState<DriversResponse | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -189,7 +186,8 @@ export default function EquipmentView(): JSX.Element {
       // Build device rows directly (the guard narrows `a` to Assignment, so no
       // cast is needed); sim assignments are the implicit built-in and carry no
       // persistable driver_id, so they're excluded from the saved profile.
-      const devices: EquipProfileDevice[] = [];
+      // `driver_id` is now a typed optional field on ProfileDevice (Task 5).
+      const devices: ProfileDevice[] = [];
       for (const [role, a] of Object.entries(assignments)) {
         if (!a || a.driverId === "sim") continue;
         devices.push({
@@ -220,6 +218,9 @@ export default function EquipmentView(): JSX.Element {
         phd2_port: 0,
         optics: null,
         site_name: null,
+        // Task-override snapshot (spec §4.4): the profile carries the CURRENT
+        // global task routing so Activate restores it (server-side precedence).
+        providers: config?.providers ? { ...config.providers } : null,
       };
       try {
         await saveProfile(profile);
@@ -237,9 +238,9 @@ export default function EquipmentView(): JSX.Element {
         const p = await getProfile(id);
         const next: AssignmentMap = {};
         for (const d of p.devices ?? []) {
-          // driver_id is server-persisted but absent from the client ProfileDevice
-          // type (types.ts) — read it through the local extension.
-          const driverId = (d as EquipProfileDevice).driver_id;
+          // driver_id is a typed optional field on ProfileDevice (Task 5);
+          // server-persisted and round-tripped to restore the assignment.
+          const driverId = d.driver_id;
           if (!driverId) continue; // raw-addressing rows: connect via Activate
           next[d.role] = {
             driverId,
@@ -250,6 +251,17 @@ export default function EquipmentView(): JSX.Element {
         }
         setAssignments(next);
         saveAssignments(next);
+        // Restore the profile's task overrides into global config so the Tasks
+        // rows and the server's resolution match the loaded snapshot. Viewers
+        // (no config.backend) skip this — assignments alone are still useful.
+        if (p.providers && canConfig) {
+          try {
+            await setProvidersConfig({ ...DEFAULT_PROVIDERS, ...p.providers });
+            await useStore.getState().loadConfig();
+          } catch {
+            showToast("warning", "Assignments loaded, but task overrides couldn't be restored");
+          }
+        }
         showToast("success", `Loaded assignments from "${p.name}" — review, then Connect`);
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "profile load failed");
@@ -305,6 +317,8 @@ export default function EquipmentView(): JSX.Element {
           </div>
         </Panel>
 
+        <TasksPanel drivers={drivers} busy={busy} />
+
         <Panel title="Rig Actions">
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -349,7 +363,7 @@ export default function EquipmentView(): JSX.Element {
             <button
               type="button"
               className="btn !py-1.5"
-              disabled={!canConfig || !profileName.trim() || assignedCount === 0}
+              disabled={!canConfig || !profileName.trim() || assignedCount === 0 || busy}
               onClick={doSaveProfile}
             >
               Save
