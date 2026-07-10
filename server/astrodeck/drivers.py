@@ -232,3 +232,58 @@ async def describe_all(force: bool = False) -> dict:
     except Exception:  # noqa: BLE001 — implicit detection must never 500 describe_all
         implicit = []
     return {"roles": list(ROLES), "drivers": rows + implicit}
+
+
+# ------------------------------------------------------- driver_id resolution
+
+#: Driver type -> backend registry name. The Alpaca lane's registry name is
+#: "native" (devices/backends/native_backend.py); nina/phd2 match their type.
+_DRIVER_TYPE_TO_BACKEND: dict[str, str] = {
+    "nina": "nina", "alpaca": "native", "phd2": "phd2",
+}
+
+
+def resolve_driver_ids(spec):
+    """Resolve every ``ConnSpec.driver_id`` in ``spec`` to concrete addressing
+    (spec §3.3). Returns ``(resolved_spec, role_to_driver_id, prefailed)``.
+
+    A ConnSpec WITHOUT a driver_id passes through untouched (raw-addressing
+    back-compat). One WITH a driver_id takes backend/host/port from the
+    configured driver; its own dev_type/dev_num/role survive, and ``extra``
+    merges driver-then-spec (spec wins) so a driver-level option (e.g. phd2
+    ``managed``) flows in without the client re-sending it.
+
+    A missing driver pre-fails its role with "driver removed: <id>"; a
+    disabled one with "driver disabled: <label>" — per the spec's failure-
+    honesty rules these become attempted+failed RoleResults at the hub, never
+    a silent skip and never a whole-rig 500."""
+    from .devices.backend import ConnSpec, RigSpec
+
+    by_id = {d.id: d for d in config_store.cfg().drivers}
+    roles: dict[str, ConnSpec] = {}
+    role_to_driver: dict[str, str] = {}
+    prefailed: list[tuple[str, str]] = []
+    for role, conn in spec.roles.items():
+        did = getattr(conn, "driver_id", None)
+        if not did:
+            roles[role] = conn
+            continue
+        d = by_id.get(did)
+        if d is None:
+            prefailed.append((role, f"driver removed: {did}"))
+            continue
+        if not d.enabled:
+            prefailed.append((role, f"driver disabled: {d.label}"))
+            continue
+        role_to_driver[role] = did
+        roles[role] = ConnSpec(
+            backend=_DRIVER_TYPE_TO_BACKEND[d.type],
+            host=d.host,
+            port=d.port,
+            dev_type=conn.dev_type,
+            dev_num=conn.dev_num,
+            role=conn.role or role,
+            driver_id=did,
+            extra={**(d.extra or {}), **(conn.extra or {})},
+        )
+    return RigSpec(primary=spec.primary, roles=roles), role_to_driver, prefailed
