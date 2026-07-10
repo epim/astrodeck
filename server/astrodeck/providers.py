@@ -147,10 +147,10 @@ def _connected(hub: object, role: str) -> object | None:
 
 
 def _rig_has_real_motion(hub: object) -> bool:
-    """True when any CONNECTED motion device (mount/focuser) is real hardware.
-    This — not the global hub mode, meaningless on a mixed rig — is what makes
-    a faked plate solve dangerous (review finding 6)."""
-    for role in ("telescope", "focuser"):
+    """True when any CONNECTED motion device (mount/focuser/rotator) is real
+    hardware. This — not the global hub mode, meaningless on a mixed rig — is
+    what makes a faked plate solve dangerous (review finding 6)."""
+    for role in ("telescope", "focuser", "rotator"):
         dev = _connected(hub, role)
         if dev is not None and getattr(dev, "backend", "") in _REAL_BACKENDS:
             return True
