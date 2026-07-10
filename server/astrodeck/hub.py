@@ -1191,16 +1191,19 @@ class Hub:
     async def _mount_expects_jnow(self, tel) -> bool:
         """True when the connected mount expects topocentric-apparent (JNOW)
         coordinates, so the hub must precess J2000<->JNOW at the slew/sync
-        boundary. Only native ("alpaca") mounts are converted: the sim/NINA mounts
-        are treated as already-consistent with the J2000 catalog (no conversion),
-        which keeps sim tests and NINA framing unchanged.
+        boundary. The gate keys on the mount DEVICE's backend (``devices/
+        alpaca.py`` sets ``backend = "alpaca"``), not the global ``hub.mode`` —
+        so a mixed rig (e.g. primary NINA with a native Alpaca mount) still
+        precesses correctly; sim/NINA mounts (backend ``""``/``"nina"``) stay
+        unconverted as before. The ``_mount_wants_jnow`` cache and its reset
+        points (``hub.py:390``, ``hub.py:659``) are unchanged.
 
         Best-effort EquatorialSystem probe (cached): ASCOM ``EquatorialSystem`` is
         0=other, 1=topocentric(local/JNOW), 2=J2000, 3=B1950. Default to JNOW when
         unreadable — real ASCOM mounts are overwhelmingly topocentric, and a mount
         that already reports J2000 (==2) is left un-precessed so we never double-
         precess it."""
-        if self.mode != "alpaca":
+        if getattr(tel, "backend", "") != "alpaca":
             return False
         if self._mount_wants_jnow is not None:
             return self._mount_wants_jnow
