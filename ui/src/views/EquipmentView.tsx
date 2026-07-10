@@ -1,5 +1,5 @@
 // EquipmentView.tsx — the unified per-device Equipment surface (spec §4.1),
-// replacing the mode-centric ConnectView under the same "connect" view id.
+// replacing the old mode-centric connect view under the same "connect" view id.
 // One uniform row grammar: for each server-fed role, pick WHO drives it from
 // the drivers that actually offer it (the one rule), then Connect Rig compiles
 // assignments → RigSpec (primary "none", driver_id ConnSpecs) → the existing

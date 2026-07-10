@@ -19,7 +19,7 @@ import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
 import { useShouldShowLogin } from "./lib/caps";
 import Login from "./views/Login";
-import ConnectView from "./views/ConnectView";
+import EquipmentView from "./views/EquipmentView";
 import CaptureView from "./views/CaptureView";
 import FocusView from "./views/FocusView";
 import MountView from "./views/MountView";
@@ -37,7 +37,7 @@ import SettingsView from "./components/settings/SettingsView";
 // APPENDED entry (no reorder, no Power eviction; monitor spec E1/E2). Nav glyphs
 // resolve through the single icons.tsx module (Batch-2 2B icon plan).
 const NAV: { id: ViewName; label: string; icon: IconName }[] = [
-  { id: "connect", label: "Rig", icon: "rig" },
+  { id: "connect", label: "Equipment", icon: "rig" },
   { id: "polar", label: "Align", icon: "align" },
   { id: "mount", label: "Mount", icon: "mount" },
   { id: "focus", label: "Focus", icon: "focus" },
@@ -65,7 +65,7 @@ function PlaceholderView({ label }: { label: string }): JSX.Element {
 }
 
 const VIEWS: Record<ViewName, () => JSX.Element> = {
-  connect: ConnectView,
+  connect: EquipmentView,
   capture: CaptureView,
   focus: FocusView,
   mount: MountView,

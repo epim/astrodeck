@@ -1,6 +1,6 @@
 // SettingsView.tsx — the Settings surface (mounts at VIEWS.settings, replacing the
 // PlaceholderView). A tabbed shell over the three W1.C/W1.6/W2.5 surfaces:
-//   Connect  → BackendPicker (choose primary + per-role overrides, connect a rig)
+//   Connect  → DriversPanel (rig connection now lives on the Equipment tab)
 //   Profiles → ProfileList (list / activate / rename / delete / save current rig)
 //   Account  → AccountPanel (principal, View-only badge, Google sign-in)
 // Plus the tri-state per-role link status (BackendLinkGrid) always visible at the
@@ -23,7 +23,6 @@ import {
   useIsViewer,
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
-import BackendPicker from "./BackendPicker";
 import DriversPanel from "./DriversPanel";
 import CapabilitiesCard from "./CapabilitiesCard";
 import ProfileList from "./ProfileList";
@@ -147,16 +146,6 @@ export default function SettingsView(): JSX.Element {
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="order-2 lg:order-1 min-w-0 flex flex-col gap-4">
             <DriversPanel />
-            {canConfig ? (
-              <BackendPicker />
-            ) : (
-              <Panel title="Backend Picker">
-                <p className="text-xs text-dim">
-                  Connecting a rig needs operator or admin access. The live rig status
-                  is shown alongside.
-                </p>
-              </Panel>
-            )}
           </div>
           <div className="order-1 lg:order-2 flex flex-col gap-4">
             <Panel title="Connection Status">
