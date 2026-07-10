@@ -48,6 +48,7 @@ from .imaging import (
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
+from . import rotation as _rotation
 
 if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
     from .devices.backend import ConnSpec, RigSpec
@@ -1596,6 +1597,91 @@ class Hub:
                         f"Dec {result.dec_deg:+.3f}° (J2000)", "solve")
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
+
+    async def rotate_to_pa(self, target_pa_deg: float,
+                           exposure_s: float = 3.0,
+                           max_attempts: int = 5) -> dict:
+        """Solve→sync→rotate loop (NINA §11.3 parity, bounded): physically
+        enforce a sky position angle. Syncs the ROTATOR only (never the mount).
+        The solver is resolved up front (motion-guarded — a sim solver can
+        never drive a real rotator) and a solve failure raises DeviceError;
+        goto_and_center degrades it to rotation_skipped."""
+        rot = self.require("rotator")
+        cam: Camera = self.require("camera")
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
+        rcfg = config_store.cfg().rotator
+        target = _rotation.mod360(target_pa_deg)
+        adjusted_to = None
+        moved = False
+        error = None
+        orientation = None
+        epoch = self._motion_epoch
+        for attempt in range(1, max_attempts + 1):
+            if not self._motion_committed_clean(epoch):
+                bus.log("warning", "rotate abandoned: aborted", "rotator")
+                return {"rotated": False, "aborted": True,
+                        "pa_deg": orientation, "adjusted_to": adjusted_to,
+                        "attempts": attempt - 1, "error_deg": error}
+            tel = self.devices.get("telescope")
+            ra_hint = dec_hint = None
+            if tel is not None and tel.connected:
+                try:
+                    ra_hint, dec_hint = await tel.get_position()
+                    if ra_hint is not None:
+                        ra_hint, dec_hint = await self.from_mount_frame(
+                            tel, ra_hint, dec_hint)
+                except Exception:
+                    ra_hint = dec_hint = None
+            async with self.exposure_guard("rotate to PA"):
+                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            tmp = CAPTURE_DIR / "_solve" / "rotate.fits"
+            await asyncio.to_thread(
+                save_fits, frame, tmp,
+                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            opt = self.effective_optics()
+            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                        fov_deg_hint=opt["fov_h_deg"] or None)
+            if not result.success:
+                raise DeviceError(f"rotate: plate solve failed: {result.message}")
+            orientation = _rotation.mod360(result.rotation_deg)
+            await rot.sync(orientation)
+            mech = await rot.get_mechanical_position()
+            prev = target
+            target = _rotation.map_sky_target(prev, mech, rot.sync_offset_deg,
+                                              rcfg.range_type,
+                                              rcfg.range_start_deg)
+            if not _rotation.angle_equals(target, prev, 0.1):
+                # a ±90°/±270° adjustment genuinely changes framing (only ±180
+                # is equivalent) — surface it, never silently (spec §3.3).
+                adjusted_to = target
+                bus.log("warning",
+                        f"rotator: target PA {prev:.1f}° adjusted to "
+                        f"{target:.1f}° by the {rcfg.range_type} mechanical "
+                        f"range", "rotator")
+            distance = _rotation.shortest_rotation(target, orientation,
+                                                   rcfg.range_type)
+            error = abs(((distance + 90.0) % 180.0) - 90.0)  # mod-180 magnitude
+            bus.publish("rotator", action="rotating", attempt=attempt,
+                        orientation_deg=round(orientation, 2),
+                        target_deg=round(target, 2))
+            if _rotation.angle_equals_mod180(distance, 0.0, rcfg.tolerance_deg):
+                bus.publish("rotator", action="rotated",
+                            pa_deg=round(orientation, 2))
+                if moved and self.guider and self.guider.connected:
+                    bus.log("warning",
+                            "camera rotated — guide calibration may be stale; "
+                            "PHD2 will re-calibrate or flip as needed", "guide")
+                return {"rotated": True, "pa_deg": orientation,
+                        "adjusted_to": adjusted_to, "attempts": attempt,
+                        "error_deg": round(error, 2)}
+            await rot.move_to(_rotation.mod360(orientation + distance))
+            moved = True
+        raise DeviceError(
+            f"rotator failed to converge after {max_attempts} attempts "
+            f"(last error {error:.1f}°)")
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
