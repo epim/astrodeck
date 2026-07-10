@@ -340,3 +340,14 @@ def test_pick_solver_returns_astap_then_sim(monkeypatch):
     s = providers.pick_solver(hub)
     assert isinstance(s, SimSolver)
     assert s.mode is None       # resolver is the safety authority now
+
+
+def test_solve_refuses_sim_when_real_rotator_connected(monkeypatch):
+    """SAFETY: a real ROTATOR is motion hardware too — a faked solve would feed
+    invented angles to a real CAA (spec §3.5.1)."""
+    monkeypatch.setattr(providers, "find_astap", lambda: None)
+    hub = FakeHub(mode="nina", devices={"rotator": FakeDev(backend="alpaca"),
+                                        "camera": FakeDev(backend="sim")})
+    with pytest.raises(DeviceError):
+        providers.resolve("solve", hub)
+    assert providers.resolve_all(hub)["solve"]["kind"] == "unavailable"
