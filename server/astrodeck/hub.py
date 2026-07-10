@@ -447,7 +447,27 @@ class Hub:
                                         profile: "Profile | None" = None) -> dict:
         await self._teardown()
         RigSpec, ConnSpec, connect_profile = _harness()  # noqa: N806 (lazy import)
+        # Phase 2 (spec §3.3): resolve driver_id references to concrete
+        # addressing. Missing/disabled drivers pre-fail their role HONESTLY —
+        # they surface as attempted+failed RoleResults below, never vanish.
+        from . import drivers as drivers_mod
+        spec, role_to_driver, prefailed = drivers_mod.resolve_driver_ids(spec)
         result = await connect_profile(spec)
+        if prefailed:
+            from .devices.orchestrator import RoleResult
+            keep = [rr for rr in result.results
+                    if rr.role not in {r for r, _ in prefailed}]
+            keep.extend(RoleResult(role, ok=False, error=err, attempted=True)
+                        for role, err in prefailed)
+            result.results = keep
+        # Cache honesty (spec §3.2): a driver-backed role that FAILED to
+        # connect drops that driver's probe-cache row immediately, so the
+        # Equipment surface's next /api/drivers read reflects reality instead
+        # of a up-to-15s-stale 'reachable'.
+        failed = {rr.role for rr in result.results if rr.attempted and not rr.ok}
+        for role, did in role_to_driver.items():
+            if role in failed:
+                drivers_mod.invalidate(did)
         summary = await self._apply_connect_result(result, primary=spec.primary)
         if set_active is not None:
             await asyncio.to_thread(config_store.set_active_profile, set_active)
@@ -492,6 +512,14 @@ class Hub:
         guide camera, derive ``self.mode`` from the primary backend, set the
         sim/NINA handles only when the primary exposes them, retain the
         ``ConnectResult`` for the boot-LED grid, and start the pollers."""
+        # primary "none" (explicit-only rig, spec §4.1): there is no declared
+        # primary to derive mode/handles from — pick the strongest connected
+        # backend. Preference nina > native > sim: the NINA handle powers the
+        # heartbeat/event-stream wiring below, a native session means a real
+        # (alpaca-mode) rig, and sim is the weakest signal. `mode` stays the
+        # legacy scalar; per-device truth lives in backend_links.
+        if primary in ("", "none"):
+            primary = self._effective_primary(result)
         meta = last_connect_meta or {}
         for role in ROLES:
             dev = result.rig.get(role)
@@ -549,6 +577,17 @@ class Hub:
             if key[0] == backend_name:
                 return session
         return None
+
+    @staticmethod
+    def _effective_primary(result: "ConnectResult") -> str:
+        """Derive a primary label for a primary-less rig from its OPEN
+        sessions, preference nina > native > sim, else the first session's
+        backend, else "sim" (an empty rig behaves like the old default)."""
+        names = [k[0] for k in result.sessions]
+        for pref in ("nina", "native", "sim"):
+            if pref in names:
+                return pref
+        return names[0] if names else "sim"
 
     def backend_links(self) -> list[dict]:
         """The per-role boot-LED surface (W1.6): the retained ConnectResult's
