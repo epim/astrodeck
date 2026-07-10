@@ -26,6 +26,7 @@ from .base import (
     FilterWheel,
     Focuser,
     PierSide,
+    Rotator,
     SafetyMonitor,
     Switch,
     SwitchPort,
@@ -609,6 +610,54 @@ class AlpacaFocuser(_AlpacaDevice, Focuser):
             return None
 
 
+class AlpacaRotator(_AlpacaDevice, Rotator):
+    dev_type = "rotator"
+
+    async def connect(self) -> None:
+        await _AlpacaDevice.connect(self)
+        try:
+            self.can_reverse = bool(await self._get("canreverse"))
+        except DeviceError:
+            self.can_reverse = False
+
+    async def get_mechanical_position(self) -> float:
+        return float(await self._get("mechanicalposition"))
+
+    async def is_moving(self) -> bool:
+        return bool(await self._get("ismoving"))
+
+    async def move_mechanical(self, mech_deg: float) -> None:
+        await self._put("movemechanical", Position=float(mech_deg))
+        waited = 0.0
+        try:
+            while await self._get("ismoving"):
+                await asyncio.sleep(0.25)
+                waited += 0.25
+                if waited >= self.MOVE_TIMEOUT_S:
+                    await self._put("halt")
+                    raise DeviceError(
+                        f"rotator move timed out after {self.MOVE_TIMEOUT_S:.0f}s")
+        except asyncio.CancelledError:
+            await self._put("halt")
+            raise
+
+    async def halt(self) -> None:
+        await self._put("halt")
+
+    async def get_reverse(self) -> bool:
+        if not self.can_reverse:
+            return False
+        try:
+            return bool(await self._get("reverse"))
+        except DeviceError:
+            return False
+
+    async def set_reverse(self, value: bool) -> None:
+        if not self.can_reverse:
+            raise DeviceError("this rotator does not support reverse")
+        await self._put("reverse", Reverse=bool(value))
+
+
 class AlpacaFilterWheel(_AlpacaDevice, FilterWheel):
     dev_type = "filterwheel"
 
@@ -663,6 +712,7 @@ DEVICE_CLASSES = {
     "camera": AlpacaCamera,
     "telescope": AlpacaTelescope,
     "focuser": AlpacaFocuser,
+    "rotator": AlpacaRotator,
     "filterwheel": AlpacaFilterWheel,
     "switch": AlpacaSwitch,
     "safetymonitor": AlpacaSafetyMonitor,
