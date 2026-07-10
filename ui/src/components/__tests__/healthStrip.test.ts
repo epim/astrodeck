@@ -174,6 +174,23 @@ eq(
   "an unavailable capability provider is Notice (tier 1)",
 );
 
+// --- status.providers solve unavailable => Notice ----------------------------
+{
+  const issues = deriveHealthIssues({
+    safety: null,
+    wsConnected: true,
+    providers: {
+      solve: { kind: "unavailable", label: "none", reason: "no ASTAP and a real mount is connected" },
+    },
+  });
+  eq(tiers(issues), [1], "an unavailable solve provider is Notice (tier 1)");
+  eq(
+    issues[0].text.includes("Plate solving unavailable"),
+    true,
+    "solve unavailable issue text names the capability",
+  );
+}
+
 // --- ranking: an Act issue and a Notice issue both surface, Act first -------
 {
   const issues = deriveHealthIssues({

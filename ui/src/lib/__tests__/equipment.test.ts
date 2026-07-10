@@ -4,6 +4,7 @@ import {
   buildRigSpec,
   deviceChoices,
   eligibleDrivers,
+  eligibleTaskDrivers,
   hasRealMotion,
   slotState,
   type AssignmentMap,
@@ -103,6 +104,41 @@ test("hasRealMotion gates on non-sim motion roles", () => {
   eq(hasRealMotion({ camera: { driverId: "alpaca-ab12" } }, [alpaca]), false);
   // a removed driver can't drive motion — no hold-confirm needed
   eq(hasRealMotion({ telescope: { driverId: "alpaca-gone" } }, [alpaca]), false);
+});
+
+test("eligibleTaskDrivers applies the one rule (task edition)", () => {
+  const mk = (id: string, tasks: string[], opts?: { enabled?: boolean; reachable?: boolean }) =>
+    ({
+      id,
+      type: id.split("-")[0],
+      label: id,
+      enabled: opts?.enabled ?? true,
+      implicit: !id.includes("-"),
+      status: { reachable: opts?.reachable ?? true, error: null, detail: null, probed_at: 0 },
+      offers: { devices: [], tasks },
+    }) as unknown as DriverInfo;
+
+  const drivers = [
+    mk("nina-a1b2", ["autofocus", "polar_align"]),
+    mk("astrodeck", ["autofocus", "polar_align"]),
+    mk("astap", ["solve"]),
+    mk("sim", ["polar_align", "solve"]),
+    mk("nina-dead", ["autofocus"], { reachable: false }),
+    mk("nina-off", ["autofocus"], { enabled: false }),
+  ];
+
+  eq(
+    eligibleTaskDrivers("autofocus", drivers).map((d) => d.id).join(","),
+    ["nina-a1b2", "astrodeck"].join(","),
+  );
+  eq(
+    eligibleTaskDrivers("solve", drivers).map((d) => d.id).join(","),
+    ["astap", "sim"].join(","),
+  );
+  eq(
+    eligibleTaskDrivers("polar_align", drivers).map((d) => d.id).join(","),
+    ["nina-a1b2", "astrodeck", "sim"].join(","),
+  );
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);
