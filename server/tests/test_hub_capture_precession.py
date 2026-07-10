@@ -1,7 +1,9 @@
 """Regression tests for J2000<->JNOW precession, autofocus-restore, capture mutual-exclusion fixes.
 
 Each test pins one confirmed bug so it can never silently regress:
-  * J2000->JNOW precession at the mount boundary (~20 arcmin today)
+  * J2000->JNOW precession at the mount boundary (~20 arcmin today), keyed on
+    the mount DEVICE's backend (not the global hub.mode) so a mixed rig
+    (e.g. primary NINA + native Alpaca mount) still precesses correctly
   * autofocus restores the focuser to start on any mid-sweep exception
   * the single camera is mutually excluded across capture paths
   * disconnect_all closes the native httpx sessions it held (no leak)
@@ -58,7 +60,11 @@ def test_jnow_j2000_roundtrip_is_tight():
 
 class _FakeAlpacaTel:
     """Fake mount exposing the Alpaca ``_get`` seam so the hub can probe
-    EquatorialSystem. ``equ`` = ASCOM EquatorialCoordinateType."""
+    EquatorialSystem. ``equ`` = ASCOM EquatorialCoordinateType. Carries the
+    real Alpaca device marker (``backend`` — devices/alpaca.py:257) because
+    the JNOW gate is DEVICE-keyed, not hub-mode-keyed."""
+    backend = "alpaca"
+
     def __init__(self, equ: int):
         self._equ = equ
 
@@ -68,25 +74,35 @@ class _FakeAlpacaTel:
         raise KeyError(method)
 
 
-async def test_mount_frame_converts_only_for_jnow_alpaca():
+class _FakeSimTel:
+    """A sim-backed mount: no ``backend`` marker (devices/base.py default '')."""
+    backend = ""
+
+
+async def test_mount_frame_converts_only_for_alpaca_devices():
     h = Hub()
     tel_jnow = _FakeAlpacaTel(equ=1)         # topocentric / JNOW
 
-    # sim mode: never convert (the sim mount is already J2000-consistent).
-    h.mode = "sim"
-    assert await h.to_mount_frame(tel_jnow, 16.6949, 36.4603) == (16.6949, 36.4603)
-
-    # alpaca + topocentric: convert (target moves ~arcmin off the J2000 input).
+    # A sim DEVICE never converts — even when the hub is in alpaca mode.
     h.mode = "alpaca"
+    assert await h.to_mount_frame(_FakeSimTel(), 16.6949, 36.4603) == (16.6949, 36.4603)
+
+    # An Alpaca topocentric device converts (target moves ~arcmin off J2000)…
     h._mount_wants_jnow = None
     ra1, dec1 = await h.to_mount_frame(tel_jnow, 16.6949, 36.4603)
     assert _sep_arcmin(16.6949, 36.4603, ra1, dec1) > 5.0
 
-    # alpaca but the mount reports J2000 (==2): must NOT double-precess.
+    # …INCLUDING on a mixed rig where the hub mode is "nina" (the phase-2
+    # review's arcminute regression: primary NINA + native Alpaca mount).
     h2 = Hub()
-    h2.mode = "alpaca"
-    tel_j2000 = _FakeAlpacaTel(equ=2)
-    assert await h2.to_mount_frame(tel_j2000, 16.6949, 36.4603) == (16.6949, 36.4603)
+    h2.mode = "nina"
+    ra2, dec2 = await h2.to_mount_frame(_FakeAlpacaTel(equ=1), 16.6949, 36.4603)
+    assert _sep_arcmin(16.6949, 36.4603, ra2, dec2) > 5.0
+
+    # An Alpaca mount that reports J2000 (==2) must NOT double-precess.
+    h3 = Hub()
+    h3.mode = "alpaca"
+    assert await h3.to_mount_frame(_FakeAlpacaTel(equ=2), 16.6949, 36.4603) == (16.6949, 36.4603)
 
 
 # ----------------------------------------------------------- autofocus recovery
