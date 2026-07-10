@@ -57,6 +57,7 @@ from ..focus import run_autofocus
 from ..hub import TOUCH_MAX_RATE_DEG_S, hub
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles
+from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.report import SessionReporter, _slug
@@ -330,6 +331,19 @@ class MoveAxisBody(BaseModel):
 
 class FocuserMoveBody(BaseModel):
     position: int
+
+
+class RotatorMoveBody(BaseModel):
+    position_deg: float
+
+
+class RotatorReverseBody(BaseModel):
+    reverse: bool
+
+
+class RotateToPaBody(BaseModel):
+    target_pa_deg: float
+    exposure_s: float = 3.0
 
 
 class AutofocusBody(BaseModel):
@@ -2023,6 +2037,69 @@ def create_app() -> FastAPI:
                 t.cancel()
         await foc.halt()
         return {"ok": True}
+
+    # ---------------------------------------------------------- rotator
+
+    @app.post("/api/rotator/move",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_move(body: RotatorMoveBody):
+        try:
+            rot = hub.require("rotator")
+        except DeviceError as e:
+            raise _err(e)
+        # spec §3.5.2: a manual rotation mid-exposure ruins the frame — refuse.
+        if hub._capture_lock.locked():
+            raise HTTPException(
+                409, f"camera is busy ({hub._capture_busy or 'exposing'}); "
+                     f"rotator move refused")
+        rcfg = config_store.cfg().rotator
+        mech = await rot.get_mechanical_position()
+        target = map_sky_target(body.position_deg, mech, rot.sync_offset_deg,
+                                rcfg.range_type, rcfg.range_start_deg)
+        adjusted = not angle_equals(target, mod360(body.position_deg), 0.1)
+        return _spawn("rotator", rot.move_to(target)) | {
+            "target_deg": round(target, 2), "adjusted": adjusted}
+
+    @app.post("/api/rotator/halt",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_halt():
+        try:
+            rot = hub.require("rotator")
+        except DeviceError as e:
+            raise _err(e)
+        for name in ("rotator", "rotate_to_pa"):
+            task = hub._busy.get(name)
+            if task and not task.done():
+                task.cancel()
+        await rot.halt()
+        return {"ok": True}
+
+    @app.post("/api/rotator/reverse",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_reverse(body: RotatorReverseBody):
+        try:
+            rot = hub.require("rotator")
+        except DeviceError as e:
+            raise _err(e)
+        if not rot.can_reverse:
+            raise HTTPException(400, "this rotator does not support reverse")
+        await rot.set_reverse(body.reverse)
+        return {"reverse": body.reverse}
+
+    @app.post("/api/rotator/rotate-to-pa",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_rotate_to_pa(body: RotateToPaBody):
+        try:
+            hub.require("rotator")
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("rotate_to_pa",
+                      hub.rotate_to_pa(body.target_pa_deg, body.exposure_s))
 
     # ---------------------------------------------------------- filterwheel
 
