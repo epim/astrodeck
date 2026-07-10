@@ -106,6 +106,11 @@ def _requested_roles(spec: RigSpec) -> set[str]:
     ``RigSpec`` alone. An explicit override for a role NOT in that backend's
     ``roles`` is STILL requested (so it surfaces a FAILED ``RoleResult`` rather
     than vanishing); the apply-time reject-rule (W1.C) handles the override."""
+    # primary "none": the Equipment surface's explicit-only rig (spec §4.1) —
+    # ONLY assigned roles are requested; no primary-derived fill. A real
+    # primary keeps the W1.6 union semantics below unchanged.
+    if spec.primary in ("", "none"):
+        return set(spec.roles)
     return set(spec.roles) | set(get_backend(spec.primary).roles)
 
 

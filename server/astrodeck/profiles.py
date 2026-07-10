@@ -57,6 +57,10 @@ class ProfileDevice(BaseModel):
     dev_type: str = ""
     dev_num: int = 0
     name: str = ""
+    # Phase 2: reference to a configured driver (AppConfig.drivers[].id). ""
+    # (old rows) → the raw host/port above stays authoritative. Saved by the
+    # Equipment surface; resolved by drivers.resolve_driver_ids at connect.
+    driver_id: str = ""
     # Stage B: carries ``ConnSpec.extra`` (backend-specific options, e.g. a PHD2
     # pixel scale). Additive + JSON-able only — a non-serializable runtime
     # injection (the NINA ``build_rig`` callable) is NEVER persisted here; see
@@ -159,6 +163,7 @@ class Profile(BaseModel):
                 dev_type=d.dev_type or None,
                 dev_num=d.dev_num,
                 role=d.role,
+                driver_id=d.driver_id or None,
                 extra=extra,
             )
         # Legacy nina_host-only profile (no per-device rows): the rig IS NINA, so
