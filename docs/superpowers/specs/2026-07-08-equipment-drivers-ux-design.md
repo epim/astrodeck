@@ -147,6 +147,11 @@ Returns the full option space the Equipment surface renders from:
   device selector — for Alpaca that is `dev_type` + `dev_num` (as in the
   example above); NINA/PHD2/sim entries need only `role` + `name`. The UI
   never synthesizes addressing.
+- **String-named addressing (review finding, doc-only):** for NINA/PHD2/sim
+  entries (no `dev_type`/`dev_num`), the offer's `name` rides into the
+  compiled ConnSpec as `extra["name"]` — the server already reads it there
+  (`devices/backends/native_backend.py`, `profiles.py`); this is not a new
+  field, just documenting where the string-named selector actually lives.
 - Probe results cached ~15 s; `POST /api/drivers/{id}/probe` forces a
   refresh. Probing never raises: failures land in `status.error`.
   **Cache-honesty rule (review finding 5):** when a rig connect fails with a
@@ -275,6 +280,12 @@ driver-id form.
   "unavailable" with the reason, and re-lights when the driver returns.
 - **Assignment references a deleted driver** → row shows "driver removed",
   falls back to unassigned; never silently reconnects elsewhere.
+- **Driver reachable but the assigned device is gone** *(amended post-review)*
+  → row shows "device missing" rather than lying "ok": the driver is
+  enabled + reachable, but its LIVE probe no longer offers the assigned
+  role (or, when the assignment pins a `dev_num`, that exact device) — e.g.
+  a camera unplugged mid-session. The sticky assignment keeps rendering
+  (never blanked); it re-lights to "ok" the moment the offer reappears.
 - **NINA configured but unreachable** → one visible banner on Equipment; NINA
   simply absent from dropdowns (never a dead entry).
 - **Task rows** keep the resolver `reason` permanently visible — "why is this

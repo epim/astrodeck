@@ -20,7 +20,7 @@ handler (``api.app``) AND the relay-tunneled /ws handler
 """
 from __future__ import annotations
 
-from ..auth.capabilities import CAP_VIEW_SITE_PRECISE
+from ..auth.capabilities import CAP_CONFIG_BACKEND, CAP_VIEW_SITE_PRECISE
 from ..auth.principal import Principal
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
@@ -96,10 +96,45 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
     return {**ev_json, "data": new_data}
 
 
+# ------------------------------------------------------ driver-row redaction
+def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
+    """Scrub ``host``/``port``/``extra`` from every driver row in a ``GET
+    /api/drivers`` payload unless ``principal`` holds ``config.backend`` (the
+    same cap that can WRITE a driver's endpoint). Without this, a
+    CAP_VIEW_STATUS-only (viewer) caller could read every configured driver's
+    LAN host/port/DDNS straight off a read-only status surface.
+
+    ``status``/``offers`` and the top-level ``roles`` list are untouched — the
+    redaction is purely endpoint-identity, not availability.
+
+    Copies each row (never mutates ``payload`` in place): ``describe_all()``
+    rows can alias the probe TTL cache (see ``drivers._probe_configured``), so
+    an in-place ``del`` here would be a second way to poison that cache."""
+    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
+        return payload  # holder: full detail, untouched
+    if not isinstance(payload, dict):
+        return payload
+    drivers = payload.get("drivers")
+    if not isinstance(drivers, list):
+        return payload
+    scrubbed = []
+    for row in drivers:
+        if not isinstance(row, dict):
+            scrubbed.append(row)
+            continue
+        row = dict(row)
+        row.pop("host", None)
+        row.pop("port", None)
+        row.pop("extra", None)
+        scrubbed.append(row)
+    return {**payload, "drivers": scrubbed}
+
+
 __all__ = [
     "WS_AUTH_RECHECK_S",
     "_redact_site_for",
     "_redact_ws_event",
+    "_redact_drivers_for",
     "_coarsen_latlon",
     "_SITE_LATLON_KEYS",
 ]

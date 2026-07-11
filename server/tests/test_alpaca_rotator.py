@@ -102,3 +102,18 @@ async def test_reverse_gated_on_capability(rot):
     rot.can_reverse = True
     await rot.set_reverse(True)
     assert ("put", "reverse", {"Reverse": True}) in rot.conn.calls
+
+
+@pytest.mark.asyncio
+async def test_get_reverse_falls_back_to_false_on_driver_error(rot):
+    """can_reverse=True (the device DECLARES support) but the ``reverse`` GET
+    itself raises (a flaky/incomplete driver) -- get_reverse() degrades to
+    False rather than propagating, matching the missing-canreverse contract."""
+    rot.can_reverse = True
+
+    async def boom(dev_type, dev_num, method, **params):
+        if method == "reverse":
+            raise DeviceError("reverse not implemented")
+        return rot.conn.responses.get(method)
+    rot.conn.get = boom
+    assert await rot.get_reverse() is False

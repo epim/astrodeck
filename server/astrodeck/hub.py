@@ -1618,6 +1618,10 @@ class Hub:
         orientation = None
         epoch = self._motion_epoch
         for attempt in range(1, max_attempts + 1):
+            # This fence gates only the NEXT attempt's dispatch below; it does
+            # NOT cancel an in-flight ``rot.move_to`` from a PRIOR attempt —
+            # that relies on task cancellation -> device halt-on-cancel, the
+            # same contract ``tel.slew`` uses (W3.7).
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "rotate abandoned: aborted", "rotator")
                 return {"rotated": False, "aborted": True,
@@ -1679,9 +1683,10 @@ class Hub:
                         "error_deg": round(error, 2)}
             await rot.move_to(_rotation.mod360(orientation + distance))
             moved = True
+        last_error = f"(last error {error:.1f}°)" if error is not None else "(no attempts ran)"
         raise DeviceError(
             f"rotator failed to converge after {max_attempts} attempts "
-            f"(last error {error:.1f}°)")
+            f"{last_error}")
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,
@@ -1705,7 +1710,7 @@ class Hub:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")
                 return {"centered": False, "error_arcmin": None,
-                        "attempts": 0, "aborted": True}
+                        "attempts": 0, "aborted": True, "rotation": None}
             if await tel.is_parked():
                 await tel.unpark()
             await tel.set_tracking(True)

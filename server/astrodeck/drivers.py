@@ -207,7 +207,15 @@ async def _probe_configured(entry: DriverEntry, force: bool) -> dict:
     row["status"] = {"reachable": res["reachable"], "error": res["error"],
                      "detail": res.get("detail"),
                      "probed_at": res["probed_at"]}
-    row["offers"] = res["offers"]
+    # Copy, never alias: ``res`` (cache hit OR the just-stored fresh probe) is
+    # the SAME dict object retained in ``_CACHE``, so handing back its
+    # ``offers`` by reference would let a consumer mutation (e.g. a route that
+    # appends/edits a returned device row) poison every future cache-hit read
+    # (P1 deferred finding). One level deep is enough: ``offers`` nests only a
+    # flat ``devices`` list of flat dicts and a flat ``tasks`` list of strings.
+    offers = res["offers"]
+    row["offers"] = {"devices": [dict(d) for d in offers["devices"]],
+                     "tasks": list(offers["tasks"])}
     return row
 
 

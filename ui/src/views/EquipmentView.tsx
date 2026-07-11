@@ -54,6 +54,9 @@ const SLOT_WORD: Record<string, { word: string; tone: string }> = {
   "driver-removed": { word: "DRIVER REMOVED", tone: "text-bad" },
   "driver-unreachable": { word: "DRIVER UNREACHABLE", tone: "text-warn" },
   "driver-disabled": { word: "DRIVER DISABLED", tone: "text-warn" },
+  // amended post-review: the driver is up, but its LIVE probe no longer
+  // offers the assigned device (e.g. a camera unplugged mid-session).
+  "device-missing": { word: "DEVICE MISSING", tone: "text-warn" },
 };
 
 export default function EquipmentView(): JSX.Element {
@@ -435,7 +438,7 @@ function RoleSlot({
   void link; // live truth reflected via status.connected + result LED; link is
   // surfaced in the side Link Status grid.
   const eligible = eligibleDrivers(role, drivers);
-  const state = slotState(assignment, drivers);
+  const state = slotState(role, assignment, drivers);
   const meta = SLOT_WORD[state];
   const chosen = assignment ? drivers.find((d) => d.id === assignment.driverId) : undefined;
   const choices = chosen ? deviceChoices(role, chosen) : [];

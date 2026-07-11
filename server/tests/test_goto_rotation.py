@@ -65,6 +65,18 @@ def test_goto_body_carries_rotation():
     assert GotoBody(ra_hours=1.0, dec_deg=2.0).rotation_deg is None
 
 
+def test_goto_body_rejects_nan_rotation():
+    """NaN bounds (post-review hardening): a NaN/inf rotation_deg must 422 at
+    the model, never sail into rotate_to_pa's mod-360 math."""
+    from pydantic import ValidationError
+
+    from astrodeck.api.app import GotoBody
+    with pytest.raises(ValidationError):
+        GotoBody(ra_hours=1.0, dec_deg=2.0, rotation_deg=float("nan"))
+    with pytest.raises(ValidationError):
+        GotoBody(ra_hours=1.0, dec_deg=2.0, rotation_deg=float("inf"))
+
+
 def test_sequence_passes_rotation():
     """_setup_target's centered branch forwards target.rotation_deg."""
     import inspect

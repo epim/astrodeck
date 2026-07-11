@@ -93,3 +93,15 @@ def test_rotate_to_pa_spawns(client, hub, rot, monkeypatch):
     r = client.post("/api/rotator/rotate-to-pa", json={"target_pa_deg": 120.0})
     assert r.status_code == 200
     assert r.json() == {"started": "rotate_to_pa"}
+
+
+def test_rotate_to_pa_body_rejects_nan():
+    """NaN bounds (post-review hardening): a NaN/inf target_pa_deg must 422 at
+    the model, never sail into rotate_to_pa's mod-360 math."""
+    from pydantic import ValidationError
+
+    from astrodeck.api.app import RotateToPaBody
+    with pytest.raises(ValidationError):
+        RotateToPaBody(target_pa_deg=float("nan"))
+    with pytest.raises(ValidationError):
+        RotateToPaBody(target_pa_deg=float("-inf"))
