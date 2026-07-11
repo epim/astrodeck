@@ -19,7 +19,7 @@ from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
@@ -37,8 +37,8 @@ from ..auth.rbac import assert_route_capabilities, declare
 # /ws handler (remote.relay_client) share ONE implementation. They cannot live
 # here as nested closures: app.py imports remote.relay_client, so relay_client
 # importing them back out of app.py would be a circular import.
-from .redact import (WS_AUTH_RECHECK_S, _redact_site_for,  # re-exported at module scope
-                     _redact_ws_event)
+from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
+                     _redact_site_for, _redact_ws_event)
 from ..catalog import search_catalog
 from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
@@ -318,7 +318,10 @@ class GotoBody(BaseModel):
     dec_deg: float
     center: bool = True
     force: bool = False
-    rotation_deg: float | None = None
+    # allow_inf_nan=False: a NaN/inf rotation target would otherwise sail
+    # through validation and blow up rotate_to_pa's mod-360 math (post-review
+    # hardening). Default stays None (rotation is optional).
+    rotation_deg: float | None = Field(default=None, allow_inf_nan=False)
 
 
 class MoveAxisBody(BaseModel):
@@ -342,7 +345,8 @@ class RotatorReverseBody(BaseModel):
 
 
 class RotateToPaBody(BaseModel):
-    target_pa_deg: float
+    # allow_inf_nan=False: same NaN/inf hardening as GotoBody.rotation_deg.
+    target_pa_deg: float = Field(..., allow_inf_nan=False)
     exposure_s: float = 3.0
 
 
@@ -784,11 +788,15 @@ def create_app() -> FastAPI:
     # (same as discovery); write = config.backend (same as every connect write).
     # describe_all() never raises, so GET /api/drivers can't 500.
 
-    @app.get("/api/drivers", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/drivers")
     @declare(CAP_VIEW_STATUS)
-    async def list_drivers():
+    async def list_drivers(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         from .. import drivers as drivers_mod
-        return await drivers_mod.describe_all()
+        # RBAC redaction (security review): a caller without config.backend
+        # (viewer role) can SEE that a driver exists and probe its offers, but
+        # not its host/port/extra — those are the same endpoint details
+        # config.backend is required to WRITE.
+        return _redact_drivers_for(await drivers_mod.describe_all(), principal)
 
     @app.post("/api/drivers/{driver_id}/probe",
               dependencies=[Depends(require(CAP_VIEW_STATUS))])

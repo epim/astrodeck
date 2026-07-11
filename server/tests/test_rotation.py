@@ -1,4 +1,3 @@
-# server/tests/test_rotation.py
 """Table-driven tests for astrodeck.rotation — direct transcription checks of
 docs/native-parity/algorithms/nina-platesolving.md §11.2/§11.4. The UI mirror
 (ui/src/lib/rotation.ts) asserts the SAME vectors — keep the tables in sync."""

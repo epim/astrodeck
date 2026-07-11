@@ -53,8 +53,20 @@ def test_probe_cached_within_ttl_forced_and_invalidated(store, monkeypatch):
 
     monkeypatch.setitem(drv._PROBES, "phd2", fake)
     _run(drv.describe_all())
-    _run(drv.describe_all())
+    out = _run(drv.describe_all())
     assert calls["n"] == 1                  # second read served from cache
+    # Cache-hit rows must be copies, not references (P1 deferred finding): a
+    # consumer mutating what describe_all() returned must never poison what
+    # the NEXT call (still within the TTL) hands back.
+    row = out["drivers"][0]
+    row["offers"]["devices"].append({"role": "camera", "name": "poison"})
+    row["offers"]["devices"][0]["name"] = "mutated"
+    row["offers"]["tasks"].append("poison")
+    out2 = _run(drv.describe_all())
+    assert calls["n"] == 1                  # still cache-served
+    assert out2["drivers"][0]["offers"]["devices"] == [
+        {"role": "guider", "name": "PHD2"}]
+    assert out2["drivers"][0]["offers"]["tasks"] == []
     _run(drv.describe_all(force=True))
     assert calls["n"] == 2                  # force bypasses the TTL
     drv.invalidate(d.id)

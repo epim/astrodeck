@@ -175,10 +175,11 @@ export default function RotatorCard(): JSX.Element | null {
                  aria-label="Mechanical range">
               {RANGE_OPTIONS.map((rt) => (
                 <button key={rt}
+                        role="radio"
                         className={`btn min-h-9 uppercase text-[10px] tracking-wider ${
                           draft.range_type === rt ? "btn-accent" : ""}`}
                         disabled={!canConfig || busy}
-                        aria-pressed={draft.range_type === rt}
+                        aria-checked={draft.range_type === rt}
                         onClick={() => void persist({ range_type: rt })}>
                   {rt}
                 </button>
