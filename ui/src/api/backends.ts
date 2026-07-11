@@ -21,6 +21,7 @@ import type {
   ProfileRow,
   ProvidersConfig,
   RigSpec,
+  RotatorConfig,
   SafetyConfig,
   UpdateConfig,
   UpdateStatus,
@@ -217,6 +218,12 @@ export const setUpdateConfig = (cfg: UpdateConfig): Promise<AppConfig> =>
  *  Returns the full merged AppConfig (mirrors setSafetyConfig/setUpdateConfig). */
 export const setProvidersConfig = (cfg: ProvidersConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config/providers", cfg);
+
+// ------------------------------------------------------------ rotator config
+/** POST /api/config/rotator → persist the rotator range-of-motion + tolerance
+ *  (CAA spec §3.2). config.backend-gated; 422 on invalid values. */
+export const setRotatorConfig = (cfg: RotatorConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config/rotator", cfg);
 
 // ------------------------------------------------------------ backend drivers
 /** GET /api/drivers → configured + implicit drivers with probe status + offers

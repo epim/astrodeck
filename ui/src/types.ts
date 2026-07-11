@@ -41,6 +41,7 @@ export interface RigStatus {
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
   filterwheel?: { position: number; names: string[] };
+  rotator?: RotatorStatus;
   camera?: {
     temperature: number | null;
     can_cool: boolean;
@@ -87,6 +88,20 @@ export interface RigStatus {
     horizon_min_deg: number;
   };
   optics?: OpticsComputed;
+}
+
+// Rotator live state (CAA spec §3.2/§5.2). `sky_deg`/`mech_deg` are the sky
+// position-angle and the raw mechanical reading; the offset between them
+// (mechanical − sky) is NOT on the wire — lib/rotation.ts derives it from
+// both live values (see adjustedPa).
+export interface RotatorStatus {
+  name: string;
+  sky_deg: number;
+  mech_deg: number;
+  moving: boolean;
+  synced: boolean;
+  can_reverse: boolean;
+  reverse: boolean;
 }
 
 export interface DiskInfo {
@@ -475,6 +490,21 @@ export interface AppConfig {
   providers?: ProvidersConfig;
   // --- backend drivers (equipment-drivers spec; global, never per-profile) ---
   drivers?: DriverEntry[];
+  // --- rotator range-of-motion + tolerance (CAA spec §3.2; global config,
+  //     mirrors server config.py RotatorConfig). Optional: an old WS `hello`
+  //     bootstrap predates the field. ---
+  rotator?: RotatorConfig;
+}
+
+// ---------------------------------------------------------- rotator config
+// Mirrors server/astrodeck/config.py RotatorConfig (CAA spec §3.2) — the
+// CONFIG (write) side of POST /api/config/rotator. range_type bounds the
+// mechanical sweep (full 360° / half 180° / quarter 90°) starting at
+// range_start_deg; tolerance_deg is the "close enough" band for rotate-to-PA.
+export interface RotatorConfig {
+  range_type: "full" | "half" | "quarter";
+  range_start_deg: number;
+  tolerance_deg: number;
 }
 
 // ------------------------------------------------------- capability providers

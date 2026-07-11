@@ -106,6 +106,11 @@ test("hasRealMotion gates on non-sim motion roles", () => {
   eq(hasRealMotion({ telescope: { driverId: "alpaca-gone" } }, [alpaca]), false);
 });
 
+test("hasRealMotion counts a real rotator", () => {
+  eq(hasRealMotion({ rotator: { driverId: "alpaca-ab12" } }, [alpaca]), true);
+  eq(hasRealMotion({ rotator: { driverId: "sim" } }, [sim]), false);
+});
+
 test("eligibleTaskDrivers applies the one rule (task edition)", () => {
   const mk = (id: string, tasks: string[], opts?: { enabled?: boolean; reachable?: boolean }) =>
     ({
