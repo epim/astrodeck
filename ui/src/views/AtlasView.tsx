@@ -44,6 +44,7 @@ import {
   deproject,
   wrapRaHours,
 } from "../lib/framing";
+import { adjustedPa } from "../lib/rotation";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
 import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
@@ -577,14 +578,30 @@ export default function AtlasView(): JSX.Element {
                 />
               </div>
 
-              {/* meridian / rotation honesty note (no rotator in rig) */}
-              {rotation_deg > 0.5 && (
+              {/* rotation honesty note — reality-aware (CAA spec §5.3) */}
+              {rotation_deg > 0.5 && (status?.rotator ? (
+                <p className="text-[12px] text-dim leading-snug">
+                  Camera will rotate to PA {Math.round(rotation_deg)}°
+                  automatically on slew ({status.rotator.name}).
+                  {(() => {
+                    const cfg = { range_type: "full" as const, range_start_deg: 0,
+                                  ...(config?.rotator ?? {}) };
+                    const h = adjustedPa(rotation_deg, status.rotator, cfg);
+                    return h.adjusted ? (
+                      <span className="text-warn">
+                        {" "}⚠ Outside the range of motion — it will image
+                        as {Math.round(h.target)}°.
+                      </span>
+                    ) : null;
+                  })()}
+                </p>
+              ) : (
                 <p className="text-[12px] text-dim leading-snug">
                   Camera angle is manual — set your camera to PA{" "}
                   {Math.round(rotation_deg)}° before the run; there is no rotator
                   in the rig.
                 </p>
-              )}
+              ))}
 
               {/* below-limit reality check from the lifted night */}
               {belowLimit && (
