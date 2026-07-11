@@ -379,9 +379,11 @@ export default function SequenceView() {
                   {t.rotation_deg != null && t.rotation_deg > 0.5 && (
                     <span
                       className="mono text-[10px] text-accent border border-line2 px-1.5 py-0.5"
-                      title="Set your camera to this position angle before the run (no rotator in rig)"
+                      title={status?.rotator
+                        ? "The rotator will move to this position angle automatically at target start"
+                        : "Set your camera to this position angle before the run (no rotator in rig)"}
                     >
-                      PA {Math.round(t.rotation_deg)}°
+                      PA {Math.round(t.rotation_deg)}°{status?.rotator ? " · auto" : ""}
                     </span>
                   )}
                   <label className="flex items-center gap-1.5 text-[11px] text-dim">
