@@ -15,27 +15,9 @@
 import type { JSX } from "react";
 import type { BackendLink, LedState } from "../../types";
 import { Led, EmptyState } from "../ui";
-
-// The canonical role order for the grid (mirrors server devices.backend.ROLES).
-const ROLE_ORDER = [
-  "camera",
-  "telescope",
-  "focuser",
-  "guider",
-  "filterwheel",
-  "switch",
-  "safety",
-] as const;
-
-const ROLE_LABEL: Record<string, string> = {
-  camera: "Camera",
-  telescope: "Mount",
-  focuser: "Focuser",
-  guider: "Guider",
-  filterwheel: "Filter wheel",
-  switch: "Power / switch",
-  safety: "Safety monitor",
-};
+// Canonical role order + labels live in backendMeta (mirrors server
+// devices.backend.ROLES) — this grid had drifted its own copy; single source now.
+import { ALL_ROLES, ROLE_LABEL } from "./backendMeta";
 
 type TriState = "connected" | "degraded" | "failed" | "skipped";
 
@@ -99,10 +81,10 @@ export default function BackendLinkGrid({
     );
   }
 
-  // Order canonically (camera→safety); any unknown trailing role keeps its order.
+  // Order canonically (camera→rotator); any unknown trailing role keeps its order.
   const ordered = [...links].sort((a, b) => {
-    const ia = ROLE_ORDER.indexOf(a.role as (typeof ROLE_ORDER)[number]);
-    const ib = ROLE_ORDER.indexOf(b.role as (typeof ROLE_ORDER)[number]);
+    const ia = ALL_ROLES.indexOf(a.role as (typeof ALL_ROLES)[number]);
+    const ib = ALL_ROLES.indexOf(b.role as (typeof ALL_ROLES)[number]);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
   });
 
