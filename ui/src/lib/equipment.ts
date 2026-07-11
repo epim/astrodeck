@@ -120,7 +120,7 @@ export function buildRigSpec(assignments: AssignmentMap): RigSpec {
 /** Hold-to-confirm gate: true when a real (non-sim) driver fills a motion
  *  role — mirrors the retired connect picker's MOTION_ROLES rule. */
 export function hasRealMotion(assignments: AssignmentMap, drivers: DriverInfo[]): boolean {
-  return ["telescope", "focuser"].some((role) => {
+  return ["telescope", "focuser", "rotator"].some((role) => {
     const a = assignments[role];
     if (!a || a.driverId === "sim") return false;
     return slotState(a, drivers) !== "driver-removed";

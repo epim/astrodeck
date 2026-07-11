@@ -15,6 +15,7 @@ export const ALL_ROLES = [
   "filterwheel",
   "switch",
   "safety",
+  "rotator",
 ] as const;
 export type Role = (typeof ALL_ROLES)[number];
 
@@ -26,6 +27,7 @@ export const ROLE_LABEL: Record<string, string> = {
   filterwheel: "Filter wheel",
   switch: "Power / switch",
   safety: "Safety monitor",
+  rotator: "Rotator",
 };
 
 // What addressing a backend needs in the picker:
