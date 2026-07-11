@@ -42,6 +42,7 @@ import {
 } from "../lib/equipment";
 import { confirmDialog } from "../components/ConfirmDialog";
 import TasksPanel, { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
+import RotatorCard from "../components/equipment/RotatorCard";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
 import { EmptyState, Field, InfoDot, Led, Panel } from "../components/ui";
@@ -318,6 +319,7 @@ export default function EquipmentView(): JSX.Element {
         </Panel>
 
         <TasksPanel drivers={drivers} busy={busy} />
+        <RotatorCard />
 
         <Panel title="Rig Actions">
           <div className="flex flex-wrap items-center gap-3">
