@@ -27,7 +27,8 @@ export type SlotState =
   | "ok"
   | "driver-removed"
   | "driver-unreachable"
-  | "driver-disabled";
+  | "driver-disabled"
+  | "device-missing";
 
 // Mirrors server drivers._DRIVER_TYPE_TO_BACKEND — the Alpaca lane's registry
 // name is "native"; sim is its own backend for the one-tap sim rig.
@@ -72,15 +73,33 @@ export function eligibleTaskDrivers(cap: TaskCap, drivers: DriverInfo[]): Driver
   );
 }
 
-/** Sticky-assignment state (spec §5): the user's choice persists through a
- *  driver outage and re-lights when it returns; a deleted driver reads
- *  "driver-removed" and never silently reconnects elsewhere. */
-export function slotState(a: Assignment | null, drivers: DriverInfo[]): SlotState {
+/** Sticky-assignment state (spec §5, amended post-review): the user's choice
+ *  persists through a driver outage and re-lights when it returns; a deleted
+ *  driver reads "driver-removed" and never silently reconnects elsewhere.
+ *  ``role`` is the AssignmentMap key (Assignment itself carries no role) --
+ *  needed to check the driver's CURRENT offers, not just its reachability. */
+export function slotState(
+  role: string,
+  a: Assignment | null,
+  drivers: DriverInfo[],
+): SlotState {
   if (!a) return "unassigned";
   const d = drivers.find((x) => x.id === a.driverId);
   if (!d) return "driver-removed";
   if (!d.enabled) return "driver-disabled";
   if (!d.status.reachable) return "driver-unreachable";
+  // Honesty (post-review): an enabled + reachable driver whose LIVE probe no
+  // longer offers the assigned role (e.g. a camera unplugged mid-session)
+  // must not read "ok" -- the row would lie. Match at the granularity the
+  // assignment actually pins: a devNum-addressed pick (Alpaca) must find
+  // that EXACT device still enumerated; role-level presence is the floor
+  // (nina/phd2/sim offers carry no dev_num to pin against).
+  const stillOffered = d.offers.devices.some((o) => {
+    if (o.role !== role) return false;
+    if (a.devNum !== undefined) return o.dev_type === a.devType && o.dev_num === a.devNum;
+    return true;
+  });
+  if (!stillOffered) return "device-missing";
   return "ok";
 }
 
@@ -123,7 +142,7 @@ export function hasRealMotion(assignments: AssignmentMap, drivers: DriverInfo[])
   return ["telescope", "focuser", "rotator"].some((role) => {
     const a = assignments[role];
     if (!a || a.driverId === "sim") return false;
-    return slotState(a, drivers) !== "driver-removed";
+    return slotState(role, a, drivers) !== "driver-removed";
   });
 }
 

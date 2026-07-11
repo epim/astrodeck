@@ -73,12 +73,40 @@ test("deviceChoices filters the driver's offers by role", () => {
 
 test("slotState is sticky and honest", () => {
   const a = { driverId: "alpaca-ab12" };
-  eq(slotState(null, [alpaca]), "unassigned");
-  eq(slotState(a, [alpaca]), "ok");
-  eq(slotState(a, []), "driver-removed");
-  eq(slotState(a, [{ ...alpaca, enabled: false }]), "driver-disabled");
-  eq(slotState(a, [{ ...alpaca, status: { ...alpaca.status, reachable: false } }]),
+  eq(slotState("camera", null, [alpaca]), "unassigned");
+  eq(slotState("camera", a, [alpaca]), "ok");
+  eq(slotState("camera", a, []), "driver-removed");
+  eq(slotState("camera", a, [{ ...alpaca, enabled: false }]), "driver-disabled");
+  eq(slotState("camera", a, [{ ...alpaca, status: { ...alpaca.status, reachable: false } }]),
      "driver-unreachable");
+});
+
+test("slotState reads device-missing when the probe drops the assigned role's offer (amended post-review)", () => {
+  const a = { driverId: "alpaca-ab12" };
+  const noCamera = {
+    ...alpaca,
+    offers: { devices: alpaca.offers.devices.filter((o) => o.role !== "camera"), tasks: [] },
+  };
+  // enabled + reachable, but the camera offer is gone (unplugged mid-session)
+  eq(slotState("camera", a, [noCamera]), "device-missing");
+  // a role the driver still offers stays ok
+  eq(slotState("focuser", a, [noCamera]), "ok");
+  // offer present -> ok unchanged
+  eq(slotState("camera", a, [alpaca]), "ok");
+});
+
+test("slotState device-missing matches devNum granularity when the assignment pins one", () => {
+  // pinned to dev_num 1 ("ASI220MM"); only dev_num 0 remains offered
+  const pinned = { driverId: "alpaca-ab12", devType: "camera", devNum: 1 };
+  const onlyDevZero = {
+    ...alpaca,
+    offers: {
+      devices: alpaca.offers.devices.filter((o) => !(o.role === "camera" && o.dev_num === 1)),
+      tasks: [],
+    },
+  };
+  eq(slotState("camera", pinned, [onlyDevZero]), "device-missing");
+  eq(slotState("camera", pinned, [alpaca]), "ok");
 });
 
 test("buildRigSpec compiles explicit-only rigs with driver_id", () => {

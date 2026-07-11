@@ -1,4 +1,3 @@
-# server/astrodeck/rotation.py
 """Pure rotator angle & mechanical-range math.
 
 Direct transcription of docs/native-parity/algorithms/nina-platesolving.md
