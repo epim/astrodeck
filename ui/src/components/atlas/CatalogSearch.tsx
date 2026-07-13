@@ -1,0 +1,61 @@
+// CatalogSearch — the Atlas's inline target search (wave-2 §2). Same idiom as
+// Plan's search (SequenceView): 250 ms debounce, GET /api/catalog?q=, top 6.
+// Self-contained: owns its query/results state and clears itself after a pick;
+// the parent decides what "pick" means (setFraming vs openFraming).
+
+import { useEffect, useState, type JSX } from "react";
+import { api } from "../../api";
+import type { CatalogEntry } from "../../types";
+
+export function CatalogSearch({
+  onPick,
+  placeholder = "Search catalog — frame a target",
+}: {
+  onPick: (e: CatalogEntry) => void;
+  placeholder?: string;
+}): JSX.Element {
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<CatalogEntry[]>([]);
+
+  useEffect(() => {
+    if (!search) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      try { setResults((await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6)); }
+      catch { /* ignore — transient search errors just yield no dropdown */ }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const pick = (e: CatalogEntry) => {
+    onPick(e);
+    setSearch("");
+    setResults([]);
+  };
+
+  return (
+    <div className="relative">
+      <input
+        className="field btn-touch !w-56"
+        placeholder={placeholder}
+        aria-label="Search the target catalog"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+      {results.length > 0 && (
+        <div className="absolute left-0 top-full mt-1 w-72 panel z-20 max-h-60 overflow-y-auto">
+          {results.map((r) => (
+            <button key={r.id} type="button" onClick={() => pick(r)}
+              className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer">
+              <span><span className="mono text-accent">{r.id}</span> {r.name}</span>
+              <span className={`mono ${r.alt > 40 ? "text-good" : r.alt < 20 ? "text-warn" : "text-dim"}`}>
+                {r.alt.toFixed(0)}°
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default CatalogSearch;
