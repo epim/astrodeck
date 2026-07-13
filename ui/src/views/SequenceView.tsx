@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
-import { Field, HoldButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
+import { Field, HoldButton, IconButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
@@ -10,9 +10,13 @@ import { humanizeSeqError } from "../lib/humanize";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
+import { confirmDialog } from "../components/ConfirmDialog";
+import { fmtTime } from "../lib/visibility";
 import { useCanControlCapture } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
-import type { CatalogEntry, ExposureStep, SequencePlan, Target } from "../types";
+import type {
+  CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
+} from "../types";
 
 const DEFAULT_STEP: ExposureStep = {
   filter: null, exposure_s: 120, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light",
@@ -36,6 +40,28 @@ function SeqStateBadge({ state }: { state: string }) {
   );
 }
 
+/** Runtime autorun-schedule chip (wave-3 §2/§4). Pure render of the engine's
+ *  `sequence.schedule` block — `waiting` is a dim in-progress note (with the
+ *  resolved start time), `window_closed`/`never_rises` are a warn-tone stop
+ *  reason; `ready` renders nothing (no chip-worthy state to report). */
+function ScheduleChip({ schedule }: { schedule: NonNullable<SequenceState["schedule"]> }) {
+  if (schedule.state === "waiting") {
+    return (
+      <span className="text-[11px] text-dim inline-flex items-center gap-1">
+        ⏱ Waiting — {schedule.reason} · starts {fmtTime(schedule.start_ts)}
+      </span>
+    );
+  }
+  if (schedule.state === "window_closed" || schedule.state === "never_rises") {
+    return (
+      <span className="text-[11px] text-warn inline-flex items-center gap-1">
+        ⚠ {schedule.reason}
+      </span>
+    );
+  }
+  return null;
+}
+
 export default function SequenceView() {
   const status = useStore((s) => s.status);
   const sequence = useStore((s) => s.sequence);
@@ -45,6 +71,12 @@ export default function SequenceView() {
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
   const setPlan = useStore((s) => s.setPlan);
+  // Frame-in-Atlas (wave-3 §5): openFraming switches the view to "atlas" and
+  // seeds the framing session's center from the CatalogEntry; the follow-up
+  // setFraming lands the PA synchronously on that fresh session (MountView
+  // precedent — see IconButton icon="frame" usage below).
+  const openFraming = useStore((s) => s.openFraming);
+  const setFraming = useStore((s) => s.setFraming);
   // Horizon limit for the per-target altitude sparkline + tonight ordering — the
   // server-owned site setting (falls back to 30° when the site is unknown, same
   // default as the /api/visibility route + VisibilityPanel).
@@ -76,6 +108,10 @@ export default function SequenceView() {
   const [ordering, setOrdering] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
+  // In-flight guard for the quick-add visibility check (wave-3 §4): blocks a
+  // second addTarget() while the first's /api/visibility fetch (or its confirm
+  // dialog) is still pending, so a double-tap on a search result can't double-add.
+  const [pendingAdd, setPendingAdd] = useState(false);
   const [recoverable, setRecoverable] =
     useState<{ name: string; frames_done: number; frames_total: number } | null>(null);
 
@@ -214,16 +250,62 @@ export default function SequenceView() {
     }
   });
 
-  const addTarget = (e: CatalogEntry) => {
-    setPlan({
-      ...plan,
-      targets: [...plan.targets, {
-        name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
-        center: true, autofocus_first: true, calibration: false, steps: [{ ...DEFAULT_STEP }],
-        schedule: defaultSchedule(),
-      }],
-    });
-    setSearch("");
+  // Quick-add below-horizon confirm (wave-3 §4): a catalog-search add now checks
+  // tonight's visibility first and gates on a confirm dialog when the target
+  // never clears the site's alt limit — mirrors AtlasView.sendToPlan's gate
+  // verbatim. A visibility-fetch FAILURE must never block the add (catch below
+  // falls through to the unconditional add), and both the "fine, no dialog"
+  // and "confirmed" paths funnel into the same setPlan/setSearch call.
+  const addTarget = async (e: CatalogEntry) => {
+    if (pendingAdd) return; // in-flight guard — no double-add on a rapid double-tap
+    setPendingAdd(true);
+    try {
+      let ok = true;
+      try {
+        const night = await api.get<VisibilityNight>(
+          `/api/visibility?ra=${e.ra_hours}&dec=${e.dec_deg}&alt_limit=${altLimit}`,
+        );
+        if (night.never_rises_above_limit) {
+          ok = await confirmDialog({
+            title: "Below tonight's limit",
+            body: `${e.name || e.id} doesn't rise above ${Math.round(night.alt_limit_deg)}° tonight (peaks ${night.transit_alt.toFixed(0)}°). Add anyway?`,
+            tone: "warn",
+            mode: "confirm",
+            confirmLabel: "Add anyway",
+          });
+        }
+      } catch {
+        /* visibility fetch failed — proceed without a confirm gate */
+      }
+      if (!ok) return;
+      setPlan({
+        ...plan,
+        targets: [...plan.targets, {
+          name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
+          center: true, autofocus_first: true, calibration: false, steps: [{ ...DEFAULT_STEP }],
+          schedule: defaultSchedule(),
+        }],
+      });
+      setSearch("");
+    } finally {
+      setPendingAdd(false);
+    }
+  };
+
+  // Frame-in-Atlas (wave-3 §5): builds a pseudo-CatalogEntry (zeros for the
+  // fields Atlas doesn't need to seed a framing session) and hands it to the
+  // store's openFraming/setFraming pair — same call shape for a single target
+  // card and a mosaic-group header (which passes its first member + group name).
+  const frameInAtlas = (
+    id: string, name: string,
+    t: { ra_hours: number; dec_deg: number; rotation_deg?: number },
+  ) => {
+    const entry: CatalogEntry = {
+      id, name, type: "", ra_hours: t.ra_hours, dec_deg: t.dec_deg,
+      mag: 0, size_arcmin: 0, alt: 0, az: 0,
+    };
+    openFraming(entry);
+    setFraming({ rotation_deg: t.rotation_deg ?? 0 });
   };
 
   const patchTarget = (ti: number, patch: Partial<Target>) =>
@@ -302,6 +384,15 @@ export default function SequenceView() {
                     </p>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* Runtime autorun-schedule chip (wave-3 §2/§4) — pure render of the
+                engine's sequence.schedule block; absent entirely when the engine
+                hasn't attached one (e.g. no windowed target is active). */}
+            {sequence.schedule && (
+              <div className="mb-2">
+                <ScheduleChip schedule={sequence.schedule} />
               </div>
             )}
 
@@ -412,8 +503,8 @@ export default function SequenceView() {
                 {results.length > 0 && (
                 <div className="absolute right-0 top-full mt-1 w-72 panel z-10 max-h-60 overflow-y-auto">
                   {results.map((r) => (
-                    <button key={r.id} onClick={() => addTarget(r)}
-                      className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer">
+                    <button key={r.id} onClick={() => addTarget(r)} disabled={pendingAdd}
+                      className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer disabled:opacity-40 disabled:cursor-default">
                       <span><span className="mono text-accent">{r.id}</span> {r.name}</span>
                       <span className={`mono ${r.alt > 40 ? "text-good" : r.alt < 20 ? "text-warn" : "text-dim"}`}>
                         {r.alt.toFixed(0)}°
@@ -442,6 +533,11 @@ export default function SequenceView() {
                   {/* Tonight's altitude at a glance (wave-3 §3) — lazy, cached,
                       shared across mosaic panels with the same rounded center. */}
                   <TargetSpark ra_hours={t.ra_hours} dec_deg={t.dec_deg} altLimit={altLimit} />
+                  {/* Runtime schedule chip (wave-3 §2/§4) inline on the active
+                      target card — same chip content as the run panel above. */}
+                  {sequence.target_index === ti && running && sequence.schedule && (
+                    <ScheduleChip schedule={sequence.schedule} />
+                  )}
                   {t.rotation_deg != null && t.rotation_deg > 0.5 && (
                     <span
                       className="mono text-[10px] text-accent border border-line2 px-1.5 py-0.5"
@@ -467,20 +563,30 @@ export default function SequenceView() {
                     onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP }] })}>
                     + step
                   </button>
-                  {/* Target delete: trash-style affordance with a ring (R28), >=44px,
-                      instant + 5s undo (reversible -> NOT a hold). */}
-                  <button
-                    className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
-                      border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
-                    disabled={running}
-                    aria-label={`Delete target ${t.name}`}
-                    title={`Delete ${t.name}`}
-                    onClick={() => deleteWithUndo(
-                      `Deleted ${t.name}`,
-                      { ...plan, targets: plan.targets.filter((_, i) => i !== ti) },
-                    )}>
-                    <Icon name="x" size={18} />
-                  </button>
+                  <div className="inline-flex items-center gap-1.5">
+                    {/* Frame this target in the Sky Atlas (wave-3 §5). Works
+                        offline (no device needed to seed a framing session), so
+                        it is never disabled — MountView precedent. */}
+                    <IconButton
+                      icon="frame"
+                      label={`Frame ${t.name} in the Sky Atlas`}
+                      onClick={() => frameInAtlas(t.name, t.name, t)}
+                    />
+                    {/* Target delete: trash-style affordance with a ring (R28), >=44px,
+                        instant + 5s undo (reversible -> NOT a hold). */}
+                    <button
+                      className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
+                        border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
+                      disabled={running}
+                      aria-label={`Delete target ${t.name}`}
+                      title={`Delete ${t.name}`}
+                      onClick={() => deleteWithUndo(
+                        `Deleted ${t.name}`,
+                        { ...plan, targets: plan.targets.filter((_, i) => i !== ti) },
+                      )}>
+                      <Icon name="x" size={18} />
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-2 flex flex-col gap-1.5">
                   {t.steps.map((s, si) => (
@@ -558,16 +664,26 @@ export default function SequenceView() {
                         {Math.floor(gMin / 60)}h {Math.round(gMin % 60)}m
                       </span>
                       <div className="flex-1" />
-                      <button
-                        className="tap min-h-[44px] inline-flex items-center justify-center gap-1 !px-3 !text-[11px]
-                          border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
-                        disabled={running}
-                        aria-label={`Delete mosaic group ${blk.group}`}
-                        title={`Delete all ${blk.members.length} panels in ${blk.group}`}
-                        onClick={() => deleteGroup(blk.group)}
-                      >
-                        <Icon name="x" size={16} /> delete group
-                      </button>
+                      <div className="inline-flex items-center gap-1.5">
+                        {/* Frame the group in the Sky Atlas (wave-3 §5), seeded
+                            from the first panel's coords; group name as id.
+                            Never disabled — framing works offline. */}
+                        <IconButton
+                          icon="frame"
+                          label={`Frame ${blk.group} in the Sky Atlas`}
+                          onClick={() => frameInAtlas(blk.group, blk.group, members[0])}
+                        />
+                        <button
+                          className="tap min-h-[44px] inline-flex items-center justify-center gap-1 !px-3 !text-[11px]
+                            border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
+                          disabled={running}
+                          aria-label={`Delete mosaic group ${blk.group}`}
+                          title={`Delete all ${blk.members.length} panels in ${blk.group}`}
+                          onClick={() => deleteGroup(blk.group)}
+                        >
+                          <Icon name="x" size={16} /> delete group
+                        </button>
+                      </div>
                     </div>
                     <div className="flex flex-col gap-4">
                       {blk.members.map((ti) => renderTarget(plan.targets[ti], ti))}
