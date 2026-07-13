@@ -63,10 +63,10 @@ Replace the in-memory `Image()` double-buffer with a `fetch`-based loader:
 
 ### 1.4 Availability state machine (replaces the one-way `surveyDown` latch)
 
-- `surveyDown: boolean` latch is replaced by `surveyDegraded: boolean` + retry
-  bookkeeping in AtlasView (or a small hook owned by SkyCanvas — implementer's choice,
-  but state must survive SkyCanvas remounts if it lives there today; follow the current
-  ownership shape).
+- `surveyDown: boolean` latch is replaced by `surveyDegraded: boolean`. The flag stays
+  in AtlasView (today's ownership shape: SkyCanvas emits `onSurveyError`/`onSurveyLoad`,
+  the parent owns the boolean); the retry timer/backoff bookkeeping lives in SkyCanvas
+  refs beside the fetch it retries.
 - On fetch failure: `surveyDegraded = true`, keep last image (§1.3), schedule an
   auto-retry of the same URL with exponential backoff 5 s → 10 s → 20 s → 40 s → cap
   60 s. On success anywhere: `surveyDegraded = false`, reset backoff.
@@ -87,11 +87,14 @@ Replace the in-memory `Image()` double-buffer with a `fetch`-based loader:
 
 ## 2. Visibility fetch debounce (VisibilityPanel.tsx)
 
-- 300 ms debounce (matching the survey debounce) on the `/api/visibility` fetch effect.
-- `AbortController` per request; abort the in-flight request when a new one is scheduled;
-  stale-guard responses by generation.
-- Skip refetch when the rounded key is unchanged (round ra_hours to 3 dp, dec_deg to
-  2 dp) so sub-pixel drift doesn't refire after settle.
+- 300 ms debounce (matching the survey debounce) on the `/api/visibility` fetch effect,
+  keyed on ROUNDED coords (ra_hours to 3 dp ≈ 54″, dec_deg to 2 dp = 36″) so sub-pixel
+  drift never refires after settle.
+- Stale responses stay ignored via the effect's existing alive-flag cleanup. (A true
+  fetch-level abort would require widening `api.ts` to accept a caller signal — not
+  worth it for a same-origin sub-second request; explicitly out of scope.)
+- Keep the previous chart while refetching (loading skeleton only before the first
+  data) — the panel stops flashing to skeleton on every pan.
 
 ## 3. Optics: truthful gating, in-place editing, one banner
 
@@ -100,9 +103,11 @@ Replace the in-memory `Image()` double-buffer with a `fetch`-based loader:
 - AtlasView computes optics ONCE from the merged source and passes results down. Merge
   order: `status.optics` (live, camera-merged — same source FocusView.tsx:76 already
   uses) → `config.optics_computed` (from `loadConfig()`) → raw `config.optics`.
-- `SkyCanvas` receives `fov`/`haveOptics` (or the merged optics object) as props; its
-  duplicate computation (`SkyCanvas.tsx:106-110`) is deleted. `framing.ts` helpers stay
-  pure and unchanged in signature except as below.
+- `SkyCanvas` keeps its existing `optics` prop but now receives the camera-MERGED
+  optics object (a 4-field `OpticsLike`, exported from `framing.ts`), so its internal
+  `fovFromOptics` computes from the same source as AtlasView — the divergence dies
+  without a prop-interface change. `framing.ts` helpers stay pure; signatures unchanged
+  except the added `OpticsLike` type + `missingOpticsFields` helper.
 
 ### 3.2 Truthful warning + missing-field naming
 
@@ -186,11 +191,16 @@ and the boundary float flip)
 
 ## 6. Perf hygiene (cheap wins only)
 
-- `React.memo` on `FovOverlay`, `SurveyControls`, `VisibilityPanel` (and the SkyCanvas
-  label layer if it is a component).
-- Atlas-tree components stop calling the whole-object `useStatus()` selector
-  (`store.ts:1174`); they select the narrow fields they render so WS status ticks stop
-  re-rendering the whole Atlas tree. Scope: atlas components only — no store refactor.
+- `React.memo` on `FovOverlay` and `VisibilityPanel` (AtlasView additionally passes
+  VisibilityPanel ROUNDED coords so pans don't re-render it at all). `SurveyControls`
+  is NOT memoized: its handlers are inline closures in AtlasView, which would make the
+  memo inert; converting them all to `useCallback` is not worth the diff (cheap-wins-only
+  rule).
+- AtlasView drops `useStatus()` (whole-object, replaced wholesale per WS tick):
+  `recenter` reads the mount via `useStore.getState()` at click time (event-handler
+  read, no subscription), and the merged-optics gate subscribes via
+  `useStore(useShallow((s) => s.status?.optics))` — shallow-stable because
+  `effective_optics()` returns primitives. Scope: AtlasView only — no store refactor.
 
 ## 7. Testing
 
