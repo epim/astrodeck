@@ -134,13 +134,15 @@ export default function SequenceView() {
           },
         );
         const order = body.recommended_order;
-        // The indices index the REQUEST array; a wrong length or an out-of-range
-        // index would silently drop/duplicate targets, so verify a full valid
-        // permutation before applying and bail loudly otherwise.
+        // The indices index the REQUEST array; a wrong length, an out-of-range
+        // index, or a repeated index would silently drop/duplicate targets, so
+        // verify a full valid permutation (length + integer + bounds + uniqueness)
+        // before applying and bail loudly otherwise.
         const valid =
           Array.isArray(order) &&
           order.length === plan.targets.length &&
-          order.every((i) => Number.isInteger(i) && i >= 0 && i < plan.targets.length);
+          order.every((i) => Number.isInteger(i) && i >= 0 && i < plan.targets.length) &&
+          new Set(order).size === order.length;
         if (!valid) {
           showToast("error", "Couldn't reorder — unexpected response from the server");
           return;
