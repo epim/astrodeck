@@ -32,8 +32,8 @@ import {
   usePreview,
   useSequence,
   useNight,
-  useStatus,
 } from "../store";
+import { useShallow } from "zustand/react/shallow";
 import type { MosaicPanel, MosaicResult, Optics, Target, VisibilityNight } from "../types";
 import { ARCSEC_PER_RAD } from "../lib/optics";
 import {
@@ -41,8 +41,10 @@ import {
   plausibilityHint,
   mosaicGrid,
   mosaicTotalFov,
+  missingOpticsFields,
   deproject,
   wrapRaHours,
+  type OpticsLike,
 } from "../lib/framing";
 import { adjustedPa } from "../lib/rotation";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
@@ -113,7 +115,13 @@ export default function AtlasView(): JSX.Element {
   const preview = usePreview();
   const sequence = useSequence();
   const night = useNight();
-  const status = useStatus();
+
+  // Camera-merged optics (server effective_optics; same source FocusView uses).
+  // useShallow: the dict is rebuilt every WS tick but its fields are primitives.
+  const statusOptics = useStore(useShallow((s) => s.status?.optics));
+  // Rotator sub-status for the PA-honesty note (CAA §5.3). Narrow + shallow so a
+  // 2 s status poll that leaves the rotator unchanged doesn't re-render the page.
+  const statusRotator = useStore(useShallow((s) => s.status?.rotator ?? null));
 
   const setFraming = useStore((s) => s.setFraming);
   const openFraming = useStore((s) => s.openFraming);
@@ -147,8 +155,28 @@ export default function AtlasView(): JSX.Element {
   // PUT on commit (blur / Enter), not per keystroke.
   const optics: Optics | null = config?.optics ?? null;
   const computed = config?.optics_computed ?? null;
+
+  // Merge for the FOV gate (wave-1 §3.1): config override wins (nonzero), else
+  // the camera-reported value from the live merged readout. Focal stays the
+  // config/draft value (focalOverride still applies via fovFromOptics).
+  const liveOptics = statusOptics ?? computed;
+  const mergedOptics: OpticsLike | null = useMemo(() => {
+    if (!optics) return null;
+    return {
+      focal_length_mm: optics.focal_length_mm,
+      pixel_size_um: optics.pixel_size_um || liveOptics?.pixel_size_um || 0,
+      sensor_width_px: optics.sensor_width_px || liveOptics?.sensor_width_px || 0,
+      sensor_height_px: optics.sensor_height_px || liveOptics?.sensor_height_px || 0,
+    };
+  }, [optics, liveOptics]);
+
   const [focalDraft, setFocalDraft] = useState<string>("");
   const [savingFocal, setSavingFocal] = useState(false);
+  // Inline pixel-size + sensor drafts (same shape as focalDraft). Empty/0 commits
+  // "use camera" — the server merge fills them from the connected camera (§3.2).
+  const [pixelDraft, setPixelDraft] = useState<string>("");
+  const [sensorWDraft, setSensorWDraft] = useState<string>("");
+  const [sensorHDraft, setSensorHDraft] = useState<string>("");
   // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
   // single target (the server round-trip is async).
   const [sending, setSending] = useState(false);
@@ -157,6 +185,14 @@ export default function AtlasView(): JSX.Element {
   useEffect(() => {
     if (optics) setFocalDraft(String(optics.focal_length_mm || ""));
   }, [optics?.focal_length_mm]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Seed/refresh the pixel + sensor drafts on config change (0 -> empty field).
+  useEffect(() => {
+    if (!optics) return;
+    setPixelDraft(String(optics.pixel_size_um || ""));
+    setSensorWDraft(String(optics.sensor_width_px || ""));
+    setSensorHDraft(String(optics.sensor_height_px || ""));
+  }, [optics?.pixel_size_um, optics?.sensor_width_px, optics?.sensor_height_px]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A survey-source change is a fresh chance — clear the degraded flag.
   useEffect(() => {
@@ -170,8 +206,8 @@ export default function AtlasView(): JSX.Element {
   }, [focalDraft]);
 
   const fov = useMemo(
-    () => fovFromOptics(optics, focalOverride),
-    [optics, focalOverride],
+    () => fovFromOptics(mergedOptics, focalOverride),
+    [mergedOptics, focalOverride],
   );
   const haveOptics = fov.fov_x_deg > 0 && fov.fov_y_deg > 0;
   const plausibility = plausibilityHint(fov.pixel_scale_arcsec);
@@ -212,6 +248,70 @@ export default function AtlasView(): JSX.Element {
     () => commitFocalValue(Number(focalDraft)),
     [commitFocalValue, focalDraft],
   );
+
+  // Commit any optics field(s): PUT /api/optics then re-GET config. Empty/0
+  // means "use camera" (server merge, config.py). Same optimistic-concurrency
+  // version token as the focal committer.
+  const commitOpticsPatch = useCallback(
+    async (patch: Partial<Optics>) => {
+      if (!optics) return;
+      try {
+        const next: Optics = { ...optics, ...patch };
+        await api.put("/api/optics", { optics: next, version: config?.version ?? null });
+        await loadConfig();
+      } catch (e) {
+        enqueueToast({
+          level: "error",
+          title: "Couldn't save optics",
+          detail: (e as Error).message,
+        });
+      }
+    },
+    [optics, config?.version, loadConfig, enqueueToast],
+  );
+
+  // Per-field blur/Enter committers. Empty -> 0 ("use camera"); a value equal to
+  // the stored one is a no-op (no needless PUT); an invalid entry reverts the
+  // draft. Sensor dims round to whole pixels.
+  const commitPixel = useCallback(() => {
+    const raw = pixelDraft.trim();
+    const n = raw === "" ? 0 : Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      setPixelDraft(String(optics?.pixel_size_um || ""));
+      return;
+    }
+    if (n === (optics?.pixel_size_um ?? 0)) return;
+    void commitOpticsPatch({ pixel_size_um: n });
+  }, [pixelDraft, optics?.pixel_size_um, commitOpticsPatch]);
+
+  const commitSensorW = useCallback(() => {
+    const raw = sensorWDraft.trim();
+    const n = raw === "" ? 0 : Math.round(Number(raw));
+    if (!Number.isFinite(n) || n < 0) {
+      setSensorWDraft(String(optics?.sensor_width_px || ""));
+      return;
+    }
+    if (n === (optics?.sensor_width_px ?? 0)) return;
+    void commitOpticsPatch({ sensor_width_px: n });
+  }, [sensorWDraft, optics?.sensor_width_px, commitOpticsPatch]);
+
+  const commitSensorH = useCallback(() => {
+    const raw = sensorHDraft.trim();
+    const n = raw === "" ? 0 : Math.round(Number(raw));
+    if (!Number.isFinite(n) || n < 0) {
+      setSensorHDraft(String(optics?.sensor_height_px || ""));
+      return;
+    }
+    if (n === (optics?.sensor_height_px ?? 0)) return;
+    void commitOpticsPatch({ sensor_height_px: n });
+  }, [sensorHDraft, optics?.sensor_height_px, commitOpticsPatch]);
+
+  // "from camera" affordance: config value is 0 AND the live merged readout has a
+  // positive camera-sourced value — show it as the placeholder + a small chip.
+  const cameraFed = liveOptics?.source === "camera" || liveOptics?.source === "mixed";
+  const pxFromCam = cameraFed && (optics?.pixel_size_um ?? 0) <= 0 && (liveOptics?.pixel_size_um ?? 0) > 0;
+  const wFromCam = cameraFed && (optics?.sensor_width_px ?? 0) <= 0 && (liveOptics?.sensor_width_px ?? 0) > 0;
+  const hFromCam = cameraFed && (optics?.sensor_height_px ?? 0) <= 0 && (liveOptics?.sensor_height_px ?? 0) > 0;
 
   // ---- calibrate from last solve (spec §6, reducer/barlow-proof) ----
   // fl_mm = ARCSEC_PER_RAD · pixel_size_um / last_solve_pixel_scale. The last
@@ -264,7 +364,7 @@ export default function AtlasView(): JSX.Element {
       setCenter(target.ra_hours, target.dec_deg);
       return;
     }
-    const m = status?.mount;
+    const m = useStore.getState().status?.mount;
     if (m) setCenter(m.ra_hours, m.dec_deg);
   };
 
@@ -441,6 +541,102 @@ export default function AtlasView(): JSX.Element {
             </span>
           </span>
         </label>
+        {/* pixel-size + sensor fields — 0/empty commits "use camera" (§3.2). The
+            "from camera" chip + placeholder appear when a connected camera fills
+            the field the config leaves blank. */}
+        <label className="flex flex-col gap-1">
+          <span className="label inline-flex items-center gap-1">
+            Pixel size
+            {pxFromCam && (
+              <span className="text-[10px] text-dim border border-line2 px-1">from camera</span>
+            )}
+          </span>
+          <span className="inline-flex items-stretch">
+            <input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={0.01}
+              value={pixelDraft}
+              placeholder={pxFromCam ? String(liveOptics?.pixel_size_um ?? "") : undefined}
+              disabled={!optics}
+              onChange={(e) => setPixelDraft(e.target.value)}
+              onBlur={commitPixel}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Camera pixel size in micrometres (0 uses the connected camera)"
+              className="field btn-touch w-20 mono text-right"
+            />
+            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+              µm
+            </span>
+          </span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="label inline-flex items-center gap-1">
+            Sensor W
+            {wFromCam && (
+              <span className="text-[10px] text-dim border border-line2 px-1">from camera</span>
+            )}
+          </span>
+          <span className="inline-flex items-stretch">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              value={sensorWDraft}
+              placeholder={wFromCam ? String(liveOptics?.sensor_width_px ?? "") : undefined}
+              disabled={!optics}
+              onChange={(e) => setSensorWDraft(e.target.value)}
+              onBlur={commitSensorW}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Camera sensor width in pixels (0 uses the connected camera)"
+              className="field btn-touch w-20 mono text-right"
+            />
+            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+              px
+            </span>
+          </span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="label inline-flex items-center gap-1">
+            Sensor H
+            {hFromCam && (
+              <span className="text-[10px] text-dim border border-line2 px-1">from camera</span>
+            )}
+          </span>
+          <span className="inline-flex items-stretch">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              step={1}
+              value={sensorHDraft}
+              placeholder={hFromCam ? String(liveOptics?.sensor_height_px ?? "") : undefined}
+              disabled={!optics}
+              onChange={(e) => setSensorHDraft(e.target.value)}
+              onBlur={commitSensorH}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Camera sensor height in pixels (0 uses the connected camera)"
+              className="field btn-touch w-20 mono text-right"
+            />
+            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+              px
+            </span>
+          </span>
+        </label>
         <button
           type="button"
           className="btn btn-touch"
@@ -468,13 +664,14 @@ export default function AtlasView(): JSX.Element {
         </div>
       )}
 
-      {/* no-optics CTA banner (FOV rectangle is dashed in the canvas) */}
+      {/* no-optics CTA banner — names the ACTUAL missing fields (wave-1 §3.2) */}
       {!haveOptics && (
         <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-black/20 px-2 py-1">
           <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
           <span>
-            Set a focal length above to draw your camera's frame and plan a
-            mosaic.
+            Framing needs your optics — missing{" "}
+            {missingOpticsFields(mergedOptics).join(", ")}. Set them here, or
+            connect your camera to fill pixel/sensor automatically.
           </span>
         </div>
       )}
@@ -489,7 +686,7 @@ export default function AtlasView(): JSX.Element {
             survey={survey}
             stretch={stretch}
             fovZoomDeg={fovZoomDeg}
-            optics={optics}
+            optics={mergedOptics}
             focalMmOverride={focalOverride}
             mosaic={mosaic}
             catalogTarget={target}
@@ -583,14 +780,14 @@ export default function AtlasView(): JSX.Element {
               </div>
 
               {/* rotation honesty note — reality-aware (CAA spec §5.3) */}
-              {rotation_deg > 0.5 && (status?.rotator ? (
+              {rotation_deg > 0.5 && (statusRotator ? (
                 <p className="text-[12px] text-dim leading-snug">
                   Camera will rotate to PA {Math.round(rotation_deg)}°
-                  automatically on slew ({status.rotator.name}).
+                  automatically on slew ({statusRotator.name}).
                   {(() => {
                     const cfg = { range_type: "full" as const, range_start_deg: 0,
                                   ...(config?.rotator ?? {}) };
-                    const h = adjustedPa(rotation_deg, status.rotator, cfg);
+                    const h = adjustedPa(rotation_deg, statusRotator, cfg);
                     return h.adjusted ? (
                       <span className="text-warn">
                         {" "}⚠ Outside the range of motion — it will image

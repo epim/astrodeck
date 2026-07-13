@@ -21,8 +21,8 @@ import {
   useCallback, useEffect, useMemo, useRef, useState, type JSX, type PointerEvent as RPointerEvent,
   type KeyboardEvent as RKeyboardEvent, type WheelEvent as RWheelEvent, type CSSProperties,
 } from "react";
-import type { CatalogEntry, Optics } from "../../types";
-import { fovFromOptics, deproject, plausibilityHint } from "../../lib/framing";
+import type { CatalogEntry } from "../../types";
+import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
@@ -38,7 +38,7 @@ export interface SkyCanvasProps {
   survey: string;
   stretch: "linear" | "asinh";
   fovZoomDeg: number; // survey crop angular width
-  optics: Optics | null; // px-suffixed Optics (config.optics)
+  optics: OpticsLike | null; // camera-MERGED 4-field optics (AtlasView builds it)
   focalMmOverride?: number; // inline Atlas focal field (overrides optics.focal_length_mm)
   mosaic: { rows: number; cols: number; overlap: number };
   activePanel?: number | null;
@@ -533,12 +533,6 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           </span>
         </div>
 
-        {/* frame label suppress hint */}
-        {!haveOptics && (
-          <div className="absolute left-1/2 -translate-x-1/2 bottom-2 text-[12px] text-warn bg-black/60 px-2 py-1 border border-line2 pointer-events-none text-center max-w-[90%]">
-            Set focal length above to draw your camera's frame
-          </div>
-        )}
       </div>
 
       {/* verdict + offline banner beneath the canvas (real text, >=12px) */}
