@@ -72,13 +72,16 @@ def client(tmp_path, monkeypatch):
 
 
 def test_ra_hours_to_degrees_and_no_rot(client):
-    # ra=1.0h must become ra=15.0 deg; TAN + icrs; NO rot param.
+    # ra=1.0h must become ~15.0 deg (then grid-snapped); TAN + icrs; NO rot param.
     r = client.get("/api/survey/cutout.jpg", params={"ra": 1.0, "dec": 41.0, "fov": 1.5})
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/jpeg"
     p = _FakeClient.last_params
     assert p is not None
-    assert float(p["ra"]) == pytest.approx(15.0)  # 1.0h * 15 == 15 deg
+    snapped_fov = float(p["fov"])
+    step = snapped_fov / survey_mod._CENTER_STEPS_PER_FOV
+    # hours -> degrees, then snapped to the fov-scaled grid (within half a step)
+    assert abs(float(p["ra"]) - 15.0) <= step / 2 + 1e-9
     assert p["projection"] == "TAN"
     assert p["coordsys"] == "icrs"
     assert p["format"] == "jpg"
@@ -122,12 +125,22 @@ def test_unknown_survey_is_422(client):
 
 
 def test_cache_key_quantization_is_stable():
-    # Two sub-3-arcsec-different RAs collapse onto the same cache key; a coarser
-    # nudge does not (finer key than the draft — C2-#15).
-    k1 = survey_mod._cache_key(0.71230, 41.270, 1.50, 768, "CDS/P/DSS2/color", "linear")
-    k2 = survey_mod._cache_key(0.71235, 41.270, 1.50, 768, "CDS/P/DSS2/color", "linear")
-    k3 = survey_mod._cache_key(0.80000, 41.270, 1.50, 768, "CDS/P/DSS2/color", "linear")
-    assert k1 == k2
+    # Coords inside one fov/20 bucket collapse onto ONE key; a >1-step nudge
+    # does not. Keys are pure functions of INTEGER indices — no float flip.
+    keys = set()
+    for i in range(100):
+        *_geom, idx = survey_mod._snap_geometry(0.712300 + i * 1e-7, 41.270, 1.5)
+        keys.add(survey_mod._cache_key(idx, 768, "CDS/P/DSS2/color", "linear"))
+    assert len(keys) == 1
+
+    _ra, _dec, fov, idx1 = survey_mod._snap_geometry(1.0, 40.0, 1.5)
+    step = fov / survey_mod._CENTER_STEPS_PER_FOV
+    *_g2, idx2 = survey_mod._snap_geometry(1.0 + (step * 0.4) / 15.0, 40.0, 1.5)
+    *_g3, idx3 = survey_mod._snap_geometry(1.0 + (step * 1.5) / 15.0, 40.0, 1.5)
+    assert idx1 == idx2       # within one step -> same bucket
+    assert idx1 != idx3       # 1.5 steps away -> different bucket
+    k1 = survey_mod._cache_key(idx1, 768, "CDS/P/DSS2/color", "linear")
+    k3 = survey_mod._cache_key(idx3, 768, "CDS/P/DSS2/color", "linear")
     assert k1 != k3
 
 
@@ -192,3 +205,40 @@ def test_write_cache_triggers_eviction(tmp_path, monkeypatch):
     survey_mod._write_cache(cache / "new.jpg", b"\xff\xd8jpeg")
     names = sorted(p.name for p in cache.glob("*.jpg"))
     assert names == ["new.jpg"]     # stale pair evicted by the write-time bound
+
+
+def test_snapped_geometry_headers_on_miss_and_hit(client):
+    params = {"ra": 1.0, "dec": 41.0, "fov": 1.5}
+    r1 = client.get("/api/survey/cutout.jpg", params=params)
+    assert r1.status_code == 200
+    ra1 = float(r1.headers["x-survey-ra-deg"])
+    dec1 = float(r1.headers["x-survey-dec-deg"])
+    fov1 = float(r1.headers["x-survey-fov-deg"])
+    step = fov1 / survey_mod._CENTER_STEPS_PER_FOV
+    assert abs(ra1 - 15.0) <= step / 2 + 1e-9
+    assert abs(dec1 - 41.0) <= step / 2 + 1e-9
+    assert abs(fov1 - 1.5) / 1.5 <= 0.011          # 2% log grid -> within ~1%
+    # upstream was asked for EXACTLY the snapped geometry the header reports
+    p = _FakeClient.last_params
+    assert float(p["ra"]) == pytest.approx(ra1)
+    assert float(p["dec"]) == pytest.approx(dec1)
+    assert float(p["fov"]) == pytest.approx(fov1)
+    # cache hit returns identical headers (and no network — force it to fail)
+    _FakeClient.fail = True
+    r2 = client.get("/api/survey/cutout.jpg", params=params)
+    assert r2.status_code == 200
+    assert r2.headers["x-survey-ra-deg"] == r1.headers["x-survey-ra-deg"]
+    assert r2.headers["x-survey-dec-deg"] == r1.headers["x-survey-dec-deg"]
+    assert r2.headers["x-survey-fov-deg"] == r1.headers["x-survey-fov-deg"]
+
+
+def test_snap_clamps_dec_and_wraps_ra():
+    ra_deg, dec_deg, _fov, _idx = survey_mod._snap_geometry(23.9999, 89.999, 2.0)
+    assert 0.0 <= ra_deg < 360.0
+    assert -90.0 <= dec_deg <= 90.0
+
+
+def test_timeout_and_salt_constants():
+    # 6 s x 2 attempts + 0.4 s sleep ~= 12.8 s worst case (was ~30.4 s).
+    assert survey_mod._TIMEOUT_S == 6.0
+    assert survey_mod._KEY_SALT == "v2"   # orphans pre-snap cache entries
