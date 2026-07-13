@@ -13,6 +13,7 @@ httpx is fully mocked so the suite never reaches the network.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 
@@ -242,3 +243,69 @@ def test_timeout_and_salt_constants():
     # 6 s x 2 attempts + 0.4 s sleep ~= 12.8 s worst case (was ~30.4 s).
     assert survey_mod._TIMEOUT_S == 6.0
     assert survey_mod._KEY_SALT == "v2"   # orphans pre-snap cache entries
+
+
+# ---------------------------------------------------------- single-flight
+
+class _GatedClient(_FakeClient):
+    """Counts upstream GETs and holds them until `gate` is set."""
+    calls = 0
+    gate: "asyncio.Event | None" = None
+
+    async def get(self, url, params=None):
+        _GatedClient.calls += 1
+        _FakeClient.last_params = params
+        if _GatedClient.gate is not None:
+            await _GatedClient.gate.wait()
+        return _FakeResponse()
+
+
+_RealAsyncClient = httpx.AsyncClient  # captured BEFORE any monkeypatch ever runs
+
+
+def _asgi_client(monkeypatch, tmp_path):
+    # NOTE: `survey_mod.httpx` is the *same* `httpx` module object imported
+    # here, so patching `survey_mod.httpx.AsyncClient` also rebinds the
+    # `httpx.AsyncClient` name globally. Building the outer ASGI test client
+    # via `httpx.AsyncClient(...)` AFTER that patch (as in the original brief
+    # text) would construct a `_GatedClient` instead of a real ASGI-transport
+    # client, bypassing the FastAPI route entirely. Use the pre-captured
+    # `_RealAsyncClient` for the outer client instead. See task-2-report.md
+    # Deviations.
+    monkeypatch.setattr(survey_mod, "_SURVEY_CACHE_DIR", tmp_path / "_survey")
+    monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _GatedClient)
+    _GatedClient.calls = 0
+    _GatedClient.gate = None
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(survey_mod.router)
+    return _RealAsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
+
+
+async def test_single_flight_coalesces_identical_requests(tmp_path, monkeypatch):
+    async with _asgi_client(monkeypatch, tmp_path) as c:
+        # NOTE: set AFTER _asgi_client() — that helper unconditionally resets
+        # _GatedClient.gate = None on every call, so setting the gate before
+        # calling it (as in the brief) is clobbered before the client is ever
+        # used. See task-2-report.md Deviations.
+        _GatedClient.gate = asyncio.Event()
+        p = {"ra": 1.0, "dec": 41.0, "fov": 1.5}
+        t1 = asyncio.create_task(c.get("/api/survey/cutout.jpg", params=p))
+        t2 = asyncio.create_task(c.get("/api/survey/cutout.jpg", params=p))
+        await asyncio.sleep(0.05)       # both in flight; one holds the key lock
+        _GatedClient.gate.set()
+        r1, r2 = await asyncio.gather(t1, t2)
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert _GatedClient.calls == 1      # exactly one upstream fetch
+    assert not survey_mod._inflight     # lock registry drained
+
+
+async def test_single_flight_distinct_keys_fetch_independently(tmp_path, monkeypatch):
+    async with _asgi_client(monkeypatch, tmp_path) as c:
+        r1, r2 = await asyncio.gather(
+            c.get("/api/survey/cutout.jpg", params={"ra": 1.0, "dec": 41.0, "fov": 1.5}),
+            c.get("/api/survey/cutout.jpg", params={"ra": 1.0, "dec": 41.0, "fov": 3.0}),
+        )
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert _GatedClient.calls == 2
+    assert not survey_mod._inflight

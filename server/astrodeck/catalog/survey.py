@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import math
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -99,6 +100,32 @@ def _snap_geometry(
     snapped_ra = (ra_idx * step) % 360.0
     snapped_dec = max(-90.0, min(90.0, dec_idx * step))
     return snapped_ra, snapped_dec, snapped_fov, (ra_idx, dec_idx, fov_idx)
+
+
+# ------------------------------------------------------------- single-flight
+# Concurrent requests for the SAME cache key coalesce: one goes upstream, the
+# rest wait on the per-key lock and then serve the file it cached. Entries are
+# refcounted and dropped when the last waiter leaves (no unbounded growth).
+# Event-loop-only state: the dict is only mutated between awaits, so no extra
+# guard lock is needed. NOTE: if the leader's fetch fails (503), each waiter
+# retries upstream itself in turn — a failure is never cached.
+_inflight: dict[str, list] = {}  # key -> [asyncio.Lock, refcount]
+
+
+@asynccontextmanager
+async def _single_flight(key: str):
+    entry = _inflight.get(key)
+    if entry is None:
+        entry = [asyncio.Lock(), 0]
+        _inflight[key] = entry
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] <= 0:
+            _inflight.pop(key, None)
 
 
 def _cache_key(idx: tuple[int, int, int], width: int, survey: str, stretch: str) -> str:
@@ -259,17 +286,21 @@ async def survey_cutout(
     if cache_path.exists():
         return FileResponse(cache_path, media_type="image/jpeg", headers=cache_headers)
 
-    params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
-    try:
-        body = await _fetch_cutout(params)
-    except RuntimeError:
-        # Upstream unreachable/slow/blank — honest 503 so the client draws the
-        # offline schematic (inline banner, no toast). Overlay math is unchanged.
-        raise HTTPException(
-            status_code=503,
-            detail={"detail": "survey unavailable", "fallback": "schematic"},
-        )
+    async with _single_flight(key):
+        if cache_path.exists():
+            return FileResponse(cache_path, media_type="image/jpeg", headers=cache_headers)
 
-    # Persist off the event loop (small image, but disk I/O shouldn't block).
-    await asyncio.to_thread(_write_cache, cache_path, body)
-    return Response(body, media_type="image/jpeg", headers=cache_headers)
+        params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
+        try:
+            body = await _fetch_cutout(params)
+        except RuntimeError:
+            # Upstream unreachable/slow/blank — honest 503 so the client keeps its
+            # last good frame and retries with backoff (no longer a mode flip).
+            raise HTTPException(
+                status_code=503,
+                detail={"detail": "survey unavailable", "fallback": "schematic"},
+            )
+
+        # Persist off the event loop (small image, but disk I/O shouldn't block).
+        await asyncio.to_thread(_write_cache, cache_path, body)
+        return Response(body, media_type="image/jpeg", headers=cache_headers)
