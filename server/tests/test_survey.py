@@ -240,7 +240,7 @@ def test_snap_clamps_dec_and_wraps_ra():
 
 
 def test_timeout_and_salt_constants():
-    # 6 s x 2 attempts + 0.4 s sleep ~= 12.8 s worst case (was ~30.4 s).
+    # 6 s x 2 attempts + 0.4 s sleep ~= 12.4 s worst case (was ~30.4 s).
     assert survey_mod._TIMEOUT_S == 6.0
     assert survey_mod._KEY_SALT == "v2"   # orphans pre-snap cache entries
 

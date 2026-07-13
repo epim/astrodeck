@@ -42,7 +42,7 @@ router = APIRouter()
 # ----------------------------------------------------------------- constants
 HIPS2FITS_URL = "https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
 _USER_AGENT = "AstroDeck/0.1"
-_TIMEOUT_S = 6.0  # was 15.0 — 2 attempts ~= 12.8 s worst case; single-flight stops pileup
+_TIMEOUT_S = 6.0  # was 15.0 — 2 attempts ~= 12.4 s worst case; single-flight stops pileup
 _CACHE_MAX_AGE = 86400  # 1 day; cutouts of a fixed field never change
 
 # Survey crop width clamp (px). The displayed survey is square (width == height).
