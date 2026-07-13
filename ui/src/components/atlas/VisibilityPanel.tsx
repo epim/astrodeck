@@ -12,7 +12,7 @@
 //   • NOW        : solid vertical + an HTML "NOW" label
 // All text is real HTML (≥12px), never inside the scaled SVG viewBox.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { VisibilityNight } from "../../types";
 import { Panel, Stat } from "../ui";
 import { Icon } from "../icons";
@@ -47,7 +47,7 @@ type LoadState =
   | { kind: "error"; message: string }
   | { kind: "ok"; night: VisibilityNight };
 
-export function VisibilityPanel({
+export const VisibilityPanel = memo(function VisibilityPanel({
   ra_hours,
   dec_deg,
   altLimit = 30,
@@ -115,7 +115,7 @@ export function VisibilityPanel({
       )}
     </Panel>
   );
-}
+});
 
 // ----------------------------------------------------------------- chart body
 
