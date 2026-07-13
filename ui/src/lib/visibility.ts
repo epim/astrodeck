@@ -205,3 +205,41 @@ export function darknessLabel(kind: VisibilityNight["darkness_kind"]): string {
 export function fmtMoonPhase(illumination: number, phaseName: string): string {
   return `${Math.round(illumination * 100)}% ${phaseName}`;
 }
+
+// ---------------------------------------------------------------- sparkline
+// Mini variant for the Plan tab's per-target cards (wave-3 §3). buildGeometry
+// closes over the full-panel VIS_W/VIS_H/PLOT constants; this one is size-
+// parameterized and emits only the three layers a 120×28 chip can carry:
+// target-alt path, alt-limit line, dark band. No moon, no labels, no NOW.
+export interface SparkGeometry {
+  altPath: string | null;             // null when never_rises_above_limit
+  altLimitY: number;
+  darkBand: { x: number; w: number } | null;
+}
+
+export function buildSparkGeometry(
+  night: VisibilityNight,
+  w: number,
+  h: number,
+): SparkGeometry {
+  const samples = night.samples;
+  if (!samples.length || night.never_rises_above_limit) {
+    return { altPath: null, altLimitY: h - (night.alt_limit_deg / ALT_MAX) * h, darkBand: null };
+  }
+  const t0 = samples[0].t_unix;
+  const t1 = samples[samples.length - 1].t_unix;
+  const span = Math.max(1, t1 - t0);
+  const x = (t: number) => ((t - t0) / span) * w;
+  const y = (alt: number) => h - (Math.max(0, alt) / ALT_MAX) * h;
+  const altPath = samples
+    .map((s, i) => `${i === 0 ? "M" : "L"}${x(s.t_unix).toFixed(1)} ${y(s.alt).toFixed(1)}`)
+    .join(" ");
+  const darkBand =
+    night.dark_start_unix != null && night.dark_end_unix != null
+      ? {
+          x: x(Math.max(t0, night.dark_start_unix)),
+          w: Math.max(0, x(Math.min(t1, night.dark_end_unix)) - x(Math.max(t0, night.dark_start_unix))),
+        }
+      : null;
+  return { altPath, altLimitY: y(night.alt_limit_deg), darkBand };
+}
