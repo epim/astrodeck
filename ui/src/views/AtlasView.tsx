@@ -737,6 +737,7 @@ export default function AtlasView(): JSX.Element {
               plausibility={plausibility}
               catalogTarget={target}
               haveOptics={haveOptics}
+              hasTarget={!!target}
               onSurveyChange={setSurvey}
               onStretchChange={setStretch}
               onZoom={setZoom}

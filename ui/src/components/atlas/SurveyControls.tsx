@@ -38,6 +38,8 @@ export interface SurveyControlsProps {
   plausibility: string | null;
   catalogTarget?: CatalogEntry; // for "fit object"
   haveOptics: boolean;
+  /** True when the session has a catalog target (labels recenter truthfully). */
+  hasTarget: boolean;
 
   onSurveyChange: (survey: string) => void;
   onStretchChange: (stretch: "linear" | "asinh") => void;
@@ -57,7 +59,7 @@ function clampZoom(v: number): number {
 export function SurveyControls(props: SurveyControlsProps): JSX.Element {
   const {
     survey, stretch, fovZoomDeg, rotationDeg, imageBrightness, cameraFovLock,
-    frameFovDeg, pixelScaleArcsec, plausibility, catalogTarget, haveOptics,
+    frameFovDeg, pixelScaleArcsec, plausibility, catalogTarget, haveOptics, hasTarget,
     onSurveyChange, onStretchChange, onZoom, onRotate, onImageBrightness,
     onCameraFovLock, onNudge, onRecenter,
   } = props;
@@ -149,7 +151,11 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
 
       {/* recenter + nudge cluster */}
       <div className="flex flex-wrap items-center gap-3">
-        <IconButton icon="align" label="Recenter on target" onClick={onRecenter} />
+        <IconButton
+          icon="align"
+          label={hasTarget ? "Recenter on target" : "Recenter on mount"}
+          onClick={onRecenter}
+        />
         <div className="inline-grid grid-cols-3 gap-1" role="group" aria-label="Nudge center">
           <span />
           <IconButton icon="arrow-up" label="Nudge up" onClick={() => onNudge(0, 1)} />
