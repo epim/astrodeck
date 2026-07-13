@@ -135,6 +135,11 @@ function defaultPlan(): SequencePlan {
     meridian_flip: true,
     recover_guiding: true,
     hfr_reject_factor: 0,
+    // unattended safety (Batch-4b) — MUST mirror models.SequencePlan defaults
+    // (safety_check=True, meridian_flip_warn_min=15.0) or a UI-started run silently
+    // drops the SafetyMonitor gate / mis-times the meridian-flip warning.
+    safety_check: true,
+    meridian_flip_warn_min: 15,
     park_when_done: false,
     warm_cooler_when_done: false,
   };
@@ -143,7 +148,13 @@ function defaultPlan(): SequencePlan {
 function loadPlan(): SequencePlan {
   try {
     const raw = localStorage.getItem(PLAN_KEY);
-    if (raw) return { ...defaultPlan(), ...(JSON.parse(raw) as Partial<SequencePlan>) };
+    if (raw) {
+      const parsed = { ...defaultPlan(), ...(JSON.parse(raw) as Partial<SequencePlan>) };
+      // Backfill `schedule` onto every target: a plan saved before Batch-4b carries
+      // none, and the schedule sub-panel needs one (C1-27). Default spreads FIRST so
+      // a PRESENT schedule wins and a backfilled target preserves run-now behavior.
+      return { ...parsed, targets: parsed.targets.map((t) => ({ schedule: defaultSchedule(), ...t })) };
+    }
   } catch {
     /* fall through to default */
   }
@@ -737,7 +748,10 @@ export const useStore = create<AppState>((set, get) => ({
     const kept = groupHit
       ? plan.targets.filter((t) => t.mosaic_group !== group)
       : plan.targets;
-    const nextPlan: SequencePlan = { ...plan, targets: [...kept, ...targets] };
+    // Atlas hand-off targets carry no schedule — backfill each (default FIRST so an
+    // explicit schedule, if a future send ever attaches one, still wins) (C1-27).
+    const incoming = targets.map((t) => ({ schedule: defaultSchedule(), ...t }));
+    const nextPlan: SequencePlan = { ...plan, targets: [...kept, ...incoming] };
     get().setPlan(nextPlan);
     // Bump the hand-off signal AND record the panel count so SequenceView shows
     // "N panels added from Atlas" exactly once, surviving its remount-on-nav.
