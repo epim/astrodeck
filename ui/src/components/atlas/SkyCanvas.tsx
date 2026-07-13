@@ -300,15 +300,16 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     const rect = el.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    // Top-edge knob zone (the rotation handle) is the top ~14% strip center.
-    const knobZone = py < rect.height * 0.14 && Math.abs(px - rect.width / 2) < rect.width * 0.22;
+    // Real element hit-test on the drawn stalk handle (wave-2 §1) — correct at
+    // any rotation/zoom, no duplicated geometry math.
+    const onHandle = !!(e.target as Element | null)?.closest?.('[data-role="rotate-handle"]');
     try {
       el.setPointerCapture(e.pointerId);
     } catch {
       /* ok */
     }
     dragRef.current = {
-      mode: knobZone ? "rotate" : "pan",
+      mode: onHandle ? "rotate" : "pan",
       startX: px,
       startY: py,
       startCenter: center,
@@ -484,16 +485,12 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             objectSemiMajorDeg={semiMajorDeg}
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
+            rotateHandle={haveOptics}
           />
           {/* compass N/E ticks (geometry; the N/E letters live on the HTML layer) */}
           <g className="svg-halo" stroke="var(--accent)" strokeWidth={1.5} opacity={0.8}>
             <line x1={cx} y1={24} x2={cx} y2={56} />
             <line x1={VIEW - 56} y1={cy} x2={VIEW - 24} y2={cy} />
-          </g>
-          {/* rotation knob handle (top edge) */}
-          <g className="svg-halo" stroke="var(--accent)" strokeWidth={2}>
-            <circle cx={cx} cy={VIEW * 0.07} r={10} fill="var(--bg)" />
-            <line x1={cx} y1={VIEW * 0.07 + 10} x2={cx} y2={VIEW * 0.07 + 34} />
           </g>
         </svg>
 
