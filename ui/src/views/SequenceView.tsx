@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
 import { Field, HoldButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
+import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
@@ -44,6 +45,11 @@ export default function SequenceView() {
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
   const setPlan = useStore((s) => s.setPlan);
+  // Horizon limit for the per-target altitude sparkline + tonight ordering — the
+  // server-owned site setting (falls back to 30° when the site is unknown, same
+  // default as the /api/visibility route + VisibilityPanel).
+  const site = useStore((s) => s.site);
+  const altLimit = site?.horizon_min_deg ?? 30;
   // Atlas hand-off: the store holds `atlasBannerPending` (the panel count of the
   // latest Send) so the one-shot "N panels added from Atlas" banner survives this
   // view's remount-on-nav. Dismiss clears the store flag. Store-held (not a useRef
@@ -67,6 +73,7 @@ export default function SequenceView() {
     (i) => i.id === "horizon" && i.status === "warn",
   );
   const [preflightOpen, setPreflightOpen] = useState(false);
+  const [ordering, setOrdering] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [recoverable, setRecoverable] =
@@ -105,6 +112,45 @@ export default function SequenceView() {
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
   };
+
+  // Order-by-tonight (wave-3 §3): POST the flat target list; the server returns a
+  // group-atomic `recommended_order` of indices INTO THE REQUEST LIST, so mosaic
+  // groups stay contiguous with no client grouping logic. Reordering the flat
+  // array is enough — the blocks partition below re-derives groups from adjacency.
+  const orderByTonight = () =>
+    act(async () => {
+      if (plan.targets.length < 2) return;
+      setOrdering(true);
+      try {
+        const body = await api.post<{ recommended_order: number[] }>(
+          "/api/visibility/order",
+          {
+            targets: plan.targets.map((t) => ({
+              name: t.name,
+              ra_hours: t.ra_hours,
+              dec_deg: t.dec_deg,
+              mosaic_group: t.mosaic_group,
+            })),
+          },
+        );
+        const order = body.recommended_order;
+        // The indices index the REQUEST array; a wrong length or an out-of-range
+        // index would silently drop/duplicate targets, so verify a full valid
+        // permutation before applying and bail loudly otherwise.
+        const valid =
+          Array.isArray(order) &&
+          order.length === plan.targets.length &&
+          order.every((i) => Number.isInteger(i) && i >= 0 && i < plan.targets.length);
+        if (!valid) {
+          showToast("error", "Couldn't reorder — unexpected response from the server");
+          return;
+        }
+        setPlan({ ...plan, targets: order.map((i) => plan.targets[i]) });
+        showToast("success", "Ordered by tonight's transits");
+      } finally {
+        setOrdering(false);
+      }
+    });
 
   // Single writer of POST /api/sequence/start. `force` is threaded into the BODY
   // (FIX-A makes the server read body.force) so an accepted low/below-horizon run
@@ -346,10 +392,22 @@ export default function SequenceView() {
         <span id="seq-targets" className="block scroll-mt-4" aria-hidden="true" />
         <Panel title="Targets"
           right={
-            <div className="relative">
-              <input className="field !w-56" placeholder="+ add target — search catalog"
-                value={search} onChange={(e) => setSearch(e.target.value)} />
-              {results.length > 0 && (
+            <div className="flex items-center gap-2">
+              {/* Reorder the plan by tonight's transit times; mosaic groups stay
+                  atomic server-side, so this only reshuffles the flat array.
+                  Disabled while running or with <2 targets (nothing to order). */}
+              <button
+                className="btn tap min-h-[44px] !px-3 !text-[11px] whitespace-nowrap"
+                disabled={running || ordering || plan.targets.length < 2}
+                title="Reorder targets by tonight's transit times (mosaic groups stay together)"
+                onClick={orderByTonight}
+              >
+                {ordering ? "Ordering…" : "Order by tonight"}
+              </button>
+              <div className="relative">
+                <input className="field !w-56" placeholder="+ add target — search catalog"
+                  value={search} onChange={(e) => setSearch(e.target.value)} />
+                {results.length > 0 && (
                 <div className="absolute right-0 top-full mt-1 w-72 panel z-10 max-h-60 overflow-y-auto">
                   {results.map((r) => (
                     <button key={r.id} onClick={() => addTarget(r)}
@@ -362,6 +420,7 @@ export default function SequenceView() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
           }>
           {plan.targets.length === 0 && (
@@ -378,6 +437,9 @@ export default function SequenceView() {
                   <span className="mono text-[11px] text-dim">
                     {t.ra_hours.toFixed(3)}h {t.dec_deg >= 0 ? "+" : ""}{t.dec_deg.toFixed(2)}°
                   </span>
+                  {/* Tonight's altitude at a glance (wave-3 §3) — lazy, cached,
+                      shared across mosaic panels with the same rounded center. */}
+                  <TargetSpark ra_hours={t.ra_hours} dec_deg={t.dec_deg} altLimit={altLimit} />
                   {t.rotation_deg != null && t.rotation_deg > 0.5 && (
                     <span
                       className="mono text-[10px] text-accent border border-line2 px-1.5 py-0.5"
