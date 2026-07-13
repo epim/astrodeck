@@ -845,9 +845,10 @@ export default function AtlasView(): JSX.Element {
           </Panel>
 
           {/* ---------- visibility (lifts the night up for the reality check) ---------- */}
+          {/* rounded to the panel's own fetch key so pans don't re-render it */}
           <VisibilityPanel
-            ra_hours={center.ra_hours}
-            dec_deg={center.dec_deg}
+            ra_hours={Math.round(center.ra_hours * 1000) / 1000}
+            dec_deg={Math.round(center.dec_deg * 100) / 100}
             altLimit={site?.horizon_min_deg ?? 30}
             onNight={setVisNight}
           />

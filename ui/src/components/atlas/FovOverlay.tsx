@@ -12,7 +12,7 @@
 // `rotation_deg`. The ACTIVE panel is emphasized by a thicker stroke + corner
 // ticks (NOT a translucent fill — invisible red-on-red at night, C3-A12).
 
-import type { JSX } from "react";
+import { memo, type JSX } from "react";
 
 export interface FovOverlayProps {
   /** viewBox edge length (square). SkyCanvas uses 1000. */
@@ -62,7 +62,7 @@ function cornerTicks(halfW: number, halfH: number, len: number): string {
   ].join(" ");
 }
 
-export function FovOverlay(props: FovOverlayProps): JSX.Element {
+export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.Element {
   const {
     view, cx, cy, pxPerDeg, fovXDeg, fovYDeg, rotationDeg,
     rows, cols, overlap, activeIndex = null,
@@ -153,4 +153,4 @@ export function FovOverlay(props: FovOverlayProps): JSX.Element {
       {targetCross}
     </g>
   );
-}
+});
