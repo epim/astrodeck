@@ -41,7 +41,6 @@ export interface SkyCanvasProps {
   optics: OpticsLike | null; // camera-MERGED 4-field optics (AtlasView builds it)
   focalMmOverride?: number; // inline Atlas focal field (overrides optics.focal_length_mm)
   mosaic: { rows: number; cols: number; overlap: number };
-  activePanel?: number | null;
   catalogTarget?: CatalogEntry; // origin object (size ellipse, legends)
   night: boolean;
   /** survey | schematic — schematic is now ONLY the user's explicit choice. */
@@ -93,7 +92,7 @@ function fmtAngle(deg: number): string {
 export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const {
     center, rotationDeg, survey, stretch, fovZoomDeg, optics, focalMmOverride,
-    mosaic, activePanel = null, catalogTarget, night, mode, imageBrightness = 1,
+    mosaic, catalogTarget, night, mode, imageBrightness = 1,
     surveyDegraded = false,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
@@ -481,7 +480,6 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             rows={mosaic.rows}
             cols={mosaic.cols}
             overlap={mosaic.overlap}
-            activeIndex={activePanel}
             objectSemiMajorDeg={semiMajorDeg}
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
