@@ -97,11 +97,15 @@ layer (§5) wraps it.
   exposed via a module-level accessor for §5. Exactly one fetch task may run at a
   time (module-level `asyncio.Lock`; a second start request while running is a
   no-op that reports "already fetching").
-* **CLI:** `python -m astrodeck.survey_pack fetch [--order 4] [--dest PATH]`.
-  `--dest` defaults to the server's pack path. Constraint: the CLI must not boot
-  the device hub or FastAPI app — import only what resolves `CAPTURE_DIR` plus
-  this module. Prints progress lines (`done/total`) and a final summary; exit
-  code 0 only if the manifest was written.
+* **CLI:** `python -m astrodeck.catalog.survey_pack fetch [--order 4] [--dest PATH]`.
+  `--dest` defaults to the server's pack path. Constraint: the CLI must not
+  START the hub or the FastAPI app. Importing `astrodeck.hub` for `CAPTURE_DIR`
+  is permitted — seam-verified side-effect-free at import (hub.py's only
+  module-level statement is `hub = Hub()`, which assigns plain attributes and
+  starts nothing) and it matches `survey.py:38`'s existing import, avoiding a
+  hand-copied path formula with an off-by-one risk. Prints progress lines
+  (`done/total`) and a final summary; exit code 0 only if the manifest was
+  written, 2 on the disk pre-flight failure.
 * **Delete:** `remove_pack(slug)` — `shutil.rmtree` of the pack dir; used by §5.
 
 ## 3. Local renderer (`server/astrodeck/catalog/hips_local.py`)
@@ -199,7 +203,19 @@ width clamp, snap, keys = (up_key, pk_key)
 * Surveys without a pack (`DSS2/red`, `2MASS/color`): steps 5 is skipped (no
   pack), so they work only when `online_fetch` is on; otherwise 503.
 
-## 5. Pack API (`survey_pack` router, mounted like the other routers)
+## 5. Pack API (routes hosted in `api/app.py`, logic in `survey_pack.py`)
+
+Seam-pinned decisions (extraction 2026-07-13): dedicated config blocks
+(`drivers`, `rotator`, `providers`) are written through their OWN typed
+`ConfigStore` setters + routes in `app.py` — NOT the generic `POST /api/config`
+field-caps merge. `survey` follows that pattern: `ConfigStore.set_survey` +
+`POST /api/config/survey` in `app.py`. The pack routes also live in `app.py`
+(the proven `@declare(...)` + `Depends(require(...))` idiom next to the
+drivers routes); `survey_pack.py` stays FastAPI-free and exposes plain
+functions/exceptions the routes wrap. Capability: **`CAP_CONFIG_SITE_OPTICS`**
+for all writes (`POST /api/config/survey`, `POST /api/survey/pack/fetch`,
+`DELETE /api/survey/pack`) — Atlas/optics-adjacent, no new capability or
+role-map churn; `CAP_VIEW_STATUS` for `GET /api/survey/pack`.
 
 * `GET /api/survey/pack` → `{"present": bool, "slug": "dss2color",
   "survey": "CDS/P/DSS2/color", "order": int|null, "bytes": int|null,
