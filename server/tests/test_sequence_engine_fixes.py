@@ -261,6 +261,80 @@ def _tracking_is(hub):
     return getattr(getattr(tel, "rig", tel), "tracking", None)
 
 
+# --------------------------------- stale WS schedule sub-state cleared (wave-3 §2)
+
+async def test_schedule_state_cleared_once_gated_target_starts(sim_hub, temp_store,
+                                                                monkeypatch):
+    """The ``schedule={"state": "waiting", ...}`` sub-block published while a
+    target's window is gated must not survive past the wait: once the gated
+    target actually starts running, ``engine.state`` must no longer carry a
+    stale 'schedule' key (GET /api/sequence/state, the monitor snapshot, and the
+    WS payload all serve ``engine.state`` verbatim)."""
+    set_safety(temp_store, enabled=False)
+
+    # Accelerate the engine's clock 3600x (1 real second = 1 fake hour) so a
+    # target gated a few *wall-clock* minutes out becomes ready after only a
+    # couple of real seconds. Exercises the SAME schedule.py window-resolution
+    # math (HH:MM clock start) as the sibling "mount stops tracking" test above
+    # — only the rate real time advances is sped up. asyncio's own scheduling
+    # uses time.monotonic (unaffected by patching time.time), so this does not
+    # break the event loop / wait_for polling below.
+    real_time = time.time
+    t0 = real_time()
+
+    def fast_time():
+        return t0 + (real_time() - t0) * 3600.0
+    monkeypatch.setattr(time, "time", fast_time)
+
+    future = time.strftime("%H:%M", time.localtime(t0 + 10 * 60))  # 10 min out
+    b = _light_target(name="B", ra_hours=6.0, dec_deg=-6.0,
+                      steps=[ExposureStep(filter="L", exposure_s=0.05, count=1)])
+    b.schedule.start_mode = "time"
+    b.schedule.start_time = future
+    plan = SequencePlan(name="clearedtest", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False, safety_check=False,
+                        targets=[b])
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    try:
+        assert await wait_for(
+            lambda: (engine.state.get("schedule") or {}).get("state") == "waiting",
+            timeout=20), engine.state
+        # the (accelerated) wait ends and B starts running — the stale schedule
+        # sub-state must be cleared, not merged forward forever.
+        assert await wait_for(
+            lambda: engine.state.get("target") == "B"
+                    and "schedule" not in engine.state,
+            timeout=20), engine.state
+    finally:
+        await engine.abort()
+
+
+async def test_schedule_state_cleared_after_abort_during_wait(sim_hub, temp_store):
+    """Aborting mid-wait (operator cancels before the gated target's window
+    opens) must also clear the stale schedule sub-state — the terminal
+    'aborted' publish must not leave a dangling waiting block behind."""
+    set_safety(temp_store, enabled=False)
+    future = time.strftime("%H:%M", time.localtime(time.time() + 3 * 3600))
+    b = _light_target(name="B", ra_hours=6.0, dec_deg=-6.0,
+                      steps=[ExposureStep(filter="L", exposure_s=0.05, count=1)])
+    b.schedule.start_mode = "time"
+    b.schedule.start_time = future
+    plan = SequencePlan(name="aborttest", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False, safety_check=False,
+                        targets=[b])
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    assert await wait_for(
+        lambda: (engine.state.get("schedule") or {}).get("state") == "waiting",
+        timeout=20), engine.state
+    await engine.abort()
+    assert engine.state.get("state") == "aborted"
+    assert "schedule" not in engine.state
+
+
 # ------------------------------------------ bounded filter-wheel / focuser moves
 
 async def test_apply_filter_is_bounded_on_a_stuck_wheel(sim_hub, monkeypatch):
