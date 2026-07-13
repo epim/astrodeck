@@ -4,10 +4,12 @@
 // deg->px scale is uniform (lib/framing.ts). NO magnet file is edited here.
 //
 // Layering (bottom -> top), per spec §6:
-//   1. survey <img class="survey"> — double-buffered: the previous frame stays
-//      until the new one fires onLoad + rAF (no flash of black between crops).
-//   2. an ALWAYS-PRESENT night dimmer, gated off only after onLoad+rAF, so no
-//      single bright JPEG frame ever reaches a dark-adapted eye (C3-A7).
+//   1. survey <img class="survey"> — fetch-based loader (abortable, generation-
+//      guarded): the last GOOD frame stays mounted through failures and gestures
+//      (keep-last-good) while surveyTransform() tracks the live view; the settled
+//      fetch decodes behind it and swaps only after decode (no half-frame flash).
+//   2. a FIXED night dimmer (0.18 when night, else 0) — the `.survey` CSS rule's
+//      red filter tames first paint, so loading no longer blacks out the frame.
 //   3. <svg viewBox="0 0 1000 1000"> — geometry only (FovOverlay + compass +
 //      scale bar). Strokes use var(--accent) with the .svg-halo black underlay.
 //   4. HTML label layer — every text label is real CSS px (>=12px), positioned
@@ -21,6 +23,7 @@ import {
 } from "react";
 import type { CatalogEntry, Optics } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint } from "../../lib/framing";
+import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
 
@@ -41,18 +44,20 @@ export interface SkyCanvasProps {
   activePanel?: number | null;
   catalogTarget?: CatalogEntry; // origin object (size ellipse, legends)
   night: boolean;
-  /** survey | schematic (503 fallback or "schematic (offline)" survey choice). */
+  /** survey | schematic — schematic is now ONLY the user's explicit choice. */
   mode: "survey" | "schematic";
   /** Per-image brightness dimmer 0.08..1 (SurveyControls slider). */
   imageBrightness?: number;
+  /** Last settled fetch failed; last good frame stays up while retries run. */
+  surveyDegraded?: boolean;
 
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
   onRotate: (deg: number) => void;
   onZoom: (fovDeg: number) => void;
-  /** Fired when the survey 503s mid-drag so AtlasView can flip mode=schematic. */
+  /** Fired when a settled survey fetch fails (AtlasView sets surveyDegraded). */
   onSurveyError?: () => void;
-  /** Fired when a survey image loads OK (lets AtlasView clear an error banner). */
+  /** Fired when a survey frame loads OK (AtlasView clears surveyDegraded). */
   onSurveyLoad?: () => void;
 }
 
@@ -89,18 +94,25 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const {
     center, rotationDeg, survey, stretch, fovZoomDeg, optics, focalMmOverride,
     mosaic, activePanel = null, catalogTarget, night, mode, imageBrightness = 1,
+    surveyDegraded = false,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [boxPx, setBoxPx] = useState(360); // CSS px size of the square canvas
-  const [imgReady, setImgReady] = useState(false); // gates the night dimmer off
-  const [loading, setLoading] = useState(true);
+  const [slowLoad, setSlowLoad] = useState(false);   // settled fetch in flight > 300 ms
   const [everLoaded, setEverLoaded] = useState(false);
 
-  // Double-buffer: `shown` is the on-screen JPEG; `pending` loads behind it.
+  // Last good frame: object URL + the geometry it was fetched at (from the
+  // X-Survey-* headers). The frame stays mounted through failures/gestures;
+  // surveyTransform() maps it onto the live view until the next swap.
   const [shownUrl, setShownUrl] = useState<string | null>(null);
+  const [shownGeom, setShownGeom] = useState<SurveyGeom | null>(null);
+  const shownUrlRef = useRef<string | null>(null);   // for unmount revocation
   const debounceRef = useRef<number | null>(null);
+  const genRef = useRef(0);                          // stale-response guard
+  const abortRef = useRef<AbortController | null>(null);
+  const retryRef = useRef<{ timer: number | null; attempt: number }>({ timer: null, attempt: 0 });
 
   // ---- optics-derived FOV (bin-1) ----
   const fov = useMemo(
@@ -136,39 +148,127 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     [center, fovZoomDeg, survey, stretch],
   );
 
+  // Fetch-based loader (Wave-1 spec §1.1): abortable, generation-guarded, swaps
+  // only after decode. Reads the server's snapped-geometry headers so the
+  // residual (<= fov/40 after server §5.2) is compensated by the transform below.
+  const loadSurvey = useCallback((url: string, fallback: SurveyGeom) => {
+    const gen = ++genRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    const slowTimer = window.setTimeout(() => {
+      if (gen === genRef.current) setSlowLoad(true);
+    }, 300);
+    void (async () => {
+      try {
+        const res = await fetch(url, { signal: ac.signal });
+        if (!res.ok) throw new Error(`survey ${res.status}`);
+        const geom: SurveyGeom = {
+          raDeg: Number(res.headers.get("x-survey-ra-deg") ?? fallback.raDeg),
+          decDeg: Number(res.headers.get("x-survey-dec-deg") ?? fallback.decDeg),
+          fovDeg: Number(res.headers.get("x-survey-fov-deg") ?? fallback.fovDeg),
+        };
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        // Decode before swap — double-buffer semantics, no flash of a half-
+        // decoded frame. decode() rejection is benign (frame still usable).
+        const img = new Image();
+        img.src = blobUrl;
+        try { await img.decode(); } catch { /* ok */ }
+        if (gen !== genRef.current) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        retryRef.current.attempt = 0;
+        setShownUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return blobUrl;
+        });
+        shownUrlRef.current = blobUrl;
+        setShownGeom(geom);
+        setSlowLoad(false);
+        setEverLoaded(true);
+        onSurveyLoad?.();
+      } catch {
+        if (gen !== genRef.current) return; // aborted by a newer load — not a failure
+        setSlowLoad(false);
+        // Self-healing retry with backoff (spec §1.4): 5s -> 10s -> ... cap 60s.
+        // Any new settled view cancels this and fetches immediately instead.
+        const attempt = retryRef.current.attempt + 1;
+        retryRef.current.attempt = attempt;
+        const delay = Math.min(60_000, 5_000 * 2 ** (attempt - 1));
+        retryRef.current.timer = window.setTimeout(() => {
+          if (gen === genRef.current) loadSurvey(url, fallback);
+        }, delay);
+        onSurveyError?.();
+      } finally {
+        window.clearTimeout(slowTimer);
+      }
+    })();
+  }, [onSurveyError, onSurveyLoad]);
+
+  // Settled-fetch scheduler: 300 ms debounce (unchanged cadence). A new view is
+  // always a fresh chance — pending backoff retries are cancelled first.
   useEffect(() => {
     if (mode === "schematic") {
-      setLoading(false);
+      setSlowLoad(false);
       return;
     }
-    setLoading(true);
+    if (retryRef.current.timer != null) {
+      window.clearTimeout(retryRef.current.timer);
+      retryRef.current.timer = null;
+    }
+    retryRef.current.attempt = 0;
     if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      // Preload behind the current frame; only swap on successful decode.
-      const img = new Image();
-      img.onload = () => {
-        // double-buffer swap + gate the dimmer off on the NEXT frame (rAF).
-        setShownUrl(targetUrl);
-        setLoading(false);
-        setEverLoaded(true);
-        requestAnimationFrame(() => setImgReady(true));
-        onSurveyLoad?.();
-      };
-      img.onerror = () => {
-        setLoading(false);
-        onSurveyError?.(); // AtlasView flips to schematic (503 path)
-      };
-      img.src = targetUrl;
-    }, 300);
+    const fallback: SurveyGeom = {
+      raDeg: center.ra_hours * 15,
+      decDeg: center.dec_deg,
+      fovDeg: fovZoomDeg,
+    };
+    debounceRef.current = window.setTimeout(() => loadSurvey(targetUrl, fallback), 300);
     return () => {
       if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
     };
-  }, [targetUrl, mode, onSurveyError, onSurveyLoad]);
+  }, [targetUrl, mode, loadSurvey, center.ra_hours, center.dec_deg, fovZoomDeg]);
 
-  // When center/zoom change, re-arm the dimmer until the next frame settles.
+  // A survey-source change must not keep showing the previous survey's frame.
   useEffect(() => {
-    setImgReady(false);
-  }, [targetUrl]);
+    genRef.current++;
+    abortRef.current?.abort();
+    if (retryRef.current.timer != null) window.clearTimeout(retryRef.current.timer);
+    retryRef.current.attempt = 0;
+    setShownUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    shownUrlRef.current = null;
+    setShownGeom(null);
+    setEverLoaded(false);
+  }, [survey]);
+
+  // Unmount: kill in-flight work + timers, release the object URL.
+  useEffect(() => () => {
+    genRef.current++;
+    abortRef.current?.abort();
+    if (retryRef.current.timer != null) window.clearTimeout(retryRef.current.timer);
+    if (shownUrlRef.current) URL.revokeObjectURL(shownUrlRef.current);
+  }, []);
+
+  // CSS transform mapping the last-fetched frame onto the live view (spec §1.2):
+  // pans track the pointer with zero fetches; the settled fetch swaps in a
+  // re-centered frame and the transform collapses back toward identity.
+  const imgTransform = useMemo(() => {
+    if (!shownGeom) return undefined;
+    const t = surveyTransform(
+      shownGeom,
+      { raDeg: center.ra_hours * 15, decDeg: center.dec_deg, fovDeg: fovZoomDeg },
+      boxPx,
+    );
+    if (Math.abs(t.dx) < 0.01 && Math.abs(t.dy) < 0.01 && Math.abs(t.scale - 1) < 1e-4) {
+      return undefined;
+    }
+    return `translate(${t.dx.toFixed(2)}px, ${t.dy.toFixed(2)}px) scale(${t.scale.toFixed(4)})`;
+  }, [shownGeom, center.ra_hours, center.dec_deg, fovZoomDeg, boxPx]);
 
   // ---- pointer drag (translate) + rotation knob ----
   const dragRef = useRef<{
@@ -290,9 +390,6 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const ccx = boxPx / 2;
   const ccy = boxPx / 2;
 
-  // night dimmer is on until the first good frame settles (or always in schematic).
-  const dimmerOn = mode === "survey" && (!imgReady || loading);
-
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -309,7 +406,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         onKeyDown={onKeyDown}
         style={{ cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab" }}
       >
-        {/* 1. survey image (double-buffered) */}
+        {/* 1. survey image — the LAST GOOD frame stays through failures/gestures
+              (keep-last-good, spec §1.3); the transform tracks the live view. */}
         {mode === "survey" && shownUrl && (
           <img
             src={shownUrl}
@@ -317,16 +415,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             aria-hidden
             draggable={false}
             className="survey absolute inset-0 w-full h-full object-cover"
-            // Per-image brightness rides an inline CSS var so the `.survey` rule's
-            // `var(--survey-filter) brightness(...)` applies the night red filter in
-            // BOTH modes (an inline `filter:` would clobber the night var). The
-            // always-present night-dimmer overlay below is the no-flash guard.
-            style={{ ["--survey-bright" as string]: imageBrightness } as CSSProperties}
+            // Brightness rides the CSS var (see .survey rule); the transform is
+            // the pan/zoom tracker — never animate it (it must follow 1:1).
+            style={{
+              ["--survey-bright" as string]: imageBrightness,
+              transform: imgTransform,
+              transformOrigin: "center",
+            } as CSSProperties}
           />
         )}
 
-        {/* schematic fallback: dim starfield gradient (existing body gradient look) */}
-        {mode === "schematic" && (
+        {/* schematic backdrop: explicit user choice OR no frame fetched yet */}
+        {(mode === "schematic" || !shownUrl) && (
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,#10131b,#04060a)]" aria-hidden />
         )}
 
@@ -334,28 +434,30 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             states (the visible chips are aria-hidden decoration). */}
         <span className="sr-only" role="status" aria-live="polite">
           {mode === "schematic"
-            ? "Survey offline, schematic framing"
-            : loading
-              ? "Loading survey"
-              : ""}
+            ? "Schematic framing"
+            : surveyDegraded
+              ? `Survey unreachable, retrying, showing ${shownUrl ? "last image" : "schematic"}`
+              : slowLoad
+                ? "Loading survey"
+                : ""}
         </span>
 
-        {/* 2. always-present night dimmer, gated off after onLoad+rAF */}
+        {/* 2. fixed night dimmer — loading no longer blacks out the frame */}
         <div
           className="absolute inset-0 bg-black pointer-events-none transition-opacity duration-200"
-          style={{ opacity: dimmerOn ? 0.55 : night ? 0.18 : 0 }}
+          style={{ opacity: night ? 0.18 : 0 }}
           aria-hidden
         />
 
         {/* first-ever load skeleton */}
-        {mode === "survey" && !everLoaded && (
+        {mode === "survey" && !everLoaded && !shownUrl && (
           <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
             <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
           </div>
         )}
 
         {/* loading progress chip (subsequent loads) */}
-        {mode === "survey" && everLoaded && loading && (
+        {mode === "survey" && everLoaded && slowLoad && (
           <div className="absolute top-2 right-2 px-2 py-0.5 text-[11px] mono text-dim bg-black/60 border border-line2 pointer-events-none">
             LOADING…
           </div>
@@ -440,9 +542,14 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       </div>
 
       {/* verdict + offline banner beneath the canvas (real text, >=12px) */}
-      {mode === "schematic" && (
+      {mode === "survey" && surveyDegraded && (
         <div className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
-          ⚠ Survey offline — schematic framing: sizes approximate, can't preview nebula shape.
+          ⚠ Survey unreachable — {shownUrl ? "showing the last image" : "schematic framing"}; retrying automatically.
+        </div>
+      )}
+      {mode === "schematic" && (
+        <div className="text-[12px] text-dim border border-line2 bg-black/30 px-2 py-1">
+          Schematic framing: sizes approximate, can't preview nebula shape.
         </div>
       )}
       {verdict && (

@@ -126,8 +126,9 @@ export default function AtlasView(): JSX.Element {
   // can cross-reference best_window / set time (spec §6).
   const [visNight, setVisNight] = useState<VisibilityNight | null>(null);
 
-  // Survey error → schematic mode (SkyCanvas fires onSurveyError on proxy 503).
-  const [surveyDown, setSurveyDown] = useState(false);
+  // Survey fetch failure -> degraded (last good frame stays up; SkyCanvas
+  // retries with backoff). NEVER flips the view to schematic (wave-1 §1.4).
+  const [surveyDegraded, setSurveyDegraded] = useState(false);
   // Per-image brightness (night-adaptation memory) lives in the page; persisted to
   // localStorage (clamped 0.08 floor) so the dark-adapted level survives a reload.
   const [imageBrightness, setImageBrightness] = useState(readSurveyBright);
@@ -157,10 +158,9 @@ export default function AtlasView(): JSX.Element {
     if (optics) setFocalDraft(String(optics.focal_length_mm || ""));
   }, [optics?.focal_length_mm]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-arm schematic mode when the survey choice changes back to a real survey.
+  // A survey-source change is a fresh chance — clear the degraded flag.
   useEffect(() => {
-    if (framing?.survey === "schematic") return;
-    setSurveyDown(false);
+    setSurveyDegraded(false);
   }, [framing?.survey]);
 
   // Effective focal override (the draft, when a positive number) feeds the FOV.
@@ -235,13 +235,16 @@ export default function AtlasView(): JSX.Element {
   // free-roam entry from the empty state
   const onFreeRoam = useCallback(() => openFraming(undefined), [openFraming]);
 
+  // Stable identities: SkyCanvas's fetch effect depends on these via loadSurvey.
+  const onSurveyError = useCallback(() => setSurveyDegraded(true), []);
+  const onSurveyLoad = useCallback(() => setSurveyDegraded(false), []);
+
   if (!framing) {
     return <AtlasEmpty onFreeRoam={onFreeRoam} />;
   }
 
   const { center, rotation_deg, survey, stretch, fovZoomDeg, mosaic, target } = framing;
-  const mode: "survey" | "schematic" =
-    survey === "schematic" || surveyDown ? "schematic" : "survey";
+  const mode: "survey" | "schematic" = survey === "schematic" ? "schematic" : "survey";
 
   // ---- session patchers routed into setFraming ----
   const setCenter = (ra_hours: number, dec_deg: number) =>
@@ -493,11 +496,12 @@ export default function AtlasView(): JSX.Element {
             night={night}
             mode={mode}
             imageBrightness={imageBrightness}
+            surveyDegraded={surveyDegraded}
             onCenterChange={setCenter}
             onRotate={setRotation}
             onZoom={setZoom}
-            onSurveyError={() => setSurveyDown(true)}
-            onSurveyLoad={() => setSurveyDown(false)}
+            onSurveyError={onSurveyError}
+            onSurveyLoad={onSurveyLoad}
           />
         </div>
 
