@@ -34,7 +34,7 @@ import {
   useNight,
 } from "../store";
 import { useShallow } from "zustand/react/shallow";
-import type { MosaicPanel, MosaicResult, Optics, Target, VisibilityNight } from "../types";
+import type { CatalogEntry, MosaicPanel, MosaicResult, Optics, Target, VisibilityNight } from "../types";
 import { ARCSEC_PER_RAD } from "../lib/optics";
 import {
   fovFromOptics,
@@ -50,6 +50,7 @@ import { adjustedPa } from "../lib/rotation";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
 import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
+import { CatalogSearch } from "../components/atlas/CatalogSearch";
 import { Panel, Stat, Stepper, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
@@ -88,19 +89,29 @@ function fmtAngle(deg: number): string {
 }
 
 // Empty-state shell when the Atlas is reached with no active session (e.g. direct
-// nav before picking an object). Free-roam opens centered on the mount/0,0.
-function AtlasEmpty({ onFreeRoam }: { onFreeRoam: () => void }): JSX.Element {
+// nav before picking an object). Search opens a fresh session; free-roam opens
+// centered on the mount/0,0.
+function AtlasEmpty({
+  onFreeRoam,
+  onPick,
+}: {
+  onFreeRoam: () => void;
+  onPick: (e: CatalogEntry) => void;
+}): JSX.Element {
   return (
     <div className="grid place-items-center min-h-[60vh] p-4">
       <div className="panel p-8 max-w-md text-center">
         <EmptyState
           icon="atlas"
           title="Frame a target"
-          hint="Pick an object from the Mount catalog's Frame button, or free-roam the sky from here. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
+          hint="Search a target right here, pick one from the Mount catalog, or free-roam the sky. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
           action={
-            <button type="button" className="btn btn-accent btn-touch mt-2" onClick={onFreeRoam}>
-              Free-roam the sky
-            </button>
+            <div className="flex flex-col items-center gap-3 mt-2">
+              <CatalogSearch onPick={onPick} placeholder="Search catalog — e.g. M 31" />
+              <button type="button" className="btn btn-accent btn-touch" onClick={onFreeRoam}>
+                Free-roam the sky
+              </button>
+            </div>
           }
         />
       </div>
@@ -340,7 +351,7 @@ export default function AtlasView(): JSX.Element {
   const onSurveyLoad = useCallback(() => setSurveyDegraded(false), []);
 
   if (!framing) {
-    return <AtlasEmpty onFreeRoam={onFreeRoam} />;
+    return <AtlasEmpty onFreeRoam={onFreeRoam} onPick={openFraming} />;
   }
 
   const { center, rotation_deg, survey, stretch, fovZoomDeg, mosaic, target } = framing;
@@ -355,6 +366,14 @@ export default function AtlasView(): JSX.Element {
   const setStretch = (s: "linear" | "asinh") => setFraming({ stretch: s });
   const setMosaic = (patch: Partial<typeof mosaic>) =>
     setFraming({ mosaic: { ...mosaic, ...patch } });
+
+  // Search-pick with a live session: swap the framed target + recenter on it,
+  // keeping the user's survey/zoom/rotation/mosaic setup (wave-2 §2).
+  const pickSearchTarget = (entry: CatalogEntry) =>
+    setFraming({
+      target: entry,
+      center: { ra_hours: entry.ra_hours, dec_deg: entry.dec_deg },
+    });
 
   // Recenter on the origin object, or — in free-roam — on the live mount position
   // (consistent with openFraming's free-roam seed). No-op only if free-roam AND
@@ -514,6 +533,7 @@ export default function AtlasView(): JSX.Element {
             {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)} frame
           </p>
         </div>
+        <CatalogSearch onPick={pickSearchTarget} />
         <div className="flex-1" />
         {/* inline focal-length field — self-contained optics (spec §6 C1-B1) */}
         <label className="flex flex-col gap-1">
