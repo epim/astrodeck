@@ -269,7 +269,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     return `translate(${t.dx.toFixed(2)}px, ${t.dy.toFixed(2)}px) scale(${t.scale.toFixed(4)})`;
   }, [shownGeom, center.ra_hours, center.dec_deg, fovZoomDeg, boxPx]);
 
-  // ---- pointer drag (translate) + rotation knob ----
+  // ---- pointer drag (translate) + rotation handle ----
   const dragRef = useRef<{
     mode: "pan" | "rotate" | null;
     startX: number;
