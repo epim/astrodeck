@@ -30,6 +30,26 @@ export interface FovFromOptics {
   pixel_scale_arcsec: number;
 }
 
+/** The 4 fields the FOV math needs — config Optics and camera-merged
+ *  OpticsComputed both satisfy it structurally. */
+export interface OpticsLike {
+  focal_length_mm: number;
+  pixel_size_um: number;
+  sensor_width_px: number;
+  sensor_height_px: number;
+}
+
+/** Human names of whichever optics fields are still missing (<= 0), for the
+ *  warning banner (wave-1 §3.2). Empty array == optics usable. */
+export function missingOpticsFields(o: OpticsLike | null | undefined): string[] {
+  if (!o) return ["focal length", "pixel size", "sensor size"];
+  const missing: string[] = [];
+  if (!(o.focal_length_mm > 0)) missing.push("focal length");
+  if (!(o.pixel_size_um > 0)) missing.push("pixel size");
+  if (!(o.sensor_width_px > 0) || !(o.sensor_height_px > 0)) missing.push("sensor size");
+  return missing;
+}
+
 export interface ProjectedXiEta {
   xi: number; // standard coordinate ξ, degrees (East/RA-like, +toward +RA)
   eta: number; // standard coordinate η, degrees (North/Dec-like, +toward +Dec)
@@ -69,12 +89,7 @@ export interface GridPanel {
  * draw the dashed placeholder + CTA instead of NaN geometry.
  */
 export function fovFromOptics(
-  optics: {
-    focal_length_mm: number;
-    pixel_size_um: number;
-    sensor_width_px: number;
-    sensor_height_px: number;
-  } | null | undefined,
+  optics: OpticsLike | null | undefined,
   focalMm?: number,
 ): FovFromOptics {
   const zero: FovFromOptics = { fov_x_deg: 0, fov_y_deg: 0, pixel_scale_arcsec: 0 };
