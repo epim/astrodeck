@@ -391,7 +391,7 @@ class SequenceEngine:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-        self._set_state(state="aborted", detail="sequence aborted")
+        self._set_state(state="aborted", detail="sequence aborted", schedule=None)
 
     @property
     def running(self) -> bool:
@@ -442,6 +442,12 @@ class SequenceEngine:
         # re-publishes it and the dispatcher fires "Run started" on every frame).
         # Pop it before merging and add it ONLY to this single publish payload.
         first_running = kw.pop("_first_running", False)
+        # schedule=None is an explicit CLEAR (wave-3 §2): the waiting sub-state
+        # must not outlive the wait it describes (GET /api/sequence/state and the
+        # monitor snapshot both serve this dict verbatim).
+        if "schedule" in kw and kw["schedule"] is None:
+            kw = {k: v for k, v in kw.items() if k != "schedule"}
+            self.state.pop("schedule", None)
         self.state = {**self.state, **kw}
         payload = dict(self.state)
         if first_running:
@@ -551,7 +557,7 @@ class SequenceEngine:
                         and cfg.escalation.cooling_action == "skip"):
                     self._set_state(state="complete",
                                     detail="skipped: camera did not reach target temp",
-                                    end_reason="cooling_skip")
+                                    end_reason="cooling_skip", schedule=None)
                     bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
                                        "required but not reached", "sequence")
                     self._clear_resume()
@@ -565,13 +571,13 @@ class SequenceEngine:
                 # the scheduler ran out of open windows (every remaining target's
                 # window closed / never rose) — finalize as a dawn cutoff (§1.9-C).
                 self._set_state(state="complete", detail="stopped at dawn (windows closed)",
-                                end_reason="dawn_cutoff")
+                                end_reason="dawn_cutoff", schedule=None)
                 bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
                                 f"{self._frames_done} frames", "sequence")
                 self._clear_resume()
                 self._finalize_report("dawn_cutoff")
             else:
-                self._set_state(state="complete", detail="all targets complete")
+                self._set_state(state="complete", detail="all targets complete", schedule=None)
                 bus.log("info", f"sequence '{plan.name}' complete: {self._frames_done} frames"
                                 + (f", {self._rejected} flagged" if self._rejected else ""),
                         "sequence")
@@ -587,7 +593,7 @@ class SequenceEngine:
             # so the inner park/warm finishes before we re-raise (§1.9-G "completes
             # before cancellation takes effect").
             bus.log("error", f"sequence stopped (unsafe): {e}", "sequence")
-            self._set_state(state="aborted", detail=str(e), end_reason="unsafe")
+            self._set_state(state="aborted", detail=str(e), end_reason="unsafe", schedule=None)
             self._finalize_report("unsafe")
             wind = asyncio.ensure_future(self._wind_down(
                 park=True,
@@ -611,7 +617,7 @@ class SequenceEngine:
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
-            self._set_state(state="error", detail=str(e))
+            self._set_state(state="error", detail=str(e), schedule=None)
             await self._safe_stop()
             self._finalize_report("error")
         finally:
@@ -802,7 +808,10 @@ class SequenceEngine:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
         self._progress_expected = False
-        self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}")
+        # this target is now actually starting — clear any stale waiting sub-state
+        # a prior gated wait published (wave-3 §2).
+        self._set_state(target=target.name, target_index=ti, detail=f"slewing to {target.name}",
+                        schedule=None)
         bus.log("info", f"target {ti + 1}/{len(self.plan.targets)}: {target.name}", "sequence")
         # pre-slew safety + mount-floor gate (mount-alt floor is enforced even
         # with no safety device configured — §1.9-A).
@@ -917,7 +926,10 @@ class SequenceEngine:
             budget, f"capture {step.exposure_s:g}s")
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
-        self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}")
+        # this target is now actually starting — clear any stale waiting sub-state
+        # a prior gated wait published (wave-3 §2).
+        self._set_state(target=target.name, target_index=ti, detail=f"calibration: {target.name}",
+                        schedule=None)
         bus.log("info", f"calibration target: {target.name}", "sequence")
         # calibration frames flow immediately — arm the watchdog + anchor its clock.
         self._last_frame_at = time.time()
