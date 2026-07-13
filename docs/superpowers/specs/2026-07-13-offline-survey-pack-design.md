@@ -76,6 +76,14 @@ layer (§5) wraps it.
   The fetch run picks the first mirror whose `properties` GET succeeds and uses it
   for the whole run (no per-tile failover; a mid-run mirror failure fails the run —
   resume handles it).
+* **Disk pre-flight (ENOSPC guard):** before any network I/O, compute
+  `remaining = tiles_not_yet_on_disk`; require
+  `shutil.disk_usage(pack_dir).free >= remaining * 70_000 + 50 MB` headroom
+  (70 KB ≈ measured order-4 tile size). On failure, no fetch starts: the CLI
+  prints the shortfall and exits 2; the API returns
+  `507 {"detail": "insufficient disk space", "free_bytes": n, "required_bytes": m}`
+  (§5). Scaling by *remaining* tiles means a nearly-complete resume isn't
+  refused on a nearly-full card.
 * **Algorithm:** download `properties` → parse/validate `hips_tile_width` (int,
   default 512) and that `hips_tile_format` contains `jpeg` → enumerate all
   (k, npix) for k ≤ target order → skip tiles whose file already exists with
@@ -201,8 +209,9 @@ width clamp, snap, keys = (up_key, pk_key)
   (manifest carries totals; while fetching, progress comes from §2 state).
   RBAC: view-status capability (same as `GET /api/config`).
 * `POST /api/survey/pack/fetch` body `{"order": 4}` (order optional, default 4,
-  clamped 1..6) → starts the background fetch task (single-flight per §2);
-  returns `202 {"started": true}` or `200 {"started": false, "already": true}`.
+  clamped 1..6) → runs the disk pre-flight synchronously (507 on failure, §2),
+  then starts the background fetch task (single-flight per §2); returns
+  `202 {"started": true}` or `200 {"started": false, "already": true}`.
   RBAC: same capability as config writes.
 * `DELETE /api/survey/pack` → removes the pack directory (`remove_pack`); 409 if
   a fetch is currently running. RBAC: same as config writes.
@@ -219,7 +228,8 @@ width clamp, snap, keys = (up_key, pk_key)
   * Button "Download offline sky pack (~250 MB)" → `POST /api/survey/pack/fetch`;
     while `fetching` is non-null, poll GET every 2 s (only while the card is
     mounted) and show `done/total` as a progress bar; on `failed > 0` completion
-    show a retry hint (re-running resumes).
+    show a retry hint (re-running resumes); on a 507 response show the shortfall
+    plainly ("Not enough space on the capture volume — needs ~X MB free").
   * "Delete pack" button (confirm dialog) → DELETE.
   * Attribution line (static text): "DSS2 imagery © AAO/STScI, served from
     CDS/ESA HiPS mirrors."
@@ -233,9 +243,14 @@ width clamp, snap, keys = (up_key, pk_key)
   `GET /api/survey/pack` on mount, refreshed after Settings changes via the
   store's config). When the degraded state fires AND `!online_fetch` AND
   `!packPresent`, the banner copy becomes: "No survey source — download the
-  offline sky pack in Settings, or enable online fetch." All other degraded
-  cases keep today's copy. No other SkyCanvas behavior changes (backoff, keep
-  last-good, skeleton all unchanged).
+  offline sky pack in Settings, or enable online fetch." If that same status
+  reports `fetching` non-null, the copy is instead
+  "Downloading offline sky pack… {done}/{total}" and AtlasView re-polls
+  `GET /api/survey/pack` every 2 s while this banner is visible (poll stops when
+  the banner clears or the view unmounts). No completion wiring is needed: once
+  the pack lands, SkyCanvas's existing backoff retry succeeds and the degraded
+  state clears itself. All other degraded cases keep today's copy. No other
+  SkyCanvas behavior changes (backoff, keep last-good, skeleton all unchanged).
 
 ## 7. Testing
 
@@ -258,7 +273,10 @@ Server (pytest, existing conventions):
 * **`test_survey_pack_fetch.py`** — `httpx.MockTransport`: full small fetch
   (order 0/1) writes tree + manifest; resume skips existing files; non-JPEG body
   counted failed and not written; failed > 0 ⇒ no manifest; progress counters;
-  concurrent second start is a no-op; delete refuses while running.
+  concurrent second start is a no-op; delete refuses while running; disk
+  pre-flight (monkeypatched `shutil.disk_usage`) blocks a fresh fetch when free
+  space is short but allows a nearly-complete resume, and the API path returns
+  the 507 shape.
 * **`survey.py` route tests** (extend the existing survey test module):
   * `online_fetch=False` ⇒ zero upstream attempts — monkeypatch
     `survey.httpx.AsyncClient` with a class whose constructor raises
@@ -299,4 +317,7 @@ Wi-Fi off, toggle online and verify small-FOV quality upgrade.
   upscaled at the FOVs where the pack serves small fields).
 * Deeper-than-order-4 packs in the Settings UI (CLI `--order` accepts up to 6).
 * Auto-refresh/re-fetch of stale packs; HiPS `Allsky.jpg` preview usage.
+* Mid-run mirror swap on per-tile failure (considered at review: rotate to the
+  next mirror when a tile fails its retry). Deferred — a failed run is cheap to
+  retry because resume skips everything already fetched.
 * Any change to the schematic mode or the client survey loader/backoff.
