@@ -165,6 +165,14 @@ Component: `Tooltip`/`InfoDot` in `ui/src/components/ui.tsx:342-412`.
   `defaultSchedule()` (`store.ts:160-172`, comment says it backfills for a "schedule
   sub-panel") + `SequencePlan.safety_check`/`meridian_flip_warn_min` (`types.ts:393-394`)
   — **zero UI anywhere** (exhaustive grep). Confirmed finding, not hypothesis.
+  **ERRATUM 2026-07-13:** the follow-on claim made elsewhere in this doc — "the
+  sequence engine ignores Schedule entirely" — was client-side-only and is FALSE.
+  Server scheduling shipped in Batch 4b (17f7609): `sequence/models.py` Schedule +
+  Target.schedule + safety_check/meridian_flip_warn_min; `sequence/schedule.py`;
+  engine `_wait_until`/`_enforce_stop_boundary`/on_missed; WS
+  `SequenceState.schedule` sub-state; engine tests cover it. The "zero UI" half of
+  this finding stands and is what Wave 3 builds (see
+  `docs/superpowers/specs/2026-07-13-plan-schedule-design.md`).
 - Plan has no altitude/visibility chart (grep-confirmed); `VisibilityPanel` mounts only in
   Atlas (:647-652), scoped to the currently-framed target.
 
