@@ -1,9 +1,12 @@
 import {
-  useEffect, useId, useRef, useState, type ReactNode, type PointerEvent as RPointerEvent,
+  useEffect, useId, useReducer, useRef, useState, type ReactNode, type PointerEvent as RPointerEvent,
   type KeyboardEvent as RKeyboardEvent,
 } from "react";
 import type { LedState, Tone } from "../types";
 import { Icon, type IconName } from "./icons";
+import {
+  tooltipNext, TOOLTIP_IDLE, TOOLTIP_OPEN_DELAY_MS, TOOLTIP_CLOSE_GRACE_MS,
+} from "../lib/tooltipMachine";
 
 export function Panel({ title, right, children, className = "" }: {
   title?: string; right?: ReactNode; children: ReactNode; className?: string;
@@ -340,23 +343,41 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
 }
 
 /* ============================================================ UI-TOOLTIP
-   Opens on hover + focus + tap; closes on outside-tap / Escape. Viewport-clamped
-   bubble, role=tooltip, >=44px focusable hit area on the trigger. */
+   Mouse hover runs through hover-intent grace timers (lib/tooltipMachine.ts);
+   touch/pen taps toggle exactly once; keyboard focus opens; Escape/outside-tap
+   closes. Viewport-clamped bubble, role=tooltip, pointer-events-none bubble,
+   >=44px focusable hit area on the trigger. */
 export function Tooltip({ content, children, side = "top" }: {
   content: ReactNode; children: ReactNode; side?: "top" | "bottom" | "left" | "right";
 }) {
-  const [open, setOpen] = useState(false);
+  const [st, dispatch] = useReducer(tooltipNext, TOOLTIP_IDLE);
   const id = useId();
   const ref = useRef<HTMLSpanElement>(null);
+  // Suppress the focus-opens path when focus was pointer-induced (a touch tap
+  // focuses the span THEN fires pointerup — without this, tap = open+toggle).
+  const pointerDownAtRef = useRef(0);
+
+  // Grace timers: the machine sets pending flags; these effects fire the expiry
+  // events. State changes re-run the effect, cancelling stale timers.
+  useEffect(() => {
+    if (!st.pendingOpen) return;
+    const t = window.setTimeout(() => dispatch("open-timer"), TOOLTIP_OPEN_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [st.pendingOpen]);
+  useEffect(() => {
+    if (!st.pendingClose) return;
+    const t = window.setTimeout(() => dispatch("close-timer"), TOOLTIP_CLOSE_GRACE_MS);
+    return () => window.clearTimeout(t);
+  }, [st.pendingClose]);
 
   useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    if (!st.open) return;
+    const onDoc = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) dispatch("outside"); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") dispatch("escape"); };
     document.addEventListener("pointerdown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("pointerdown", onDoc); document.removeEventListener("keydown", onKey); };
-  }, [open]);
+  }, [st.open]);
 
   const pos: Record<string, string> = {
     top: "bottom-full left-1/2 -translate-x-1/2 mb-1.5",
@@ -370,18 +391,20 @@ export function Tooltip({ content, children, side = "top" }: {
       <span
         tabIndex={0}
         role="button"
-        aria-describedby={open ? id : undefined}
-        aria-expanded={open}
+        aria-describedby={st.open ? id : undefined}
+        aria-expanded={st.open}
         className="inline-flex items-center cursor-help"
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        onPointerEnter={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("enter-mouse"); }}
+        onPointerLeave={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("leave-mouse"); }}
+        onPointerDown={() => { pointerDownAtRef.current = Date.now(); }}
+        onPointerUp={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType !== "mouse") dispatch("tap"); }}
+        onFocus={() => { if (Date.now() - pointerDownAtRef.current > 400) dispatch("focus"); }}
+        onBlur={() => dispatch("blur")}
+        onClick={(e) => e.stopPropagation()}
       >
         {children}
       </span>
-      {open && (
+      {st.open && (
         <span
           id={id}
           role="tooltip"
