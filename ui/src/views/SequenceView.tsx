@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore, useAtlasBannerPending } from "../store";
+import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
 import { Field, HoldButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
+import SchedulePanel from "../components/sequence/SchedulePanel";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
@@ -171,6 +172,7 @@ export default function SequenceView() {
       targets: [...plan.targets, {
         name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
         center: true, autofocus_first: true, calibration: false, steps: [{ ...DEFAULT_STEP }],
+        schedule: defaultSchedule(),
       }],
     });
     setSearch("");
@@ -459,6 +461,15 @@ export default function SequenceView() {
                     <span>filter</span><span>exp s</span><span>gain</span><span>bin</span><span>count</span><span />
                   </div>
                 </div>
+                {/* Per-target autorun schedule (wave-3 §1,6) — collapsed below the
+                    steps grid; tolerates a legacy target with no schedule via the
+                    defaultSchedule() fallback, and patches through patchTarget. */}
+                <SchedulePanel
+                  schedule={t.schedule ?? defaultSchedule()}
+                  disabled={running}
+                  onChange={(patch) =>
+                    patchTarget(ti, { schedule: { ...(t.schedule ?? defaultSchedule()), ...patch } })}
+                />
               </div>
               );
 
@@ -560,6 +571,27 @@ export default function SequenceView() {
                 <InfoDot content={HELP.meridianFlip} label="About meridian flip" />
               </span>
               <Toggle checked={plan.meridian_flip} onChange={(v) => setPlan({ ...plan, meridian_flip: v })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim inline-flex items-center gap-1">
+                meridian warn lead (min)
+                <InfoDot
+                  label="About the meridian-flip warning lead"
+                  content="Lead time before the meridian for the live flip-ETA chip during a run — how far ahead you're warned the mount is about to flip."
+                />
+              </span>
+              <input className="field !w-16 !py-1" value={plan.meridian_flip_warn_min ?? 15}
+                onChange={(e) => setPlan({ ...plan, meridian_flip_warn_min: Math.max(0, num(e.target.value, plan.meridian_flip_warn_min ?? 15)) })} />
+            </label>
+            <label className="flex items-center justify-between gap-2">
+              <span className="text-dim inline-flex items-center gap-1">
+                safety monitor gate
+                <InfoDot
+                  label="About the safety monitor gate"
+                  content="Honor the configured SafetyMonitor and the global altitude floor during unattended runs — pauses/parks when conditions go unsafe. Off runs without the safety abort."
+                />
+              </span>
+              <Toggle checked={plan.safety_check ?? true} onChange={(v) => setPlan({ ...plan, safety_check: v })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">recover guiding if lost</span>
