@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import time
 from pathlib import Path
 from typing import Literal
@@ -40,7 +41,7 @@ router = APIRouter()
 # ----------------------------------------------------------------- constants
 HIPS2FITS_URL = "https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
 _USER_AGENT = "AstroDeck/0.1"
-_TIMEOUT_S = 15.0
+_TIMEOUT_S = 6.0  # was 15.0 — 2 attempts ~= 12.8 s worst case; single-flight stops pileup
 _CACHE_MAX_AGE = 86400  # 1 day; cutouts of a fixed field never change
 
 # Survey crop width clamp (px). The displayed survey is square (width == height).
@@ -64,36 +65,46 @@ _CACHE_TTL_S = 7 * 86400          # 7 days — a cutout of a fixed field is reus
 _CACHE_MAX_BYTES = 200 * 1024 * 1024   # 200 MB total cap (a few thousand cutouts).
 _CACHE_MAX_FILES = 2000           # hard file-count cap (inode pressure on the SD).
 
-# Cache-key quantization (spec §4.3): finer than the draft so a fine-framing
-# nudge doesn't return a stale image while the overlay moves (critique C2-#15).
-#   ra -> 0.0002 h  (~3 arcsec)   dec -> 0.002 deg   fov -> 0.01 deg
-_Q_RA_H = 0.0002
-_Q_DEC_DEG = 0.002
-_Q_FOV_DEG = 0.01
+# Snap-to-grid caching (Wave-1 spec §5.2): request geometry is SNAPPED onto a
+# FOV-scaled grid BEFORE keying and BEFORE the upstream fetch, so the cached
+# image always matches its key exactly. The snapped geometry is returned in
+# X-Survey-* response headers; the client compensates the <= fov/40 residual
+# with a CSS transform (ui/src/lib/surveyView.ts) — zero framing-accuracy loss.
+#
+# Keys are built from INTEGER bucket indices — never reconstructed floats — so
+# two requests in the same bucket can never disagree at a float boundary (the
+# pre-snap double-bucket bug, review 2026-07-12 Symptom 1 cause 3).
+_FOV_LOG_STEP = 1.02          # fov snapped to a 2% logarithmic grid
+_CENTER_STEPS_PER_FOV = 20    # center grid step = snapped_fov / 20 (deg, both axes)
+_KEY_SALT = "v2"              # orphan pre-snap cache files (TTL eviction cleans them)
 
 
-def _quantize(value: float, step: float) -> float:
-    """Round ``value`` to the nearest ``step`` (stable, sign-correct cache key)."""
-    return round(value / step) * step
+def _snap_geometry(
+    ra_hours: float, dec_deg: float, fov_deg: float
+) -> tuple[float, float, float, tuple[int, int, int]]:
+    """Snap (ra HOURS, dec, fov) onto the fov-scaled grid.
 
-
-def _cache_key(
-    ra_hours: float,
-    dec_deg: float,
-    fov_deg: float,
-    width: int,
-    survey: str,
-    stretch: str,
-) -> str:
-    """SHA-1 over the *quantized* params — the disk-cache key only.
-
-    The interactive client requests un-quantized coords and debounces 300 ms;
-    quantization here just collapses near-identical fields onto one cached file.
+    Returns (ra_deg, dec_deg, fov_deg) SNAPPED — ra converted hours->DEGREES
+    (the unit-critical *15, spec §4.3) and wrapped to [0,360), dec clamped to
+    [-90,90] — plus the integer bucket indices (ra_idx, dec_idx, fov_idx).
+    The RA step is a fixed sky-plane step (no cos-dec scaling): buckets get
+    finer in true angle near the poles, which costs cache hits, never accuracy.
     """
-    qra = _quantize(ra_hours, _Q_RA_H)
-    qdec = _quantize(dec_deg, _Q_DEC_DEG)
-    qfov = _quantize(fov_deg, _Q_FOV_DEG)
-    raw = f"{survey}|{qra:.4f}|{qdec:.4f}|{qfov:.4f}|{width}|{stretch}"
+    fov_idx = round(math.log(fov_deg) / math.log(_FOV_LOG_STEP))
+    snapped_fov = _FOV_LOG_STEP ** fov_idx
+    step = snapped_fov / _CENTER_STEPS_PER_FOV
+    ra_deg = (ra_hours * 15.0) % 360.0  # <-- HOURS -> DEGREES (unit-critical)
+    ra_idx = round(ra_deg / step)
+    dec_idx = round(dec_deg / step)
+    snapped_ra = (ra_idx * step) % 360.0
+    snapped_dec = max(-90.0, min(90.0, dec_idx * step))
+    return snapped_ra, snapped_dec, snapped_fov, (ra_idx, dec_idx, fov_idx)
+
+
+def _cache_key(idx: tuple[int, int, int], width: int, survey: str, stretch: str) -> str:
+    """SHA-1 over the INTEGER bucket indices + discrete params — the disk key."""
+    ra_idx, dec_idx, fov_idx = idx
+    raw = f"{_KEY_SALT}|{survey}|{ra_idx}|{dec_idx}|{fov_idx}|{width}|{stretch}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -232,16 +243,23 @@ async def survey_cutout(
 ) -> Response:
     """Proxy a TAN survey cutout to JPEG, disk-cached; 503 -> schematic fallback."""
     width = max(_WIDTH_MIN, min(_WIDTH_MAX, width))
-    ra_deg = ra * 15.0  # <-- HOURS -> DEGREES (spec §4.3, unit-critical)
+    snapped_ra, snapped_dec, snapped_fov, idx = _snap_geometry(ra, dec, fov)
 
-    key = _cache_key(ra, dec, fov, width, survey, stretch)
+    key = _cache_key(idx, width, survey, stretch)
     cache_path = _SURVEY_CACHE_DIR / f"{key}.jpg"
-    cache_headers = {"Cache-Control": f"max-age={_CACHE_MAX_AGE}"}
+    cache_headers = {
+        "Cache-Control": f"max-age={_CACHE_MAX_AGE}",
+        # Snapped geometry (spec Wave-1 §5.2) — the client reads these to place
+        # the frame exactly (residual compensated by a CSS transform).
+        "X-Survey-Ra-Deg": f"{snapped_ra:.6f}",
+        "X-Survey-Dec-Deg": f"{snapped_dec:.6f}",
+        "X-Survey-Fov-Deg": f"{snapped_fov:.6f}",
+    }
 
     if cache_path.exists():
         return FileResponse(cache_path, media_type="image/jpeg", headers=cache_headers)
 
-    params = _hips2fits_params(ra_deg, dec, fov, width, survey, stretch)
+    params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
     try:
         body = await _fetch_cutout(params)
     except RuntimeError:
