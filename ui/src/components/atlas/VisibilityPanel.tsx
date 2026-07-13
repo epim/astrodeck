@@ -59,35 +59,47 @@ export function VisibilityPanel({
   // the curve is a tonight-scale plot where a 1px/min NOW drift is invisible).
   const nowRef = useRef(Date.now() / 1000);
 
+  // Rounded fetch key (wave-1 §2): sub-arcminute drift must not refire the
+  // server-side astropy ephemeris. 0.001 h ≈ 54″ RA; 0.01° = 36″ dec — both far
+  // below anything visible on a tonight-scale chart.
+  const keyRa = Math.round(ra_hours * 1000) / 1000;
+  const keyDec = Math.round(dec_deg * 100) / 100;
+
   useEffect(() => {
     let alive = true;
-    setState({ kind: "loading" });
-    nowRef.current = Date.now() / 1000;
-    const url =
-      `/api/visibility?ra=${encodeURIComponent(ra_hours)}` +
-      `&dec=${encodeURIComponent(dec_deg)}` +
-      `&alt_limit=${encodeURIComponent(altLimit)}`;
-    api
-      .get<VisibilityNight>(url)
-      .then((night) => {
-        if (!alive) return;
-        setState({ kind: "ok", night });
-        onNight?.(night);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        const message =
-          e instanceof ApiError ? e.message : "couldn't compute visibility";
-        setState({ kind: "error", message });
-        onNight?.(null);
-      });
+    // 300 ms debounce (matches the survey debounce): a drag fires ONE request
+    // per settle, not one per pointer-move tick. The previous chart stays up
+    // while refetching — the loading skeleton only shows before the first data.
+    const timer = window.setTimeout(() => {
+      setState((prev) => (prev.kind === "ok" ? prev : { kind: "loading" }));
+      nowRef.current = Date.now() / 1000;
+      const url =
+        `/api/visibility?ra=${encodeURIComponent(keyRa)}` +
+        `&dec=${encodeURIComponent(keyDec)}` +
+        `&alt_limit=${encodeURIComponent(altLimit)}`;
+      api
+        .get<VisibilityNight>(url)
+        .then((night) => {
+          if (!alive) return;
+          setState({ kind: "ok", night });
+          onNight?.(night);
+        })
+        .catch((e) => {
+          if (!alive) return;
+          const message =
+            e instanceof ApiError ? e.message : "couldn't compute visibility";
+          setState({ kind: "error", message });
+          onNight?.(null);
+        });
+    }, 300);
     return () => {
       alive = false;
+      window.clearTimeout(timer);
     };
     // onNight intentionally omitted — it's a stable lift callback; re-fetch only
-    // on the target/limit or an explicit retry.
+    // on the (rounded) target/limit or an explicit retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ra_hours, dec_deg, altLimit, reloadKey]);
+  }, [keyRa, keyDec, altLimit, reloadKey]);
 
   return (
     <Panel title="Tonight">
