@@ -58,11 +58,31 @@ class _FakeClient:
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # Legacy tests exercise the upstream path: run with online_fetch=True and no
+    # pack, so behavior is identical to today (spec §4).
+    yield from _make_client(tmp_path, monkeypatch, online=True, pack=False)
+
+
+def _make_client(tmp_path, monkeypatch, *, online: bool, pack: bool):
+    import astrodeck.catalog.survey_pack as pack_mod
+    from astrodeck.config import ConfigStore
+
     # Redirect the disk cache to tmp so tests never pollute captures/_survey.
     monkeypatch.setattr(survey_mod, "_SURVEY_CACHE_DIR", tmp_path / "_survey")
     monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _FakeClient)
     _FakeClient.last_params = None
     _FakeClient.fail = False
+
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    temp_store.cfg().survey.online_fetch = online
+    monkeypatch.setattr(survey_mod, "config_store", temp_store)
+    monkeypatch.setattr(pack_mod, "PACK_ROOT", tmp_path / "_survey_pack")
+    if pack:
+        pdir = pack_mod.pack_dir()
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "pack.json").write_text(
+            '{"survey": "CDS/P/DSS2/color", "slug": "dss2color", "order": 4,'
+            ' "tile_width": 512, "tile_count": 4092, "fetched_at": 0, "bytes": 1}')
 
     # Mount only the survey router so the test is independent of other lanes.
     from fastapi import FastAPI
@@ -272,10 +292,17 @@ def _asgi_client(monkeypatch, tmp_path):
     # client, bypassing the FastAPI route entirely. Use the pre-captured
     # `_RealAsyncClient` for the outer client instead. See task-2-report.md
     # Deviations.
+    import astrodeck.catalog.survey_pack as pack_mod
+    from astrodeck.config import ConfigStore
+
     monkeypatch.setattr(survey_mod, "_SURVEY_CACHE_DIR", tmp_path / "_survey")
     monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _GatedClient)
     _GatedClient.calls = 0
     _GatedClient.gate = None
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    temp_store.cfg().survey.online_fetch = True
+    monkeypatch.setattr(survey_mod, "config_store", temp_store)
+    monkeypatch.setattr(pack_mod, "PACK_ROOT", tmp_path / "_survey_pack")
     from fastapi import FastAPI
     app = FastAPI()
     app.include_router(survey_mod.router)
@@ -309,3 +336,112 @@ async def test_single_flight_distinct_keys_fetch_independently(tmp_path, monkeyp
     assert r1.status_code == 200 and r2.status_code == 200
     assert _GatedClient.calls == 2
     assert not survey_mod._inflight
+
+
+# ------------------------------------------------- offline-first routing (spec §4)
+
+_FAKE_RENDER = b"\xff\xd8\xff\xe0fake-pack-render"
+
+
+@pytest.fixture
+def offline_client(tmp_path, monkeypatch):
+    yield from _make_client(tmp_path, monkeypatch, online=False, pack=True)
+
+
+@pytest.fixture
+def offline_nopack_client(tmp_path, monkeypatch):
+    yield from _make_client(tmp_path, monkeypatch, online=False, pack=False)
+
+
+@pytest.fixture
+def online_pack_client(tmp_path, monkeypatch):
+    yield from _make_client(tmp_path, monkeypatch, online=True, pack=True)
+
+
+@pytest.fixture
+def fake_render(monkeypatch):
+    calls = {"n": 0}
+    def _render(pack, ra, dec, fov, width):
+        calls["n"] += 1
+        return _FAKE_RENDER
+    import astrodeck.catalog.hips_local as hl
+    monkeypatch.setattr(hl, "render_cutout", _render)
+    return calls
+
+
+class _Boom:
+    """httpx.AsyncClient stand-in whose CONSTRUCTION fails the test."""
+    def __init__(self, *a, **kw):
+        raise AssertionError("httpx client constructed with online_fetch=False")
+
+
+def test_offline_serves_pack_and_never_builds_client(offline_client, fake_render, monkeypatch):
+    monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _Boom)
+    r = offline_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=2.3")
+    assert r.status_code == 200
+    assert r.headers["X-Survey-Source"] == "pack"
+    assert r.headers["X-Survey-Fov-Deg"]          # snapped headers still present
+    assert r.content == _FAKE_RENDER
+    r2 = offline_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=2.3")
+    assert r2.status_code == 200 and fake_render["n"] == 1  # cached, one render
+
+
+def test_offline_no_pack_is_frozen_503(offline_nopack_client, monkeypatch):
+    monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _Boom)
+    r = offline_nopack_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=2.3")
+    assert r.status_code == 503
+    assert r.json()["detail"] == {"detail": "survey unavailable", "fallback": "schematic"}
+
+
+def test_online_smallfov_upstream_then_pack_fallback(online_pack_client, fake_render):
+    r = online_pack_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=1.5")
+    assert r.status_code == 200 and r.headers["X-Survey-Source"] == "upstream"
+    _FakeClient.fail = True
+    r = online_pack_client.get("/api/survey/cutout.jpg?ra=9.0&dec=10.0&fov=1.5")
+    assert r.status_code == 200 and r.headers["X-Survey-Source"] == "pack"
+    assert r.content == _FAKE_RENDER
+
+
+def test_online_widefov_uses_pack_without_upstream(online_pack_client, fake_render, monkeypatch):
+    monkeypatch.setattr(survey_mod.httpx, "AsyncClient", _Boom)
+    r = online_pack_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=6.0")
+    assert r.status_code == 200 and r.headers["X-Survey-Source"] == "pack"
+
+
+def test_pack_cached_file_does_not_satisfy_upstream_want(online_pack_client, fake_render):
+    # Seed the pack-cache file by failing upstream once...
+    _FakeClient.fail = True
+    r = online_pack_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=1.5")
+    assert r.headers["X-Survey-Source"] == "pack"
+    # ...then upstream recovers: the same bucket must UPGRADE to upstream.
+    _FakeClient.fail = False
+    r = online_pack_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=1.5")
+    assert r.headers["X-Survey-Source"] == "upstream"
+
+
+def test_cache_key_formats_pinned():
+    import hashlib
+    idx = (10, 20, 30)
+    up = survey_mod._cache_key(idx, 768, "CDS/P/DSS2/color", "linear")
+    assert up == hashlib.sha1(b"v2|CDS/P/DSS2/color|10|20|30|768|linear").hexdigest()
+    pk = survey_mod._pack_cache_key(idx, 768, "CDS/P/DSS2/color")
+    assert pk == hashlib.sha1(b"v2pk|CDS/P/DSS2/color|10|20|30|768|-").hexdigest()
+
+
+def test_evict_never_touches_pack_dir(tmp_path):
+    cache = tmp_path / "_survey"
+    cache.mkdir()
+    packf = tmp_path / "_survey_pack" / "dss2color" / "Norder0" / "Dir0" / "Npix0.jpg"
+    packf.parent.mkdir(parents=True)
+    packf.write_bytes(b"\xff\xd8keep")
+    survey_mod._evict_cache(cache, ttl_s=0, max_bytes=0, max_files=0)
+    assert packf.exists()
+
+
+def test_render_failure_offline_falls_to_503(offline_client, monkeypatch):
+    import astrodeck.catalog.hips_local as hl
+    def _boom(*a, **kw):
+        raise hl.PackUnavailable("bad pack")
+    monkeypatch.setattr(hl, "render_cutout", _boom)
+    r = offline_client.get("/api/survey/cutout.jpg?ra=5.591&dec=-5.39&fov=2.3")
+    assert r.status_code == 503
