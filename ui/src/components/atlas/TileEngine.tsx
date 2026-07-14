@@ -48,6 +48,16 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
   // False after unmount: a fetch that outraces its abort (e.g. past the body
   // read when cleanup runs) can neither repopulate caches nor fire callbacks.
   const live = useRef(true);
+  // Single shared one-shot timer that re-dirties the loop once negative-cache
+  // entries expire. Without it, once every visible tile is negative-cached
+  // and inflight is empty, the rAF loop has no dirty source left (dirty is
+  // only set on init/prop-change/fetch-success/fetch-failure) and idles
+  // forever: recovery after the pack/network comes back needs user
+  // interaction, and on a static view with <8 visible tiles onAllFailing can
+  // never fire. One shared timer (not per-tile) is enough because the +250ms
+  // slack guarantees every entry marked while it is pending has expired by
+  // the time it fires.
+  const wakeTimer = useRef<number | null>(null);
 
   // Latest view snapshot for the rAF loop (avoids re-subscribing the loop).
   const view = useRef({ centerRaDeg, centerDecDeg, fovDeg, slug, onlineFetch });
@@ -71,6 +81,7 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
       flightMap.forEach((a) => a.abort());
       flightMap.clear();
       bmp.clear();
+      if (wakeTimer.current !== null) { window.clearTimeout(wakeTimer.current); wakeTimer.current = null; }
     };
   }, []);
 
@@ -82,6 +93,7 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
     firstDrawn.current = false;
     everDrew.current = false;
     consecFail.current = 0;
+    if (wakeTimer.current !== null) { window.clearTimeout(wakeTimer.current); wakeTimer.current = null; }
   }, [slug]);
 
   const enqueue = useCallback((order: number, npix: number) => {
@@ -104,6 +116,15 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
         if ((e as Error).name === "AbortError") return;
         if (!live.current) return;
         negcache.current.mark(key, performance.now());
+        // Arm the shared wake timer so the loop retries after this entry
+        // (and any others marked before it fires) expires from negcache,
+        // even with no further user interaction.
+        if (wakeTimer.current === null) {
+          wakeTimer.current = window.setTimeout(() => {
+            wakeTimer.current = null;
+            dirty.current = true;
+          }, NEG_TTL_MS + 250);
+        }
         consecFail.current += 1;
         // Re-dirty so the next frame enqueues the next-priority tiles (the
         // failed key is negative-cached); without this, concurrency (6) would
