@@ -40,12 +40,14 @@ from ..auth.rbac import assert_route_capabilities, declare
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
                      _redact_site_for, _redact_ws_event)
 from ..catalog import search_catalog
+from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
                       EscalationConfig, Optics, ProvidersConfig, RotatorConfig,
-                      SafetyConfig, Site, UpdateConfig, config_store, redacted)
+                      SafetyConfig, Site, SurveyConfig, UpdateConfig, config_store,
+                      redacted)
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
@@ -501,6 +503,13 @@ class DriverPatchBody(BaseModel):
     extra: dict | None = None
 
 
+class PackFetchBody(BaseModel):
+    """POST /api/survey/pack/fetch body (offline-pack spec §5). order is
+    HiPS depth 1-6, clamped server-side; the route defaults it to 4 whether
+    the body is omitted entirely or sent as ``{}``."""
+    order: int = 4
+
+
 # ------------------------------------------------------------ optional auth (P0-4)
 # OPTIONAL shared-token auth, OFF BY DEFAULT. The token is read from the
 # ``ASTRODECK_TOKEN`` env var. When it is UNSET (or empty), the server behaves
@@ -738,6 +747,57 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
         return _config_payload()
+
+    # ---------------------------------------------------- survey pack (offline-pack spec §4-5)
+    # Sky-Atlas survey source selection (online_fetch gates upstream hips2fits
+    # calls — an imaging/framing concern, so it's config.site_optics, not
+    # config.backend) + the offline HiPS tile-pack lifecycle (status/fetch/
+    # delete). Same cap/broadcast shape as the rotator/optics config routes
+    # above: the config-store write is offloaded off the event loop
+    # (bump_and_save is a blocking disk write), and the redacted union is
+    # broadcast so every open client's Sky-Atlas panel updates immediately.
+    # survey_pack_mod.* is always called as a module attribute (never
+    # `from ... import start_fetch`) so tests can monkeypatch it.
+
+    @app.post("/api/config/survey",
+              dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_survey_config(body: SurveyConfig):
+        cfg = await asyncio.to_thread(config_store.set_survey, body)
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload()
+
+    @app.get("/api/survey/pack",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def get_survey_pack():
+        return survey_pack_mod.pack_status()
+
+    @app.post("/api/survey/pack/fetch",
+              dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def start_survey_pack_fetch(body: PackFetchBody | None = None):
+        order = max(1, min(6, body.order if body is not None else 4))
+        try:
+            survey_pack_mod.start_fetch(order=order)
+        except survey_pack_mod.FetchAlreadyRunning:
+            return JSONResponse({"started": False, "already": True}, status_code=200)
+        except survey_pack_mod.InsufficientSpace as exc:
+            raise HTTPException(status_code=507, detail={
+                "detail": "insufficient disk space",
+                "free_bytes": exc.free, "required_bytes": exc.required})
+        return JSONResponse({"started": True}, status_code=202)
+
+    @app.delete("/api/survey/pack",
+                dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def delete_survey_pack():
+        try:
+            removed = survey_pack_mod.remove_pack()
+        except survey_pack_mod.FetchAlreadyRunning:
+            raise HTTPException(status_code=409,
+                                detail={"detail": "pack fetch in progress"})
+        return {"deleted": removed}
 
     # ------------------------------------------------------------ equipment
 
