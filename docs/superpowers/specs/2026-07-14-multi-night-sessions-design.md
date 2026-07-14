@@ -7,6 +7,11 @@ Sub-project **A** of the multi-night program. Build order approved by user:
 cloud integration) → **D** (dynamic cloud-dodging; deferred, hooks only).
 B/C/D get their own specs later.
 
+**Carry-in requirements for C (user, 2026-07-14):** when the forecast
+predicts high cloud cover for the coming night, the UI proactively warns
+that imaging is likely to be poor (popup/banner). C also implements the
+ResumeArm `resume_veto()` weather gate (§5).
+
 ## Problem
 
 Plans routinely exceed one night — because the plan is long, or because
@@ -178,6 +183,12 @@ Session:
   transitions and leaves the session `active` on disk. At app startup (the
   engine is never running at boot), any `active` session is transitioned to
   `dormant` so it is manually resumable and ResumeArm-eligible.
+- **Graceful resume guarantee (user requirement):** resume after ANY
+  interruption — dawn, abort, error, or power cut — re-enters the full
+  normal start path (cooling, slew/center, autofocus, guider recovery, all
+  per the plan's flags; all safety gates). Ledger writes happen only at
+  record time, so a frame in flight when power died was never counted and
+  is simply re-shot: no double counting, no silently skipped frames.
 - **Id-safe plan edits on dormant sessions:** `PATCH /api/sessions/{id}`
   accepts a full replacement `plan` while the session is `dormant`.
   Attribution survives via stable IDs: targets/steps whose ids persist keep
@@ -261,8 +272,11 @@ reads):
   route. Per-step remaining counts update live in the drawer header.
   Night-mode safe: existing tokens/classes only.
 - **Plan settings:** `count_mode` toggle ("Count = accepted frames"),
-  `min_stars`, `max_guide_rms`, `max_consecutive_rejects` (advanced row) in
-  the plan-level settings block of SequenceView.
+  `min_stars`, `max_guide_rms`, and both reject guards
+  (`max_consecutive_rejects`, `max_consecutive_rejects_night`) in an
+  advanced row of the plan-level settings block of SequenceView. Each guard
+  is individually disable-able from the UI (0 = off, and the UI labels the
+  off state explicitly — user requirement).
 - **Plan library:** Export button per saved plan (downloads the existing
   export JSON) and an Import button (file picker → POST /api/plans/import,
   surfacing name-collision errors).
