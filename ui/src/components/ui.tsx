@@ -1,12 +1,15 @@
 import {
-  useEffect, useId, useReducer, useRef, useState, type ReactNode, type PointerEvent as RPointerEvent,
+  useEffect, useId, useLayoutEffect, useReducer, useRef, useState,
+  type ReactNode, type PointerEvent as RPointerEvent,
   type KeyboardEvent as RKeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import type { LedState, Tone } from "../types";
 import { Icon, type IconName } from "./icons";
 import {
   tooltipNext, TOOLTIP_IDLE, TOOLTIP_OPEN_DELAY_MS, TOOLTIP_CLOSE_GRACE_MS,
 } from "../lib/tooltipMachine";
+import { placeTooltip, type Placement } from "../lib/tooltipPlace";
 
 export function Panel({ title, right, children, className = "" }: {
   title?: string; right?: ReactNode; children: ReactNode; className?: string;
@@ -345,14 +348,27 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
 /* ============================================================ UI-TOOLTIP
    Mouse hover runs through hover-intent grace timers (lib/tooltipMachine.ts);
    touch/pen taps toggle exactly once; keyboard focus opens; Escape/outside-tap
-   closes. Viewport-clamped bubble, role=tooltip, pointer-events-none bubble,
-   >=44px focusable hit area on the trigger. */
+   closes. role=tooltip, pointer-events-none bubble, >=44px focusable hit area
+   on the trigger.
+
+   The bubble is PORTALED to document.body as a position:fixed node (not an
+   in-flow child): rendering it inside the trigger — the old `.panel absolute`
+   approach — put it IN FLOW (unlayered `.panel { position: relative }` beats
+   the layered Tailwind `absolute` utility) and trapped `fixed` descendants
+   against the panel's backdrop-filter, so it could neither overlay nor clamp.
+   Placement is pure (lib/tooltipPlace.ts): we measure the bubble hidden via
+   useLayoutEffect, then clamp it to the viewport, recomputing on resize/scroll
+   while open so it stays glued to the trigger. The outside-pointerdown check
+   still uses the trigger ref — the bubble is pointer-events-none and can never
+   be an event target, so it never registers as "inside". */
 export function Tooltip({ content, children, side = "top" }: {
   content: ReactNode; children: ReactNode; side?: "top" | "bottom" | "left" | "right";
 }) {
   const [st, dispatch] = useReducer(tooltipNext, TOOLTIP_IDLE);
   const id = useId();
   const ref = useRef<HTMLSpanElement>(null);
+  const bubbleRef = useRef<HTMLSpanElement>(null);
+  const [placement, setPlacement] = useState<Placement | null>(null);
   // Suppress the focus-opens path when focus was pointer-induced (a touch tap
   // focuses the span THEN fires pointerup — without this, tap = open+toggle).
   const pointerDownAtRef = useRef(0);
@@ -379,21 +395,41 @@ export function Tooltip({ content, children, side = "top" }: {
     return () => { document.removeEventListener("pointerdown", onDoc); document.removeEventListener("keydown", onKey); };
   }, [st.open]);
 
-  const pos: Record<string, string> = {
-    top: "bottom-full left-1/2 -translate-x-1/2 mb-1.5",
-    bottom: "top-full left-1/2 -translate-x-1/2 mt-1.5",
-    left: "right-full top-1/2 -translate-y-1/2 mr-1.5",
-    right: "left-full top-1/2 -translate-y-1/2 ml-1.5",
-  };
+  // Measure the (already-mounted, hidden) bubble and clamp it to the viewport
+  // before paint; keep it glued to the trigger on resize/scroll while open.
+  // useLayoutEffect runs after the bubble commits, so bubbleRef is populated.
+  useLayoutEffect(() => {
+    if (!st.open) { setPlacement(null); return; }
+    const measure = () => {
+      const trig = ref.current;
+      const bub = bubbleRef.current;
+      if (!trig || !bub) return;
+      const r = trig.getBoundingClientRect();
+      setPlacement(placeTooltip({
+        trigger: { left: r.left, top: r.top, width: r.width, height: r.height },
+        bubble: { width: bub.offsetWidth, height: bub.offsetHeight },
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        side,
+      }));
+    };
+    measure();
+    const scrollOpts = { capture: true, passive: true } as const;
+    window.addEventListener("resize", measure, { passive: true });
+    window.addEventListener("scroll", measure, scrollOpts);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, scrollOpts);
+    };
+  }, [st.open, side]);
 
   return (
-    <span ref={ref} className="relative inline-flex">
+    <span ref={ref} className="relative inline-flex min-w-0">
       <span
         tabIndex={0}
         role="button"
         aria-describedby={st.open ? id : undefined}
         aria-expanded={st.open}
-        className="inline-flex items-center cursor-help"
+        className="inline-flex items-center cursor-help min-w-0"
         onPointerEnter={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("enter-mouse"); }}
         onPointerLeave={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("leave-mouse"); }}
         onPointerDown={() => { pointerDownAtRef.current = Date.now(); }}
@@ -404,15 +440,20 @@ export function Tooltip({ content, children, side = "top" }: {
       >
         {children}
       </span>
-      {st.open && (
+      {st.open && createPortal(
         <span
+          ref={bubbleRef}
           id={id}
           role="tooltip"
-          className={`panel absolute z-50 ${pos[side]} px-2.5 py-2 text-[11px] leading-snug text-ink
-            w-max max-w-[min(240px,90vw)] pointer-events-none`}
+          className="tooltip-bubble fixed z-50 px-2.5 py-2 text-[11px] leading-snug text-ink
+            w-max max-w-[min(240px,90vw)] pointer-events-none"
+          style={placement
+            ? { left: placement.left, top: placement.top }
+            : { left: 0, top: 0, visibility: "hidden" }}
         >
           {content}
-        </span>
+        </span>,
+        document.body,
       )}
     </span>
   );
