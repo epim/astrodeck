@@ -42,6 +42,7 @@ from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at m
 from ..catalog import search_catalog
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
+from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
@@ -654,6 +655,7 @@ def create_app() -> FastAPI:
     # here so no two owners edit the same function; /api/optics already exists
     # below (not duplicated here).
     app.include_router(survey_router)
+    app.include_router(tiles_router)
     app.include_router(framing_router)
     app.include_router(visibility_router)
 
