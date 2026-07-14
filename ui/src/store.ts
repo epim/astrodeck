@@ -722,8 +722,15 @@ export const useStore = create<AppState>((set, get) => ({
       center,
       rotation_deg: 0,
       // Night seeds the monochrome red survey (spec §8) so a fresh session never
-      // flashes a full-color JPEG at a dark-adapted eye.
-      survey: get().night ? FRAMING_NIGHT_SURVEY : FRAMING_DEFAULT_SURVEY,
+      // flashes a full-color JPEG at a dark-adapted eye — but ONLY when online
+      // fetch is on: the offline pack is color-only (offline-pack spec §9), so
+      // seeding red with fetch off would leave a night-mode user permanently
+      // degraded. Offline/night falls back to the color default; the night
+      // dimmer overlay already handles dark adaptation for it.
+      survey:
+        get().night && (get().config?.survey?.online_fetch ?? false)
+          ? FRAMING_NIGHT_SURVEY
+          : FRAMING_DEFAULT_SURVEY,
       stretch: "linear",
       fovZoomDeg: seedFovZoomDeg(config),
       mosaic: { rows: 1, cols: 1, overlap: 0.25 },
