@@ -261,6 +261,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       setSlowLoad(false);
       return;
     }
+    // Tile engine active (spec §5): the debounce/loader remain ONLY in the
+    // fallback img path. Gate off cutout fetching and cancel any pending
+    // backoff retry; the fallback resumes if the engine ever unmounts.
+    if (useTileEngine) {
+      setSlowLoad(false);
+      if (retryRef.current.timer != null) {
+        window.clearTimeout(retryRef.current.timer);
+        retryRef.current.timer = null;
+      }
+      retryRef.current.attempt = 0;
+      return;
+    }
     if (retryRef.current.timer != null) {
       window.clearTimeout(retryRef.current.timer);
       retryRef.current.timer = null;
@@ -276,7 +288,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     return () => {
       if (debounceRef.current != null) window.clearTimeout(debounceRef.current);
     };
-  }, [targetUrl, mode, loadSurvey, center.ra_hours, center.dec_deg, fovZoomDeg]);
+  }, [targetUrl, mode, useTileEngine, loadSurvey, center.ra_hours, center.dec_deg, fovZoomDeg]);
 
   // A survey-source change must not keep showing the previous survey's frame.
   useEffect(() => {
@@ -503,8 +515,10 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           />
         )}
 
-        {/* schematic backdrop: explicit user choice OR no frame fetched yet */}
-        {(mode === "schematic" || !shownUrl) && (
+        {/* schematic backdrop: explicit user choice OR no fallback frame fetched
+              yet — never over the tile engine (it sits later in DOM order and
+              is opaque, so it would occlude the tile canvas). */}
+        {(mode === "schematic" || (!useTileEngine && !shownUrl)) && (
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_40%,#10131b,#04060a)]" aria-hidden />
         )}
 
@@ -534,8 +548,8 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           </div>
         )}
 
-        {/* first-ever load skeleton */}
-        {mode === "survey" && !everLoaded && !shownUrl && (
+        {/* first-ever load skeleton (img fallback path only) */}
+        {mode === "survey" && !useTileEngine && !everLoaded && !shownUrl && (
           <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
             <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
           </div>
