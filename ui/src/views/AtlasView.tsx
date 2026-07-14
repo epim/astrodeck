@@ -742,6 +742,7 @@ export default function AtlasView(): JSX.Element {
             imageBrightness={imageBrightness}
             surveyDegraded={surveyDegraded}
             degradedText={degradedText}
+            onlineFetch={onlineFetch}
             onCenterChange={setCenter}
             onRotate={setRotation}
             onZoom={setZoom}

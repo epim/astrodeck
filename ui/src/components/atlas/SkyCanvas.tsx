@@ -19,17 +19,46 @@
 
 import {
   useCallback, useEffect, useMemo, useRef, useState, type JSX, type PointerEvent as RPointerEvent,
-  type KeyboardEvent as RKeyboardEvent, type WheelEvent as RWheelEvent, type CSSProperties,
+  type KeyboardEvent as RKeyboardEvent, type CSSProperties,
 } from "react";
 import type { CatalogEntry } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
+import { initTileGL } from "../../lib/tileGL";
+import { TileEngine } from "./TileEngine";
 
 const VIEW = 1000; // SVG viewBox edge (geometry units)
 const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 10;
+
+// One-time WebGL capability probe (spec §5): try initTileGL on a 1x1 canvas.
+// Cached so every SkyCanvas mount shares one probe result.
+let _tileGLProbe: boolean | null = null;
+function tileGLSupported(): boolean {
+  if (_tileGLProbe === null) {
+    try {
+      const c = document.createElement("canvas");
+      c.width = 1;
+      c.height = 1;
+      const g = initTileGL(c);
+      _tileGLProbe = g !== null;
+      g?.dispose();
+    } catch {
+      _tileGLProbe = false;
+    }
+  }
+  return _tileGLProbe;
+}
+
+// survey id -> tile slug (UI mirror of the server SLUG_REGISTRY, spec §6).
+// schematic / unknown -> null -> the <img> fallback pipeline.
+const SURVEY_SLUGS: Record<string, string> = {
+  "CDS/P/DSS2/color": "dss2color",
+  "CDS/P/DSS2/red": "dss2red",
+  "CDS/P/2MASS/color": "twomass",
+};
 
 export interface SkyCanvasProps {
   /** Session center (J2000). */
@@ -51,6 +80,8 @@ export interface SkyCanvasProps {
   surveyDegraded?: boolean;
   /** Replacement copy for the degraded banner (offline-pack spec §6). */
   degradedText?: string;
+  /** config.survey.online_fetch — passed through to the tile engine (spec §4). */
+  onlineFetch?: boolean;
 
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
@@ -95,7 +126,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const {
     center, rotationDeg, survey, stretch, fovZoomDeg, optics, focalMmOverride,
     mosaic, catalogTarget, night, mode, imageBrightness = 1,
-    surveyDegraded = false, degradedText,
+    surveyDegraded = false, degradedText, onlineFetch = false,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
@@ -128,6 +159,21 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const cssPerDeg = boxPx / fovZoomDeg; // for pointer-delta -> degrees
   const cx = VIEW / 2;
   const cy = VIEW / 2;
+
+  // ---- WebGL tile engine gate (spec §5) ----
+  const surveySlug = SURVEY_SLUGS[survey] ?? null;
+  const useTileEngine = mode === "survey" && surveySlug !== null && tileGLSupported();
+  const [tileDrew, setTileDrew] = useState(false);
+  // Tile engine first-draw flag resets when the survey (slug) changes.
+  useEffect(() => { setTileDrew(false); }, [survey]);
+
+  const onTileFirst = useCallback(() => {
+    setTileDrew(true);
+    onSurveyLoad?.();
+  }, [onSurveyLoad]);
+  const onTileAllFailing = useCallback(() => {
+    onSurveyError?.();
+  }, [onSurveyError]);
 
   // ---- responsive square sizing ----
   useEffect(() => {
@@ -284,10 +330,9 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   // Convert a CSS-px delta into a new center via tangent-plane offset.
   const panTo = useCallback(
     (dxPx: number, dyPx: number, startCenter: { ra_hours: number; dec_deg: number }) => {
-      // viewBox is N-up: +x is East/RA-increasing on the sky image (the survey is
-      // mirrored for RA, but the overlay frame uses the SAME projection so the
-      // visual stays consistent). Dragging right moves the sky left under the frame.
-      const dXiDeg = -(dxPx / cssPerDeg);
+      // Grab-the-sky, both axes (spec §5): drag right pulls the sky right
+      // (map-style), revealing what lay to the left. Vertical was already correct.
+      const dXiDeg = dxPx / cssPerDeg;
       const dEtaDeg = dyPx / cssPerDeg; // screen-down is -Dec (north up)
       const sky = deproject(dXiDeg, dEtaDeg, startCenter.ra_hours, startCenter.dec_deg);
       onCenterChange(sky.ra_hours, sky.dec_deg);
@@ -347,12 +392,28 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     dragRef.current.mode = null;
   };
 
-  // ---- wheel zoom ----
-  const onWheel = (e: RWheelEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
-    onZoom(clampZoom(fovZoomDeg * factor));
-  };
+  // ---- wheel zoom (native, non-passive) ----
+  // React >=17 registers synthetic onWheel as a PASSIVE listener, so
+  // e.preventDefault() in a React handler is silently ignored and the page
+  // scrolls under the Atlas (spec §5 "Wheel-zoom page-scroll trap"). Attach a
+  // real { passive: false } listener to the box instead — it serves ALL modes
+  // (tile engine, img fallback, schematic). Refs keep the handler current
+  // without re-attaching on every zoom change.
+  const fovZoomRef = useRef(fovZoomDeg);
+  fovZoomRef.current = fovZoomDeg;
+  const onZoomRef = useRef(onZoom);
+  onZoomRef.current = onZoom;
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault(); // honored: registered with passive: false
+      const factor = e.deltaY > 0 ? 1.12 : 1 / 1.12;
+      onZoomRef.current(clampZoom(fovZoomRef.current * factor));
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
 
   // ---- keyboard nudge ----
   const onKeyDown = (e: RKeyboardEvent<HTMLDivElement>) => {
@@ -404,13 +465,28 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
         onKeyDown={onKeyDown}
         style={{ cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab" }}
       >
-        {/* 1. survey image — the LAST GOOD frame stays through failures/gestures
-              (keep-last-good, spec §1.3); the transform tracks the live view. */}
-        {mode === "survey" && shownUrl && (
+        {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
+              maps and WebGL is available; else the <img> pipeline below. */}
+        {useTileEngine && surveySlug && (
+          <TileEngine
+            centerRaDeg={center.ra_hours * 15}
+            centerDecDeg={center.dec_deg}
+            fovDeg={fovZoomDeg}
+            slug={surveySlug}
+            onlineFetch={onlineFetch}
+            brightness={imageBrightness}
+            onFirstTile={onTileFirst}
+            onAllFailing={onTileAllFailing}
+          />
+        )}
+
+        {/* 1b. survey image — kept EXACTLY as-is; the tile engine gates it off.
+              The LAST GOOD frame stays through failures/gestures (keep-last-good,
+              spec §1.3); the transform tracks the live view. */}
+        {mode === "survey" && !useTileEngine && shownUrl && (
           <img
             src={shownUrl}
             alt=""
@@ -450,6 +526,13 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           style={{ opacity: night ? 0.18 : 0 }}
           aria-hidden
         />
+
+        {/* first-ever tile-engine skeleton — until the first texture draws */}
+        {useTileEngine && !tileDrew && (
+          <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
+            <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
+          </div>
+        )}
 
         {/* first-ever load skeleton */}
         {mode === "survey" && !everLoaded && !shownUrl && (
