@@ -494,6 +494,9 @@ export interface AppConfig {
   //     mirrors server config.py RotatorConfig). Optional: an old WS `hello`
   //     bootstrap predates the field. ---
   rotator?: RotatorConfig;
+  // --- offline survey pack (spec 2026-07-13). Optional: an old WS `hello`
+  //     bootstrap predates the field. ---
+  survey?: SurveyConfig;
 }
 
 // ---------------------------------------------------------- rotator config
@@ -566,6 +569,23 @@ export interface DriverInfo {
 export interface DriversResponse {
   roles: string[];       // fed from devices/backend.py ROLES — a new role appears free
   drivers: DriverInfo[];
+}
+
+// ------------------------------------------------ offline survey pack (spec 2026-07-13)
+export interface SurveyConfig {
+  /** True => hips2fits upstream is used for FOV < 4°; false (default) => pack only. */
+  online_fetch: boolean;
+}
+export interface PackFetchProgress { done: number; total: number; failed: number; }
+export interface PackStatus {
+  present: boolean;
+  slug: string;
+  survey: string;
+  order: number | null;
+  bytes: number | null;
+  tile_count: number | null;
+  fetched_at: number | null;
+  fetching: PackFetchProgress | null;
 }
 
 // ---------------------------------------------------------------- self-update

@@ -15,6 +15,7 @@ import type {
   ConnectRigResult,
   DriverEntry,
   DriversResponse,
+  PackStatus,
   Principal,
   PrincipalRole,
   Profile,
@@ -23,6 +24,7 @@ import type {
   RigSpec,
   RotatorConfig,
   SafetyConfig,
+  SurveyConfig,
   UpdateConfig,
   UpdateStatus,
   User,
@@ -259,3 +261,20 @@ export const updateDriver = (
 /** DELETE /api/config/drivers/{id} → {deleted:id}. 404 unknown. */
 export const deleteDriver = (id: string): Promise<{ deleted: string }> =>
   api.del<{ deleted: string }>(`/api/config/drivers/${encodeURIComponent(id)}`);
+
+// -------------------------------------------------- offline survey pack (spec 2026-07-13)
+/** POST /api/config/survey → config payload. config.site_optics. */
+export const setSurveyConfig = (survey: SurveyConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config/survey", survey);
+
+/** GET /api/survey/pack → offline pack status + fetch progress. view.status. */
+export const getPackStatus = (): Promise<PackStatus> =>
+  api.get<PackStatus>("/api/survey/pack");
+
+/** POST /api/survey/pack/fetch → 202 {started} | 200 {already} | 507 no space. config.site_optics. */
+export const startPackFetch = (order = 4): Promise<{ started: boolean; already?: boolean }> =>
+  api.post<{ started: boolean; already?: boolean }>("/api/survey/pack/fetch", { order });
+
+/** DELETE /api/survey/pack → {deleted}. 409 while a fetch runs. config.site_optics. */
+export const deletePack = (): Promise<{ deleted: boolean }> =>
+  api.del<{ deleted: boolean }>("/api/survey/pack");
