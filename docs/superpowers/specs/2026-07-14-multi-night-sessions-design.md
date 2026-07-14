@@ -41,6 +41,11 @@ clouds/quality-rejects eat the night. Today:
 4. **Scope =** ONE spec/plan covering everything (no A1/A2 split).
 5. **Forward-compat:** optional PixInsight integration is planned later —
    the ledger schema must accommodate external graders (see §10).
+6. **Review round (agent-bridge, verdict SHIP-WITH-CHANGES; user confirmed
+   2026-07-14):** allow id-safe plan edits on dormant sessions; keep
+   auto-resume in v1 but warn when no safety monitor is configured; add
+   boot sweep for orphaned `active` sessions; add night-level reject guard;
+   frame PATCH also accepts metrics.
 
 ## 1. Stable IDs
 
@@ -133,10 +138,16 @@ Session:
   recorded in the ledger (`auto_accepted=False`); the
   `escalation.hfr_reject_action` (warn/discard/retake) applies only to
   `attempts` mode. Rationale: regrading requires the file.
-- **Runaway guard:** plan-level `max_consecutive_rejects: int = 10`
-  (0 = off). After N consecutive rejects on one step, skip to the next
-  step/target and alert (existing alerting). The shortfall stays in the
-  ledger for another night. Applies in `accepted` mode only.
+- **Runaway guards** (both `accepted`-mode only, both alert via existing
+  alerting; shortfalls stay in the ledger for another night):
+  - per-step: `max_consecutive_rejects: int = 10` (0 = off) — after N
+    consecutive rejects on one step, skip to the next step/target.
+  - per-night: `max_consecutive_rejects_night: int = 20` (0 = off) — after
+    N consecutive rejects **across step/target boundaries** (counter resets
+    on any accepted frame), end the night early → session `dormant`,
+    `end_reason="quality"`. Prevents a clouded-out sky from cascading the
+    per-step guard through every target (wasted hours + hardware wear);
+    also the proto cloud-detector until sub-projects C/D exist.
 - **Thumbnails:** on every ledger record (accepted or rejected), render a
   ~512px-long-edge JPEG using the preview stretch pipeline, off-thread,
   best-effort (failure leaves `thumb=None`, never blocks capture).
@@ -163,11 +174,23 @@ Session:
 - Only one session can run at a time (engine is a singleton); starting a new
   plan while another session is dormant is allowed (multiple dormant
   sessions may exist).
-- The session's plan snapshot is **frozen** — editing the Plan panel never
-  mutates an existing session; a new start creates a new session. (Bumping
-  counts upward on a dormant session is a noted future enhancement.)
+- **Boot sweep:** a hard power cut / process kill bypasses terminal
+  transitions and leaves the session `active` on disk. At app startup (the
+  engine is never running at boot), any `active` session is transitioned to
+  `dormant` so it is manually resumable and ResumeArm-eligible.
+- **Id-safe plan edits on dormant sessions:** `PATCH /api/sessions/{id}`
+  accepts a full replacement `plan` while the session is `dormant`.
+  Attribution survives via stable IDs: targets/steps whose ids persist keep
+  their ledger progress; new ids start at zero; frames whose step id no
+  longer exists stay recorded in the ledger but stop counting toward any
+  quota. **Running sessions are never editable.** Editing the Plan panel
+  alone still never mutates a session — the update is an explicit action
+  (see §7).
 - Dormancy is the seam sub-project D will hook (cloud-driven early
-  dormancy + re-planning).
+  dormancy + re-planning). Note: the snapshot fixes frame **identity**, not
+  execution order — the scheduler already reorders/skips targets at run
+  time (window sorting, skip-ahead), which is the layer D will act on; no
+  conflict with session snapshots.
 
 ## 5. Auto-resume at dusk (opt-in)
 
@@ -184,6 +207,13 @@ Session:
   gives up until the next night.
 - Success and give-up both alert. Disarming from the UI (or starting
   anything manually) stops the service's interest immediately.
+- **No-safety-monitor warning:** enabling auto-resume when no safety
+  monitor device is configured requires an explicit confirm in the UI and
+  shows a persistent warning chip on the armed session card ("auto-resume
+  armed without a safety monitor — rig may start in bad weather").
+  Sub-project C will add a weather gate to ResumeArm (cloud/precip forecast
+  veto); this spec only reserves the hook (ResumeArm consults a
+  `resume_veto()` check that v1 implements as the existing safety gates).
 
 ## 6. API surface
 
@@ -197,10 +227,13 @@ reads):
   see §8 for path redaction)
 - `POST /api/sessions/{id}/resume` — manual resume. (sequence-control cap,
   same as /api/sequence/start)
-- `PATCH /api/sessions/{id}` — `{auto_resume?: bool, status?: "abandoned"}`.
-  (sequence-control cap)
+- `PATCH /api/sessions/{id}` — `{auto_resume?: bool, status?: "abandoned",
+  plan?: SequencePlan}`; `plan` accepted only while `dormant` (409
+  otherwise), id-merge semantics per §4. (sequence-control cap)
 - `PATCH /api/sessions/{id}/frames/{frame_id}` —
-  `{override: "accept"|"reject"|null}`; returns updated per-step remaining.
+  `{override?: "accept"|"reject"|null, metrics?: dict[str, float]}`;
+  `metrics` merges into the frame's metrics dict (float values only) — the
+  external-grader write path (§10). Returns updated per-step remaining.
   (sequence-control cap)
 - `DELETE /api/sessions/{id}` — remove session file + thumbs (never the
   FITS frames). (sequence-control cap)
@@ -214,7 +247,11 @@ reads):
 
 - **Plan view Sessions section** (SequenceView): list of non-abandoned
   sessions — name, status chip, per-target accepted/total progress bars,
-  Resume button (dormant only), auto-resume Toggle, Review button, delete
+  Resume button (dormant only), "Update from Plan" button (dormant only —
+  pushes the current Plan-panel plan into the session via the PATCH `plan`
+  route; shows a per-target diff summary of kept/new/dropped progress
+  before confirming), auto-resume Toggle (with the §5 no-safety-monitor
+  confirm + warning chip), Review button, delete
   (with the existing undo-toast pattern where applicable; deleting a session
   is confirm-then-delete, no undo — server state).
 - **Review drawer/modal:** frame grid for one session — thumbnail,
@@ -246,11 +283,14 @@ reads):
 - **Server (pytest, from `server/`):** SessionStore round-trip + atomic
   write + prune policy; id backfill (client-less plans, legacy resume-file
   migration); quota predicate incl. overrides flipping remaining counts;
-  consecutive-reject bail; dormancy transitions for each night-boundary
-  cause; resume seeding from ledger (edited-plan reorder does NOT
-  misattribute — id-keyed); ResumeArm with injected clock (window-not-open,
-  refusal-retry, disarm, singleton-arm enforcement); frame PATCH route RBAC
-  + path redaction; thumb route cap.
+  per-step AND per-night consecutive-reject guards (night counter resets on
+  accept, crosses target boundaries, sets `end_reason="quality"`); dormancy
+  transitions for each night-boundary cause; boot sweep (orphaned `active`
+  → `dormant`); resume seeding from ledger (edited-plan reorder does NOT
+  misattribute — id-keyed); dormant plan PATCH id-merge (kept/new/dropped
+  progress, 409 while running); frame PATCH metrics merge; ResumeArm with
+  injected clock (window-not-open, refusal-retry, disarm, singleton-arm
+  enforcement); frame PATCH route RBAC + path redaction; thumb route cap.
 - **UI (self-executing tsx, `npx tsx`, never in CI — run manually):** pure
   helpers for quota math / remaining computation, review-grid filtering +
   bulk-selection reducer, id backfill on plan load.
@@ -267,7 +307,8 @@ reads):
 
 ## Out of scope (v1)
 
-- Editing a session's frozen plan snapshot (incl. bumping counts upward).
+- Editing a **running** session's plan (dormant sessions: id-safe edits per
+  §4; running: never).
 - Full-size frame preview rendering in the review UI (thumbs + metrics only).
 - Session export/import (plans export/import ships; sessions are rig-local).
 - Eccentricity in the auto gate (stars.py computes a placeholder 0.0 today).
