@@ -7,6 +7,7 @@ import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
+import { applyStepsToGroup } from "../lib/planGroups";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
@@ -115,15 +116,18 @@ export default function SequenceView() {
   const [recoverable, setRecoverable] =
     useState<{ name: string; frames_done: number; frames_total: number } | null>(null);
 
-  // Reversible deletes use instant-remove + a 5s undo affordance, NOT a hold (R28).
-  // Local to this view per touch §2.2 (no global store field required for v1).
+  // Reversible plan edits (deletes AND the mosaic "apply to all panels" copy)
+  // use instant-apply + a 5s undo affordance, NOT a hold (R28). Local to this
+  // view per touch §2.2 (no global store field required for v1).
   const [pendingUndo, setPendingUndo] =
     useState<{ label: string; prev: SequencePlan } | null>(null);
   const undoTimer = useRef<number | null>(null);
 
-  // Remove `next` from the plan but stash the pre-delete plan so a 5s toast can
-  // restore it. A second delete supersedes the first (its snapshot is the latest).
-  const deleteWithUndo = (label: string, next: SequencePlan) => {
+  // Apply `next` to the plan but stash the pre-edit plan so a 5s toast can
+  // restore it. A second reversible edit supersedes the first (its snapshot is
+  // the latest). Generalized from a delete-only helper — delete behavior is
+  // unchanged, just called through this shared name.
+  const setPlanWithUndo = (label: string, next: SequencePlan) => {
     if (undoTimer.current != null) clearTimeout(undoTimer.current);
     setPendingUndo({ label, prev: plan });
     setPlan(next);
@@ -226,10 +230,21 @@ export default function SequenceView() {
 
   // Delete every target sharing a mosaic_group (the whole mosaic), reversibly.
   const deleteGroup = (group: string) =>
-    deleteWithUndo(
+    setPlanWithUndo(
       `Deleted mosaic ${group}`,
       { ...plan, targets: plan.targets.filter((t) => t.mosaic_group !== group) },
     );
+
+  // Copy one panel's step list onto every panel sharing its mosaic_group,
+  // reversibly (spec: mosaic-apply-steps). `sourceTi` is the index of the
+  // panel whose steps are the template — any member can be the source.
+  const applyGroupSteps = (group: string, sourceTi: number) => {
+    const memberCount = plan.targets.filter((t) => t.mosaic_group === group).length;
+    setPlanWithUndo(
+      `Applied steps to ${memberCount} panel${memberCount === 1 ? "" : "s"}`,
+      { ...plan, targets: applyStepsToGroup(plan.targets, group, plan.targets[sourceTi].steps) },
+    );
+  };
 
   // Partition the (ordered) plan into render blocks: each block is either a single
   // ungrouped target or a run of CONSECUTIVE targets sharing one mosaic_group.
@@ -559,6 +574,23 @@ export default function SequenceView() {
                     <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })} /> Cal
                   </label>
                   <div className="flex-1" />
+                  {/* Mosaic "apply to all panels" (spec: mosaic-apply-steps): visible
+                      on EVERY member (any panel can be the source), only once the
+                      group actually has >1 panel — a lone panel has nothing to fan
+                      out to, so the button would be a no-op. */}
+                  {t.mosaic_group != null &&
+                    plan.targets.filter((x) => x.mosaic_group === t.mosaic_group).length > 1 && (
+                    <button
+                      className="tap min-h-[44px] inline-flex items-center justify-center gap-1 !px-3 !text-[11px]
+                        border border-line2 text-dim hover:text-accent hover:border-accent/50 disabled:opacity-40"
+                      disabled={running}
+                      aria-label={`Apply this panel's steps to all ${t.mosaic_group} panels`}
+                      title={`Apply this panel's steps to all ${t.mosaic_group} panels`}
+                      onClick={() => applyGroupSteps(t.mosaic_group!, ti)}
+                    >
+                      <Icon name="grid" size={14} /> apply to all panels
+                    </button>
+                  )}
                   <button className="btn tap min-h-[44px] !px-3 !text-[11px]" disabled={running}
                     onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP }] })}>
                     + step
@@ -580,7 +612,7 @@ export default function SequenceView() {
                       disabled={running}
                       aria-label={`Delete target ${t.name}`}
                       title={`Delete ${t.name}`}
-                      onClick={() => deleteWithUndo(
+                      onClick={() => setPlanWithUndo(
                         `Deleted ${t.name}`,
                         { ...plan, targets: plan.targets.filter((_, i) => i !== ti) },
                       )}>
@@ -617,7 +649,7 @@ export default function SequenceView() {
                           disabled={running}
                           aria-label="Remove step"
                           title="Remove step"
-                          onClick={() => deleteWithUndo(
+                          onClick={() => setPlanWithUndo(
                             "Removed step",
                             { ...plan, targets: plan.targets.map((tt, i) =>
                               i === ti ? { ...tt, steps: tt.steps.filter((_, j) => j !== si) } : tt) },
