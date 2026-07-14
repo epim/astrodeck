@@ -150,9 +150,11 @@ render_cutout(pack_dir: Path, ra_deg: float, dec_deg: float, fov_deg: float,
   `_survey` is ground truth); no licensed image enters the repo.
 * **Tile LRU:** `functools.lru_cache(maxsize=48)` on
   `(str(pack_dir), k, npix) -> ndarray | None`. 48 × ~0.75 MB ≈ 36 MB worst case.
-* **Performance target:** ≤ 150 ms for a 768² render on the dev PC (measured in a
-  test with the synthetic pack; generous bound so CI never flakes). The route
-  calls the renderer via `asyncio.to_thread` — never on the event loop.
+* **Performance target:** ~150 ms for a 768² render on the dev PC informally;
+  the TEST bound is 1.0 s to give shared CI runners headroom (measured with the
+  synthetic pack). The test guards against per-pixel-loop regressions, not
+  latency tuning. The route calls the renderer via `asyncio.to_thread` — never
+  on the event loop.
 
 ## 4. Routing and config (`survey.py`, `config.py`)
 
