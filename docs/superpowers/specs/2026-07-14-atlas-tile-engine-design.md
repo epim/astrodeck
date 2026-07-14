@@ -184,6 +184,14 @@ Pure module (npx-tsx testable). Exports:
   axes)". The tile engine consumes the same `onCenterChange` updates per
   pointermove — no debounce in the view loop (fetching has its own queue; the
   transform/mesh math is per-frame cheap).
+* **Wheel-zoom page-scroll trap (user report 2026-07-14):** zooming with the
+  wheel over the Atlas also scrolls the page. Cause: React ≥17 registers the
+  synthetic `onWheel` as a PASSIVE listener, so the handler's
+  `e.preventDefault()` is silently ignored. Fix: remove the JSX `onWheel` prop
+  and attach a NATIVE non-passive listener in an effect —
+  `el.addEventListener("wheel", handler, { passive: false })` with
+  `e.preventDefault()` + the same zoom-factor logic — cleaned up on unmount.
+  Applies to the survey box in all modes (tile, fallback, schematic).
 * First-load skeleton: shown until `onFirstTile`; degraded banner driven by
   `onAllFailing` through the existing `onSurveyError`/`onSurveyLoad` callbacks
   (AtlasView machinery unchanged).
