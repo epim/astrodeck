@@ -213,6 +213,17 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
   box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), inset 0 -1px 2px rgba(0,0,0,0.5);
 }
 
+/* Tooltip bubble chrome — NOT `.panel`: the portaled bubble must overlay
+   arbitrary content (solid --bg-raise, no translucency), and `.panel`'s
+   backdrop-filter would trap the fixed bubble against the panel instead of the
+   viewport. Design tokens only (night-safe); positioning is inline (fixed). */
+.tooltip-bubble {
+  background: var(--bg-raise);
+  border: 1px solid var(--line-bright);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+
 .panel-title {
   font-family: "Chakra Petch", sans-serif;
   font-size: 11px;
