@@ -83,10 +83,10 @@ Think of NINA as the gangway, not the ship.
   `SafetyMonitor` gating with named presets, autorun scheduling (dusk/dawn/min-alt
   windows with skip-ahead), end-of-night session reports, and
   ntfy / webhook / Telegram alerting with a dead-man's-switch heartbeat.
-- **Sky Atlas** — a survey-cutout framing assistant (hips2fits) with a
-  draggable/rotatable FOV overlay, a mosaic planner (server-canonical panels),
-  and an astropy visibility planner (altitude curve, transit, twilight, moon
-  separation, best window).
+- **Sky Atlas** — a pan/zoomable WebGL survey tile map (classic `<img>` cutout
+  as fallback) framing assistant with a draggable/rotatable FOV overlay, a
+  mosaic planner (server-canonical panels), and an astropy visibility planner
+  (altitude curve, transit, twilight, moon separation, best window).
 - **Monitor** — a glanceable live dashboard: ETA, progress, mount state, cooler,
   guiding RMS, meridian countdown, an HFR trend sparkline, and a live thumbnail.
 - **Power** — Alpaca `Switch` (Pegasus UPB-style): outputs, dew-heater PWM, and
@@ -142,18 +142,25 @@ Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ---
 
-## Offline sky pack
+## Slippy-sky Atlas
 
-The Atlas renders survey imagery from a local DSS2 tile pack — no internet
-needed at the scope. Download it once (~250 MB) from **Settings → Sky Atlas →
-Download offline sky pack**, or via CLI:
+The Atlas renders survey imagery as a smoothly pan/zoomable WebGL tile map:
+the browser fetches raw HiPS tiles through the server tile route
+(`/api/survey/tile/...`), warps them through the exact TAN projection, and
+upsamples from parent tiles so the view never blanks while you drag. Online
+deep-zooms grow the offline pack on disk as a side effect. Where WebGL is
+unavailable the Atlas falls back to the classic `<img>` cutout pipeline (the
+`/api/survey/cutout.jpg` route), which is otherwise unchanged. Drag is
+grab-the-sky on both axes (drag right pulls the sky right).
+
+No internet needed at the scope: download the pack once (~250 MB) from
+**Settings → Sky Atlas → Download offline sky pack**, or via CLI:
 
     cd server && python -m astrodeck.catalog.survey_pack fetch
 
-Small fields render soft from the pack (26″/px). For full-resolution deep
-zooms, enable **Settings → Sky Atlas → Online survey fetch (CDS)** — the pack
-remains the automatic fallback whenever the CDS service is unreachable.
-DSS2 imagery © AAO/STScI, fetched from public CDS/ESA HiPS mirrors.
+The pack remains the automatic fallback whenever the CDS service is
+unreachable. DSS2 imagery © AAO/STScI, fetched from public CDS/ESA HiPS
+mirrors.
 
 ---
 
