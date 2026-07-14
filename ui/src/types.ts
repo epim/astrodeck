@@ -813,6 +813,7 @@ export interface FramingSession {
   survey: string;                          // "CDS/P/DSS2/color" | "CDS/P/DSS2/red" | "CDS/P/2MASS/color"
   stretch: "linear" | "asinh";
   fovZoomDeg: number;                      // survey crop angular width
+  prev_zoom_deg?: number;                  // zoom saved by the FOV-lock toggle (in-memory; not persisted)
   mosaic: { rows: number; cols: number; overlap: number };
   panels: MosaicPanel[];                   // generated; length 1 when 1x1
   freeroamId?: string;                     // stable mosaic-group id for free-roam (no target) sends

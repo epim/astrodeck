@@ -1,8 +1,9 @@
 // SurveyControls — the Atlas framing control cluster (design spec §6). Survey
-// picker, stretch toggle, FOV zoom + "fit object", per-image brightness dimmer,
-// "use camera FOV" lock, recenter, center-nudge cluster, rotation numeric. Every
-// control is >=44px (.btn-touch / .stepper / 44px Toggle). The pixel-scale
-// plausibility hint is shown so a focal-length typo is visible (C1-D1).
+// picker, FOV zoom + "fit object", per-image brightness dimmer, FOV lock
+// (absorbs the old "use camera FOV" button — see AtlasView's onCameraFovLock),
+// recenter, center-nudge cluster, rotation numeric. Every control is >=44px
+// (.btn-touch / .stepper / 44px Toggle). The pixel-scale plausibility hint is
+// shown so a focal-length typo is visible (C1-D1).
 //
 // This component is presentational + callback-driven: AtlasView passes the
 // current FramingSession-derived values and the setters that route into
@@ -24,14 +25,13 @@ const ZOOM_MAX = 10;
 
 export interface SurveyControlsProps {
   survey: string;
-  stretch: "linear" | "asinh";
   fovZoomDeg: number;
   rotationDeg: number;
   /** per-image brightness 0.08..1 (night-adaptation dimmer). */
   imageBrightness: number;
   /** true => zoom is locked to the camera FOV (×1.6 padding). */
   cameraFovLock: boolean;
-  /** single-frame FOV (bin-1, degrees) for "use camera FOV" + fit math. */
+  /** single-frame FOV (bin-1, degrees) for the FOV lock + fit math. */
   frameFovDeg: number; // max(fov_x, fov_y)
   /** pixel scale + optional plausibility hint for the readout. */
   pixelScaleArcsec: number;
@@ -40,11 +40,10 @@ export interface SurveyControlsProps {
   haveOptics: boolean;
   /** True when the session has a catalog target (labels recenter truthfully). */
   hasTarget: boolean;
-  /** config.survey.online_fetch — gates online-only surveys + stretch. */
+  /** config.survey.online_fetch — gates online-only surveys. */
   onlineFetch: boolean;
 
   onSurveyChange: (survey: string) => void;
-  onStretchChange: (stretch: "linear" | "asinh") => void;
   onZoom: (fovDeg: number) => void;
   onRotate: (deg: number) => void;
   onImageBrightness: (v: number) => void;
@@ -60,10 +59,10 @@ function clampZoom(v: number): number {
 
 export function SurveyControls(props: SurveyControlsProps): JSX.Element {
   const {
-    survey, stretch, fovZoomDeg, rotationDeg, imageBrightness, cameraFovLock,
+    survey, fovZoomDeg, rotationDeg, imageBrightness, cameraFovLock,
     frameFovDeg, pixelScaleArcsec, plausibility, catalogTarget, haveOptics, hasTarget,
     onlineFetch,
-    onSurveyChange, onStretchChange, onZoom, onRotate, onImageBrightness,
+    onSurveyChange, onZoom, onRotate, onImageBrightness,
     onCameraFovLock, onNudge, onRecenter,
   } = props;
 
@@ -74,16 +73,11 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
     else onZoom(clampZoom(Math.max(frameFovDeg, 0.5)));
   };
 
-  // "Use camera FOV": lock the survey crop to the camera field (×1.6 pad).
-  const useCameraFov = () => {
-    if (frameFovDeg > 0) onZoom(clampZoom(frameFovDeg * 1.6));
-  };
-
   const rotById = (delta: number) => onRotate(((rotationDeg + delta) % 360 + 360) % 360);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* survey + stretch */}
+      {/* survey */}
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 min-w-0">
           <span className="label">Survey</span>
@@ -103,30 +97,9 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
             })}
           </select>
         </label>
-        <div className="flex flex-col gap-1">
-          <span className="label">Stretch</span>
-          <div className="inline-flex items-stretch" role="group" aria-label="Survey stretch">
-            <button
-              type="button"
-              className={`btn btn-touch ${stretch === "linear" ? "border-accent text-accent" : ""}`}
-              aria-pressed={stretch === "linear"}
-              disabled={!onlineFetch}
-              title={!onlineFetch ? "Stretch applies to online imagery — pack tiles are pre-stretched" : undefined}
-              onClick={() => onStretchChange("linear")}
-            >Linear</button>
-            <button
-              type="button"
-              className={`btn btn-touch ${stretch === "asinh" ? "border-accent text-accent" : ""}`}
-              aria-pressed={stretch === "asinh"}
-              disabled={!onlineFetch}
-              title={!onlineFetch ? "Stretch applies to online imagery — pack tiles are pre-stretched" : undefined}
-              onClick={() => onStretchChange("asinh")}
-            >Asinh</button>
-          </div>
-        </div>
       </div>
 
-      {/* zoom + fit + use-camera-FOV lock */}
+      {/* zoom + fit + FOV lock */}
       <div className="flex flex-wrap items-end gap-3">
         <Stepper
           label="FOV (zoom)"
@@ -140,15 +113,6 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
         />
         <button type="button" className="btn btn-touch" onClick={fitObject}>
           Fit object
-        </button>
-        <button
-          type="button"
-          className="btn btn-touch"
-          onClick={useCameraFov}
-          disabled={!haveOptics}
-          title={haveOptics ? "Zoom to the camera field" : "Set focal length first"}
-        >
-          Use camera FOV
         </button>
         <div className="flex items-center gap-2">
           <span className="label">Lock</span>

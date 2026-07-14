@@ -390,7 +390,6 @@ export default function AtlasView(): JSX.Element {
   const setRotation = (deg: number) => setFraming({ rotation_deg: deg });
   const setZoom = (deg: number) => setFraming({ fovZoomDeg: deg });
   const setSurvey = (s: string) => setFraming({ survey: s });
-  const setStretch = (s: "linear" | "asinh") => setFraming({ stretch: s });
   const setMosaic = (patch: Partial<typeof mosaic>) =>
     setFraming({ mosaic: { ...mosaic, ...patch } });
 
@@ -427,10 +426,17 @@ export default function AtlasView(): JSX.Element {
     setCenter(sky.ra_hours, sky.dec_deg);
   };
 
-  // "use camera FOV" lock — when on, snap zoom to the camera field on toggle.
+  // FOV lock (spec §6): on -> save the current zoom + apply camera FOV x1.6;
+  // off -> restore the saved zoom (clamped) if present, else keep current.
   const onCameraFovLock = (locked: boolean) => {
     setCameraFovLock(locked);
-    if (locked && frameFovDeg > 0) setZoom(Math.min(10, Math.max(0.1, frameFovDeg * 1.6)));
+    const clamp = (v: number) => Math.min(10, Math.max(0.1, v));
+    if (locked) {
+      if (frameFovDeg > 0)
+        setFraming({ prev_zoom_deg: fovZoomDeg, fovZoomDeg: clamp(frameFovDeg * 1.6) });
+    } else if (framing.prev_zoom_deg != null) {
+      setZoom(clamp(framing.prev_zoom_deg));
+    }
   };
 
   // ---- mosaic panels (dual-path: Send POSTs /api/framing/mosaic; the client
@@ -756,7 +762,6 @@ export default function AtlasView(): JSX.Element {
           <Panel title="Survey & framing">
             <SurveyControls
               survey={survey}
-              stretch={stretch}
               fovZoomDeg={fovZoomDeg}
               rotationDeg={rotation_deg}
               imageBrightness={imageBrightness}
@@ -769,7 +774,6 @@ export default function AtlasView(): JSX.Element {
               hasTarget={!!target}
               onlineFetch={onlineFetch}
               onSurveyChange={setSurvey}
-              onStretchChange={setStretch}
               onZoom={setZoom}
               onRotate={setRotation}
               onImageBrightness={setImageBrightness}
