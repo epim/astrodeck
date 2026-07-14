@@ -32,6 +32,41 @@ _MIRRORS: dict[str, list[str]] = {
         "https://alaskybis.cds.unistra.fr/DSS/DSSColor",
     ],
 }
+
+# On-demand tile registry (tile-engine spec §1): slug -> survey id + ordered
+# mirror bases. All mirror paths below are VERIFIED (curl -sI <base>/properties,
+# 2026-07-13; each answered 200 with hips_tile_format containing "jpeg"). ESA
+# (skies.esac.esa.int) does not mirror DSS2/red under any plausible path name
+# (DSS2Red, DSS2Merged, DSS2-Red, DSS2FR, ... all 404 while the ESA host itself
+# is reachable) so dss2red has CDS-only mirrors; ESA DOES mirror 2MASS color,
+# but under the flat path "2MASSColor" (no "/Color" suffix, unlike CDS). On-
+# demand tiles for every slug land under PACK_ROOT/<slug>/, so remove_pack(slug)
+# already deletes them (spec §1; no v1 UI for red/2MASS).
+SLUG_REGISTRY: dict[str, dict] = {
+    "dss2color": {
+        "survey": "CDS/P/DSS2/color",
+        "mirrors": [
+            "https://skies.esac.esa.int/DSSColor",
+            "https://alasky.cds.unistra.fr/DSS/DSSColor",
+            "https://alaskybis.cds.unistra.fr/DSS/DSSColor",
+        ],
+    },
+    "dss2red": {
+        "survey": "CDS/P/DSS2/red",
+        "mirrors": [
+            "https://alasky.cds.unistra.fr/DSS/DSS2Merged",
+            "https://alaskybis.cds.unistra.fr/DSS/DSS2Merged",
+        ],
+    },
+    "twomass": {
+        "survey": "CDS/P/2MASS/color",
+        "mirrors": [
+            "https://skies.esac.esa.int/2MASSColor",
+            "https://alasky.cds.unistra.fr/2MASS/Color",
+            "https://alaskybis.cds.unistra.fr/2MASS/Color",
+        ],
+    },
+}
 _USER_AGENT = "AstroDeck/0.1"
 _TILE_TIMEOUT_S = 30.0
 _CONCURRENCY = 8
