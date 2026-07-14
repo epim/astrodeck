@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, type JSX } from "react";
 import { u } from "../../lib/base";
 import { parentOf } from "../../lib/healpix";
 import { tileOrderFor, visibleTiles, tileMesh, ancestorUV } from "../../lib/tileView";
-import { tilePriority, LruSet, NegativeCache } from "../../lib/tileCache";
+import { planFetches, LruSet, NegativeCache } from "../../lib/tileCache";
 import { initTileGL, type TileGL, type TileDraw } from "../../lib/tileGL";
 
 export interface TileEngineProps {
@@ -158,10 +158,23 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
       const order = tileOrderFor(v.fovDeg, cssPx);
       const tiles = visibleTiles(v.centerRaDeg, v.centerDecDeg, v.fovDeg, cssPx, order);
 
-      // Abort fetches for tiles that left the visible+margin set (keys carry
-      // slug + order, so pans, zooms, and survey switches all cancel stale
-      // loads and free their concurrency slots).
-      const want = new Set(tiles.map((npix) => keyOf(order, npix)));
+      // Fetch plan for this frame: each not-yet-resident visible tile followed
+      // by its ancestor chain (up to PARENT_WALK levels, stopping at the first
+      // resident ancestor). Ancestors are first-class fetch jobs so a pan into
+      // fresh sky whose native tiles 404 (offline, capped pack) still pulls the
+      // best-available parent within one round-trip and upsamples it — the
+      // Task-4 watch item that the old code only reused ancestors already
+      // cached from earlier zoomed-out views.
+      const plan = planFetches(
+        tiles, order, v.centerRaDeg, v.centerDecDeg,
+        (o, n) => bitmaps.current.has(keyOf(o, n)), PARENT_WALK,
+      );
+
+      // Abort fetches for keys that left the plan (pans, zooms, and survey
+      // switches all cancel stale loads and free their concurrency slots).
+      // `want` now covers planned ANCESTOR keys too, so an in-flight parent
+      // load queued last frame is not cancelled the very next frame.
+      const want = new Set(plan.map(({ order: o, npix: n }) => keyOf(o, n)));
       for (const [k, ac] of inflight.current) {
         if (!want.has(k)) { ac.abort(); inflight.current.delete(k); }
       }
@@ -200,11 +213,9 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
 
       gl.drawTiles(draws, sizePx);
 
-      // Schedule fetches, nearest-first (the +15% margin ring is the prefetch set).
-      const byPri = [...tiles].sort((a, b) =>
-        tilePriority(a, order, v.centerRaDeg, v.centerDecDeg)
-        - tilePriority(b, order, v.centerRaDeg, v.centerDecDeg));
-      for (const npix of byPri) enqueue(order, npix);
+      // Schedule fetches in plan order: nearest tile then its ancestor chain,
+      // then the next tile, etc. (the +15% margin ring is the prefetch set).
+      for (const { order: o, npix: n } of plan) enqueue(o, n);
 
       if (draws.length > 0) {
         everDrew.current = true;
