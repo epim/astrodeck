@@ -40,6 +40,8 @@ export interface SurveyControlsProps {
   haveOptics: boolean;
   /** True when the session has a catalog target (labels recenter truthfully). */
   hasTarget: boolean;
+  /** config.survey.online_fetch — gates online-only surveys + stretch. */
+  onlineFetch: boolean;
 
   onSurveyChange: (survey: string) => void;
   onStretchChange: (stretch: "linear" | "asinh") => void;
@@ -60,6 +62,7 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
   const {
     survey, stretch, fovZoomDeg, rotationDeg, imageBrightness, cameraFovLock,
     frameFovDeg, pixelScaleArcsec, plausibility, catalogTarget, haveOptics, hasTarget,
+    onlineFetch,
     onSurveyChange, onStretchChange, onZoom, onRotate, onImageBrightness,
     onCameraFovLock, onNudge, onRecenter,
   } = props;
@@ -89,9 +92,15 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
             value={survey}
             onChange={(e) => onSurveyChange(e.target.value)}
           >
-            {SURVEYS.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
+            {SURVEYS.map((s) => {
+              const needsOnline = s.id === "CDS/P/DSS2/red" || s.id === "CDS/P/2MASS/color";
+              const off = needsOnline && !onlineFetch;
+              return (
+                <option key={s.id} value={s.id} disabled={off}>
+                  {s.label}{off ? " (online only)" : ""}
+                </option>
+              );
+            })}
           </select>
         </label>
         <div className="flex flex-col gap-1">
@@ -101,12 +110,16 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
               type="button"
               className={`btn btn-touch ${stretch === "linear" ? "border-accent text-accent" : ""}`}
               aria-pressed={stretch === "linear"}
+              disabled={!onlineFetch}
+              title={!onlineFetch ? "Stretch applies to online imagery — pack tiles are pre-stretched" : undefined}
               onClick={() => onStretchChange("linear")}
             >Linear</button>
             <button
               type="button"
               className={`btn btn-touch ${stretch === "asinh" ? "border-accent text-accent" : ""}`}
               aria-pressed={stretch === "asinh"}
+              disabled={!onlineFetch}
+              title={!onlineFetch ? "Stretch applies to online imagery — pack tiles are pre-stretched" : undefined}
               onClick={() => onStretchChange("asinh")}
             >Asinh</button>
           </div>

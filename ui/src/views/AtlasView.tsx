@@ -34,7 +34,8 @@ import {
   useNight,
 } from "../store";
 import { useShallow } from "zustand/react/shallow";
-import type { CatalogEntry, MosaicPanel, MosaicResult, Optics, Target, VisibilityNight } from "../types";
+import type { CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, Target, VisibilityNight } from "../types";
+import { getPackStatus } from "../api/backends";
 import { ARCSEC_PER_RAD } from "../lib/optics";
 import {
   fovFromOptics,
@@ -148,6 +149,32 @@ export default function AtlasView(): JSX.Element {
   // Survey fetch failure -> degraded (last good frame stays up; SkyCanvas
   // retries with backoff). NEVER flips the view to schematic (wave-1 §1.4).
   const [surveyDegraded, setSurveyDegraded] = useState(false);
+  // config.survey.online_fetch gates online-only surveys/stretch (offline-pack
+  // spec §6); AtlasView already holds config = useConfig() above.
+  const onlineFetch = config?.survey?.online_fetch ?? false;
+  const [packStatus, setPackStatus] = useState<PackStatus | null>(null);
+  // Poll pack status every 2s only while degraded with online fetch off — the
+  // only state in which the banner copy depends on it (offline-pack spec §6).
+  useEffect(() => {
+    if (!surveyDegraded || onlineFetch) return;
+    let live = true;
+    const tick = () => {
+      getPackStatus().then((p) => { if (live) setPackStatus(p); }).catch(() => {});
+    };
+    tick();
+    const id = window.setInterval(tick, 2000);
+    return () => { live = false; window.clearInterval(id); };
+  }, [surveyDegraded, onlineFetch]);
+
+  // Fetching-aware empty-state copy: only overrides the default banner when no
+  // pack is present (a pack IS present -> the default "upstream hiccup" copy is
+  // correct, offline-pack spec §6).
+  const degradedText =
+    surveyDegraded && !onlineFetch && packStatus && !packStatus.present
+      ? packStatus.fetching
+        ? `Downloading offline sky pack… ${packStatus.fetching.done}/${packStatus.fetching.total}`
+        : "No survey source — download the offline sky pack in Settings, or enable online fetch."
+      : undefined;
   // Per-image brightness (night-adaptation memory) lives in the page; persisted to
   // localStorage (clamped 0.08 floor) so the dark-adapted level survives a reload.
   const [imageBrightness, setImageBrightness] = useState(readSurveyBright);
@@ -714,6 +741,7 @@ export default function AtlasView(): JSX.Element {
             mode={mode}
             imageBrightness={imageBrightness}
             surveyDegraded={surveyDegraded}
+            degradedText={degradedText}
             onCenterChange={setCenter}
             onRotate={setRotation}
             onZoom={setZoom}
@@ -738,6 +766,7 @@ export default function AtlasView(): JSX.Element {
               catalogTarget={target}
               haveOptics={haveOptics}
               hasTarget={!!target}
+              onlineFetch={onlineFetch}
               onSurveyChange={setSurvey}
               onStretchChange={setStretch}
               onZoom={setZoom}

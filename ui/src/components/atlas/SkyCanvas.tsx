@@ -49,6 +49,8 @@ export interface SkyCanvasProps {
   imageBrightness?: number;
   /** Last settled fetch failed; last good frame stays up while retries run. */
   surveyDegraded?: boolean;
+  /** Replacement copy for the degraded banner (offline-pack spec §6). */
+  degradedText?: string;
 
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
@@ -93,7 +95,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const {
     center, rotationDeg, survey, stretch, fovZoomDeg, optics, focalMmOverride,
     mosaic, catalogTarget, night, mode, imageBrightness = 1,
-    surveyDegraded = false,
+    surveyDegraded = false, degradedText,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
@@ -436,7 +438,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           {mode === "schematic"
             ? "Schematic framing"
             : surveyDegraded
-              ? `Survey unreachable, retrying, showing ${shownUrl ? "last image" : "schematic"}`
+              ? (degradedText ?? `Survey unreachable, retrying, showing ${shownUrl ? "last image" : "schematic"}`)
               : slowLoad
                 ? "Loading survey"
                 : ""}
@@ -533,7 +535,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       {/* verdict + offline banner beneath the canvas (real text, >=12px) */}
       {mode === "survey" && surveyDegraded && (
         <div className="text-[12px] text-warn border border-line2 bg-black/30 px-2 py-1">
-          ⚠ Survey unreachable — {shownUrl ? "showing the last image" : "schematic framing"}; retrying automatically.
+          {degradedText ?? <>⚠ Survey unreachable — {shownUrl ? "showing the last image" : "schematic framing"}; retrying automatically.</>}
         </div>
       )}
       {mode === "schematic" && (

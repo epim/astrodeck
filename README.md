@@ -142,6 +142,21 @@ Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
 
 ---
 
+## Offline sky pack
+
+The Atlas renders survey imagery from a local DSS2 tile pack — no internet
+needed at the scope. Download it once (~250 MB) from **Settings → Sky Atlas →
+Download offline sky pack**, or via CLI:
+
+    cd server && python -m astrodeck.catalog.survey_pack fetch
+
+Small fields render soft from the pack (26″/px). For full-resolution deep
+zooms, enable **Settings → Sky Atlas → Online survey fetch (CDS)** — the pack
+remains the automatic fallback whenever the CDS service is unreachable.
+DSS2 imagery © AAO/STScI, fetched from public CDS/ESA HiPS mirrors.
+
+---
+
 ## Architecture
 
 ```
