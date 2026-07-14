@@ -317,7 +317,7 @@ function VisChart({
           glyph={<span aria-hidden>↑</span>}
           value={
             night.transit_in_daylight
-              ? `daylight · dark peak ${fmtTime(night.transit_unix)}`
+              ? `dark peak ${fmtTime(night.transit_unix)}`
               : fmtTime(night.transit_unix)
           }
           unit={fmtAlt(night.transit_alt)}
