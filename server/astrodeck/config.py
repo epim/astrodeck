@@ -270,6 +270,13 @@ class RotatorConfig(BaseModel):
     tolerance_deg: float = 1.0
 
 
+class SurveyConfig(BaseModel):
+    """Sky-Atlas survey source (offline-pack spec §4). online_fetch gates ALL
+    hips2fits upstream calls: False (the default) = offline-first, the local
+    pack is the only source; True = upstream for fov < 4°, pack as fallback."""
+    online_fetch: bool = False
+
+
 # ------------------------------------------------------- backend drivers (2026-07-08)
 #
 # GLOBAL configured drivers (equipment-drivers spec §3.1): a driver is "how to
@@ -322,6 +329,8 @@ class AppConfig(BaseModel):
     drivers: list[DriverEntry] = Field(default_factory=list)
     # --- rotator ROM/tolerance (rotator/CAA spec §3.2; appended — old configs load fine) ---
     rotator: RotatorConfig = Field(default_factory=RotatorConfig)
+    # --- Sky-Atlas survey source (offline-pack spec §4; appended — old configs load fine) ---
+    survey: SurveyConfig = Field(default_factory=SurveyConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -619,6 +628,14 @@ class ConfigStore:
             raise ValueError("tolerance_deg must be in (0, 45]")
         cfg = self.cfg()
         cfg.rotator = rotator
+        return self.bump_and_save()
+
+    # -- survey-source mutation (offline-pack spec §4) --------------------------
+
+    def set_survey(self, survey: "SurveyConfig") -> AppConfig:
+        """Persist the survey-source config (offline-pack spec §4)."""
+        cfg = self.cfg()
+        cfg.survey = survey
         return self.bump_and_save()
 
     # -- backend drivers mutation (equipment-drivers spec §3.1) -----------------

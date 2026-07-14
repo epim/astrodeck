@@ -35,7 +35,10 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 
+from ..config import config_store
 from ..hub import CAPTURE_DIR
+from . import hips_local
+from . import survey_pack as pack_mod
 
 router = APIRouter()
 
@@ -78,6 +81,9 @@ _CACHE_MAX_FILES = 2000           # hard file-count cap (inode pressure on the S
 _FOV_LOG_STEP = 1.02          # fov snapped to a 2% logarithmic grid
 _CENTER_STEPS_PER_FOV = 20    # center grid step = snapped_fov / 20 (deg, both axes)
 _KEY_SALT = "v2"              # orphan pre-snap cache files (TTL eviction cleans them)
+
+_ONLINE_FOV_MAX_DEG = 4.0   # below this the order-4 pack is soft on 768px (spec §4)
+_PACK_KEY_SALT = "v2pk"     # pack renders; stretch normalized to "-" (baked-in)
 
 
 def _snap_geometry(
@@ -132,6 +138,14 @@ def _cache_key(idx: tuple[int, int, int], width: int, survey: str, stretch: str)
     """SHA-1 over the INTEGER bucket indices + discrete params — the disk key."""
     ra_idx, dec_idx, fov_idx = idx
     raw = f"{_KEY_SALT}|{survey}|{ra_idx}|{dec_idx}|{fov_idx}|{width}|{stretch}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _pack_cache_key(idx: tuple[int, int, int], width: int, survey: str) -> str:
+    """Disk key for LOCAL pack renders — distinct salt so an upstream upgrade
+    is never masked; stretch is normalized ('-') because pack JPEGs bake it in."""
+    ra_idx, dec_idx, fov_idx = idx
+    raw = f"{_PACK_KEY_SALT}|{survey}|{ra_idx}|{dec_idx}|{fov_idx}|{width}|-"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
@@ -268,12 +282,21 @@ async def survey_cutout(
     ] = Query("CDS/P/DSS2/color", description="HiPS id"),
     stretch: Literal["linear", "asinh"] = Query("linear"),
 ) -> Response:
-    """Proxy a TAN survey cutout to JPEG, disk-cached; 503 -> schematic fallback."""
+    """Offline-first TAN survey cutout to JPEG, disk-cached (spec §4).
+
+    Routing (spec §4): when ``survey.online_fetch`` is off (the default) the
+    LOCAL pack is the only source; when on, upstream hips2fits is tried for
+    fov < 4° with the pack as fallback (and, for fov >= 4°, the pack first with
+    upstream only as a last resort). Snapped geometry is always echoed in the
+    X-Survey-* headers; failure -> 503 schematic fallback.
+    """
     width = max(_WIDTH_MIN, min(_WIDTH_MAX, width))
     snapped_ra, snapped_dec, snapped_fov, idx = _snap_geometry(ra, dec, fov)
 
-    key = _cache_key(idx, width, survey, stretch)
-    cache_path = _SURVEY_CACHE_DIR / f"{key}.jpg"
+    up_key = _cache_key(idx, width, survey, stretch)
+    pk_key = _pack_cache_key(idx, width, survey)
+    up_path = _SURVEY_CACHE_DIR / f"{up_key}.jpg"
+    pk_path = _SURVEY_CACHE_DIR / f"{pk_key}.jpg"
     cache_headers = {
         "Cache-Control": f"max-age={_CACHE_MAX_AGE}",
         # Snapped geometry (spec Wave-1 §5.2) — the client reads these to place
@@ -283,24 +306,62 @@ async def survey_cutout(
         "X-Survey-Fov-Deg": f"{snapped_fov:.6f}",
     }
 
-    if cache_path.exists():
-        return FileResponse(cache_path, media_type="image/jpeg", headers=cache_headers)
+    online = bool(config_store.cfg().survey.online_fetch)
+    want_upstream = online and snapped_fov < _ONLINE_FOV_MAX_DEG
 
-    async with _single_flight(key):
-        if cache_path.exists():
-            return FileResponse(cache_path, media_type="image/jpeg", headers=cache_headers)
+    def _file(path: Path, source: str) -> FileResponse:
+        return FileResponse(path, media_type="image/jpeg",
+                            headers={**cache_headers, "X-Survey-Source": source})
 
-        params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
-        try:
-            body = await _fetch_cutout(params)
-        except RuntimeError:
-            # Upstream unreachable/slow/blank — honest 503 so the client keeps its
-            # last good frame and retries with backoff (no longer a mode flip).
-            raise HTTPException(
-                status_code=503,
-                detail={"detail": "survey unavailable", "fallback": "schematic"},
-            )
+    # Fast path: an upstream-quality file always wins; a pack file only when
+    # upstream isn't wanted (spec §4 step 2 — upstream gets its upgrade chance).
+    if up_path.exists():
+        return _file(up_path, "upstream")
+    if pk_path.exists() and not want_upstream:
+        return _file(pk_path, "pack")
 
-        # Persist off the event loop (small image, but disk I/O shouldn't block).
-        await asyncio.to_thread(_write_cache, cache_path, body)
-        return Response(body, media_type="image/jpeg", headers=cache_headers)
+    async with _single_flight(up_key if want_upstream else pk_key):
+        if up_path.exists():
+            return _file(up_path, "upstream")
+        if pk_path.exists() and not want_upstream:
+            return _file(pk_path, "pack")
+
+        if want_upstream:
+            params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
+            try:
+                body = await _fetch_cutout(params)
+                await asyncio.to_thread(_write_cache, up_path, body)
+                return Response(body, media_type="image/jpeg",
+                                headers={**cache_headers, "X-Survey-Source": "upstream"})
+            except RuntimeError:
+                pass  # never 503 while the pack can still render (spec §4 step 4)
+
+        pack = pack_mod.pack_present(survey)
+        if pack is not None:
+            if pk_path.exists():
+                return _file(pk_path, "pack")
+            try:
+                body = await asyncio.to_thread(
+                    hips_local.render_cutout, pack, snapped_ra, snapped_dec, snapped_fov, width)
+            except Exception:  # noqa: BLE001 — any render failure falls through
+                body = None
+            if body:
+                await asyncio.to_thread(_write_cache, pk_path, body)
+                return Response(body, media_type="image/jpeg",
+                                headers={**cache_headers, "X-Survey-Source": "pack"})
+
+        if online and not want_upstream:
+            # fov >= 4° and the pack failed — upstream as last resort (spec §4 step 6)
+            params = _hips2fits_params(snapped_ra, snapped_dec, snapped_fov, width, survey, stretch)
+            try:
+                body = await _fetch_cutout(params)
+                await asyncio.to_thread(_write_cache, up_path, body)
+                return Response(body, media_type="image/jpeg",
+                                headers={**cache_headers, "X-Survey-Source": "upstream"})
+            except RuntimeError:
+                pass
+
+    raise HTTPException(
+        status_code=503,
+        detail={"detail": "survey unavailable", "fallback": "schematic"},
+    )
