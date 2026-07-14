@@ -11,7 +11,7 @@
 
 import type { JSX } from "react";
 import type { CatalogEntry } from "../../types";
-import { Stepper, Toggle, IconButton } from "../ui";
+import { Stepper, Toggle, IconButton, InfoDot } from "../ui";
 
 const SURVEYS: { id: string; label: string }[] = [
   { id: "CDS/P/DSS2/color", label: "DSS2 color" },
@@ -114,13 +114,22 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
         <button type="button" className="btn btn-touch" onClick={fitObject}>
           Fit object
         </button>
-        <div className="flex items-center gap-2">
-          <span className="label">Lock</span>
+        <div
+          className="flex items-center gap-2"
+          title="Zooms the sky view to what your camera will capture (with a little margin). Turn off to go back to your previous zoom."
+        >
+          <span className="label inline-flex items-center gap-1">
+            Match camera
+            <InfoDot
+              label="About Match camera"
+              content="Zooms the sky view to what your camera will capture (with a little margin). Turn off to go back to your previous zoom."
+            />
+          </span>
           <Toggle
             checked={cameraFovLock}
             onChange={onCameraFovLock}
             disabled={!haveOptics}
-            label="Lock zoom to camera FOV"
+            label="Match the zoom to your camera's field of view"
             showState
           />
         </div>
