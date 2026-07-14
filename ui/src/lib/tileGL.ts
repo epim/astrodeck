@@ -141,8 +141,16 @@ export function initTileGL(canvas: HTMLCanvasElement): TileGL | null {
     gl.deleteProgram(prog);
     gl.deleteShader(vs);
     gl.deleteShader(fs);
-    const lose = gl.getExtension("WEBGL_lose_context");
-    lose?.loseContext();
+    // Deliberately NOT calling WEBGL_lose_context here: the deleteTexture/
+    // deleteBuffer/deleteProgram/deleteShader calls above already free every
+    // GPU resource this module owns. React StrictMode dev-mode remounts the
+    // same canvas (mount -> cleanup -> mount) without a new element, so
+    // canvas.getContext("webgl") in the next initTileGL call returns this
+    // SAME context object; if it had been explicitly lost here it would come
+    // back lost (isContextLost() === true), createShader would return null,
+    // and initTileGL would return null forever -> a permanently blank layer
+    // in dev. Letting the browser reclaim the context on GC/navigation is
+    // sufficient outside of StrictMode.
   }
 
   return { texFor, uploadTile, drawTiles, dispose };
