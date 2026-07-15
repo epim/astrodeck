@@ -482,3 +482,55 @@ def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
                     got = ev
                     break
             assert got is not None and got["data"]["message"] == "still-alive"
+
+
+# ============================== site/sky geolocator strip + visibility gating
+
+def test_site_sky_strips_geolocators_for_viewer(tmp_path, monkeypatch):
+    """A viewer lacks view.site_precise -> /api/site/sky omits place_hint and
+    lst_str but keeps sun_alt_deg + dark_window (ephemeris kept by decision)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/site/sky").json()
+        assert "place_hint" not in r and "lst_str" not in r
+        assert "sun_alt_deg" in r and "dark_window" in r
+
+
+def test_site_sky_full_for_admin(tmp_path, monkeypatch):
+    """An admin holds view.site_precise -> all four fields present."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        r = c.get("/api/site/sky").json()
+        assert "place_hint" in r and "lst_str" in r
+        assert "sun_alt_deg" in r and "dark_window" in r
+
+
+def test_visibility_fail_closed_for_unauthenticated(tmp_path, monkeypatch):
+    """Both visibility routes now require view.status; an unauthenticated caller
+    (provider resolves None) is refused fail-closed (401/403), not served."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(None)
+    with TestClient(app) as c:
+        assert c.get("/api/visibility?ra=5&dec=10").status_code in (401, 403)
+        assert c.post("/api/visibility/order",
+                      json={"targets": []}).status_code in (401, 403)
+
+
+def test_visibility_allows_viewer(tmp_path, monkeypatch):
+    """A viewer (view.status) gets 200 from the visibility ephemeris."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.get("/api/visibility?ra=5&dec=10").status_code == 200
+        assert c.post("/api/visibility/order",
+                      json={"targets": []}).status_code == 200
+
+
+def test_boot_assertion_passes_with_visibility_gated(tmp_path, monkeypatch):
+    """create_app() runs assert_route_capabilities LAST; with /api/visibility/order
+    removed from the exemption it must still build because the route now declares
+    view.status (a real capability)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    assert app is not None
