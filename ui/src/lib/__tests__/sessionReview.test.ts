@@ -1,7 +1,7 @@
 // sessionReview.test.ts — pure tests for lib/sessionReview.ts (review drawer
 // filtering / selection / local override). Inline-assert harness via `npx tsx`.
 import {
-  effectiveAccepted, filterFrames, toggleSel, verdictOf, withOverride,
+  effectiveAccepted, filterFrames, pruneSelection, toggleSel, verdictOf, withOverride,
 } from "../sessionReview";
 import type { SessionFrame } from "../../types";
 
@@ -48,6 +48,15 @@ test("toggleSel is a pure toggle", () => {
   const before = sel;
   sel = toggleSel(sel, "a");
   assert(!sel.includes("a") && before.includes("a"), "removed, input untouched");
+});
+
+test("pruneSelection keeps only ids in the visible set", () => {
+  const fs = [frame(), frame()];
+  const both = [fs[0].id, fs[1].id];
+  assert(pruneSelection(both, fs).length === 2, "kept when visible");
+  const pruned = pruneSelection([fs[0].id, fs[1].id], [fs[0]]);
+  assert(pruned.length === 1 && pruned[0] === fs[0].id, "dropped when hidden");
+  assert(pruneSelection([], fs).length === 0, "empty selection stays empty");
 });
 
 test("withOverride touches only the matching frame", () => {

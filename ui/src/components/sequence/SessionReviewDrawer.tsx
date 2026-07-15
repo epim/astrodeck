@@ -8,9 +8,31 @@ import { BASE } from "../../lib/base";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
 import { getSession, patchFrame } from "../../api/sessions";
-import { filterFrames, toggleSel, verdictOf, withOverride } from "../../lib/sessionReview";
+import {
+  filterFrames, pruneSelection, toggleSel, verdictOf, withOverride,
+} from "../../lib/sessionReview";
 import type { FrameFilters } from "../../lib/sessionReview";
 import type { Session } from "../../types";
+
+/** Tokened placeholder shared by thumb=null and broken-thumb states. */
+function ThumbFallback() {
+  return (
+    <div className="w-full aspect-video bg-line2/40 flex items-center justify-center text-dim text-[10px]">
+      no thumb
+    </div>
+  );
+}
+
+/** Frame thumbnail with a broken-image fallback (state lives per frame via the
+ *  grid's key={f.id}, so a failed load doesn't blank its neighbours). */
+function Thumb({ src }: { src: string | null }) {
+  const [broken, setBroken] = useState(false);
+  if (!src || broken) return <ThumbFallback />;
+  return (
+    <img src={src} alt="" className="w-full aspect-video object-cover"
+      loading="lazy" onError={() => setBroken(true)} />
+  );
+}
 
 export default function SessionReviewDrawer({ id, onClose }: {
   id: string | null;
@@ -95,13 +117,23 @@ export default function SessionReviewDrawer({ id, onClose }: {
     ? Object.values(remaining).reduce((a, b) => a + b, 0)
     : null;
 
+  // Filter changes prune the selection against the NEW visible set so a
+  // hidden-but-selected frame can never be regraded invisibly by a bulk action.
+  const applyFlt = (next: FrameFilters) => {
+    setFlt(next);
+    setSel((s) => pruneSelection(s, filterFrames(session.frames, next)));
+  };
+
   const bulk = async (override: "accept" | "reject") => {
-    if (busy || sel.length === 0) return;
+    // Belt-and-braces: only ever regrade the intersection of the selection and
+    // the currently VISIBLE frames (applyFlt already keeps them in sync).
+    const ids = pruneSelection(sel, frames);
+    if (busy || ids.length === 0) return;
     setBusy(true);
     let frames2 = session.frames;
     let rem: Record<string, number> | null = null;
     try {
-      for (const fid of sel) {
+      for (const fid of ids) {
         const res = await patchFrame(session.id, fid, { override });
         frames2 = withOverride(frames2, fid, override);
         rem = res.remaining;
@@ -142,19 +174,19 @@ export default function SessionReviewDrawer({ id, onClose }: {
       <div className="flex items-center gap-2 pb-2 flex-wrap text-[11px]">
         <select className="field !py-1 !w-28" value={flt.target_id ?? ""}
           aria-label="Filter by target"
-          onChange={(e) => setFlt({ ...flt, target_id: e.target.value || undefined })}>
+          onChange={(e) => applyFlt({ ...flt, target_id: e.target.value || undefined })}>
           <option value="">all targets</option>
           {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         <select className="field !py-1 !w-32" value={flt.night ?? ""}
           aria-label="Filter by night"
-          onChange={(e) => setFlt({ ...flt, night: e.target.value || undefined })}>
+          onChange={(e) => applyFlt({ ...flt, night: e.target.value || undefined })}>
           <option value="">all nights</option>
           {nights.map((nx) => <option key={nx} value={nx}>{nx}</option>)}
         </select>
         <select className="field !py-1 !w-28" value={flt.verdict ?? ""}
           aria-label="Filter by verdict"
-          onChange={(e) => setFlt({ ...flt, verdict: (e.target.value || undefined) as FrameFilters["verdict"] })}>
+          onChange={(e) => applyFlt({ ...flt, verdict: (e.target.value || undefined) as FrameFilters["verdict"] })}>
           <option value="">all verdicts</option>
           <option value="accepted">accepted</option>
           <option value="rejected">rejected</option>
@@ -181,14 +213,8 @@ export default function SessionReviewDrawer({ id, onClose }: {
               aria-pressed={selected}
               aria-label={`Select frame ${f.id}`}
               onClick={() => setSel(toggleSel(sel, f.id))}>
-              {f.thumb ? (
-                <img src={`${BASE}/api/sessions/${session.id}/frames/${f.id}/thumb`}
-                  alt="" className="w-full aspect-video object-cover" loading="lazy" />
-              ) : (
-                <div className="w-full aspect-video bg-line2/40 flex items-center justify-center text-dim text-[10px]">
-                  no thumb
-                </div>
-              )}
+              <Thumb src={f.thumb
+                ? `${BASE}/api/sessions/${session.id}/frames/${f.id}/thumb` : null} />
               <span className="mono text-[10px] text-dim">
                 {targetName(f.target_id)} · {filterOf(f.step_id)} · {f.night.slice(-6)}
               </span>
