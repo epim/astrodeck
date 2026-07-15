@@ -98,6 +98,14 @@ FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can cra
 # ready target's _setup_target restores tracking + re-slews (review §1.9).
 WAIT_TEARDOWN_S = 120.0
 
+# --- review-thumbnail back-pressure (Task 6 review, Important #2) ----------
+# Thumbs are best-effort and MUST NEVER block the capture loop, so there is no
+# queue to wait on: once this many renders are already in flight, ``_spawn_
+# thumb`` just drops the new one (frame's thumb stays None). This bounds a
+# fast calibration burst (sub-second bias/darks) to at most this many
+# in-memory full-res ndarray closures at once instead of piling up unbounded.
+_MAX_PENDING_THUMBS = 4
+
 
 async def _bounded(awaitable, timeout_s: float, what: str):
     """Await ``awaitable`` under ``asyncio.wait_for`` (P0-2). On timeout, raise a
@@ -171,6 +179,11 @@ class SequenceEngine:
         self._flip_armed = False
         self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
         self._session: Session | None = None   # live ledger (sessions spec §2)
+        # In-flight ~512px review-thumbnail renders (Task 6 review, Important
+        # #1). Tracked so abort()/teardown can cancel + await them instead of
+        # orphaning fire-and-forget tasks; capped (see _MAX_PENDING_THUMBS) so
+        # a fast burst drops renders instead of queuing unbounded ndarrays.
+        self._thumb_tasks: set[asyncio.Task] = set()
         self._started_at = 0.0
         # --- paused-aware elapsed + deterministic ETA bookkeeping (spec §5) ---
         self._paused_accum_s = 0.0
@@ -415,7 +428,26 @@ class SequenceEngine:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
+        # the main run is now fully stopped, so no NEW thumb can be spawned
+        # concurrently -- this always drains exactly the pending set (Task 6
+        # review, Important #1: no orphaned renders / "destroyed but pending"
+        # warnings at interpreter exit).
+        await self._drain_thumb_tasks()
         self._set_state(state="aborted", detail="sequence aborted", schedule=None)
+
+    async def _drain_thumb_tasks(self) -> None:
+        """Cancel and await every in-flight thumbnail render (Task 6 review,
+        Important #1). Bounded: ``return_exceptions=True`` means a wedged or
+        erroring render can never hang teardown -- cancellation of an
+        ``asyncio.to_thread`` await resolves promptly even while its
+        underlying OS thread keeps running to completion in the background."""
+        if not self._thumb_tasks:
+            return
+        pending = list(self._thumb_tasks)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self._thumb_tasks.difference_update(pending)
 
     @property
     def running(self) -> bool:
@@ -1601,17 +1633,31 @@ class SequenceEngine:
     def _spawn_thumb(self, sf: SessionFrame | None) -> None:
         """Fire-and-forget ~512px review thumbnail (spec §3). Best-effort by
         design: NINA frames carry no raw array (data is None) and any render
-        failure simply leaves ``thumb=None`` — capture is never blocked."""
+        failure simply leaves ``thumb=None`` — capture is never blocked.
+
+        Back-pressure (Task 6 review, Important #2): the render holds a
+        full-res ndarray closure, so a fast burst must never queue them
+        unbounded. Once ``_MAX_PENDING_THUMBS`` renders are already in
+        flight this DROPS the new one outright (thumb stays None, logged at
+        debug) rather than awaiting/semaphore-queuing — nothing here may
+        block the capture loop. The task is tracked in ``self._thumb_tasks``
+        so abort()/teardown can cancel + await it instead of orphaning it."""
         if self._session is None or sf is None:
             return
         frame = getattr(self.hub, "last_frame", None)
         data = getattr(frame, "data", None)
         if data is None:
             return
+        if len(self._thumb_tasks) >= _MAX_PENDING_THUMBS:
+            bus.log("debug", "thumb render dropped: pending queue saturated "
+                             f"(>= {_MAX_PENDING_THUMBS} in flight)", "sequence")
+            return
         try:
-            asyncio.create_task(self._render_thumb(self._session, sf, data))
+            task = asyncio.create_task(self._render_thumb(self._session, sf, data))
         except RuntimeError:
-            pass                              # no running loop (defensive)
+            return                            # no running loop (defensive)
+        self._thumb_tasks.add(task)
+        task.add_done_callback(self._thumb_tasks.discard)
 
     async def _render_thumb(self, session: Session, sf: SessionFrame,
                             data) -> None:

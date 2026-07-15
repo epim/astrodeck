@@ -1,9 +1,11 @@
 """Task 6: per-frame review thumbnails (sessions spec §3) — sim frame."""
 import asyncio
+import threading
 
 import pytest
 
 import astrodeck.hub as hub_module
+from astrodeck.events import bus
 from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
 from astrodeck.sequence.models import ExposureStep, Target
@@ -103,3 +105,101 @@ async def test_thumb_render_failure_is_silent_best_effort(sim_hub, monkeypatch):
     assert s.frames[0].thumb is None
     tdir = session_mod._sessions_dir() / sid / "thumbs"
     assert not tdir.exists() or not any(tdir.iterdir())
+
+
+async def test_thumb_render_backpressure_drops_when_saturated(sim_hub, monkeypatch):
+    """Task 6 review (Important #2 — no back-pressure): every recorded frame
+    used to unconditionally spawn a render holding a full-res ndarray
+    closure, so a fast calibration burst would queue unbounded in-flight
+    renders. The fix is DROP-when-saturated: once
+    ``engine_mod._MAX_PENDING_THUMBS`` renders are in flight, later frames'
+    spawn is skipped outright (thumb stays None) — never queued, never
+    awaited from the capture loop.
+
+    Gate the encoder shut for the whole run so every render that DOES get
+    spawned stays pending throughout capture: that makes the cap exact (a
+    queueing semaphore would drain back toward 0 as frames finish; a drop
+    policy holds steady at the cap)."""
+    gate = threading.Event()
+
+    def _gated_to_jpeg(data, **kw):
+        gate.wait(timeout=30.0)
+        return b"\xff\xd8FAKE", 8, 8
+
+    monkeypatch.setattr(engine_mod, "to_jpeg", _gated_to_jpeg)
+
+    cap = engine_mod._MAX_PENDING_THUMBS
+    n = cap + 4   # comfortably over the cap ("> 4 rapid records")
+    plan = SequencePlan(name="thumb-burst", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False, targets=[Target(
+                            name="M42", ra_hours=5.5881, dec_deg=-5.3911,
+                            center=False, autofocus_first=False,
+                            steps=[ExposureStep(filter="L", exposure_s=0.02,
+                                                count=n)])])
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    sid = eng._session.id
+    try:
+        # the burst must complete normally -- the capture loop never blocks
+        # on a saturated thumb queue.
+        assert await wait_for(lambda: eng.state.get("state") == "complete")
+        # pending set never exceeds the cap, and (since every render is
+        # gated shut) lands EXACTLY at the cap once the burst is done.
+        assert len(eng._thumb_tasks) == cap
+
+        s = session_store.load(sid)
+        assert len(s.frames) == n
+        assert all(f.thumb is None for f in s.frames[cap:])   # dropped tail
+    finally:
+        gate.set()   # release the gated encoder threads so they don't leak
+
+    # once the gate opens, the cap's-worth of pending renders land normally
+    def cap_thumbs_done():
+        s = session_store.load(sid)
+        return all(f.thumb is not None for f in s.frames[:cap])
+    assert await wait_for(cap_thumbs_done, timeout=15.0)
+    assert await wait_for(lambda: len(eng._thumb_tasks) == 0, timeout=15.0)
+    # the dropped tail must STAY dropped forever -- no task was ever spawned
+    s = session_store.load(sid)
+    assert all(f.thumb is None for f in s.frames[cap:])
+
+
+async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch):
+    """Task 6 review (Important #1 — untracked tasks): ``_render_thumb`` used
+    to be spawned via bare ``asyncio.create_task`` with no reference kept, so
+    ``abort()`` could neither cancel nor await a pending render -> an
+    orphaned task ("Task was destroyed but it is pending" at interpreter
+    exit). ``abort()`` must now cancel every pending thumb task and await it
+    so teardown is clean (task set empties, no warnings) and bounded (a slow
+    encoder can't hang shutdown)."""
+    gate = threading.Event()
+
+    def _gated_to_jpeg(data, **kw):
+        gate.wait(timeout=30.0)
+        return b"\xff\xd8FAKE", 8, 8
+
+    monkeypatch.setattr(engine_mod, "to_jpeg", _gated_to_jpeg)
+
+    plan = _plan()   # single short frame
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    try:
+        assert await wait_for(lambda: eng.state.get("state") == "complete")
+        # the run's own frame render is gated shut -> still pending right now
+        assert len(eng._thumb_tasks) == 1
+        pending_task = next(iter(eng._thumb_tasks))
+
+        warnings_before = len([e for e in bus.log_history
+                               if e["data"].get("level") == "warning"])
+        t0 = asyncio.get_event_loop().time()
+        await asyncio.wait_for(eng.abort(), timeout=5.0)
+        dt = asyncio.get_event_loop().time() - t0
+        assert dt < 5.0                        # bounded -- never hangs on the gate
+
+        assert pending_task.done()
+        assert len(eng._thumb_tasks) == 0      # drained -- nothing orphaned
+        warnings_after = len([e for e in bus.log_history
+                              if e["data"].get("level") == "warning"])
+        assert warnings_after == warnings_before
+    finally:
+        gate.set()
