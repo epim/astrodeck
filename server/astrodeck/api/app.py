@@ -19,7 +19,7 @@ from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
@@ -463,6 +463,16 @@ class LocationBody(BaseModel):
     longitude: float = Field(..., ge=-180, le=180)   # +E (East-positive)
     elevation_m: float = Field(..., ge=-430, le=9000)
     horizon_min_deg: float | None = Field(None, ge=0, le=90)
+
+    @field_validator("name")
+    @classmethod
+    def _name_trimmed_non_empty(cls, v: str) -> str:
+        """Same rule as SavedLocation (spec §4): trim, then reject empty —
+        so '' and '   ' 422 at the boundary instead of 500ing in the store."""
+        v = v.strip()
+        if not v:
+            raise ValueError("name must be non-empty")
+        return v
 
 
 class ProfileCaptureBody(BaseModel):

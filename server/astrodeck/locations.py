@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .config import CONFIG_DIR
 from .events import bus
@@ -35,6 +35,17 @@ class SavedLocation(BaseModel):
     horizon_min_deg: float | None = None
     created_ts: float = 0.0
     updated_ts: float = 0.0
+
+    @field_validator("name")
+    @classmethod
+    def _name_trimmed_non_empty(cls, v: str) -> str:
+        """Trim, then reject empty (spec §4: the name must be non-empty after
+        trim). Validator-first — a min_length constraint would pass '   '
+        before any trimming could run."""
+        v = v.strip()
+        if not v:
+            raise ValueError("name must be non-empty")
+        return v
 
 
 class LocationNameCollision(Exception):

@@ -30,6 +30,20 @@ def test_horizon_optional(tmp_path):
     assert loc.horizon_min_deg is None
 
 
+def test_name_empty_after_trim_rejected(tmp_path):
+    """Spec §4: a name must be non-empty after trimming — '' and '   ' both
+    raise (pydantic ValidationError from the field validator) and nothing is
+    persisted."""
+    from pydantic import ValidationError
+    s = _store(tmp_path)
+    with pytest.raises(ValidationError):
+        s.create("", 1.0, 2.0, 0.0)
+    with pytest.raises(ValidationError):
+        s.create("   ", 1.0, 2.0, 0.0)
+    assert s.list() == []
+    assert _store(tmp_path).list() == []   # nothing hit the disk either
+
+
 def test_atomic_write_keeps_bak_and_recovers(tmp_path):
     p = tmp_path / "locations.json"
     s = LocationStore(path=p)
