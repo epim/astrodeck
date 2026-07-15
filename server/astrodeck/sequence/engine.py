@@ -37,6 +37,7 @@ from ..devices.base import DeviceError, PierSide
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import Hub
+from ..imaging.processing import to_jpeg
 from . import schedule
 from .models import SequencePlan, Target
 from .report import FrameRecord, SessionReporter
@@ -1594,7 +1595,40 @@ class SequenceEngine:
             session_store.save(self._session)
         except Exception as e:
             bus.log("warning", f"session ledger write failed: {e}", "sequence")
+        self._spawn_thumb(sf)
         return sf
+
+    def _spawn_thumb(self, sf: SessionFrame | None) -> None:
+        """Fire-and-forget ~512px review thumbnail (spec §3). Best-effort by
+        design: NINA frames carry no raw array (data is None) and any render
+        failure simply leaves ``thumb=None`` — capture is never blocked."""
+        if self._session is None or sf is None:
+            return
+        frame = getattr(self.hub, "last_frame", None)
+        data = getattr(frame, "data", None)
+        if data is None:
+            return
+        try:
+            asyncio.create_task(self._render_thumb(self._session, sf, data))
+        except RuntimeError:
+            pass                              # no running loop (defensive)
+
+    async def _render_thumb(self, session: Session, sf: SessionFrame,
+                            data) -> None:
+        """Encode + write the thumb off-thread, then stamp the relative path
+        onto the ledger frame and re-save the session (event-loop-serialized
+        with the capture loop's own saves, so writes never interleave)."""
+        try:
+            jpeg, _w, _h = await asyncio.to_thread(
+                to_jpeg, data, max_width=512)  # auto-stretch, ~512px long edge
+            tdir = session_store.thumbs_dir(session.id)
+            await asyncio.to_thread(tdir.mkdir, parents=True, exist_ok=True)
+            path = tdir / f"{sf.id}.jpg"
+            await asyncio.to_thread(path.write_bytes, jpeg)
+            sf.thumb = f"thumbs/{sf.id}.jpg"
+            session_store.save(session)
+        except Exception as e:
+            bus.log("warning", f"thumb render failed: {e}", "sequence")
 
     # ----------------------------------------------------------- sub-routines
 
