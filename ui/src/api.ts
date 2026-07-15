@@ -2,6 +2,13 @@
 // AbortController fallback for old Safari/WebView (reliability spec §12,
 // settings spec §2.1).
 import { BASE } from "./lib/base";
+import { parseApiError } from "./lib/apiError";
+
+// Re-exported so `ApiError.code`'s parsing logic is reachable (and testable)
+// via api.ts, while living in lib/apiError.ts to stay dependency-free (no
+// window access at module load) — see that file for the FastAPI nested-detail
+// rationale.
+export { parseApiError } from "./lib/apiError";
 
 export class ApiError extends Error {
   status: number;
@@ -57,18 +64,14 @@ async function req<T = unknown>(method: string, path: string, body?: unknown): P
     done();
   }
   if (!res.ok) {
-    let detail = res.statusText;
-    let code: string | undefined;
+    let body: unknown;
     try {
-      const j = await res.json();
-      if (j && typeof j === "object") {
-        if (typeof j.code === "string") code = j.code;
-        detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail ?? j);
-      }
+      body = await res.json();
     } catch {
-      /* keep statusText */
+      /* no/invalid JSON body; parseApiError falls back to statusText */
     }
-    throw new ApiError(detail, res.status, false, code);
+    const { message, code } = parseApiError(res.status, body, res.statusText);
+    throw new ApiError(message, res.status, false, code);
   }
   return res.json() as Promise<T>;
 }
