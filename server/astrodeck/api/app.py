@@ -783,30 +783,32 @@ def create_app() -> FastAPI:
     # backend/connect write: choosing which implementation runs autofocus/TPPA is
     # a backend-shape decision, not a safety one. Broadcasts the redacted union so
     # every open client's ProviderBadge / Capabilities card updates immediately.
-    @app.post("/api/config/providers",
-              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @app.post("/api/config/providers")
     @declare(CAP_CONFIG_BACKEND)
-    async def set_providers_config(body: ProvidersConfig):
+    async def set_providers_config(
+            body: ProvidersConfig,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
         try:
             cfg = await asyncio.to_thread(config_store.set_providers, body)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
-        return _config_payload()
+        return _config_payload(principal)
 
     # -------------------------------------------------------------- rotator
     # Rotator mechanical ROM + rotate-loop tolerance (rotator/CAA spec §3.2).
     # Same cap/broadcast shape as the providers route above.
-    @app.post("/api/config/rotator",
-              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @app.post("/api/config/rotator")
     @declare(CAP_CONFIG_BACKEND)
-    async def set_rotator_config(body: RotatorConfig):
+    async def set_rotator_config(
+            body: RotatorConfig,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
         try:
             cfg = await asyncio.to_thread(config_store.set_rotator, body)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
-        return _config_payload()
+        return _config_payload(principal)
 
     # ---------------------------------------------------- survey pack (offline-pack spec §4-5)
     # Sky-Atlas survey source selection (online_fetch gates upstream hips2fits
@@ -819,13 +821,14 @@ def create_app() -> FastAPI:
     # survey_pack_mod.* is always called as a module attribute (never
     # `from ... import start_fetch`) so tests can monkeypatch it.
 
-    @app.post("/api/config/survey",
-              dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @app.post("/api/config/survey")
     @declare(CAP_CONFIG_SITE_OPTICS)
-    async def set_survey_config(body: SurveyConfig):
+    async def set_survey_config(
+            body: SurveyConfig,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         cfg = await asyncio.to_thread(config_store.set_survey, body)
         bus.publish("config", config=redacted(cfg))
-        return _config_payload()
+        return _config_payload(principal)
 
     @app.get("/api/survey/pack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -932,10 +935,11 @@ def create_app() -> FastAPI:
         drivers_mod.invalidate(driver_id)
         return await drivers_mod.describe_all()
 
-    @app.post("/api/config/drivers",
-              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @app.post("/api/config/drivers")
     @declare(CAP_CONFIG_BACKEND)
-    async def add_driver(body: DriverCreateBody):
+    async def add_driver(
+            body: DriverCreateBody,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
         try:
             entry = await asyncio.to_thread(
                 config_store.add_driver, body.type, body.host, body.port,
@@ -943,12 +947,13 @@ def create_app() -> FastAPI:
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(config_store.cfg()))
-        return {"driver": entry.model_dump(), "config": _config_payload()}
+        return {"driver": entry.model_dump(), "config": _config_payload(principal)}
 
-    @app.patch("/api/config/drivers/{driver_id}",
-               dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @app.patch("/api/config/drivers/{driver_id}")
     @declare(CAP_CONFIG_BACKEND)
-    async def patch_driver(driver_id: str, body: DriverPatchBody):
+    async def patch_driver(
+            driver_id: str, body: DriverPatchBody,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
         patch = {k: v for k, v in body.model_dump().items() if v is not None}
         try:
             entry = await asyncio.to_thread(
@@ -960,12 +965,13 @@ def create_app() -> FastAPI:
         from .. import drivers as drivers_mod
         drivers_mod.invalidate(driver_id)      # addressing may have changed
         bus.publish("config", config=redacted(config_store.cfg()))
-        return {"driver": entry.model_dump(), "config": _config_payload()}
+        return {"driver": entry.model_dump(), "config": _config_payload(principal)}
 
-    @app.delete("/api/config/drivers/{driver_id}",
-                dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @app.delete("/api/config/drivers/{driver_id}")
     @declare(CAP_CONFIG_BACKEND)
-    async def delete_driver(driver_id: str):
+    async def delete_driver(
+            driver_id: str,
+            principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
         try:
             await asyncio.to_thread(config_store.delete_driver, driver_id)
         except KeyError:
@@ -973,7 +979,7 @@ def create_app() -> FastAPI:
         from .. import drivers as drivers_mod
         drivers_mod.invalidate(driver_id)
         bus.publish("config", config=redacted(config_store.cfg()))
-        return {"deleted": driver_id, "config": _config_payload()}
+        return {"deleted": driver_id, "config": _config_payload(principal)}
 
     @app.get("/api/discover/{backend}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -1106,16 +1112,29 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------ config / site / optics
 
-    def _config_payload() -> dict:
+    def _config_payload(principal: Principal | None) -> dict:
         """REDACTED AppConfig dump + the server's computed optics readout (single
-        source of truth for image-scale / FOV the UI never re-derives as logic).
+        source of truth for image-scale / FOV the UI never re-derives as logic),
+        run through the site-precision strip seam for ``principal``.
 
         ``redacted`` blanks every alert sink's Telegram bot token — the only
         secret kept at rest — so the union sent over REST/WS never leaks it (4b
         §1.10). The union also carries the automation blocks (safety/escalation/
-        alerts/deadman_url) appended to AppConfig."""
+        alerts/deadman_url) appended to AppConfig.
+
+        SECURITY (whole-branch review finding): every caller of this function --
+        GET /api/config AND every config-WRITE route that echoes the fresh config
+        back (POST /api/config, PUT/POST /api/site, PUT/POST /api/optics, POST
+        /api/config/{providers,rotator,survey,drivers...}) -- MUST pass the
+        requesting principal so the echo is stripped identically to the read
+        surfaces. Redacting only inside GET /api/config left every write route
+        echoing precise site coords bare to any authenticated caller (even a
+        floor-only viewer via an empty-body POST /api/config), defeating
+        view.site_precise. Redaction now happens HERE, once, so no call site can
+        forget it."""
         cfg = config_store.cfg()
-        return redacted(cfg) | {"optics_computed": hub.effective_optics()}
+        payload = redacted(cfg) | {"optics_computed": hub.effective_optics()}
+        return _redact_site_for(payload, principal)
 
     # ---------------------------------------------------- site-precision redaction
     # ``view.site_precise`` (admin-only; EXCLUDED from viewer/operator) is the
@@ -1301,7 +1320,7 @@ def create_app() -> FastAPI:
     @app.get("/api/config")
     @declare(CAP_VIEW_STATUS)
     async def get_config(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
-        return _redact_site_for(_config_payload(), principal)
+        return _config_payload(principal)
 
     @app.post("/api/config")
     @declare(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_SAFETY,
@@ -1326,7 +1345,7 @@ def create_app() -> FastAPI:
                     bus.log("warning", f"could not push site to mount: {e}",
                             "config")
         bus.publish("config", config=redacted(config_store.cfg()))
-        return _config_payload()
+        return _config_payload(principal)
 
     def _require_site_field_caps(body: SiteSaveBody, principal: Principal) -> None:
         """Field-level RBAC for ``PUT/POST /api/site`` (plan): site coords need
@@ -1379,7 +1398,7 @@ def create_app() -> FastAPI:
             except Exception as e:
                 bus.log("warning", f"could not push site to mount: {e}", "config")
         bus.publish("config", version=cfg.version)
-        return _config_payload()
+        return _config_payload(principal)
 
     # thin alias kept for backward compat (referenced nowhere in UI, cheap)
     @app.post("/api/site")
@@ -1458,9 +1477,11 @@ def create_app() -> FastAPI:
             raise HTTPException(404, detail={"code": "not_found"})
         return {"ok": True}
 
-    @app.put("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @app.put("/api/optics")
     @declare(CAP_CONFIG_SITE_OPTICS)
-    async def put_optics(body: OpticsSaveBody):
+    async def put_optics(
+            body: OpticsSaveBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         try:
             # P2-3: offload the blocking disk write off the event loop.
             cfg = await asyncio.to_thread(
@@ -1471,13 +1492,15 @@ def create_app() -> FastAPI:
                 "current": e.current.model_dump() | {
                     "optics_computed": hub.effective_optics()}})
         bus.publish("config", version=cfg.version)
-        return _config_payload()
+        return _config_payload(principal)
 
     # atlas alias: also seeds hub.optics (same persisted object)
-    @app.post("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
+    @app.post("/api/optics")
     @declare(CAP_CONFIG_SITE_OPTICS)
-    async def post_optics(body: OpticsSaveBody):
-        return await put_optics(body)
+    async def post_optics(
+            body: OpticsSaveBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        return await put_optics(body, principal)
 
     @app.get("/api/site/sky")
     @declare(CAP_VIEW_STATUS)
