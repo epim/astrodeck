@@ -10,7 +10,9 @@
 - **Keep ephemeris, strip geolocators** (2026-07-15): non-holders keep dark windows, transit times, and altitude curves (remote Atlas/planning keeps working) but lose all direct geolocators: coordinates, elevation, site name, `place_hint`, LST. Residual coarse inference from ephemeris (~city/region scale: dusk+dawn pins longitude to ~1°, altitude curves imply latitude) is **accepted and documented**.
 - **Capability-based scope, everyone** (2026-07-15): the strip applies to ANY principal lacking `view.site_precise`, regardless of connection origin (LAN or relay). One uniform rule; no origin-keyed second path. LAN viewers/operators lose coordinates too; grant the cap to a custom role if that is ever wanted.
 
-**Review rounds (recorded):** bridge review by antigravity 2026-07-15 — verdict SHIP with three advisories, all folded in: no-coords-in-logs constraint (§7; `/api/logs` is viewer-visible), mount read-back rejects non-finite/out-of-range sentinels (§3), breaking-change release note for non-admin API consumers (§2). Runtime-validation concern evaluated, no change: the UI uses plain TS casts, no Zod/io-ts schemas exist.
+- **Saved locations, outside rig profiles** (2026-07-15, user, at spec approval): a library of named saved locations, deliberately independent of rig profiles — "some photographers will take different rigs to the same site on different occasions." (Ground truth supports this: `Profile.site_name` at profiles.py:87 is write-only capture metadata, never read back; the active `AppConfig.site` is global and already survives profile switches.)
+
+**Review rounds (recorded):** bridge review by antigravity 2026-07-15 — verdict SHIP with three advisories, all folded in: no-coords-in-logs constraint (§8; `/api/logs` is viewer-visible), mount read-back rejects non-finite/out-of-range sentinels (§3), breaking-change release note for non-admin API consumers (§2). Runtime-validation concern evaluated, no change: the UI uses plain TS casts, no Zod/io-ts schemas exist. User approved 2026-07-15 with one addition (saved locations, §4).
 
 ## 1. Ground truth (existing code this spec builds on)
 
@@ -47,7 +49,27 @@ New endpoint `GET /api/site/mount-gps`, gated `require(CAP_CONFIG_SITE_OPTICS)` 
 - Response (always 200): `{available: bool, latitude?: float, longitude?: float, elevation_m?: float, detail?: str}`. `available: false` with a human `detail` when: no mount connected, mount is not Alpaca-backed, any property read fails, the mount reports exactly `(0.0, 0.0)` (unset-GPS sentinel on common mounts — `detail: "Mount reports 0,0 — GPS likely unset"`), or **any returned value is non-finite (NaN/inf) or out of the Site model's ranges** (lat ±90, lon ±180, elevation −430..9000 — some mounts return junk sentinels like `99.0/181.0` when unset). Genuine Null-Island observers can still type `0, 0` manually; the read-back is only an assist.
 - **Assist only — never persisted.** The UI fills the form draft; the user reviews and saves explicitly through the normal `PUT /api/site` path.
 
-## 4. UI: Settings → Site panel
+## 4. Saved locations library
+
+A library of named locations so returning to a known site is one click — independent of rig profiles by design (different rigs visit the same site) and independent of `AppConfig` (so precise coordinates never ride along in config/status/WS payloads).
+
+**Model.** `SavedLocation {id: str (uuid4 hex), name: str (unique, case-insensitive compare, trimmed, non-empty), latitude: float (±90), longitude: float (±180, signed East-positive), elevation_m: float (−430..9000), horizon_min_deg: float | None, created_ts: float, updated_ts: float}`. `horizon_min_deg` is optional because a horizon profile is a property of the site (trees, ridgelines), not the rig.
+
+**Storage.** New module `server/astrodeck/locations.py` with a `LocationStore` singleton: single JSON file `CONFIG_DIR/locations.json` (same atomic-write + `.bak`-recovery pattern as `ConfigStore`), `MAX_LOCATIONS = 50`. Lives in `CONFIG_DIR` so it survives self-update, and is NOT part of `AppConfig` — no `version` interplay, no redaction-seam changes, not snapshot by profiles.
+
+**Routes** (all gated `require(CAP_CONFIG_SITE_OPTICS)` + `@declare(CAP_CONFIG_SITE_OPTICS)` — the library contains precise coordinates and exists to write the site, so the write cap gates the whole surface):
+- `GET /api/locations` — full list.
+- `POST /api/locations` `{name, latitude, longitude, elevation_m, horizon_min_deg?}` — create. Name collision (case-insensitive) → 409 `{code: "name_collision", id: <existing>}`; library full → 409 `{code: "library_full"}`.
+- `PUT /api/locations/{id}` — update in place (rename allowed; collision rule applies against OTHER ids).
+- `DELETE /api/locations/{id}` — remove. 404 on unknown id.
+
+**Apply is client-side.** "Apply" fills the Site panel's draft fields from the chosen location; persisting goes through the normal `PUT /api/site` (and includes `horizon_min_deg` only when the location has one AND the principal holds `config.safety` — reusing the existing field-level RBAC unchanged, no new server-side apply logic). The applier reviews before saving; nothing applies implicitly.
+
+**Privacy.** The library is served ONLY by these four routes; it is never embedded in `/api/config`, `/api/status`, `/api/summary`, hello, or any WS event — so the §2 strip seam needs no changes for it. Location names/coords must never enter `bus.log` (same §8 constraint).
+
+**Explicit non-link to profiles.** `Profile.site_name` (profiles.py:87) stays informational-only; this spec does NOT wire profiles to locations (no auto-apply on profile activate). Noted as a possible future enhancement, out of scope here.
+
+## 5. UI: Settings → Site panel
 
 New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's left column between `DriversPanel` and `SkyAtlasPanel` (`SettingsView.tsx:145-150`). Follows the DriversPanel pattern exactly: `Panel`/`Field`/`.field` inputs, `btn btn-accent` actions, `run(fn, okMsg)` busy+toast helper, 403 special-cased to a capability message, lock-note footer when read-only.
 
@@ -55,15 +77,23 @@ New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's lef
 
 **Reading state.** The authoritative copy is `config.site` (`useConfig()`); `store.site` remains the live-status projection. For principals receiving stripped payloads, coordinate fields render a "Hidden" placeholder — driven by a new `useCanViewSitePrecise = () => useCapability("view.site_precise")` hook added to `lib/caps.ts` (the convention at caps.ts:123-131). This hook is also the gate sub-project C's weather panel will use. A warn chip shows when `config.site.is_default` ("Using default location (0, 0) — sequencing windows and Atlas visibility are wrong until set").
 
-**Save.** `PUT /api/site` with `{site, version: config?.version ?? null}` via a new typed `ui/src/api/site.ts` (`saveSite`, `getMountGps` — mirroring `api/backends.ts` one-function-per-route). On success: `loadConfig()` re-GET (never partial-merge). On 409 version conflict: `loadConfig()` + error toast "Config changed elsewhere — reloaded, re-apply your edit". `horizon_min_deg` is never sent — the Safety panel owns it, and omission preserves the stored value (P2-1 guard at app.py:1331-1337).
+**Save.** `PUT /api/site` with `{site, version: config?.version ?? null}` via a new typed `ui/src/api/site.ts` (`saveSite`, `getMountGps` — mirroring `api/backends.ts` one-function-per-route). On success: `loadConfig()` re-GET (never partial-merge). On 409 version conflict: `loadConfig()` + error toast "Config changed elsewhere — reloaded, re-apply your edit". `horizon_min_deg` is never sent from manual edits — the Safety panel owns it, and omission preserves the stored value (P2-1 guard at app.py:1331-1337). Single exception: applying a saved location that carries a `horizon_min_deg` includes it when the principal holds `config.safety` (§4).
 
 **"Use my location" button.** Rendered only when `isSecureContext && "geolocation" in navigator` (no prior geolocation use exists in the codebase; the UI is served over plain LAN http where the API is unavailable outside localhost). When unavailable, a hint line replaces it: "Browser location needs HTTPS or localhost — enter manually or use mount GPS." When available: `getCurrentPosition` with `enableHighAccuracy: true`, 10 s timeout; success fills the drafts (6 dp); failure → error toast with the browser's message. Fills drafts only — user still saves explicitly.
 
 **"Use mount GPS" button.** Calls `getMountGps()`; `available: false` → info toast with `detail`; otherwise fills the drafts. Always enabled for `config.site_optics` holders (the endpoint itself reports unavailability).
 
+**Saved locations row** (renders only for `config.site_optics` holders — the routes 403 otherwise):
+- A `Field` labeled "Saved locations": dropdown of library entries (by name, sorted case-insensitively), plus **Apply**, **Save current…**, and **Delete** actions, all through the panel's `run(fn, okMsg)` helper.
+- **Apply** fills the draft fields from the chosen entry and records that entry as the form's baseline. Nothing persists until the normal Save (§4 apply-is-client-side).
+- **Dirty-state indicator**: while the draft matches the baseline entry, the dropdown shows its name (the form *is* that location); editing any field clears the selection and shows a muted note `Modified — differs from "<name>"`. Pure client-side comparison via a `locationEquals(draft, loc)` helper in `lib/site.ts`; no auto-save ever.
+- **Save current…** prompts for a name (inline input, ConfirmDialog pattern) and `POST /api/locations` with the draft's coordinates + elevation and the CURRENT stored `horizon_min_deg` (read from config). On 409 `name_collision` → confirm-overwrite dialog → `PUT /api/locations/{id}`. On 409 `library_full` → error toast "Location library is full (50) — delete one first." Never silently evicts or overwrites.
+- **Delete** (enabled only with a selection) → ConfirmDialog → `DELETE /api/locations/{id}`, then re-fetch the list.
+- New type `SavedLocation` in `ui/src/types.ts` matching §4's model; typed wrappers `listLocations`/`saveLocation`/`updateLocation`/`deleteLocation` in `api/site.ts`.
+
 **Types.** In `ui/src/types.ts`, the strippable fields on the site shapes that arrive over the wire (`SiteInfo` at :890-895, `RigStatus.site` at :89-96, and `AppConfig`'s `Site` at :454-459) become optional: `name?`, `latitude?`, `longitude?`, `elevation_m?` (`is_default` and `horizon_min_deg` stay required). Strip-aware consumers to adjust: `PreflightStrip.tsx:123-131` site signature uses `site.latitude ?? "hidden"` (behavior unchanged — it already skips fetching when `is_default`); `AtlasView` uses only `horizon_min_deg`/`is_default` (kept fields). The build is strict (`tsc -b`), so the compiler enumerates every consumer.
 
-## 5. Testing
+## 6. Testing
 
 **Server** (conventions of `server/tests/test_rbac_enforcement.py` — in-process fakes via monkeypatch + TestClient, no unittest.mock, `_principal_with(*caps)` / `principal_for_role`):
 - Rework T-RBAC-13 (lines 361-415) from coarsen-asserts to strip-asserts: seed precise site (`40.123456, -74.654321`, elevation 123.4, name "Secret Barn"); viewer responses on `/api/status`, `/api/config`, `/api/summary` (both `site` and `config.site`) and the WS hello have NO `latitude`/`longitude`/`elevation_m`/`name` keys and DO have `is_default` + `horizon_min_deg`; admin sees exact values.
@@ -71,7 +101,8 @@ New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's lef
 - `/api/visibility` + `/api/visibility/order`: unauthenticated → 401/403 (fail-closed); viewer (`view.status`) → 200; boot RBAC assertion passes with the exemption removed.
 - `/api/site/mount-gps`: viewer → 403; `config.site_optics` holder with no mount → `{available: false}`; with sim/fake Alpaca mount reporting coords → values echoed; `(0.0, 0.0)` → `available: false` with the GPS-unset detail.
 - Relay (`test_remote_relay.py:586-796` pattern): tunneled hello + streamed frames stripped for viewer, full for holder, and mid-stream downgrade re-tightens to stripped.
-- Log hygiene: after a `/api/site` save and a `/api/site/mount-gps` read against the seeded precise site, `bus.log_history` contains no occurrence of the precise coordinate strings.
+- Log hygiene: after a `/api/site` save, a `/api/site/mount-gps` read, and a full locations save/update/delete cycle against the seeded precise site, `bus.log_history` contains no occurrence of the precise coordinate strings.
+- Locations: `LocationStore` round-trip + atomic write + `.bak` recovery + case-insensitive `name_collision` 409 + `library_full` 409 at `MAX_LOCATIONS`; route RBAC — viewer AND operator → 403 on all four routes, `config.site_optics` holder → full access; `PUT` rename onto another entry's name → 409; `DELETE` unknown id → 404; locations payloads appear in NO `/api/status`/`/api/summary`/`/api/config`/WS hello response.
 - Run: `cd server && ./.venv/Scripts/python.exe -m pytest -q` (currently 1037 passed; all green required).
 
 **UI:**
@@ -79,15 +110,16 @@ New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's lef
 - `npm run build` (`tsc -b && vite build`, strict `noUnusedLocals`/`noUnusedParameters`) green — this is also the compile-time sweep for the optional-field change.
 - UI tsx tests never run in CI; they run locally and must pass before commit.
 
-## 6. Out of scope
+## 7. Out of scope
 
 - Weather fetching, forecast/cloud panels, radar tiles, high-cloud warning popup, ResumeArm `resume_veto()` weather gate (all sub-project C — but C's UI gates on `view.site_precise` per carry-out).
 - Dynamic cloud-dodging (D).
-- `horizon_min_deg` editing (Safety panel owns it; this panel never sends it).
+- `horizon_min_deg` editing (Safety panel owns it; this panel never edits it — a saved location may CARRY one, applied through `PUT /api/site` only when the principal holds `config.safety`, per §4).
+- Wiring profiles to locations (`Profile.site_name` stays informational; no auto-apply on profile activate).
 - Relay server changes (redaction is home-side; the relay stays untrusted forward-only; for non-holders, precise coordinates never leave the home network at all).
 - Changing role→capability assignments (viewer/operator/admin keep their current cap sets).
 
-## 7. Constraints (project-wide, binding on the plan)
+## 8. Constraints (project-wide, binding on the plan)
 
 - Longitude is stored **signed East-positive**; latitude signed +N. UI collects magnitude + hemisphere and converts at the boundary (`lib/site.ts`). Exact convention per config.py:11-16.
 - Strip set is exactly `{name, latitude, longitude, elevation_m}`; retain set is exactly `{is_default, horizon_min_deg}`.
