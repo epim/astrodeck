@@ -129,6 +129,9 @@ export const useCanConfigBackend = () => useCapability("config.backend");
 export const useCanAdminUsers = () => useCapability("admin.users");
 /** system.update — admin-only; gates the Updates panel (self-update). */
 export const useCanSystemUpdate = () => useCapability("system.update");
+/** view.site_precise — gates precise-coordinate display (Site panel "Hidden"
+ *  placeholder) and, in sub-project C, the weather/radar panel. Admin-only. */
+export const useCanViewSitePrecise = () => useCapability("view.site_precise");
 
 /** True when the caller is a viewer (or unresolved). Drives the "View-only"
  *  badge + read-only surfaces (controls HIDDEN/disabled, not 403-on-tap). */

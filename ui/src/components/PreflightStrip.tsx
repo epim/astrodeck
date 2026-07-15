@@ -124,7 +124,7 @@ function useSharedAltById(plan: SequencePlan, site: SiteInfo): AltMap {
       setAltById({});
       return; // server returns unknown on default site; the row is disabled/skipped
     }
-    const siteSig = `${site.latitude}|${site.longitude}|${site.horizon_min_deg}`;
+    const siteSig = `${site.latitude ?? "hidden"}|${site.longitude ?? "hidden"}|${site.horizon_min_deg}`;
     const key = `${siteSig}::${fetchKey}`;
     return subscribeAlt(key, lights, setAltById);
     // eslint-disable-next-line react-hooks/exhaustive-deps

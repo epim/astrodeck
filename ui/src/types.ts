@@ -84,13 +84,14 @@ export interface RigStatus {
   //     normalizeSafety(); do NOT read the flat dict's `connected` (it has none). ---
   safety?: SafetyReading | null;
   // --- settings (additive; survives the 2s wholesale status replace) ---
-  // Full poll_status site shape (6 fields) — superset of SiteInfo so the store
-  // can refresh store.site (is_default/horizon_min_deg) live while connected.
+  // Full poll_status site shape — superset of SiteInfo. name/lat/lon/elevation
+  // are stripped over the wire for non-holders of view.site_precise (spec §2),
+  // so they are optional; is_default/horizon_min_deg are always present.
   site?: {
-    name: string;
-    latitude: number;
-    longitude: number;
-    elevation_m: number;
+    name?: string;
+    latitude?: number;
+    longitude?: number;
+    elevation_m?: number;
     is_default: boolean;
     horizon_min_deg: number;
   };
@@ -452,10 +453,14 @@ export interface NinaHealth {
 
 // ---------------------------------------------------- settings: site + optics
 export interface Site {
-  name: string;
-  latitude: number;   // +N (stored signed)
-  longitude: number;  // +E (East-positive; matches coords.lst_hours)
-  elevation_m: number;
+  // Strippable over the wire for principals lacking view.site_precise (spec §2):
+  // absent, not nulled. is_default + horizon_min_deg are always present.
+  name?: string;
+  latitude?: number;   // +N (stored signed)
+  longitude?: number;  // +E (East-positive; matches coords.lst_hours)
+  elevation_m?: number;
+  is_default: boolean;
+  horizon_min_deg: number;
 }
 
 export interface Optics {
@@ -888,10 +893,25 @@ export interface VisibilityTarget {
 // ---------------------------------------------------- onboarding: site + checks
 // SiteInfo is the LIVE/status view of the site (distinct from the persisted Site).
 export interface SiteInfo {
-  latitude: number;
-  longitude: number;
+  name?: string;
+  latitude?: number;
+  longitude?: number;
+  elevation_m?: number;
   is_default: boolean;
   horizon_min_deg: number;
+}
+
+// Saved observing location (server astrodeck/locations.py SavedLocation). Served
+// ONLY by /api/locations — never embedded in config/status/WS payloads.
+export interface SavedLocation {
+  id: string;
+  name: string;
+  latitude: number;   // +N (signed)
+  longitude: number;  // +E (East-positive)
+  elevation_m: number;
+  horizon_min_deg: number | null;
+  created_ts: number;
+  updated_ts: number;
 }
 
 export interface PreflightAlt {
