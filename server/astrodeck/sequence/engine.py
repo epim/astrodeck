@@ -307,7 +307,7 @@ class SequenceEngine:
         total = 0.0
         for ti, target in enumerate(self.plan.targets):
             for si, step in enumerate(target.steps):
-                done = self._done.get(f"{ti}:{si}", 0)
+                done = self._done.get(f"{target.id}:{step.id}", 0)
                 remaining = max(0, step.count - done)
                 # the in-flight frame belongs to the step currently capturing; we
                 # subtract one frame's worth there because it is accounted as the
@@ -650,9 +650,10 @@ class SequenceEngine:
         site = self.hub.site
         twilight = cfg.safety.twilight_deg if cfg else -12.0
 
-        # stable original index per target object so reporter/_done/_set_state and
-        # the _done "ti:si" keys keep referring to the PLAN order, not the sorted
-        # order (resume + skip semantics depend on the plan index).
+        # stable original index per target object so reporter/_set_state keep
+        # referring to the PLAN order, not the sorted order (resume + skip
+        # semantics depend on the plan index). ``_done`` itself is keyed by
+        # "<target.id>:<step.id>" (id-keyed, not by this index).
         index_of = {id(t): i for i, t in enumerate(plan.targets)}
         run_start = time.time()
         order = schedule.schedule_order(plan.targets, site, twilight, run_start)

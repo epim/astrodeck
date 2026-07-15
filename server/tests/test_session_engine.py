@@ -79,6 +79,31 @@ async def test_abort_leaves_dormant_session_and_active_on_disk_midrun(sim_hub):
     assert 1 <= len(s.frames) < 6
 
 
+async def test_remaining_capture_s_reflects_id_keyed_done_counts(sim_hub):
+    """Regression (Task 3 review, Critical): ``_done`` is keyed
+    "<target.id>:<step.id>" (id-keyed — see class docstring / _target_complete),
+    but ``_remaining_capture_s`` looked it up by the retired positional
+    "ti:si" key. That lookup always misses, so completed frames were never
+    subtracted and remaining/ETA silently overcounted by every captured frame
+    for the whole run."""
+    plan = SequencePlan(name="ledger", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False, targets=[Target(
+                            name="M42", ra_hours=5.5881, dec_deg=-5.3911,
+                            center=False, autofocus_first=False,
+                            steps=[ExposureStep(filter="L", exposure_s=0.3,
+                                                count=4)])])
+    engine = SequenceEngine(sim_hub)
+    engine.start(plan)
+    # let at least 2 of the 4 frames actually record before sampling
+    assert await wait_for(lambda: engine._frames_done >= 2)
+    remaining = engine._remaining_capture_s()
+    # with 2+ of 4 frames already recorded, at most 2 frames' worth of pure
+    # capture time can still be owed — a positional-key lookup that always
+    # misses (the bug) reports ~3-4 frames' worth instead.
+    assert remaining <= 2 * 0.3 + 1e-6, remaining
+    await engine.abort()
+
+
 async def test_recover_routes_read_session_store(tmp_path, monkeypatch):
     # isolated app (mirrors tests/test_rbac_enforcement.py::_make_client)
     from astrodeck.config import ConfigStore
