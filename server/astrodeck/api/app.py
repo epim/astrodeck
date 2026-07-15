@@ -38,7 +38,8 @@ from ..auth.rbac import assert_route_capabilities, declare
 # here as nested closures: app.py imports remote.relay_client, so relay_client
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
-                     _redact_site_for, _redact_ws_event)
+                     _redact_session_for, _redact_site_for, _redact_ws_event)
+from ..persist import safe_id_path
 from ..catalog import search_catalog
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
@@ -457,6 +458,17 @@ class PlanSaveBody(BaseModel):
     plan: SequencePlan
     id: str | None = None
     overwrite: bool = False
+
+
+class SessionPatchBody(BaseModel):
+    auto_resume: bool | None = None
+    status: str | None = None            # only "abandoned" is accepted
+    plan: SequencePlan | None = None     # dormant-only full replacement (spec §4)
+
+
+class FramePatchBody(BaseModel):
+    override: str | None = None          # "accept" | "reject" | null (clear)
+    metrics: dict[str, float] | None = None
 
 
 class StartSequenceBody(SequencePlan):
@@ -1714,6 +1726,158 @@ def create_app() -> FastAPI:
             raise HTTPException(422, detail={"detail": str(e), "code": code})
         except Exception as e:
             raise HTTPException(422, detail={"detail": str(e), "code": "invalid"})
+
+    # ------------------------------------------------ multi-night sessions (§6)
+
+    @app.get("/api/sessions", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def list_sessions():
+        return {"sessions": await asyncio.to_thread(session_store.list)}
+
+    @app.get("/api/sessions/{session_id}")
+    @declare(CAP_VIEW_STATUS)
+    async def get_session(session_id: str,
+                          principal: Principal = Depends(require(CAP_VIEW_STATUS))):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        # frame-path strip for a caller lacking config.backend (spec §8) — the
+        # same endpoint==filesystem-identity rule as the driver-row redaction.
+        return _redact_session_for(s.model_dump(), principal)
+
+    @app.post("/api/sessions/{session_id}/resume",
+              dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
+    async def resume_session(session_id: str):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        if s.status != "dormant":
+            raise HTTPException(409, f"session is {s.status}, not dormant")
+        # Same unbounded accepted-quota guard as /api/sequence/start and
+        # /api/sequence/recover (Task 4 review, IMPORTANT): resume starts the
+        # engine on this same loop, so a session carrying the unbounded
+        # combination (accepted mode, both reject guards off, no stop boundary)
+        # must be refused here too — not just on the original start.
+        if quota_unbounded(s.plan):
+            raise HTTPException(
+                400,
+                "count_mode=accepted with both reject guards disabled and no "
+                "stop boundary can run unbounded — set max_consecutive_rejects, "
+                "max_consecutive_rejects_night, a stop time, or max_run_min")
+        try:
+            hub.require("camera")
+            engine.start(s.plan, session=s)
+        except DeviceError as e:
+            raise _err(e)
+        return {"resumed": True, "remaining": sum(s.remaining().values())}
+
+    @app.patch("/api/sessions/{session_id}",
+               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def patch_session(session_id: str, body: SessionPatchBody):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        merge = None
+        if body.plan is not None:
+            # id-safe plan edit (spec §4): DORMANT only; running never editable.
+            if s.status != "dormant":
+                raise HTTPException(409, "plan edits require a dormant session")
+            old_ids = {st.id for t in s.plan.targets for st in t.steps}
+            new_ids = {st.id for t in body.plan.targets for st in t.steps}
+            with_frames = {f.step_id for f in s.frames}
+            merge = {"kept": sorted(old_ids & new_ids),
+                     "new": sorted(new_ids - old_ids),
+                     "dropped": sorted((old_ids - new_ids) & with_frames)}
+            s.plan = body.plan
+            s.name = body.plan.name or s.name
+        if body.status is not None:
+            if body.status != "abandoned":
+                raise HTTPException(422, "status can only be set to 'abandoned'")
+            if s.status == "active":
+                raise HTTPException(409, "cannot abandon a running session")
+            s.status = "abandoned"
+            s.auto_resume = False
+        if body.auto_resume is not None:
+            if body.auto_resume and s.status != "dormant":
+                raise HTTPException(409, "auto-resume arms only dormant sessions")
+            if body.auto_resume:
+                # server-enforced singleton (spec §5): arming here disarms others.
+                for other in await asyncio.to_thread(session_store.load_all):
+                    if other.id != s.id and other.auto_resume:
+                        other.auto_resume = False
+                        await asyncio.to_thread(session_store.save, other)
+            s.auto_resume = body.auto_resume
+        await asyncio.to_thread(session_store.save, s)
+        out = {"id": s.id, "status": s.status, "auto_resume": s.auto_resume,
+               "remaining": s.remaining()}
+        if merge is not None:
+            out["merge"] = merge
+        return out
+
+    @app.patch("/api/sessions/{session_id}/frames/{frame_id}",
+               dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def patch_session_frame(session_id: str, frame_id: str,
+                                  body: FramePatchBody):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        if s.status == "active":
+            # regrade is a between-nights operation (spec: manual regrade UI
+            # between nights); also prevents store-vs-engine copy divergence.
+            raise HTTPException(409, "session is running — regrade between nights")
+        frame = next((f for f in s.frames if f.id == frame_id), None)
+        if frame is None:
+            raise HTTPException(404, "frame not found")
+        if "override" in body.model_fields_set:      # omitted ≠ explicit null
+            if body.override not in ("accept", "reject", None):
+                raise HTTPException(422, "override must be 'accept', 'reject' or null")
+            frame.override = body.override
+        if body.metrics is not None:
+            # float-merge: the external-grader write path (spec §10). pydantic
+            # already coerced values to float (non-numeric -> 422).
+            frame.metrics.update({k: float(v) for k, v in body.metrics.items()})
+        await asyncio.to_thread(session_store.save, s)
+        return {"frame": frame.model_dump(), "remaining": s.remaining()}
+
+    @app.delete("/api/sessions/{session_id}",
+                dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def delete_session(session_id: str):
+        try:
+            s = await asyncio.to_thread(session_store.load, session_id)
+        except KeyError:
+            raise HTTPException(404, "session not found")
+        if s.status == "active":
+            raise HTTPException(409, "cannot delete a running session")
+        # Task 6 carry-in: natural completion does NOT drain thumb renders (only
+        # abort() does), so a fire-and-forget render for THIS session may still
+        # be mid-write — and its trailing session_store.save would RESURRECT the
+        # JSON we are about to remove. Drain the matching renders before the
+        # rmtree. (The actively-running session was refused above, never here.)
+        await engine.drain_thumbs_for_session(session_id)
+        # session file + thumbs only — NEVER the FITS frames (spec §6).
+        await asyncio.to_thread(session_store.delete, session_id)
+        return {"deleted": session_id}
+
+    @app.get("/api/sessions/{session_id}/frames/{frame_id}/thumb",
+             dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def session_frame_thumb(session_id: str, frame_id: str):
+        try:
+            tdir = session_store.thumbs_dir(session_id)
+            path = safe_id_path(tdir, frame_id, suffix=".jpg")
+        except KeyError:
+            raise HTTPException(404, "not found")
+        if not path.exists():
+            raise HTTPException(404, "no thumbnail")
+        return FileResponse(path, media_type="image/jpeg")
 
     # -------------------------------------------------------------- capture
 
