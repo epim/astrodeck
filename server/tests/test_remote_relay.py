@@ -579,12 +579,15 @@ def test_tunneled_ws_streams_bus_events(tmp_path, monkeypatch):
 
 _PRECISE_LAT = 40.123456
 _PRECISE_LON = -74.654321
+_PRECISE_ELEV = 123.4
+_PRECISE_NAME = "Secret Barn"
+_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
 
 
 def _seed_precise_site(store):
     from astrodeck.config import Site
-    store.set_site(Site(name="home", latitude=_PRECISE_LAT,
-                        longitude=_PRECISE_LON, elevation_m=12.0))
+    store.set_site(Site(name=_PRECISE_NAME, latitude=_PRECISE_LAT,
+                        longitude=_PRECISE_LON, elevation_m=_PRECISE_ELEV))
 
 
 class _FixedPrincipalProvider:
@@ -619,15 +622,12 @@ async def _wait_for_frame(channel, predicate, *, timeout=5.0):
     return await asyncio.wait_for(_poll(), timeout=timeout)
 
 
-def test_tunneled_ws_coarsens_site_for_viewer(tmp_path, monkeypatch):
+def test_tunneled_ws_strips_site_for_viewer(tmp_path, monkeypatch):
     """A viewer LACKING view.site_precise: the hello AND every streamed status
-    event have site lat/lon COARSENED to 0.1 deg (the precise fix never leaks
+    event have the four precise site keys REMOVED (the precise fix never leaks
     over the relay to a viewer that lost/never had the cap)."""
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
-    coarse_lat = round(_PRECISE_LAT, 1)
-    coarse_lon = round(_PRECISE_LON, 1)
-    assert coarse_lat != _PRECISE_LAT  # rounding is observable
     set_active_provider(_FixedPrincipalProvider(principal_for_role("viewer")))
 
     async def _scenario():
@@ -639,7 +639,9 @@ def test_tunneled_ws_coarsens_site_for_viewer(tmp_path, monkeypatch):
         await asyncio.sleep(0.05)  # authorize + hello + enter loop
         from astrodeck.events import bus
         bus.publish("status",
-                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+                    site={"name": _PRECISE_NAME, "latitude": _PRECISE_LAT,
+                          "longitude": _PRECISE_LON, "elevation_m": _PRECISE_ELEV,
+                          "is_default": False, "horizon_min_deg": 15.0})
         await asyncio.sleep(0.05)
         channel.finish()
         await asyncio.wait_for(task, timeout=5.0)
@@ -647,21 +649,22 @@ def test_tunneled_ws_coarsens_site_for_viewer(tmp_path, monkeypatch):
         payloads = await _ws_data_payloads(channel)
         hello = payloads[0]
         assert hello["type"] == "hello"
-        assert hello["data"]["site"]["latitude"] == coarse_lat
-        assert hello["data"]["site"]["longitude"] == coarse_lon
-        # the duplicate copy inside the embedded config is coarsened too
-        assert hello["data"]["config"]["site"]["latitude"] == coarse_lat
+        for k in _STRIP_KEYS:
+            assert k not in hello["data"]["site"]
+            assert k not in hello["data"]["config"]["site"]
+        assert "horizon_min_deg" in hello["data"]["site"]
         status = [p for p in payloads if p["type"] == "status"]
         assert status, "expected a status event"
-        assert status[0]["data"]["site"]["latitude"] == coarse_lat
-        assert status[0]["data"]["site"]["longitude"] == coarse_lon
+        for k in _STRIP_KEYS:
+            assert k not in status[0]["data"]["site"]
+        assert "horizon_min_deg" in status[0]["data"]["site"]
 
     asyncio.run(_scenario())
 
 
 def test_tunneled_ws_precise_site_for_holder(tmp_path, monkeypatch):
     """A viewer HOLDING view.site_precise: the hello AND every streamed event
-    carry FULL-precision site coords, byte-for-byte (no coarsening)."""
+    carry FULL-precision site coords, byte-for-byte (no strip)."""
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
     holder = Principal(role="viewer", email=None,
@@ -678,7 +681,9 @@ def test_tunneled_ws_precise_site_for_holder(tmp_path, monkeypatch):
         await asyncio.sleep(0.05)
         from astrodeck.events import bus
         bus.publish("status",
-                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+                    site={"name": _PRECISE_NAME, "latitude": _PRECISE_LAT,
+                          "longitude": _PRECISE_LON, "elevation_m": _PRECISE_ELEV,
+                          "is_default": False, "horizon_min_deg": 15.0})
         await asyncio.sleep(0.05)
         channel.finish()
         await asyncio.wait_for(task, timeout=5.0)
@@ -686,6 +691,7 @@ def test_tunneled_ws_precise_site_for_holder(tmp_path, monkeypatch):
         payloads = await _ws_data_payloads(channel)
         hello = payloads[0]
         assert hello["data"]["site"]["latitude"] == _PRECISE_LAT
+        assert hello["data"]["site"]["name"] == _PRECISE_NAME
         assert hello["data"]["config"]["site"]["latitude"] == _PRECISE_LAT
         status = [p for p in payloads if p["type"] == "status"]
         assert status and status[0]["data"]["site"]["latitude"] == _PRECISE_LAT
@@ -762,14 +768,13 @@ def test_tunneled_ws_revoked_midstream_closes_4401(tmp_path, monkeypatch):
     asyncio.run(_scenario())
 
 
-def test_tunneled_ws_downgrade_midstream_coarsens(tmp_path, monkeypatch):
+def test_tunneled_ws_downgrade_midstream_strips(tmp_path, monkeypatch):
     """A viewer that stays valid (keeps view.status) but LOSES view.site_precise
-    mid-stream: events AFTER the downgrade recheck become coarsened, even though
+    mid-stream: events AFTER the downgrade recheck are stripped, even though
     earlier events were full-precision -- redaction tracks the refreshed caps."""
     monkeypatch.setattr(redact_module, "WS_AUTH_RECHECK_S", 0.05)
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
-    coarse_lat = round(_PRECISE_LAT, 1)
     holder = Principal(role="viewer", email=None,
                        caps=frozenset({CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE}),
                        jti=None)
@@ -786,14 +791,18 @@ def test_tunneled_ws_downgrade_midstream_coarsens(tmp_path, monkeypatch):
         await asyncio.sleep(0.03)  # authorize + hello + enter loop
         # event BEFORE downgrade -> full precision
         bus.publish("status",
-                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+                    site={"name": _PRECISE_NAME, "latitude": _PRECISE_LAT,
+                          "longitude": _PRECISE_LON, "elevation_m": _PRECISE_ELEV,
+                          "is_default": False, "horizon_min_deg": 15.0})
         await asyncio.sleep(0.03)
         # downgrade: drop view.site_precise but keep view.status (still allowed)
         prov.principal = principal_for_role("viewer")
         await asyncio.sleep(0.15)  # let >=1 recheck refresh the cached principal
-        # event AFTER downgrade -> coarsened
+        # event AFTER downgrade -> stripped
         bus.publish("status",
-                    site={"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON})
+                    site={"name": _PRECISE_NAME, "latitude": _PRECISE_LAT,
+                          "longitude": _PRECISE_LON, "elevation_m": _PRECISE_ELEV,
+                          "is_default": False, "horizon_min_deg": 15.0})
         await asyncio.sleep(0.05)
         channel.finish()
         await asyncio.wait_for(task, timeout=5.0)
@@ -802,7 +811,7 @@ def test_tunneled_ws_downgrade_midstream_coarsens(tmp_path, monkeypatch):
         status = [p for p in payloads if p["type"] == "status"]
         assert len(status) >= 2, "expected a pre- and post-downgrade status event"
         assert status[0]["data"]["site"]["latitude"] == _PRECISE_LAT   # before
-        assert status[-1]["data"]["site"]["latitude"] == coarse_lat    # after
+        assert "latitude" not in status[-1]["data"]["site"]            # after
 
     asyncio.run(_scenario())
 
