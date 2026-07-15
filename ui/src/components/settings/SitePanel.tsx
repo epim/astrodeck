@@ -289,25 +289,39 @@ export default function SitePanel(): JSX.Element {
       await refreshLocations();
       setSelectedId(loc.id);
       setBaseline(loc);
+      // sync the Site-name draft to the saved location's stored name so the
+      // form compares clean against the new baseline (the prompt name and the
+      // Site-name field routinely differ — e.g. blank field + default name).
+      setName(loc.name);
       setSavingName(null);
       showToast("success", `Saved location "${loc.name}"`);
     } catch (e) {
       if (e instanceof ApiError && e.code === "name_collision") {
-        const existing = locations.find(
-          (l) => l.name.trim().toLowerCase() === locName.trim().toLowerCase(),
-        );
         const ok = await confirmDialog({
           title: `A location named "${locName}" already exists`,
           body: "Overwrite it with the current coordinates?",
           tone: "warn",
           confirmLabel: "Overwrite",
         });
-        if (ok && existing) {
+        if (ok) {
+          // The 409 detail carries the existing location's id — the server's
+          // authoritative overwrite target. Never re-derive it client-side by
+          // name (JS toLowerCase() != the server's casefold()), and never
+          // no-op silently after the user confirmed an overwrite.
+          if (!e.id) {
+            showToast(
+              "error",
+              "Couldn't identify the existing location — refresh and retry",
+            );
+            return;
+          }
           try {
-            const loc = await updateLocation(existing.id, input);
+            const loc = await updateLocation(e.id, input);
             await refreshLocations();
             setSelectedId(loc.id);
             setBaseline(loc);
+            // same baseline sync as the create path above.
+            setName(loc.name);
             setSavingName(null);
             showToast("success", "Location updated");
           } catch (e2) {
