@@ -72,6 +72,12 @@ class SequencePlan(BaseModel):
     meridian_flip: bool = True         # flip a German mount when past the meridian
     recover_guiding: bool = True       # restart guiding if the star is lost
     hfr_reject_factor: float = 0.0     # warn when a frame's HFR exceeds factor × running median (0 = off)
+    # --- multi-night quota mode (sessions spec §3; defaults preserve behavior) ---
+    count_mode: str = "attempts"             # "attempts" | "accepted"
+    min_stars: int = 0                       # star-count floor (0 = off)
+    max_guide_rms: float = 0.0               # guide-RMS ceiling, arcsec (0 = off)
+    max_consecutive_rejects: int = 10        # per-STEP consecutive guard (0 = off)
+    max_consecutive_rejects_night: int = 20  # per-NIGHT guard, crosses targets (0 = off)
     # unattended safety (Batch 4b; global safety/escalation live in config.py —
     # the plan carries only a master toggle + the meridian-flip warning lead time)
     safety_check: bool = True          # honor the configured SafetyMonitor + floor
