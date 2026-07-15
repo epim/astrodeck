@@ -215,30 +215,47 @@ class SessionStore:
 session_store = SessionStore()
 
 
+def _safe_unlink(path: Path) -> None:
+    """``path.unlink(missing_ok=True)`` that also swallows ``OSError`` (a
+    locked/AV-held file on Windows) — legacy-file cleanup must never crash
+    the boot migration, on any exit path."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def migrate_legacy_resume() -> Session | None:
     """One-shot boot migration of the retired ``.sequence_resume.json`` (spec
     §2): positional ``"ti:si"`` counts map onto the ids pydantic backfills
     during plan validation (position-preserving), synthesized as N accepted
     placeholder frames per step so ``done_map()`` seeds a resume at the exact
-    same counts. The legacy file is deleted afterward (even when unparseable —
-    it is single-slot garbage either way)."""
+    same counts. The legacy file is deleted afterward on every exit path —
+    even when unparseable — it is single-slot garbage either way, and this
+    function must never raise on a corrupt legacy file. A bad top-level
+    ``ts`` falls back to ``now()``; a bad individual ``done`` entry (bad key
+    or non-numeric count) is skipped and the rest of the migration proceeds."""
     legacy = _hubmod.CAPTURE_DIR / ".sequence_resume.json"
     try:
         raw = json.loads(legacy.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
-        legacy.unlink(missing_ok=True)
+        _safe_unlink(legacy)
         return None
     try:
         plan = SequencePlan.model_validate(raw.get("plan") or {})
     except Exception:
-        legacy.unlink(missing_ok=True)
+        _safe_unlink(legacy)
         return None
     report_id = str(raw.get("report_id") or "")
     now = time.time()
+    try:
+        created_ts = float(raw.get("ts") or now)
+    except (TypeError, ValueError):
+        created_ts = now
     s = Session(name=plan.name or "Tonight",
-                created_ts=float(raw.get("ts") or now), updated_ts=now,
+                created_ts=created_ts, updated_ts=now,
                 status="dormant", plan=plan,
                 nights=[report_id] if report_id else [])
     for key, count in (raw.get("done") or {}).items():
@@ -246,15 +263,13 @@ def migrate_legacy_resume() -> Session | None:
             ti, si = (int(x) for x in str(key).split(":", 1))
             target = plan.targets[ti]
             step = target.steps[si]
-        except (ValueError, IndexError):
+            n = int(count)
+        except (TypeError, ValueError, IndexError):
             continue
-        for _ in range(int(count)):
+        for _ in range(n):
             s.frames.append(SessionFrame(
                 ts=now, night=report_id, target_id=target.id,
                 step_id=step.id, path="", auto_accepted=True))
     session_store.save(s)
-    try:
-        legacy.unlink(missing_ok=True)
-    except OSError:
-        pass
+    _safe_unlink(legacy)
     return s
