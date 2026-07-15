@@ -46,9 +46,25 @@ export default function SitePanel(): JSX.Element {
   const [elev, setElev] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // Seed drafts from config.site whenever the version changes (initial load +
-  // after a save that bumps version) — not on every render, so in-flight edits
-  // survive an unrelated config event.
+  // Seed drafts from the PERSISTED site fields only (SafetyPanel idiom):
+  // config.version is a global counter bumped by EVERY config mutation
+  // (drivers, optics, safety, ...), so keying the reseed on it would reset
+  // in-flight edits whenever anything unrelated changed. Instead the effect
+  // keys on a signature of exactly the fields this form seeds from — it
+  // reseeds when the SITE actually changed (initial load + after our own
+  // successful save) and leaves drafts alone on unrelated config bumps.
+  // Stripped fields (no view.site_precise) serialize as null, so a cap change
+  // that adds/removes them also reseeds correctly.
+  const site = config?.site;
+  const siteSig = site
+    ? JSON.stringify([
+        site.name ?? null,
+        site.latitude ?? null,
+        site.longitude ?? null,
+        site.elevation_m ?? null,
+        site.is_default,
+      ])
+    : null;
   useEffect(() => {
     const s = config?.site;
     if (!s) return;
@@ -65,7 +81,7 @@ export default function SitePanel(): JSX.Element {
     }
     if (typeof s.elevation_m === "number") setElev(String(s.elevation_m));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.version]);
+  }, [siteSig]);
 
   // A generic action runner (DriversPanel idiom): busy + optional success toast,
   // 403 -> capability message. Save has its own handler (409 is special).
@@ -177,7 +193,12 @@ export default function SitePanel(): JSX.Element {
       showToast("success", "Filled from mount GPS — review and save");
     });
 
+  // All four seeded fields (name/lat/lon/elevation) are strippable for
+  // principals lacking view.site_precise — gate every placeholder, not just
+  // the coordinates, so the "Hidden" affordance is consistent.
   const coordPlaceholder = canSeePrecise ? "0.000000" : "Hidden";
+  const namePlaceholder = canSeePrecise ? "[SITE-LABEL]" : "Hidden";
+  const elevPlaceholder = canSeePrecise ? "0" : "Hidden";
 
   return (
     <Panel title="Observing Site">
@@ -198,7 +219,7 @@ export default function SitePanel(): JSX.Element {
             value={name}
             disabled={!canEdit}
             onChange={(e) => setName(e.target.value)}
-            placeholder="[SITE-LABEL]"
+            placeholder={namePlaceholder}
           />
         </Field>
 
@@ -257,7 +278,7 @@ export default function SitePanel(): JSX.Element {
             value={elev}
             disabled={!canEdit}
             onChange={(e) => setElev(e.target.value)}
-            placeholder="0"
+            placeholder={elevPlaceholder}
             aria-label="Elevation in metres"
           />
         </Field>
