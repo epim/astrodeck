@@ -433,7 +433,8 @@ class SequenceEngine:
         # review, Important #1: no orphaned renders / "destroyed but pending"
         # warnings at interpreter exit).
         await self._drain_thumb_tasks()
-        self._set_state(state="aborted", detail="sequence aborted", schedule=None)
+        self._set_state(state="aborted", detail="sequence aborted", schedule=None,
+                        session=None)
 
     async def _drain_thumb_tasks(self) -> None:
         """Cancel and await every in-flight thumbnail render (Task 6 review,
@@ -444,6 +445,29 @@ class SequenceEngine:
         if not self._thumb_tasks:
             return
         pending = list(self._thumb_tasks)
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self._thumb_tasks.difference_update(pending)
+
+    async def drain_thumbs_for_session(self, session_id: str) -> None:
+        """Cancel + await any in-flight thumb renders writing into
+        ``session_id`` (Task 7 DELETE race). Natural completion — unlike
+        ``abort()`` — does NOT drain thumb tasks, so a render can still be
+        mid-write when the DELETE route rmtree's the thumbs dir; worse, the
+        render's trailing ``session_store.save`` would RESURRECT the JSON we
+        are about to delete. The DELETE route calls this BEFORE removing
+        anything. Only ever drains renders left from a finished/dormant run —
+        the actively-running session is 409'd by the route, never deleted.
+
+        Cancelling before the render's next ``await`` means it never reaches the
+        save (``CancelledError`` is a ``BaseException``, uncaught by the render's
+        ``except Exception``); a render already past its last await completes,
+        and ``gather`` waits for it, so the save-then-delete order can't race."""
+        pending = [t for t in list(self._thumb_tasks)
+                   if getattr(t, "_astro_session_id", None) == session_id]
+        if not pending:
+            return
         for t in pending:
             t.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
@@ -488,6 +512,20 @@ class SequenceEngine:
         # re-publishes it and the dispatcher fires "Run started" on every frame).
         # Pop it before merging and add it ONLY to this single publish payload.
         first_running = kw.pop("_first_running", False)
+        # session sub-state (sessions spec §6): {id, name, count_mode, accepted,
+        # target}, cleared with the same explicit-None semantics as `schedule`
+        # so it never outlives the run (terminal transitions pass session=None).
+        if "session" in kw and kw["session"] is None:
+            kw = {k: v for k, v in kw.items() if k != "session"}
+            self.state.pop("session", None)
+        elif self._session is not None and self.plan is not None:
+            kw.setdefault("session", {
+                "id": self._session.id,
+                "name": self._session.name,
+                "count_mode": getattr(self.plan, "count_mode", "attempts"),
+                "accepted": self._session.total_accepted(),
+                "target": kw.get("target", self.state.get("target")),
+            })
         # schedule=None is an explicit CLEAR (wave-3 §2): the waiting sub-state
         # must not outlive the wait it describes (GET /api/sequence/state and the
         # monitor snapshot both serve this dict verbatim).
@@ -576,7 +614,8 @@ class SequenceEngine:
                         and cfg.escalation.cooling_action == "skip"):
                     self._set_state(state="complete",
                                     detail="skipped: camera did not reach target temp",
-                                    end_reason="cooling_skip", schedule=None)
+                                    end_reason="cooling_skip", schedule=None,
+                                    session=None)
                     bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
                                        "required but not reached", "sequence")
                     self._finalize_report("cooling_skip")
@@ -589,12 +628,13 @@ class SequenceEngine:
                 # the scheduler ran out of open windows (every remaining target's
                 # window closed / never rose) — finalize as a dawn cutoff (§1.9-C).
                 self._set_state(state="complete", detail="stopped at dawn (windows closed)",
-                                end_reason="dawn_cutoff", schedule=None)
+                                end_reason="dawn_cutoff", schedule=None, session=None)
                 bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
                                 f"{self._frames_done} frames", "sequence")
                 self._finalize_report("dawn_cutoff")
             else:
-                self._set_state(state="complete", detail="all targets complete", schedule=None)
+                self._set_state(state="complete", detail="all targets complete",
+                                schedule=None, session=None)
                 bus.log("info", f"sequence '{plan.name}' complete: {self._frames_done} frames"
                                 + (f", {self._rejected} flagged" if self._rejected else ""),
                         "sequence")
@@ -609,7 +649,8 @@ class SequenceEngine:
             # so the inner park/warm finishes before we re-raise (§1.9-G "completes
             # before cancellation takes effect").
             bus.log("error", f"sequence stopped (unsafe): {e}", "sequence")
-            self._set_state(state="aborted", detail=str(e), end_reason="unsafe", schedule=None)
+            self._set_state(state="aborted", detail=str(e), end_reason="unsafe",
+                            schedule=None, session=None)
             self._finalize_report("unsafe")
             wind = asyncio.ensure_future(self._wind_down(
                 park=True,
@@ -634,7 +675,7 @@ class SequenceEngine:
                              "(clouds?)", "sequence")
             self._set_state(state="complete",
                             detail="stopped early: consecutive quality rejects",
-                            end_reason="quality", schedule=None)
+                            end_reason="quality", schedule=None, session=None)
             self._finalize_report("quality")
             await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
         except asyncio.CancelledError:
@@ -644,7 +685,7 @@ class SequenceEngine:
             raise
         except Exception as e:
             bus.log("error", f"sequence failed: {e}", "sequence")
-            self._set_state(state="error", detail=str(e), schedule=None)
+            self._set_state(state="error", detail=str(e), schedule=None, session=None)
             await self._safe_stop()
             self._finalize_report("error")
         finally:
@@ -1656,6 +1697,11 @@ class SequenceEngine:
             task = asyncio.create_task(self._render_thumb(self._session, sf, data))
         except RuntimeError:
             return                            # no running loop (defensive)
+        # Tag the render with its session id so DELETE (Task 7) can drain ONLY
+        # the renders writing into the session being removed — a natural
+        # completion leaves these fire-and-forget tasks live (only abort()
+        # drains), and their trailing save would resurrect a just-deleted JSON.
+        task._astro_session_id = self._session.id
         self._thumb_tasks.add(task)
         task.add_done_callback(self._thumb_tasks.discard)
 

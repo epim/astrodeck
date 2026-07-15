@@ -130,11 +130,34 @@ def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
     return {**payload, "drivers": scrubbed}
 
 
+# ---------------------------------------------------- session frame-path redaction
+def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
+    """Strip the filesystem ``path`` from every session-ledger frame unless the
+    caller holds ``config.backend`` (sessions spec §8) — the same holder rule
+    as ``_redact_drivers_for``: endpoint identity == filesystem identity.
+    Copies rows; never mutates ``payload`` in place."""
+    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return payload
+    scrubbed = []
+    for row in frames:
+        if isinstance(row, dict):
+            row = dict(row)
+            row.pop("path", None)
+        scrubbed.append(row)
+    return {**payload, "frames": scrubbed}
+
+
 __all__ = [
     "WS_AUTH_RECHECK_S",
     "_redact_site_for",
     "_redact_ws_event",
     "_redact_drivers_for",
+    "_redact_session_for",
     "_coarsen_latlon",
     "_SITE_LATLON_KEYS",
 ]
