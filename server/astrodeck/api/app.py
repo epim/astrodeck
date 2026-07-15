@@ -27,7 +27,7 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
-                    CAP_VIEW_PREVIEW, CAP_VIEW_STATUS,
+                    CAP_VIEW_PREVIEW, CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
                     Principal, _scope_is_remote,
                     configure_provider_from_auth, get_principal, require,
                     resolve_principal)
@@ -1070,8 +1070,9 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     @declare(CAP_VIEW_STATUS)
     async def status(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
-        # ``require`` returns the resolved principal so we can coarsen the site
-        # fix for callers lacking view.site_precise (viewer/operator).
+        # ``require`` returns the resolved principal so we can strip the precise
+        # site fix (name/lat/lon/elevation_m -- made ABSENT, not nulled) for
+        # callers lacking view.site_precise (viewer/operator).
         return _redact_site_for(await hub.poll_status(), principal)
 
     @app.get("/api/summary")
@@ -1096,12 +1097,13 @@ def create_app() -> FastAPI:
     # ``view.site_precise`` (admin-only; EXCLUDED from viewer/operator) is the
     # access-control decision for the observatory's EXACT GPS fix. The serving
     # payloads (poll_status / summary / redacted config) are built without a
-    # principal, so we coarsen at the seam: any principal LACKING the cap sees
-    # lat/lon rounded to ~0.1 deg (~11 km -- enough to place the sky region for
-    # altaz sanity, but not the operator's home), while a holder gets full
-    # precision. This is the ONLY place the cap is enforced, so every precise-site
-    # surface (REST status/summary/config + the WS hello frame and status pushes)
-    # must route through here. The helpers (_redact_site_for / _redact_ws_event)
+    # principal, so we STRIP at the seam: any principal LACKING the cap has the
+    # four precise-site keys (name, latitude, longitude, elevation_m) REMOVED
+    # (absent, not nulled) while is_default/horizon_min_deg are retained (the UI
+    # needs both and neither reveals location), and a holder gets the full block.
+    # This is the ONLY place the cap is enforced, so every precise-site surface
+    # (REST status/summary/config + the WS hello frame and status pushes) must
+    # route through here. The helpers (_redact_site_for / _redact_ws_event)
     # are imported from .redact at module scope -- shared with the relay-tunneled
     # /ws handler so both /ws lanes redact identically.
 
@@ -1383,9 +1385,10 @@ def create_app() -> FastAPI:
     async def post_optics(body: OpticsSaveBody):
         return await put_optics(body)
 
-    @app.get("/api/site/sky", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/site/sky")
     @declare(CAP_VIEW_STATUS)
-    async def site_sky(lat: float | None = None, lon: float | None = None):
+    async def site_sky(lat: float | None = None, lon: float | None = None,
+                       principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         from ..catalog import coords
         s = config_store.cfg().site
         latitude = s.latitude if lat is None else lat
@@ -1393,15 +1396,20 @@ def create_app() -> FastAPI:
         sun = coords.sun_altaz(latitude, longitude)
         sun_alt = sun[0] if isinstance(sun, (tuple, list)) else float(sun)
         window = coords.dark_window(latitude, longitude)
-        place_fn = getattr(coords, "place_hint", None)
-        hint = place_fn(latitude, longitude) if callable(place_fn) \
-            else _place_hint(latitude, longitude)
-        return {
+        out = {
             "sun_alt_deg": round(sun_alt, 1),
             "dark_window": window,
-            "place_hint": hint,
-            "lst_str": coords.format_ra(coords.lst_hours(longitude)),
         }
+        # place_hint (names the region) and lst_str (LST == longitude) are direct
+        # geolocators; a non-holder keeps the ephemeris (sun alt + dark window)
+        # but not these two (spec §2). Holder gets everything.
+        if principal.has(CAP_VIEW_SITE_PRECISE):
+            place_fn = getattr(coords, "place_hint", None)
+            hint = place_fn(latitude, longitude) if callable(place_fn) \
+                else _place_hint(latitude, longitude)
+            out["place_hint"] = hint
+            out["lst_str"] = coords.format_ra(coords.lst_hours(longitude))
+        return out
 
     # ------------------------------------------------------------------- safety
 
@@ -2914,11 +2922,12 @@ def create_app() -> FastAPI:
     # retired cap, or reaches a motion sink without control.mount. The SPA
     # catch-all + the open auth-login dance are exempt. This runs LAST so every
     # route (incl. the included routers) is present when it enumerates.
-    # The two atlas POST routes (/api/framing/mosaic, /api/visibility/order) are
-    # pure STATELESS COMPUTE owned by the Sky-Atlas lanes -- they take a structured
-    # body (hence POST) but mutate NO server state and command NO device, so they
-    # are read-equivalent and exempt from the mutating-cap requirement. (A future
-    # pass can gate them view.status in their own modules; the seam is noted.)
+    # /api/framing/mosaic is pure STATELESS COMPUTE owned by the Sky-Atlas lane --
+    # it takes a structured body (hence POST) but mutates NO server state and
+    # commands NO device, so it is read-equivalent and exempt from the
+    # mutating-cap requirement. (/api/visibility/order, the other atlas POST, is
+    # NOT exempt -- catalog/visibility.py now gates it with view.status like any
+    # other read surface, so it declares a real capability and passes normally.)
     #
     # The whole ``/auth`` prefix is owned by the provider lane's auth/routes.py
     # (the OIDC login dance + self-revoke logout + fail-closed /auth/me). Those
@@ -2927,8 +2936,7 @@ def create_app() -> FastAPI:
     # the prefix is exempt from this app-side mutating-cap assertion.
     assert_route_capabilities(
         app,
-        exempt_paths={"/{path:path}", "/api/framing/mosaic",
-                      "/api/visibility/order"},
+        exempt_paths={"/{path:path}", "/api/framing/mosaic"},
         exempt_prefixes=("/assets", "/auth"))
 
     return app

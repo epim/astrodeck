@@ -29,7 +29,7 @@ import time
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 import astropy.units as u
@@ -45,6 +45,8 @@ from astropy.coordinates import (
 from astropy.coordinates.baseframe import NonRotationTransformationWarning
 from astropy.time import Time
 
+from ..auth import CAP_VIEW_STATUS, require
+from ..auth.rbac import declare
 from ..hub import hub
 
 router = APIRouter()
@@ -507,7 +509,8 @@ def transit_alt_for(
 
 # ----------------------------------------------------------------- routes
 
-@router.get("/api/visibility")
+@router.get("/api/visibility", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+@declare(CAP_VIEW_STATUS)
 async def get_visibility(
     ra: float = Query(..., ge=0, lt=24),
     dec: float = Query(..., ge=-90, le=90),
@@ -527,7 +530,9 @@ async def get_visibility(
         alt_limit=alt_limit)
 
 
-@router.post("/api/visibility/order")
+@router.post("/api/visibility/order",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+@declare(CAP_VIEW_STATUS)
 async def post_order(body: OrderBody):
     """Annotate each target with its visibility and return a group-atomic
     ``recommended_order`` (indices into the request list).
