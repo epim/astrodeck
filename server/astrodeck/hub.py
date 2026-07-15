@@ -881,6 +881,49 @@ class Hub:
         except Exception as e:
             bus.log("warning", f"could not push site to mount: {e}", "config")
 
+    async def read_site_from_mount(self) -> dict:
+        """Best-effort READ-BACK of the mount's GPS fix (site lat/lon/elevation)
+        from a connected Alpaca telescope — the first read on the site<->mount
+        channel (push_site_to_mount is push-only). ASSIST ONLY: the result fills
+        the Settings form draft; nothing is persisted here.
+
+        Always returns a dict; NEVER raises. ``available: false`` with a human
+        ``detail`` when: no mount connected, the mount is not Alpaca-backed (no
+        ``_get``), any property read fails, the mount reports exactly (0.0, 0.0)
+        (unset-GPS sentinel), or any value is non-finite (NaN/inf) or out of the
+        Site model's ranges (lat +-90, lon +-180, elevation -430..9000 — some
+        mounts return junk like 99.0/181.0 when unset). Logs OUTCOME ONLY, never
+        coordinate values (spec §8)."""
+        import math
+        tel = self.devices.get("telescope")
+        if not (tel and tel.connected):
+            return {"available": False, "detail": "No mount connected"}
+        get = getattr(tel, "_get", None)
+        if get is None:
+            return {"available": False,
+                    "detail": "Mount does not support GPS read-back"}
+        try:
+            lat = float(await get("sitelatitude"))
+            lon = float(await get("sitelongitude"))
+            elev = float(await get("siteelevation"))
+        except Exception:
+            bus.log("warning", "could not read site from mount", "config")
+            return {"available": False,
+                    "detail": "Could not read GPS from mount"}
+        if not (math.isfinite(lat) and math.isfinite(lon) and math.isfinite(elev)):
+            return {"available": False,
+                    "detail": "Mount returned invalid (non-finite) coordinates"}
+        if lat == 0.0 and lon == 0.0:
+            return {"available": False,
+                    "detail": "Mount reports 0,0 — GPS likely unset"}
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+                and -430.0 <= elev <= 9000.0):
+            return {"available": False,
+                    "detail": "Mount returned out-of-range coordinates"}
+        bus.log("info", "read observing site from mount", "config")
+        return {"available": True, "latitude": lat, "longitude": lon,
+                "elevation_m": elev}
+
     def _check_horizon(self, ra_hours: float, dec_deg: float, *, force: bool = False) -> None:
         """Server-side below-horizon guard (defense in depth). Inert on a default
         site; blocks only ``alt < 0`` (the visible horizon) on a real site. Called

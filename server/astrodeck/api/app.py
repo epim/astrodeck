@@ -1364,6 +1364,20 @@ def create_app() -> FastAPI:
                         principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         return await put_site(body, principal)
 
+    @app.get("/api/site/mount-gps")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def site_mount_gps(
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        """Best-effort read-back of the connected mount's GPS fix. config.site_optics
+        (the cap that may WRITE the site). Always 200; the body's ``available``
+        flag + ``detail`` carry unavailability. ASSIST ONLY — the UI fills the
+        draft; the user saves explicitly via PUT /api/site."""
+        read = getattr(hub, "read_site_from_mount", None)
+        if not callable(read):
+            return {"available": False,
+                    "detail": "Mount GPS read-back unavailable"}
+        return await read()
+
     @app.put("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
     @declare(CAP_CONFIG_SITE_OPTICS)
     async def put_optics(body: OpticsSaveBody):
