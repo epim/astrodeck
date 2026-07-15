@@ -86,6 +86,22 @@ test("empty sourceSteps clears members to []", () => {
   assert(Array.isArray(out[1].steps) && out[1].steps.length === 0, "p2 cleared to []");
 });
 
+// --- 5. sessions spec §1: clones must get FRESH step ids — a copied id would
+//     alias two steps in the session ledger and double-count their quota.
+test("clones get FRESH unique step ids (never the source's)", () => {
+  const src = [step(), step()];
+  src[0].id = "src-a";
+  src[1].id = "src-b";
+  const p1 = target({ name: "A", mosaic_group: "G", steps: [] });
+  const p2 = target({ name: "B", mosaic_group: "G", steps: [] });
+  const out = applyStepsToGroup([p1, p2], "G", src);
+
+  const ids = out.flatMap((t) => t.steps.map((s) => s.id));
+  assert(ids.every((id) => !!id), "every clone has an id");
+  assert(!ids.includes("src-a") && !ids.includes("src-b"), "source ids not reused");
+  assert(new Set(ids).size === ids.length, "all clone ids unique");
+});
+
 console.log(`planGroups.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
   failures.forEach((f) => console.error(f));
