@@ -136,6 +136,12 @@ class StopTarget(Exception):
     skip-ahead loop, marks the target skipped, and moves on (§1.9-C)."""
 
 
+class NightQualityStop(Exception):
+    """Per-night consecutive-reject guard tripped (spec §3): end the night
+    early -> session dormant, ``end_reason="quality"``. Caught in ``_run`` as
+    its own terminal arm (like SafetyAbort) — never treated as an error."""
+
+
 class SequenceEngine:
     def __init__(self, hub: Hub):
         self.hub = hub
@@ -153,6 +159,7 @@ class SequenceEngine:
         self._last_focus_temp: float | None = None
         self._recent_hfr: list[float] = []
         self._rejected = 0
+        self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
         # Meridian-flip arming latch. A GEM flip is owed only when a target is
         # tracked from EAST across the meridian; a target acquired already-west
         # was slewed counterweight-down on the correct side and needs no flip.
@@ -229,6 +236,7 @@ class SequenceEngine:
         self._last_focus_temp = None
         self._recent_hfr = []
         self._rejected = 0
+        self._night_rejects = 0
         self._flip_armed = False
         self._paused.set()
         self._started_at = time.time()
@@ -585,6 +593,17 @@ class SequenceEngine:
                     break
             if cancelled:
                 raise asyncio.CancelledError()
+        except NightQualityStop as e:
+            # per-night reject guard (spec §3): end the night early — the same
+            # complete+end_reason terminal shape as dawn_cutoff, alerting via
+            # the existing log→dispatcher path (error level reaches all sinks).
+            bus.log("error", f"sequence '{plan.name}' stopped early — {e} "
+                             "(clouds?)", "sequence")
+            self._set_state(state="complete",
+                            detail="stopped early: consecutive quality rejects",
+                            end_reason="quality", schedule=None)
+            self._finalize_report("quality")
+            await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
         except asyncio.CancelledError:
             bus.log("warning", "sequence aborted", "sequence")
             await self._safe_stop()
@@ -939,7 +958,7 @@ class SequenceEngine:
                 info = await self._capture(step, target)
                 # calibration frames always record + advance (no quality gate on
                 # darks/bias/flats) — but they still go in the report.
-                accepted = self._check_quality(info)
+                accepted = self._check_quality(info, calibration=True)
                 self._reporter_record(target, step, info, accepted=accepted)
                 if accepted:
                     self._record_frame(key, i, target, step, info)
@@ -951,11 +970,25 @@ class SequenceEngine:
         plan = self.plan
         assert plan is not None
         key = f"{target.id}:{step.id}"
-        if self._done.get(key, 0) >= step.count:
+        # accepted-frame quota mode (spec §3): the predicate is the LEDGER's
+        # effective-accepted count, not the attempt index. Attempts are
+        # unbounded within the night; window/dawn/max_run still end it.
+        quota = plan.count_mode == "accepted" and not target.calibration
+
+        def _quota_met() -> bool:
+            return (self._session is not None
+                    and self._session.accepted(step.id) >= step.count)
+
+        if quota:
+            if _quota_met():
+                return
+        elif self._done.get(key, 0) >= step.count:
             return
         await self._apply_filter(step)
 
-        for i in range(self._done.get(key, 0), step.count):
+        step_rejects = 0                 # per-step consecutive guard (spec §3)
+        i = self._done.get(key, 0)
+        while (not _quota_met()) if quota else (i < step.count):
             await self._checkpoint()
             # stop the target the instant its FROZEN window closes (dawn / stop_mode
             # time / max_run_min) — checked between frames so the in-flight exposure
@@ -988,25 +1021,51 @@ class SequenceEngine:
                 self._frame_had_event = True
 
             self._begin_frame(ti, si, step.exposure_s)
+            shown = (self._session.accepted(step.id) + 1
+                     if quota and self._session is not None else i + 1)
             self._set_state(state="running",
                             detail=f"{target.name}: {step.filter or 'no filter'} "
-                                   f"{step.exposure_s:g}s  [{i + 1}/{step.count}]")
+                                   f"{step.exposure_s:g}s  [{shown}/{step.count}]")
             info = await self._capture(step, target)
             self._frames_since_dither += 1
             self._frames_since_focus += 1
             # quality-before-record (§1.9-D, C2-8): decide accept BEFORE _done
-            # advances so a rejected/retaken frame can unlink its FITS and the
-            # _done slot stays consistent. EVERY frame goes in the report.
+            # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
             self._reporter_record(target, step, info, accepted=accepted)
             if accepted:
+                step_rejects = 0
+                self._night_rejects = 0            # resets on ANY accepted frame
                 self._record_frame(key, i, target, step, info)
-            else:
-                # _handle_reject returns True when it consumed the slot (discard /
-                # retake-then-discard); False to fall through to a normal record
-                # (warn — frame is kept).
-                if not await self._handle_reject(info, key, i, target, step):
-                    self._record_frame(key, i, target, step, info, accepted=False)
+                i += 1
+                continue
+            if quota:
+                # accepted mode (spec §3): rejects are ALWAYS kept on disk and
+                # ledger-recorded (regrading needs the file) — escalation's
+                # hfr_reject_action applies to attempts mode ONLY. _done does
+                # not advance; the frame still needs cadence bookkeeping so it
+                # can't pollute the next frame's overhead sample.
+                self._record_session_frame(target, step, info,
+                                           auto_accepted=False)
+                self._end_discarded_frame()
+                step_rejects += 1
+                self._night_rejects += 1
+                if plan.max_consecutive_rejects_night \
+                        and self._night_rejects >= plan.max_consecutive_rejects_night:
+                    raise NightQualityStop(
+                        f"{self._night_rejects} consecutive rejects across targets")
+                if plan.max_consecutive_rejects \
+                        and step_rejects >= plan.max_consecutive_rejects:
+                    bus.log("warning",
+                            f"{target.name}: {step_rejects} consecutive rejects — "
+                            "skipping to the next step (shortfall stays in the "
+                            "ledger for another night)", "sequence")
+                    return
+                continue
+            # attempts mode: legacy escalation path (warn / discard / retake).
+            if not await self._handle_reject(info, key, i, target, step):
+                self._record_frame(key, i, target, step, info, accepted=False)
+            i += 1
 
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
@@ -1754,43 +1813,56 @@ class SequenceEngine:
                 return True
         return False
 
-    def _check_quality(self, info: dict, *, record: bool = True) -> bool:
-        """Return whether a frame is ACCEPTED (kept) per the HFR-median gate.
+    def _guide_rms(self) -> float | None:
+        """Current total guide RMS (arcsec) or None when unguided/unreadable."""
+        try:
+            if self.hub.guider and self.hub.guider.connected:
+                rms = getattr(self.hub.guider.stats(), "rms_total", None)
+                return None if rms is None else float(rms)
+        except Exception:
+            pass
+        return None
 
-        Preserves the existing running-median logic + the ``_rejected`` counter.
-        A frame is rejected only when ``hfr_reject_factor`` is set, enough recent
-        samples exist, and the frame's HFR exceeds ``factor × running median``.
-        The escalation action (``warn``/``discard``/``retake``) is applied by the
-        caller via ``_handle_reject``; under the default ``warn`` action the
-        rejected frame is still kept+recorded, so the legacy behavior (flag only)
-        is exactly preserved when escalation is at its default.
+    def _check_quality(self, info: dict, *, record: bool = True,
+                       calibration: bool = False) -> bool:
+        """Return whether a frame is ACCEPTED per the auto gate (spec §3): the
+        existing HFR running-median factor AND an optional star floor
+        (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``) —
+        all three AND together; 0 disables each. Star/RMS gates skip
+        calibration frames (darks/bias/flats have no stars and no guiding).
 
-        ``record=False`` evaluates the gate WITHOUT ever folding this frame's HFR
-        into the running-median window — a pure read-only check for any path that
-        must not perturb the good-frame history."""
-        factor = self.plan.hfr_reject_factor
+        Preserves the legacy HFR logic exactly: gate against the median of the
+        ACCEPTED window only, fold this frame's HFR in only when accepted and
+        ``record`` (a rejected/cloudy HFR must never drift the median).
+        ``record=False`` is a pure read-only check."""
+        plan = self.plan
+        factor = plan.hfr_reject_factor
         hfr = info.get("hfr") if isinstance(info, dict) else None
-        if not factor or hfr is None:
-            return True
-        # Gate against the median of the frames ALREADY accepted (the current
-        # window). We have NOT appended this frame yet, so the window is exactly the
-        # good-frame history.
-        window = self._recent_hfr
         accepted = True
-        if len(window) >= 4:
-            med = median(window)
-            if med > 0 and hfr > med * factor:
+        if factor and hfr is not None:
+            window = self._recent_hfr
+            if len(window) >= 4:
+                med = median(window)
+                if med > 0 and hfr > med * factor:
+                    self._rejected += 1
+                    bus.log("warning", f"frame HFR {hfr:.2f} >> median {med:.2f} — "
+                                       "possible cloud / poor frame", "sequence")
+                    accepted = False
+        if accepted and not calibration and plan.min_stars > 0:
+            stars = info.get("stars") if isinstance(info, dict) else None
+            if stars is not None and int(stars) < plan.min_stars:
                 self._rejected += 1
-                bus.log("warning", f"frame HFR {hfr:.2f} >> median {med:.2f} — "
-                                   "possible cloud / poor frame", "sequence")
+                bus.log("warning", f"frame stars {int(stars)} below floor "
+                                   f"{plan.min_stars}", "sequence")
                 accepted = False
-        # Anchor the running median to GOOD frames only: append the HFR ONLY when
-        # the frame is ACCEPTED. Feeding rejected (cloudy) HFRs into the window let
-        # the median climb toward the cloud level over ~6 bad frames until
-        # ``hfr > med × factor`` stopped firing and every subsequent cloudy frame
-        # was silently re-admitted into the stack (the bug — NINA-style references
-        # exclude rejected samples from the reference statistic for this reason).
-        if accepted and record:
+        if accepted and not calibration and plan.max_guide_rms > 0:
+            rms = self._guide_rms()
+            if rms is not None and rms > plan.max_guide_rms:
+                self._rejected += 1
+                bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
+                                   f'{plan.max_guide_rms:.2f}"', "sequence")
+                accepted = False
+        if accepted and record and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))
             self._recent_hfr = self._recent_hfr[-12:]
         return accepted
