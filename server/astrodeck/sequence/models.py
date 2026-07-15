@@ -1,10 +1,15 @@
 """Sequence plan data model (pydantic, shared with the REST API)."""
 from __future__ import annotations
 
+from uuid import uuid4
+
 from pydantic import BaseModel, Field
 
 
 class ExposureStep(BaseModel):
+    # stable identity for multi-night session ledgers (sessions spec §1).
+    # Backfilled on every validation so an id-less legacy plan is never rejected.
+    id: str = Field(default_factory=lambda: uuid4().hex)
     filter: str | None = None          # filter name, None = don't move wheel
     exposure_s: float = Field(gt=0, le=3600)
     gain: int = 100
@@ -34,6 +39,8 @@ class Schedule(BaseModel):
 
 
 class Target(BaseModel):
+    # stable identity for multi-night session ledgers (sessions spec §1).
+    id: str = Field(default_factory=lambda: uuid4().hex)
     name: str
     ra_hours: float = Field(ge=0, lt=24)
     dec_deg: float = Field(ge=-90, le=90)
