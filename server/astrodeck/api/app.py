@@ -66,6 +66,7 @@ from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
+from ..sequence.resume_arm import ResumeArm
 from ..sequence.session import migrate_legacy_resume, session_store
 
 engine = SequenceEngine(hub)
@@ -78,6 +79,11 @@ dispatcher = AlertDispatcher(bus, lambda: config_store.cfg())
 # external dead-man's-switch + emit progress heartbeats (§1.8/§1.9-F). Done by
 # injection (not an import inside the engine) to avoid a circular import.
 engine.dispatcher = dispatcher
+
+# Auto-resume-at-dusk service (sessions spec §5). Started in the lifespan, like
+# the AlertDispatcher; a disarm or any manual start stops its interest (it
+# re-checks state every tick and holds no long-lived assumptions).
+resume_arm = ResumeArm(engine, hub)
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
@@ -137,6 +143,8 @@ async def _lifespan(app: "FastAPI"):
     except Exception as e:  # noqa: BLE001 - degrade, never crash boot
         bus.log("error", f"session boot sweep failed: {e}", "sequence")
     task = asyncio.create_task(dispatcher.run())
+    # Auto-resume-at-dusk service (sessions spec §5) — its own 60s asyncio loop.
+    resume_arm.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -179,6 +187,7 @@ async def _lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        await resume_arm.stop()
         await dispatcher.stop()
         task.cancel()
         try:
