@@ -10,6 +10,8 @@
 - **Keep ephemeris, strip geolocators** (2026-07-15): non-holders keep dark windows, transit times, and altitude curves (remote Atlas/planning keeps working) but lose all direct geolocators: coordinates, elevation, site name, `place_hint`, LST. Residual coarse inference from ephemeris (~city/region scale: dusk+dawn pins longitude to ~1°, altitude curves imply latitude) is **accepted and documented**.
 - **Capability-based scope, everyone** (2026-07-15): the strip applies to ANY principal lacking `view.site_precise`, regardless of connection origin (LAN or relay). One uniform rule; no origin-keyed second path. LAN viewers/operators lose coordinates too; grant the cap to a custom role if that is ever wanted.
 
+**Review rounds (recorded):** bridge review by antigravity 2026-07-15 — verdict SHIP with three advisories, all folded in: no-coords-in-logs constraint (§7; `/api/logs` is viewer-visible), mount read-back rejects non-finite/out-of-range sentinels (§3), breaking-change release note for non-admin API consumers (§2). Runtime-validation concern evaluated, no change: the UI uses plain TS casts, no Zod/io-ts schemas exist.
+
 ## 1. Ground truth (existing code this spec builds on)
 
 - **`Site` model** `server/astrodeck/config.py:55-63`: `name` (default "[SITE-LABEL]"), `latitude` (signed, +N, ±90), `longitude` (**signed East-positive**, ±180 — load-bearing convention per config.py:11-16), `elevation_m` (−430..9000), `is_default`, `horizon_min_deg` (default 15.0). Persisted in `AppConfig` via `ConfigStore` (atomic JSON, `.bak` recovery). `ConfigStore.set_site(site, expected_version)` (config.py:489-495) flips `is_default=False` and bumps `version`; `ConfigVersionConflict` → 409.
@@ -33,6 +35,7 @@
 - `GET /api/visibility` and `GET /api/visibility/order`: add the standard `require(CAP_VIEW_STATUS)` gate + `@declare(CAP_VIEW_STATUS)`, and remove both routes from the boot-assertion exemption list at app.py:2917-2931. Response bodies unchanged (ephemeris is kept for all status viewers by decision).
 - `PUT /api/site` response (`_config_payload()`) is already redacted per-principal; a writer holding `config.site_optics` but not `view.site_precise` would get a stripped echo of what they just wrote. Accepted edge (realistic writers are admins); document with a comment, do not special-case.
 - **Residual leak (documented, accepted):** dark windows, transit times, and altitude curves permit coarse location inference. The user chose to keep remote planning functional over closing this channel.
+- **Breaking change (document, don't soften):** third-party scripts polling `/api/status`/`/api/summary` with a non-admin token stop receiving `latitude`/`longitude` (today they get coarsened values). This is the intended privacy outcome; record it in the release notes / changelog entry for the shipping commit.
 
 **Why the site name is stripped:** user-chosen names routinely contain addresses or place names ("Barn at 12 Oak Lane").
 
@@ -41,7 +44,7 @@
 New endpoint `GET /api/site/mount-gps`, gated `require(CAP_CONFIG_SITE_OPTICS)` + `@declare(CAP_CONFIG_SITE_OPTICS)` (it exposes precise coordinates; `config.site_optics` is the cap that may write them, and admin holds it).
 
 - Reads `sitelatitude` / `sitelongitude` / `siteelevation` from the connected Alpaca mount via the same best-effort raw client used by `push_site_to_mount()` (hub.py:865-882) — a new `hub.read_site_from_mount()` alongside it. Today the site↔mount channel is push-only; this is the first read-back.
-- Response (always 200): `{available: bool, latitude?: float, longitude?: float, elevation_m?: float, detail?: str}`. `available: false` with a human `detail` when: no mount connected, mount is not Alpaca-backed, any property read fails, or the mount reports exactly `(0.0, 0.0)` (unset-GPS sentinel on common mounts — `detail: "Mount reports 0,0 — GPS likely unset"`).
+- Response (always 200): `{available: bool, latitude?: float, longitude?: float, elevation_m?: float, detail?: str}`. `available: false` with a human `detail` when: no mount connected, mount is not Alpaca-backed, any property read fails, the mount reports exactly `(0.0, 0.0)` (unset-GPS sentinel on common mounts — `detail: "Mount reports 0,0 — GPS likely unset"`), or **any returned value is non-finite (NaN/inf) or out of the Site model's ranges** (lat ±90, lon ±180, elevation −430..9000 — some mounts return junk sentinels like `99.0/181.0` when unset). Genuine Null-Island observers can still type `0, 0` manually; the read-back is only an assist.
 - **Assist only — never persisted.** The UI fills the form draft; the user reviews and saves explicitly through the normal `PUT /api/site` path.
 
 ## 4. UI: Settings → Site panel
@@ -68,6 +71,7 @@ New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's lef
 - `/api/visibility` + `/api/visibility/order`: unauthenticated → 401/403 (fail-closed); viewer (`view.status`) → 200; boot RBAC assertion passes with the exemption removed.
 - `/api/site/mount-gps`: viewer → 403; `config.site_optics` holder with no mount → `{available: false}`; with sim/fake Alpaca mount reporting coords → values echoed; `(0.0, 0.0)` → `available: false` with the GPS-unset detail.
 - Relay (`test_remote_relay.py:586-796` pattern): tunneled hello + streamed frames stripped for viewer, full for holder, and mid-stream downgrade re-tightens to stripped.
+- Log hygiene: after a `/api/site` save and a `/api/site/mount-gps` read against the seeded precise site, `bus.log_history` contains no occurrence of the precise coordinate strings.
 - Run: `cd server && ./.venv/Scripts/python.exe -m pytest -q` (currently 1037 passed; all green required).
 
 **UI:**
@@ -88,7 +92,8 @@ New `ui/src/components/settings/SitePanel.tsx`, mounted in the Connect tab's lef
 - Longitude is stored **signed East-positive**; latitude signed +N. UI collects magnitude + hemisphere and converts at the boundary (`lib/site.ts`). Exact convention per config.py:11-16.
 - Strip set is exactly `{name, latitude, longitude, elevation_m}`; retain set is exactly `{is_default, horizon_min_deg}`.
 - `view.site_precise` remains admin-only in the role map; `config.site_optics` remains the write cap; no new capabilities are introduced.
-- All redaction changes live in `redact.py` (single seam shared by both WS lanes); no redaction logic in route handlers beyond calling the seam.
+- All redaction changes live in `redact.py` (single seam shared by both WS lanes); no redaction logic in route handlers beyond calling the seam. Any FUTURE event or payload that embeds site data must place it at `site` / `config.site` so the seam catches it — a code comment at `_redact_ws_event` states this contract.
+- **Precise coordinates must never enter `bus.log`** — `GET /api/logs` (app.py:2687-2690) returns `bus.log_history` to any `view.status` holder, which would bypass redaction entirely. `push_site_to_mount` already logs outcome-only (hub.py:880-882); the new `read_site_from_mount()` and the `/api/site` save path must do the same (log presence/success/failure, never values).
 - Night-mode: the panel uses semantic tokens only (`text-warn`/`text-bad`/`.field`/`btn*`); status never encoded by hue alone.
 - Commit trailer on every commit: `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` + `Claude-Session: https://claude.ai/code/session_01M6wy4Lkm8yAoZWJWiyv6FL`.
 - Do not touch: the catalog HiPS/tile engine and survey-pack code, `native/`, sessions/quota code shipped in A, weather (C). Exception: adding the auth gate to the `/api/visibility[/order]` routes in `catalog/visibility.py` IS in scope (§2).
