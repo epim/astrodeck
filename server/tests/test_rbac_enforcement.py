@@ -503,6 +503,48 @@ def test_put_site_echo_stripped_for_non_holder_writer(tmp_path, monkeypatch):
         _assert_site_stripped(r.json()["site"])
 
 
+def test_put_site_version_conflict_body_stripped_for_non_holder(tmp_path,
+                                                                monkeypatch):
+    """The 409 version-conflict body used to hand back ``e.current.model_dump()``
+    RAW -- bypassing both ``redacted`` (secrets) and ``_redact_site_for`` (site
+    precision). A config.site_optics-without-view.site_precise caller sending a
+    stale ``version`` -> 409 AND the ``current`` payload's site is stripped
+    (optics_computed extras intact)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(_principal_with("config.site_optics", "view.status"))
+    stale = store.cfg().version + 1000
+    with TestClient(app) as c:
+        r = c.put("/api/site", json={
+            "site": {"latitude": 1.0, "longitude": 2.0, "elevation_m": 3.0},
+            "version": stale})
+        assert r.status_code == 409
+        current = r.json()["detail"]["current"]
+        _assert_site_stripped(current["site"])
+        assert "optics_computed" in current  # the extras still ride the body
+        # the store's precise site is untouched by the failed write
+        assert store.cfg().site.latitude == _PRECISE_LAT
+
+
+def test_put_site_version_conflict_body_full_for_admin(tmp_path, monkeypatch):
+    """An admin (holds view.site_precise) hitting the same stale-version 409
+    gets the full precise site back in ``current`` -- holder behavior identical."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("admin"))
+    stale = store.cfg().version + 1000
+    with TestClient(app) as c:
+        r = c.put("/api/site", json={
+            "site": {"latitude": 1.0, "longitude": 2.0, "elevation_m": 3.0},
+            "version": stale})
+        assert r.status_code == 409
+        site = r.json()["detail"]["current"]["site"]
+        assert site["latitude"] == _PRECISE_LAT
+        assert site["longitude"] == _PRECISE_LON
+        assert site["elevation_m"] == _PRECISE_ELEV
+        assert site["name"] == _PRECISE_NAME
+
+
 # ==================================== T-RBAC-14 WS periodic re-authentication
 # Auth on the long-lived /ws is otherwise checked ONLY at accept, so a revoked
 # session / expired token would keep streaming for the whole all-night run. The

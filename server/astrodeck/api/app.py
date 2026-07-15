@@ -1386,11 +1386,19 @@ def create_app() -> FastAPI:
             cfg = await asyncio.to_thread(config_store.set_site, site, body.version)
         except ConfigVersionConflict as e:
             # optimistic-concurrency mismatch — hand back current so the UI can
-            # reconcile rather than silently clobber a co-user's field.
+            # reconcile rather than silently clobber a co-user's field. The
+            # conflict body rides the SAME two redaction seams as every other
+            # config echo (bridge-review follow-up): ``redacted`` scrubs the
+            # at-rest secrets (telegram tokens, auth/remote secrets, deadman
+            # url) the raw ``model_dump()`` used to leak, and
+            # ``_redact_site_for`` strips the precise site for a caller
+            # lacking view.site_precise.
             raise HTTPException(409, detail={
                 "detail": str(e),
-                "current": e.current.model_dump() | {
-                    "optics_computed": hub.effective_optics()}})
+                "current": _redact_site_for(
+                    redacted(e.current) | {
+                        "optics_computed": hub.effective_optics()},
+                    principal)})
         push = getattr(hub, "push_site_to_mount", None)
         if callable(push):
             try:
@@ -1487,10 +1495,13 @@ def create_app() -> FastAPI:
             cfg = await asyncio.to_thread(
                 config_store.set_optics, body.optics, body.version)
         except ConfigVersionConflict as e:
+            # same two-seam redaction as the put_site conflict body above.
             raise HTTPException(409, detail={
                 "detail": str(e),
-                "current": e.current.model_dump() | {
-                    "optics_computed": hub.effective_optics()}})
+                "current": _redact_site_for(
+                    redacted(e.current) | {
+                        "optics_computed": hub.effective_optics()},
+                    principal)})
         bus.publish("config", version=cfg.version)
         return _config_payload(principal)
 
