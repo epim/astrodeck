@@ -24,6 +24,7 @@ import {
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import DriversPanel from "./DriversPanel";
+import SitePanel from "./SitePanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
@@ -146,6 +147,7 @@ export default function SettingsView(): JSX.Element {
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="order-2 lg:order-1 min-w-0 flex flex-col gap-4">
             <DriversPanel />
+            <SitePanel />
             <SkyAtlasPanel />
           </div>
           <div className="order-1 lg:order-2 flex flex-col gap-4">
