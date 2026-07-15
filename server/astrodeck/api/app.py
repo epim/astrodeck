@@ -50,6 +50,8 @@ from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
                       EscalationConfig, Optics, ProvidersConfig, RotatorConfig,
                       SafetyConfig, Site, SurveyConfig, UpdateConfig, config_store,
                       redacted)
+from ..locations import (LocationLibraryFull, LocationNameCollision,
+                         location_store)
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
@@ -449,6 +451,14 @@ class SiteSaveBody(BaseModel):
 class OpticsSaveBody(BaseModel):
     optics: Optics
     version: int | None = None
+
+
+class LocationBody(BaseModel):
+    name: str
+    latitude: float
+    longitude: float
+    elevation_m: float
+    horizon_min_deg: float | None = None
 
 
 class ProfileCaptureBody(BaseModel):
@@ -1377,6 +1387,62 @@ def create_app() -> FastAPI:
             return {"available": False,
                     "detail": "Mount GPS read-back unavailable"}
         return await read()
+
+    # ------------------------------------------------------- saved locations
+    # A named-location library (spec §4), INDEPENDENT of rig profiles and NOT
+    # part of AppConfig — precise coords live only in locations.json and are
+    # served ONLY here, so they never ride config/status/WS payloads. All four
+    # routes are config.site_optics: the library contains precise coordinates
+    # and exists to WRITE the site, so the write cap gates the whole surface.
+
+    @app.get("/api/locations")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def list_locations(
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        return [loc.model_dump() for loc in location_store.list()]
+
+    @app.post("/api/locations")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def create_location(
+            body: LocationBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            loc = await asyncio.to_thread(
+                location_store.create, body.name, body.latitude, body.longitude,
+                body.elevation_m, body.horizon_min_deg)
+        except LocationNameCollision as e:
+            raise HTTPException(409, detail={"code": "name_collision",
+                                             "id": e.existing_id})
+        except LocationLibraryFull:
+            raise HTTPException(409, detail={"code": "library_full"})
+        return loc.model_dump()
+
+    @app.put("/api/locations/{loc_id}")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def update_location(
+            loc_id: str, body: LocationBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            loc = await asyncio.to_thread(
+                location_store.update, loc_id, body.name, body.latitude,
+                body.longitude, body.elevation_m, body.horizon_min_deg)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        except LocationNameCollision as e:
+            raise HTTPException(409, detail={"code": "name_collision",
+                                             "id": e.existing_id})
+        return loc.model_dump()
+
+    @app.delete("/api/locations/{loc_id}")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def delete_location(
+            loc_id: str,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            await asyncio.to_thread(location_store.delete, loc_id)
+        except KeyError:
+            raise HTTPException(404, detail={"code": "not_found"})
+        return {"ok": True}
 
     @app.put("/api/optics", dependencies=[Depends(require(CAP_CONFIG_SITE_OPTICS))])
     @declare(CAP_CONFIG_SITE_OPTICS)

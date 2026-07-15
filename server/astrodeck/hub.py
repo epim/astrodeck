@@ -879,7 +879,7 @@ class Hub:
             await put("siteelevation", SiteElevation=s["elevation_m"])
             bus.log("info", "pushed observing site to mount", "config")
         except Exception as e:
-            bus.log("warning", f"could not push site to mount: {e}", "config")
+            bus.log("warning", f"could not push site to mount: {type(e).__name__}", "config")
 
     async def read_site_from_mount(self) -> dict:
         """Best-effort READ-BACK of the mount's GPS fix (site lat/lon/elevation)
