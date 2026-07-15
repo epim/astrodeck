@@ -255,8 +255,11 @@ export interface SequenceState {
   // Live ETA chips (engine §1.9-E): meridian-flip ETA is SECONDS (ttf*3600); the
   // sensor temp / guide RMS are echoed for the run-time chips without a status poll.
   live?: { meridian_eta_s?: number; sensor_temp_c?: number; guide_rms?: number };
+  // Multi-night session sub-state (sessions spec §6): present while a session
+  // is running; cleared with explicit-None semantics like `schedule`.
+  session?: { id: string; name: string; count_mode: string; accepted: number; target?: string };
   // Terminal reason — drives the run-complete Badge + Report end-reason icon.
-  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff";
+  end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality";
 }
 
 export interface CoolerInfo {
@@ -347,6 +350,9 @@ export interface NinaInstance {
 }
 
 export interface ExposureStep {
+  // stable identity for multi-night session ledgers (sessions spec §1).
+  // Optional: legacy localStorage plans lack it; store backfills via ensurePlanIds.
+  id?: string;
   filter: string | null;
   exposure_s: number;
   gain: number;
@@ -357,6 +363,8 @@ export interface ExposureStep {
 }
 
 export interface Target {
+  // stable identity for multi-night session ledgers (sessions spec §1).
+  id?: string;
   name: string;
   ra_hours: number;
   dec_deg: number;
@@ -392,6 +400,12 @@ export interface SequencePlan {
   //     the plan carries only the master toggle + a meridian-flip warning lead). ---
   safety_check?: boolean;          // honor the configured SafetyMonitor + floor
   meridian_flip_warn_min?: number; // lead time for the live meridian-flip ETA chip
+  // --- multi-night quota (sessions spec §3; additive — server defaults apply) ---
+  count_mode?: "attempts" | "accepted";
+  min_stars?: number;                     // star floor (0 = off)
+  max_guide_rms?: number;                 // guide-RMS ceiling, arcsec (0 = off)
+  max_consecutive_rejects?: number;       // per-step guard (0 = off)
+  max_consecutive_rejects_night?: number; // per-night guard (0 = off)
 }
 
 // ============================================================================
@@ -1101,6 +1115,46 @@ export interface User {
   role: PrincipalRole;
   enabled: boolean;
   created: number; // epoch seconds
+}
+
+// -------------------------------------------------------- multi-night sessions
+// Mirrors server sequence/session.py (sessions spec §2/§6).
+export interface SessionFrame {
+  id: string;
+  ts: number;
+  night: string;                       // report_id captured under
+  target_id: string;
+  step_id: string;
+  path?: string;                       // ABSENT for principals w/o config.backend (§8)
+  thumb: string | null;
+  metrics: Record<string, number>;     // hfr, stars, guide_rms, sensor_temp_c, ...
+  auto_accepted: boolean;
+  override: "accept" | "reject" | null;
+}
+
+export interface Session {
+  id: string;
+  schema_version: number;
+  name: string;
+  created_ts: number;
+  updated_ts: number;
+  status: "active" | "dormant" | "complete" | "abandoned";
+  plan: SequencePlan;                  // frozen snapshot WITH ids
+  nights: string[];
+  frames: SessionFrame[];
+  auto_resume: boolean;
+}
+
+export interface SessionRow {
+  id: string;
+  name: string;
+  status: "active" | "dormant" | "complete" | "abandoned";
+  created_ts: number;
+  updated_ts: number;
+  nights: number;
+  accepted: number;
+  total: number;
+  auto_resume: boolean;
 }
 
 export interface PlanRow {
