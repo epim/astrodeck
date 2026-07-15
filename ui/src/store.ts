@@ -36,6 +36,7 @@ import { deriveNinaHealth } from "./lib/health";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
+import { ensurePlanIds } from "./lib/ids";
 import { api, ApiError } from "./api";
 import { getMe, getAuthMethods } from "./api/backends";
 
@@ -142,6 +143,13 @@ function defaultPlan(): SequencePlan {
     meridian_flip_warn_min: 15,
     park_when_done: false,
     warm_cooler_when_done: false,
+    // multi-night quota (sessions spec §3) — MUST mirror models.SequencePlan
+    // defaults or a UI-started run silently changes quota/guard behavior.
+    count_mode: "attempts",
+    min_stars: 0,
+    max_guide_rms: 0,
+    max_consecutive_rejects: 10,
+    max_consecutive_rejects_night: 20,
   };
 }
 
@@ -150,10 +158,9 @@ function loadPlan(): SequencePlan {
     const raw = localStorage.getItem(PLAN_KEY);
     if (raw) {
       const parsed = { ...defaultPlan(), ...(JSON.parse(raw) as Partial<SequencePlan>) };
-      // Backfill `schedule` onto every target: a plan saved before Batch-4b carries
-      // none, and the schedule sub-panel needs one (C1-27). Default spreads FIRST so
-      // a PRESENT schedule wins and a backfilled target preserves run-now behavior.
-      return { ...parsed, targets: parsed.targets.map((t) => ({ schedule: defaultSchedule(), ...t })) };
+      // Backfill `schedule` (C1-27) AND stable ids (sessions spec §1) onto
+      // legacy plans. Default spreads FIRST so a PRESENT schedule wins.
+      return ensurePlanIds({ ...parsed, targets: parsed.targets.map((t) => ({ schedule: defaultSchedule(), ...t })) });
     }
   } catch {
     /* fall through to default */
@@ -689,12 +696,13 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setPlan: (p, dirty = true) => {
+    const withIds = ensurePlanIds(p);   // safety net: every write path carries ids
     try {
-      localStorage.setItem(PLAN_KEY, JSON.stringify(p));
+      localStorage.setItem(PLAN_KEY, JSON.stringify(withIds));
     } catch {
       /* quota / unavailable — keep in-memory */
     }
-    set({ plan: p, editorDirty: dirty });
+    set({ plan: withIds, editorDirty: dirty });
   },
 
   setSiteDirty: (b) => set({ siteDirty: b }),
