@@ -9,6 +9,7 @@ import { useStore } from "../../store";
 import { Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
+import SessionReviewDrawer from "./SessionReviewDrawer";
 import { useCanControlMount } from "../../lib/caps";
 import { ensurePlanIds } from "../../lib/ids";
 import { mergePreview, targetProgress } from "../../lib/sessions";
@@ -32,6 +33,7 @@ export default function SessionsPanel() {
   const canControl = useCanControlMount();
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [details, setDetails] = useState<Record<string, Session>>({});
+  const [reviewId, setReviewId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -109,7 +111,8 @@ export default function SessionsPanel() {
   if (rows.length === 0) return null;
 
   return (
-    <Panel title="Sessions">
+    <>
+      <Panel title="Sessions">
       <div className="flex flex-col gap-3 text-xs">
         {rows.map((r) => {
           const s = details[r.id];
@@ -137,6 +140,13 @@ export default function SessionsPanel() {
                     <Icon name="refresh" size={12} /> update from plan
                   </button>
                 )}
+                <button
+                  className="tap min-h-[44px] inline-flex items-center gap-1 !px-3 !text-[11px]
+                    border border-line2 text-dim hover:text-accent hover:border-accent/50"
+                  title={`Review frames of ${r.name}`}
+                  onClick={() => setReviewId(r.id)}>
+                  <Icon name="eye" size={12} /> review
+                </button>
                 {canControl && r.status !== "active" && (
                   <button
                     className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
@@ -174,6 +184,9 @@ export default function SessionsPanel() {
           );
         })}
       </div>
-    </Panel>
+      </Panel>
+      <SessionReviewDrawer id={reviewId}
+        onClose={() => { setReviewId(null); void refresh(); }} />
+    </>
   );
 }
