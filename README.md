@@ -13,7 +13,7 @@ your rules.
 
 ![status](https://img.shields.io/badge/status-v0.1-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-251%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-1000%2B%20passing-brightgreen)
 
 > **Validated on sky.** AstroDeck has been run end-to-end against a live rig —
 > a Player One Poseidon-M PRO mono camera, a ZWO AM-series harmonic mount, a ZWO
@@ -77,12 +77,21 @@ Think of NINA as the gangway, not the ship.
   live guide-cam view (simulator fallback when NINA isn't present).
 - **Guide** — PHD2 (and the NINA guider) with a live RA/Dec error graph, an
   RA-vs-Dec scatter, RMS stats, and dithering.
+- **Native engine** — star detection, HFR/PSF measurement, autofocus, and
+  three-point polar alignment math run through a Rust extension (PyO3)
+  instead of NINA, reimplemented from audited algorithm dossiers rather than
+  ported code. See [`native/README.md`](native/README.md).
 - **Plan / Sequence** — an autonomous multi-target engine (slew → center →
   autofocus → guide → per-filter exposure loops, with dither, thermal refocus,
   meridian-flip handling, and park/warm when done), plus the automation surface:
   `SafetyMonitor` gating with named presets, autorun scheduling (dusk/dawn/min-alt
   windows with skip-ahead), end-of-night session reports, and
   ntfy / webhook / Telegram alerting with a dead-man's-switch heartbeat.
+- **Sessions** — targets accrue frames across as many nights (and reboots) as
+  it takes: a per-frame accept/reject ledger tracks quality gates (HFR, star
+  count, guide RMS), a manual regrade UI lets you override any call, and a
+  dormant session auto-resumes at the next dusk when its target's window
+  reopens. Full surface at `/api/sessions`.
 - **Sky Atlas** — a pan/zoomable WebGL survey tile map (classic `<img>` cutout
   as fallback) framing assistant with a draggable/rotatable FOV overlay, a
   mosaic planner (server-canonical panels), and an astropy visibility planner
@@ -91,10 +100,25 @@ Think of NINA as the gangway, not the ship.
   guiding RMS, meridian countdown, an HFR trend sparkline, and a live thumbnail.
 - **Power** — Alpaca `Switch` (Pegasus UPB-style): outputs, dew-heater PWM, and
   voltage/current telemetry.
+- **Rotator** — mechanical range-of-motion modeling (full/half/quarter sweeps)
+  and shortest-path rotate-to-position-angle convergence, alongside camera,
+  mount, focuser, and filter wheel in the Equipment view.
 - **Night mode & touch** — one tap flips the whole UI to dark-adaptation red
   (including a red survey filter over previews), a store-owned brightness dimmer
   with day/night memory, large touch targets, a slide-to-unlock screen guard,
   and reliability chrome (toasts, a reconnect banner, and a log drawer).
+- **Auth & access** — open by default on the LAN; turn it on and three roles
+  (viewer / operator / admin) gate every capability, with Google OIDC or local
+  accounts and share links for read-only remote viewers. Precise site
+  coordinates are visible to admins only.
+- **Remote access** — the scope dials one outbound WSS to an untrusted,
+  forward-only relay so you get a remote front door with no port-forwarding or
+  NAT config; every tunnelled request is re-authenticated and redacted at the
+  home, never trusted from the relay. See [`relay/README.md`](relay/README.md).
+- **Self-update** — Ed25519-signed releases verify fail-closed (no pinned key,
+  no update), a supervisor applies them and auto-rolls-back a bad release, and
+  updates never interrupt a running sequence or a slewing/exposing mount. See
+  [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
 
 > **Rough edges, honestly.** Guiding and plate solving work but still have
 > sharp corners; the Settings view is a placeholder (site/optics/safety/alerts
@@ -193,7 +217,7 @@ flag and a pre-rendered-frame path on `CameraFrame`. More detail in
 
 ```powershell
 cd server
-.venv\Scripts\python -m pytest -q             # 251 tests
+.venv\Scripts\python -m pytest -q             # ~1,000 tests
 
 cd ui
 npm run dev                                   # Vite dev server, proxies to :8800
