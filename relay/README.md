@@ -66,7 +66,7 @@ backpressure (`WINDOW`); class round-robin (`event`|`control`|`bulk`) so a
 (unknown `stream_id`) is an **error** (never silently buffered); `PING`/`PONG`/
 `REVOKE` ride reserved `stream_id=0` and are exempt from the orphan rule.
 
-The codec lives in `relay/protocol.py` and is kept **byte-for-byte compatible**
+The codec lives in `relay/relay/protocol.py` and is kept **byte-for-byte compatible**
 with the home-side `server/astrodeck/remote/protocol.py` (the scope client).
 
 ### HTTP/WS endpoints the relay exposes
@@ -186,5 +186,6 @@ no scale-to-zero) so a home's persistent WSS stays on the same instance, exposes
 | `RELAY_WS_RATE` / `RELAY_WS_BURST` | `1` / `5` | per-IP `/ws`-open token bucket |
 | `RELAY_MAX_BODY` | `134217728` | max tunnelled request body bytes |
 | `RELAY_DEVICE_TOKENS_FILE` | `""` | JSON `{device_token: home_id}` (mounted) |
+| `RELAY_DEVICE_TOKENS` | `""` | same JSON inline, when a file mount isn't available (e.g. Fly/most-PaaS secrets-as-env) |
 | `RELAY_OIDC_SEED_FILE` | `""` | 32-byte Ed25519 seed for the OIDC key |
 | `RELAY_VIEWER_SEED_FILE` | `""` | 32-byte Ed25519 seed for the **separate** viewer key |

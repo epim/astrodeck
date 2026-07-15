@@ -48,4 +48,4 @@ Build and install the Python extension module into AstroDeck's backend venv
 maturin develop --release -m native/crates/astrodeck-native/Cargo.toml
 ```
 
-using the interpreter/venv at `C:/Users/bear/astro/server/.venv`.
+using the interpreter/venv at `server/.venv`.

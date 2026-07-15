@@ -62,3 +62,6 @@ ADR `docs/architecture/2026-06-17-remote-access-architecture.md`.
   one-time bootstrap.
 - **[../relay-deploy.md](../relay-deploy.md)** — full relay deploy walkthrough +
   security model.
+- **[native-backend.md](native-backend.md)** — the native ASCOM/Alpaca device
+  backend (the no-NINA path): wiring, the OmniSim validation run, and
+  connecting real gear.
