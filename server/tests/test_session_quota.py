@@ -7,11 +7,13 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+import astrodeck.api.app as app_module
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 from astrodeck.sequence import SequenceEngine, SequencePlan
-from astrodeck.sequence.models import ExposureStep, Target
+from astrodeck.sequence.models import ExposureStep, Target, _quota_unbounded
 from astrodeck.sequence.session import session_store
 
 
@@ -35,13 +37,13 @@ async def wait_for(predicate, timeout=30.0):
     return False
 
 
-def _plan(count=3, targets=1, **plan_kw) -> SequencePlan:
+def _plan(count=3, targets=1, exposure_s=0.05, **plan_kw) -> SequencePlan:
     return SequencePlan(name="q", guide=False, dither_every=0, autofocus_every=0,
                         meridian_flip=False, count_mode="accepted", **plan_kw,
                         targets=[Target(
                             name=f"T{n}", ra_hours=5.5881, dec_deg=-5.3911,
                             center=False, autofocus_first=False,
-                            steps=[ExposureStep(filter="L", exposure_s=0.05,
+                            steps=[ExposureStep(filter="L", exposure_s=exposure_s,
                                                 count=count)])
                             for n in range(targets)])
 
@@ -165,3 +167,203 @@ async def test_attempts_mode_unchanged_by_default(sim_hub):
     s = session_store.load(sid)
     assert s.status == "complete"
     assert len(s.frames) == 3                      # exactly count attempts
+
+
+# ---------------------------------------------------------- Fix round 1 (review)
+
+# --------------------------------------------- MINOR: count_mode is a Literal
+
+def test_count_mode_rejects_invalid_value():
+    """A typo (e.g. "accpeted") used to silently degrade to "attempts" mode
+    with no feedback (count_mode was a bare ``str``). Now a Literal, rejected
+    at validation with a clear pydantic error."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        SequencePlan(count_mode="accpeted")
+
+
+def test_count_mode_still_accepts_the_two_real_values():
+    assert SequencePlan(count_mode="attempts").count_mode == "attempts"
+    assert SequencePlan(count_mode="accepted").count_mode == "accepted"
+
+
+# ------------------------------------- IMPORTANT: unbounded accepted-quota gate
+
+def test_quota_unbounded_helper():
+    """Direct unit coverage of the ``_quota_unbounded`` predicate: reviewer-
+    verified that ``_enforce_stop_boundary`` never raises for a (now, None)
+    window and the no-progress watchdog only WARNs, so BOTH reject guards off
+    AND no target stop boundary is the exact unbounded combination."""
+    unbounded = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    assert _quota_unbounded(unbounded) is True
+
+    # attempts mode never counts, regardless of guards
+    attempts = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    attempts.count_mode = "attempts"
+    assert _quota_unbounded(attempts) is False
+
+    # either guard alone is enough to make the run bounded
+    assert _quota_unbounded(
+        _plan(max_consecutive_rejects=1, max_consecutive_rejects_night=0)) is False
+    assert _quota_unbounded(
+        _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=1)) is False
+
+    # a stop boundary on every target is also enough
+    bounded_run = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    bounded_run.targets[0].schedule.max_run_min = 30
+    assert _quota_unbounded(bounded_run) is False
+
+    bounded_dawn = _plan(max_consecutive_rejects=0, max_consecutive_rejects_night=0)
+    bounded_dawn.targets[0].schedule.stop_mode = "dawn"
+    assert _quota_unbounded(bounded_dawn) is False
+
+    # the review's predicate is literally "every target has no stop boundary"
+    # -- one target carrying a stop boundary is enough to call the plan
+    # bounded, even if a second target has none.
+    mixed = _plan(count=2, targets=2, max_consecutive_rejects=0,
+                  max_consecutive_rejects_night=0)
+    mixed.targets[0].schedule.max_run_min = 30
+    assert _quota_unbounded(mixed) is False
+
+    # calibration targets never enter the accepted-mode quota loop -> a
+    # calibration-only plan is never unbounded by this rule
+    cal = SequencePlan(name="cal", count_mode="accepted", max_consecutive_rejects=0,
+                       max_consecutive_rejects_night=0,
+                       targets=[Target(name="darks", ra_hours=0.0, dec_deg=0.0,
+                                       calibration=True,
+                                       steps=[ExposureStep(exposure_s=1.0, count=3)])])
+    assert _quota_unbounded(cal) is False
+
+
+@pytest.fixture
+def api_client(tmp_path, monkeypatch):
+    """Isolated TestClient exercising the REAL /api/sequence/start and
+    /api/sequence/recover routes (mirrors tests/test_app_preflight.py's
+    ``client`` fixture and test_session_engine.py's isolated-app pattern).
+    The camera + engine.start are stubbed and solar is bypassed so only the
+    NEW quota-unbounded start-gate is under test — a default (un-configured)
+    site never blocks horizon (see app.py `_horizon_block`), so no site setup
+    is needed either."""
+    from astrodeck.config import ConfigStore
+    import astrodeck.config as config_mod
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    monkeypatch.setattr(hub_module, "config_store", temp_store)
+    monkeypatch.setattr(app_module, "config_store", temp_store)
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path / "captures")
+    monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
+    from astrodeck.plans import PlanLibrary
+    from astrodeck.profiles import ProfileLibrary
+    monkeypatch.setattr(app_module, "plan_library",
+                        PlanLibrary(directory=tmp_path / "plans"))
+    monkeypatch.setattr(app_module, "profiles",
+                        ProfileLibrary(directory=tmp_path / "profiles"))
+    app = app_module.create_app()
+    with TestClient(app) as c:
+        monkeypatch.setattr(app_module.hub, "_check_solar", lambda *a, **kw: None)
+        monkeypatch.setattr(app_module.hub, "require", lambda role: object())
+        started = {"n": 0}
+        monkeypatch.setattr(
+            app_module.engine, "start",
+            lambda plan, **kw: started.__setitem__("n", started["n"] + 1))
+        c.started = started
+        yield c
+
+
+def _unbounded_accepted_payload() -> dict:
+    return {
+        "name": "q", "guide": False, "count_mode": "accepted",
+        "max_consecutive_rejects": 0, "max_consecutive_rejects_night": 0,
+        "targets": [{
+            "name": "T1", "ra_hours": 5.5, "dec_deg": -5.0,
+            "steps": [{"exposure_s": 1.0, "count": 3}],
+        }],
+    }
+
+
+def test_sequence_start_refuses_unbounded_accepted_quota(api_client):
+    r = api_client.post("/api/sequence/start", json=_unbounded_accepted_payload())
+    assert r.status_code == 400, r.text
+    assert "unbounded" in r.json()["detail"].lower()
+    assert api_client.started["n"] == 0        # never reached engine.start
+
+
+def test_sequence_start_allows_accepted_quota_with_one_guard_set(api_client):
+    payload = _unbounded_accepted_payload()
+    payload["max_consecutive_rejects"] = 5      # one guard set -> bounded
+    r = api_client.post("/api/sequence/start", json=payload)
+    assert r.status_code == 200, r.text
+    assert api_client.started["n"] == 1
+
+
+def test_sequence_start_allows_accepted_quota_with_default_guards(api_client):
+    # dropping both keys falls back to the model defaults (10 / 20) -- the
+    # existing accepted-mode default-guard behavior must be unaffected.
+    payload = _unbounded_accepted_payload()
+    del payload["max_consecutive_rejects"]
+    del payload["max_consecutive_rejects_night"]
+    r = api_client.post("/api/sequence/start", json=payload)
+    assert r.status_code == 200, r.text
+    assert api_client.started["n"] == 1
+
+
+def test_sequence_start_allows_unbounded_guards_with_a_stop_boundary(api_client):
+    payload = _unbounded_accepted_payload()
+    payload["targets"][0]["schedule"] = {"max_run_min": 30}
+    r = api_client.post("/api/sequence/start", json=payload)
+    assert r.status_code == 200, r.text
+    assert api_client.started["n"] == 1
+
+
+def test_sequence_start_leaves_attempts_mode_unaffected(api_client):
+    payload = _unbounded_accepted_payload()
+    payload["count_mode"] = "attempts"
+    r = api_client.post("/api/sequence/start", json=payload)
+    assert r.status_code == 200, r.text
+    assert api_client.started["n"] == 1
+
+
+def test_sequence_recover_refuses_unbounded_accepted_quota(api_client):
+    from astrodeck.sequence.session import Session, SessionFrame
+    plan = SequencePlan.model_validate(_unbounded_accepted_payload())
+    s = Session(name="q", created_ts=1.0, status="dormant", plan=plan)
+    s.frames.append(SessionFrame(ts=1.0, night="n1",
+                                 target_id=plan.targets[0].id,
+                                 step_id=plan.targets[0].steps[0].id,
+                                 auto_accepted=False))
+    session_store.save(s)
+    r = api_client.post("/api/sequence/recover")
+    assert r.status_code == 400, r.text
+    assert "unbounded" in r.json()["detail"].lower()
+    assert api_client.started["n"] == 0
+    assert session_store.load(s.id).status == "dormant"   # untouched
+
+
+# --------------------------------------------- COVERAGE: real gate + real loop
+
+async def test_real_quality_gate_drives_real_capture_loop_reject(sim_hub):
+    """Every reject-path test above scripts ``_check_quality`` (a canned verdict
+    sequence via ``_script_gate``, monkeypatching OUR OWN engine method) — the
+    REAL quality gate and the REAL capture loop were never exercised together
+    with a genuine rejection. ``exposure_s=2.0`` is probe-verified (Task 3) to
+    yield ~32 real detected stars in the sim, so ``min_stars=9999`` makes
+    ``_check_quality`` genuinely reject every captured frame (unmocked); the
+    per-step guard then ends the run after exactly 2 real rejected captures."""
+    plan = _plan(count=1, exposure_s=2.0, min_stars=9999,
+                max_consecutive_rejects=2, max_consecutive_rejects_night=0)
+    eng = SequenceEngine(sim_hub)
+    eng.start(plan)
+    sid = eng._session.id
+    assert await wait_for(lambda: eng.state.get("state") == "complete", timeout=60)
+    s = session_store.load(sid)
+    # quota unmet (0 of 1 accepted) -> dormant, even though the scheduler
+    # exhausted the single target naturally (the per-step guard returned out
+    # of _run_step rather than raising NightQualityStop).
+    assert s.status == "dormant"
+    step = plan.targets[0].steps[0]
+    assert s.accepted(step.id) == 0
+    assert len(s.frames) == 2                        # guard tripped at 2
+    for f in s.frames:
+        assert f.auto_accepted is False               # genuinely rejected
+        assert f.path                                 # accepted mode never unlinks
+        assert Path(f.path).exists()                  # -- still on disk
