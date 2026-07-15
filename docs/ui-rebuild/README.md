@@ -1,5 +1,10 @@
 # AstroDeck UI Rebuild — Product Reference Set
 
+> **Snapshot as of 2026-07-03.** Predates multi-night sessions/accepted-frame
+> quotas, the WebGL HiPS tile Atlas + offline survey packs, rotator/CAA
+> support, and the view.site_precise location-privacy tier. Re-derive docs
+> 01–03 from the live codebase before using this set to drive a rebuild.
+
 These four docs are the **product** layer the onboarding docs deliberately left out. The onboarding set (`docs/onboarding/`) teaches the *astrophotography domain*; this set describes *the AstroDeck product* — its screens, states, users, and failures — so a designer or writer can actually rebuild the UI without reverse-engineering the running app.
 
 ## Why this set exists
@@ -14,6 +19,7 @@ Four domain-naïve personas (a brand designer, a UX designer, a technical writer
 | 02 | [State & Automation Model](02-state-automation-model.md) | The status snapshot, every entity state machine, the automation knobs, manual-vs-auto per step |
 | 03 | [Personas, Roles & Attention](03-personas-roles-attention.md) | The RBAC roles, auth/remote model, six design personas, and the glance/notice/act attention tiers |
 | 04 | [Failure & "2am" UX Spec](04-failure-2am-ux-spec.md) | Every failure path mapped to what the app does / what the user sees / what they can do |
+| 06 | [Implementation Brief](06-implementation-brief.md) | How the native-parity visual redesign maps onto the real React/TS/Tailwind/Zustand codebase — tokens, hero screens, provider badges, build sequence |
 
 ## How to use it
 
