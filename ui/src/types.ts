@@ -256,8 +256,11 @@ export interface SequenceState {
   // sensor temp / guide RMS are echoed for the run-time chips without a status poll.
   live?: { meridian_eta_s?: number; sensor_temp_c?: number; guide_rms?: number };
   // Multi-night session sub-state (sessions spec §6): present while a session
-  // is running; cleared with explicit-None semantics like `schedule`.
-  session?: { id: string; name: string; count_mode: string; accepted: number; target?: string };
+  // is running; cleared with explicit-None semantics like `schedule`. `target`
+  // is a raw dict key server-side — it serializes as an explicit null (key
+  // PRESENT) until the first target starts, so it must admit null, not just
+  // undefined. The other fields are pydantic str/int-typed: never null.
+  session?: { id: string; name: string; count_mode: string; accepted: number; target?: string | null };
   // Terminal reason — drives the run-complete Badge + Report end-reason icon.
   end_reason?: "complete" | "aborted" | "error" | "unsafe" | "dawn_cutoff" | "cooling_skip" | "quality";
 }
