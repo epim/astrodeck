@@ -7,6 +7,7 @@ import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
+import { uid } from "../lib/ids";
 import { applyStepsToGroup } from "../lib/planGroups";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
@@ -296,8 +297,10 @@ export default function SequenceView() {
       setPlan({
         ...plan,
         targets: [...plan.targets, {
+          id: uid(),
           name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
-          center: true, autofocus_first: true, calibration: false, steps: [{ ...DEFAULT_STEP }],
+          center: true, autofocus_first: true, calibration: false,
+          steps: [{ ...DEFAULT_STEP, id: uid() }],
           schedule: defaultSchedule(),
         }],
       });
@@ -592,7 +595,7 @@ export default function SequenceView() {
                     </button>
                   )}
                   <button className="btn tap min-h-[44px] !px-3 !text-[11px]" disabled={running}
-                    onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP }] })}>
+                    onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP, id: uid() }] })}>
                     + step
                   </button>
                   <div className="inline-flex items-center gap-1.5">
@@ -831,6 +834,74 @@ export default function SequenceView() {
               <span className="text-dim">warm camera when done</span>
               <Toggle checked={plan.warm_cooler_when_done} onChange={(v) => setPlan({ ...plan, warm_cooler_when_done: v })} />
             </label>
+            {/* --- multi-night quota + reject guards (sessions spec §3/§7).
+                Each numeric guard is individually disable-able; the 0 state is
+                labeled "off" EXPLICITLY (user requirement). --- */}
+            <div className="border-t border-line pt-3 flex flex-col gap-3">
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim inline-flex items-center gap-1">
+                  count = accepted frames
+                  <InfoDot
+                    label="About accepted-frame counting"
+                    content="Each step's count becomes a quota of ACCEPTED frames: rejected frames don't count and the step keeps shooting — across nights if needed — until the quota is met. Rejected frames are kept on disk for regrading. Off = classic attempt counting."
+                  />
+                </span>
+                <Toggle checked={(plan.count_mode ?? "attempts") === "accepted"}
+                  onChange={(v) => setPlan({ ...plan, count_mode: v ? "accepted" : "attempts" })} />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim">min stars per frame</span>
+                <span className="inline-flex items-center gap-2">
+                  {(plan.min_stars ?? 0) === 0 && (
+                    <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
+                  )}
+                  <input className="field !w-16 !py-1" value={plan.min_stars ?? 0}
+                    onChange={(e) => setPlan({ ...plan, min_stars: Math.max(0, Math.round(num(e.target.value, plan.min_stars ?? 0))) })} />
+                </span>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim">max guide RMS (arcsec)</span>
+                <span className="inline-flex items-center gap-2">
+                  {(plan.max_guide_rms ?? 0) === 0 && (
+                    <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
+                  )}
+                  <input className="field !w-16 !py-1" value={plan.max_guide_rms ?? 0}
+                    onChange={(e) => setPlan({ ...plan, max_guide_rms: Math.max(0, num(e.target.value, plan.max_guide_rms ?? 0)) })} />
+                </span>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim inline-flex items-center gap-1">
+                  skip step after N rejects
+                  <InfoDot
+                    label="About the per-step reject guard"
+                    content="Accepted-count mode only: after N consecutive rejected frames on one step, skip to the next step/target. The shortfall stays in the session ledger for another night."
+                  />
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  {(plan.max_consecutive_rejects ?? 10) === 0 && (
+                    <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
+                  )}
+                  <input className="field !w-16 !py-1" value={plan.max_consecutive_rejects ?? 10}
+                    onChange={(e) => setPlan({ ...plan, max_consecutive_rejects: Math.max(0, Math.round(num(e.target.value, plan.max_consecutive_rejects ?? 10))) })} />
+                </span>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim inline-flex items-center gap-1">
+                  end night after N rejects
+                  <InfoDot
+                    label="About the per-night reject guard"
+                    content="Accepted-count mode only: after N consecutive rejects ACROSS targets (counter resets on any accepted frame), end the night early and leave the session resumable — the proto cloud detector."
+                  />
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  {(plan.max_consecutive_rejects_night ?? 20) === 0 && (
+                    <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
+                  )}
+                  <input className="field !w-16 !py-1" value={plan.max_consecutive_rejects_night ?? 20}
+                    onChange={(e) => setPlan({ ...plan, max_consecutive_rejects_night: Math.max(0, Math.round(num(e.target.value, plan.max_consecutive_rejects_night ?? 20))) })} />
+                </span>
+              </label>
+            </div>
           </div>
         </Panel>
 
