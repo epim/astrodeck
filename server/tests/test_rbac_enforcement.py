@@ -358,57 +358,66 @@ def test_auth_revoke_viewer_forbidden(tmp_path, monkeypatch):
         assert c.post("/api/auth/revoke", json={"jti": "abc"}).status_code == 403
 
 
-# ==================================== T-RBAC-13 view.site_precise coarsening
+# ==================================== T-RBAC-13 view.site_precise strip-entirely
 # view.site_precise (admin-only; EXCLUDED from viewer/operator) gates the
-# observatory's EXACT GPS fix. A principal lacking it must see lat/lon coarsened
-# to ~0.1 deg on EVERY precise-site surface (REST status/summary/config + the WS
-# hello frame); a holder sees full precision.
+# observatory's EXACT GPS fix. A principal lacking it must see the four precise
+# keys (name/latitude/longitude/elevation_m) REMOVED (absent, not nulled) on
+# EVERY precise-site surface (REST status/summary/config + the WS hello frame),
+# while is_default + horizon_min_deg are retained; a holder sees the full block.
 
 _PRECISE_LAT = 40.123456
 _PRECISE_LON = -74.654321
+_PRECISE_ELEV = 123.4
+_PRECISE_NAME = "Secret Barn"
+_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
 
 
 def _seed_precise_site(store):
     from astrodeck.config import Site
-    store.set_site(Site(name="home", latitude=_PRECISE_LAT,
-                        longitude=_PRECISE_LON, elevation_m=12.0))
+    store.set_site(Site(name=_PRECISE_NAME, latitude=_PRECISE_LAT,
+                        longitude=_PRECISE_LON, elevation_m=_PRECISE_ELEV))
 
 
-def test_site_precise_coarsened_for_viewer(tmp_path, monkeypatch):
-    """A viewer (no view.site_precise) gets lat/lon rounded to 0.1 deg on status,
-    config, summary AND the WS hello frame (both the top-level site block and the
-    duplicate copy inside the embedded config)."""
+def _assert_site_stripped(site):
+    for k in _STRIP_KEYS:
+        assert k not in site, f"{k} must be ABSENT for a non-holder"
+    assert "is_default" in site, "is_default must be retained"
+    assert "horizon_min_deg" in site, "horizon_min_deg must be retained"
+
+
+def test_site_stripped_for_viewer(tmp_path, monkeypatch):
+    """A viewer (no view.site_precise) gets the four precise keys REMOVED on
+    status, config, summary (both the top-level site block and the duplicate
+    copy inside the embedded config) AND the WS hello frame; is_default and
+    horizon_min_deg remain."""
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
-    coarse_lat = round(_PRECISE_LAT, 1)
-    coarse_lon = round(_PRECISE_LON, 1)
-    assert coarse_lat != _PRECISE_LAT  # the rounding is observable
     _install(principal_for_role("viewer"))
     with TestClient(app) as c:
-        st = c.get("/api/status").json()["site"]
-        assert st["latitude"] == coarse_lat and st["longitude"] == coarse_lon
-        cfg = c.get("/api/config").json()["site"]
-        assert cfg["latitude"] == coarse_lat and cfg["longitude"] == coarse_lon
+        _assert_site_stripped(c.get("/api/status").json()["site"])
+        _assert_site_stripped(c.get("/api/config").json()["site"])
         summ = c.get("/api/summary").json()
-        assert summ["site"]["latitude"] == coarse_lat
-        assert summ["config"]["site"]["latitude"] == coarse_lat
+        _assert_site_stripped(summ["site"])
+        _assert_site_stripped(summ["config"]["site"])
         with c.websocket_connect("/ws") as ws:
             hello = ws.receive_json()
             assert hello["type"] == "hello"
-            assert hello["data"]["site"]["latitude"] == coarse_lat
-            assert hello["data"]["site"]["longitude"] == coarse_lon
-            assert hello["data"]["config"]["site"]["latitude"] == coarse_lat
+            _assert_site_stripped(hello["data"]["site"])
+            _assert_site_stripped(hello["data"]["config"]["site"])
 
 
-def test_site_precise_full_for_admin(tmp_path, monkeypatch):
-    """An admin holds view.site_precise -> exact lat/lon everywhere, untouched."""
+def test_site_full_for_admin(tmp_path, monkeypatch):
+    """An admin holds view.site_precise -> the exact name/lat/lon/elevation
+    everywhere, untouched."""
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
     _install(principal_for_role("admin"))
     with TestClient(app) as c:
         st = c.get("/api/status").json()["site"]
         assert st["latitude"] == _PRECISE_LAT and st["longitude"] == _PRECISE_LON
-        assert c.get("/api/config").json()["site"]["latitude"] == _PRECISE_LAT
+        assert st["elevation_m"] == _PRECISE_ELEV and st["name"] == _PRECISE_NAME
+        cfg = c.get("/api/config").json()["site"]
+        assert cfg["latitude"] == _PRECISE_LAT and cfg["name"] == _PRECISE_NAME
         with c.websocket_connect("/ws") as ws:
             hello = ws.receive_json()
             assert hello["data"]["site"]["latitude"] == _PRECISE_LAT

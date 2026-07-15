@@ -3,12 +3,13 @@
 ``view.site_precise`` (admin-only; EXCLUDED from viewer/operator) is the
 access-control decision for the observatory's EXACT GPS fix. The serving
 payloads (poll_status / summary / redacted config) are built without a
-principal, so we coarsen at the seam: any principal LACKING the cap sees
-lat/lon rounded to ~0.1 deg (~11 km -- enough to place the sky region for
-altaz sanity, but not the operator's home), while a holder gets full
-precision. This is the ONLY place the cap is enforced, so every precise-site
-surface (REST status/summary/config + the WS hello frame and status pushes)
-must route through here.
+principal, so we STRIP at the seam: any principal LACKING the cap has the
+four precise-site keys (name, latitude, longitude, elevation_m) REMOVED
+(absent, not nulled) while is_default/horizon_min_deg are retained (the UI
+needs both and neither reveals location), and a holder gets the full block.
+This is the ONLY place the cap is enforced, so every precise-site surface
+(REST status/summary/config + the WS hello frame and status pushes) must
+route through here.
 
 These helpers were originally nested closures inside ``api.app.create_app``.
 They are extracted here -- module-level and IMPORT-LIGHT (only ``..auth`` for
@@ -33,20 +34,24 @@ from ..auth.principal import Principal
 WS_AUTH_RECHECK_S = 60.0
 
 # ---------------------------------------------------- site-precision redaction
-_SITE_LATLON_KEYS = ("latitude", "longitude")
+# The exact set of precise-site keys removed for a principal lacking
+# view.site_precise (spec §2/§8). is_default + horizon_min_deg are NOT here --
+# they are retained (default-site nudge + alt-limit display; neither is a
+# geolocator).
+_SITE_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
 
 
-def _coarsen_latlon(site: dict) -> None:
-    """Round a site dict's lat/lon to ~0.1 deg IN PLACE (safe: every caller
-    hands us a freshly-built dict, never shared/persisted state)."""
-    for k in _SITE_LATLON_KEYS:
-        v = site.get(k)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            site[k] = round(float(v), 1)
+def _strip_site(site: dict) -> None:
+    """Delete the four precise-site keys from a site dict IN PLACE (safe: every
+    caller hands us a freshly-built/copied dict, never shared/persisted state).
+    Keys are made ABSENT, not nulled (spec §2). is_default/horizon_min_deg are
+    left untouched."""
+    for k in _SITE_STRIP_KEYS:
+        site.pop(k, None)
 
 
 def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
-    """Coarsen precise site coords in ``payload`` unless ``principal`` holds
+    """Strip precise site keys in ``payload`` unless ``principal`` holds
     ``view.site_precise``. Handles the top-level ``site`` block AND the
     duplicate copy inside an embedded ``config`` block (summary/hello frame).
     Mutates + returns ``payload`` (which is always a fresh per-call dict)."""
@@ -55,21 +60,26 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     if isinstance(payload, dict):
         site = payload.get("site")
         if isinstance(site, dict):
-            _coarsen_latlon(site)
+            _strip_site(site)
         cfg = payload.get("config")
         if isinstance(cfg, dict):
             cfg_site = cfg.get("site")
             if isinstance(cfg_site, dict):
-                _coarsen_latlon(cfg_site)
+                _strip_site(cfg_site)
     return payload
 
 
 def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
-    """Coarsen precise site coords in a broadcast WS event for a principal
-    lacking ``view.site_precise``. The bus ``Event.data`` is SHARED across
-    every subscriber, so we must NEVER mutate it in place -- we copy only the
-    nodes we change (status carries ``data.site``; config carries
-    ``data.config.site``). A holder sees the event verbatim (no copy)."""
+    """Strip precise site keys in a broadcast WS event for a principal lacking
+    ``view.site_precise``. The bus ``Event.data`` is SHARED across every
+    subscriber, so we must NEVER mutate it in place -- we copy only the nodes we
+    change (status carries ``data.site``; config carries ``data.config.site``).
+    A holder sees the event verbatim (no copy).
+
+    CONTRACT (spec §8): any FUTURE event or payload that embeds site
+    coordinates MUST place them at ``data.site`` or ``data.config.site`` so this
+    seam catches them. Site data reachable by no other path is the invariant
+    that makes this the single enforcement point; do NOT add a second lane."""
     if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
         return ev_json
     data = ev_json.get("data")
@@ -77,17 +87,17 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
         return ev_json
     new_data: dict | None = None
     site = data.get("site")
-    if isinstance(site, dict) and any(k in site for k in _SITE_LATLON_KEYS):
+    if isinstance(site, dict) and any(k in site for k in _SITE_STRIP_KEYS):
         new_data = dict(data)
         new_site = dict(site)
-        _coarsen_latlon(new_site)
+        _strip_site(new_site)
         new_data["site"] = new_site
     cfg = data.get("config")
     if isinstance(cfg, dict) and isinstance(cfg.get("site"), dict):
         base = new_data if new_data is not None else dict(data)
         new_cfg = dict(cfg)
         new_cfg_site = dict(cfg["site"])
-        _coarsen_latlon(new_cfg_site)
+        _strip_site(new_cfg_site)
         new_cfg["site"] = new_cfg_site
         base["config"] = new_cfg
         new_data = base
@@ -158,6 +168,6 @@ __all__ = [
     "_redact_ws_event",
     "_redact_drivers_for",
     "_redact_session_for",
-    "_coarsen_latlon",
-    "_SITE_LATLON_KEYS",
+    "_strip_site",
+    "_SITE_STRIP_KEYS",
 ]
