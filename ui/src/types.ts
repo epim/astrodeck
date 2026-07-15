@@ -76,6 +76,13 @@ export interface RigStatus {
   boot_connect_failed?: boolean;
   // --- onboarding (additive) ---
   disk?: DiskInfo;
+  // --- automation (Batch-4b; additive). The own-cadence SafetyMonitor poller's
+  //     latest cached reading, forwarded on EVERY 2s poll (the flat SafetyReading
+  //     dict). `null` when no monitor is connected OR it dropped mid-session (the
+  //     poller clears its cache to None) — this null is what lets the store's
+  //     safety.connected self-heal on disconnect. The store normalizes it via
+  //     normalizeSafety(); do NOT read the flat dict's `connected` (it has none). ---
+  safety?: SafetyReading | null;
   // --- settings (additive; survives the 2s wholesale status replace) ---
   // Full poll_status site shape (6 fields) — superset of SiteInfo so the store
   // can refresh store.site (is_default/horizon_min_deg) live while connected.

@@ -33,6 +33,7 @@ import type {
   WsPhase,
 } from "./types";
 import { deriveNinaHealth } from "./lib/health";
+import { normalizeSafety } from "./lib/safety";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
@@ -1010,7 +1011,21 @@ export const useStore = create<AppState>((set, get) => ({
       case "status": {
         const status = ev.data as unknown as RigStatus;
         const equipConnected = status.mode !== undefined && status.mode !== "none";
-        set({ status, ninaHealth: deriveNinaHealth(status), equipConnected });
+        set((s) => ({
+          status,
+          ninaHealth: deriveNinaHealth(status),
+          equipConnected,
+          // The 2s poll is the LIVE truth for the SafetyMonitor: poll_status
+          // forwards the own-cadence poller's cached reading — the flat dict, or
+          // `null` when no monitor is connected OR it dropped mid-session (the
+          // poller clears its cache). Normalizing here is what makes
+          // store.safety.connected self-heal on disconnect/reconnect within a
+          // poll cycle, so the no-monitor confirm can be trusted. Carry the
+          // UI-accumulated streak across the wholesale status replace.
+          ...(status.safety !== undefined
+            ? { safety: normalizeSafety(status.safety, s.safety?.streak ?? 0) }
+            : {}),
+        }));
         // poll_status carries the full 6-field site; keep store.site fresh while
         // connected so is_default/horizon_min_deg don't go stale until reconnect.
         if (status.site) set({ site: status.site });
@@ -1020,9 +1035,12 @@ export const useStore = create<AppState>((set, get) => ({
         // cold hydration snapshot — backend sends {"data": hub.summary()} with no
         // wrapper, so treat data directly as the summary dict (may carry site / mode
         // and, Batch-4b, a `safety` snapshot + redacted `config`).
+        // NB: `safety` here is the FLAT server SafetyReading dict (or null), NOT a
+        // SafetyState — hub.summary() emits _safety_reading_dict(); it must be
+        // normalized, never assigned straight in (that left `connected` undefined).
         const summary = ev.data as unknown as Partial<RigStatus> & {
           site?: SiteInfo;
-          safety?: SafetyState;
+          safety?: SafetyReading | null;
           config?: AppConfig;
         };
         if (summary.site) set({ site: summary.site });
@@ -1031,7 +1049,11 @@ export const useStore = create<AppState>((set, get) => ({
         }
         // Hydrate automation state on connect so the header safety chip + Settings
         // render correctly without waiting for the first periodic event (§2.2).
-        if (summary.safety) set({ safety: summary.safety });
+        // Normalize even when `null` (no monitor) so a reconnect with the monitor
+        // gone correctly reads connected:false instead of a stale true.
+        if (summary.safety !== undefined) {
+          set((s) => ({ safety: normalizeSafety(summary.safety, s.safety?.streak ?? 0) }));
+        }
         if (summary.config) set({ config: summary.config });
         break;
       }
@@ -1047,13 +1069,7 @@ export const useStore = create<AppState>((set, get) => ({
         // SafetyMonitor reading (engine §1.9-A / status §1.11). A `stale` read means
         // the device dropped or the cached read timed out — treat as NOT connected.
         const reading = ev.data as unknown as SafetyReading;
-        set((s) => ({
-          safety: {
-            streak: s.safety?.streak ?? 0,
-            reading,
-            connected: !reading.stale,
-          },
-        }));
+        set((s) => ({ safety: normalizeSafety(reading, s.safety?.streak ?? 0) }));
         // Unsafe OR stale → persistent (sticky) alert through the EXISTING queued
         // toast model: enqueueToast({level,title,ttl:0}). ttl:0 = never auto-dismiss,
         // so the UNSAFE notice can't be overwritten by a later transient toast (C3-6c).
