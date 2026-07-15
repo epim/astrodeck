@@ -63,6 +63,7 @@ from ..profiles import Profile, profiles
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
+from ..sequence.models import _quota_unbounded
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.session import migrate_legacy_resume, session_store
 
@@ -2274,6 +2275,20 @@ def create_app() -> FastAPI:
             body.model_dump(exclude={"force"}))
         if not plan.targets or plan.total_frames() == 0:
             raise HTTPException(422, "plan has no frames")
+        # Unbounded accepted-quota guard (Task 4 review, IMPORTANT): the
+        # accepted-mode capture loop (_run_step, spec §3) only terminates via an
+        # accepted frame, a reject-guard trip, or a frozen stop boundary — the
+        # no-progress watchdog only WARNs, never raises. When both reject
+        # guards are disabled AND no target carries a stop boundary, a step
+        # whose quota can never be satisfied (e.g. persistent clouds) would run
+        # forever. Never bypassed by `force` (that flag only overrides the
+        # horizon pre-flight below, not a structural configuration hazard).
+        if _quota_unbounded(plan):
+            raise HTTPException(
+                400,
+                "count_mode=accepted with both reject guards disabled and no "
+                "stop boundary can run unbounded — set max_consecutive_rejects, "
+                "max_consecutive_rejects_night, a stop time, or max_run_min")
         # Below-horizon pre-flight: refuse to start a run whose target can't be
         # observed from a *configured* site, unless explicitly forced.
         if not force:
@@ -2430,6 +2445,16 @@ def create_app() -> FastAPI:
         s = session_store.recoverable()
         if s is None:
             raise HTTPException(404, "no resumable sequence found")
+        # Same unbounded accepted-quota guard as /api/sequence/start (Task 4
+        # review, IMPORTANT) — resume starts the engine on this same loop, so a
+        # dormant session carrying the unbounded combination must be refused
+        # here too, not just on the original start.
+        if _quota_unbounded(s.plan):
+            raise HTTPException(
+                400,
+                "count_mode=accepted with both reject guards disabled and no "
+                "stop boundary can run unbounded — set max_consecutive_rejects, "
+                "max_consecutive_rejects_night, a stop time, or max_run_min")
         try:
             hub.require("camera")
             engine.start(s.plan, session=s)
