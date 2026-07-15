@@ -48,6 +48,7 @@ import {
   type OpticsLike,
 } from "../lib/framing";
 import { adjustedPa } from "../lib/rotation";
+import { uid } from "../lib/ids";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
 import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
@@ -463,6 +464,7 @@ export default function AtlasView(): JSX.Element {
   const panelsToTargets = (panels: MosaicPanel[]): Target[] => {
     const baseName = target?.id ?? target?.name ?? "Sky";
     return panels.map((p) => ({
+      id: uid(),                          // stable identity (sessions spec §1)
       name: panelCount > 1 ? `${baseName} ${p.row + 1}-${p.col + 1}` : baseName,
       ra_hours: p.ra_hours, // already %24-wrapped (server emits ra % 24)
       dec_deg: p.dec_deg,
@@ -471,7 +473,7 @@ export default function AtlasView(): JSX.Element {
       calibration: false,
       rotation_deg,
       mosaic_group: panelCount > 1 ? groupId : undefined,
-      steps: [{ ...ATLAS_DEFAULT_STEP }],
+      steps: [{ ...ATLAS_DEFAULT_STEP, id: uid() }],
     }));
   };
 
