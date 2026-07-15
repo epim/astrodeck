@@ -534,3 +534,80 @@ def test_boot_assertion_passes_with_visibility_gated(tmp_path, monkeypatch):
     view.status (a real capability)."""
     store, app = _make_client(tmp_path, monkeypatch)
     assert app is not None
+
+
+# ================================================ /api/site/mount-gps read-back
+
+class _FakeTel:
+    """A minimal connected Alpaca-like telescope exposing async _get for the
+    three site properties (mirrors _AlpacaDevice._get)."""
+
+    def __init__(self, lat, lon, elev):
+        self.connected = True
+        self._vals = {"sitelatitude": lat, "sitelongitude": lon,
+                      "siteelevation": elev}
+
+    async def _get(self, method):
+        return self._vals[method]
+
+
+def test_mount_gps_viewer_forbidden(tmp_path, monkeypatch):
+    """A viewer lacks config.site_optics -> 403 (the read-back exposes precise
+    coordinates)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.get("/api/site/mount-gps").status_code == 403
+
+
+def test_mount_gps_no_mount(tmp_path, monkeypatch):
+    """config.site_optics holder, no mount connected -> 200 {available: false}."""
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices", {})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps")
+        assert r.status_code == 200 and r.json()["available"] is False
+
+
+def test_mount_gps_reports_coords(tmp_path, monkeypatch):
+    """A fake mount reporting valid coords -> the values are echoed."""
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices",
+                        {"telescope": _FakeTel(40.5, -74.5, 30.0)})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps").json()
+        assert r["available"] is True
+        assert r["latitude"] == 40.5 and r["longitude"] == -74.5
+        assert r["elevation_m"] == 30.0
+
+
+def test_mount_gps_zero_zero_is_unset(tmp_path, monkeypatch):
+    """Exactly (0.0, 0.0) is the GPS-unset sentinel -> available: false."""
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices",
+                        {"telescope": _FakeTel(0.0, 0.0, 0.0)})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps").json()
+        assert r["available"] is False and "GPS" in r["detail"]
+
+
+def test_mount_gps_out_of_range_rejected(tmp_path, monkeypatch):
+    """Junk sentinels (99.0/181.0) are out of the Site ranges -> available: false."""
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices",
+                        {"telescope": _FakeTel(99.0, 181.0, 0.0)})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps").json()
+        assert r["available"] is False
