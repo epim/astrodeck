@@ -115,6 +115,57 @@ test("exact running payload (POST /api/profiles/{id}/activate, 409)", () => {
   assert(message === "a sequence, capture loop or polar alignment is running", `message: ${message}`);
 });
 
+// (e) nested detail carrying a target-resource id — the exact
+// POST /api/locations name_collision payload (app.py:1427-1429): the id is
+// the EXISTING location's id, the authoritative overwrite target for the UI.
+test("exact locations name_collision payload yields code AND id", () => {
+  const payload = {
+    detail: { code: "name_collision", id: "3f2a77c0deadbeef3f2a77c0deadbeef" },
+  };
+  const { code, id } = parseApiError(409, payload);
+  assert(code === "name_collision", `code: ${code}`);
+  assert(id === "3f2a77c0deadbeef3f2a77c0deadbeef", `id: ${id}`);
+});
+
+test("nested detail with detail+code+id yields all three", () => {
+  const payload = {
+    detail: { detail: "already exists", code: "name_collision", id: "abc123" },
+  };
+  const { message, code, id } = parseApiError(409, payload);
+  assert(message === "already exists", `message: ${message}`);
+  assert(code === "name_collision", `code: ${code}`);
+  assert(id === "abc123", `id: ${id}`);
+});
+
+test("id is undefined when the nested detail has none", () => {
+  const { id } = parseApiError(409, {
+    detail: { detail: "library is full", code: "library_full" },
+  });
+  assert(id === undefined, `id: ${id}`);
+});
+
+test("non-string id is ignored (undefined)", () => {
+  const { id } = parseApiError(409, {
+    detail: { code: "name_collision", id: 42 },
+  });
+  assert(id === undefined, `id: ${id}`);
+});
+
+test("flat top-level id alongside string detail is honored", () => {
+  const { code, id } = parseApiError(409, {
+    code: "name_collision",
+    id: "flat99",
+    detail: "exists",
+  });
+  assert(code === "name_collision", `code: ${code}`);
+  assert(id === "flat99", `id: ${id}`);
+});
+
+test("string detail and absent body yield no id", () => {
+  assert(parseApiError(404, { detail: "not found" }).id === undefined, "string detail");
+  assert(parseApiError(500, undefined, "ISE").id === undefined, "absent body");
+});
+
 console.log(`apiError.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
   failures.forEach((f) => console.error(f));

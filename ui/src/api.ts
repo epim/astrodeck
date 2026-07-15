@@ -14,12 +14,23 @@ export class ApiError extends Error {
   status: number;
   timedOut: boolean;
   code?: string;
-  constructor(message: string, status: number, timedOut = false, code?: string) {
+  /** Target-resource id some 409 payloads carry (e.g. name_collision's
+   *  existing-location id) — the authoritative reference for a follow-up
+   *  overwrite, parsed by lib/apiError.ts. */
+  id?: string;
+  constructor(
+    message: string,
+    status: number,
+    timedOut = false,
+    code?: string,
+    id?: string,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.timedOut = timedOut;
     this.code = code;
+    this.id = id;
   }
 }
 
@@ -70,8 +81,8 @@ async function req<T = unknown>(method: string, path: string, body?: unknown): P
     } catch {
       /* no/invalid JSON body; parseApiError falls back to statusText */
     }
-    const { message, code } = parseApiError(res.status, body, res.statusText);
-    throw new ApiError(message, res.status, false, code);
+    const { message, code, id } = parseApiError(res.status, body, res.statusText);
+    throw new ApiError(message, res.status, false, code, id);
   }
   return res.json() as Promise<T>;
 }
