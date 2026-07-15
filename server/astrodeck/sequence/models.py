@@ -1,6 +1,7 @@
 """Sequence plan data model (pydantic, shared with the REST API)."""
 from __future__ import annotations
 
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -73,7 +74,10 @@ class SequencePlan(BaseModel):
     recover_guiding: bool = True       # restart guiding if the star is lost
     hfr_reject_factor: float = 0.0     # warn when a frame's HFR exceeds factor × running median (0 = off)
     # --- multi-night quota mode (sessions spec §3; defaults preserve behavior) ---
-    count_mode: str = "attempts"             # "attempts" | "accepted"
+    # Literal (Task 4 review, MINOR): a typo used to silently degrade to
+    # "attempts" mode (the else-branch of every `count_mode == "accepted"`
+    # check) with no feedback. Now rejected at validation.
+    count_mode: Literal["attempts", "accepted"] = "attempts"
     min_stars: int = 0                       # star-count floor (0 = off)
     max_guide_rms: float = 0.0               # guide-RMS ceiling, arcsec (0 = off)
     max_consecutive_rejects: int = 10        # per-STEP consecutive guard (0 = off)
@@ -95,3 +99,33 @@ class SequencePlan(BaseModel):
     def total_lights(self) -> int:
         """Light frames only — excludes calibration targets (darks/bias/flats)."""
         return sum(s.count for t in self.targets for s in t.steps if not t.calibration)
+
+
+def _quota_unbounded(plan: SequencePlan) -> bool:
+    """True when starting ``plan`` in accepted-frame quota mode could run
+    forever under persistent rejects (Task 4 review, IMPORTANT).
+
+    ``engine._run_step``'s accepted-mode loop (spec §3) terminates a step only
+    via: an accepted frame reaching ``step.count``, the per-step
+    ``max_consecutive_rejects`` guard, the per-night
+    ``max_consecutive_rejects_night`` guard (``NightQualityStop``), or a frozen
+    stop boundary (``_enforce_stop_boundary`` -> ``StopTarget``, from
+    ``schedule.stop_mode``/``max_run_min``). The no-progress watchdog only
+    WARNs — it never raises. So when BOTH reject guards are disabled (0) AND
+    every non-calibration target carries no stop boundary at all, a step whose
+    quota can never be satisfied (e.g. persistent clouds) loops without any
+    terminating bound.
+
+    Calibration targets never enter the quota loop (``quota = count_mode ==
+    "accepted" and not target.calibration`` in ``_run_step``), so they're
+    excluded here; a plan with no non-calibration targets is never unbounded
+    by this rule."""
+    if plan.count_mode != "accepted":
+        return False
+    if plan.max_consecutive_rejects or plan.max_consecutive_rejects_night:
+        return False
+    lights = [t for t in plan.targets if not t.calibration]
+    if not lights:
+        return False
+    return all(t.schedule.stop_mode == "none" and not t.schedule.max_run_min
+              for t in lights)
