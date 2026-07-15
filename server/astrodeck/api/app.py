@@ -64,6 +64,7 @@ from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.report import SessionReporter, _slug
+from ..sequence.session import migrate_legacy_resume, session_store
 
 engine = SequenceEngine(hub)
 
@@ -122,6 +123,17 @@ async def _lifespan(app: "FastAPI"):
         _warn_insecure_session_secret()
     except Exception as e:  # noqa: BLE001 - degrade to open-default, never crash boot
         bus.log("error", f"auth provider init failed (open-default): {e}", "auth")
+    # Multi-night sessions (spec §2/§4): migrate the retired single-slot resume
+    # file ONCE, then sweep power-cut orphans (active -> dormant) so they are
+    # manually resumable + ResumeArm-eligible. Never raises out of boot.
+    try:
+        migrate_legacy_resume()
+        swept = session_store.boot_sweep()
+        if swept:
+            bus.log("info", f"boot sweep: {swept} orphaned session(s) -> dormant",
+                    "sequence")
+    except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+        bus.log("error", f"session boot sweep failed: {e}", "sequence")
     task = asyncio.create_task(dispatcher.run())
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
@@ -2403,31 +2415,28 @@ def create_app() -> FastAPI:
     @app.get("/api/sequence/recoverable", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def sequence_recoverable():
-        data = engine.load_resume()
-        if not data:
+        # Re-backed on the session store (spec §2): a dormant session WITH
+        # frames is recoverable. Route path unchanged for UI compatibility.
+        s = session_store.recoverable()
+        if s is None:
             return {"recoverable": False}
-        plan = SequencePlan(**data["plan"])
-        done = sum(data.get("done", {}).values())
-        return {"recoverable": True, "name": plan.name, "frames_done": done,
-                "frames_total": plan.total_frames(), "ts": data.get("ts")}
+        return {"recoverable": True, "session_id": s.id, "name": s.name,
+                "frames_done": sum(s.done_map().values()),
+                "frames_total": s.plan.total_frames(), "ts": s.updated_ts}
 
     @app.post("/api/sequence/recover", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"SequenceEngine.start"})
     async def sequence_recover():
-        data = engine.load_resume()
-        if not data:
+        s = session_store.recoverable()
+        if s is None:
             raise HTTPException(404, "no resumable sequence found")
-        plan = SequencePlan(**data["plan"])
         try:
             hub.require("camera")
-            # re-attach the persisted report so the resume keeps appending to the
-            # SAME report instead of forking a new one (C2-5).
-            engine.start(plan, resume_done=data.get("done", {}),
-                         report_id=data.get("report_id"))
+            engine.start(s.plan, session=s)
         except DeviceError as e:
             raise _err(e)
-        done = sum(data.get("done", {}).values())
-        return {"resumed": True, "frames_remaining": plan.total_frames() - done}
+        return {"resumed": True,
+                "frames_remaining": sum(s.remaining().values())}
 
     # -------------------------------------------------------------- polar align
 
