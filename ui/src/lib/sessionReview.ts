@@ -39,6 +39,14 @@ export function toggleSel(sel: string[], id: string): string[] {
   return sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id];
 }
 
+/** Drop selected ids that are not in the visible set (pure). Filter changes
+ *  must prune the selection so hidden-but-selected frames can't be regraded
+ *  invisibly by a later bulk action. */
+export function pruneSelection(sel: string[], visible: SessionFrame[]): string[] {
+  const vis = new Set(visible.map((f) => f.id));
+  return sel.filter((fid) => vis.has(fid));
+}
+
 /** Apply an override locally after a successful PATCH (pure; untouched frames
  *  stay reference-equal for React re-render scoping). */
 export function withOverride(
