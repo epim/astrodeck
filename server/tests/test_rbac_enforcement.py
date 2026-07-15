@@ -424,6 +424,85 @@ def test_site_full_for_admin(tmp_path, monkeypatch):
             assert hello["data"]["config"]["site"]["latitude"] == _PRECISE_LAT
 
 
+# ============================== T-RBAC-13b config-write echo strip (bridge review)
+# Whole-branch review finding: GET /api/config wrapped its response in
+# _redact_site_for, but ``_config_payload()`` itself did NOT strip site
+# precision, and every config-WRITE route echoed it back BARE. A plain viewer
+# could reach it via an empty-body POST /api/config (``{}`` passes
+# ``_require_config_field_caps`` vacuously, floor is only view.status). Fixed
+# by moving the strip INSIDE ``_config_payload(principal)`` so every caller
+# (read or write) redacts identically. These tests pin the fix at the two
+# routes that most directly demonstrate the leak: POST /api/config (the exact
+# empty-body reproduction) and PUT /api/site (the documented edge -- a caller
+# who may WRITE site coords need not also hold view.site_precise to READ them
+# back).
+
+def test_post_config_empty_body_echo_stripped_for_viewer(tmp_path, monkeypatch):
+    """viewer POST /api/config {} -> 200 (empty body passes field-cap check
+    vacuously) AND the echoed site (top-level + the embedded config.site, if
+    present) has the four precise keys ABSENT, keeping is_default/horizon."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.post("/api/config", json={})
+        assert r.status_code == 200
+        body = r.json()
+        _assert_site_stripped(body["site"])
+        cfg_site = body.get("config", {}).get("site") if isinstance(
+            body.get("config"), dict) else None
+        if cfg_site is not None:
+            _assert_site_stripped(cfg_site)
+
+
+def test_post_config_empty_body_echo_stripped_for_operator(tmp_path, monkeypatch):
+    """Same assertion for operator -- also lacks view.site_precise."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        r = c.post("/api/config", json={})
+        assert r.status_code == 200
+        body = r.json()
+        _assert_site_stripped(body["site"])
+        cfg_site = body.get("config", {}).get("site") if isinstance(
+            body.get("config"), dict) else None
+        if cfg_site is not None:
+            _assert_site_stripped(cfg_site)
+
+
+def test_post_config_empty_body_echo_full_for_admin(tmp_path, monkeypatch):
+    """admin POST /api/config {} -> full precise echo, holder untouched (no
+    regression: the structural fix must not narrow what a holder sees)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        r = c.post("/api/config", json={})
+        assert r.status_code == 200
+        site = r.json()["site"]
+        assert site["latitude"] == _PRECISE_LAT
+        assert site["longitude"] == _PRECISE_LON
+        assert site["elevation_m"] == _PRECISE_ELEV
+        assert site["name"] == _PRECISE_NAME
+
+
+def test_put_site_echo_stripped_for_non_holder_writer(tmp_path, monkeypatch):
+    """A principal holding config.site_optics + view.status but NOT
+    view.site_precise -- i.e. may WRITE the site but not READ it back precisely
+    -- does PUT /api/site with valid coords -> 200 AND the echoed site is
+    stripped. This is the spec's documented edge: the write cap and the
+    precise-read cap are independent."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(_principal_with("config.site_optics", "view.status"))
+    with TestClient(app) as c:
+        r = c.put("/api/site", json={"site": {
+            "name": _PRECISE_NAME, "latitude": _PRECISE_LAT,
+            "longitude": _PRECISE_LON, "elevation_m": _PRECISE_ELEV}})
+        assert r.status_code == 200
+        _assert_site_stripped(r.json()["site"])
+
+
 # ==================================== T-RBAC-14 WS periodic re-authentication
 # Auth on the long-lived /ws is otherwise checked ONLY at accept, so a revoked
 # session / expired token would keep streaming for the whole all-night run. The
