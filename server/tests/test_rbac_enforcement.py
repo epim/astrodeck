@@ -611,3 +611,162 @@ def test_mount_gps_out_of_range_rejected(tmp_path, monkeypatch):
     with TestClient(app) as c:
         r = c.get("/api/site/mount-gps").json()
         assert r["available"] is False
+
+
+def test_mount_gps_nan_latitude_rejected(tmp_path, monkeypatch):
+    """A mount reporting NaN latitude -> available: false (non-finite guard)."""
+    import math
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices",
+                        {"telescope": _FakeTel(math.nan, -74.5, 30.0)})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps").json()
+        assert r["available"] is False
+
+
+def test_mount_gps_no_get_attribute(tmp_path, monkeypatch):
+    """A connected telescope object with NO ``_get`` -> available: false (not an
+    Alpaca-backed device we can read GPS from)."""
+    import astrodeck.hub as hub_mod
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+
+    class _NoGetTel:
+        connected = True
+
+    store, app = _make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub_mod.hub, "devices", {"telescope": _NoGetTel()})
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.get("/api/site/mount-gps").json()
+        assert r["available"] is False
+
+
+# ================================================= /api/locations routes + RBAC
+
+def _wire_locations(tmp_path, monkeypatch, app):
+    """Point the location_store singleton at a temp file for this test."""
+    import astrodeck.locations as loc_mod
+    from astrodeck.locations import LocationStore
+    temp = LocationStore(path=tmp_path / "locations.json")
+    monkeypatch.setattr(loc_mod, "location_store", temp)
+    monkeypatch.setattr(app_module, "location_store", temp)
+    return temp
+
+
+def test_locations_rbac_viewer_and_operator_forbidden(tmp_path, monkeypatch):
+    """All four routes require config.site_optics: viewer AND operator -> 403."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    body = {"name": "Home", "latitude": 40.0, "longitude": -74.0,
+            "elevation_m": 12.0}
+    for role in ("viewer", "operator"):
+        _install(principal_for_role(role))
+        with TestClient(app) as c:
+            assert c.get("/api/locations").status_code == 403
+            assert c.post("/api/locations", json=body).status_code == 403
+            assert c.put("/api/locations/x", json=body).status_code == 403
+            assert c.delete("/api/locations/x").status_code == 403
+
+
+def test_locations_holder_full_access_and_error_codes(tmp_path, monkeypatch):
+    """A config.site_optics holder gets full CRUD; collision -> 409 name_collision
+    + existing id; unknown id -> 404."""
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    body = {"name": "Home", "latitude": 40.0, "longitude": -74.0,
+            "elevation_m": 12.0}
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.post("/api/locations", json=body)
+        assert r.status_code == 200
+        lid = r.json()["id"]
+        assert len(c.get("/api/locations").json()) == 1
+        # case-insensitive collision -> 409 {code, id}
+        rc = c.post("/api/locations", json={**body, "name": "home"})
+        assert rc.status_code == 409
+        assert rc.json()["detail"]["code"] == "name_collision"
+        assert rc.json()["detail"]["id"] == lid
+        # rename onto a fresh name -> 200
+        assert c.put(f"/api/locations/{lid}",
+                     json={**body, "name": "Renamed"}).status_code == 200
+        # unknown id -> 404 on PUT and DELETE
+        assert c.put("/api/locations/nope", json=body).status_code == 404
+        assert c.delete("/api/locations/nope").status_code == 404
+        # delete real -> 200, list empty
+        assert c.delete(f"/api/locations/{lid}").status_code == 200
+        assert c.get("/api/locations").json() == []
+
+
+def test_locations_library_full_409(tmp_path, monkeypatch):
+    """A create beyond MAX_LOCATIONS -> 409 {code: library_full}."""
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    from astrodeck.locations import MAX_LOCATIONS
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        for i in range(MAX_LOCATIONS):
+            assert c.post("/api/locations",
+                          json={"name": f"L{i}", "latitude": 1.0,
+                                "longitude": 2.0, "elevation_m": 0.0}
+                          ).status_code == 200
+        r = c.post("/api/locations",
+                   json={"name": "over", "latitude": 1.0, "longitude": 2.0,
+                         "elevation_m": 0.0})
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "library_full"
+
+
+def test_locations_absent_from_all_payloads(tmp_path, monkeypatch):
+    """The library is served ONLY by /api/locations — never in status/summary/
+    config or the WS hello (the §2 strip seam needs no change for it)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        assert "locations" not in c.get("/api/status").json()
+        assert "locations" not in c.get("/api/config").json()
+        summ = c.get("/api/summary").json()
+        assert "locations" not in summ
+        assert "locations" not in summ.get("config", {})
+        with c.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert "locations" not in hello["data"]
+            assert "locations" not in hello["data"].get("config", {})
+
+
+def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
+    """After a /api/site save, a mount-gps read, and a full locations save/
+    update/delete cycle against the seeded precise site, the NEW log entries
+    contain no precise coordinate strings (spec §8; /api/logs is viewer-visible)."""
+    import json as _json
+    from astrodeck.events import bus
+    from astrodeck.auth import (CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS,
+                                CAP_CONFIG_SAFETY)
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    _install(_principal_with(CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS,
+                             CAP_CONFIG_SAFETY))
+    lat_s, lon_s = "40.123456", "-74.654321"
+    with TestClient(app) as c:
+        before = len(bus.log_history)
+        c.put("/api/site", json={"site": {
+            "name": "Secret Barn", "latitude": 40.123456,
+            "longitude": -74.654321, "elevation_m": 123.4}})
+        c.get("/api/site/mount-gps")
+        r = c.post("/api/locations", json={
+            "name": "Barn", "latitude": 40.123456, "longitude": -74.654321,
+            "elevation_m": 123.4})
+        lid = r.json()["id"]
+        c.put(f"/api/locations/{lid}", json={
+            "name": "Barn2", "latitude": 40.123456, "longitude": -74.654321,
+            "elevation_m": 123.4})
+        c.delete(f"/api/locations/{lid}")
+        new_logs = bus.log_history[before:]
+    blob = _json.dumps(new_logs)
+    assert lat_s not in blob, "precise latitude leaked into bus.log"
+    assert lon_s not in blob, "precise longitude leaked into bus.log"
