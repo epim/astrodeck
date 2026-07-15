@@ -63,7 +63,7 @@ from ..profiles import Profile, profiles
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
-from ..sequence.models import _quota_unbounded
+from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.session import migrate_legacy_resume, session_store
 
@@ -2283,7 +2283,7 @@ def create_app() -> FastAPI:
         # whose quota can never be satisfied (e.g. persistent clouds) would run
         # forever. Never bypassed by `force` (that flag only overrides the
         # horizon pre-flight below, not a structural configuration hazard).
-        if _quota_unbounded(plan):
+        if quota_unbounded(plan):
             raise HTTPException(
                 400,
                 "count_mode=accepted with both reject guards disabled and no "
@@ -2449,7 +2449,7 @@ def create_app() -> FastAPI:
         # review, IMPORTANT) — resume starts the engine on this same loop, so a
         # dormant session carrying the unbounded combination must be refused
         # here too, not just on the original start.
-        if _quota_unbounded(s.plan):
+        if quota_unbounded(s.plan):
             raise HTTPException(
                 400,
                 "count_mode=accepted with both reject guards disabled and no "
