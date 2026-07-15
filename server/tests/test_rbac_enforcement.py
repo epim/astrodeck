@@ -721,6 +721,29 @@ def test_locations_library_full_409(tmp_path, monkeypatch):
         assert r.json()["detail"]["code"] == "library_full"
 
 
+def test_locations_out_of_range_body_422(tmp_path, monkeypatch):
+    """Out-of-range coordinates are rejected AT THE BOUNDARY by LocationBody's
+    Field constraints -> 422 (never a 500 from an uncaught ValidationError
+    inside the store): POST with latitude 999 and PUT with longitude -999."""
+    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
+    store, app = _make_client(tmp_path, monkeypatch)
+    _wire_locations(tmp_path, monkeypatch, app)
+    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
+    with TestClient(app) as c:
+        r = c.post("/api/locations",
+                   json={"name": "Bad", "latitude": 999.0, "longitude": 2.0,
+                         "elevation_m": 0.0})
+        assert r.status_code == 422
+        # a valid location to target with the bad PUT
+        lid = c.post("/api/locations",
+                     json={"name": "Good", "latitude": 1.0, "longitude": 2.0,
+                           "elevation_m": 0.0}).json()["id"]
+        r = c.put(f"/api/locations/{lid}",
+                  json={"name": "Good", "latitude": 1.0, "longitude": -999.0,
+                        "elevation_m": 0.0})
+        assert r.status_code == 422
+
+
 def test_locations_absent_from_all_payloads(tmp_path, monkeypatch):
     """The library is served ONLY by /api/locations — never in status/summary/
     config or the WS hello (the §2 strip seam needs no change for it)."""

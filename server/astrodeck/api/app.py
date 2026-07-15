@@ -454,11 +454,15 @@ class OpticsSaveBody(BaseModel):
 
 
 class LocationBody(BaseModel):
+    # Range-constrained AT THE BOUNDARY (same ranges as config.Site /
+    # locations.SavedLocation) so out-of-range input 422s in FastAPI's body
+    # validation instead of raising an uncaught ValidationError (-> 500)
+    # inside LocationStore's post-model_copy re-validate.
     name: str
-    latitude: float
-    longitude: float
-    elevation_m: float
-    horizon_min_deg: float | None = None
+    latitude: float = Field(..., ge=-90, le=90)      # +N (signed)
+    longitude: float = Field(..., ge=-180, le=180)   # +E (East-positive)
+    elevation_m: float = Field(..., ge=-430, le=9000)
+    horizon_min_deg: float | None = Field(None, ge=0, le=90)
 
 
 class ProfileCaptureBody(BaseModel):
