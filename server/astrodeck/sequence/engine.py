@@ -27,22 +27,20 @@ WITHOUT changing any existing ETA/resume bookkeeping:
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-from .. import hub as _hubmod
 from ..config import config_store
 from ..devices.base import DeviceError, PierSide
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import Hub
-from ..persist import write_json_atomic
 from . import schedule
 from .models import SequencePlan, Target
 from .report import FrameRecord, SessionReporter
+from .session import Session, SessionFrame, session_store
 
 # --- Monitor / ETA shared constants (single source of truth) ---------------
 # The cooler "at target" band. Defined ONCE here (master plan §A.7); the hub
@@ -112,8 +110,17 @@ async def _bounded(awaitable, timeout_s: float, what: str):
         raise SafetyAbort(f"{what} timed out after {timeout_s:.0f}s")
 
 
-def _resume_file() -> Path:
-    return _hubmod.CAPTURE_DIR / ".sequence_resume.json"
+def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
+    """Collision-safe per-night report id (spec §4): ``slug-YYYYMMDD-HHMMSS``,
+    suffixed ``-2``/``-3``/... when this session already minted that id (same
+    plan name resumed within the same second)."""
+    rid = SessionReporter._make_id(plan_name or "Tonight", started_at)
+    if rid not in taken:
+        return rid
+    n = 2
+    while f"{rid}-{n}" in taken:
+        n += 1
+    return f"{rid}-{n}"
 
 
 class SafetyAbort(DeviceError):
@@ -154,7 +161,8 @@ class SequenceEngine:
         # whole ~12h the target is west — flips at most ONCE per crossing instead
         # of re-flipping every frame.
         self._flip_armed = False
-        self._done: dict[str, int] = {}   # "ti:si" -> frames completed
+        self._done: dict[str, int] = {}   # "targetId:stepId" -> frames completed
+        self._session: Session | None = None   # live ledger (sessions spec §2)
         self._started_at = 0.0
         # --- paused-aware elapsed + deterministic ETA bookkeeping (spec §5) ---
         self._paused_accum_s = 0.0
@@ -196,12 +204,25 @@ class SequenceEngine:
 
     # ----------------------------------------------------------------- control
 
-    def start(self, plan: SequencePlan, resume_done: dict[str, int] | None = None,
-              report_id: str | None = None) -> None:
+    def start(self, plan: SequencePlan, *, session: Session | None = None) -> None:
+        """Start a run. EVERY start owns a Session (spec §2): a fresh one when
+        ``session`` is None (ids were backfilled by pydantic during plan
+        validation — the server-side backfill seam), or a re-opened dormant one
+        on resume. Resume seeds ``_done`` from the ledger's id-keyed
+        ``done_map()`` and appends a FRESH report to ``session.nights`` — one
+        immutable report per night (spec §4); windows re-resolve naturally
+        because resume is a new run."""
         if self.running:
             raise DeviceError("a sequence is already running")
         self.plan = plan
-        self._done = dict(resume_done or {})
+        resume = session is not None
+        if session is None:
+            session = Session(name=plan.name or "Tonight",
+                              created_ts=time.time(), status="active", plan=plan)
+        else:
+            session.status = "active"
+        self._session = session
+        self._done = dict(session.done_map()) if resume else {}
         self._frames_done = sum(self._done.values())
         self._frames_since_dither = 0
         self._frames_since_focus = 0
@@ -223,18 +244,12 @@ class SequenceEngine:
         self._event_costs = {}
         # --- automation / safety run state (snapshot config ONCE at run start) ---
         self._cfg = config_store.cfg()
-        # crash-resume must keep appending to the SAME report (C2-5): re-attach the
-        # persisted report_id instead of forking a new report. When resuming and no
-        # report_id was passed by the caller, self-source it from the resume file.
-        if report_id is None and resume_done is not None:
-            saved = self.load_resume()
-            if saved:
-                report_id = saved.get("report_id")
-        self.reporter = None
-        if report_id:
-            self.reporter = SessionReporter.attach_existing(report_id)
-        if self.reporter is None:
-            self.reporter = SessionReporter(plan, started_at=self._started_at)
+        rid = _mint_report_id(plan.name or "Tonight", self._started_at,
+                              session.nights)
+        self.reporter = SessionReporter(plan, report_id=rid,
+                                        started_at=self._started_at)
+        session.nights.append(self.reporter.id)
+        session_store.save(session)
         self._report_finalized = False
         self._unsafe_streak = 0
         self._safe_streak = 0
@@ -401,16 +416,6 @@ class SequenceEngine:
     def paused(self) -> bool:
         return not self._paused.is_set()
 
-    @staticmethod
-    def load_resume() -> dict | None:
-        # read UTF-8 to match write_json_atomic's encoding (a target name with a
-        # non-ascii char would otherwise mis-decode under the Windows cp1252
-        # default). Missing/corrupt → None (caller starts fresh).
-        try:
-            return json.loads(_resume_file().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-
     # ------------------------------------------------------------------- state
 
     def _set_state(self, **kw: Any) -> None:
@@ -478,33 +483,6 @@ class SequenceEngine:
             live["sensor_temp_c"] = round(float(t), 1)
         return live or None
 
-    def _persist(self) -> None:
-        if not self.plan:
-            return
-        # ATOMIC write (P0-5): a plain write_text could be interrupted by a power
-        # cut mid-write and leave a half-written, unparseable .sequence_resume.json
-        # — a crash-resume would then silently fork a NEW report and lose night
-        # continuity. Reuse the same temp-file + fsync + os.replace helper config
-        # uses (persist.write_json_atomic), so the resume file is never observed
-        # half-written. The .bak is suppressed: the resume file churns every frame
-        # and a stale .bak is worthless for resume (the live file is the only
-        # truth), so we skip the per-frame copy.
-        try:
-            write_json_atomic(
-                _resume_file(),
-                {"plan": self.plan.model_dump(), "done": self._done,
-                 "ts": time.time(),
-                 "report_id": self.reporter.id if self.reporter else None},
-                backup=False)
-        except OSError:
-            pass
-
-    def _clear_resume(self) -> None:
-        try:
-            _resume_file().unlink(missing_ok=True)
-        except OSError:
-            pass
-
     async def _checkpoint(self) -> None:
         """Frame-boundary gate: honors pause and cancellation."""
         await self._paused.wait()
@@ -560,7 +538,6 @@ class SequenceEngine:
                                     end_reason="cooling_skip", schedule=None)
                     bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
                                        "required but not reached", "sequence")
-                    self._clear_resume()
                     self._finalize_report("cooling_skip")
                     await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
                     return
@@ -574,14 +551,12 @@ class SequenceEngine:
                                 end_reason="dawn_cutoff", schedule=None)
                 bus.log("info", f"sequence '{plan.name}' stopped at dawn: "
                                 f"{self._frames_done} frames", "sequence")
-                self._clear_resume()
                 self._finalize_report("dawn_cutoff")
             else:
                 self._set_state(state="complete", detail="all targets complete", schedule=None)
                 bus.log("info", f"sequence '{plan.name}' complete: {self._frames_done} frames"
                                 + (f", {self._rejected} flagged" if self._rejected else ""),
                         "sequence")
-                self._clear_resume()
                 self._finalize_report("complete")
             await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
         except SafetyAbort as e:
@@ -643,6 +618,22 @@ class SequenceEngine:
                 bus.log("warning", f"report finalize failed: {e}", "sequence")
             rid = self.reporter.id
         bus.publish("report", id=rid)
+        # ---- session terminal transition (spec §4) ---------------------------
+        # 'complete' ONLY when the run finished naturally with no unmet quota
+        # (in accepted mode); EVERY other cause — dawn_cutoff / window_closed /
+        # max_run (both surface as dawn_cutoff here) / aborted / error / unsafe
+        # / cooling_skip / quality — leaves unmet work -> dormant + resumable.
+        if self._session is not None:
+            quota = getattr(self._session.plan, "count_mode", "attempts") == "accepted"
+            unmet = quota and any(v > 0 for v in self._session.remaining().values())
+            self._session.status = ("complete"
+                                    if reason == "complete" and not unmet
+                                    else "dormant")
+            try:
+                session_store.save(self._session)
+            except Exception as e:
+                bus.log("warning", f"session save failed: {e}", "sequence")
+            self._session = None
 
     async def _run_scheduled(self, plan: SequencePlan) -> None:
         """Window-sorted skip-ahead scheduler (§1.9-C).
@@ -785,7 +776,7 @@ class SequenceEngine:
 
     def _target_complete(self, ti: int, target: Target) -> bool:
         total = sum(s.count for s in target.steps)
-        done = sum(self._done.get(f"{ti}:{si}", 0) for si in range(len(target.steps)))
+        done = sum(self._done.get(f"{target.id}:{s.id}", 0) for s in target.steps)
         return total > 0 and done >= total
 
     def _enforce_stop_boundary(self, target: Target) -> None:
@@ -935,7 +926,7 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
         for si, step in enumerate(target.steps):
-            key = f"{ti}:{si}"
+            key = f"{target.id}:{step.id}"
             for i in range(self._done.get(key, 0), step.count):
                 await self._checkpoint()
                 # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
@@ -950,15 +941,15 @@ class SequenceEngine:
                 accepted = self._check_quality(info)
                 self._reporter_record(target, step, info, accepted=accepted)
                 if accepted:
-                    self._record_frame(key, i)
+                    self._record_frame(key, i, target, step, info)
                 else:
                     if not await self._handle_reject(info, key, i, target, step):
-                        self._record_frame(key, i)
+                        self._record_frame(key, i, target, step, info, accepted=False)
 
     async def _run_step(self, ti: int, si: int, target: Target, step) -> None:
         plan = self.plan
         assert plan is not None
-        key = f"{ti}:{si}"
+        key = f"{target.id}:{step.id}"
         if self._done.get(key, 0) >= step.count:
             return
         await self._apply_filter(step)
@@ -1008,13 +999,13 @@ class SequenceEngine:
             accepted = self._check_quality(info)
             self._reporter_record(target, step, info, accepted=accepted)
             if accepted:
-                self._record_frame(key, i)
+                self._record_frame(key, i, target, step, info)
             else:
                 # _handle_reject returns True when it consumed the slot (discard /
                 # retake-then-discard); False to fall through to a normal record
                 # (warn — frame is kept).
                 if not await self._handle_reject(info, key, i, target, step):
-                    self._record_frame(key, i)
+                    self._record_frame(key, i, target, step, info, accepted=False)
 
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
@@ -1100,7 +1091,7 @@ class SequenceEngine:
             accepted = self._check_quality(new_info)
             self._reporter_record(target, step, new_info, accepted=accepted)
             if accepted:
-                self._record_frame(key, i)
+                self._record_frame(key, i, target, step, new_info)
                 return True
             # retaken frame still bad → discard and stop retaking this one.
             self._unlink_saved(new_info)
@@ -1479,7 +1470,8 @@ class SequenceEngine:
         self._cur_exposure_s = float(exposure_s)
         self._frame_started_at = time.time()
 
-    def _record_frame(self, key: str, i: int) -> None:
+    def _record_frame(self, key: str, i: int, target: Target, step, info: dict,
+                      *, accepted: bool = True) -> None:
         now = time.time()
         # Per-frame overhead EMA: cadence minus exposure, EXCLUDING any frame that
         # carried a dither/AF/flip (those are accounted analytically, so folding
@@ -1502,8 +1494,47 @@ class SequenceEngine:
         self._frame_started_at = 0.0   # frame complete — no longer in flight
         self._done[key] = i + 1
         self._frames_done += 1
-        self._persist()
+        # ledger append + atomic session save replaces the retired resume-file
+        # _persist (same per-frame write cost — sessions spec §3).
+        self._record_session_frame(target, step, info, auto_accepted=accepted)
         self._set_state()
+
+    def _record_session_frame(self, target: Target, step, info: dict,
+                              *, auto_accepted: bool) -> SessionFrame | None:
+        """Append one ledger entry (metrics: hfr / stars / guide_rms /
+        sensor_temp_c — floats only, absent when unmeasured) + save the session
+        atomically. Best-effort: a ledger hiccup must never break capture."""
+        if self._session is None:
+            return None
+        metrics: dict[str, float] = {}
+        if isinstance(info, dict):
+            if info.get("hfr") is not None:
+                metrics["hfr"] = float(info["hfr"])
+            if info.get("stars") is not None:
+                metrics["stars"] = float(info["stars"])
+        try:
+            if self.hub.guider and self.hub.guider.connected:
+                rms = getattr(self.hub.guider.stats(), "rms_total", None)
+                if rms is not None:
+                    metrics["guide_rms"] = float(rms)
+        except Exception:
+            pass
+        frame = getattr(self.hub, "last_frame", None)
+        temp = getattr(frame, "temperature_c", None) if frame is not None else None
+        if temp is not None:
+            metrics["sensor_temp_c"] = float(temp)
+        saved = info.get("saved_path") if isinstance(info, dict) else None
+        sf = SessionFrame(ts=time.time(),
+                          night=self.reporter.id if self.reporter else "",
+                          target_id=target.id, step_id=step.id,
+                          path=str(saved) if saved else "", metrics=metrics,
+                          auto_accepted=auto_accepted)
+        try:
+            self._session.frames.append(sf)
+            session_store.save(self._session)
+        except Exception as e:
+            bus.log("warning", f"session ledger write failed: {e}", "sequence")
+        return sf
 
     # ----------------------------------------------------------- sub-routines
 

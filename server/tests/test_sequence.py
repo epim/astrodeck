@@ -170,13 +170,16 @@ async def test_resume_after_abort(sim_hub, tmp_path):
     engine.start(plan)
     assert await wait_for(lambda: engine._frames_done >= 2)
     await engine.abort()
-    data = SequenceEngine.load_resume()
-    assert data is not None
-    done_before = sum(data["done"].values())
+    from astrodeck.sequence.session import session_store
+    s = session_store.recoverable()
+    assert s is not None and s.status == "dormant"
+    done_before = sum(s.done_map().values())
     assert 1 <= done_before < 6
 
     engine2 = SequenceEngine(sim_hub)
-    engine2.start(plan, resume_done=data["done"])
+    engine2.start(s.plan, session=s)
     assert await wait_for(lambda: engine2.state.get("state") == "complete")
     assert engine2._frames_done == 6              # resumed, did not redo all 6
-    assert SequenceEngine.load_resume() is None   # cleared on completion
+    assert session_store.recoverable() is None    # nothing dormant remains
+    assert session_store.load(s.id).status == "complete"
+    assert len(session_store.load(s.id).nights) == 2   # one report per night
