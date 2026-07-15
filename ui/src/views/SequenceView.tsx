@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
 import { Field, HoldButton, IconButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
+import SessionsPanel from "../components/sequence/SessionsPanel";
 import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
@@ -904,6 +905,10 @@ export default function SequenceView() {
             </div>
           </div>
         </Panel>
+
+        {/* Multi-night sessions (sessions spec §7): resume/manage cards for
+            non-abandoned sessions. Self-hides when there are none. */}
+        <SessionsPanel />
 
         {/* Pre-flight gate (F-P0.1): the strip is always visible once the plan has
             frames; Review opens the modal. Run is disabled when blocked and only
