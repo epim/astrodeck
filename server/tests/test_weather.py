@@ -164,3 +164,272 @@ def test_config_weather_409_body_never_leaks_key(tmp_path, monkeypatch):
         assert r2.status_code == 409
         assert "SECRET-KEY-XYZ" not in r2.text         # 409 body masked
         assert store.cfg().weather.astrospheric_api_key == "SECRET-KEY-XYZ"
+
+
+# ============================================================ WeatherService
+# Poller cadence / fetchers / cache / staleness / payload (spec §3, §7, §14).
+# Injected clock + monkeypatched httpx (test_survey _FakeClient/_Boom +
+# test_resume_arm clock patterns). The bus is replaced by a recorder so
+# publish/log assertions need no asyncio queue draining.
+
+import httpx  # noqa: E402  (section import, mirrors test_survey.py style)
+
+import astrodeck.weather as weather_mod  # noqa: E402
+from astrodeck.weather import (ASTROSPHERIC_INTERVAL_S,  # noqa: E402
+                               OPEN_METEO_INTERVAL_S, OPEN_METEO_STALE_S,
+                               WeatherService)
+
+BASE = 1_700_000_000.0 - (1_700_000_000.0 % 900.0)   # 15-min-aligned anchor
+
+
+def _iso_minute(ts: float) -> str:
+    """Open-Meteo minutely_15 time format: ISO-8601 to the minute, no zone
+    suffix (timezone=UTC is requested, so times are UTC)."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M")
+
+
+def _om_payload(cloud, *, start: float = BASE, low=None, mid=None, high=None):
+    n = len(cloud)
+    return {"minutely_15": {
+        "time": [_iso_minute(start + i * 900) for i in range(n)],
+        "cloud_cover": cloud,
+        "cloud_cover_low": low if low is not None else [0] * n,
+        "cloud_cover_mid": mid if mid is not None else [0] * n,
+        "cloud_cover_high": high if high is not None else list(cloud),
+    }}
+
+
+def _astro_payload(*, start: float = BASE, seeing=(2.0, 3.0),
+                   trans=(21.0, 22.0), credits=20):
+    from datetime import datetime, timezone
+    return {
+        "UTCStartTime": datetime.fromtimestamp(start, tz=timezone.utc)
+                                .strftime("%Y-%m-%dT%H:%M:%S"),
+        "ModelTime": "2026071600",
+        "APICreditUsedToday": credits,
+        "Astrospheric_Seeing": [{"Value": {"ActualValue": v}} for v in seeing],
+        "Astrospheric_Transparency": [{"Value": {"ActualValue": v}} for v in trans],
+    }
+
+
+class _FakeJsonResp:
+    def __init__(self, js, status: int = 200):
+        self._js = js
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("bad", request=None, response=None)  # type: ignore[arg-type]
+
+    def json(self):
+        return self._js
+
+
+class _FakeWxClient:
+    """Serves Open-Meteo GETs and Astrospheric POSTs; counts calls."""
+    om_payload: dict = {}
+    astro_payload: dict = {}
+    fail_om = False
+    fail_astro = False
+    om_calls = 0
+    astro_calls = 0
+    last_astro_body = None
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, params=None):
+        type(self).om_calls += 1
+        if type(self).fail_om:
+            raise httpx.ConnectError("down")
+        return _FakeJsonResp(type(self).om_payload)
+
+    async def post(self, url, json=None):
+        type(self).astro_calls += 1
+        type(self).last_astro_body = json
+        if type(self).fail_astro:
+            raise httpx.ConnectError("down")
+        return _FakeJsonResp(type(self).astro_payload)
+
+
+class _BoomWx:
+    """httpx.AsyncClient stand-in whose CONSTRUCTION fails the test (the
+    survey _Boom zero-httpx-when-disabled invariant, spec §16)."""
+    def __init__(self, *a, **kw):
+        raise AssertionError("httpx client constructed while weather disabled")
+
+
+class _BusRecorder:
+    def __init__(self):
+        self.published: list[tuple[str, dict]] = []
+        self.logs: list[tuple[str, str, str]] = []
+
+    def publish(self, type: str, **data):
+        self.published.append((type, data))
+
+    def log(self, level: str, message: str, source: str = "hub"):
+        self.logs.append((level, message, source))
+
+
+@pytest.fixture
+def svc(tmp_path, monkeypatch):
+    """Isolated WeatherService: temp ConfigStore (enabled, real site), injected
+    wall clock, recorder bus, _FakeWxClient httpx. Night resolution defaults to
+    None (inert warning path) — latch tests re-patch _tonight themselves."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    site = store.cfg().site
+    site.latitude, site.longitude, site.is_default = 34.2, -118.1, False
+    store.cfg().weather.enabled = True
+    monkeypatch.setattr(weather_mod, "config_store", store)
+    rec = _BusRecorder()
+    monkeypatch.setattr(weather_mod, "bus", rec)
+    monkeypatch.setattr(weather_mod.httpx, "AsyncClient", _FakeWxClient)
+    _FakeWxClient.om_payload = _om_payload([0] * 8)
+    _FakeWxClient.astro_payload = _astro_payload()
+    _FakeWxClient.fail_om = _FakeWxClient.fail_astro = False
+    _FakeWxClient.om_calls = _FakeWxClient.astro_calls = 0
+    _FakeWxClient.last_astro_body = None
+    monkeypatch.setattr(WeatherService, "_tonight", lambda self, t: None)
+    now = {"t": BASE}
+    return WeatherService(clock=lambda: now["t"]), now, store, rec
+
+
+async def test_open_meteo_cadence_due_not_due(svc):
+    s, now, store, rec = svc
+    await s.tick()
+    assert _FakeWxClient.om_calls == 1
+    now["t"] += 300
+    await s.tick()                                # 5 min later: not due
+    assert _FakeWxClient.om_calls == 1
+    now["t"] += 601                               # past the 15-min mark
+    await s.tick()
+    assert _FakeWxClient.om_calls == 2
+
+
+async def test_astrospheric_six_hourly_key_gated_exact_body(svc):
+    s, now, store, rec = svc
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 0          # no key -> NEVER called
+    store.cfg().weather.astrospheric_api_key = "k-123"
+    now["t"] += OPEN_METEO_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 1
+    # exact verified body casing (spec §3) — the key rides ONLY here
+    assert _FakeWxClient.last_astro_body == {
+        "Latitude": 34.2, "Longitude": -118.1, "APIKey": "k-123"}
+    now["t"] += 3600.0
+    await s.tick()                                 # 1 h later: 6 h cadence holds
+    assert _FakeWxClient.astro_calls == 1
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    assert _FakeWxClient.astro_calls == 2
+
+
+async def test_disabled_zero_httpx_and_flip_within_one_tick(svc, monkeypatch):
+    s, now, store, rec = svc
+    store.cfg().weather.enabled = False
+    monkeypatch.setattr(weather_mod.httpx, "AsyncClient", _BoomWx)
+    await s.tick()                                 # disabled: ZERO construction
+    now["t"] += OPEN_METEO_INTERVAL_S
+    await s.tick()
+    store.cfg().weather.enabled = True             # runtime flip...
+    monkeypatch.setattr(weather_mod.httpx, "AsyncClient", _FakeWxClient)
+    now["t"] += 60
+    await s.tick()                                 # ...takes effect within one tick
+    assert _FakeWxClient.om_calls == 1
+
+
+async def test_default_site_never_fetches(svc, monkeypatch):
+    s, now, store, rec = svc
+    store.cfg().site.is_default = True             # plan decision 2
+    monkeypatch.setattr(weather_mod.httpx, "AsyncClient", _BoomWx)
+    await s.tick()                                 # no site: ZERO construction
+
+
+async def test_disable_publishes_one_cleared_payload(svc):
+    s, now, store, rec = svc
+    await s.tick()                                 # enabled fetch + publish
+    store.cfg().weather.enabled = False
+    now["t"] += 60
+    await s.tick()                                 # first disabled tick: cleared payload
+    cleared = [d for t, d in rec.published if t == "weather" and not d["enabled"]]
+    assert len(cleared) == 1
+    assert cleared[0]["forecast"] is None
+    assert cleared[0]["astrospheric"] is None
+    assert cleared[0]["alert"] is None
+    now["t"] += 60
+    await s.tick()                                 # second disabled tick: silent
+    assert len([d for t, d in rec.published
+                if t == "weather" and not d["enabled"]]) == 1
+
+
+async def test_failure_keeps_last_forecast_and_marks_stale(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([10] * 8)
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["forecast"]["cloud"] == [10] * 8 and p["stale"] is False
+    _FakeWxClient.fail_om = True
+    for _ in range(4):                             # 4 failed cycles = 60 min
+        now["t"] += OPEN_METEO_INTERVAL_S
+        await s.tick()
+    p = s.payload(now["t"])
+    assert p["forecast"]["cloud"] == [10] * 8      # failure NEVER cached; last kept
+    assert p["stale"] is True                      # age > 45 min
+    fail_logs = [m for lvl, m, src in rec.logs if "open-meteo fetch failed" in m]
+    assert fail_logs                               # outcome-only logging...
+    assert "34.2" not in fail_logs[0] and "118.1" not in fail_logs[0]  # ...no coords
+
+
+async def test_astrospheric_independent_fail_soft(svc):
+    s, now, store, rec = svc
+    store.cfg().weather.astrospheric_api_key = "k-123"
+    _FakeWxClient.om_payload = _om_payload([5] * 8)
+    _FakeWxClient.fail_astro = True
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["forecast"] is not None               # Open-Meteo landed anyway
+    assert p["astrospheric"] is None               # Astrospheric failed soft
+    _FakeWxClient.fail_astro = False
+    _FakeWxClient.fail_om = True
+    now["t"] += ASTROSPHERIC_INTERVAL_S
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["astrospheric"] is not None           # ...and vice versa
+    assert p["astrospheric"]["credits_used_today"] == 20
+    assert p["astrospheric"]["seeing"] == [2.0, 3.0]
+    assert p["astrospheric"]["transparency"] == [21.0, 22.0]
+    assert p["astrospheric"]["stale"] is False
+
+
+async def test_payload_shape_matches_spec_7(svc):
+    s, now, store, rec = svc
+    store.cfg().weather.astrospheric_api_key = "k-123"
+    _FakeWxClient.om_payload = _om_payload([1, 2, 3, 4])
+    await s.tick()
+    p = s.payload(now["t"])
+    assert set(p) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
+                      "threshold_pct", "sustain_minutes", "forecast",
+                      "astrospheric", "alert"}
+    assert p["enabled"] is True and p["ignore_tonight"] is False
+    assert p["threshold_pct"] == 50 and p["sustain_minutes"] == 30
+    f = p["forecast"]
+    assert set(f) == {"times", "cloud", "cloud_low", "cloud_mid", "cloud_high"}
+    assert f["times"][0] == weather_mod._iso_z(BASE)       # ISO Z timestamps
+    assert f["cloud"] == [1, 2, 3, 4]
+    a = p["astrospheric"]
+    assert set(a) == {"times", "seeing", "transparency", "fetched_ts", "stale",
+                      "credits_used_today"}
+    assert p["alert"] is None
+    # NO coordinates anywhere in the payload (spec §7)
+    assert "34.2" not in str(p) and "118.1" not in str(p)
+    # a successful refresh published the same shape on the bus
+    published = [d for t, d in rec.published if t == "weather"]
+    assert published and set(published[-1]) == set(p)

@@ -70,6 +70,7 @@ from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.resume_arm import ResumeArm
 from ..sequence.session import migrate_legacy_resume, session_store
+from ..weather import weather_service
 
 engine = SequenceEngine(hub)
 
@@ -147,6 +148,10 @@ async def _lifespan(app: "FastAPI"):
     task = asyncio.create_task(dispatcher.run())
     # Auto-resume-at-dusk service (sessions spec §5) — its own 60s asyncio loop.
     resume_arm.start()
+    # Weather forecast poller (weather spec §3) — its own 60 s asyncio loop.
+    # Started UNCONDITIONALLY: each tick no-ops unless cfg.weather.enabled AND
+    # the site is set, so runtime config toggles take effect within one tick.
+    weather_service.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -189,6 +194,7 @@ async def _lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        await weather_service.stop()
         await resume_arm.stop()
         await dispatcher.stop()
         task.cancel()
