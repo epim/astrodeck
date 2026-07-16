@@ -48,8 +48,8 @@ from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
                       EscalationConfig, Optics, ProvidersConfig, RotatorConfig,
-                      SafetyConfig, Site, SurveyConfig, UpdateConfig, config_store,
-                      redacted)
+                      SafetyConfig, Site, SurveyConfig, UpdateConfig, WeatherConfig,
+                      config_store, redacted)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
                          location_store)
 from .. import __version__
@@ -569,6 +569,17 @@ class PackFetchBody(BaseModel):
     order: int = 4
 
 
+class WeatherSaveBody(BaseModel):
+    """POST /api/config/weather body (weather spec §2). Same optimistic-
+    concurrency version token as SiteSaveBody. Secret write contract
+    (deadman_url precedent): a null/empty astrospheric_api_key means "leave
+    the stored key unchanged" — the UI only ever sees the masked config, so
+    it round-trips a blank; clear_astrospheric_key=True clears explicitly."""
+    weather: WeatherConfig
+    version: int | None = None
+    clear_astrospheric_key: bool = False
+
+
 # ------------------------------------------------------------ optional auth (P0-4)
 # OPTIONAL shared-token auth, OFF BY DEFAULT. The token is read from the
 # ``ASTRODECK_TOKEN`` env var. When it is UNSET (or empty), the server behaves
@@ -827,6 +838,44 @@ def create_app() -> FastAPI:
             body: SurveyConfig,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         cfg = await asyncio.to_thread(config_store.set_survey, body)
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload(principal)
+
+    # ---------------------------------------------------- weather config (weather spec §2)
+    # Same cap/broadcast shape as the survey route above, PLUS the optimistic-
+    # concurrency version token (put_site idiom). Secret write contract
+    # (deadman_url precedent): a null/empty astrospheric_api_key means "leave
+    # the stored key unchanged" — the UI only ever sees the masked config, so
+    # it round-trips a blank; clear_astrospheric_key=True clears explicitly.
+    # WeatherSaveBody is defined at module scope alongside the other *Body
+    # request models (SiteSaveBody idiom) — NOT locally here, because this
+    # file uses ``from __future__ import annotations`` (PEP 563): FastAPI
+    # resolves a route's string annotations via the function's module
+    # globals, so a class defined inside create_app() cannot be resolved as
+    # the request body and silently degrades to an unresolvable query param.
+
+    @app.post("/api/config/weather")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_weather_config(
+            body: WeatherSaveBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        weather = body.weather
+        if body.clear_astrospheric_key:
+            weather = weather.model_copy(update={"astrospheric_api_key": None})
+        elif not weather.astrospheric_api_key:
+            weather = weather.model_copy(update={
+                "astrospheric_api_key":
+                    config_store.cfg().weather.astrospheric_api_key})
+        try:
+            cfg = await asyncio.to_thread(
+                config_store.set_weather, weather, body.version)
+        except ConfigVersionConflict as e:
+            # conflict body rides the SAME redaction seams as every config echo
+            # (B rule): redacted() scrubs secrets (incl. the astrospheric key),
+            # _redact_site_for strips the precise site for non-holders.
+            raise HTTPException(409, detail={
+                "detail": str(e),
+                "current": _redact_site_for(redacted(e.current), principal)})
         bus.publish("config", config=redacted(cfg))
         return _config_payload(principal)
 
