@@ -277,6 +277,18 @@ class SurveyConfig(BaseModel):
     online_fetch: bool = False
 
 
+class WeatherConfig(BaseModel):
+    """Weather forecast + radar integration (sub-project C). enabled gates ALL
+    weather upstream calls (Open-Meteo, Astrospheric, IEM tile proxy): False
+    (the default) = zero outbound weather traffic. One shared threshold drives
+    both the night warning and the auto-resume veto. astrospheric_api_key is a
+    SECRET (None = feature absent): scrubbed in redacted(), never logged."""
+    enabled: bool = False
+    cloud_threshold_pct: int = Field(50, ge=0, le=100)  # breach metric = TOTAL cloud_cover
+    sustain_minutes: int = Field(30, ge=15, le=240)     # breach must persist this long
+    astrospheric_api_key: str | None = None
+
+
 # ------------------------------------------------------- backend drivers (2026-07-08)
 #
 # GLOBAL configured drivers (equipment-drivers spec §3.1): a driver is "how to
@@ -331,6 +343,8 @@ class AppConfig(BaseModel):
     rotator: RotatorConfig = Field(default_factory=RotatorConfig)
     # --- Sky-Atlas survey source (offline-pack spec §4; appended — old configs load fine) ---
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
+    # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
+    weather: WeatherConfig = Field(default_factory=WeatherConfig)
 
 
 # --------------------------------------------------------------------- pure math
@@ -638,6 +652,15 @@ class ConfigStore:
         cfg.survey = survey
         return self.bump_and_save()
 
+    def set_weather(self, weather: "WeatherConfig",
+                    expected_version: int | None = None) -> AppConfig:
+        """Persist the weather config (weather spec §2). Version-checked like
+        set_site so concurrent editors get a 409, not a silent clobber."""
+        self._check_version(expected_version)
+        cfg = self.cfg()
+        cfg.weather = weather
+        return self.bump_and_save()
+
     # -- backend drivers mutation (equipment-drivers spec §3.1) -----------------
 
     def add_driver(self, driver_type: str, host: str, port: int | None = None,
@@ -858,6 +881,16 @@ def redacted(cfg: AppConfig) -> dict:
         remote["remote_configured"] = bool(
             remote.get("enabled") and remote.get("relay_url"))
         data["remote"] = remote
+    # C weather block: the Astrospheric API key is a secret (weather spec §2/§8).
+    # Blank it and surface an ``astrospheric_configured`` boolean so the UI can
+    # show set/not-set without the value. Rebuilt defensively (auth/remote
+    # idiom) — a malformed weather dict can't slip the key through.
+    weather = data.get("weather")
+    if isinstance(weather, dict):
+        as_key = weather.get("astrospheric_api_key") or ""
+        weather["astrospheric_api_key"] = None
+        weather["astrospheric_configured"] = bool(as_key)
+        data["weather"] = weather
     return data
 
 
