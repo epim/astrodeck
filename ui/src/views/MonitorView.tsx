@@ -38,7 +38,7 @@ import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
-import { useCanControlCapture, useCanViewSitePrecise } from "../lib/caps";
+import { useCanControlMount, useCanViewSitePrecise } from "../lib/caps";
 import {
   CountdownTile,
   deriveHealthIssues,
@@ -116,9 +116,12 @@ export default function MonitorView() {
   const providers = useProviders();
   const setView = useStore((s) => s.setView);
   // VIEWER-READ-ONLY (W2.5): the Monitor is a glance dashboard; its only writes are
-  // Pause/Resume/Abort (sequence run-control = control.capture). A viewer sees the
-  // dashboard fully but not the controls row.
-  const canRun = useCanControlCapture();
+  // Pause/Resume/Abort. Those hit the same /api/sequence/{pause,resume,abort}
+  // routes as SequenceView's run controls, which require control.mount (a
+  // running sequence slews the mount) — NOT control.capture. A viewer (and an
+  // operator, who lacks control.mount) sees the dashboard fully but not the
+  // controls row.
+  const canRun = useCanControlMount();
 
   const reducedMotion = useReducedMotion();
   const now = useCoarseTick();

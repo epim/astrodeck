@@ -16,7 +16,7 @@ import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { fmtTime } from "../lib/visibility";
-import { useCanControlCapture } from "../lib/caps";
+import { useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
@@ -93,10 +93,14 @@ export default function SequenceView() {
   // see the signal at all.
   const atlasBannerPending = useAtlasBannerPending();
   const dismissAtlasBanner = useStore((s) => s.dismissAtlasBanner);
-  // VIEWER-READ-ONLY (W2.5): running/aborting a sequence drives devices, so it
-  // needs control.capture. The plan BUILDER stays usable for everyone (it's local
-  // state + localStorage, not a device write) — only the run-control buttons gate.
-  const canRun = useCanControlCapture();
+  // VIEWER-READ-ONLY (W2.5): a sequence run SLEWS the mount to each target, so
+  // the server's /api/sequence/{start,pause,resume,abort,recover} routes all
+  // require control.mount, NOT control.capture (an operator can run a single
+  // capture/loop but cannot start a slewing sequence — server
+  // auth/capabilities.py ROLES_CAP["operator"]). The plan BUILDER stays usable
+  // for everyone (it's local state + localStorage, not a device write) — only
+  // the run-control buttons gate.
+  const canRun = useCanControlMount();
   // Pre-flight gate (F-P0.1): one shared verdict drives BOTH the strip and the
   // Run button. `verdict==='blocked'` disables Run and routes it through the
   // modal (Review) instead of starting. `force` is threaded into the start body
