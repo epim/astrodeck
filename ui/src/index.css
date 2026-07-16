@@ -335,6 +335,17 @@ select.field { appearance: none; }
 .led { position: relative; width: 11px; height: 11px; border-radius: 50%; flex: none; }
 .led-off  { width: 11px; height: 2px; border-radius: 1px; background: var(--text-faint); align-self: center; }
 .led-on   { background: var(--good); box-shadow: 0 0 6px var(--good); }
+/* CHECKMARK (EQ-02): "connected" reads by glyph, not just filled-circle-vs-dash —
+   night mode maps --good to the same red family as --warn/--bad, so a color-blind
+   or red-filtered glance still needs a positive shape cue here, not just "not a
+   dash". var(--bg) rides the ground token, so the mark stays high-contrast against
+   the fill on every theme (near-black stroke on dark/night, near-white on light). */
+.led-on::after {
+  content: ""; position: absolute; left: 3px; top: 3.5px;
+  width: 5px; height: 2.5px;
+  border-left: 1.5px solid var(--bg); border-bottom: 1.5px solid var(--bg);
+  transform: rotate(-45deg);
+}
 .led-warn { background: var(--warn); box-shadow: 0 0 6px var(--warn);
             outline: 1.5px solid var(--warn); outline-offset: 2px; }          /* haloed circle */
 .led-bad  { background: var(--bad); border-radius: 1px;                       /* SQUARE */
