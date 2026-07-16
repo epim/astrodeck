@@ -10,11 +10,14 @@ import asyncio
 import hmac
 import io
 import os
+import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+import httpx
 from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
                      WebSocketDisconnect)
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -60,7 +63,7 @@ from ..devices.base import DeviceError
 from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
-from ..hub import TOUCH_MAX_RATE_DEG_S, hub
+from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles
 from ..rotation import angle_equals, map_sky_target, mod360
@@ -89,6 +92,78 @@ engine.dispatcher = dispatcher
 resume_arm = ResumeArm(engine, hub, weather=weather_service)
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
+
+# ------------------------------------------------ weather tile proxy (weather spec §6)
+# IEM tile cache proxy. Upstream HARDCODED server-side (never caller-supplied);
+# browsers — possibly on foreign networks, over the relay — only ever hit
+# /api/weather/tile/..., so they NEVER contact IEM. The HOME SERVER's IP
+# fetching site-area tiles is the same exposure class as the Open-Meteo fetch
+# itself (accepted, spec §6). Slugs VERIFIED LIVE 2026-07-16 — copied verbatim.
+# Pattern copied from catalog/tiles.py (spec: copy, do NOT import its private
+# helpers). Module-level names so tests can monkeypatch the cache dir.
+IEM_TILE_BASE = "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0"
+IEM_SLUGS = {"radar": "nexrad-n0q-900913", "satellite": "goes_east_fulldisk_ch13"}
+WEATHER_TILE_TTL_S = {"radar": 240, "satellite": 600}   # radar updates ~5 min
+_WEATHER_TILE_TIMEOUT_S = 6.0
+_WEATHER_TILE_MIN_FREE_BYTES = 200 * 1024 * 1024        # Pi-card disk guard
+_WEATHER_TILE_CACHE_DIR = CAPTURE_DIR / "_weather_tiles"
+_WEATHER_NO_STORE = {"Cache-Control": "no-store"}
+
+# Local copy of the refcounted per-key single-flight (tiles.py idiom):
+# concurrent requests for the same missing tile coalesce; waiters serve the
+# file the leader wrote. Event-loop-only state, no guard lock needed.
+_weather_tile_inflight: dict[str, list] = {}
+
+
+@asynccontextmanager
+async def _weather_tile_single_flight(key: str):
+    entry = _weather_tile_inflight.get(key)
+    if entry is None:
+        entry = [asyncio.Lock(), 0]
+        _weather_tile_inflight[key] = entry
+    entry[1] += 1
+    try:
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] <= 0:
+            _weather_tile_inflight.pop(key, None)
+
+
+def _weather_tile_free_bytes() -> int:
+    probe = _WEATHER_TILE_CACHE_DIR
+    while not probe.exists():                # disk_usage needs an existing path
+        probe = probe.parent
+    return shutil.disk_usage(probe).free
+
+
+def _write_weather_tile(path: Path, body: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(body)
+    tmp.replace(path)                        # atomic publish (survey_pack idiom)
+
+
+async def _fetch_weather_tile(layer: str, z: int, x: int, y: int) -> bytes | None:
+    """One request + one retry against the IEM tile cache; PNG-magic-validated
+    (the tiles.py JPEG-SOI check, PNG flavor). None on exhaustion."""
+    url = f"{IEM_TILE_BASE}/{IEM_SLUGS[layer]}/{z}/{x}/{y}.png"
+    headers = {"User-Agent": "AstroDeck/0.1"}
+    async with httpx.AsyncClient(timeout=_WEATHER_TILE_TIMEOUT_S,
+                                 headers=headers) as client:
+        for attempt in range(2):             # initial + one retry
+            try:
+                r = await client.get(url)
+                r.raise_for_status()
+                body = r.content
+                if not body.startswith(b"\x89PNG"):
+                    raise RuntimeError("not a PNG")
+                return body
+            except Exception:  # noqa: BLE001 — uniform per-attempt failure
+                if attempt == 0:
+                    await asyncio.sleep(0.3)
+    return None
 
 # ``WS_AUTH_RECHECK_S`` (the WS re-auth cadence) is re-exported at module scope so
 # the LAN /ws handler reads it as a module global and a test can shrink it via
@@ -926,6 +1001,56 @@ def create_app() -> FastAPI:
     async def get_weather(
             principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))):
         return weather_service.payload()
+
+    # ------------------------------------------------- weather tiles (weather spec §6)
+
+    @app.get("/api/weather/tile/{layer}/{z}/{x}/{y}.png")
+    @declare(CAP_VIEW_SITE_PRECISE)
+    async def weather_tile(
+            layer: Literal["radar", "satellite"], z: int, x: int, y: int,
+            principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))
+    ) -> Response:
+        if not (3 <= z <= 11):
+            raise HTTPException(status_code=422, detail="z out of range [3,11]")
+        if not (0 <= x < 2 ** z and 0 <= y < 2 ** z):
+            raise HTTPException(status_code=422, detail="x/y out of range for z")
+        if not config_store.cfg().weather.enabled:
+            # ZERO httpx construction on the disabled path (tiles.py:110-113
+            # invariant, _Boom-tested).
+            raise HTTPException(status_code=404, detail="weather disabled",
+                                headers=dict(_WEATHER_NO_STORE))
+        ttl = WEATHER_TILE_TTL_S[layer]
+        cache_headers = {"Cache-Control": f"private, max-age={ttl}"}
+        path = _WEATHER_TILE_CACHE_DIR / layer / str(z) / str(x) / f"{y}.png"
+
+        def _fresh() -> bool:
+            # NOT immutable — these tiles change; freshness = mtime within TTL.
+            try:
+                return path.exists() and \
+                    time.time() - path.stat().st_mtime < ttl
+            except OSError:
+                return False
+
+        if _fresh():
+            return FileResponse(path, media_type="image/png",
+                                headers=cache_headers)
+        key = f"{layer}/{z}/{x}/{y}"
+        async with _weather_tile_single_flight(key):
+            if _fresh():                     # a coalesced leader just wrote it
+                return FileResponse(path, media_type="image/png",
+                                    headers=cache_headers)
+            body = await _fetch_weather_tile(layer, z, x, y)
+            if body is None:
+                # failures return 502 no-store and are NEVER cached (spec §6)
+                raise HTTPException(status_code=502,
+                                    detail="tile upstream failed",
+                                    headers=dict(_WEATHER_NO_STORE))
+            if _weather_tile_free_bytes() < _WEATHER_TILE_MIN_FREE_BYTES:
+                return Response(body, media_type="image/png",
+                                headers=cache_headers)
+            await asyncio.to_thread(_write_weather_tile, path, body)
+            return Response(body, media_type="image/png",
+                            headers=cache_headers)
 
     @app.get("/api/survey/pack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
