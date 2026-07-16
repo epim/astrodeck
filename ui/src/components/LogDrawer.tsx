@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { Icon } from "./icons";
+import { fmtLogTime, severityWord } from "../lib/logFormat";
 
 /**
  * Event-log drawer, available on ALL viewports.
@@ -99,7 +100,10 @@ export default function LogDrawer() {
             className={`${LEVEL_TONE[l.data.level] ?? "text-accent2"} shrink-0 mt-px`}
           />
           <span>
-            <span className={LEVEL_TONE[l.data.level] ?? "text-accent2"}>[{l.data.source}]</span>{" "}
+            <span className="text-dim">{fmtLogTime(l.ts)}</span>{" "}
+            <span className={LEVEL_TONE[l.data.level] ?? "text-accent2"}>
+              [{severityWord(l.data.level)} · {l.data.source}]
+            </span>{" "}
             <span className="text-ink/90">{l.data.message}</span>
           </span>
         </div>
