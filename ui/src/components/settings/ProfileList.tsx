@@ -183,26 +183,35 @@ export default function ProfileList(): JSX.Element {
   // orphaned active-profile pointer). No server route does this in one call,
   // so it's composed from three that do: capture the live rig under a scratch
   // name (server mints a throwaway id), copy its device data onto THIS
-  // profile's id/name, upsert (POST /api/profiles honors the existing id as an
-  // in-place overwrite — app.py::save_profile), then delete the scratch
-  // record. On any failure after the capture, best-effort clean up the scratch
-  // row rather than leaving it behind.
+  // profile, upsert (POST /api/profiles honors the existing id as an in-place
+  // overwrite — app.py::save_profile), then delete the scratch record. On any
+  // failure after the capture, best-effort clean up the scratch row rather
+  // than leaving it behind.
+  //
+  // The merge starts from the TARGET profile and pulls ONLY the fields
+  // hub.capture_profile actually populates (hub.py:1180-1207: devices,
+  // primary_backend, nina_host, site_name) — enumerated explicitly, never a
+  // spread from the capture, so the target's optics / providers / phd2_host /
+  // phd2_port / nina_port survive (the capture leaves all five unset, and a
+  // spread would silently null them; nina_port in particular is only ever the
+  // model default 1888 on a capture, never the live rig's real port). A
+  // future capture_profile change can't widen this overwrite without an
+  // explicit edit here.
   const onUpdateFromRig = async (row: ProfileRow) => {
-    const ok = await confirmDialog({
-      title: `Update "${row.name}" from the current rig?`,
-      body: "Overwrites this profile's stored devices and backend with whatever's connected right now. The name and activation state are unchanged.",
-      mode: "confirm",
-      tone: "warn",
-      confirmLabel: "Update",
-    });
-    if (!ok) return;
     setBusyId(row.id);
     let scratchId: string | null = null;
     try {
+      const target = await getProfile(row.id);
       const captured = await captureProfile(`__update_scratch__${row.id}`);
       scratchId = captured.id;
-      const full = await getProfile(captured.id);
-      const merged: Profile = { ...full, id: row.id, name: row.name };
+      const fresh = await getProfile(captured.id);
+      const merged: Profile = {
+        ...target,
+        devices: fresh.devices,
+        primary_backend: fresh.primary_backend,
+        nina_host: fresh.nina_host,
+        site_name: fresh.site_name,
+      };
       await saveProfile(merged);
       await deleteProfile(captured.id);
       scratchId = null;
@@ -467,18 +476,44 @@ function ProfileCard({
           Rename
         </button>
         {/* "Update from current rig" (F7 #5a) — the edit affordance: overwrite
-            this profile's stored devices with whatever's connected now. */}
-        <button
-          type="button"
-          className="btn btn-touch !py-1 !px-3 text-[11px]"
-          disabled={busy}
-          onClick={onUpdateFromRig}
-          aria-label={`Update ${row.name} from the current rig`}
-          title="Overwrite this profile's devices with the currently connected rig"
+            this profile's stored devices with whatever's connected now. It
+            destroys stored state (the profile's device intent), so it gets the
+            SAME hold-to-confirm friction as Delete below — not a lighter
+            single-click confirm. */}
+        <HoldButton
+          label={`Update ${row.name} from the current rig`}
+          onConfirm={onUpdateFromRig}
         >
-          <Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />
-          Update
-        </button>
+          {(bind) => (
+            <button
+              type="button"
+              className="btn btn-touch !py-1 !px-3 text-[11px] relative overflow-hidden select-none"
+              style={{ touchAction: "none" }}
+              disabled={busy}
+              aria-label={bind["aria-label"]}
+              title="Hold to overwrite this profile's devices with the currently connected rig"
+              onPointerDown={bind.onPointerDown}
+              onPointerUp={bind.onPointerUp}
+              onPointerCancel={bind.onPointerUp}
+              onKeyDown={bind.onKeyDown}
+              onKeyUp={bind.onKeyUp}
+            >
+              <span
+                aria-hidden
+                className="absolute inset-y-0 left-0 pointer-events-none"
+                style={{
+                  width: `${Math.round(bind.progress * 100)}%`,
+                  background: "color-mix(in srgb, var(--text) 60%, transparent)",
+                  transition: "width 80ms linear",
+                }}
+              />
+              <span className="relative inline-flex items-center gap-1">
+                <Icon name="refresh" size={12} />
+                Update
+              </span>
+            </button>
+          )}
+        </HoldButton>
         {/* Export (F7 #5b) — client-side JSON download, icon-only (same height
             as its siblings via btn + !py-1; standard download iconography). */}
         <button
