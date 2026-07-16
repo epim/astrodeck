@@ -46,6 +46,18 @@ export default function WeatherPanel(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
 
+  // Unsaved-draft indicator (F7 #1, SitePanel dirty-chip idiom: lib/site.ts
+  // locationEquals + SitePanel.tsx:374,556 — draft vs. the persisted baseline).
+  // `key` is write-only and never seeded back (the effect above always resets
+  // it to ""), so any non-blank entry there is itself an unsaved edit even
+  // before `w` has loaded.
+  const dirty =
+    key.trim() !== "" ||
+    (!!w &&
+      (enabled !== !!w.enabled ||
+        threshold !== String(w.cloud_threshold_pct) ||
+        sustain !== String(w.sustain_minutes)));
+
   const validate = (): string | null => {
     const t = toNum(threshold);
     if (!Number.isFinite(t) || t < 0 || t > 100) return "Cloud threshold must be 0-100 %";
@@ -170,7 +182,12 @@ export default function WeatherPanel(): JSX.Element {
           </span>
         )}
 
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-2">
+          {dirty ? (
+            <p className="text-[11px] text-dim">Unsaved changes — Save to apply</p>
+          ) : (
+            <span />
+          )}
           <button
             type="button"
             className="btn btn-accent"
