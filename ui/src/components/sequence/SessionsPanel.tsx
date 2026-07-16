@@ -187,7 +187,8 @@ export default function SessionsPanel() {
               {canControl && r.status === "dormant" && (
                 <label className="flex items-center justify-between gap-2">
                   <span className="text-dim">auto-resume at dusk</span>
-                  <Toggle checked={r.auto_resume} onChange={(v) => void onArm(r, v)} />
+                  <Toggle checked={r.auto_resume} onChange={(v) => void onArm(r, v)}
+                    label={`Auto-resume ${r.name} at dusk`} />
                 </label>
               )}
               {r.auto_resume && noMonitor && (
@@ -215,6 +216,7 @@ export default function SessionsPanel() {
                     checked={!!weather.ignore_tonight}
                     disabled={!canCapture}
                     onChange={(v) => void onIgnoreWeather(v)}
+                    label="Ignore weather tonight"
                   />
                 </label>
               )}

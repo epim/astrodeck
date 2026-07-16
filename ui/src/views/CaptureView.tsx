@@ -192,7 +192,7 @@ export default function CaptureView() {
             </Field>
           </div>
           <div className="flex items-center gap-3 mt-3">
-            <Toggle checked={save} onChange={setSave} disabled={!canCapture} />
+            <Toggle checked={save} onChange={setSave} disabled={!canCapture} label="Save FITS to library" />
             <span className="text-xs text-dim">save FITS to library</span>
           </div>
           {save && (
