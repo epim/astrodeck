@@ -569,14 +569,17 @@ export default function SequenceView() {
                     </span>
                   )}
                   <label className="flex items-center gap-1.5 text-[11px] text-dim">
-                    <Toggle checked={t.center} onChange={(v) => patchTarget(ti, { center: v })} /> center
+                    <Toggle checked={t.center} onChange={(v) => patchTarget(ti, { center: v })}
+                      label={`Center on ${t.name}`} /> center
                   </label>
                   <label className="flex items-center gap-1.5 text-[11px] text-dim">
-                    <Toggle checked={t.autofocus_first} onChange={(v) => patchTarget(ti, { autofocus_first: v })} /> AF
+                    <Toggle checked={t.autofocus_first} onChange={(v) => patchTarget(ti, { autofocus_first: v })}
+                      label={`Autofocus first for ${t.name}`} /> AF
                   </label>
                   <label className="flex items-center gap-1.5 text-[11px] text-dim"
                     title="calibration frames (darks/bias) — no slew, focus or guiding">
-                    <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })} /> Cal
+                    <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })}
+                      label={`Calibration frames for ${t.name}`} /> Cal
                   </label>
                   <div className="flex-1" />
                   {/* Mosaic "apply to all panels" (spec: mosaic-apply-steps): visible
@@ -750,7 +753,8 @@ export default function SequenceView() {
           <div className="flex flex-col gap-3 text-xs">
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">guide during sequence</span>
-              <Toggle checked={plan.guide} onChange={(v) => setPlan({ ...plan, guide: v })} />
+              <Toggle checked={plan.guide} onChange={(v) => setPlan({ ...plan, guide: v })}
+                label="Guide during sequence" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -780,14 +784,16 @@ export default function SequenceView() {
                 apply filter focus offsets
                 <InfoDot content={HELP.filterOffset} label="About filter focus offsets" />
               </span>
-              <Toggle checked={plan.apply_filter_offsets} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })} />
+              <Toggle checked={plan.apply_filter_offsets} onChange={(v) => setPlan({ ...plan, apply_filter_offsets: v })}
+                label="Apply filter focus offsets" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
                 meridian flip (German mount)
                 <InfoDot content={HELP.meridianFlip} label="About meridian flip" />
               </span>
-              <Toggle checked={plan.meridian_flip} onChange={(v) => setPlan({ ...plan, meridian_flip: v })} />
+              <Toggle checked={plan.meridian_flip} onChange={(v) => setPlan({ ...plan, meridian_flip: v })}
+                label="Meridian flip (German mount)" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -808,11 +814,13 @@ export default function SequenceView() {
                   content="Honor the configured SafetyMonitor and the global altitude floor during unattended runs — pauses/parks when conditions go unsafe. Off runs without the safety abort."
                 />
               </span>
-              <Toggle checked={plan.safety_check ?? true} onChange={(v) => setPlan({ ...plan, safety_check: v })} />
+              <Toggle checked={plan.safety_check ?? true} onChange={(v) => setPlan({ ...plan, safety_check: v })}
+                label="Safety monitor gate" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">recover guiding if lost</span>
-              <Toggle checked={plan.recover_guiding} onChange={(v) => setPlan({ ...plan, recover_guiding: v })} />
+              <Toggle checked={plan.recover_guiding} onChange={(v) => setPlan({ ...plan, recover_guiding: v })}
+                label="Recover guiding if lost" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">cool sensor to °C (blank=off)</span>
@@ -830,11 +838,13 @@ export default function SequenceView() {
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">park mount when done</span>
-              <Toggle checked={plan.park_when_done} onChange={(v) => setPlan({ ...plan, park_when_done: v })} />
+              <Toggle checked={plan.park_when_done} onChange={(v) => setPlan({ ...plan, park_when_done: v })}
+                label="Park mount when done" />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">warm camera when done</span>
-              <Toggle checked={plan.warm_cooler_when_done} onChange={(v) => setPlan({ ...plan, warm_cooler_when_done: v })} />
+              <Toggle checked={plan.warm_cooler_when_done} onChange={(v) => setPlan({ ...plan, warm_cooler_when_done: v })}
+                label="Warm camera when done" />
             </label>
             {/* --- multi-night quota + reject guards (sessions spec §3/§7).
                 Each numeric guard is individually disable-able; the 0 state is
@@ -849,7 +859,8 @@ export default function SequenceView() {
                   />
                 </span>
                 <Toggle checked={(plan.count_mode ?? "attempts") === "accepted"}
-                  onChange={(v) => setPlan({ ...plan, count_mode: v ? "accepted" : "attempts" })} />
+                  onChange={(v) => setPlan({ ...plan, count_mode: v ? "accepted" : "attempts" })}
+                  label="Count accepted frames instead of attempts" />
               </label>
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim">min stars per frame</span>
