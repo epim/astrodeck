@@ -60,6 +60,16 @@ export const saveProfile = (p: Profile): Promise<ProfileRow> =>
 export const captureProfile = (name: string): Promise<ProfileRow> =>
   api.post<ProfileRow>("/api/profiles/capture", { name });
 
+/** POST /api/profiles with parsed import JSON (F7 #5b). Same upsert-by-id rule
+ *  as `saveProfile` (app.py::save_profile): a client-carried id only wins as an
+ *  upsert when a profile with that id already exists on THIS server, otherwise
+ *  the server mints a fresh uuid — so importing a stranger's export always
+ *  creates a new record. Body is `unknown`-shaped (lib/profileFile.ts only
+ *  screens the obvious non-files); the server's Profile model is the real
+ *  validator. */
+export const importProfile = (raw: Record<string, unknown>): Promise<ProfileRow> =>
+  api.post<ProfileRow>("/api/profiles", raw);
+
 /** PATCH /api/profiles/{id} → rename in place (id/filename never change). */
 export const renameProfile = (id: string, name: string): Promise<ProfileRow> =>
   api.patch<ProfileRow>(`/api/profiles/${encodeURIComponent(id)}`, { name });
