@@ -56,9 +56,9 @@ Think of NINA as the gangway, not the ship.
 
 ## Features
 
-- **Rig / Connect** — Alpaca UDP network discovery, role-based device
-  assignment, one-tap full simulator rig, NINA bridge with subnet discovery,
-  and PHD2.
+- **Equipment / Connect** — Alpaca UDP network discovery, role-based device
+  assignment, a one-tap **▶ Simulator rig** that assigns and connects every
+  role at once, NINA bridge with subnet discovery, and PHD2.
 - **Capture** — an overhauled live preview (zoom / pan / fit / 100%, adjustable
   MTF stretch with an interactive histogram, star overlay, clip/saturation mask,
   a frame filmstrip, and a no-flash double-buffered stage), full exposure
@@ -66,8 +66,9 @@ Think of NINA as the gangway, not the ship.
   heater, a live guide-camera preview, and single / loop / stop with separate
   exposure and download progress.
 - **Focus** — manual jog and absolute goto plus V-curve autofocus (HFR star
-  measurement, parabola fit). For backends with their own routine (NINA), it
-  delegates to the native autofocus and draws the real V-curve.
+  measurement). AstroDeck's own native Rust engine and NINA's own routine both
+  fit a real **hyperbola** with trendlines and an R² goodness-of-fit; the
+  legacy/simulator path fits a local parabola near the minimum.
 - **Mount** — a touch slew pad with fixed-rate control and a move dead-man's
   switch, catalog goto with live altitude and a below-horizon guard,
   sidereal tracking, park/unpark, and plate-solve **Solve & Sync** /
@@ -97,7 +98,14 @@ Think of NINA as the gangway, not the ship.
   mosaic planner (server-canonical panels), and an astropy visibility planner
   (altitude curve, transit, twilight, moon separation, best window).
 - **Monitor** — a glanceable live dashboard: ETA, progress, mount state, cooler,
-  guiding RMS, meridian countdown, an HFR trend sparkline, and a live thumbnail.
+  guiding RMS, meridian countdown, an HFR trend sparkline, a live thumbnail,
+  and stall/recovery signals for an unattended run. See
+  [`docs/guide/monitor.md`](docs/guide/monitor.md).
+- **Weather** — an optional cloud forecast (Open-Meteo, plus optional
+  Astrospheric seeing/transparency) that warns of a cloudy night, holds
+  auto-resume before it starts imaging into clouds, and draws a live
+  radar/satellite map with your telescope's line of sight projected onto it.
+  Visible to admins only. See [`docs/guide/weather.md`](docs/guide/weather.md).
 - **Power** — Alpaca `Switch` (Pegasus UPB-style): outputs, dew-heater PWM, and
   voltage/current telemetry.
 - **Rotator** — mechanical range-of-motion modeling (full/half/quarter sweeps)
@@ -121,10 +129,13 @@ Think of NINA as the gangway, not the ship.
   [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
 
 > **Rough edges, honestly.** Guiding and plate solving work but still have
-> sharp corners; the Settings view is a placeholder (site/optics/safety/alerts
-> are edited through the API and the relevant surfaces); live-stacking and a
-> flats wizard are not built yet; and there's no Docker or Raspberry-Pi
-> packaging yet. See [`docs/overview.md`](docs/overview.md) for the full status.
+> sharp corners; the **Settings** view is real, with tabs for **Connect**
+> (backend drivers, observing site, weather, Sky Atlas offline pack),
+> **Profiles**, **Safety** (sun avoidance — the safety-monitor presets and
+> altitude floors are still config-file/API only), **Account**, and, for
+> admins, **Updates**, **Users**, and **Auth**; live-stacking and a flats
+> wizard are not built yet; and there's no Docker or Raspberry-Pi packaging
+> yet. See [`docs/overview.md`](docs/overview.md) for the full status.
 
 ---
 
@@ -143,19 +154,23 @@ npm install
 npm run build
 ```
 
-Open `http://localhost:8800`, hit **Connect Simulator Rig**, and explore. The
-sim camera renders a star field that responds to mount pointing, focus position,
-and filters, so autofocus, plate solving, and sequencing all genuinely work with
-no hardware attached.
+Open `http://localhost:8800`, go to the **Equipment** view and hit
+**▶ Simulator rig**, and explore. The sim camera renders a star field that
+responds to mount pointing, focus position, and filters, so autofocus, plate
+solving, and sequencing all genuinely work with no hardware attached.
 
-For real gear: run your vendor's Alpaca server (or ASCOM Remote on the machine
-with the drivers), then **Scan** on the Rig page and tap devices to assign them
-to roles. For guiding, start PHD2 with its event server enabled and connect it.
+For real gear: declare your backends under **Settings → Connect → Backend
+Drivers** (run your vendor's Alpaca server, or ASCOM Remote on the machine
+with the drivers, and use **⟳ Scan network** to auto-discover them), then on
+the **Equipment** view assign each device slot to a driver and press
+**Connect Rig**. For guiding, start PHD2 with its event server enabled and
+connect it.
 
 **NINA transition mode:** install the **Advanced API** plugin in NINA (default
-port `1888`), then on the Rig page use **NINA Bridge** → **Scan Network** to
-auto-discover instances, or enter the host/IP manually. To try it without a NINA
-install, run the bundled mock:
+port `1888`), then declare it as a driver under **Settings → Connect →
+Backend Drivers** — use **⟳ Scan network** to auto-discover instances, or
+enter the host/IP manually. To try it without a NINA install, run the bundled
+mock:
 
 ```powershell
 cd server
@@ -178,7 +193,7 @@ unavailable the Atlas falls back to the classic `<img>` cutout pipeline (the
 grab-the-sky on both axes (drag right pulls the sky right).
 
 No internet needed at the scope: download the pack once (~250 MB) from
-**Settings → Sky Atlas → Download offline sky pack**, or via CLI:
+**Settings → Connect → Sky Atlas → Download offline sky pack**, or via CLI:
 
     cd server && python -m astrodeck.catalog.survey_pack fetch
 
@@ -231,7 +246,8 @@ new device backend means implementing the small async interfaces in
 
 - [**`docs/guide/`**](docs/guide/README.md) — **the user guide**: task-focused how-tos for
   getting started, equipment, capture, focus, the Sky Atlas, plans, multi-night sessions,
-  weather, remote access & roles, site & locations, safety, and troubleshooting.
+  the Monitor dashboard, weather, remote access & roles, site & locations, safety, and
+  troubleshooting.
 - [`docs/overview.md`](docs/overview.md) — purpose, philosophy, and architecture in depth.
 - [`docs/quickstart.md`](docs/quickstart.md) — install, first simulator session, real gear, the NINA bridge.
 - [`docs/development.md`](docs/development.md) — dev setup, repo structure, testing, adding a backend.
