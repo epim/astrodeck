@@ -16,10 +16,12 @@ Each session holds a **frozen snapshot of the plan** it runs (with stable ids so
 progress survives edits) and a **ledger** of every frame captured under it. A
 session has one of four states, shown as a status chip on the card:
 
-- **active** — running right now.
-- **dormant** — paused between nights, ready to resume.
-- **complete** — every step met its count.
-- **abandoned** — retired (hidden from the panel).
+| State | Means | What moves it here | What you can do |
+|---|---|---|---|
+| **active** | running right now | you started/resumed it and the sequence engine currently owns it | Pause/Abort from [Plan & sequences](plan-and-sequences.md) or [Monitor](monitor.md) |
+| **dormant** | paused between nights, ready to resume | the run finished a night without completing all quotas, **or** the server booted and found this session still marked active (see below) | **resume** (manual, `control.mount`), arm **auto-resume at dusk**, **update from plan**, delete |
+| **complete** | every step met its count | the engine finishes the last target's last step | review/regrade frames, delete |
+| **abandoned** | retired | you pressed **Delete** on a **dormant** or **complete** card (Delete is refused on an active one — pause or let it finish first) | nothing — it's out of the active rotation, but the ledger/frames underneath are untouched |
 
 The card shows the name, the status, `accepted / total` frames, and a
 per-target progress bar, plus the number of nights it has spanned.
@@ -75,6 +77,12 @@ Regrades are read-only while the session is actively running — you'll be told
 and the ledger are what the review shows; the saved FITS files themselves are
 never touched by regrading.
 
+> The regrade drawer itself doesn't grey out for a lower-role account — the
+> server is what actually enforces `control.mount` (admin) on a regrade
+> write, so a viewer or operator can open it and tap a verdict, but the
+> save will come back as a permission error rather than a disabled button.
+> See [remote-access-and-roles.md](remote-access-and-roles.md#screen-by-screen-what-each-role-actually-sees).
+
 ### Update from Plan
 
 A dormant session's card has **update from plan**: it replaces the session's
@@ -121,7 +129,14 @@ when applicable, an **ignore weather tonight** toggle to proceed anyway.
 
 ## What survives a reboot
 
-Sessions are built to survive power cuts:
+**Closing your browser tab, losing Wi-Fi, or your sign-in session expiring
+does nothing to a running session.** The sequence engine runs entirely on the
+server — your browser is a viewer/controller, not the thing doing the work.
+Walk away, close the laptop lid, or get logged out (see
+[remote-access-and-roles.md](remote-access-and-roles.md)) and the active
+session keeps shooting; reopen the app later and it's exactly where you left
+it. The distinction that actually matters is a **server/host reboot** —
+sessions are built to survive those, specifically:
 
 - Every session is one JSON file on disk, rewritten as frames land.
 - At boot, any session still marked **active** (the process can't be running at
@@ -142,6 +157,9 @@ cannot be undone.
 ## Related
 
 - [Plan & sequences](plan-and-sequences.md) — building the plan a session runs.
+- [Monitor](monitor.md) — the recover banner and live progress for a resumed run.
 - [Weather](weather.md) — the auto-resume weather veto and overrides.
 - [Safety & automation](safety-and-automation.md) — the safety monitor that
   guards unattended resumes.
+- [Remote access & roles](remote-access-and-roles.md) — exactly who can
+  resume, arm auto-resume, or regrade.
