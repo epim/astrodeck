@@ -37,6 +37,7 @@ import {
 import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
+import RadarMap from "../components/weather/RadarMap";
 import { useCanControlCapture, useCanViewSitePrecise } from "../lib/caps";
 import {
   CountdownTile,
@@ -528,6 +529,9 @@ export default function MonitorView() {
 
         {/* ==================================== SKY CONDITIONS (weather spec §10) */}
         {canSeePrecise && <SkyConditionsPanel />}
+
+        {/* ========================================= RADAR MAP (weather spec §11) */}
+        {canSeePrecise && weather?.enabled && <RadarMap />}
 
         {/* ================================================== THERMAL */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Thermal">
