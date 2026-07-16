@@ -6,6 +6,7 @@ import {
   eligibleDrivers,
   eligibleTaskDrivers,
   hasRealMotion,
+  simAssignments,
   slotState,
   type AssignmentMap,
 } from "../equipment";
@@ -172,6 +173,24 @@ test("eligibleTaskDrivers applies the one rule (task edition)", () => {
     eligibleTaskDrivers("polar_align", drivers).map((d) => d.id).join(","),
     ["nina-a1b2", "astrodeck", "sim"].join(","),
   );
+});
+
+test("simAssignments matches pickDriver('sim')'s shape for every role (sim-connect desync root-cause fix)", () => {
+  const map = simAssignments(["camera", "telescope"], [alpaca, sim]);
+  eq(map.camera?.driverId, "sim");
+  eq(map.camera?.name, "Simulated camera");
+  eq(map.telescope?.name, "Simulated telescope");
+  // slotState reads this exactly like a hand-picked assignment: ASSIGNED, not
+  // driver-removed/unassigned — the dropdown, Connect Rig count, and (once
+  // connected via the RigSpec path) Link Status all agree.
+  eq(slotState("camera", map.camera ?? null, [alpaca, sim]), "ok");
+  eq(buildRigSpec(map).roles.camera.backend, "sim");
+});
+
+test("simAssignments degrades to a bare sim id when the driver row is missing", () => {
+  const map = simAssignments(["camera"], []);
+  eq(map.camera?.driverId, "sim");
+  eq(map.camera?.name, undefined);
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);
