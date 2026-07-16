@@ -21,7 +21,7 @@ session has one of four states, shown as a status chip on the card:
 | **active** | running right now | you started/resumed it and the sequence engine currently owns it | Pause/Abort from [Plan & sequences](plan-and-sequences.md) or [Monitor](monitor.md) |
 | **dormant** | paused between nights, ready to resume | the run finished a night without completing all quotas, **or** the server booted and found this session still marked active (see below) | **resume** (manual, `control.mount`), arm **auto-resume at dusk**, **update from plan**, delete |
 | **complete** | every step met its count | the engine finishes the last target's last step | review/regrade frames, delete |
-| **abandoned** | retired | you pressed **Delete** on a **dormant** or **complete** card (Delete is refused on an active one — pause or let it finish first) | nothing — it's out of the active rotation, but the ledger/frames underneath are untouched |
+| **abandoned** | retired but kept on disk — hidden from the panel, ledger intact | **no UI path reaches this state today** — it's API-only (`PATCH /api/sessions/{id}` with `status="abandoned"`, refused while active); no button in the app issues it | nothing in the panel (it's filtered out). Note: the card's **Delete** button is a different, harder action — it *removes* the session's ledger and thumbnails outright (FITS frames untouched, cannot be undone; see [Deleting](#what-survives-a-reboot) below), it does not mark it abandoned |
 
 The card shows the name, the status, `accepted / total` frames, and a
 per-target progress bar, plus the number of nights it has spanned.
