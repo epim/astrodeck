@@ -102,6 +102,12 @@ export interface ConfirmRequest {
   cancelLabel?: string;
   tone?: "warn" | "danger";
   mode?: "ok" | "confirm" | "hold";
+  // PLAN-01-gemini: the default confirm-mode chrome reads as Cancel-is-primary
+  // (solid text on .btn vs. an outline .btn-accent) — fine for a destructive
+  // "are you sure", backwards for a "proceed anyway" advisory where completing
+  // the action IS the safe/intended outcome. Opt-in per call site so this
+  // doesn't reshuffle every confirm dialog in the app.
+  confirmPrimary?: boolean;
   resolve: (ok: boolean) => void;
 }
 

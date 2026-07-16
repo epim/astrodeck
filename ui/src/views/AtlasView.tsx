@@ -526,6 +526,7 @@ export default function AtlasView(): JSX.Element {
         tone: "warn",
         mode: "confirm",
         confirmLabel: "Add anyway",
+        confirmPrimary: true, // PLAN-01-gemini: proceeding is the intended action
       });
       if (!ok) return;
     }
