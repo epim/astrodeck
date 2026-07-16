@@ -4,7 +4,7 @@
 
 import type { WeatherState } from "../../types";
 import {
-  agoLabel, breachSpans, fmtHm, normalizeWeather, OPEN_METEO_STALE_S,
+  agoLabel, breachSpans, fmtHm, groupEndLabels, normalizeWeather, OPEN_METEO_STALE_S,
 } from "../weather";
 
 let passed = 0;
@@ -99,6 +99,46 @@ test("fmtHm shape + garbage guard; agoLabel fresh vs stale copy", () => {
   assert(agoLabel(NOW - 2 * 3600, NOW).startsWith("STALE — last fetch 2.0 h"),
     "stale copy");
   assert(agoLabel(null, NOW) === "STALE — never fetched", "never fetched");
+});
+
+test("groupEndLabels: coincident series (all-zero) merge into one row", () => {
+  const rows = groupEndLabels(
+    [{ name: "total", y: 100 }, { name: "low", y: 100 }, { name: "mid", y: 100 }, { name: "high", y: 100 }],
+    3,
+  );
+  assert(rows.length === 1, `expected 1 row, got ${rows.length}`);
+  assert(rows[0].label === "total+low+mid+high", `label=${rows[0].label}`);
+  assert(rows[0].y === 100, `mean y=${rows[0].y}`);
+});
+
+test("groupEndLabels: well-separated series stay on their own rows", () => {
+  const rows = groupEndLabels(
+    [{ name: "total", y: 10 }, { name: "low", y: 40 }, { name: "mid", y: 90 }, { name: "high", y: 130 }],
+    6,
+  );
+  assert(rows.length === 4, `expected 4 rows, got ${rows.length}`);
+  assert(rows.map((r) => r.label).join(",") === "total,low,mid,high", JSON.stringify(rows));
+});
+
+test("groupEndLabels: partial collision — only the near pair merges", () => {
+  // sorted by y: high(10), low(40), total(100), mid(103) — total/mid are 3px
+  // apart (<= minGap 6) and merge; low sits 60px from total, stays separate.
+  const rows = groupEndLabels(
+    [{ name: "total", y: 100 }, { name: "low", y: 40 }, { name: "mid", y: 103 }, { name: "high", y: 10 }],
+    6,
+  );
+  assert(rows.length === 3, `expected 3 rows, got ${rows.length}: ${JSON.stringify(rows)}`);
+  assert(rows[0].label === "high" && rows[1].label === "low", JSON.stringify(rows));
+  assert(rows[2].label === "total+mid", `label=${rows[2].label}`);
+  assert(rows[2].y === 101.5, `mean y=${rows[2].y}`);
+});
+
+test("groupEndLabels: gap exactly at minGap merges; empty input -> []", () => {
+  const rows = groupEndLabels([{ name: "a", y: 0 }, { name: "b", y: 5 }], 5);
+  assert(rows.length === 1, `boundary gap should merge, got ${rows.length}`);
+  const justOver = groupEndLabels([{ name: "a", y: 0 }, { name: "b", y: 5.01 }], 5);
+  assert(justOver.length === 2, `gap just over minGap should NOT merge, got ${justOver.length}`);
+  assert(groupEndLabels([], 5).length === 0, "empty input");
 });
 
 console.log(`weather.test: ${passed} passed, ${failed} failed`);

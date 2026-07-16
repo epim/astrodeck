@@ -5,14 +5,16 @@
 // ported from SkyCanvas (drag-pan, native non-passive wheel trap, keyboard).
 // Night mode: the tile layer gets filter var(--img-filter) directly, exactly
 // as survey imagery is dimmed (index.css:115). Broken tiles hide themselves
-// (B thumb-fallback idiom). Controls are word-labeled — never hue alone.
+// (B thumb-fallback idiom), but a per-layer health badge (loading… / tiles
+// unavailable) still surfaces the failure — a blank layer must never read as
+// clear sky (R2-WEA-04). Controls are word-labeled — never hue alone.
 import { useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as RKeyboardEvent,
   PointerEvent as RPointerEvent,
 } from "react";
 import { useSite, useStore } from "../../store";
-import { Panel } from "../ui";
+import { Panel, Stepper } from "../ui";
 import { Icon } from "../icons";
 import { u } from "../../lib/base";
 import {
@@ -22,6 +24,8 @@ import {
   destPoint,
   latToTileY,
   lonToTileX,
+  MAX_Z,
+  MIN_Z,
   pierceDistanceKm,
   TILE_SIZE,
   tileXToLon,
@@ -57,7 +61,12 @@ export default function RadarMap() {
   const [center, setCenter] = useState<{ lat: number; lon: number } | null>(null);
   const [bust, setBust] = useState(() => Math.floor(Date.now() / (RADAR_TTL_S * 1000)));
   const [width, setWidth] = useState(0);
-  const [broken, setBroken] = useState<Record<string, boolean>>({});
+  // Per-tile-id health (R2-WEA-04): "ok" once the <img> fires onLoad, "broken"
+  // once it fires onError. Ids embed layer/zoom/x/y/bust so a layer switch,
+  // zoom change or refresh naturally starts every tile fresh (untracked ==
+  // still pending) without needing a manual reset — we still clear on layer
+  // switch/refresh below to keep the map bounded during a long pan session.
+  const [tileStatus, setTileStatus] = useState<Record<string, "ok" | "broken">>({});
   const boxRef = useRef<HTMLDivElement>(null);
 
   // Center defaults to the site; the recenter button returns to it (spec §11).
@@ -161,7 +170,11 @@ export default function RadarMap() {
     setCenter({ lat: clampLat(tileYToLat(cy, zoom)), lon: tileXToLon(cx, zoom) });
   };
 
-  // ---- tile grid (ceil(viewport/256)+1 overscan; broken tiles hidden) ----
+  // ---- tile grid (ceil(viewport/256)+1 overscan). Every viewport tile is
+  // kept here (including ones already known "broken") so the health badge
+  // below can see the FULL expected set, not just the survivors — a layer
+  // that fails outright must never just quietly render nothing (R2-WEA-04).
+  // Broken tiles are filtered out only at <img> render time, further down.
   const tiles: { key: string; id: string; src: string; left: number; top: number }[] = [];
   if (center && width > 0) {
     const n = Math.pow(2, zoom);
@@ -176,7 +189,6 @@ export default function RadarMap() {
         if (ty < 0 || ty >= n) continue;
         const wx = ((tx % n) + n) % n;
         const id = `${layer}/${zoom}/${wx}/${ty}?${bust}`;
-        if (broken[id]) continue;
         tiles.push({
           key: `${tx}:${ty}:${layer}:${bust}`,
           id,
@@ -188,6 +200,25 @@ export default function RadarMap() {
       }
     }
   }
+
+  // ---- tile health badge (R2-WEA-04): "loading…" until the first tile in
+  // the CURRENT viewport has painted, "tiles unavailable" once every tile in
+  // it has errored — either way a visible signal, so a failed/empty layer can
+  // never silently read as clear sky. Recomputed from the live viewport ids,
+  // so panning/zooming/switching layers into fresh tiles goes back to
+  // "loading…" until they resolve, rather than carrying a stale "ok".
+  let okCount = 0;
+  let brokenCount = 0;
+  for (const t of tiles) {
+    const st = tileStatus[t.id];
+    if (st === "ok") okCount++;
+    else if (st === "broken") brokenCount++;
+  }
+  const tileHealth: "loading" | "unavailable" | "ok" =
+    tiles.length === 0 ? "ok"
+      : brokenCount === tiles.length ? "unavailable"
+      : okCount === 0 ? "loading"
+      : "ok";
 
   // ---- overlay projection (px within the box) ----
   const toPx = (lat: number, lon: number): { x: number; y: number } | null => {
@@ -234,7 +265,7 @@ export default function RadarMap() {
               aria-pressed={layer === l}
               onClick={() => {
                 setLayer(l);
-                setBroken({});
+                setTileStatus({});
               }}
             >
               {l === "radar" ? "Radar" : "IR satellite"}
@@ -245,7 +276,7 @@ export default function RadarMap() {
             className="btn !py-0.5 text-[11px]"
             onClick={() => {
               setBust(Math.floor(Date.now() / (RADAR_TTL_S * 1000)));
-              setBroken({});
+              setTileStatus({});
             }}
           >
             <Icon name="refresh" size={11} className="inline mr-1" />
@@ -263,6 +294,16 @@ export default function RadarMap() {
           >
             recenter
           </button>
+          {/* Visible zoom control (R2-WEA-05) — same clampZoom(3-11) the wheel
+              handler uses below, so keyboard/touch users get an affordance
+              equal to the mouse-wheel gesture, not just a hidden one. */}
+          <Stepper
+            value={zoom}
+            onChange={(v) => setZoom(clampZoom(v))}
+            min={MIN_Z}
+            max={MAX_Z}
+            label="Zoom"
+          />
           <span className="mono text-dim border border-line px-1.5 py-0.5">
             {hasPointing && mount
               ? `Az ${Math.round(mount.az)}° · Alt ${Math.round(mount.alt)}°`
@@ -283,9 +324,12 @@ export default function RadarMap() {
           onPointerCancel={onPointerUp}
           onKeyDown={onKeyDown}
         >
-          {/* tile layer — night-dimmed exactly like survey imagery (spec §11) */}
+          {/* tile layer — night-dimmed exactly like survey imagery (spec §11).
+              A tile already known "broken" is skipped (hides itself rather
+              than showing a browser broken-image glyph); the health badge
+              below is what tells the operator imagery actually failed. */}
           <div className="absolute inset-0" style={{ filter: "var(--img-filter)" }} aria-hidden>
-            {tiles.map((t) => (
+            {tiles.map((t) => tileStatus[t.id] === "broken" ? null : (
               <img
                 key={t.key}
                 src={t.src}
@@ -294,10 +338,22 @@ export default function RadarMap() {
                 width={TILE_SIZE}
                 height={TILE_SIZE}
                 style={{ position: "absolute", left: t.left, top: t.top, maxWidth: "none" }}
-                onError={() => setBroken((b) => ({ ...b, [t.id]: true }))}
+                onLoad={() => setTileStatus((s) => ({ ...s, [t.id]: "ok" }))}
+                onError={() => setTileStatus((s) => ({ ...s, [t.id]: "broken" }))}
               />
             ))}
           </div>
+
+          {/* per-layer tile health badge (R2-WEA-04) — a blank layer must
+              never silently read as clear sky. */}
+          {tileHealth !== "ok" && (
+            <div
+              className={`absolute top-2 right-2 px-2 py-0.5 text-[11px] mono border pointer-events-none
+                ${tileHealth === "unavailable" ? "text-warn bg-black/60 border-warn/50" : "text-dim bg-black/60 border-line2"}`}
+            >
+              {tileHealth === "unavailable" ? "tiles unavailable" : "loading…"}
+            </div>
+          )}
 
           {/* scope location + orientation overlay (spec §11) */}
           <svg
