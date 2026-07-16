@@ -470,7 +470,15 @@ export default function SequenceView() {
                           transition: "width 80ms linear",
                         }}
                       />
-                      <span className="relative">{bind.armed ? bind.hintLabel : "Abort"}</span>
+                      {/* Persistent hold affordance (r1 backlog): a tap-and-release with
+                          nothing visibly happening got filed as a Blocker by an external
+                          reviewer — "Abort" alone never said this needs a HOLD. */}
+                      <span className="relative flex flex-col items-center leading-tight">
+                        <span>{bind.armed ? bind.hintLabel : "Abort"}</span>
+                        {!bind.armed && (
+                          <span className="text-[9px] tracking-wider normal-case opacity-75">hold to confirm</span>
+                        )}
+                      </span>
                     </button>
                   )}
                 </HoldButton>

@@ -191,39 +191,49 @@ export function HoldButton({
 }) {
   return (
     <UiHoldButton onConfirm={onConfirm} label={label} holdMs={holdMs} disabled={disabled}>
-      {(bind) => (
-        <button
-          type="button"
-          aria-label={bind["aria-label"]}
-          onPointerDown={bind.onPointerDown}
-          onPointerUp={bind.onPointerUp}
-          onPointerCancel={bind.onPointerUp}
-          onKeyDown={bind.onKeyDown}
-          onKeyUp={bind.onKeyUp}
-          disabled={disabled}
-          className={`relative overflow-hidden inline-flex flex-col items-center justify-center
-            min-h-[48px] min-w-[88px] px-4 select-none touch-none
-            border ${danger ? "border-danger/55 text-danger" : "border-line2 text-ink"}
-            bg-raise font-display font-semibold text-xs tracking-[0.14em] uppercase
-            ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
-        >
-          {/* ring-fill progress — the non-color hold signal (master §A.0) */}
-          <span
-            aria-hidden
-            className="absolute inset-y-0 left-0 bg-danger/25 pointer-events-none transition-[width] duration-75"
-            style={{ width: `${Math.round(bind.progress * 100)}%` }}
-          />
-          <span className="relative z-10 inline-flex items-center gap-1.5">
-            <Icon name="stop" size={14} />
-            {bind.armed ? bind.hintLabel : face}
-          </span>
-          {hint && (
-            <span className="relative z-10 label !text-[9px] !tracking-normal normal-case text-warn mt-0.5">
-              {hint}
+      {(bind) => {
+        // Persistent hold affordance (r1 backlog): a caller-supplied `hint` (e.g.
+        // "link down") is more urgent and takes priority; otherwise, whenever the
+        // button isn't mid-hold, default to a neutral "hold to X" caption so a
+        // tap-and-release isn't the only way to discover this is a HOLD control.
+        const caption = hint ?? (!bind.armed ? `hold to ${face.toLowerCase()}` : undefined);
+        return (
+          <button
+            type="button"
+            aria-label={bind["aria-label"]}
+            onPointerDown={bind.onPointerDown}
+            onPointerUp={bind.onPointerUp}
+            onPointerCancel={bind.onPointerUp}
+            onKeyDown={bind.onKeyDown}
+            onKeyUp={bind.onKeyUp}
+            disabled={disabled}
+            className={`relative overflow-hidden inline-flex flex-col items-center justify-center
+              min-h-[48px] min-w-[88px] px-4 select-none touch-none
+              border ${danger ? "border-danger/55 text-danger" : "border-line2 text-ink"}
+              bg-raise font-display font-semibold text-xs tracking-[0.14em] uppercase
+              ${disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}
+          >
+            {/* ring-fill progress — the non-color hold signal (master §A.0) */}
+            <span
+              aria-hidden
+              className="absolute inset-y-0 left-0 bg-danger/25 pointer-events-none transition-[width] duration-75"
+              style={{ width: `${Math.round(bind.progress * 100)}%` }}
+            />
+            <span className="relative z-10 inline-flex items-center gap-1.5">
+              <Icon name="stop" size={14} />
+              {bind.armed ? bind.hintLabel : face}
             </span>
-          )}
-        </button>
-      )}
+            {caption && (
+              <span
+                className={`relative z-10 label !text-[9px] !tracking-normal normal-case mt-0.5
+                  ${hint ? "text-warn" : "text-dim"}`}
+              >
+                {caption}
+              </span>
+            )}
+          </button>
+        );
+      }}
     </UiHoldButton>
   );
 }
