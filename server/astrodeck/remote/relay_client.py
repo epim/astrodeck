@@ -587,12 +587,13 @@ class RelayClient:
                         return
                     next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
                 if ev is not None:
-                    seq += 1
-                    await self._send_frame(Frame(
-                        type=FrameType.WS_DATA, stream_id=wire_stream_id,
-                        header={"ws_id": ws_id, "seq": seq},
-                        payload=_event_payload(
-                            redact._redact_ws_event(ev.to_json(), principal))))
+                    out = redact._redact_ws_event(ev.to_json(), principal)
+                    if out is not None:  # None = dropped event (weather spec §8)
+                        seq += 1
+                        await self._send_frame(Frame(
+                            type=FrameType.WS_DATA, stream_id=wire_stream_id,
+                            header={"ws_id": ws_id, "seq": seq},
+                            payload=_event_payload(out)))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - close just this ws stream
