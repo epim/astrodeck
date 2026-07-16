@@ -443,6 +443,105 @@ test("F-dimmer: setBrightness/resetBrightness write the active mode's slice + pe
   eq(localStorage.getItem("astrodeck-bright-night"), "1", "reset persisted");
 });
 
+// ====================================================================
+// F5 — autofocus result persistence (R2-FOC-01/DOC-FOC-01)
+// ====================================================================
+
+// --------------------------------- F5: 'done' builds the canonical record
+test("F5: focus 'done' event builds lastAutofocusResult, snapshotting live provider/filter", () => {
+  useStore.setState({
+    status: {
+      connected: {}, looping: false, mode: "sim",
+      filterwheel: { position: 2, names: ["L", "R", "G", "B"] },
+      providers: { autofocus: { kind: "astrodeck", label: "AstroDeck native", reason: "" } },
+    } as unknown as RigStatus,
+    lastAutofocusResult: null,
+  });
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: {
+      state: "done",
+      points: [{ position: 100, hfr: 3.0 }, { position: 400, hfr: 1.5 }],
+      best: { position: 400, hfr: 1.49 },
+      fit: { method: "hyperbolic", r2: 0.99 },
+    } as unknown as Record<string, unknown>,
+    ts: 1_700_000_000,
+  });
+  const r = useStore.getState().lastAutofocusResult;
+  assert(!!r, "lastAutofocusResult set");
+  eq(r!.state, "done", "state");
+  eq(r!.best?.position, 400, "best position");
+  eq(r!.fit?.method ?? null, "hyperbolic", "fit method");
+  eq(r!.provider?.label ?? null, "AstroDeck native", "provider snapshot from live status");
+  eq(r!.filter, "G", "filter snapshot (index 2 -> G)");
+  eq(r!.ts, 1_700_000_000 * 1000, "ts from ev.ts (seconds) * 1000, not Date.now()");
+  // the raw live `focus` slice is ALSO updated (existing behavior, unchanged —
+  // it still drives the in-progress V-curve chart while a run streams).
+  eq(useStore.getState().focus?.state, "done", "raw focus slice also set");
+});
+
+// --------------------------------- F5: replacement semantics
+test("F5: a new run's 'running' ticks do not clear the previous lastAutofocusResult; only its own terminal event replaces it", () => {
+  useStore.setState({ status: { connected: {}, looping: false, mode: "sim" } as unknown as RigStatus });
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: { state: "done", points: [{ position: 1, hfr: 2 }], best: { position: 1, hfr: 2 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const first = useStore.getState().lastAutofocusResult;
+  assert(!!first, "first result set");
+
+  // A new run starts: the bus fires an empty "running" tick (autofocus.py/
+  // native.py both publish state="running", points=[], best=None first).
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: { state: "running", points: [], best: null } as unknown as Record<string, unknown>,
+    ts: 1,
+  });
+  assert(useStore.getState().lastAutofocusResult === first, "running tick leaves lastAutofocusResult untouched");
+  eq(useStore.getState().focus?.state, "running", "raw focus DOES flip to running (drives Measuring…/live chart)");
+
+  // The new run concludes -> NOW it replaces the record.
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: { state: "done", points: [{ position: 9, hfr: 1 }], best: { position: 9, hfr: 1 } } as unknown as Record<string, unknown>,
+    ts: 2,
+  });
+  const second = useStore.getState().lastAutofocusResult;
+  assert(second !== first, "second run's terminal event replaced the record");
+  eq(second!.best?.position, 9, "new best reflected");
+});
+
+// --------------------------------- F5: survives navigation (store, not view-local)
+test("F5: lastAutofocusResult is store state, not view-local -> survives a view switch", () => {
+  useStore.setState({ status: { connected: {}, looping: false, mode: "sim" } as unknown as RigStatus, view: "focus" });
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: { state: "done", points: [{ position: 5, hfr: 1 }], best: { position: 5, hfr: 1 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const r = useStore.getState().lastAutofocusResult;
+  assert(!!r, "result present before navigating");
+  useStore.getState().setView("capture"); // navigate away
+  useStore.getState().setView("focus"); // navigate back
+  assert(useStore.getState().lastAutofocusResult === r, "unchanged by navigation — never touched by setView");
+});
+
+// --------------------------------- F5: 'failed' terminal event also persists
+test("F5: focus 'failed' event also builds a persisted record (message carried, best null)", () => {
+  useStore.setState({ status: { connected: {}, looping: false, mode: "sim" } as unknown as RigStatus, lastAutofocusResult: null });
+  useStore.getState().handleEvent({
+    type: "focus",
+    data: { state: "failed", points: [{ position: 1, hfr: 2 }], best: null, message: "no V-curve minimum found" } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const r = useStore.getState().lastAutofocusResult;
+  assert(!!r, "failed result persisted too");
+  eq(r!.state, "failed", "state");
+  eq(r!.message, "no V-curve minimum found", "message carried");
+  eq(r!.best, null, "best null");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

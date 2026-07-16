@@ -4,6 +4,7 @@ import {
   useStore,
   useStatus,
   useFocus,
+  useLastAutofocusResult,
   useHfrThresholds,
   useLinkDown,
   useLivePreview,
@@ -18,6 +19,7 @@ import {
 } from "../store";
 import type { FocusEvent } from "../types";
 import { VCurve, type FocusFit } from "../components/graphs";
+import { afResultAgeLabel } from "../lib/autofocus";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
@@ -30,6 +32,10 @@ import { HELP } from "../help";
 export default function FocusView() {
   const status = useStatus();
   const focus = useFocus();
+  // Canonical latest-completed-run record (F5: R2-FOC-01/DOC-FOC-01) — lives in
+  // the store (not local state), so it rehydrates on mount and survives
+  // navigating away and back; only a NEW run's own terminal event replaces it.
+  const afResult = useLastAutofocusResult();
   const showToast = useStore((s) => s.showToast);
   const canFocus = useCanControlCapture(); // focuser/autofocus is imaging-control class
 
@@ -65,12 +71,14 @@ export default function FocusView() {
   const pos = foc?.position ?? 0;
   const running = focus?.state === "running";
 
-  // The additive `fit` (method/R²/curve/trendlines) + `message` ride on the raw
-  // `focus` event; types.ts FocusEvent stays untouched, so read them via a cast —
-  // same pattern the store uses for `status.providers` (useProviders).
-  const focusExt = focus as (FocusEvent & { fit?: FocusFit | null; message?: string }) | null;
+  // The additive `fit` (method/R²/curve/trendlines) rides on the raw `focus`
+  // event; types.ts FocusEvent stays untouched, so read it via a cast — same
+  // pattern the store uses for `status.providers` (useProviders). Only the
+  // LIVE V-curve chart below reads this (it needs the in-progress sweep's
+  // fit while `running`); the Result panel reads the store's persisted
+  // `afResult` instead (see above) so it survives navigation.
+  const focusExt = focus as (FocusEvent & { fit?: FocusFit | null }) | null;
   const focusFit = focusExt?.fit ?? null;
-  const focusMessage = focusExt?.message ?? null;
   // Pixel scale for the arcsec HFR in the verdict: prefer computed optics, fall
   // back to the live frame's scale when the sensor reports it.
   const pixelScale = status?.optics?.image_scale_arcsec_px ?? shown?.pixel_scale_arcsec ?? null;
@@ -123,26 +131,35 @@ export default function FocusView() {
         {/* Result panel — the verdict-first outcome lives in the right column
             above the Focuser, matching the design reference (F5). */}
         <Panel title="Result" right={<ProviderBadge cap="autofocus" />}>
-          {focus?.state === "done" || focus?.state === "failed" ? (
+          {running ? (
+            <div className="text-accent text-sm blink">Measuring…</div>
+          ) : afResult ? (
             <>
               <AutofocusVerdict
-                state={focus.state}
-                hfr={focus.best?.hfr ?? null}
-                r2={focusFit?.r2 ?? null}
-                method={focusFit?.method ?? null}
+                state={afResult.state}
+                hfr={afResult.best?.hfr ?? null}
+                r2={afResult.fit?.r2 ?? null}
+                method={afResult.fit?.method ?? null}
                 pixelScaleArcsec={pixelScale}
                 hfrGood={hfrGood}
                 hfrWarn={hfrWarn}
-                message={focusMessage}
+                message={afResult.message}
               />
-              {focus.state === "done" && focus.best && (
+              {afResult.state === "done" && afResult.best && (
                 <div className="mt-3">
-                  <Stat label="best position" value={focus.best.position} />
+                  <Stat label="best position" value={afResult.best.position} />
                 </div>
               )}
+              {/* Persisted-run provenance (F5: R2-FOC-01/DOC-FOC-01) — this
+                  line, like the verdict above, reads store.lastAutofocusResult
+                  (not local state), so it is still here after navigating away
+                  and back; only a NEW run's own terminal event replaces it. */}
+              <p className="text-[11px] text-dim mt-2">
+                {afResult.provider ? `${afResult.provider.label} · ` : ""}
+                {afResult.filter ? `${afResult.filter} · ` : ""}
+                {afResultAgeLabel(afResult.ts, Date.now())}
+              </p>
             </>
-          ) : running ? (
-            <div className="text-accent text-sm blink">Measuring…</div>
           ) : (
             <div className="text-faint text-sm">Run autofocus to measure focus quality.</div>
           )}

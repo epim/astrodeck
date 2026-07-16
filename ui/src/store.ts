@@ -36,6 +36,7 @@ import type {
 import { deriveNinaHealth } from "./lib/health";
 import { normalizeSafety } from "./lib/safety";
 import { normalizeWeather } from "./lib/weather";
+import { normalizeAutofocusResult, filterNameFromStatus, type AutofocusResult } from "./lib/autofocus";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
@@ -389,6 +390,16 @@ interface AppState {
   status: RigStatus | null;
   preview: PreviewInfo | null;
   focus: FocusEvent | null;
+  // Canonical latest-completed-autofocus-run record (F5: R2-FOC-01/DOC-FOC-01).
+  // `focus` above stays the raw live bus slice (streams every "running" tick
+  // for the in-progress V-curve chart, exactly as before); this is a SEPARATE
+  // snapshot written ONLY on a terminal (done|failed) `focus` event, enriched
+  // with the provider/filter that were live at that instant (the bus event
+  // carries neither) and the event's own timestamp. It survives navigation
+  // (it's store state, not view-local) and survives until the NEXT run's own
+  // terminal event replaces it — a fresh run's early empty "running" ticks
+  // never blank it. null until the first autofocus run completes this session.
+  lastAutofocusResult: AutofocusResult | null;
   guide: (GuideStats & { name?: string }) | null;
   sequence: SequenceState;
   polar: PolarState;
@@ -586,6 +597,7 @@ export const useStore = create<AppState>((set, get) => ({
   status: null,
   preview: null,
   focus: null,
+  lastAutofocusResult: null,
   guide: null,
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
@@ -1145,9 +1157,30 @@ export const useStore = create<AppState>((set, get) => ({
         get().pushPreview(p);
         break;
       }
-      case "focus":
+      case "focus": {
         set({ focus: ev.data as unknown as FocusEvent });
+        // Snapshot the canonical latest-run record on a terminal tick only
+        // (normalizeAutofocusResult itself returns null for "running", so
+        // this is safe to call on every tick — but skipping the lookup for
+        // the common "running" ticks avoids reading `status` on every
+        // in-sweep point). provider/filter come from the store's OWN live
+        // status at this instant (F5: R2-FOC-01) since the bus event has
+        // neither; `ev.ts` (seconds) is the event's timestamp, not the
+        // client's receive time.
+        const state = (ev.data as { state?: unknown }).state;
+        if (state === "done" || state === "failed") {
+          const st = get();
+          const providers = (st.status as (RigStatus & { providers?: ProvidersStatus }) | null)?.providers;
+          const choice = providers?.autofocus;
+          const result = normalizeAutofocusResult(ev.data, {
+            provider: choice ? { kind: choice.kind, label: choice.label } : null,
+            filter: filterNameFromStatus(st.status?.filterwheel),
+            tsMs: ev.ts * 1000,
+          });
+          if (result) set({ lastAutofocusResult: result });
+        }
         break;
+      }
       case "guide":
         set({ guide: ev.data as unknown as GuideStats, lastGuideAtMs: Date.now() });
         break;
@@ -1261,6 +1294,7 @@ export const useStatus = () => useStore((s) => s.status);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
 export const useFocus = () => useStore((s) => s.focus);
+export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResult);
 export const usePreview = () => useStore((s) => s.preview);
 export const usePolar = () => useStore((s) => s.polar);
 export const useLogs = () => useStore((s) => s.logs);
