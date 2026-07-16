@@ -30,10 +30,12 @@ import type {
   UpdateStatus,
   ViewName,
   Viewport,
+  WeatherState,
   WsPhase,
 } from "./types";
 import { deriveNinaHealth } from "./lib/health";
 import { normalizeSafety } from "./lib/safety";
+import { normalizeWeather } from "./lib/weather";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
@@ -441,6 +443,14 @@ interface AppState {
   // event). The run-complete panel + overflow deep-link to it in the next workflow.
   lastReportId: string | null;
 
+  // --- weather (sub-project C §9) ---
+  // Latest normalized weather payload (null until a `weather` event or the
+  // panel's cold GET lands — non-holders never receive either, spec §8).
+  weather: WeatherState | null;
+  // Bumped ONLY when `alert` transitions null -> non-null (the `alert` slice
+  // key idiom) so the popup effect fires exactly once per server-side latch.
+  weatherAlertKey: number;
+
   // --- live-preview (Batch-2; master §A.2) ---
   previews: PreviewInfo[]; // newest last, cap 24 (client metadata ring)
   selectedPreviewId: number | null; // null => follow live
@@ -605,6 +615,8 @@ export const useStore = create<AppState>((set, get) => ({
   safety: null,
   alert: null,
   lastReportId: null,
+  weather: null,
+  weatherAlertKey: 0,
 
   // --- live-preview ---
   previews: [],
@@ -1096,6 +1108,23 @@ export const useStore = create<AppState>((set, get) => ({
         if (d.id) set({ lastReportId: d.id });
         break;
       }
+      case "weather": {
+        // Weather payload (spec §7) — WS push, the panel's cold GET, and the
+        // ignore-tonight POST all route through here (single application
+        // path). Normalize (stale fail-closed, clamped) and replace; bump
+        // weatherAlertKey ONLY on the alert null -> non-null edge so the
+        // popup fires once per server-side once-per-night latch (spec §12).
+        const raw = ev.data as unknown as WeatherState;
+        const nw = normalizeWeather(raw, Date.now() / 1000);
+        set((s) => ({
+          weather: nw,
+          weatherAlertKey:
+            nw?.alert && !s.weather?.alert
+              ? s.weatherAlertKey + 1
+              : s.weatherAlertKey,
+        }));
+        break;
+      }
       case "preview": {
         const p = ev.data as unknown as PreviewInfo;
         // Keep the single-frame `preview` (existing consumers) AND push into the
@@ -1283,6 +1312,8 @@ export const useConfirm = () => useStore((s) => s.confirm);
 export const useSafety = () => useStore((s) => s.safety);
 export const useAlert = () => useStore((s) => s.alert);
 export const useLastReportId = () => useStore((s) => s.lastReportId);
+export const useWeather = () => useStore((s) => s.weather);
+export const useWeatherAlertKey = () => useStore((s) => s.weatherAlertKey);
 
 // ============================================================================
 // Live-preview narrow hooks (live-preview spec §4.2). Each subscribes to one
