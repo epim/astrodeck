@@ -110,7 +110,7 @@ export default function MountView() {
           </div>
           <div className="flex items-center gap-3 mt-4 border-t border-line pt-3">
             <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
-              onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} />
+              onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Sidereal tracking" />
             <span className="text-xs text-dim">sidereal tracking</span>
             <div className="flex-1" />
             {m?.parked ? (
@@ -143,7 +143,7 @@ export default function MountView() {
         right={
           <label className="flex items-center gap-2">
             <span className="label">center after slew</span>
-            <Toggle checked={center} onChange={setCenter} />
+            <Toggle checked={center} onChange={setCenter} label="Center after slew" />
           </label>
         }>
         <input className="field mb-3" placeholder="Search — M42, Andromeda, nebula, galaxy…"

@@ -118,9 +118,16 @@ export function Stat({ label, value, unit, tone, hint, glyph = true }: {
   );
 }
 
+// `label` is REQUIRED, not optional (root-cause fix for W-01/R2-CAP-02): the
+// control is a <button role="switch">, and wrapping it in a visual <label>
+// element (the common call-site idiom for the adjacent text) does NOT give a
+// button an accessible name in the accname algorithm the way it does for a
+// bare <input> — only aria-label/aria-labelledby do. Making the prop
+// mandatory turns "forgot the a11y name" into a compile error instead of a
+// silent gap, so every switch in the app carries one.
 export function Toggle({ checked, onChange, disabled = false, label, showState = false }: {
   checked: boolean; onChange: (v: boolean) => void; disabled?: boolean;
-  label?: string; showState?: boolean;
+  label: string; showState?: boolean;
 }) {
   return (
     <span className="inline-flex items-center min-h-11 sm:min-h-0">
