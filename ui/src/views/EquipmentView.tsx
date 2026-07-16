@@ -36,6 +36,7 @@ import {
   hasRealMotion,
   loadAssignments,
   saveAssignments,
+  simAssignments,
   slotState,
   type Assignment,
   type AssignmentMap,
@@ -112,8 +113,16 @@ export default function EquipmentView(): JSX.Element {
 
   const assignedCount = roles.filter((r) => assignments[r]).length;
 
-  const doConnect = async () => {
-    if (hasRealMotion(assignments, drivers)) {
+  // The one connect-rig implementation, parameterized on the AssignmentMap to
+  // drive (root-cause fix, sim-connect desync EQ-01 ×3 rounds): both the
+  // Connect Rig button (the user's own dropdown picks) and ▶ Simulator rig
+  // (an all-sim map it builds itself, see doSimRig) funnel through here so
+  // Devices/Connect Rig/Link Status always agree on ONE connected rig —
+  // Link Status in particular only populates from the RigSpec connect path
+  // (backend_links stays [] for the legacy /api/connect/sim shortcut this
+  // replaces), so reusing this path is what makes that surface honest too.
+  const connectAssignments = async (map: AssignmentMap) => {
+    if (hasRealMotion(map, drivers)) {
       const ok = await confirmDialog({
         title: "Connect this rig?",
         body: "This rig includes a real mount or focuser. Connecting will command the hardware to attach and may move it. Hold to confirm.",
@@ -126,10 +135,10 @@ export default function EquipmentView(): JSX.Element {
     setBusy(true);
     setResults({});
     try {
-      const res: ConnectRigResult = await connectRig(buildRigSpec(assignments));
-      const map: Record<string, RoleResult> = {};
-      for (const r of res.results) map[r.role] = r;
-      setResults(map);
+      const res: ConnectRigResult = await connectRig(buildRigSpec(map));
+      const resultMap: Record<string, RoleResult> = {};
+      for (const r of res.results) resultMap[r.role] = r;
+      setResults(resultMap);
       const okCount = res.results.filter((r) => r.ok).length;
       const attempted = res.results.filter((r) => r.attempted).length;
       if (okCount === 0 && attempted > 0) {
@@ -155,6 +164,8 @@ export default function EquipmentView(): JSX.Element {
     }
   };
 
+  const doConnect = () => connectAssignments(assignments);
+
   const doDisconnect = () =>
     void (async () => {
       setBusy(true);
@@ -169,18 +180,16 @@ export default function EquipmentView(): JSX.Element {
       }
     })();
 
-  const doSimRig = () =>
-    void (async () => {
-      setBusy(true);
-      try {
-        await api.post("/api/connect/sim");
-        showToast("success", "Simulator rig connected");
-      } catch (e) {
-        showToast("error", e instanceof Error ? e.message : "sim connect failed");
-      } finally {
-        setBusy(false);
-      }
-    })();
+  // Builds the AssignmentMap first (state + localStorage, same as a manual
+  // per-row pick) and THEN drives it through connectAssignments — never the
+  // legacy /api/connect/sim shortcut, whose ConnectResult the Equipment
+  // surface has no way to read into assignments/backend_links (root cause).
+  const doSimRig = () => {
+    const map = simAssignments(roles, drivers);
+    setAssignments(map);
+    saveAssignments(map);
+    void connectAssignments(map);
+  };
 
   // ------------------------------------------------------------- profiles
   const doSaveProfile = () =>

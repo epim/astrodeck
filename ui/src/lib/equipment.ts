@@ -56,6 +56,26 @@ export function deviceChoices(role: string, driver: DriverInfo): DriverDeviceOff
   return driver.offers.devices.filter((o) => o.role === role);
 }
 
+/** Sim-connect desync root-cause fix (spec review EQ-01, ×3 rounds): assign the
+ *  implicit "sim" driver to every given role, in the EXACT shape RoleSlot's
+ *  pickDriver("sim") would produce by hand. `▶ Simulator rig` builds this map
+ *  and then drives it through the SAME connect-rig flow Connect Rig uses, so
+ *  Devices (dropdowns), Connect Rig (assignedCount), and Link Status
+ *  (backend_links, only populated by the RigSpec connect path) all read one
+ *  AssignmentMap instead of three disjoint sources of truth. A role the sim
+ *  driver doesn't offer (shouldn't happen -- it offers every ROLE) degrades to
+ *  a bare `{driverId: "sim"}`, same as pickDriver does when the driver row is
+ *  missing. */
+export function simAssignments(roles: string[], drivers: DriverInfo[]): AssignmentMap {
+  const sim = drivers.find((d) => d.id === "sim");
+  const map: AssignmentMap = {};
+  for (const role of roles) {
+    const offer = sim ? deviceChoices(role, sim)[0] : undefined;
+    map[role] = { driverId: "sim", devType: offer?.dev_type, devNum: offer?.dev_num, name: offer?.name };
+  }
+  return map;
+}
+
 /** The three task slots the Equipment Tasks section renders (spec §4.1). */
 export type TaskCap = "autofocus" | "polar_align" | "solve";
 export const TASK_CAPS: { cap: TaskCap; label: string }[] = [
