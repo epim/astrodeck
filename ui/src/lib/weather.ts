@@ -116,3 +116,33 @@ export function agoLabel(fetchedTs: number | null, nowTs: number): string {
   }
   return `updated ${mins} min ago`;
 }
+
+/** Collision-consolidates SVG chart end-labels that land within `minGap` px of
+ *  one another (e.g. all-zero series stack exactly on the 0% baseline and
+ *  would otherwise overprint — SkyConditionsPanel spec §10). Sorts by y, then
+ *  greedily clusters CONSECUTIVE entries whose gap to the previous member is
+ *  <= minGap (a chain: A+B may merge, B+C may merge, joining A/B/C into one
+ *  row even though A and C alone are > minGap apart — intentional, since each
+ *  adjacent pair is visually touching). Each cluster becomes one row: label =
+ *  member names joined with "+" in sorted-y order, y = the cluster's mean.
+ *  Pure — no DOM, no chart-scale knowledge; the caller supplies pixel y's. */
+export function groupEndLabels(
+  entries: { name: string; y: number }[],
+  minGap: number,
+): { label: string; y: number }[] {
+  if (entries.length === 0) return [];
+  const sorted = [...entries].sort((a, b) => a.y - b.y);
+  const clusters: { name: string; y: number }[][] = [];
+  for (const e of sorted) {
+    const cur = clusters[clusters.length - 1];
+    if (cur && e.y - cur[cur.length - 1].y <= minGap) {
+      cur.push(e);
+    } else {
+      clusters.push([e]);
+    }
+  }
+  return clusters.map((c) => ({
+    label: c.map((e) => e.name).join("+"),
+    y: c.reduce((sum, e) => sum + e.y, 0) / c.length,
+  }));
+}

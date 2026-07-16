@@ -99,9 +99,16 @@ export default function WeatherPanel(): JSX.Element {
         </p>
 
         <label className="flex items-center justify-between gap-2 text-sm">
-          <span className="text-dim">weather enabled</span>
-          <Toggle checked={enabled} disabled={!canEdit || busy} onChange={setEnabled} />
+          <span className="label">Weather enabled</span>
+          <Toggle checked={enabled} disabled={!canEdit || busy} onChange={setEnabled} label="Weather enabled" />
         </label>
+
+        {enabled && config?.site?.is_default && (
+          <p className="text-[12px] text-warn inline-flex items-start gap-1.5">
+            <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+            <span>Requires a valid observing site to fetch forecasts.</span>
+          </p>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Cloud threshold (%)">
