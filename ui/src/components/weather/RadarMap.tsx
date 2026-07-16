@@ -201,6 +201,21 @@ export default function RadarMap() {
     }
   }
 
+  // Prune tile-health entries that left the viewport (pan/zoom/bust roll) so
+  // tileStatus can't grow unboundedly across a long session — ids embed zoom,
+  // so without this every zoom level's tiles would accumulate for the
+  // component's lifetime. Keyed on the joined id list (ids never contain
+  // spaces); returns the SAME state object when nothing needs dropping so
+  // React bails out instead of re-rendering per pan frame.
+  const tileIdsKey = tiles.map((t) => t.id).join(" ");
+  useEffect(() => {
+    const keep = new Set(tileIdsKey.split(" "));
+    setTileStatus((s) => {
+      const kept = Object.entries(s).filter(([id]) => keep.has(id));
+      return kept.length === Object.keys(s).length ? s : Object.fromEntries(kept);
+    });
+  }, [tileIdsKey]);
+
   // ---- tile health badge (R2-WEA-04): "loading…" until the first tile in
   // the CURRENT viewport has painted, "tiles unavailable" once every tile in
   // it has errored — either way a visible signal, so a failed/empty layer can
