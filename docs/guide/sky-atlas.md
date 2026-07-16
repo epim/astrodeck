@@ -19,6 +19,19 @@ The catalog is a curated list of Messier objects plus bright NGC/IC favourites
 (and a couple of Sh2 objects) — not an exhaustive survey catalog. Matching is
 case-insensitive across id, name, and object type, sorted brightest-first.
 
+**While you type**, the dropdown always shows something rather than going
+silent: *"Searching…"* while the debounced query is in flight, the matching
+rows once they land, or — if nothing matches — an explicit *"No matches for
+'…'."* with a one-line hint. That hint is context-aware: a query that looks
+like the Sun, Moon, or a planet name gets *"Planets aren't supported yet —
+use manual coordinates or free-roam."*; anything else gets *"Catalog covers
+Messier/NGC/IC deep-sky objects only — try a name or ID (e.g. M31)."*
+
+**No planet ephemerides.** This isn't a bug to work around with a better
+search term — the catalog genuinely has no Sun/Moon/planet positions today.
+If you need to frame one, use **Free-roam the sky** to point manually and
+dial in coordinates yourself; there's no scripted workaround beyond that.
+
 If you don't have a target in mind, use **Free-roam the sky** to just explore.
 
 ---
@@ -100,8 +113,8 @@ it will sit low"*) but still lets you frame and send it.
 
 ## Offline at the scope
 
-You don't need internet under the stars. Two settings (under **Settings → Sky
-Atlas**) control online use:
+You don't need internet under the stars. Two settings (under **Settings →
+Connect → Sky Atlas**) control online use:
 
 - **Online survey fetch (CDS)** — **off by default**. When off, the Atlas is
   offline-first: the local pack is the only source. When on, small fields pull

@@ -21,7 +21,7 @@ disabled, the server makes **zero** outbound weather requests.
 Go to **Settings → Connect**. The **Weather** panel appears there (only for
 admins). It has:
 
-- **weather enabled** — the master toggle. Off means no forecasts are fetched.
+- **WEATHER ENABLED** — the master toggle. Off means no forecasts are fetched.
 - **Cloud threshold (%)** — default `50`. Cloud cover at or above this counts
   as "too cloudy". Range 0–100.
 - **Sustained for (min)** — default `30`. A breach only counts once cloud
@@ -29,10 +29,15 @@ admins). It has:
   pair drives **both** the night warning and the auto-resume hold.
 - **Astrospheric API key** — optional (see below). Write-only.
 
-Press **Save weather settings**. Enabling weather makes the home server start
-fetching forecasts for your **configured site** — so you must
-[set your site](site-and-locations.md) first. On the default (0, 0) location it
-fetches nothing.
+If you enable weather while the site is still the default (0, 0), the panel
+shows an inline warning — *"Requires a valid observing site to fetch
+forecasts."* — so you must [set your site](site-and-locations.md) first; on
+the default location weather fetches nothing even if enabled.
+
+Any unsaved edit (including just flipping the toggle) shows an **"Unsaved
+changes — Save to apply"** note next to the Save button, so a change you make
+and then navigate away from is never silently discarded without at least a
+visible hint. Press **Save weather settings** to apply.
 
 The forecast source is **Open-Meteo**, polled every 15 minutes (about 96 calls
 per day). Data older than 45 minutes is shown as **stale**.
@@ -41,23 +46,42 @@ per day). Data older than 45 minutes is shown as **stale**.
 
 ## The Sky Conditions panel
 
-On the **Monitor** view, admins see a **Sky Conditions** panel: a 24-hour
-cloud-cover forecast chart.
+On the [Monitor](monitor.md) view, admins see a **Sky Conditions** panel: a
+24-hour cloud-cover forecast chart. It has four states, and only ever shows
+one of them:
+
+- **disabled** — weather is off: *"Weather is off — enable it in
+  Settings → Connect."*
+- **waiting for first forecast** — weather was just enabled and the server's
+  poller hasn't landed its first fetch yet (up to ~60s): *"waiting for first
+  forecast…"* — so turning weather on gives you immediate feedback instead of
+  the panel looking broken for a minute.
+- **no data in the current window** — a forecast exists but none of it falls
+  in the next 24 hours (e.g. a very stale fetch): *"no forecast data for the
+  current window"*.
+- **live** — the chart itself, described below.
+
+The live chart:
 
 - Four lines are drawn — **total**, **low**, **mid**, and **high** cloud — each
-  distinguished by line style and an inline label (not by colour alone, so it
-  stays readable in night mode).
-- A dashed horizontal rule marks your **cloud threshold**.
+  distinguished by line style and dash pattern (not by colour alone, so it
+  stays readable in night mode). End-of-line labels are collision-consolidated
+  when two or more series land on the same value (e.g. an all-zero night
+  renders one `total+mid+high 0%` label instead of four overlapping ones).
+- A dashed horizontal rule marks your **cloud threshold**, labeled with the
+  actual hold policy it's drawing — *"hold ≥{threshold}% for {sustain}m"* —
+  so the rule and the policy driving it can never drift apart on screen.
+  Axis, series, and threshold-label text were all bumped up a size (the
+  original 8–9px was reported unreadable; the threshold label got a second,
+  larger bump after a follow-up pass still called it out).
 - Shaded bands mark tonight's **dark window** (astronomical night) and any
   **sustained breach** where cloud is forecast to exceed the threshold long
   enough to matter.
-- A chip row shows how long ago the forecast was fetched (turning amber when
-  **stale**), and — if Astrospheric is configured — current **seeing**,
+- A chip row shows the **source** — *"Open-Meteo"*, or *"Open-Meteo +
+  Astrospheric"* once that's configured — and how long ago the forecast was
+  fetched (e.g. *"updated 12 min ago"*, turning amber and prefixed **STALE**
+  past 45 minutes), plus, if Astrospheric is configured, current **seeing**,
   **transparency**, and credits used today.
-
-If weather is on but no forecast has arrived yet, it reads *"no forecast yet —
-first fetch lands within a minute"*. If weather is off, it says *"Weather is
-off — enable it in Settings → Connect."*
 
 ### ignore weather tonight
 
@@ -105,14 +129,24 @@ with no safety monitor still warns you; see the sessions guide.)
 
 ## The radar map
 
-On the **Monitor** view, admins also see a **Radar** panel: a small slippy
-radar/satellite map centred on your site.
+On the [Monitor](monitor.md) view, admins also see a **Radar** panel — but
+only once weather is **enabled** (it stays hidden while weather is off,
+unlike Sky Conditions above, which shows its own disabled state instead): a
+small slippy radar/satellite map centred on your site.
 
 - Two layers, chosen with the **Radar** and **IR satellite** buttons. **Radar**
   is roughly 5 minutes delayed.
 - **refresh** re-fetches tiles; **recenter** returns the map to your site.
-- Drag to pan, mouse-wheel or `+`/`-` to zoom, arrow keys to nudge. The tile
-  layer is dimmed in night mode just like sky-survey imagery.
+- Drag to pan, mouse-wheel to zoom, or use the visible **−** / **+** zoom
+  stepper (44px targets, same range the wheel uses) — so zooming isn't
+  mouse-only. Arrow keys nudge the pan. The tile layer is dimmed in night
+  mode just like sky-survey imagery.
+- **Per-layer tile health.** A broken tile hides itself rather than showing a
+  broken-image glyph, but a badge in the corner still tells you the layer
+  failed: **"loading…"** while the current viewport's tiles haven't painted
+  yet, or **"tiles unavailable"** once every tile in view has errored. The
+  point is that a blank map must never silently read as "no clouds" — if
+  imagery failed to load, the badge says so.
 - A chip shows the mount's current **Az / Alt**, or "no mount" when the
   telescope isn't reporting a position.
 
@@ -165,6 +199,7 @@ faster poll would just burn credits for no new data. Data older than 12 hours
 
 ## Related
 
+- [Monitor](monitor.md) — where the Sky Conditions and Radar panels live.
 - [Sessions & multi-night imaging](sessions-multi-night.md) — where the
   auto-resume veto and the weather-override toggles live.
 - [Safety & automation](safety-and-automation.md) — the safety monitor, the

@@ -13,7 +13,13 @@ panel. Editing the site needs **operator or admin** access
 
 ## Setting your site manually
 
-The panel has:
+The panel opens with a persistent line — **"Active site: `<name>` ·
+`<source>`"** — naming the currently *saved* site and where it came from
+(`default`, `manual`, `saved preset`, or `hidden` for a low-role user). It
+never changes just because you're mid-edit in the form below; only an actual
+save moves it.
+
+Below that, the panel has:
 
 - **Site name** — e.g. `[SITE-LABEL]` (the default).
 - **Latitude** — a magnitude field (0–90) plus an **N / S** selector.
@@ -23,8 +29,11 @@ The panel has:
 
 You enter latitude and longitude as a **positive magnitude with a hemisphere**;
 AstroDeck converts to its signed internal convention (North-positive,
-East-positive) at the boundary. Press **Save site**. Saving flips the site off
-the "default" flag.
+East-positive) at the boundary. Press **Set site** to persist the form as your
+active site — that's the one verb that actually saves your location; the
+buttons in the next section only *fill the form* or manage a separate library
+of presets, they never save on their own. Saving flips the site off the
+"default" flag and updates the "Active site" line above.
 
 While the site is still the default, the panel shows an amber notice:
 *"Using default location (0, 0) — sequencing windows and Atlas visibility are
@@ -34,7 +43,7 @@ wrong until set."*
 
 ## Filling it in automatically
 
-Two shortcuts sit next to **Save site**:
+Two shortcuts sit next to **Set site**:
 
 ### Use my location (browser geolocation)
 
@@ -50,7 +59,7 @@ The **Use mount GPS** button reads the position back from a mount that reports
 GPS (many go-to mounts do). If the mount has no GPS it reports that and changes
 nothing.
 
-Both shortcuts only *fill the form* — you still review and **Save site**.
+Both shortcuts only *fill the form* — you still review and press **Set site**.
 
 ---
 
@@ -58,23 +67,34 @@ Both shortcuts only *fill the form* — you still review and **Save site**.
 
 If you observe from more than one place (home, a dark-sky site, a star party),
 the **Saved locations** row lets you keep a small library — up to **50** named
-sites. It appears only for `config.site_optics` holders.
+sites, entirely separate from the one active site above. It appears only for
+`config.site_optics` holders.
 
-- The **Saved locations** dropdown lists your sites by name. Pick one and press
-  **Apply** to load it into the form (then Save site to make it active).
-- **Save current…** prompts for a name and saves the coordinates currently in
-  the form. If the name already exists (case-insensitively) you're asked to
-  **Overwrite** it.
+- The **Saved locations** dropdown just tracks *which* preset is picked —
+  selecting one does **not** touch the form by itself (three review rounds
+  flagged the old auto-apply-on-select behaviour as concealing which action
+  actually did something). Press **Load selected preset** to actually copy
+  its coordinates into the form; you still then need **Set site** to make it
+  the active site.
+- **Save as location preset…** opens an inline name field (prefilled from the
+  current **Site name**); press **Save** to add the form's current
+  coordinates to the library as a new entry, or **Cancel** to back out. If
+  the name already exists (case-insensitively) you're asked to **Overwrite**
+  it.
 - **Delete** removes the selected saved location (with a confirm).
-- If you edit the form after applying a saved location, the row shows
-  *"Modified — differs from …"* so you know the form no longer matches.
+- If you edit the form after loading a preset, the row shows
+  *"Modified — differs from …"* so you know the form no longer matches what's
+  saved in the library.
 
-A saved location can also carry a **horizon profile** (its own tree/ridge
-altitude limit, a property of the *place*, not the rig). When you apply such a
-location and save, its horizon is applied **only if** you hold `config.safety` —
-otherwise the stored horizon is preserved untouched. Horizon limits themselves
-are edited on the Safety surface; see
-[safety-and-automation.md](safety-and-automation.md).
+A saved location can also carry a **horizon profile** (a single degrees
+number today — its own tree/ridge altitude limit, a property of the *place*,
+not the rig). When you **Load selected preset** and then **Set site**, that
+stored horizon is carried through and applied **only if** you hold
+`config.safety` — otherwise the site's previously-stored horizon is preserved
+untouched. There is currently **no UI field to type a new horizon number
+directly** (for a preset or otherwise) — the config API is the only way to
+set one from scratch; see
+[safety-and-automation.md](safety-and-automation.md#altitude-floors-horizon-and-pier-limits).
 
 Saved locations are stored separately from your rig profiles and from the main
 config, in their own file that survives updates.
