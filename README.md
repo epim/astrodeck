@@ -229,6 +229,9 @@ new device backend means implementing the small async interfaces in
 
 ## Documentation
 
+- [**`docs/guide/`**](docs/guide/README.md) — **the user guide**: task-focused how-tos for
+  getting started, equipment, capture, focus, the Sky Atlas, plans, multi-night sessions,
+  weather, remote access & roles, site & locations, safety, and troubleshooting.
 - [`docs/overview.md`](docs/overview.md) — purpose, philosophy, and architecture in depth.
 - [`docs/quickstart.md`](docs/quickstart.md) — install, first simulator session, real gear, the NINA bridge.
 - [`docs/development.md`](docs/development.md) — dev setup, repo structure, testing, adding a backend.
