@@ -22,6 +22,8 @@ New to AstroDeck? Follow this path:
 5. **[Sky Atlas](sky-atlas.md)** → **[Plan & sequences](plan-and-sequences.md)**
    → **[Sessions](sessions-multi-night.md)** — frame a target, build an
    autonomous run, and accumulate it across nights.
+6. **[Monitor](monitor.md)** — the live dashboard to leave up once a
+   sequence is running.
 
 ---
 
@@ -36,6 +38,7 @@ New to AstroDeck? Follow this path:
 | [Sky Atlas](sky-atlas.md) | Search, framing, mosaics, visibility, offline survey pack |
 | [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, scheduling, plan library |
 | [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume |
+| [Monitor](monitor.md) | Live dashboard, stall detection, pause/recovery, admin-only weather panels |
 | [Weather](weather.md) | Cloud forecast, night warning, auto-resume veto, radar map, Astrospheric |
 | [Remote access & roles](remote-access-and-roles.md) | Relay, sign-in, viewer/operator/admin, site privacy |
 | [Site & locations](site-and-locations.md) | Observing site, hemispheres, GPS, saved locations |
@@ -56,6 +59,21 @@ New to AstroDeck? Follow this path:
 - **"How do I connect my camera / mount?"** →
   [Equipment & profiles](equipment-and-profiles.md)
 - **"Server won't start."** → [Troubleshooting](troubleshooting.md)
+- **"My capture looks stalled — what do I check?"** →
+  [Monitor](monitor.md#stall-detection--what-you-actually-see) and
+  [Troubleshooting](troubleshooting.md#the-run-looks-stuck-stall-diagnosis)
+- **"What do RMS / HFR actually mean?"** → **HFR** (half-flux radius, lower
+  is sharper) is explained on [Capture](capture.md#reading-the-live-preview)
+  and [Focus](focus.md#the-verdict); guide **RMS** shows up live on
+  [Monitor](monitor.md#last-frame-guiding-thermal).
+- **"The radar map is blank — is that clear sky?"** → No — see
+  [Weather](weather.md#the-radar-map); a blank/failed tile layer always shows
+  a **"loading…"** or **"tiles unavailable"** badge, never silence.
+- **"A run got interrupted — how do I get it back?"** →
+  [Sessions](sessions-multi-night.md#what-survives-a-reboot) and
+  [Monitor](monitor.md#recovering-an-interrupted-run)
+- **"Can I search for a planet in the Atlas?"** → Not yet — see
+  [Sky Atlas](sky-atlas.md#searching-for-a-target)
 
 ---
 

@@ -11,7 +11,10 @@ preview with a **Read-only** badge.
 
 The **Exposure** panel:
 
-- **Exposure (s)** — exposure time, default `2`.
+- **Exposure (s)** — exposure time, default `2`. An exposure of `0` or less is
+  blocked client-side: the field outlines red and shows *"Exposure must be
+  greater than 0s"* inline, and Single/Loop stay disabled until it's fixed —
+  it never reaches the server to fail downstream with a misleading error.
 - **Gain** — camera gain, default `120` (the label shows the camera's max, e.g.
   `Gain (max 300)`, when reported).
 - **Offset** — default `30`.
@@ -25,9 +28,17 @@ Three capture buttons:
   flight.
 - **Loop** — expose continuously (**Looping…**). A progress meter shows the
   current exposure and separate download progress.
-- **Stop** — end the loop and abort the current exposure.
+- **Stop** — end the loop and abort the current exposure. Stop stays a single
+  tap on purpose (it's the "make it stop now" control) — it does not use the
+  hold-to-confirm affordance that Abort uses elsewhere.
 
 You can't capture while polar alignment is running — stop alignment first.
+Single and Loop are also disabled with an inline reason — *"Sequence
+running — camera reserved"* or *"Sequence paused — camera reserved"* — the
+whole time an autonomous [sequence](plan-and-sequences.md) owns the camera,
+**including while it's paused**: a paused run still holds the camera between
+frames rather than releasing it back to manual control, so a background
+sequence never intercepts a manual exposure mid-flight.
 
 ---
 
