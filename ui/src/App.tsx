@@ -327,9 +327,19 @@ export default function App() {
             >=44px action target. Auto-SELECT (if enabled) happens in the store. */}
         {showRunBanner && (
           <div className="flex items-center gap-3 px-4 py-2 border-b border-line bg-accent2/15 shrink-0 text-xs">
-            <span className="blink shrink-0"><Led state="busy" label="Sequence running" /></span>
+            {/* Global strip truth (R2-PLN-01 partial, minimal): the banner stays up
+                through a PAUSED engine (store §monitor 3.2, runBanner survives
+                "paused"), so its own state must be read here too — otherwise a
+                paused run keeps blinking "RUNNING" against the Plan card's own
+                honest PAUSED badge (SeqStateBadge / stateMeta) two clicks away. */}
+            <span className={sequence.state === "paused" ? "shrink-0" : "blink shrink-0"}>
+              <Led state={sequence.state === "paused" ? "warn" : "busy"}
+                label={sequence.state === "paused" ? "Sequence paused" : "Sequence running"} />
+            </span>
             <span className="min-w-0 truncate text-ink">
-              <span className="text-accent font-display tracking-wider">SEQUENCE RUNNING</span>
+              <span className={`font-display tracking-wider ${sequence.state === "paused" ? "text-warn" : "text-accent"}`}>
+                {sequence.state === "paused" ? "SEQUENCE PAUSED" : "SEQUENCE RUNNING"}
+              </span>
               {runBanner?.plan_name && <span className="text-dim"> · {runBanner.plan_name}</span>}
               {typeof runBanner?.percent === "number" && (
                 <span className="mono text-dim"> · {Math.round(runBanner.percent)}%</span>
