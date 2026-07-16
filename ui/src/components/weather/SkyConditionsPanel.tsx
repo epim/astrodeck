@@ -12,21 +12,33 @@ import { Icon } from "../icons";
 import { api } from "../../api";
 import { getWeather, setIgnoreTonight } from "../../api/weather";
 import { useCanControlCapture } from "../../lib/caps";
-import { agoLabel, breachSpans, fmtHm, groupEndLabels } from "../../lib/weather";
+import { agoLabel, breachSpans, fmtHm, groupEndLabels, weatherSourceLabel } from "../../lib/weather";
 import type { WeatherState } from "../../types";
 
-// Minimum vertical gap (px) between two end-labels before they're treated as
-// colliding and consolidated (groupEndLabels, spec §10/R2-WEA-01) — a bit
-// taller than the 9px label font so two adjacent single-line labels never
-// overprint.
-const END_LABEL_MIN_GAP_PX = 9;
+// Chart typography (F7 #4 smoke-test verdict: axis/series text at 8-9px was
+// "unreadable"; the threshold policy label was "still a bit too small" even
+// after F1's initial pass). THRESHOLD_LABEL_FONT_PX is bumped a notch past the
+// rest since it was called out a second time.
+const AXIS_FONT_PX = 11;          // 0%/100% + time-tick labels (was 8-9)
+const SERIES_LABEL_FONT_PX = 11;  // right-edge end labels (was 9)
+const THRESHOLD_LABEL_FONT_PX = 12; // hold-policy rule label (was 8)
 
+// Minimum vertical gap (px) between two end-labels before they're treated as
+// colliding and consolidated (groupEndLabels, spec §10/R2-WEA-01) — retuned
+// for the SERIES_LABEL_FONT_PX bump above (F7) so two adjacent single-line
+// labels still never overprint at the larger font metrics.
+const END_LABEL_MIN_GAP_PX = SERIES_LABEL_FONT_PX + 2;
+
+// Chart geometry: F7 "too long for what it contains" — H and the plot area
+// are tightened while PAD_L/PAD_R/PAD_T/PAD_B grow slightly to give the bigger
+// fonts above room, so the panel's rendered height (the svg scales to its
+// container width via the H/W aspect ratio) drops even though the text grew.
 const W = 480;
-const H = 150;
-const PAD_L = 30;
-const PAD_R = 40;
-const PAD_T = 8;
-const PAD_B = 16;
+const H = 130;
+const PAD_L = 34;
+const PAD_R = 54;
+const PAD_T = 10;
+const PAD_B = 20;
 const PLOT_W = W - PAD_L - PAD_R;
 const PLOT_H = H - PAD_T - PAD_B;
 const HORIZON_S = 24 * 3600; // x-domain: now -> now + 24 h
@@ -200,7 +212,7 @@ export default function SkyConditionsPanel() {
   if (!weather || !weather.enabled) {
     return (
       <Panel className="col-span-full lg:col-span-6" title="Sky Conditions">
-        <p className="text-dim text-xs py-6 text-center">
+        <p className="text-dim text-xs py-4 text-center">
           Weather is off — enable it in Settings → Connect.
         </p>
       </Panel>
@@ -257,9 +269,9 @@ export default function SkyConditionsPanel() {
             />
             <text
               x={PAD_L + 3}
-              y={Math.max(PAD_T + 8, chart.sy(weather.threshold_pct) - 3)}
+              y={Math.max(PAD_T + THRESHOLD_LABEL_FONT_PX, chart.sy(weather.threshold_pct) - 3)}
               fill="var(--text-faint)"
-              fontSize={8}
+              fontSize={THRESHOLD_LABEL_FONT_PX}
               fontFamily="IBM Plex Mono"
             >
               hold ≥{weather.threshold_pct}% for {weather.sustain_minutes}m
@@ -283,31 +295,39 @@ export default function SkyConditionsPanel() {
                 x={W - PAD_R + 3}
                 y={g.y + 3}
                 fill={g.label.split("+").includes("total") ? "var(--accent)" : "var(--text-dim)"}
-                fontSize={9}
+                fontSize={SERIES_LABEL_FONT_PX}
                 fontFamily="IBM Plex Mono"
               >
                 {g.label}
               </text>
             ))}
-            <text x={2} y={PAD_T + 8} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">100%</text>
-            <text x={2} y={PAD_T + PLOT_H} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">0%</text>
+            <text x={2} y={PAD_T + AXIS_FONT_PX} fill="var(--text-dim)" fontSize={AXIS_FONT_PX} fontFamily="IBM Plex Mono">100%</text>
+            <text x={2} y={PAD_T + PLOT_H} fill="var(--text-dim)" fontSize={AXIS_FONT_PX} fontFamily="IBM Plex Mono">0%</text>
             {chart.ticks.map((t, i) => (
-              <text key={i} x={t.x} y={H - 4} textAnchor="middle" fill="var(--text-faint)" fontSize={8} fontFamily="IBM Plex Mono">
+              <text key={i} x={t.x} y={H - 5} textAnchor="middle" fill="var(--text-faint)" fontSize={AXIS_FONT_PX} fontFamily="IBM Plex Mono">
                 {t.label}
               </text>
             ))}
           </svg>
-        ) : (
-          <p className="text-dim text-xs py-6 text-center">
-            no forecast yet — first fetch lands within a minute
+        ) : weather.forecast ? (
+          // Forecast exists but none of it falls in the current 24 h window
+          // (e.g. a very stale fetch) — distinct from the never-fetched case
+          // below; the stale chip in the chips row explains why.
+          <p className="text-dim text-xs py-4 text-center">
+            no forecast data for the current window
           </p>
+        ) : (
+          // F7 #2: enabling weather leaves up to ~60s (the server poller tick)
+          // with no data at all — this used to fall through to the same empty
+          // look as "disabled", giving no hint anything was coming.
+          <p className="text-dim text-xs py-4 text-center">waiting for first forecast…</p>
         )}
 
         {/* chips row (spec §10) */}
         <div className="flex items-center gap-2 flex-wrap text-[11px]">
           <span className={weather.stale ? "text-warn" : "text-dim"}>
             {weather.stale && <Icon name="alert" size={11} className="inline mr-1" />}
-            {agoLabel(weather.fetched_ts, nowTs)}
+            {weatherSourceLabel(!!weather.astrospheric)} · {agoLabel(weather.fetched_ts, nowTs)}
           </span>
           {seeingNow !== null && (
             <span className="text-dim border border-line px-1.5 py-0.5">seeing {seeingNow}</span>
