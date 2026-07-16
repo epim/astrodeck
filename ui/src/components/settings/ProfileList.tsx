@@ -4,7 +4,19 @@
 //               per-role result streams back over WS into backend_links). Danger
 //               hold-confirm when the profile resolves a real mount/focuser.
 //   Rename    → PATCH /api/profiles/{id}
+//   Update    → "Update from current rig" (F7 #5a) — overwrites the profile's
+//               devices/backend with whatever's currently connected. No server
+//               endpoint does this directly, so it's composed from three
+//               existing calls (capture the live rig under a scratch name, copy
+//               its device data onto THIS profile's id/name, upsert, then
+//               delete the scratch record) — see onUpdateFromRig below.
 //   Delete    → DELETE /api/profiles/{id} (hold-confirm)
+//   Export/Import (F7 #5b) → client-side JSON download / file-picker upload,
+//               PlanLibraryPanel precedent (commit de2839a). Profiles have no
+//               server export route, so export is a Blob download of the full
+//               Profile; import posts straight to POST /api/profiles, which
+//               already refuses to trust a client id for a NEW record
+//               (app.py::save_profile).
 //   Save current rig as profile → POST /api/profiles/capture (409 when no rig).
 //
 // Activation is async on the server ({started} immediately); we re-list to flip the
@@ -19,12 +31,15 @@ import {
   renameProfile,
   deleteProfile,
   activateProfile,
+  saveProfile,
+  importProfile,
 } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
 import { confirmDialog } from "../ConfirmDialog";
 import { Panel, Led, HoldButton, EmptyState, Field } from "../ui";
 import { Icon } from "../icons";
+import { parseProfileFile, profileExportFilename } from "../../lib/profileFile";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   alpaca: "Native / Alpaca",
@@ -65,6 +80,7 @@ export default function ProfileList(): JSX.Element {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [captureName, setCaptureName] = useState("");
   const [capturing, setCapturing] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const refresh = async () => {
     try {
@@ -161,6 +177,91 @@ export default function ProfileList(): JSX.Element {
     }
   };
 
+  // "Update from current rig" (F7 #5a) — the minimum-viable EDIT affordance:
+  // overwrite this profile's devices/backend with whatever's connected right
+  // now, keeping its id/name (so it stays the SAME row — no duplicate, no
+  // orphaned active-profile pointer). No server route does this in one call,
+  // so it's composed from three that do: capture the live rig under a scratch
+  // name (server mints a throwaway id), copy its device data onto THIS
+  // profile's id/name, upsert (POST /api/profiles honors the existing id as an
+  // in-place overwrite — app.py::save_profile), then delete the scratch
+  // record. On any failure after the capture, best-effort clean up the scratch
+  // row rather than leaving it behind.
+  const onUpdateFromRig = async (row: ProfileRow) => {
+    const ok = await confirmDialog({
+      title: `Update "${row.name}" from the current rig?`,
+      body: "Overwrites this profile's stored devices and backend with whatever's connected right now. The name and activation state are unchanged.",
+      mode: "confirm",
+      tone: "warn",
+      confirmLabel: "Update",
+    });
+    if (!ok) return;
+    setBusyId(row.id);
+    let scratchId: string | null = null;
+    try {
+      const captured = await captureProfile(`__update_scratch__${row.id}`);
+      scratchId = captured.id;
+      const full = await getProfile(captured.id);
+      const merged: Profile = { ...full, id: row.id, name: row.name };
+      await saveProfile(merged);
+      await deleteProfile(captured.id);
+      scratchId = null;
+      showToast("success", `Updated "${row.name}" from the current rig`);
+      await refresh();
+    } catch (e) {
+      const msg =
+        e instanceof ApiError && e.status === 409
+          ? "Connect a rig first, then update the profile from it."
+          : e instanceof Error
+            ? e.message
+            : "update failed";
+      showToast("error", msg);
+      if (scratchId) {
+        try {
+          await deleteProfile(scratchId);
+        } catch {
+          /* best-effort cleanup only — a leftover scratch row is harmless
+             (visible in the list, deletable like any other) */
+        }
+      }
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // Export (F7 #5b): no server route does this for profiles (unlike
+  // /api/plans/{id}/export), so fetch the full record and download it as a
+  // Blob — PlanLibraryPanel's confirmation-toast idiom (R2-PLN-03) carries over.
+  const exportRow = async (row: ProfileRow) => {
+    try {
+      const full = await getProfile(row.id);
+      const filename = profileExportFilename(full.name);
+      const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("success", `Exported ${filename}`);
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "export failed");
+    }
+  };
+
+  const importFile = async (file: File) => {
+    try {
+      const raw = parseProfileFile(await file.text());
+      await importProfile(raw);
+      showToast("success", "Profile imported");
+      await refresh();
+    } catch (e) {
+      showToast("error", `Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
   const onCapture = async () => {
     const name = captureName.trim() || "Captured rig";
     setCapturing(true);
@@ -188,15 +289,38 @@ export default function ProfileList(): JSX.Element {
       <Panel
         title="Profiles"
         right={
-          <button
-            type="button"
-            className="btn !py-1 !px-2 text-[10px]"
-            onClick={refresh}
-            title="Refresh profile list"
-          >
-            <Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />
-            Refresh
-          </button>
+          <div className="inline-flex items-center gap-1.5">
+            <button
+              type="button"
+              className="btn !py-1 !px-2 text-[10px]"
+              onClick={() => fileRef.current?.click()}
+              title="Import a profile from file"
+            >
+              <Icon name="upload" size={12} className="inline -mt-0.5 mr-1" />
+              Import
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              aria-label="Import a profile file"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) void importFile(f);
+              }}
+            />
+            <button
+              type="button"
+              className="btn !py-1 !px-2 text-[10px]"
+              onClick={refresh}
+              title="Refresh profile list"
+            >
+              <Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />
+              Refresh
+            </button>
+          </div>
         }
       >
         {loadErr && (
@@ -222,6 +346,8 @@ export default function ProfileList(): JSX.Element {
                 onStartRename={() => setRenamingId(row.id)}
                 onCancelRename={() => setRenamingId(null)}
                 onCommitRename={(next) => onRename(row, next)}
+                onUpdateFromRig={() => onUpdateFromRig(row)}
+                onExport={() => exportRow(row)}
                 onDelete={() => onDelete(row)}
               />
             ))}
@@ -267,6 +393,8 @@ function ProfileCard({
   onStartRename,
   onCancelRename,
   onCommitRename,
+  onUpdateFromRig,
+  onExport,
   onDelete,
 }: {
   row: ProfileRow;
@@ -276,6 +404,8 @@ function ProfileCard({
   onStartRename: () => void;
   onCancelRename: () => void;
   onCommitRename: (next: string) => void;
+  onUpdateFromRig: () => void;
+  onExport: () => void;
   onDelete: () => void;
 }): JSX.Element {
   return (
@@ -310,7 +440,12 @@ function ProfileCard({
         )}
       </div>
 
-      <div className="flex items-center gap-1.5">
+      {/* Normalized action row (F7 #5c): every button shares the same height
+          (btn + !py-1) and horizontal padding (!px-3) so Activate/Rename/
+          Update/Delete read as one consistent set instead of varying weights
+          — Delete in particular now carries an icon + label like its
+          siblings, not a bare icon-only X. */}
+      <div className="flex items-center gap-1.5 flex-wrap">
         <button
           type="button"
           className={`btn !py-1 !px-3 text-[11px] ${row.active ? "" : "btn-accent"}`}
@@ -323,7 +458,7 @@ function ProfileCard({
         </button>
         <button
           type="button"
-          className="btn btn-touch !py-1 !px-2 text-[11px]"
+          className="btn btn-touch !py-1 !px-3 text-[11px]"
           disabled={busy || renaming}
           onClick={onStartRename}
           aria-label={`Rename ${row.name}`}
@@ -331,12 +466,38 @@ function ProfileCard({
         >
           Rename
         </button>
-        {/* Delete is irreversible → hold-to-confirm (the danger primitive). */}
+        {/* "Update from current rig" (F7 #5a) — the edit affordance: overwrite
+            this profile's stored devices with whatever's connected now. */}
+        <button
+          type="button"
+          className="btn btn-touch !py-1 !px-3 text-[11px]"
+          disabled={busy}
+          onClick={onUpdateFromRig}
+          aria-label={`Update ${row.name} from the current rig`}
+          title="Overwrite this profile's devices with the currently connected rig"
+        >
+          <Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />
+          Update
+        </button>
+        {/* Export (F7 #5b) — client-side JSON download, icon-only (same height
+            as its siblings via btn + !py-1; standard download iconography). */}
+        <button
+          type="button"
+          className="btn btn-touch !py-1 !px-2 text-[11px]"
+          disabled={busy}
+          onClick={onExport}
+          aria-label={`Export ${row.name}`}
+          title="Export profile to file"
+        >
+          <Icon name="download" size={12} />
+        </button>
+        {/* Delete is irreversible → hold-to-confirm (the danger primitive),
+            but now a proper danger BUTTON (icon + label), not a bare X. */}
         <HoldButton label={`Delete ${row.name}`} onConfirm={onDelete}>
           {(bind) => (
             <button
               type="button"
-              className="btn btn-danger btn-touch !py-1 !px-2 text-[11px] relative overflow-hidden select-none"
+              className="btn btn-danger btn-touch !py-1 !px-3 text-[11px] relative overflow-hidden select-none"
               style={{ touchAction: "none" }}
               disabled={busy}
               aria-label={bind["aria-label"]}
@@ -356,8 +517,9 @@ function ProfileCard({
                   transition: "width 80ms linear",
                 }}
               />
-              <span className="relative inline-flex items-center">
-                <Icon name="x" size={12} />
+              <span className="relative inline-flex items-center gap-1">
+                <Icon name="trash" size={12} />
+                Delete
               </span>
             </button>
           )}
