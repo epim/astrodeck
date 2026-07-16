@@ -8,10 +8,12 @@ import {
   validateElevation,
   formatCoord,
   locationEquals,
+  activeSiteName,
+  activeSiteSource,
   type Hemisphere,
   type SiteDraft,
 } from "../site";
-import type { SavedLocation } from "../../types";
+import type { SavedLocation, Site } from "../../types";
 
 let passed = 0;
 let failed = 0;
@@ -126,6 +128,43 @@ test("locationEquals false when any field differs", () => {
   assert(!locationEquals({ ...base, latitude: 40.2 }, loc), "lat differs");
   assert(!locationEquals({ ...base, longitude: -74.6 }, loc), "lon differs");
   assert(!locationEquals({ ...base, elevation_m: 13 }, loc), "elev differs");
+});
+
+// ---------------------------------------------------------- activeSiteName
+test("activeSiteName: default -> Not set, stripped -> Hidden, else the name", () => {
+  eq(activeSiteName(undefined), "Not set", "no config yet");
+  eq(activeSiteName({ is_default: true, name: undefined }), "Not set", "default");
+  eq(activeSiteName({ is_default: false, name: undefined }), "Hidden", "stripped by RBAC");
+  eq(activeSiteName({ is_default: false, name: "Backyard" }), "Backyard", "named");
+  eq(activeSiteName({ is_default: false, name: "  " }), "Unnamed", "blank after trim");
+});
+
+// ---------------------------------------------------------- activeSiteSource
+const presetA: SavedLocation = {
+  id: "a", name: "Backyard", latitude: 40.123456, longitude: -74.654321,
+  elevation_m: 12, horizon_min_deg: 15, created_ts: 0, updated_ts: 0,
+};
+test("activeSiteSource: default site", () => {
+  eq(activeSiteSource(undefined, []), "default", "no config yet");
+  eq(activeSiteSource({ is_default: true }, [presetA]), "default", "is_default flag");
+});
+test("activeSiteSource: coordinates stripped by RBAC -> hidden", () => {
+  eq(activeSiteSource({ is_default: false, name: undefined }, [presetA]), "hidden");
+});
+test("activeSiteSource: byte-for-byte match against a saved preset", () => {
+  const site: Site = {
+    is_default: false, horizon_min_deg: 15, name: "Backyard",
+    latitude: 40.123456, longitude: -74.654321, elevation_m: 12,
+  };
+  eq(activeSiteSource(site, [presetA]), "saved preset");
+});
+test("activeSiteSource: coordinates present but no matching preset -> manual", () => {
+  const site: Site = {
+    is_default: false, horizon_min_deg: 15, name: "Somewhere Else",
+    latitude: 10, longitude: 20, elevation_m: 30,
+  };
+  eq(activeSiteSource(site, [presetA]), "manual");
+  eq(activeSiteSource(site, []), "manual", "empty library still manual, not a crash");
 });
 
 // ---------------------------------------------------------- report
