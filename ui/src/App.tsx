@@ -254,7 +254,7 @@ export default function App() {
           WITH the UI — no body/#root starfield here. */}
       <div className="dim-content h-full flex flex-col">
         {/* ---------------------------------------------- top status strip */}
-        <header className="flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
+        <header className="relative z-20 flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
           <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
             ASTRO<span className="text-ink">DECK</span>
           </h1>
@@ -269,28 +269,36 @@ export default function App() {
               `none`-provider LAN posture), a small VIEW ONLY / OPERATOR badge
               otherwise — read by glyph + text, never color alone. */}
           <RoleBadge />
-          <div className={`hidden md:flex items-center gap-4 text-xs mono text-dim min-w-0 overflow-hidden
+          {/* Top status strip. Narrow-width priority (R2-WEA-03 / smoke): a STATUS
+              caption for identity, then sequence state, then mount state + a
+              compact RA/Dec summary, then ALT/temp/RMS as space widens. Only the
+              RA/Dec summary is shrinkable (truncate → ellipsis); every other item
+              is shrink-0, so nothing is ever clipped mid-glyph into a stray
+              fragment (the "- L" / clipped-cyan bug). */}
+          <div className={`hidden md:flex items-center gap-2.5 lg:gap-4 text-xs mono text-dim min-w-0 overflow-hidden
             ${dim ? "opacity-40 saturate-50 transition-opacity" : "transition-opacity"}`}>
+            <span className="label !text-[10px] !tracking-[0.18em] shrink-0">STATUS</span>
+            {seqRunning && sequence.progress && (
+              <span className="text-accent shrink-0 whitespace-nowrap">
+                SEQ {sequence.progress.frames_done}/{sequence.progress.frames_total}
+              </span>
+            )}
             {status?.mount && (
               <>
-                <span className="truncate">{status.mount.ra_str}</span>
-                <span className="truncate">{status.mount.dec_str}</span>
-                <span>ALT {status.mount.alt.toFixed(0)}°</span>
-                <span className={status.mount.tracking ? "text-good" : "text-warn"}>
+                <span className={`shrink-0 whitespace-nowrap ${status.mount.tracking ? "text-good" : "text-warn"}`}>
                   {status.mount.parked ? "PARKED" : status.mount.slewing ? "SLEWING"
                     : status.mount.tracking ? "TRACKING" : "IDLE"}
                 </span>
+                <span className="min-w-0 truncate">{status.mount.ra_str} {status.mount.dec_str}</span>
+                <span className="hidden lg:inline shrink-0 whitespace-nowrap">ALT {status.mount.alt.toFixed(0)}°</span>
               </>
             )}
             {status?.camera?.temperature != null && (
-              <span>{status.camera.temperature.toFixed(1)}°C</span>
+              <span className="hidden lg:inline shrink-0 whitespace-nowrap">{status.camera.temperature.toFixed(1)}°C</span>
             )}
             {status?.guider?.guiding && (
-              <span className="text-good">RMS {status.guider.rms_total.toFixed(2)}"</span>
-            )}
-            {seqRunning && sequence.progress && (
-              <span className="text-accent">
-                SEQ {sequence.progress.frames_done}/{sequence.progress.frames_total}
+              <span className="hidden xl:inline shrink-0 whitespace-nowrap text-good">
+                RMS {status.guider.rms_total.toFixed(2)}"
               </span>
             )}
           </div>
@@ -306,7 +314,7 @@ export default function App() {
               unless a Google provider is configured, so the LAN tablet is
               unchanged. Hidden on the narrowest widths to protect the dimmer/log
               controls; the full affordance also lives in Settings → Account. */}
-          <span className="hidden md:inline-flex"><SignInButton /></span>
+          <span className="hidden lg:inline-flex"><SignInButton /></span>
           <HeaderControls />
           <HealthLeds />
         </header>
