@@ -110,7 +110,12 @@ the finally block. Each tick no-ops unless `cfg.weather.enabled` AND the config 
 finite lat/lon — so runtime config toggles take effect within one tick, no service restart.
 Cadences (due-when-older-than, monotonic-latch pattern `alerting.py:202-226`):
 - Open-Meteo: every **15 min** (~96 calls/day, far under their 10k/day free tier).
-- Astrospheric: every **60 min**, only when `astrospheric_api_key` is set.
+- Astrospheric: every **6 h**, only when `astrospheric_api_key` is set. VERIFIED
+  2026-07-16 against astrospheric.com/DynamicContent/api_info.html: each call costs
+  **5 API credits** and Pro accounts get **100 credits/day** (refresh at midnight UTC) —
+  6-hourly = 4 calls/day = 20 credits, comfortable headroom; their model only updates
+  every 6 h, so faster polling buys nothing. (The key requires an Astrospheric Pro
+  membership.)
 
 **Open-Meteo fetch.** `https://api.open-meteo.com/v1/forecast` with
 `latitude`, `longitude`, `minutely_15=cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high`,
@@ -118,18 +123,23 @@ Cadences (due-when-older-than, monotonic-latch pattern `alerting.py:202-226`):
 (`survey.py:170-191`): own `httpx.AsyncClient(timeout=6.0, headers={"User-Agent": "AstroDeck/0.1"})`,
 2 attempts, 0.4 s backoff, RuntimeError on exhaustion. Keep ≤192 samples/series (48 h).
 
-**Astrospheric fetch.** POST to the Astrospheric public API (endpoint
-`https://astrosphericpublicaccess.azurewebsites.net/api/GetForecastData_V1`, body
-`{"Latitude": .., "Longitude": .., "APIKey": ..}` — plan-writer MUST verify endpoint +
-field names against current Astrospheric public docs before committing them; runtime is
-fail-soft either way). Extract hourly seeing + transparency series (~81 h). Independent
-fail-soft from Open-Meteo: one failing never blocks the other. The key appears only in the
-request body — never in logs, never in any payload.
+**Astrospheric fetch.** VERIFIED 2026-07-16 against their live API docs: HTTP POST to
+`https://astrosphericpublicaccess.azurewebsites.net/api/GetForecastData_V1`, JSON body
+exactly `{"Latitude": float, "Longitude": float, "APIKey": string}` (that casing).
+Response `ReturnObject`: `UTCStartTime` (forecast start), `ModelTime` (`YYYYMMDDHH`),
+`APICreditUsedToday` (int), and hourly `Array<HourValue>` fields — we extract
+`Astrospheric_Seeing` and `Astrospheric_Transparency` (raw value per hour; ignore the
+bundled map-color). Sample times = `UTCStartTime + index` hours (81 h horizon). Errors:
+400/403/500 with `ErrorInfo` JSON; locations outside the RDPS (North America) domain are
+a 400 — fail-soft covers all of these. Independent fail-soft from Open-Meteo: one failing
+never blocks the other. The key appears only in the request body — never in logs, never
+in any payload. Surface `APICreditUsedToday` as `astrospheric.credits_used_today` in the
+weather payload so the user can watch their daily budget.
 
 **Cache + staleness.** In-memory only (no disk): latest forecast + `fetched_ts` per source.
 Failures NEVER cached (survey rule, `survey.py:116-117`); on failure keep the previous
 forecast and mark staleness by age. Stale thresholds: Open-Meteo > 45 min,
-Astrospheric > 3 h. Failure logging is outcome-only — `type(exc).__name__`, never
+Astrospheric > 12 h (two 6-hourly model cycles). Failure logging is outcome-only — `type(exc).__name__`, never
 coordinates, never the URL with lat/lon query (B log rule; `hub.py:882` precedent).
 
 **Publish.** After each successful refresh (and once, with cleared payload, on the first
@@ -197,9 +207,11 @@ GET /api/weather/tile/{layer}/{z}/{x}/{y}.png    layer: Literal["radar", "satell
   reveal the site area; holders only (§8).
 - Upstream hardcoded server-side (never caller-supplied): IEM tile cache
   `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/{slug}/{z}/{x}/{y}.png` with
-  `radar` → `nexrad-n0q-900913` (CONUS composite reflectivity) and `satellite` → the IEM
-  GOES East IR slug. **Plan-writer MUST verify both slugs by fetching one real tile of
-  each before committing them** (IEM renames services occasionally).
+  `radar` → `nexrad-n0q-900913` (CONUS composite reflectivity) and `satellite` →
+  `goes_east_fulldisk_ch13` (GOES East channel-13 longwave IR, full disk — cloud-top
+  temps, works at night). BOTH SLUGS VERIFIED LIVE 2026-07-16: real PNG tiles returned
+  with `Cache-Control: public, max-age=300` (actively updating). The plan copies these
+  verbatim; no further verification step needed.
 - Zoom clamp `3 ≤ z ≤ 11`; x/y validated to the z range; out-of-range → 422 (Literal/
   bounds at the route boundary, survey precedent `survey.py:280-282`).
 - `cfg.weather.enabled` false → 404 `no-store` with ZERO httpx construction (the
@@ -237,7 +249,8 @@ All four use `@declare` so the boot assertion covers them (B rule: no exempt pat
   "forecast": {"times": ["...iso Z..."], "cloud": [..], "cloud_low": [..],
                "cloud_mid": [..], "cloud_high": [..]},
   "astrospheric": {"times": ["..."], "seeing": [..], "transparency": [..],
-                   "fetched_ts": 1789000000.0, "stale": false},
+                   "fetched_ts": 1789000000.0, "stale": false,
+                   "credits_used_today": 20},
   "alert": {"kind": "high_cloud", "start_iso": "..", "end_iso": "..",
             "peak_pct": 78, "dominant_layer": "high"}
 }
@@ -432,7 +445,9 @@ UI (self-executing, `npx tsx ui/src/lib/__tests__/<name>.test.ts`; never in CI):
 - "Tonight" = `_night_dusk`/`_night_dawn` with `cfg.safety.twilight_deg` — the ResumeArm
   definition, everywhere in C.
 - IEM/Open-Meteo/Astrospheric origins hardcoded server-side; browsers only ever hit
-  `/api/weather/*`; tile slugs verified with a live fetch at plan time.
+  `/api/weather/*`. Upstreams verified live 2026-07-16 (§3, §6) — the plan copies them
+  verbatim. Astrospheric cadence is 6 h and MUST NOT be increased (5 credits/call,
+  100/day Pro budget).
 - No new npm dependencies; charts hand-rolled SVG; series differentiated by dash/width/
   label, never hue; imagery gets `var(--img-filter)` at night.
 - Server tests via `cd server && ./.venv/Scripts/python.exe -m pytest -q`; UI tsx tests
