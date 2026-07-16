@@ -133,6 +133,18 @@ test("groupEndLabels: partial collision — only the near pair merges", () => {
   assert(rows[2].y === 101.5, `mean y=${rows[2].y}`);
 });
 
+test("groupEndLabels: transitive chain merge — adjacent gaps within minGap join even when the extremes exceed it", () => {
+  // a-b and b-c are each exactly minGap apart; a-c (10) exceeds it. The
+  // documented chain rule merges all three into one row.
+  const rows = groupEndLabels(
+    [{ name: "a", y: 0 }, { name: "b", y: 5 }, { name: "c", y: 10 }],
+    5,
+  );
+  assert(rows.length === 1, `expected 1 chained row, got ${rows.length}: ${JSON.stringify(rows)}`);
+  assert(rows[0].label === "a+b+c", `label=${rows[0].label}`);
+  assert(rows[0].y === 5, `mean y=${rows[0].y}`);
+});
+
 test("groupEndLabels: gap exactly at minGap merges; empty input -> []", () => {
   const rows = groupEndLabels([{ name: "a", y: 0 }, { name: "b", y: 5 }], 5);
   assert(rows.length === 1, `boundary gap should merge, got ${rows.length}`);
