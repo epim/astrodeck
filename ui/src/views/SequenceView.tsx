@@ -290,6 +290,7 @@ export default function SequenceView() {
             tone: "warn",
             mode: "confirm",
             confirmLabel: "Add anyway",
+            confirmPrimary: true, // PLAN-01-gemini: proceeding is the intended action
           });
         }
       } catch {
