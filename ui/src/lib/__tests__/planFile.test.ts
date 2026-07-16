@@ -1,6 +1,6 @@
 // planFile.test.ts — pure tests for lib/planFile.ts (plan-library import
 // parsing). Inline-assert harness via `npx tsx`.
-import { parsePlanFile } from "../planFile";
+import { parsePlanFile, planExportFilename } from "../planFile";
 
 let passed = 0;
 let failed = 0;
@@ -27,6 +27,21 @@ test("rejects arrays and primitives", () => {
     try { parsePlanFile(bad); } catch { threw = true; }
     assert(threw, `rejected: ${bad}`);
   }
+});
+
+// -------------------------------------------------------- planExportFilename
+test("planExportFilename mirrors the server's sanitize + suffix", () => {
+  assert(planExportFilename("M31 Night 1") === "M31 Night 1.astroplan.json", "spaces kept");
+  assert(planExportFilename("Weekend/Plan:2") === "Weekend_Plan_2.astroplan.json", "punctuation -> _");
+});
+
+test("planExportFilename falls back to 'plan' for a blank name", () => {
+  assert(planExportFilename("") === "plan.astroplan.json", "empty string");
+  assert(planExportFilename("   ") === "plan.astroplan.json", "whitespace-only (trims to empty)");
+});
+
+test("planExportFilename trims and keeps dash/underscore", () => {
+  assert(planExportFilename("  My-Plan_v2  ") === "My-Plan_v2.astroplan.json", "trim + dash/underscore kept");
 });
 
 console.log(`planFile.test.ts: ${passed} passed, ${failed} failed`);

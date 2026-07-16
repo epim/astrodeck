@@ -8,7 +8,7 @@ import { Panel } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 import { BASE } from "../../lib/base";
-import { parsePlanFile } from "../../lib/planFile";
+import { parsePlanFile, planExportFilename } from "../../lib/planFile";
 import { useCanControlCapture } from "../../lib/caps";
 import type { PlanRow, SequencePlan } from "../../types";
 
@@ -98,6 +98,9 @@ export default function PlanLibraryPanel() {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    // R2-PLN-03: exporting gave zero confirmation — the download can land
+    // silently in the browser's download tray with no on-screen feedback.
+    showToast("success", `Exported ${planExportFilename(row.name)}`);
   };
 
   const importFile = async (file: File) => {

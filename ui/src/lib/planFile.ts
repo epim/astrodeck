@@ -14,3 +14,15 @@ export function parsePlanFile(text: string): Record<string, unknown> {
   }
   return raw as Record<string, unknown>;
 }
+
+/** The filename GET /api/plans/{id}/export sends as Content-Disposition
+ *  (server: `app.py::export_plan`) — mirrored here ONLY so the export toast
+ *  (R2-PLN-03) can name the actual downloaded file; the server's sanitizing
+ *  is canonical and this never rides a request. */
+export function planExportFilename(name: string): string {
+  const safe = Array.from(name)
+    .map((c) => (/[\p{L}\p{N}_ -]/u.test(c) ? c : "_"))
+    .join("")
+    .trim() || "plan";
+  return `${safe}.astroplan.json`;
+}
