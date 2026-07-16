@@ -39,6 +39,28 @@ export function isViewerRole(principal: Principal | null): boolean {
   return roleOf(principal) === "viewer";
 }
 
+// One-line, truthful capability summaries for the 3-tier role model (F7 #6b,
+// UsersPanel role-assignment point). Derived directly from the role->caps
+// table (server/astrodeck/auth/capabilities.py:59-73 ROLES_CAP/VIEWER_LINK_CAPS/
+// ALL_CAPS) — NOT invented. Custom/editable roles are out of scope (deferred,
+// 2026-07-16 backlog); this only describes the fixed viewer/operator/admin set.
+export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
+  // VIEWER_LINK_CAPS = {view.status, view.preview}: read-only live-watch, no
+  // raw FITS (view.media) and no precise coordinates (view.site_precise).
+  viewer:
+    "Live status and preview frames only — no raw FITS, no precise site location, no device control.",
+  // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide;
+  // explicitly NOT control.mount/control.power/config.*/view.media (see the
+  // server comment: "can run a single capture/loop + guiding ... but CANNOT
+  // start a slewing sequence").
+  operator:
+    "Runs imaging: capture, capture loops, autofocus, and guiding. Cannot slew the mount, control power, or change settings.",
+  // ALL_CAPS: every capability, including the DESTRUCTIVE-tier ones (mount
+  // motion, power, safety/solar override, admin.users, system.update).
+  admin:
+    "Full control — mount motion, power, safety/config, site & optics, alerts, user management, and system updates, plus everything above.",
+};
+
 /** Resolve a role's connected/error tri-state from backend_links, falling back to
  *  the legacy per-device flag, then the sticky equipment flag — so the live tablet
  *  (which never populates backend_links) keeps working unchanged. */
