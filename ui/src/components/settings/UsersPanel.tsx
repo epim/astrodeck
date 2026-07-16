@@ -9,6 +9,13 @@
 // edit would remove the last enabled admin; a 409 on create/rename means a
 // duplicate username. We surface those inline. Delete uses the shared danger
 // confirmDialog (mode:"hold") to match the W2.5 destructive-action pattern.
+//
+// F7 #6a: email is required CLIENT-SIDE ONLY on create — the server (POST
+// /api/users) still accepts a null email unchanged (no server change in this
+// task); this form simply stops offering that path.
+// F7 #6b: ROLE_DESCRIPTIONS (lib/caps.ts, sourced from the server's
+// role->capability table) is shown at both role-assignment points — creating a
+// user and changing an existing one's role — so the choice isn't a guess.
 
 import { useEffect, useState, type FormEvent, type JSX } from "react";
 import type { PrincipalRole, User } from "../../types";
@@ -21,6 +28,7 @@ import {
 } from "../../api/backends";
 import { ApiError } from "../../api";
 import { usePrincipal } from "../../store";
+import { ROLE_DESCRIPTIONS } from "../../lib/caps";
 import { Panel, EmptyState, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
@@ -191,20 +199,26 @@ function UserRow({
         {user.email && <div className="text-[11px] text-dim truncate">{user.email}</div>}
       </div>
 
-      {/* role */}
-      <select
-        className="field !py-1 text-xs w-[110px]"
-        value={user.role}
-        disabled={busy}
-        onChange={(e) => onRole(e.target.value as PrincipalRole)}
-        aria-label={`Role for ${user.username}`}
-      >
-        {ROLES.map((r) => (
-          <option key={r} value={r}>
-            {r}
-          </option>
-        ))}
-      </select>
+      {/* role — inline capability description under the select so a role
+          change is never a guess (F7 #6b). */}
+      <div className="flex flex-col gap-0.5">
+        <select
+          className="field !py-1 text-xs w-[110px]"
+          value={user.role}
+          disabled={busy}
+          onChange={(e) => onRole(e.target.value as PrincipalRole)}
+          aria-label={`Role for ${user.username}`}
+        >
+          {ROLES.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+        <span className="text-[10px] text-dim leading-tight max-w-[220px]">
+          {ROLE_DESCRIPTIONS[user.role]}
+        </span>
+      </div>
 
       {/* enabled toggle */}
       <span className="inline-flex items-center gap-1.5" title={user.enabled ? "Enabled" : "Disabled"}>
@@ -248,15 +262,25 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
   const [role, setRole] = useState<PrincipalRole>("operator");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const tooLong = new TextEncoder().encode(password).length > 72;
 
+  // F7 #6a: required client-side only (server contract unchanged — see the
+  // file-header note). Basic shape check catches an obvious typo without
+  // pretending to be a full RFC 5322 validator.
+  const emailTrimmed = email.trim();
+  const emailMissing = emailTrimmed === "";
+  const emailInvalid = !emailMissing && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed);
+  const emailErrorText = emailMissing ? "Email is required." : emailInvalid ? "Enter a valid email address." : null;
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (busy || tooLong) return;
+    setEmailTouched(true);
+    if (busy || tooLong || emailMissing || emailInvalid) return;
     setErr(null);
     setBusy(true);
     try {
@@ -264,11 +288,12 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
         username: username.trim(),
         password,
         role,
-        email: email.trim() || null,
+        email: emailTrimmed,
       });
       setUsername("");
       setPassword("");
       setEmail("");
+      setEmailTouched(false);
       setRole("operator");
       await onCreated();
     } catch (e) {
@@ -298,14 +323,21 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
           />
         </label>
         <label className="flex flex-col gap-1">
-          <span className="label">Email (optional)</span>
+          <span className="label">Email</span>
           <input
-            className="field"
+            className={`field ${emailTouched && (emailMissing || emailInvalid) ? "!border-bad" : ""}`}
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            onBlur={() => setEmailTouched(true)}
             disabled={busy}
+            required
+            aria-required="true"
+            aria-invalid={emailTouched && (emailMissing || emailInvalid)}
           />
+          {emailTouched && emailErrorText && (
+            <span className="text-[11px] text-bad">{emailErrorText}</span>
+          )}
         </label>
         <label className="flex flex-col gap-1">
           <span className="label">Password</span>
@@ -335,6 +367,14 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
           </select>
         </label>
       </div>
+      {/* F7 #6b: what each role can actually do, right where it's picked. */}
+      <ul className="flex flex-col gap-0.5 text-[11px]">
+        {ROLES.map((r) => (
+          <li key={r} className={r === role ? "text-ink" : "text-dim"}>
+            <span className="mono uppercase tracking-wide">{r}</span> — {ROLE_DESCRIPTIONS[r]}
+          </li>
+        ))}
+      </ul>
       {tooLong && <p className="text-xs text-bad">Password is too long (max 72 bytes).</p>}
       {err && (
         <p className="text-xs text-bad inline-flex items-center gap-1.5">
@@ -346,7 +386,7 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
         <button
           type="submit"
           className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
-          disabled={busy || !username.trim() || !password || tooLong}
+          disabled={busy || !username.trim() || !password || tooLong || emailMissing || emailInvalid}
         >
           <Icon name="plus" size={15} />
           {busy ? "Creating…" : "Create user"}
