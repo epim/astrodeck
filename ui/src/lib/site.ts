@@ -2,7 +2,7 @@
 // DOM: npx-tsx testable (caps.ts/safety.ts precedent). Longitude is stored
 // SIGNED East-positive, latitude signed +N (config.py:11-16 convention); the UI
 // collects magnitude + hemisphere and converts here at the boundary.
-import type { SavedLocation } from "../types";
+import type { SavedLocation, Site } from "../types";
 
 export type Hemisphere = "N" | "S" | "E" | "W";
 
@@ -67,4 +67,48 @@ export function locationEquals(draft: SiteDraft, loc: SavedLocation): boolean {
     formatCoord(draft.longitude) === formatCoord(loc.longitude) &&
     formatCoord(draft.elevation_m) === formatCoord(loc.elevation_m)
   );
+}
+
+// ------------------------------------------------- active-site identification
+// site-verbs spec (R2-SIT-01/02, SET-01): the panel's FORM may hold a dirty
+// draft or a picked-but-not-loaded preset, so the persisted, actually-active
+// site (config.site) needs its own always-visible line — "Active site: <name>
+// · <source>" — independent of whatever the fields below it currently show.
+
+/** The active site's display name. A stripped `name` (principal lacks
+ *  view.site_precise) is distinguished from "never configured" (is_default). */
+export function activeSiteName(
+  site: Pick<Site, "is_default" | "name"> | undefined,
+): string {
+  if (!site || site.is_default) return "Not set";
+  if (site.name === undefined) return "Hidden";
+  return site.name.trim() || "Unnamed";
+}
+
+export type ActiveSiteSource = "default" | "hidden" | "saved preset" | "manual";
+
+/** Best-effort provenance label for the active (persisted) site: still the
+ *  unset default, coordinates stripped by RBAC, a byte-for-byte match against
+ *  one of the saved-location presets, or a one-off manual entry. */
+export function activeSiteSource(
+  site:
+    | Pick<Site, "is_default" | "name" | "latitude" | "longitude" | "elevation_m">
+    | undefined,
+  locations: SavedLocation[],
+): ActiveSiteSource {
+  if (!site || site.is_default) return "default";
+  if (
+    typeof site.latitude !== "number" ||
+    typeof site.longitude !== "number" ||
+    typeof site.elevation_m !== "number"
+  ) {
+    return "hidden";
+  }
+  const draft: SiteDraft = {
+    name: site.name ?? "",
+    latitude: site.latitude,
+    longitude: site.longitude,
+    elevation_m: site.elevation_m,
+  };
+  return locations.some((l) => locationEquals(draft, l)) ? "saved preset" : "manual";
 }

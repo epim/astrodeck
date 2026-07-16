@@ -23,6 +23,8 @@ import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { useCan, useCanViewSitePrecise } from "../../lib/caps";
 import {
+  activeSiteName,
+  activeSiteSource,
   formatCoord,
   fromSigned,
   locationEquals,
@@ -250,6 +252,11 @@ export default function SitePanel(): JSX.Element {
 
   // ---- saved-locations actions --------------------------------------------
 
+  // Loads a preset's coordinates into the form. ONLY called from the explicit
+  // "Load selected preset" action (R2-SIT-01: merely highlighting an <option>
+  // must never mutate the form — three review rounds flagged the old
+  // auto-apply-on-select behavior as concealing which action actually did
+  // something).
   const applyLocation = (loc: SavedLocation) => {
     setName(loc.name);
     const la = fromSigned(loc.latitude, "lat");
@@ -264,9 +271,10 @@ export default function SitePanel(): JSX.Element {
     setAppliedHorizon(loc.horizon_min_deg);
   };
 
+  // The dropdown's onChange: tracks WHICH preset is picked, nothing more. The
+  // form only changes when "Load selected preset" is pressed.
   const onPickLocation = (id: string) => {
-    const loc = locations.find((l) => l.id === id);
-    if (loc) applyLocation(loc);
+    setSelectedId(id || null);
   };
 
   const submitSaveCurrent = async (locName: string) => {
@@ -368,9 +376,18 @@ export default function SitePanel(): JSX.Element {
     a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
   );
 
+  // Persistent identifier (R2-SIT-02): the PERSISTED site, independent of
+  // whatever the form below is mid-editing or a picked-but-not-loaded preset.
+  const activeName = activeSiteName(config?.site);
+  const activeSource = activeSiteSource(config?.site, locations);
+
   return (
     <Panel title="Observing Site">
       <div className="flex flex-col gap-3">
+        <p className="text-[11px] text-dim border-b border-line pb-2">
+          Active site: <span className="text-ink">{activeName}</span> · {activeSource}
+        </p>
+
         {config?.site?.is_default && (
           <p className="text-[12px] text-warn inline-flex items-start gap-1.5">
             <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
@@ -459,7 +476,7 @@ export default function SitePanel(): JSX.Element {
               disabled={busy}
               onClick={() => void onSave()}
             >
-              Save site
+              Set site
             </button>
             {geoAvailable ? (
               <button
@@ -494,7 +511,7 @@ export default function SitePanel(): JSX.Element {
               <div className="flex flex-wrap items-center gap-2">
                 <select
                   className="field !w-auto"
-                  value={dirty ? "" : (selectedId ?? "")}
+                  value={selectedId ?? ""}
                   disabled={busy}
                   onChange={(e) => onPickLocation(e.target.value)}
                   aria-label="Saved locations"
@@ -509,13 +526,13 @@ export default function SitePanel(): JSX.Element {
                 <button
                   type="button"
                   className="btn"
-                  disabled={busy || !selectedId || dirty}
+                  disabled={busy || !selectedId}
                   onClick={() => {
                     const loc = locations.find((l) => l.id === selectedId);
                     if (loc) applyLocation(loc);
                   }}
                 >
-                  Apply
+                  Load selected preset
                 </button>
                 <button
                   type="button"
@@ -523,7 +540,7 @@ export default function SitePanel(): JSX.Element {
                   disabled={busy}
                   onClick={() => setSavingName(name.trim() || "New location")}
                 >
-                  Save current…
+                  Save as location preset…
                 </button>
                 <button
                   type="button"
