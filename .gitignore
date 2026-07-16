@@ -13,3 +13,6 @@ server/config/
 ui/tsconfig.tsbuildinfo
 references/
 native/target/
+
+# external UI review evidence (referenced by docs/superpowers/reviews, kept local)
+review-evidence/
