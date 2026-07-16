@@ -350,7 +350,10 @@ function applyTouchSizing(sizing: TouchSettings["touchSizing"]): void {
 const BRIGHT_DAY_KEY = "astrodeck-bright-day";
 const BRIGHT_NIGHT_KEY = "astrodeck-bright-night";
 
-const clampBright = (v: number): number => Math.min(1, Math.max(0.08, v));
+// Floor is 0.5 (product decision): the screen can never be dimmed to unreadable.
+// Both day and night sliders share this clamp, and readBright() re-clamps stale
+// persisted values (< 0.5 from before this floor) up to 0.5 on load.
+const clampBright = (v: number): number => Math.min(1, Math.max(0.5, v));
 
 function readBright(key: string, def: number): number {
   try {
@@ -361,13 +364,16 @@ function readBright(key: string, def: number): number {
   }
 }
 
-/** Write the dimmer CSS vars onto <html>. Scrim deepens past what filter:brightness
- *  can do (OLED black-pixel safe). The single writer of these vars (DIMMER CONTRACT). */
+/** Write the dimmer CSS vars onto <html>. The single writer of these vars (DIMMER
+ *  CONTRACT). Dimming is now pure filter:brightness — the scrim stays 0 across the
+ *  whole 0.5..1 slider range. The OLD formula (1 - b*1.05) compounded WITH the
+ *  filter into an effective ~b² crush (0.45 slider → ~0.21 on screen), which made
+ *  even white text ~1.7:1; that was the dominant "unreadable at night" factor. */
 function applyBrightnessVars(v: number): void {
   const b = clampBright(v);
   const d = document.documentElement;
   d.style.setProperty("--screen-brightness", String(b));
-  d.style.setProperty("--scrim-opacity", String(Math.min(0.92, Math.max(0, 1 - b * 1.05))));
+  d.style.setProperty("--scrim-opacity", String(Math.max(0, 0.5 - b)));
 }
 
 interface AppState {
@@ -474,8 +480,8 @@ interface AppState {
   touch: TouchSettings; // haptics / sizing / reverse-axis / auto-lock prefs
 
   // --- dimmer (Batch-3 F-dimmer; design-system §7.5) ---
-  brightDay: number; // remembered day brightness (0.08..1), persisted
-  brightNight: number; // remembered night brightness (0.08..1), persisted
+  brightDay: number; // remembered day brightness (0.5..1), persisted
+  brightNight: number; // remembered night brightness (0.5..1), persisted
   // The ACTIVE brightness is derived from `night` via useBrightness(); the store
   // applies the CSS vars whenever either value or `night` changes (single source).
 
@@ -642,7 +648,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --- dimmer (F-dimmer) ---
   brightDay: readBright(BRIGHT_DAY_KEY, 1),
-  brightNight: readBright(BRIGHT_NIGHT_KEY, 0.45),
+  brightNight: readBright(BRIGHT_NIGHT_KEY, 1), // night STARTS at 100% (brightest) — product decision
 
   // --- compat ---
   wsConnected: false,
@@ -1234,7 +1240,7 @@ applyTouchSizing(TOUCH_INIT.touchSizing);
 // but guarantees the store and CSS vars agree if the pre-paint script is absent.
 applyBrightnessVars(
   (localStorage.getItem("astrodeck-night") === "1"
-    ? readBright(BRIGHT_NIGHT_KEY, 0.45)
+    ? readBright(BRIGHT_NIGHT_KEY, 1)
     : readBright(BRIGHT_DAY_KEY, 1)),
 );
 

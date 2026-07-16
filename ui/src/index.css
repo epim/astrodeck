@@ -91,9 +91,14 @@
   --line: rgba(255, 50, 50, 0.25);
   --line-bright: rgba(255, 80, 80, 0.4);
 
-  --text: #ff5555;
-  --text-dim: #b33333;
-  --text-faint: #771111;
+  /* Night text ladder — every rung stays pure red (R≫G=B, no hue shift) but the
+     luminance is raised to the palette's >=4.5:1 text contract on #000 that the
+     old ladder VIOLATED: was #ff5555/#b33333/#771111 = 6.7 / 3.4 / 1.9:1, so
+     dim+faint failed AA and read near-black even at full brightness (R2-WEA-02,
+     r1 CAP-01). New rungs are monotonic and stay below the --bad alarm rung. */
+  --text: #ff7a7a;       /* ~8.3:1 on #000 */
+  --text-dim: #e07070;   /* ~6.7:1 — operational labels / series / numbers */
+  --text-faint: #b85252; /* ~4.4:1 — dimmest rung (ticks, gridline ghosts) */
 
   --accent: #ff3a3a;
   --accent-dim: #ff0000;
@@ -175,7 +180,7 @@ body {
 .dim-scrim {
   position: fixed; inset: 0; z-index: 40; pointer-events: none;
   background: #000;
-  opacity: var(--scrim-opacity, 0);     /* store: clamp(0, 1 - brightness*1.05, 0.92) */
+  opacity: var(--scrim-opacity, 0);     /* store: max(0, 0.5 - brightness) — 0 across the 0.5..1 slider range */
   transition: opacity 0.25s ease;        /* mode-change reads as intentional (B5) */
 }
 

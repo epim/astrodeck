@@ -423,19 +423,19 @@ test("F-D1: pushConfirm resolves the previous pending confirm false before repla
 test("F-dimmer: setBrightness/resetBrightness write the active mode's slice + persist", () => {
   // Day mode.
   useStore.setState({ night: false });
-  useStore.getState().setBrightness(0.5);
-  eq(useStore.getState().brightDay, 0.5, "day brightness set");
-  eq(localStorage.getItem("astrodeck-bright-day"), "0.5", "day persisted");
+  useStore.getState().setBrightness(0.7);
+  eq(useStore.getState().brightDay, 0.7, "day brightness set");
+  eq(localStorage.getItem("astrodeck-bright-day"), "0.7", "day persisted");
 
-  // Clamp floor (0.08).
+  // Clamp floor (0.5 — screen can never be dimmed to unreadable).
   useStore.getState().setBrightness(0.01);
-  eq(useStore.getState().brightDay, 0.08, "clamped to floor 0.08");
+  eq(useStore.getState().brightDay, 0.5, "clamped to floor 0.5");
 
   // Night mode is a separate memory.
   useStore.setState({ night: true });
-  useStore.getState().setBrightness(0.3);
-  eq(useStore.getState().brightNight, 0.3, "night brightness set");
-  eq(useStore.getState().brightDay, 0.08, "day memory untouched by night change");
+  useStore.getState().setBrightness(0.6);
+  eq(useStore.getState().brightNight, 0.6, "night brightness set");
+  eq(useStore.getState().brightDay, 0.5, "day memory untouched by night change");
 
   // Reset hatch returns the ACTIVE mode to 1.0.
   useStore.getState().resetBrightness();
