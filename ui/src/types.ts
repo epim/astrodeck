@@ -506,6 +506,16 @@ export interface AppConfig {
   // alert-token "empty means unchanged" contract); POST a non-empty url to set it.
   deadman_url: string;
   deadman_configured?: boolean;
+  // --- weather (sub-project C; additive). The Astrospheric key is blanked
+  //     server-side via redacted(); astrospheric_configured is the marker the
+  //     write-only Settings field reads ("set" / "not set"). ---
+  weather?: {
+    enabled: boolean;
+    cloud_threshold_pct: number;
+    sustain_minutes: number;
+    astrospheric_api_key: string | null;
+    astrospheric_configured?: boolean;
+  };
   // --- RBAC (W2.5; additive). The redacted auth state block — non-secret
   //     booleans + role allowlist. Optional: the WS `hello` bootstrap config may
   //     omit it; the first `config` event / REST GET carries it. ---
@@ -1216,4 +1226,46 @@ export interface TouchSettings {
   reverseRa: boolean;
   reverseDec: boolean;
   autoLockMs: null | 180000 | 300000;
+}
+
+// ===================================================================== weather
+// Sub-project C (weather spec §7): the GET /api/weather + WS `weather` event
+// payload. ALL weather data is view.site_precise-gated server-side (WS events
+// are DROPPED for non-holders), so these only ever populate for holders. NO
+// coordinates ride this payload.
+export interface WeatherForecast {
+  times: string[];        // ISO-8601 Z, 15-min grid, <= 192 samples (48 h)
+  cloud: number[];        // TOTAL cloud cover % — the breach metric
+  cloud_low: number[];
+  cloud_mid: number[];
+  cloud_high: number[];
+}
+
+export interface WeatherAstrospheric {
+  times: string[];        // ISO-8601 Z, hourly (81 h horizon)
+  seeing: (number | null)[];
+  transparency: (number | null)[];
+  fetched_ts: number | null;
+  stale: boolean;         // > 12 h old (two 6-hourly model cycles)
+  credits_used_today: number | null;  // 5 credits/call on a 100/day Pro budget
+}
+
+export interface WeatherAlert {
+  kind: "high_cloud";
+  start_iso: string;
+  end_iso: string;
+  peak_pct: number;
+  dominant_layer: "low" | "mid" | "high";
+}
+
+export interface WeatherState {
+  enabled: boolean;
+  fetched_ts: number | null;   // Open-Meteo fetch time (unix s)
+  stale: boolean;              // client re-derives FAIL-CLOSED (> 45 min)
+  ignore_tonight: boolean;
+  threshold_pct: number;
+  sustain_minutes: number;
+  forecast: WeatherForecast | null;
+  astrospheric: WeatherAstrospheric | null;
+  alert: WeatherAlert | null;
 }
