@@ -16,7 +16,7 @@ export type IconName =
   // status
   | "alert" | "check" | "info" | "x"
   // misc
-  | "grid" | "plus" | "trash"
+  | "grid" | "plus" | "trash" | "download" | "upload"
   // directional
   | "arrow-up" | "arrow-down" | "arrow-left" | "arrow-right";
 
@@ -63,6 +63,8 @@ const PATHS: Record<IconName, JSX.Element> = {
   shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>,
   plus: <><path d="M12 5v14M5 12h14" /></>,
   trash: <><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6M5 6l1 14a2 2 0 002 2h8a2 2 0 002-2l1-14" /></>,
+  download: <><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" /></>,
+  upload: <><path d="M12 21V9M7 14l5-5 5 5" /><path d="M4 19h16" /></>,
   "arrow-up": <><path d="M12 19V5M5 12l7-7 7 7" /></>,
   "arrow-down": <><path d="M12 5v14M19 12l-7 7-7-7" /></>,
   "arrow-left": <><path d="M19 12H5M12 19l-7-7 7-7" /></>,
