@@ -363,8 +363,14 @@ select.field { appearance: none; }
    night mode maps --good to the same red family as --warn/--bad, so a color-blind
    or red-filtered glance still needs a positive shape cue here, not just "not a
    dash". var(--bg) rides the ground token, so the mark stays high-contrast against
-   the fill on every theme (near-black stroke on dark/night, near-white on light). */
-.led-on::after {
+   the fill on every theme (near-black stroke on dark/night, near-white on light).
+   Scoped to .led.led-on (not bare .led-on): the pseudo-element is positioned
+   absolutely against the nearest positioned ancestor, and only .led carries
+   `position: relative` — .led-letter (HealthLeds' lettered dots) does not, so an
+   unscoped .led-on::after escapes to the nearest OTHER positioned ancestor (e.g.
+   the header) and paints a stray checkmark there. HealthLeds' letters already
+   convey state via the glyph itself, so they never wanted this mark. */
+.led.led-on::after {
   content: ""; position: absolute; left: 3px; top: 3.5px;
   width: 5px; height: 2.5px;
   border-left: 1.5px solid var(--bg); border-bottom: 1.5px solid var(--bg);

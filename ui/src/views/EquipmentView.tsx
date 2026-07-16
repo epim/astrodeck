@@ -344,7 +344,7 @@ export default function EquipmentView(): JSX.Element {
               <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
               {busy ? "Working…" : `Connect Rig (${assignedCount})`}
             </button>
-            <button type="button" className="btn" disabled={busy || !canConfig} onClick={doSimRig}>
+            <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doSimRig}>
               ▶ Simulator rig
             </button>
             <button type="button" className="btn btn-danger" disabled={busy || !canConfig} onClick={doDisconnect}>
