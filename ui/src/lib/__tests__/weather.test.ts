@@ -5,6 +5,7 @@
 import type { WeatherState } from "../../types";
 import {
   agoLabel, breachSpans, fmtHm, groupEndLabels, normalizeWeather, OPEN_METEO_STALE_S,
+  weatherSourceLabel,
 } from "../weather";
 
 let passed = 0;
@@ -151,6 +152,11 @@ test("groupEndLabels: gap exactly at minGap merges; empty input -> []", () => {
   const justOver = groupEndLabels([{ name: "a", y: 0 }, { name: "b", y: 5.01 }], 5);
   assert(justOver.length === 2, `gap just over minGap should NOT merge, got ${justOver.length}`);
   assert(groupEndLabels([], 5).length === 0, "empty input");
+});
+
+test("weatherSourceLabel: mechanically truthful — Astrospheric only when it's actually flowing", () => {
+  assert(weatherSourceLabel(false) === "Open-Meteo", "Open-Meteo alone");
+  assert(weatherSourceLabel(true) === "Open-Meteo + Astrospheric", "both sources named");
 });
 
 console.log(`weather.test: ${passed} passed, ${failed} failed`);
