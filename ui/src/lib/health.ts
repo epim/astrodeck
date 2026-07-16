@@ -9,6 +9,7 @@ import type {
   RigStatus,
   SafetyState,
   SequenceState,
+  WeatherState,
 } from "../types";
 import type { ProvidersStatus } from "../store";
 import type { IconName } from "../components/icons";
@@ -75,6 +76,7 @@ export interface HealthIssue {
 
 export function deriveHealthIssues(input: {
   safety: SafetyState | null;
+  weather?: WeatherState | null;
   disk?: DiskInfo;
   meridian?: MeridianInfo | null;
   ninaLink?: { active: boolean; healthy: boolean; warming_up: boolean } | null;
@@ -87,6 +89,7 @@ export function deriveHealthIssues(input: {
 }): HealthIssue[] {
   const {
     safety,
+    weather,
     disk,
     meridian,
     ninaLink,
@@ -166,6 +169,16 @@ export function deriveHealthIssues(input: {
     if (choice?.kind === "unavailable") {
       issues.push({ tier: 1, icon: "info", text: `${label} unavailable — ${choice.reason}` });
     }
+  }
+  // weather (sub-project C §10): ADVISORY — always Tier-1 amber, never Tier-2
+  // red (red is for safety/disk/link). "Night looks OK" therefore requires no
+  // active cloud alert. Non-holders never carry a weather slice at all.
+  if (weather?.alert) {
+    issues.push({
+      tier: 1,
+      icon: "alert",
+      text: `high cloud forecast tonight (peak ${weather.alert.peak_pct}%)`,
+    });
   }
 
   return issues;

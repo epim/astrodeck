@@ -5,12 +5,13 @@
 // (confirm-then-delete, no undo — server state). Night-mode safe: existing
 // tokens/classes only.
 import { useCallback, useEffect, useState } from "react";
-import { useStore } from "../../store";
+import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 import SessionReviewDrawer from "./SessionReviewDrawer";
-import { useCanControlMount } from "../../lib/caps";
+import { useCanControlCapture, useCanControlMount } from "../../lib/caps";
+import { setIgnoreTonight } from "../../api/weather";
 import { ensurePlanIds } from "../../lib/ids";
 import { mergePreview, targetProgress } from "../../lib/sessions";
 import {
@@ -31,6 +32,21 @@ export default function SessionsPanel() {
   const sequence = useStore((s) => s.sequence);
   const showToast = useStore((s) => s.showToast);
   const canControl = useCanControlMount();
+  const canCapture = useCanControlCapture();
+  const weather = useWeather();
+
+  const onIgnoreWeather = async (v: boolean) => {
+    try {
+      const raw = await setIgnoreTonight(v);
+      useStore.getState().handleEvent({
+        type: "weather",
+        data: raw as unknown as Record<string, unknown>,
+        ts: Date.now() / 1000,
+      });
+    } catch (e) {
+      showToast("error", `Weather override failed: ${(e as Error).message}`);
+    }
+  };
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [details, setDetails] = useState<Record<string, Session>>({});
   const [reviewId, setReviewId] = useState<string | null>(null);
@@ -179,6 +195,28 @@ export default function SessionsPanel() {
                   <Icon name="alert" size={12} />
                   auto-resume armed without a safety monitor — rig may start in bad weather
                 </span>
+              )}
+              {r.auto_resume && weather?.alert && !weather.ignore_tonight && (
+                <span className="text-[11px] text-warn inline-flex items-center gap-1">
+                  <Icon name="alert" size={12} />
+                  high cloud tonight — auto-resume will hold unless overridden
+                </span>
+              )}
+              {r.auto_resume && weather?.ignore_tonight && (
+                <span className="text-[11px] text-warn inline-flex items-center gap-1">
+                  <Icon name="alert" size={12} />
+                  weather override active — resume will ignore clouds tonight
+                </span>
+              )}
+              {r.auto_resume && weather?.alert && (
+                <label className="flex items-center justify-between gap-2">
+                  <span className="text-dim">ignore weather tonight</span>
+                  <Toggle
+                    checked={!!weather.ignore_tonight}
+                    disabled={!canCapture}
+                    onChange={(v) => void onIgnoreWeather(v)}
+                  />
+                </label>
               )}
             </div>
           );

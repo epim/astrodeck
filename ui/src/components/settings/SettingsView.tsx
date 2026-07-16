@@ -20,12 +20,14 @@ import {
   useCanConfigBackend,
   useCanAdminUsers,
   useCanSystemUpdate,
+  useCanViewSitePrecise,
   useIsViewer,
 } from "../../lib/caps";
 import BackendLinkGrid from "./BackendLinkGrid";
 import DriversPanel from "./DriversPanel";
 import SitePanel from "./SitePanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
+import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
@@ -51,6 +53,7 @@ export default function SettingsView(): JSX.Element {
   const canSystemUpdate = useCanSystemUpdate();
   const update = useUpdate();
   const isViewer = useIsViewer();
+  const canSeePrecise = useCanViewSitePrecise();
 
   // Admin-only tabs (W2.6) appear ONLY for the `admin.users` capability. Under the
   // open `none`/no-method default every caller is admin, so an offline LAN admin
@@ -148,6 +151,7 @@ export default function SettingsView(): JSX.Element {
           <div className="order-2 lg:order-1 min-w-0 flex flex-col gap-4">
             <DriversPanel />
             <SitePanel />
+            {canSeePrecise && <WeatherPanel />}
             <SkyAtlasPanel />
           </div>
           <div className="order-1 lg:order-2 flex flex-col gap-4">

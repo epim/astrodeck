@@ -31,11 +31,13 @@ import {
   useBackendLinks,
   useBootConnectFailed,
   useProviders,
+  useWeather,
   useStore,
 } from "../store";
 import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
-import { useCanControlCapture } from "../lib/caps";
+import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
+import { useCanControlCapture, useCanViewSitePrecise } from "../lib/caps";
 import {
   CountdownTile,
   deriveHealthIssues,
@@ -257,10 +259,13 @@ export default function MonitorView() {
   // ----- the single "is my night OK?" verdict (implementation brief §5) -----
   // Folds safety/disk/backend_links/meridian/nina_link/status.providers/boot +
   // the engine's end_reason into ranked tier-1 (Notice)/tier-2 (Act) issues.
+  const weather = useWeather();
+  const canSeePrecise = useCanViewSitePrecise();
   const healthIssues = useMemo(
     () =>
       deriveHealthIssues({
         safety,
+        weather,
         disk: status?.disk,
         meridian: status?.meridian,
         ninaLink: status?.nina_link,
@@ -271,7 +276,7 @@ export default function MonitorView() {
         endReason: seq.end_reason,
         wsConnected,
       }),
-    [safety, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected],
+    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected],
   );
 
   // ====================================================================== render
@@ -520,6 +525,9 @@ export default function MonitorView() {
             )}
           </div>
         </Panel>
+
+        {/* ==================================== SKY CONDITIONS (weather spec §10) */}
+        {canSeePrecise && <SkyConditionsPanel />}
 
         {/* ================================================== THERMAL */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Thermal">

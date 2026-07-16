@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
-import { useStore, useBrightness, useAuthMethods, type ViewName } from "./store";
+import { useStore, useBrightness, useAuthMethods, useWeatherAlertKey, type ViewName } from "./store";
+import { fmtHm } from "./lib/weather";
 import Logo from "./components/Logo";
 import { connectWs } from "./ws";
 import { Icon, type IconName } from "./components/icons";
@@ -14,7 +15,7 @@ import LogDrawer from "./components/LogDrawer";
 import HeaderControls from "./components/HeaderControls";
 import BottomNav from "./components/BottomNav";
 import TouchGuard from "./components/TouchGuard";
-import { ConfirmHost } from "./components/ConfirmDialog";
+import { confirmDialog, ConfirmHost } from "./components/ConfirmDialog";
 import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
 import { useShouldShowLogin } from "./lib/caps";
@@ -191,6 +192,31 @@ export default function App() {
   // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
   // and the gate dissolves the moment a session is minted — no reload. Toasts +
   // the confirm host stay mounted so login errors and dialogs still surface.
+  // High-cloud night warning popup (weather spec §12): fires once per server-
+  // side once-per-night latch (weatherAlertKey bumps only on the alert
+  // null -> non-null edge, store §9). Acknowledge-only (mode "ok",
+  // ConfirmDialog.tsx:140-144) — the user-required hard notice; the
+  // ignore-tonight override lives on the Sky Conditions / Sessions cards, not
+  // in this dialog. Non-holders never receive weather events (spec §8), so
+  // this can never fire for them.
+  const weatherAlertKey = useWeatherAlertKey();
+  useEffect(() => {
+    if (weatherAlertKey === 0) return;
+    const w = useStore.getState().weather;
+    const a = w?.alert;
+    if (!w || !a) return;
+    void confirmDialog({
+      title: "High cloud forecast tonight",
+      body:
+        `Forecast peak ${a.peak_pct}% total cloud (${a.dominant_layer} layer ` +
+        `dominant) between ${fmtHm(a.start_iso)} and ${fmtHm(a.end_iso)} — ` +
+        `at/above your ${w.threshold_pct}% threshold. Auto-resume will hold ` +
+        `unless "ignore weather tonight" is set.`,
+      tone: "warn",
+      mode: "ok",
+    });
+  }, [weatherAlertKey]);
+
   if (authMethods === null && !authGraceElapsed) {
     return (
       <div className="h-full dim-content flex items-center justify-center">
