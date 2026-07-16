@@ -586,6 +586,17 @@ class WeatherSaveBody(BaseModel):
     clear_astrospheric_key: bool = False
 
 
+class IgnoreTonightBody(BaseModel):
+    """POST /api/weather/ignore-tonight body (weather spec §4). MUST be
+    module-level (like every other ``*Body`` model here) rather than nested
+    inside ``create_app`` -- with ``from __future__ import annotations`` in
+    effect, FastAPI resolves parameter annotations via the function's module
+    globals, so a class local to ``create_app`` cannot be found and the
+    ``body`` param silently degrades to an (always-missing) query param,
+    422-ing every call. Caught by the weather RBAC HTTP tests (Task 4)."""
+    ignore: bool
+
+
 # ------------------------------------------------------------ optional auth (P0-4)
 # OPTIONAL shared-token auth, OFF BY DEFAULT. The token is read from the
 # ``ASTRODECK_TOKEN`` env var. When it is UNSET (or empty), the server behaves
@@ -891,9 +902,6 @@ def create_app() -> FastAPI:
     # caps). Keyed to tonight's dusk; auto-expires when a new night begins.
     # The updated flag rides the weather payload so ALL clients see it.
 
-    class IgnoreTonightBody(BaseModel):
-        ignore: bool
-
     @app.post("/api/weather/ignore-tonight")
     @declare(CAP_CONTROL_CAPTURE)
     async def weather_ignore_tonight(
@@ -908,6 +916,16 @@ def create_app() -> FastAPI:
         payload = weather_service.payload()
         bus.publish("weather", **payload)
         return payload
+
+    # ---------------------------------------------------- weather read (weather spec §7)
+    # Full payload, holders only (spec §8: REST requires the cap outright — no
+    # partial payloads). The payload itself is coordinate-free by construction.
+
+    @app.get("/api/weather")
+    @declare(CAP_VIEW_SITE_PRECISE)
+    async def get_weather(
+            principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))):
+        return weather_service.payload()
 
     @app.get("/api/survey/pack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -3094,8 +3112,9 @@ def create_app() -> FastAPI:
                         return
                     next_check = _t.monotonic() + WS_AUTH_RECHECK_S
                 if ev is not None:
-                    await websocket.send_json(
-                        _redact_ws_event(ev.to_json(), principal))
+                    out = _redact_ws_event(ev.to_json(), principal)
+                    if out is not None:  # None = dropped event (weather spec §8)
+                        await websocket.send_json(out)
         except (WebSocketDisconnect, RuntimeError):
             pass
         finally:

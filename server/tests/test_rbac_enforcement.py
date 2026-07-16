@@ -935,3 +935,136 @@ def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
     blob = _json.dumps(new_logs)
     assert lat_s not in blob, "precise latitude leaked into bus.log"
     assert lon_s not in blob, "precise longitude leaked into bus.log"
+
+
+# ===================================================== weather (spec §7/§8/§14)
+# All four weather routes are @declare-gated (the boot assertion covers them at
+# create_app time); WS `weather` events are DROPPED entirely (not stripped) for
+# non-holders of view.site_precise on the LAN lane; the astrospheric key is
+# absent from redacted config, config echoes, and 409 bodies (T-RBAC-13b
+# family). The relay-lane drop test lives in tests/test_remote_relay.py.
+
+
+def _make_weather_client(tmp_path, monkeypatch):
+    """_make_client + a FRESH WeatherService bound to the temp store (the
+    module singleton would otherwise leak ignore/alert state across tests and
+    read the global config store). Routes and the lifespan look the singleton
+    up as an app-module global at call time, so monkeypatching it works."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    import astrodeck.weather as weather_mod
+    monkeypatch.setattr(weather_mod, "config_store", store)
+    monkeypatch.setattr(app_module, "weather_service",
+                        weather_mod.WeatherService())
+    return store, app
+
+
+def test_weather_routes_gated_for_viewer(tmp_path, monkeypatch):
+    """Viewer holds view.status only: 403 on the weather GET (view.site_precise),
+    ignore-tonight (control.capture), and config (config.site_optics)."""
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.get("/api/weather").status_code == 403
+        r = c.post("/api/weather/ignore-tonight", json={"ignore": True})
+        assert r.status_code == 403
+        r = c.post("/api/config/weather", json={
+            "weather": {"enabled": True, "cloud_threshold_pct": 50,
+                        "sustain_minutes": 30, "astrospheric_api_key": None},
+            "version": None})
+        assert r.status_code == 403
+
+
+def test_operator_ignore_tonight_allowed_config_and_get_denied(tmp_path, monkeypatch):
+    """Operator holds control.capture (ignore-tonight passes the gate; a
+    default site then yields the 409 no_night contract) but NOT
+    config.site_optics nor view.site_precise."""
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        r = c.post("/api/weather/ignore-tonight", json={"ignore": True})
+        assert r.status_code == 409                 # gate passed; no night (default site)
+        assert r.json()["detail"]["code"] == "no_night"
+        r = c.post("/api/config/weather", json={
+            "weather": {"enabled": True, "cloud_threshold_pct": 50,
+                        "sustain_minutes": 30, "astrospheric_api_key": None},
+            "version": None})
+        assert r.status_code == 403
+        assert c.get("/api/weather").status_code == 403
+
+
+def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)                       # real site -> night resolves
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        r = c.get("/api/weather")
+        assert r.status_code == 200
+        body = r.json()
+        assert set(body) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
+                             "threshold_pct", "sustain_minutes", "forecast",
+                             "astrospheric", "alert"}
+        assert body["enabled"] is False and body["forecast"] is None
+        r2 = c.post("/api/weather/ignore-tonight", json={"ignore": True})
+        assert r2.status_code == 200
+        assert r2.json()["ignore_tonight"] is True
+        assert c.get("/api/weather").json()["ignore_tonight"] is True
+
+
+def test_ws_weather_event_dropped_for_viewer_kept_for_admin(tmp_path, monkeypatch):
+    """LAN lane (spec §8): type=='weather' + non-holder -> the frame is NEVER
+    sent (dropped, not stripped). A later marker event proves ordering."""
+    from astrodeck.events import bus
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            hello = ws.receive_json()
+            assert hello["type"] == "hello"
+            bus.publish("weather", enabled=True, stale=False)
+            bus.publish("safety", is_safe=True)     # ordered marker
+            # drain until the marker: bus ordering guarantees the weather frame
+            # (if it leaked) would arrive BEFORE the safety marker; unrelated
+            # background events may interleave and are ignored.
+            seen = []
+            while True:
+                ev = ws.receive_json()
+                seen.append(ev["type"])
+                if ev["type"] == "safety":
+                    break
+            assert "weather" not in seen, f"weather frame leaked: {seen}"
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.receive_json()                        # hello
+            bus.publish("weather", enabled=True, stale=False)
+            while True:                              # holder receives verbatim
+                ev = ws.receive_json()
+                if ev["type"] == "weather":
+                    break
+            assert ev["data"]["enabled"] is True
+
+
+def test_astrospheric_key_scrubbed_everywhere(tmp_path, monkeypatch):
+    """T-RBAC-13b family (spec §8): key absent from the config-route echo, the
+    generic GET /api/config echo, AND the 409 conflict body."""
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        r = c.post("/api/config/weather", json={
+            "weather": {"enabled": True, "cloud_threshold_pct": 60,
+                        "sustain_minutes": 45,
+                        "astrospheric_api_key": "SECRET-KEY-XYZ"},
+            "version": None})
+        assert r.status_code == 200
+        assert "SECRET-KEY-XYZ" not in r.text
+        w = r.json()["weather"]
+        assert w["astrospheric_api_key"] is None
+        assert w["astrospheric_configured"] is True
+        assert store.cfg().weather.astrospheric_api_key == "SECRET-KEY-XYZ"
+        assert "SECRET-KEY-XYZ" not in c.get("/api/config").text
+        r2 = c.post("/api/config/weather", json={
+            "weather": {"enabled": False, "cloud_threshold_pct": 50,
+                        "sustain_minutes": 30, "astrospheric_api_key": None},
+            "version": 1})                           # stale token -> 409
+        assert r2.status_code == 409
+        assert "SECRET-KEY-XYZ" not in r2.text

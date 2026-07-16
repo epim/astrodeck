@@ -69,12 +69,18 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     return payload
 
 
-def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
+def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     """Strip precise site keys in a broadcast WS event for a principal lacking
     ``view.site_precise``. The bus ``Event.data`` is SHARED across every
     subscriber, so we must NEVER mutate it in place -- we copy only the nodes we
     change (status carries ``data.site``; config carries ``data.config.site``).
     A holder sees the event verbatim (no copy).
+
+    Weather events (sub-project C, weather spec §8) are DROPPED ENTIRELY (not
+    stripped) for non-holders: this returns ``None`` and BOTH WS lanes (the
+    LAN /ws handler in api/app.py and the relay ``_run_ws`` in
+    remote/relay_client.py) skip the send on None. Rationale: max-privacy —
+    even location-free forecast numbers describe conditions at the site.
 
     CONTRACT (spec §8): any FUTURE event or payload that embeds site
     coordinates MUST place them at ``data.site`` or ``data.config.site`` so this
@@ -82,6 +88,8 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict:
     that makes this the single enforcement point; do NOT add a second lane."""
     if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
         return ev_json
+    if ev_json.get("type") == "weather":
+        return None
     data = ev_json.get("data")
     if not isinstance(data, dict):
         return ev_json

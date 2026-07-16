@@ -921,3 +921,58 @@ async def test_on_wire_wss_roundtrip(tmp_path, monkeypatch):
     assert got["hello_type"] == FrameType.HELLO
     # open server + remote flag => 401 (the open default never served remotely)
     assert got["status"] == 401
+
+
+def test_tunneled_ws_drops_weather_for_viewer(tmp_path, monkeypatch):
+    """WS `weather` events are DROPPED ENTIRELY (not stripped) for a principal
+    lacking view.site_precise on the RELAY lane too (weather spec §8) — the
+    relay handler must skip the send when _redact_ws_event returns None."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("viewer")))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsA"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.05)  # authorize + hello + enter loop
+        from astrodeck.events import bus
+        bus.publish("weather", enabled=True, stale=False)
+        bus.publish("status", site={"is_default": True, "horizon_min_deg": 15.0})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        types = [p["type"] for p in payloads]
+        assert "status" in types            # the LATER event arrived...
+        assert "weather" not in types       # ...but the weather frame was dropped
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_delivers_weather_to_admin(tmp_path, monkeypatch):
+    """A view.site_precise holder receives the weather event verbatim over the
+    relay (the drop rule is non-holder-only)."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsA"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.05)
+        from astrodeck.events import bus
+        bus.publish("weather", enabled=True, stale=False)
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        weather = [p for p in payloads if p["type"] == "weather"]
+        assert weather and weather[0]["data"]["enabled"] is True
+
+    asyncio.run(_scenario())
