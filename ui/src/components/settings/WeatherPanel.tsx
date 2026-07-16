@@ -48,15 +48,20 @@ export default function WeatherPanel(): JSX.Element {
 
   // Unsaved-draft indicator (F7 #1, SitePanel dirty-chip idiom: lib/site.ts
   // locationEquals + SitePanel.tsx:374,556 — draft vs. the persisted baseline).
-  // `key` is write-only and never seeded back (the effect above always resets
-  // it to ""), so any non-blank entry there is itself an unsaved edit even
-  // before `w` has loaded.
+  // Numeric fields compare as PARSED VALUES (locationEquals precedent), not
+  // strings — "50.0" or "050" against a stored 50 is not an edit. Blank/
+  // non-numeric input parses to NaN, which never equals the baseline, so it
+  // still (correctly) reads as dirty. `key` is write-only and never seeded
+  // back (the effect above always resets it to ""), so any non-blank entry
+  // there is itself an unsaved edit even before `w` has loaded.
+  const numEdited = (raw: string, baseline: number): boolean =>
+    toNum(raw) !== baseline;
   const dirty =
     key.trim() !== "" ||
     (!!w &&
       (enabled !== !!w.enabled ||
-        threshold !== String(w.cloud_threshold_pct) ||
-        sustain !== String(w.sustain_minutes)));
+        numEdited(threshold, w.cloud_threshold_pct) ||
+        numEdited(sustain, w.sustain_minutes)));
 
   const validate = (): string | null => {
     const t = toNum(threshold);
