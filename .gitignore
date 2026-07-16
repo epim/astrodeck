@@ -15,4 +15,4 @@ references/
 native/target/
 
 # external UI review evidence (referenced by docs/superpowers/reviews, kept local)
-review-evidence/
+review-evidence*/
