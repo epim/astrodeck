@@ -12,8 +12,14 @@ import { Icon } from "../icons";
 import { api } from "../../api";
 import { getWeather, setIgnoreTonight } from "../../api/weather";
 import { useCanControlCapture } from "../../lib/caps";
-import { agoLabel, breachSpans, fmtHm } from "../../lib/weather";
+import { agoLabel, breachSpans, fmtHm, groupEndLabels } from "../../lib/weather";
 import type { WeatherState } from "../../types";
+
+// Minimum vertical gap (px) between two end-labels before they're treated as
+// colliding and consolidated (groupEndLabels, spec §10/R2-WEA-01) — a bit
+// taller than the 9px label font so two adjacent single-line labels never
+// overprint.
+const END_LABEL_MIN_GAP_PX = 9;
 
 const W = 480;
 const H = 150;
@@ -176,7 +182,18 @@ export default function SkyConditionsPanel() {
       const t = t0 + h * 3600;
       ticks.push({ x: sx(t), label: fmtHm(new Date(t * 1000).toISOString()) });
     }
-    return { sx, sy, path, spans, dark, ticks };
+    // End-of-series labels, collision-consolidated (lib/weather.ts) so
+    // coincident series (e.g. all-zero cloud tonight) don't overprint.
+    const endLabels = groupEndLabels(
+      [
+        { name: "total", y: sy(win.cloud[win.cloud.length - 1]) },
+        { name: "low", y: sy(win.low[win.low.length - 1]) },
+        { name: "mid", y: sy(win.mid[win.mid.length - 1]) },
+        { name: "high", y: sy(win.high[win.high.length - 1]) },
+      ],
+      END_LABEL_MIN_GAP_PX,
+    );
+    return { sx, sy, path, spans, dark, ticks, endLabels };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [win, weather, darkWindow]);
 
@@ -227,7 +244,9 @@ export default function SkyConditionsPanel() {
                 opacity={0.12}
               />
             ))}
-            {/* threshold rule */}
+            {/* threshold rule, labeled with the active hold policy (threshold +
+                sustain minutes — same weather payload as breachSpans above,
+                so the label can never drift from the rule it's drawn beside) */}
             <line
               x1={PAD_L}
               x2={W - PAD_R}
@@ -236,6 +255,15 @@ export default function SkyConditionsPanel() {
               stroke="var(--text-faint)"
               strokeDasharray="2 5"
             />
+            <text
+              x={PAD_L + 3}
+              y={Math.max(PAD_T + 8, chart.sy(weather.threshold_pct) - 3)}
+              fill="var(--text-faint)"
+              fontSize={8}
+              fontFamily="IBM Plex Mono"
+            >
+              hold ≥{weather.threshold_pct}% for {weather.sustain_minutes}m
+            </text>
             {/* "now" cursor */}
             <line x1={PAD_L} x2={PAD_L} y1={PAD_T} y2={PAD_T + PLOT_H} stroke="var(--line-bright)" />
             {/* series: total solid/thick; low dotted; mid dashed; high
@@ -245,10 +273,22 @@ export default function SkyConditionsPanel() {
             <path d={chart.path(win.low)} fill="none" stroke="var(--text-dim)" strokeWidth={1} strokeDasharray="1 3" />
             <path d={chart.path(win.mid)} fill="none" stroke="var(--text-dim)" strokeWidth={1} strokeDasharray="4 3" />
             <path d={chart.path(win.high)} fill="none" stroke="var(--text-dim)" strokeWidth={1.4} strokeDasharray="8 3" />
-            <text x={W - PAD_R + 3} y={chart.sy(win.cloud[win.cloud.length - 1]) + 3} fill="var(--accent)" fontSize={9} fontFamily="IBM Plex Mono">total</text>
-            <text x={W - PAD_R + 3} y={chart.sy(win.low[win.low.length - 1]) + 3} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">low</text>
-            <text x={W - PAD_R + 3} y={chart.sy(win.mid[win.mid.length - 1]) + 3} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">mid</text>
-            <text x={W - PAD_R + 3} y={chart.sy(win.high[win.high.length - 1]) + 3} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">high</text>
+            {/* end labels: collision-consolidated (groupEndLabels) so coincident
+                series never overprint — a group containing "total" stays
+                accent-colored, otherwise dim (never hue-only: the dash
+                pattern above is still the primary series distinguisher). */}
+            {chart.endLabels.map((g) => (
+              <text
+                key={g.label}
+                x={W - PAD_R + 3}
+                y={g.y + 3}
+                fill={g.label.split("+").includes("total") ? "var(--accent)" : "var(--text-dim)"}
+                fontSize={9}
+                fontFamily="IBM Plex Mono"
+              >
+                {g.label}
+              </text>
+            ))}
             <text x={2} y={PAD_T + 8} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">100%</text>
             <text x={2} y={PAD_T + PLOT_H} fill="var(--text-dim)" fontSize={9} fontFamily="IBM Plex Mono">0%</text>
             {chart.ticks.map((t, i) => (
@@ -301,6 +341,7 @@ export default function SkyConditionsPanel() {
             checked={weather.ignore_tonight}
             disabled={!canOperate || busy}
             onChange={(v) => void onIgnore(v)}
+            label="Ignore weather tonight"
           />
         </label>
         {!canOperate && (
