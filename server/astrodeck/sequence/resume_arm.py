@@ -10,8 +10,8 @@ preflight) runs inside ``engine.start`` / the run itself. A refusal alerts and
 retries every 10 minutes; when the window closes mid-backoff (dawn) it alerts
 one give-up and stays quiet until the window reopens (the next night). The
 run_start alert on success comes free from the AlertDispatcher's sequence
-state machine. ``resume_veto()`` is the sub-project-C weather-gate hook — v1
-always returns None.
+state machine. ``resume_veto()`` delegates to the injected WeatherService
+(sub-project C, weather spec §4); with no service injected it returns None.
 
 HARD REQUIREMENT (Task 4 review carry-in): ResumeArm is a THIRD ``engine.start``
 path, and ``engine.start`` is deliberately unguarded — the route-level gates
@@ -36,10 +36,13 @@ RETRY_INTERVAL_S = 600.0
 
 
 class ResumeArm:
-    def __init__(self, engine, hub, *, clock=time.time):
+    def __init__(self, engine, hub, *, clock=time.time, weather=None):
         self.engine = engine
         self.hub = hub
         self._clock = clock
+        # sub-project C (weather spec §4): injected WeatherService (like clock,
+        # so tests inject fakes). None = no weather gate (back-compat).
+        self._weather = weather
         self._task: asyncio.Task | None = None
         self._retry_at: float = 0.0        # refusal backoff: no attempt before this
         self._gave_up_for: str | None = None   # session id we give-up-alerted on
@@ -68,9 +71,13 @@ class ResumeArm:
             await asyncio.sleep(CHECK_INTERVAL_S)
 
     def resume_veto(self) -> str | None:
-        """Veto hook (spec §5). v1: no veto — sub-project C plugs the
-        cloud/precip forecast gate in here. Non-None = human-readable reason."""
-        return None
+        """Veto hook (sessions spec §5 / weather spec §4): delegates to the
+        injected WeatherService. Non-None = human-readable reason; the caller
+        (tick, :120-125) logs it and arms the 10-min retry latch BEFORE any
+        device is touched. No service injected -> no veto (back-compat)."""
+        if self._weather is None:
+            return None
+        return self._weather.veto_reason(self._clock())
 
     def _window_open(self, session: Session, now: float) -> bool:
         """True when tonight's window for ANY of the session's targets is open

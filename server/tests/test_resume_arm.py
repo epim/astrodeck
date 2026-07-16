@@ -154,3 +154,52 @@ async def test_quota_unbounded_refused(sim_hub, monkeypatch):
     assert not engine.running                         # refused before start
     assert arm._retry_at == now["t"] + RETRY_INTERVAL_S
     assert session_store.load(s.id).status == "dormant"
+
+
+# =================================================== weather veto (spec §4/§14)
+# ResumeArm stays thin: veto logic lives in WeatherService; these tests inject
+# a fake with a fixed veto_reason. The stale/disabled/ignore-tonight variants
+# all collapse to veto_reason() -> None inside the real service and are
+# covered service-level in tests/test_weather.py.
+
+
+class _FakeWeather:
+    def __init__(self, reason):
+        self._reason = reason
+
+    def veto_reason(self, now):
+        return self._reason
+
+
+async def test_weather_veto_blocks_resume_and_arms_retry(sim_hub, monkeypatch):
+    engine = SequenceEngine(sim_hub)
+    await _dormant_armed(sim_hub, engine)
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"],
+                    weather=_FakeWeather(
+                        "cloud cover 80% forecast within the next hour "
+                        "(threshold 50%)"))
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+    assert not engine.running                      # vetoed BEFORE any device touch
+    assert arm._retry_at == now["t"] + RETRY_INTERVAL_S   # 10-min retry latch
+    from astrodeck.events import bus
+    assert any("auto-resume vetoed: cloud cover 80%" in
+               (e["data"].get("message") or "")
+               for e in bus.log_history), "veto warning must be logged"
+
+
+async def test_weather_veto_none_resumes(sim_hub, monkeypatch):
+    """veto_reason None (the real service's stale/disabled/ignored outcomes)
+    -> the run starts. Constructor default weather=None (no service injected,
+    back-compat) is covered by the existing resume tests above."""
+    engine = SequenceEngine(sim_hub)
+    sid = await _dormant_armed(sim_hub, engine)
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"],
+                    weather=_FakeWeather(None))
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+    assert engine.running
+    assert await wait_for(lambda: engine.state.get("state") == "complete")
+    assert session_store.load(sid).status == "complete"

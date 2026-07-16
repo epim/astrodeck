@@ -70,7 +70,7 @@ from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.resume_arm import ResumeArm
 from ..sequence.session import migrate_legacy_resume, session_store
-from ..weather import weather_service
+from ..weather import NoNightError, weather_service
 
 engine = SequenceEngine(hub)
 
@@ -86,7 +86,7 @@ engine.dispatcher = dispatcher
 # Auto-resume-at-dusk service (sessions spec §5). Started in the lifespan, like
 # the AlertDispatcher; a disarm or any manual start stops its interest (it
 # re-checks state every tick and holds no long-lived assumptions).
-resume_arm = ResumeArm(engine, hub)
+resume_arm = ResumeArm(engine, hub, weather=weather_service)
 
 UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
 
@@ -884,6 +884,30 @@ def create_app() -> FastAPI:
                 "current": _redact_site_for(redacted(e.current), principal)})
         bus.publish("config", config=redacted(cfg))
         return _config_payload(principal)
+
+    # ------------------------------------------------- ignore-tonight (weather spec §4)
+    # Runtime flag on the WeatherService, NOT persisted config. Gated
+    # control.capture (operator — it affects sequencing, like other control
+    # caps). Keyed to tonight's dusk; auto-expires when a new night begins.
+    # The updated flag rides the weather payload so ALL clients see it.
+
+    class IgnoreTonightBody(BaseModel):
+        ignore: bool
+
+    @app.post("/api/weather/ignore-tonight")
+    @declare(CAP_CONTROL_CAPTURE)
+    async def weather_ignore_tonight(
+            body: IgnoreTonightBody,
+            principal: Principal = Depends(require(CAP_CONTROL_CAPTURE))):
+        try:
+            weather_service.set_ignore_tonight(body.ignore)
+        except NoNightError:
+            raise HTTPException(409, detail={
+                "detail": "no night resolves for the configured site",
+                "code": "no_night"})
+        payload = weather_service.payload()
+        bus.publish("weather", **payload)
+        return payload
 
     @app.get("/api/survey/pack",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
