@@ -38,7 +38,7 @@ the UI.
   (below).
 - **Real gear:** a device only appears in a role's dropdown when its driver is
   **enabled, reachable, and offers that device**. Use **Probe** on the driver row
-  (Settings → Backend Drivers) to force a fresh check, confirm the host/port, and
+  (Settings → Connect → Backend Drivers) to force a fresh check, confirm the host/port, and
   make sure the vendor's Alpaca server / ASCOM Remote / NINA Advanced API / PHD2
   is actually running. Slot states like `DRIVER UNREACHABLE` or `DEVICE MISSING`
   tell you which part is wrong. See
@@ -52,14 +52,52 @@ the UI.
 ## Night mode and screen brightness
 
 - The **NIGHT** toggle in the header flips the whole UI to dark-adaptation red,
-  including a red filter over previews and survey/radar imagery.
-- The brightness steppers (`−` / `+`) and slider dim the screen; the dimmer floor
-  is about 8%. Brightness is remembered separately for day and night, so flipping
-  NIGHT restores your last night brightness.
-- If the screen is *too* dark to find the controls, the dimmer never goes fully
-  black — brighten with the `+` stepper, or toggle NIGHT off.
+  including a red filter over previews and survey/radar imagery. Night mode
+  **starts at 100% brightness** by default (a deliberate product decision —
+  it never opens on a nearly-black screen) and text/labels are tuned to stay
+  legible at every brightness level down to the floor.
+- Brightness is a single **slider**, not steppers — the `−`/`+` buttons were
+  removed. On wide screens it sits inline in the header; on narrower ones it
+  collapses behind a small sun-icon button that opens a popover with the same
+  slider. The dimmer floor is **50%** — it can never be dragged down to
+  unreadable.
+- Brightness is remembered separately for day and night, so flipping NIGHT
+  restores your last night brightness.
 - On phones, extra display controls (**Lock Screen**, **Keep Awake**, reverse-axis
   toggles) live in the **More** sheet.
+
+---
+
+## The run looks stuck (stall diagnosis)
+
+Checklist, roughly in the order to check them:
+
+1. **Look at [Monitor](monitor.md) first**, not Plan — it has the live stall
+   read. The **"last frame N ago"** line turns amber past ~2× the current
+   exposure time and red with **"CAPTURE STALLED?"** past ~3×. If it's still
+   dim/grey text, the engine likely isn't actually stalled — you're probably
+   just between frames (plate-solving, a filter change, a meridian flip, a
+   dither settle).
+2. **Check whether it's paused, not stalled.** The header badge and the
+   run banner both read **PAUSED** honestly now — if you (or someone else)
+   hit Pause, that's the whole explanation. Pause only takes effect at a
+   **frame boundary**, so a stall warning can still fire on the last frame
+   that was in flight when you paused; see
+   [plan-and-sequences.md](plan-and-sequences.md#running-a-sequence).
+3. **Open the Event Log** (below) and look at the last few lines — a stuck
+   plate solve, a guiding-recovery loop, or a device timeout usually logs
+   something explanatory right before the stall becomes visible.
+4. **Check Link Status** (Settings → Connect, or the Equipment view) — a
+   device that silently dropped (`DRIVER UNREACHABLE`, `DEVICE MISSING`) can
+   leave a step waiting on a response that will never come.
+5. **Check Weather**, if enabled — a high-cloud warning doesn't stop a
+   running sequence by itself, but it's worth ruling out as a correlated
+   cause before you assume it's a device problem.
+6. If none of the above explains it and the rig genuinely seems wedged,
+   **Abort** (hold-to-confirm) from Monitor or Plan, then use the **recover**
+   banner / **Resume from frame N** on [Plan & sequences](plan-and-sequences.md)
+   to pick it back up. The underlying session is never lost either way — see
+   [sessions-multi-night.md](sessions-multi-night.md#what-survives-a-reboot).
 
 ---
 
@@ -73,6 +111,11 @@ the UI.
   — they may be a viewer.
 - Some admin-level writes (auth config, remote config) are intentionally
   **blocked over the tunnel** and must be done on the LAN.
+- **Getting signed out doesn't stop a run.** If your session expires or you
+  get logged out mid-sequence, only your browser is affected — the imaging
+  engine runs server-side and keeps going regardless. Sign back in and
+  you'll see the same run still in progress; see
+  [remote-access-and-roles.md](remote-access-and-roles.md#signing-in).
 - Full setup and the security model: [remote-access-and-roles.md](remote-access-and-roles.md)
   and [`relay/README.md`](../../relay/README.md).
 
@@ -82,8 +125,10 @@ the UI.
 
 **In-app Event Log (primary).** Every AstroDeck component logs to a live event
 stream. Open it with the **LOG** button in the header (or **Event Log** in the
-mobile **More** sheet); a badge counts unseen errors. It shows each event's
-source and message, colour-coded by level. This is backed by:
+mobile **More** sheet); a badge counts unseen errors. Each line shows a local
+**HH:MM:SS** timestamp, a severity word (**Error / Warning / Info / Debug**)
+and source in brackets, colour-coded by level, then the message. This is
+backed by:
 
 - the WebSocket `log` event stream (live), and
 - **`GET /api/logs`** — the recent log buffer (any viewer, `view.status`).
@@ -91,6 +136,14 @@ source and message, colour-coded by level. This is backed by:
 Weather, safety, sequence, and config subsystems all report here, so it's the
 first place to look for *why* something refused or failed (e.g. *"auto-resume
 vetoed: …"*, *"config reset to defaults: …"*).
+
+**What it still doesn't do.** The log is a flat, reverse-chronological list —
+there's no filter by session, target, or severity, and no way to jump to "the
+log lines from run X" short of scrolling and reading timestamps against the
+session card's own history. For anything beyond "what happened recently and
+how bad was it," cross-reference the timestamp against
+[Sessions](sessions-multi-night.md) or the Plan's own run detail rather than
+expecting the log itself to correlate them for you.
 
 **Server console.** The server also writes startup and runtime lines to its own
 standard output (the terminal you launched it from) — the security posture
@@ -123,4 +176,5 @@ authenticated install, reset a local admin from the CLI:
 ## Related
 
 - [Getting started](getting-started.md) · [Equipment & profiles](equipment-and-profiles.md)
+- [Monitor](monitor.md) — the live stall/recovery read.
 - [Remote access & roles](remote-access-and-roles.md) · [Safety & automation](safety-and-automation.md)
