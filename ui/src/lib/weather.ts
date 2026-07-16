@@ -117,6 +117,14 @@ export function agoLabel(fetchedTs: number | null, nowTs: number): string {
   return `updated ${mins} min ago`;
 }
 
+/** Data-source attribution (F7 #3, SkyConditionsPanel): mechanically truthful
+ *  — Astrospheric is named ONLY when the payload actually carries astrospheric
+ *  samples (WeatherState.astrospheric non-null), never hardcoded, so the label
+ *  never claims a source that isn't flowing. */
+export function weatherSourceLabel(hasAstrospheric: boolean): string {
+  return hasAstrospheric ? "Open-Meteo + Astrospheric" : "Open-Meteo";
+}
+
 /** Collision-consolidates SVG chart end-labels that land within `minGap` px of
  *  one another (e.g. all-zero series stack exactly on the 0% baseline and
  *  would otherwise overprint — SkyConditionsPanel spec §10). Sorts by y, then
