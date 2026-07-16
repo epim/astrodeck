@@ -7,6 +7,7 @@ import { Icon } from "../icons";
 import { BASE } from "../../lib/base";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
+import { useCanControlMount } from "../../lib/caps";
 import { getSession, patchFrame } from "../../api/sessions";
 import {
   filterFrames, pruneSelection, toggleSel, verdictOf, withOverride,
@@ -44,6 +45,13 @@ export default function SessionReviewDrawer({ id, onClose }: {
   const [remaining, setRemaining] = useState<Record<string, number> | null>(null);
   const [busy, setBusy] = useState(false);
   const showToast = useStore((s) => s.showToast);
+  // VIEWER-READ-ONLY (W2.5): the drawer itself stays viewable for every role
+  // (browsing frames is a read, matching SessionsPanel's ungated "review"
+  // affordance that opens it) — only the regrade controls, which PATCH
+  // /api/sessions/{id}/frames/{fid}, gate. That route requires control.mount
+  // (same cap as SessionsPanel's resume/delete/update-from-plan controls),
+  // NOT control.capture — an operator can run captures but not regrade.
+  const canRegrade = useCanControlMount();
   const deskRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -128,7 +136,7 @@ export default function SessionReviewDrawer({ id, onClose }: {
     // Belt-and-braces: only ever regrade the intersection of the selection and
     // the currently VISIBLE frames (applyFlt already keeps them in sync).
     const ids = pruneSelection(sel, frames);
-    if (busy || ids.length === 0) return;
+    if (!canRegrade || busy || ids.length === 0) return;
     setBusy(true);
     let frames2 = session.frames;
     let rem: Record<string, number> | null = null;
@@ -194,15 +202,21 @@ export default function SessionReviewDrawer({ id, onClose }: {
         </select>
         <div className="flex-1" />
         <button className="btn tap min-h-[44px] !px-3 !text-[11px]"
-          disabled={busy || sel.length === 0} onClick={() => void bulk("accept")}>
+          disabled={!canRegrade || busy || sel.length === 0} onClick={() => void bulk("accept")}>
           <Icon name="check" size={12} /> mark accepted ({sel.length})
         </button>
         <button
           className="tap min-h-[44px] !px-3 !text-[11px] border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
-          disabled={busy || sel.length === 0} onClick={() => void bulk("reject")}>
+          disabled={!canRegrade || busy || sel.length === 0} onClick={() => void bulk("reject")}>
           <Icon name="x" size={12} /> mark rejected
         </button>
       </div>
+      {!canRegrade && (
+        <p className="text-[11px] text-dim pb-2 inline-flex items-center gap-1.5">
+          <Icon name="lock" size={11} />
+          Read-only — regrading frames needs operator or admin access.
+        </p>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 overflow-y-auto flex-1">
         {frames.map((f) => {
           const v = verdictOf(f);
