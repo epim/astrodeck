@@ -84,6 +84,17 @@ F3 root-cause pass (compare the user's failing run shape vs Codex's passing one)
 - A1 adjacent ATL-04 (visibility chart unlabeled; summary concatenates `21:4548°` —
   that concatenation is its own small bug).
 
+## Gemini (bridge id "antigravity") review — Top-5 received 2026-07-16, full artifact requested
+Independent convergence with codex (confidence upgrade on all of these):
+- Simulator connect desync = EQ-01 (adds detail: sim connect never populates the driver
+  dropdowns, so "Connect Rig" stays disabled until manual assignment).
+- Night-mode illegibility = CAP-02/MON-01 (CONFIRMED x2).
+- Negative exposure accepted = CAP-01 (CONFIRMED x2 — top fix candidate; also notes the
+  resulting frame throws a generic "few stars" error rather than an input error).
+- Silent Atlas search failure = ATL-02 (CONFIRMED x2 — no spinner/error/no-results).
+- Save-verbs ambiguity = S1/SIT-01 (CONFIRMED x2, matches user's original finding).
+Full artifact to be committed beside the codex review when it lands.
+
 ## Smaller new items (polish-wave fodder)
 ATL-02 search feedback (Enter-only, no empty state); ATL-05 suggested-mosaic CTA
 (object 6.4× frame → offer grid); EQ-02/CAP-04/MON-03 narrow+wide layout balance;
