@@ -25,3 +25,70 @@ Owner: future "UI polish wave" (separate from sub-project C/weather). None of th
 
 ## Notes
 - User will provide gemini/claude/gpt agents for recurring UI/UX reviews; the reusable review prompt lives at `docs/superpowers/prompts/ui-ux-review-prompt.md`.
+
+---
+
+# Codex field review triage — 2026-07-16 (reviewed :8802 instance)
+
+Full report: `docs/superpowers/reviews/2026-07-15-codex-ui-field-review.md`. Evidence
+screenshots: `review-evidence/` at repo root (kept on disk, git-ignored, referenced by
+absolute path from the report). Review quality: high — followed the prompt (personas,
+sweeps, per-finding evidence, intuitive leaps, top-10). Verified-truths it recorded:
+plan totals correct; site validation messages actionable; resume picks up sessions
+correctly; **its V-curve run showed fitted minimum / BEST marker / final position all
+agreeing** — so F3's apex≠BEST is likely data-dependent/intermittent, which narrows the
+F3 root-cause pass (compare the user's failing run shape vs Codex's passing one).
+
+## Triage verdicts on its top findings
+
+- **REC-01 "Abort ignored" (its #1 Blocker): DOWNGRADED — automation artifact.**
+  Abort is a press-and-hold `HoldButton` (MonitorView.tsx:334-338); repeated *clicks*
+  are ignored by design. Residual REAL finding (Major): the hold affordance is
+  undiscoverable — face just says "Abort"; add a visible "hold" hint (and the same for
+  every HoldButton). Verify by hand once to close the loop.
+- **CAP-01 negative exposure accepted (Blocker): REAL by inspection likelihood — top
+  fix candidate.** `-5s` accepted, captured, and reported in metadata. Validate against
+  a positive camera-supported range at the input boundary; keep last valid value.
+- **ATL-01/MNT-01 planets absent (Blocker): confirms A2**, elevated — fix at a shared
+  catalog/ephemeris provider so Atlas, Mount, and Plan agree (Sun/Moon/planets).
+- **REC-02 PAUSED not truthful (Major): REAL.** Progress advanced 1/130→3/130 while
+  "PAUSED"; global strip said RUNNING simultaneously. Needs a "Pausing — finishing
+  current frame" intermediate state and strip consistency. (Some of this is honest
+  physics — an in-flight exposure completes — but the UI must say so.)
+- **EQ-01 three conflicting connection truths (Major): REAL** — sim-connected
+  toasts/dots vs UNASSIGNED drivers vs "No rig connected yet" + `Connect Rig (0)`.
+- **REC-03 live session beside unrelated draft (Major): REAL** — session snapshot
+  should own the main context while running; drafts move behind an explicit edit affordance.
+- **PLN-02 second-tab last-write-wins on drafts (Major): REAL** — no stale/conflict
+  detection on the plan draft (config/site have 409 versioning; drafts have nothing).
+- **MON-01 night-mode guide chart is hue-only (Major): REAL and embarrassing** — the
+  Monitor guide chart uses two solid color-only lines, violating our own dash/width/
+  label night rule (Sparkline complies; GuideGraph predates the rule). Fold with CAP-02
+  (night contrast floor; brightness badge said 100% while header sat at 45%).
+- **MON-02/REV-01 HFR units inconsistent (Major): REAL** — `HFR 2.10` unitless on
+  Monitor vs px/″ split on Capture; timestamps like `223727` unreadable. One canonical
+  format everywhere: `HFR 2.10 px (3.07″)`, `2026-07-15 22:37:27`.
+- **FOC-01 stale pre-AF preview beside FOCUS—GOOD (Major): REAL** — refresh preview
+  with the final AF frame or label it "pre-autofocus frame".
+- **FOC-02 unexplained dual fit lines / no legend: fold into F3's root-cause pass.**
+
+## Confirmations of existing items (evidence now attached)
+- F1 ⊂ FOC-04 (AF binning; Codex adds filter/gain + tappable curve samples).
+- F2 = FOC-03 (HFR label overlap; adds axis units + interior ticks).
+- A3/A4 = ATL-03 + ATL-06 + SIT-03 (optics belong on profile; oversized/unstable boxes;
+  cap numeric field widths — SIT-03 measured a 1,074 px input for 9 characters).
+- P2 = PLN-01 (cramped names + 37 px buttons + clipped actions at 900 px).
+- S1 = SIT-01 (verb rename proposal: "Apply active site" / "Save as location preset…" /
+  "Load selected preset") + SIT-02 (matching-preset selection resets in new tab) +
+  SIT-04 (provenance line: source + timestamp on the active site).
+- A1 adjacent ATL-04 (visibility chart unlabeled; summary concatenates `21:4548°` —
+  that concatenation is its own small bug).
+
+## Smaller new items (polish-wave fodder)
+ATL-02 search feedback (Enter-only, no empty state); ATL-05 suggested-mosaic CTA
+(object 6.4× frame → offer grid); EQ-02/CAP-04/MON-03 narrow+wide layout balance;
+MON-04 meridian countdown format (`in 6 h 11 m` + clock time); PLN-03 step offset
+visibility (exports contain offset 30 the UI never shows); PLN-05 toggle touch targets
++ ON/OFF words; CAP-03 "Center" verb ambiguity; CAP-05 capture destination visibility;
+EQ-03 first-light checklist; REV-02 recovery summary (why stopped, what Resume does);
+AUT-01 preview-as-viewer role matrix.
