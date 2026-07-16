@@ -277,6 +277,9 @@ class WeatherService:
             return
         self._om_times, self._om_series = times, series
         self._om_fetched_ts = now
+        # spec §5: evaluate BEFORE publishing so a fresh alert rides this
+        # payload (the publish is emission #1; the bus.log inside is #2).
+        self._evaluate_night_warning(now)
         bus.publish("weather", **self.payload(now))
 
     async def _refresh_astrospheric(self, lat: float, lon: float,
@@ -330,6 +333,118 @@ class WeatherService:
         if night is None:
             raise NoNightError()
         self._ignore_night_key = int(night[0]) if ignore else None
+
+    # -- breach math + veto (spec §4) -----------------------------------------
+
+    def _needed_samples(self, sustain_minutes: int) -> int:
+        """Consecutive 15-min samples a breach must span (spec §4)."""
+        return max(1, sustain_minutes // 15)
+
+    def _sustained_breach(self, lo: float, hi: float, threshold: int,
+                          needed: int) -> tuple[int, int] | None:
+        """First run of >= ``needed`` CONSECUTIVE 15-min samples with TOTAL
+        cloud >= ``threshold`` among samples timestamped in [lo, hi]; returns
+        the run's (start_idx, end_idx) inclusive indices into the Open-Meteo
+        series, or None. Samples are consecutive by construction (one series
+        on a 15-min grid)."""
+        cloud = self._om_series.get("cloud_cover") or []
+        run_start: int | None = None
+        run_end: int | None = None
+        for i, t in enumerate(self._om_times):
+            in_window = i < len(cloud) and lo <= t <= hi
+            if in_window and cloud[i] >= threshold:
+                if run_start is None:
+                    run_start = i
+                run_end = i
+            else:
+                if (run_start is not None and run_end is not None
+                        and run_end - run_start + 1 >= needed):
+                    return run_start, run_end
+                run_start = run_end = None
+        if (run_start is not None and run_end is not None
+                and run_end - run_start + 1 >= needed):
+            return run_start, run_end
+        return None
+
+    def veto_reason(self, now: float) -> str | None:
+        """Auto-resume weather gate (spec §4). Non-None = human-readable
+        reason. FAIL-OPEN on stale/missing data: weather is advisory; the
+        safety monitor remains the hard guard."""
+        cfg = config_store.cfg().weather
+        if not cfg.enabled:
+            return None
+        if self._ignore_active(now):
+            return None
+        if self._om_fetched_ts is None or \
+                now - self._om_fetched_ts > OPEN_METEO_STALE_S:
+            return None                            # stale/missing -> fail-open
+        needed = self._needed_samples(cfg.sustain_minutes)
+        hit = self._sustained_breach(now, now + 3600.0,
+                                     cfg.cloud_threshold_pct, needed)
+        if hit is None:
+            return None
+        cloud = self._om_series.get("cloud_cover") or []
+        peak = max(cloud[hit[0]:hit[1] + 1])
+        return (f"cloud cover {peak}% forecast within the next hour "
+                f"(threshold {cfg.cloud_threshold_pct}%)")
+
+    # -- high-cloud night warning (spec §5, REQUIRED) --------------------------
+
+    def _evaluate_night_warning(self, now: float) -> None:
+        """Sustained-breach scan over tonight's [dusk, dawn] on each successful
+        Open-Meteo refresh; ONCE-PER-NIGHT latch keyed by int(dusk_ts). On the
+        first breach of a night: populate the alert (rides the weather payload
+        until dawn) and bus.log ONE warning that reaches the existing ntfy/
+        webhook/telegram sinks — times + percentages only, NEVER coordinates."""
+        night = self._tonight(now)
+        if night is None:
+            return                                 # polar day / no site
+        dusk, dawn = night
+        key = int(dusk)
+        if self._alert_night_key is not None and self._alert_night_key != key:
+            # night rolled over: drop the stale alert, allow a fresh latch
+            self._alert = None
+            self._alert_dawn_ts = None
+            self._alert_night_key = None
+        if self._alert_night_key == key:
+            return                                 # already latched tonight
+        cfg = config_store.cfg().weather
+        needed = self._needed_samples(cfg.sustain_minutes)
+        hit = self._sustained_breach(dusk, dawn, cfg.cloud_threshold_pct,
+                                     needed)
+        if hit is None:
+            return
+        i0, i1 = hit
+        cloud = self._om_series.get("cloud_cover") or []
+        peak = int(max(cloud[i0:i1 + 1]))
+        layers = {
+            "low": self._om_series.get("cloud_cover_low") or [],
+            "mid": self._om_series.get("cloud_cover_mid") or [],
+            "high": self._om_series.get("cloud_cover_high") or [],
+        }
+
+        def _mean(vals: list[int]) -> float:
+            window = vals[i0:i1 + 1]
+            return sum(window) / len(window) if window else 0.0
+
+        dominant = max(layers, key=lambda k: _mean(layers[k]))
+        start_ts, end_ts = self._om_times[i0], self._om_times[i1]
+        self._alert = {
+            "kind": "high_cloud",
+            "start_iso": _iso_z(start_ts),
+            "end_iso": _iso_z(end_ts),
+            "peak_pct": peak,
+            "dominant_layer": dominant,
+        }
+        self._alert_dawn_ts = dawn
+        self._alert_night_key = key
+        start_hhmm = datetime.fromtimestamp(
+            start_ts, tz=timezone.utc).strftime("%H:%M")
+        end_hhmm = datetime.fromtimestamp(
+            end_ts, tz=timezone.utc).strftime("%H:%M")
+        bus.log("warning",
+                f"high cloud forecast tonight: peak {peak}% ({dominant} layer) "
+                f"{start_hhmm}–{end_hhmm}", "weather")
 
     # -- payload (spec §7) -----------------------------------------------------
 
