@@ -273,6 +273,30 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
 .btn-danger { border-color: color-mix(in srgb, var(--danger-ink) 45%, transparent); color: var(--danger-ink); }
 .btn-danger:hover:not(:disabled) { border-color: var(--danger-ink); color: var(--danger-ink); box-shadow: 0 0 12px color-mix(in srgb, var(--danger-ink) 28%, transparent); }
 
+/* ConfirmDialog confirmPrimary=true (PLAN-01-gemini): a solid fill reads as
+   unambiguously primary next to the now-deliberately-quiet Cancel — the
+   default outline treatments (.btn-accent/.btn-danger) read as SECONDARY next
+   to Cancel's solid bright-text/bright-border look. */
+.btn-confirm-primary {
+  border-color: var(--warn);
+  background: var(--warn);
+  color: var(--bg);
+}
+.btn-confirm-primary:hover:not(:disabled) {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--warn) 45%, transparent);
+}
+.btn-confirm-muted {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-dim);
+  box-shadow: none;
+}
+.btn-confirm-muted:hover:not(:disabled) {
+  border-color: var(--line-bright);
+  color: var(--text);
+  box-shadow: none;
+}
+
 .field {
   background: var(--bg);
   border: 1px solid var(--line);

@@ -25,6 +25,9 @@ export interface ConfirmOpts {
   // "confirm" = OK / Cancel
   // "hold"    = HoldButton proceed (only when the dialog FIRES an action)
   mode?: ConfirmMode;
+  // See ConfirmRequest.confirmPrimary (store.ts) — makes the affirmative
+  // button read as primary instead of Cancel (PLAN-01-gemini).
+  confirmPrimary?: boolean;
 }
 
 /**
@@ -44,6 +47,7 @@ export function confirmDialog(opts: ConfirmOpts): Promise<boolean> {
     cancelLabel: opts.cancelLabel,
     tone: opts.tone,
     mode: opts.mode ?? "confirm",
+    confirmPrimary: opts.confirmPrimary,
   });
 }
 
@@ -109,6 +113,7 @@ export function ConfirmHost() {
   const danger = req.tone === "danger";
   const confirmLabel = req.confirmLabel ?? (mode === "ok" ? "OK" : "Confirm");
   const cancelLabel = req.cancelLabel ?? "Cancel";
+  const primary = req.confirmPrimary ?? false;
 
   return (
     <div
@@ -132,7 +137,12 @@ export function ConfirmHost() {
 
         <div className="flex flex-wrap justify-end gap-2 mt-2">
           {mode !== "ok" && (
-            <button ref={cancelBtnRef} type="button" className="btn" onClick={() => resolve(false)}>
+            <button
+              ref={cancelBtnRef}
+              type="button"
+              className={`btn ${primary ? "btn-confirm-muted" : ""}`}
+              onClick={() => resolve(false)}
+            >
               {cancelLabel}
             </button>
           )}
@@ -147,7 +157,7 @@ export function ConfirmHost() {
             <button
               ref={confirmBtnRef}
               type="button"
-              className={`btn ${danger ? "btn-danger" : "btn-accent"}`}
+              className={`btn ${primary ? "btn-confirm-primary" : danger ? "btn-danger" : "btn-accent"}`}
               onClick={() => resolve(true)}
             >
               {confirmLabel}
