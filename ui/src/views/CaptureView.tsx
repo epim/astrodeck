@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore, useStatus, usePolar, useLivePreviewId } from "../store";
+import { useStore, useStatus, usePolar, useLivePreviewId, useSequence } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Field, Led, Panel, Stat, Toggle } from "../components/ui";
@@ -26,6 +26,7 @@ type CapturePhase = "idle" | "exposing" | "downloading";
 export default function CaptureView() {
   const status = useStatus();
   const polar = usePolar();
+  const sequence = useSequence();
   const liveId = useLivePreviewId();
   const showToast = useStore((s) => s.showToast);
   const canCapture = useCanControlCapture(); // viewer => preview visible, controls read-only
@@ -51,9 +52,18 @@ export default function CaptureView() {
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
   const looping = !!status?.looping;
   const polarBusy = polar.state === "running" || polar.state === "paused";
-  const captureBlocked = polarBusy; // can't expose while the mount is doing TPPA slews
+  // A sequence (incl. PAUSED — it still holds the camera between frames, not
+  // released back to manual control) owns the camera end-to-end; manual
+  // Single/Loop racing it just 409s at the capture lock (r1 CAP-01 / R2-CAP-01).
+  const seqOwnsCamera = sequence.state === "running" || sequence.state === "paused";
+  const captureBlocked = polarBusy || seqOwnsCamera; // can't expose while blocked
 
-  const exposureS = Number(exposure) || 1;
+  // Exposure ≤0 silently produced a blank frame + a misleading "few stars"
+  // error downstream (CAP-02-gemini / r1 CAP-01-neg) — block it here, before
+  // any request is built.
+  const exposureNum = Number(exposure);
+  const exposureInvalid = exposure.trim() === "" || !Number.isFinite(exposureNum) || exposureNum <= 0;
+  const exposureS = exposureInvalid ? 1 : exposureNum;
   const body = {
     exposure_s: exposureS,
     gain: Number(gain) || 0,
@@ -144,12 +154,12 @@ export default function CaptureView() {
   );
 
   const onSingle = () => {
-    if (captureBlocked || !canCapture) return;
+    if (captureBlocked || !canCapture || exposureInvalid) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture", body));
   };
   const onLoop = () => {
-    if (captureBlocked || !canCapture) return;
+    if (captureBlocked || !canCapture || exposureInvalid) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture/loop", body));
   };
@@ -177,7 +187,16 @@ export default function CaptureView() {
         <Panel title="Exposure" right={!canCapture && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Exposure (s)">
-              <input className="field" value={exposure} disabled={!canCapture} onChange={(e) => setExposure(e.target.value)} />
+              <input
+                className={`field ${exposureInvalid ? "border-bad" : ""}`}
+                value={exposure}
+                disabled={!canCapture}
+                aria-invalid={exposureInvalid}
+                onChange={(e) => setExposure(e.target.value)}
+              />
+              {exposureInvalid && (
+                <p className="text-[11px] text-bad mt-1">Exposure must be greater than 0s</p>
+              )}
             </Field>
             <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`}>
               <input className="field" value={gain} disabled={!canCapture} onChange={(e) => setGain(e.target.value)} />
@@ -210,7 +229,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${phase === "exposing" || phase === "downloading" ? "btn-accent border-accent" : "btn-accent"}`}
               aria-pressed={inFlight && !looping}
-              disabled={!canCapture || looping || captureBlocked}
+              disabled={!canCapture || looping || captureBlocked || exposureInvalid}
               onClick={onSingle}>
               {inFlight && !looping
                 ? (phase === "downloading" ? "Reading…" : "Exposing…")
@@ -219,7 +238,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${looping ? "btn-accent border-accent" : ""}`}
               aria-pressed={looping}
-              disabled={!canCapture || looping || captureBlocked}
+              disabled={!canCapture || looping || captureBlocked || exposureInvalid}
               onClick={onLoop}>
               {looping ? "Looping…" : "Loop"}
             </button>
@@ -271,9 +290,17 @@ export default function CaptureView() {
           )}
 
           {/* ---- polar-alignment block notice (item 5c). ---- */}
-          {captureBlocked && (
+          {polarBusy && (
             <p className="text-[11px] text-warn mt-2 leading-snug">
               Can&rsquo;t capture during polar alignment — stop alignment first.
+            </p>
+          )}
+          {/* ---- sequence-ownership block notice (R2-CAP-01 / DOC-CAP-01): a running
+               OR paused sequence still owns the camera between frames, so manual
+               Single/Loop must read as blocked here instead of 409ing after the tap. ---- */}
+          {seqOwnsCamera && (
+            <p className="text-[11px] text-warn mt-2 leading-snug">
+              {sequence.state === "paused" ? "Sequence paused" : "Sequence running"} — camera reserved.
             </p>
           )}
 
