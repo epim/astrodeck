@@ -78,14 +78,19 @@ Two different altitude concepts exist — don't confuse them:
   *begins* once **it** climbs above this altitude. Set per target. See
   [plan-and-sequences.md](plan-and-sequences.md).
 - **Global pier-collision floor** (`SafetyConfig.min_alt_deg`) — watches the
-  **mount's** altitude and stops motion below it. Off by default (0); the UI sets
-  10° when you enable the floor. A full **horizon profile** (az/alt control
-  points for trees and ridgelines) and an optional **no-go box** pier guard can
-  raise the effective floor per azimuth. Pier limits can only be enforced when
-  the mount actually reports pier side (`enforce_pier_limits`).
-
-A saved location can carry its own horizon profile — see
-[site-and-locations.md](site-and-locations.md).
+  **mount's** altitude and stops motion below it. Off by default (0). As
+  covered above, there is **no Settings UI control for this today** — it's
+  config-file/API only (`PATCH` the safety config with `min_alt_deg`). A full
+  **horizon profile** (az/alt control points for trees and ridgelines) and an
+  optional **no-go box** pier guard can raise the effective floor per
+  azimuth. Neither has a dedicated editor in the UI either: the one
+  UI-reachable horizon path is that a **saved location** can carry a stored
+  `horizon_min_deg`, which the Site panel re-applies on save if you hold
+  `config.safety` (see [site-and-locations.md](site-and-locations.md)) — but
+  nothing in the UI lets you *type* a new horizon number or plot a profile
+  today; both are set through the config API. Pier limits can only be
+  enforced when the mount actually reports pier side
+  (`enforce_pier_limits`).
 
 ---
 

@@ -47,6 +47,15 @@ Your role and email appear under **Settings → Account**, which also hosts
 sign-out. Viewers get a **View-only** badge there and an explainer that controls
 are hidden for their role.
 
+**Session expiry does not touch the imaging engine.** If your sign-in session
+times out (or you sign out, or your tab loses the connection), all that
+happens is your browser gets logged back out to the **Login** gate. A
+running [sequence](plan-and-sequences.md) or armed
+[auto-resume](sessions-multi-night.md#resuming--manual-and-auto-at-dusk)
+keeps going untouched — the engine runs server-side and has no dependency on
+any particular browser tab staying authenticated. Signing back in just
+reconnects you to whatever's already happening.
+
 ---
 
 ## The three roles and what they actually gate
@@ -86,6 +95,74 @@ override, user admin, update): the UI double-confirms them even for an admin.
 
 In the UI, controls you lack are **hidden or disabled** — you never tap a button
 and get a 403. A viewer sees status and previews and can sign in; that's it.
+
+### Screen-by-screen: what each role actually sees
+
+This table is built from the same capability checks the UI itself makes (the
+`useCan*` hooks in `ui/src/lib/caps.ts`, one per screen's component), so it
+tracks what's really hidden/disabled per role, not just the intent:
+
+| Screen | viewer | operator | admin |
+|---|---|---|---|
+| **Equipment** (drivers, device assignment, Rig Actions, Tasks, Rotator, Profiles) | read-only | read-only (`config.backend` required; operator doesn't hold it) | full |
+| **Capture** | preview only, **Read-only** badge | full (`control.capture`) | full |
+| **Focus** | preview only | full (`control.capture`) | full |
+| **Mount** | pointing visible, controls disabled | disabled (`control.mount` — operator doesn't hold it) | full |
+| **Align** (polar) | visible, disabled | disabled (`control.mount`) | full |
+| **Guide** | graph visible, disabled | full (`control.guide`) | full |
+| **Power** | read-only ports | disabled (`control.power`) | full |
+| **Sky Atlas** | full (search, framing, mosaic, visibility are all local/client-side) | full | full |
+| **Plan** — building the on-screen draft | full (local-only, no capability check) | full | full |
+| **Plan** — plan library save/import/delete | disabled | enabled (`control.capture`) | enabled |
+| **Plan** — Run / Monitor's Pause / Resume / Abort | hidden (viewer gets a passive "View only" note) | **shown and clickable**, but see the caveat below | full |
+| **Sessions** | cards + review drawer visible; regrade controls are **not disabled in the UI** — see the caveat below | resume/auto-resume-arm/update-from-plan/delete need `control.mount` (disabled); regrade controls not disabled in the UI either | full |
+| **Monitor** | dashboard fully visible, controls row hidden | dashboard visible, controls row shown (same caveat as Plan Run) | full |
+| **Sky Conditions / Radar** (on Monitor) and the **Weather** settings panel | never rendered — no request even fires | never rendered | full (`view.site_precise`) |
+| **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics`) | full |
+| **Settings → Safety** (sun avoidance) | current value shown, toggle disabled | disabled (`config.solar_override` is admin-only) | full |
+| **Settings → Profiles** | hidden (a "needs operator or admin" note instead) | full (`config.backend`) | full |
+| **Settings → Updates / Users / Auth** | tabs don't exist in the nav | tabs don't exist in the nav | full (`system.update` / `admin.users`) |
+
+> **A caveat worth knowing before you rely on it.** The Plan **≡ Run
+> Sequence** button and Monitor's **Pause / Resume / Abort** row are shown to
+> anyone holding `control.capture` — which includes operator. But the server
+> routes behind all of them (`/api/sequence/start`, `/pause`, `/resume`,
+> `/abort`, `/recover`) require `control.mount`, which **only admin holds**.
+> So today an operator account can open these controls and will get a
+> permission error the moment they press one. Until that's reconciled,
+> treat sequence run-control as **admin-only** in practice, and don't be
+> surprised if an operator reports a button that "doesn't work" here — it's
+> this gap, not a bug in their setup.
+>
+> The **Session review drawer**'s regrade controls (mark accepted/rejected)
+> have the same shape of gap, but wider: the drawer applies **no capability
+> check at all** in the UI, so even a **viewer** sees fully-interactive
+> regrade buttons. The server route behind them
+> (`PATCH /api/sessions/{id}/frames/{id}`) requires `control.mount` —
+> admin-only — so a viewer or operator who regrades a frame will get a
+> permission error, not a silent no-op. Treat regrading, like sequence
+> run-control, as admin-only in practice.
+
+### A disposable way to verify this yourself
+
+Because capability sets can be edited over time, don't just trust this
+table — check it against your own build in a couple of minutes:
+
+1. Create a throwaway account of each role you care about:
+   `python -m astrodeck create-admin _verify_admin` (or use **Settings →
+   Users** once you have an admin) and add a `viewer`/`operator` user the
+   same way.
+2. Sign in as each in turn (a private/incognito window keeps sessions from
+   colliding) and walk the screens above, noting what's hidden vs. disabled
+   vs. usable.
+3. Delete the throwaway accounts from **Settings → Users** when you're done
+   — they're accounts only, not tied to state a real user would care about
+   losing.
+
+If the app disagrees with this table, the app is right — open an issue, and
+in the meantime the source of truth is
+`server/astrodeck/auth/capabilities.py` on the server side and the
+`useCan*` hooks in `ui/src/lib/caps.ts` on the UI side.
 
 ---
 
