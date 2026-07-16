@@ -73,10 +73,19 @@ Two verdicts help you judge focus:
 - **Autofocus result** (the **Result** panel): after a sweep it shows
   **excellent / good / soft / failed**, the achieved HFR (px and arcsec), the
   fit R² and method when available, and the **best position**. A **provider
-  badge** shows which engine ran it.
+  badge** shows which engine ran it, and a line below names the provider, the
+  filter it ran on, and how long ago the run finished.
 
 The GOOD/FAIR/POOR thresholds come from your session's HFR settings, so "good"
 means good *for your rig*.
+
+**Persistence.** The Result panel remembers the *latest completed* run —
+navigate away to Capture or anywhere else and come back, and it's still
+there, because it lives in the app's in-memory store rather than this view's
+own local state. Only a new autofocus run replaces it. That memory does
+**not** survive a full browser reload (F5 or closing the tab) — the store is
+rebuilt fresh on load and there is no completed run to show until you run
+one again.
 
 ---
 

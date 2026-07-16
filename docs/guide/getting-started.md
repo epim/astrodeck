@@ -50,11 +50,16 @@ that's expected; before any remote exposure, read
 Open **http://localhost:8800** in a browser (desktop, tablet, or phone).
 
 - The top of the screen has a **NIGHT** toggle (flips the whole UI to
-  dark-adaptation red) and brightness steppers — handy at the scope, ignore them
-  for now.
+  dark-adaptation red, and defaults new sessions to full 100% brightness) and
+  a brightness slider (floor 50%, so you can never dim the screen to
+  unreadable) — handy at the scope, ignore them for now. Below the `lg`
+  breakpoint the slider moves into a small overflow popover behind a sun icon
+  so it doesn't crowd the header.
 - Navigation: on desktop a left rail; on a phone a bottom bar with **Equipment,
   Align, Mount, Focus, Capture** and a **More** button holding **Guide, Atlas,
-  Plan, Power, Monitor, Settings**.
+  Plan, Power, Monitor, Settings**. "Equipment" is the exact label everywhere
+  — the internal icon name is "rig", but nothing in the UI ever shows that
+  word to you.
 
 If you enabled a sign-in method you'll get a login screen first; a fresh open LAN
 install shows the app directly. See
@@ -64,14 +69,18 @@ install shows the app directly. See
 
 ## 3. Connect the simulator rig
 
-Go to the **Equipment** view (the **Equipment** tab / left-rail "Rig"). In the
-**Rig Actions** panel, press **▶ Simulator rig**. You'll see the toast
-*"Simulator rig connected"*, and the **Devices** panel + **Link Status** show the
-camera, mount, focuser, filter wheel and the rest coming up.
+Go to the **Equipment** view (that's the literal label, on the left rail and
+the bottom bar alike). In the **Rig Actions** panel, press
+**▶ Simulator rig**. This assigns every device role to the simulator *and*
+connects it in one step, so the toast (*"Rig connected — N/N roles up"*), the
+**Devices** panel, and the **Link Status** panel all agree on the same
+connected rig — there's no separate "assign, then connect" dance for the
+simulator.
 
-(For real gear instead: declare your backends under **Settings → Backend
-Drivers**, assign each device slot to a driver in the **Devices** panel, then
-press **Connect Rig** — see [equipment-and-profiles.md](equipment-and-profiles.md).)
+(For real gear instead: declare your backends under **Settings → Connect →
+Backend Drivers**, assign each device slot to a driver in the **Devices**
+panel on the **Equipment** view, then press **Connect Rig** — see
+[equipment-and-profiles.md](equipment-and-profiles.md).)
 
 ---
 
@@ -79,9 +88,10 @@ press **Connect Rig** — see [equipment-and-profiles.md](equipment-and-profiles
 
 Before anything sky-related is correct, set your location. Go to **Settings →
 Connect → Observing Site**, enter your latitude/longitude (magnitude + N/S,
-E/W) and elevation, and press **Save site**. Until you do, AstroDeck uses a
-default (0, 0) site and every altitude, transit, and visibility number is wrong.
-Full details: [site-and-locations.md](site-and-locations.md).
+E/W) and elevation, and press **Set site**. Until you do, AstroDeck uses a
+default (0, 0) site and every altitude, transit, and visibility number is wrong
+— and the panel's persistent **"Active site: ..."** line will keep reading
+*Not set*. Full details: [site-and-locations.md](site-and-locations.md).
 
 ---
 

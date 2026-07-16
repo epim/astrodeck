@@ -14,7 +14,7 @@ server, or **PHD2** (plus the built-in Simulator, AstroDeck native, and ASTAP).
 
 ## Step 1 — Declare your drivers
 
-Go to **Settings → Backend Drivers**. You declare each backend once, globally,
+Go to **Settings → Connect → Backend Drivers**. You declare each backend once, globally,
 then reference it from device slots. In the **Add driver** form:
 
 - **Type** — **NINA**, **Alpaca server**, or **PHD2**.
@@ -55,11 +55,21 @@ In the **Rig Actions** panel:
 - **Connect Rig (N)** — connect all N assigned devices. If the rig includes a
   **real** mount, focuser, or rotator, you'll get a hold-to-confirm ("Connect
   this rig?") first — a safeguard against unexpected motion.
-- **▶ Simulator rig** — connect the full fake rig instead (great for testing).
+- **▶ Simulator rig** — assigns *every* device role to the built-in simulator
+  and connects it in one step, then runs through the exact same connect path
+  as **Connect Rig**. That's deliberate: the **Devices** panel's assignments,
+  the **Link Status** grid, and the toast all agree on one connected rig —
+  there's no separate legacy shortcut that could leave them disagreeing.
 - **Disconnect** — drop everything.
 
-The **Link Status** panel (also on Settings → Connect) shows the per-role
-connected/error state at a glance.
+Either button reports the outcome as a toast, e.g. *"Rig connected — 7/7
+roles up"*; if some roles failed to come up the per-row error shows inline
+on that role's slot in **Devices**.
+
+The **Link Status** panel (also on Settings → Connect and Settings →
+Profiles) shows the per-role connected/error state at a glance — it is
+populated from the same connect path as both buttons above, so it never lags
+behind what Devices shows.
 
 ---
 
@@ -105,10 +115,25 @@ in one tap. Two places manage them:
 - **Equipment → Profiles**: **Save current assignments as** (name it, **Save**),
   then per row **Load** (repopulate the assignments to review before connecting)
   and **Activate**.
-- **Settings → Profiles**: cards with **Activate** / **Reconnect**, **Rename**,
-  and delete; a **Save Current Rig** panel captures the *connected* rig as a
-  profile. Each card notes its backend mode (**Native / Alpaca**, **NINA
-  bridge**, **Mixed backends**, or **Empty**) and device count.
+- **Settings → Profiles**: the full card list, plus a **Save Current Rig**
+  panel that captures the *connected* rig as a new profile. Each card notes
+  its backend mode (**Native / Alpaca**, **NINA bridge**, **Mixed backends**,
+  or **Empty**) and device count, and offers:
+  - **Activate** (or **Reconnect** if it's already the active profile) — sets
+    it as the boot profile and connects it now.
+  - **Rename** — an inline field (Enter or the check button to save, Escape
+    or the × to cancel).
+  - **Update** — a hold-to-confirm control that overwrites this profile's
+    stored devices/backend/site name with whatever rig is *currently
+    connected*, while keeping the profile's own optics, task-provider
+    overrides, and PHD2/NINA-port settings untouched. It gets the same
+    hold friction as Delete because it destroys the profile's previous
+    device intent.
+  - **↓ Export** — downloads the full profile as JSON.
+  - **Delete** — a danger-styled, hold-to-confirm button (icon + label, not a
+    bare ×).
+  - Above the card list, the panel header has **Import** (upload a
+    previously exported profile JSON) and **Refresh**.
 
 The **active** profile **auto-connects on boot**. Activating a profile with real
 motion devices asks you to confirm first, and offers **Force activate** if the
