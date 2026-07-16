@@ -433,3 +433,141 @@ async def test_payload_shape_matches_spec_7(svc):
     # a successful refresh published the same shape on the bus
     published = [d for t, d in rec.published if t == "weather"]
     assert published and set(published[-1]) == set(p)
+
+
+# ==================================================== breach / veto / warning
+# Spec §4 (consecutive-sample sustained veto, fail-open), §5 (once-per-night
+# latch), §14 test matrix rows.
+
+
+async def test_veto_consecutive_sample_rule_and_reason_string(svc):
+    s, now, store, rec = svc
+    store.cfg().weather.cloud_threshold_pct = 50
+    store.cfg().weather.sustain_minutes = 30       # -> 2 consecutive samples
+    # a single >=50 sample inside [now, now+60min] is NOT sustained
+    _FakeWxClient.om_payload = _om_payload([40, 60, 40, 40, 40, 40, 40, 40])
+    await s.tick()
+    assert s.veto_reason(now["t"]) is None
+    # two CONSECUTIVE samples >= 50 inside the hour ARE (peak = 70)
+    _FakeWxClient.om_payload = _om_payload([40, 60, 70, 40, 40, 40, 40, 40])
+    now["t"] += OPEN_METEO_INTERVAL_S
+    await s.tick()
+    assert s.veto_reason(now["t"]) == \
+        "cloud cover 70% forecast within the next hour (threshold 50%)"
+
+
+async def test_veto_sustain_longer_than_window_never_fires(svc):
+    """Plan decision 5 (spec-literal edge): sustain 240 -> 16 consecutive
+    samples needed, but [now, now+60min] holds at most 5 -> no veto even at
+    100% cloud. The NIGHT warning still covers this (full dark window)."""
+    s, now, store, rec = svc
+    store.cfg().weather.sustain_minutes = 240
+    _FakeWxClient.om_payload = _om_payload([100] * 8)
+    await s.tick()
+    assert s.veto_reason(now["t"]) is None
+
+
+async def test_veto_fail_open_when_stale(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([90] * 8)
+    await s.tick()
+    assert s.veto_reason(now["t"]) is not None     # baseline: breach vetoes
+    _FakeWxClient.fail_om = True
+    now["t"] += OPEN_METEO_STALE_S + 900           # age past 45 min, fetch dead
+    await s.tick()
+    assert s.veto_reason(now["t"]) is None         # stale -> FAIL-OPEN (spec §4)
+
+
+async def test_veto_none_when_disabled(svc):
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([90] * 8)
+    await s.tick()
+    store.cfg().weather.enabled = False
+    assert s.veto_reason(now["t"]) is None
+
+
+async def test_ignore_tonight_set_expire_and_no_night(svc, monkeypatch):
+    from astrodeck.weather import NoNightError
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([90] * 8)
+    await s.tick()
+    dusk, dawn = BASE - 3600.0, BASE + 8 * 3600.0
+    monkeypatch.setattr(
+        WeatherService, "_tonight",
+        lambda self, t: (dusk, dawn) if t < dawn
+        else (dusk + 86400.0, dawn + 86400.0))
+    assert s.veto_reason(now["t"]) is not None     # breach vetoes...
+    s.set_ignore_tonight(True, now["t"])
+    assert s.veto_reason(now["t"]) is None         # ...until overridden
+    assert s.payload(now["t"])["ignore_tonight"] is True
+    # a NEW night has a new dusk key -> the flag auto-expires
+    assert s._ignore_active(dawn + 3600.0) is False
+    # clearing works
+    s.set_ignore_tonight(False, now["t"])
+    assert s.veto_reason(now["t"]) is not None
+    # no resolvable night -> NoNightError (route maps to 409 no_night)
+    monkeypatch.setattr(WeatherService, "_tonight", lambda self, t: None)
+    with pytest.raises(NoNightError):
+        s.set_ignore_tonight(True, now["t"])
+
+
+async def test_night_warning_latch_once_per_night_and_reset(svc, monkeypatch):
+    s, now, store, rec = svc
+    store.cfg().weather.cloud_threshold_pct = 50
+    store.cfg().weather.sustain_minutes = 30
+    dusk, dawn = BASE + 3 * 3600.0, BASE + 12 * 3600.0
+    monkeypatch.setattr(WeatherService, "_tonight", lambda self, t: (dusk, dawn))
+    n = 96
+    cloud = [0] * n
+    hi = [0] * n
+    for i in range(16, 20):        # 1 h sustained breach starting BASE + 4 h
+        cloud[i] = 80
+        hi[i] = 75
+    _FakeWxClient.om_payload = _om_payload(cloud, high=hi)
+    await s.tick()
+    p = s.payload(now["t"])
+    assert p["alert"] == {
+        "kind": "high_cloud",
+        "start_iso": weather_mod._iso_z(BASE + 16 * 900),
+        "end_iso": weather_mod._iso_z(BASE + 19 * 900),
+        "peak_pct": 80,
+        "dominant_layer": "high",
+    }
+    warn_logs = [m for lvl, m, src in rec.logs
+                 if lvl == "warning" and "high cloud forecast tonight" in m]
+    assert len(warn_logs) == 1
+    assert "peak 80%" in warn_logs[0] and "high layer" in warn_logs[0]
+    # B log rule: times + percentages ONLY — never coordinates
+    assert "34.2" not in warn_logs[0] and "118.1" not in warn_logs[0]
+    # same night, next refresh: latched — no second log, alert still rides
+    now["t"] += OPEN_METEO_INTERVAL_S
+    await s.tick()
+    assert len([m for lvl, m, src in rec.logs
+                if "high cloud forecast tonight" in m]) == 1
+    assert s.payload(now["t"])["alert"] is not None
+    # past dawn the alert leaves the payload (spec §5)
+    assert s.payload(dawn + 60.0)["alert"] is None
+    # a NEW night key resets the latch: a breach the next night alerts again
+    dusk2, dawn2 = dusk + 86400.0, dawn + 86400.0
+    monkeypatch.setattr(WeatherService, "_tonight",
+                        lambda self, t: (dusk2, dawn2))
+    cloud2 = [0] * n
+    for i in range(16, 20):
+        cloud2[i] = 90
+    _FakeWxClient.om_payload = _om_payload(cloud2, start=BASE + 86400.0,
+                                           high=list(cloud2))
+    now["t"] = BASE + 86400.0
+    await s.tick()
+    assert len([m for lvl, m, src in rec.logs
+                if "high cloud forecast tonight" in m]) == 2
+
+
+async def test_no_night_means_no_warning_evaluation(svc):
+    """Polar day / default site: _tonight() -> None -> no evaluation, no alert
+    (spec §5). The svc fixture already pins _tonight to None."""
+    s, now, store, rec = svc
+    _FakeWxClient.om_payload = _om_payload([100] * 8)
+    await s.tick()
+    assert s.payload(now["t"])["alert"] is None
+    assert not [m for lvl, m, src in rec.logs
+                if "high cloud forecast tonight" in m]
