@@ -10,7 +10,7 @@
 import type { JSX } from "react";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
-import { useCanConfigBackend } from "../lib/caps";
+import { accessPhrase, useCanConfigBackend } from "../lib/caps";
 import type { ViewName } from "../types";
 
 // Per-view ghost icon + one-liner. Icons come from the Batch-1 icon module.
@@ -55,7 +55,8 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
         </div>
       ) : (
         <p className="text-[11px] text-faint max-w-[40ch] mt-1">
-          Ask an operator or admin to connect the rig, then this view comes alive.
+          Ask someone with {accessPhrase("config.backend")} to connect the rig,
+          then this view comes alive.
         </p>
       )}
     </div>

@@ -7,7 +7,7 @@ import { Icon } from "../icons";
 import { BASE } from "../../lib/base";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
-import { useCanControlMount } from "../../lib/caps";
+import { accessPhrase, useCanControlMount } from "../../lib/caps";
 import { getSession, patchFrame } from "../../api/sessions";
 import {
   filterFrames, pruneSelection, toggleSel, verdictOf, withOverride,
@@ -214,7 +214,7 @@ export default function SessionReviewDrawer({ id, onClose }: {
       {!canRegrade && (
         <p className="text-[11px] text-dim pb-2 inline-flex items-center gap-1.5">
           <Icon name="lock" size={11} />
-          Read-only — regrading frames needs operator or admin access.
+          Read-only — regrading frames needs {accessPhrase("control.mount")}.
         </p>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 overflow-y-auto flex-1">

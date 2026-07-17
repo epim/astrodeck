@@ -17,6 +17,7 @@ import { Panel } from "../ui";
 import { Icon } from "../icons";
 import { useBackendLinks, useBootConnectFailed, useUpdate } from "../../store";
 import {
+  accessPhrase,
   useCanConfigBackend,
   useCanAdminUsers,
   useCanSystemUpdate,
@@ -124,7 +125,7 @@ export default function SettingsView(): JSX.Element {
           <Icon name="lock" size={14} className="text-dim shrink-0" />
           <span className="text-dim">
             {isViewer
-              ? "Read-only — you can view rig status and sign in, but connecting rigs and editing profiles needs operator or admin access."
+              ? `Read-only — you can view rig status and sign in, but connecting rigs and editing profiles needs ${accessPhrase("config.backend")}.`
               : "Your role can't change backends or profiles. Connection status is shown for reference."}
           </span>
         </div>
@@ -171,7 +172,7 @@ export default function SettingsView(): JSX.Element {
             ) : (
               <Panel title="Profiles">
                 <p className="text-xs text-dim">
-                  Managing profiles needs operator or admin access.
+                  Managing profiles needs {accessPhrase("config.backend")}.
                 </p>
               </Panel>
             )}

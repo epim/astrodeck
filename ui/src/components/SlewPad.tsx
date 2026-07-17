@@ -41,7 +41,7 @@ import {
 } from "../lib/slewController";
 import { haptics } from "../lib/haptics";
 import { useTouchSettings, useSetTouch, useLocked } from "../lib/touchStore";
-import { useCanControlMount } from "../lib/caps";
+import { accessPhrase, useCanControlMount } from "../lib/caps";
 
 const axisLabelText: Record<string, string> = {
   "dec:1": "north",
@@ -337,7 +337,7 @@ export default function SlewPad() {
               inert (W2.5 — disabled, never 403-on-tap). */}
           {!canMount && (
             <p className="text-[12px] text-warn text-center mb-2 tracking-wide">
-              View only — slewing needs operator or admin access.
+              View only — slewing needs {accessPhrase("control.mount")}.
             </p>
           )}
           {/* ---- pad grid: N on top, W [rate] E, S on bottom (R-§4.4) ---- */}
