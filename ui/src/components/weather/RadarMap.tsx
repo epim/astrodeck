@@ -5,9 +5,11 @@
 // ported from SkyCanvas (drag-pan, native non-passive wheel trap, keyboard).
 // Night mode: the tile layer gets filter var(--img-filter) directly, exactly
 // as survey imagery is dimmed (index.css:115). Broken tiles hide themselves
-// (B thumb-fallback idiom), but a per-layer health badge (loading… / tiles
-// unavailable) still surfaces the failure — a blank layer must never read as
-// clear sky (R2-WEA-04). Controls are word-labeled — never hue alone.
+// (B thumb-fallback idiom), but a per-layer health badge (loading… / updated
+// Nm ago / tiles unavailable) always surfaces the current state — a blank
+// layer must never read as clear sky (R2-WEA-04), and a healthy layer must
+// stay visible too, so a later silent failure isn't indistinguishable from
+// healthy-and-quiet (R3-MON-03). Controls are word-labeled — never hue alone.
 import { useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as RKeyboardEvent,
@@ -17,6 +19,7 @@ import { useSite, useStore } from "../../store";
 import { Panel, Stepper } from "../ui";
 import { Icon } from "../icons";
 import { u } from "../../lib/base";
+import { fmtDuration } from "../../lib/eta";
 import {
   CLOUD_DECKS_KM,
   clampLat,
@@ -68,6 +71,11 @@ export default function RadarMap() {
   // switch/refresh below to keep the map bounded during a long pan session.
   const [tileStatus, setTileStatus] = useState<Record<string, "ok" | "broken">>({});
   const boxRef = useRef<HTMLDivElement>(null);
+  // Positive-health timestamp (R3-MON-03): when the tile-health badge last
+  // recovered to "ok", so the badge can read "updated Nm ago" while healthy
+  // instead of disappearing — see the derivation below for why.
+  const prevTileHealthRef = useRef<"loading" | "unavailable" | "ok" | null>(null);
+  const paintedAtRef = useRef<number | null>(null);
 
   // Center defaults to the site; the recenter button returns to it (spec §11).
   useEffect(() => {
@@ -235,6 +243,24 @@ export default function RadarMap() {
       : okCount === 0 ? "loading"
       : "ok";
 
+  // Timestamp of the last transition INTO "ok" (R3-MON-03): the badge must
+  // stay visible even when healthy, so "loading…"/"tiles unavailable" alone
+  // isn't enough — a later silent failure needs a positive "updated Nm ago"
+  // baseline to go quiet FROM. We anchor on the last recovery into "ok"
+  // rather than the raw `bust` tick because `bust` only rolls on the TTL/
+  // refresh click, not on a layer switch or an actual confirmed paint — this
+  // is the simplest signal that's still truthful about when the operator's
+  // current view was last confirmed loaded. The vacuous tiles.length===0
+  // "ok" (no viewport yet) is excluded so it can't stamp a false paint time.
+  // Mutated during render, same idiom as lastHfrId/lastEtaSentinel in
+  // MonitorView — a plain transition detector, not a state derivation.
+  if (tiles.length > 0) {
+    if (tileHealth === "ok" && prevTileHealthRef.current !== "ok") {
+      paintedAtRef.current = Date.now();
+    }
+    prevTileHealthRef.current = tileHealth;
+  }
+
   // ---- overlay projection (px within the box) ----
   const toPx = (lat: number, lon: number): { x: number; y: number } | null => {
     if (!center || width === 0) return null;
@@ -359,16 +385,21 @@ export default function RadarMap() {
             ))}
           </div>
 
-          {/* per-layer tile health badge (R2-WEA-04) — a blank layer must
-              never silently read as clear sky. */}
-          {tileHealth !== "ok" && (
-            <div
-              className={`absolute top-2 right-2 px-2 py-0.5 text-[11px] mono border pointer-events-none
-                ${tileHealth === "unavailable" ? "text-warn bg-black/60 border-warn/50" : "text-dim bg-black/60 border-line2"}`}
-            >
-              {tileHealth === "unavailable" ? "tiles unavailable" : "loading…"}
-            </div>
-          )}
+          {/* per-layer tile health badge (R2-WEA-04, R3-MON-03) — ALWAYS
+              visible, tri-state: a blank layer must never silently read as
+              clear sky, AND a healthy layer must never read as "nothing to
+              report" (a later silent failure needs a positive baseline to go
+              quiet from — R3-MON-03). */}
+          <div
+            className={`absolute top-2 right-2 px-2 py-0.5 text-[11px] mono border pointer-events-none
+              ${tileHealth === "unavailable" ? "text-warn bg-black/60 border-warn/50" : "text-dim bg-black/60 border-line2"}`}
+          >
+            {tileHealth === "unavailable"
+              ? "tiles unavailable"
+              : tileHealth === "ok" && paintedAtRef.current != null
+                ? `updated ${fmtDuration((Date.now() - paintedAtRef.current) / 1000)} ago`
+                : "loading…"}
+          </div>
 
           {/* scope location + orientation overlay (spec §11) */}
           <svg
