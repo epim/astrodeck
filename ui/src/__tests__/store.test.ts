@@ -542,6 +542,48 @@ test("F5: focus 'failed' event also builds a persisted record (message carried, 
   eq(r!.best, null, "best null");
 });
 
+// ====================================================================
+// G2 — unified Plan panel: dirty cue + loaded-plan tracking
+// ====================================================================
+
+// --------------------------------- G2: setPlan dirty flag semantics
+// The unified Plan panel's saved/unsaved cue reads editorDirty. A user EDIT
+// (default setPlan) must mark dirty; a library LOAD (setPlan(p,false)) must land
+// clean so a freshly-loaded plan does not falsely read "Unsaved changes".
+test("G2: setPlan marks editorDirty true by default, false when loading a saved plan", () => {
+  const p = useStore.getState().plan;
+  useStore.getState().setPlan({ ...p, name: "edited" }); // user edit
+  eq(useStore.getState().editorDirty, true, "edit → dirty");
+  useStore.getState().setPlan({ ...p, name: "loaded" }, false); // library load
+  eq(useStore.getState().editorDirty, false, "load(dirty=false) → clean");
+  eq(useStore.getState().plan.name, "loaded", "plan still updated on a clean set");
+});
+
+// --------------------------------- G2: setEditorDirty / setLoadedPlanId actions
+// Save marks clean + adopts the returned row id; delete-of-loaded clears the tie.
+test("G2: setEditorDirty and setLoadedPlanId are independent, direct setters", () => {
+  useStore.getState().setLoadedPlanId("plan-abc");
+  eq(useStore.getState().loadedPlanId, "plan-abc", "loaded id set");
+  useStore.getState().setEditorDirty(false);
+  eq(useStore.getState().editorDirty, false, "marked saved/clean");
+  // editing again re-dirties WITHOUT dropping the loaded-plan tie
+  useStore.getState().setPlan({ ...useStore.getState().plan, name: "tweak" });
+  eq(useStore.getState().editorDirty, true, "edit re-dirties");
+  eq(useStore.getState().loadedPlanId, "plan-abc", "loaded id survives an edit");
+  // delete-of-loaded semantics: caller clears the tie
+  useStore.getState().setLoadedPlanId(null);
+  eq(useStore.getState().loadedPlanId, null, "tie cleared");
+});
+
+// --------------------------------- G2: loadedPlanId initializes null (session-only)
+test("G2: loadedPlanId defaults to null (a restored draft is not tied to a library row)", () => {
+  // fresh store snapshot already has it; assert the documented default holds
+  // after a plain edit (edits never introduce a tie on their own).
+  useStore.setState({ loadedPlanId: null });
+  useStore.getState().setPlan({ ...useStore.getState().plan, name: "draft" });
+  eq(useStore.getState().loadedPlanId, null, "an edit alone never ties to a saved plan");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console
