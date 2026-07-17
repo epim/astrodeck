@@ -20,6 +20,7 @@ import type { AuthState, PrincipalRole } from "../../types";
 import { setAuthConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
+import { reconnectWs } from "../../ws";
 import { Panel, Field, Toggle } from "../ui";
 import { Icon } from "../icons";
 
@@ -100,11 +101,22 @@ export default function AuthMethodPanel(): JSX.Element {
         default_role: defaultRole === "deny" ? null : defaultRole,
       };
       const next = await setAuthConfig(body);
-      // Re-hydrate config + the login-screen signal so RoleBadge/gates/login flip.
+      // Re-hydrate config + the login-screen signal AND the principal so
+      // RoleBadge/gates/login flip. loadPrincipal is the H1 fix for the SAVING
+      // tab: enabling a method live-flips the provider, so THIS browser (which
+      // has no session) now gets 401 from /api/me → the viewer sentinel → App
+      // raises the Login gate. Without re-resolving the principal the tab kept a
+      // stale admin identity and rendered contradictory panels over a dead link.
       await Promise.all([
         useStore.getState().loadConfig(),
         useStore.getState().loadAuthMethods(),
+        useStore.getState().loadPrincipal(),
       ]);
+      // Re-sync the socket to the new auth posture immediately (the server also
+      // closes the old socket on its next re-auth, but that can be up to a minute
+      // away). Enabling a method → the reconnect is rejected (no session) and the
+      // tab is already on Login; disabling all methods → it reconnects open.
+      reconnectWs();
       void next;
       setSavedAt(Date.now());
     } catch (e) {

@@ -18,7 +18,7 @@ import TouchGuard from "./components/TouchGuard";
 import { confirmDialog, ConfirmHost } from "./components/ConfirmDialog";
 import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
-import { useShouldShowLogin } from "./lib/caps";
+import { useShouldShowLogin, useAuthResolving } from "./lib/caps";
 import Login from "./views/Login";
 import EquipmentView from "./views/EquipmentView";
 import CaptureView from "./views/CaptureView";
@@ -130,6 +130,14 @@ export default function App() {
   // enabled this is ALWAYS false, so the open LAN UI is byte-for-byte unchanged.
   const showLogin = useShouldShowLogin();
 
+  // Auth-resolving guard (H1): once /api/auth/methods reports a method IS enabled
+  // but the principal hasn't resolved yet, keep showing the neutral splash rather
+  // than flashing the operational shell + a false DISPLAY DISCONNECTED banner
+  // before the Login gate decides. Open LAN (methods == []) never triggers this,
+  // so today's default is unchanged. Bounded by the same 4s grace below so a
+  // wedged /api/me can never trap the tablet behind a spinner (fail-open).
+  const authResolving = useAuthResolving();
+
   // Auth-resolving splash: until the login signal (authMethods) has loaded once,
   // show a neutral splash instead of flashing the console shell before the gate
   // decides (W2.6 polish). Fail OPEN after a short grace so a transport blip never
@@ -217,7 +225,7 @@ export default function App() {
     });
   }, [weatherAlertKey]);
 
-  if (authMethods === null && !authGraceElapsed) {
+  if ((authMethods === null || authResolving) && !authGraceElapsed) {
     return (
       <div className="h-full dim-content flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-dim">

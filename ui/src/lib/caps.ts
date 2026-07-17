@@ -6,6 +6,7 @@
 
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store";
+import { authRequiredForBanner } from "./connection";
 import type {
   AuthMethods,
   BackendLink,
@@ -129,6 +130,27 @@ export function shouldShowLogin(
 export function useShouldShowLogin(): boolean {
   return useStore(
     useShallow((s) => shouldShowLogin(s.authMethods, s.principal)),
+  );
+}
+
+// ---------------------------------------------------------------- auth-required
+// The pure "reachable but not signed in under an enabled method" predicate
+// (H1 §2e) lives in lib/connection.ts (store-free, so it is unit-testable
+// alongside bannerState). Here we only wrap it in the reactive store hook.
+
+/** Reactive form of authRequiredForBanner (H1 §2e). */
+export function useAuthRequiredForBanner(): boolean {
+  return useStore((s) => authRequiredForBanner(s.authMethods, s.principal));
+}
+
+/** True while a sign-in method is enabled but the principal has NOT resolved yet
+ *  (identity fetch in flight). App shows the auth-resolving splash for this
+ *  window so it never flashes the operational shell + a false DISCONNECTED
+ *  banner before the Login gate decides (H1). Open LAN (methods == []) is never
+ *  "resolving" — it has no gate to wait on. */
+export function useAuthResolving(): boolean {
+  return useStore(
+    (s) => (s.authMethods?.methods?.length ?? 0) > 0 && s.principal === null,
   );
 }
 
