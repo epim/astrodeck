@@ -1130,6 +1130,11 @@ export interface AuthState {
   session_ttl_s?: number;
   // First-run create-admin path is allowed while the user store is empty.
   local_enabled_first_run?: boolean;
+  // G4: False => a loopback (127.0.0.1) caller no longer auto-resolves to admin
+  // under the open/no-method default — it must sign in like any other client.
+  // Test-mode knob for verifying operator/viewer gating from this machine.
+  // Default true; not a secret, passes through redaction unscrubbed.
+  trust_loopback?: boolean;
   // Non-secret google fields pass through redaction (the client_secret is blanked).
   google_client_id?: string;
   google_redirect_uri?: string;

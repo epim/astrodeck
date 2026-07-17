@@ -25,6 +25,7 @@ Public surface (import from ``astrodeck.auth``):
   Enforcement / DI:
     require, requires, get_principal, resolve_principal,
     set_active_provider, get_active_provider, reset_active_provider,
+    set_trust_loopback, get_trust_loopback (G4 loopback-trust test mode),
     build_provider, configure_provider_from_auth
 
 Kept import-light: no ``api.app`` / ``hub`` / ``config`` import at package
@@ -45,8 +46,9 @@ from .capabilities import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                            role_rank)
 from .deps import (_scope_is_remote, build_provider,
                    configure_provider_from_auth, get_active_provider,
-                   get_principal, require, requires, reset_active_provider,
-                   resolve_principal, set_active_provider)
+                   get_principal, get_trust_loopback, require, requires,
+                   reset_active_provider, resolve_principal,
+                   set_active_provider, set_trust_loopback)
 from .passwords import (PasswordTooLongError, hash_password, verify_password)
 from .principal import Principal, admin_principal, principal_for_role
 from .providers import (AuthProvider, DEFAULT_PROVIDER, GoogleAuthProvider,
@@ -83,5 +85,6 @@ __all__ = [
     "require", "requires", "get_principal", "resolve_principal",
     "_scope_is_remote",
     "set_active_provider", "get_active_provider", "reset_active_provider",
+    "set_trust_loopback", "get_trust_loopback",
     "build_provider", "configure_provider_from_auth",
 ]

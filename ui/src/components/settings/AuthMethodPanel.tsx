@@ -36,6 +36,7 @@ export default function AuthMethodPanel(): JSX.Element {
   const [googleOn, setGoogleOn] = useState(false);
   const [ttlH, setTtlH] = useState(8);
   const [firstRun, setFirstRun] = useState(true);
+  const [trustLoopback, setTrustLoopback] = useState(true);
   const [defaultRole, setDefaultRole] = useState<PrincipalRole | "deny">("deny");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export default function AuthMethodPanel(): JSX.Element {
             auth.methods,
             auth.session_ttl_s,
             auth.local_enabled_first_run,
+            auth.trust_loopback,
             auth.default_role,
           ])
         : "",
@@ -60,6 +62,7 @@ export default function AuthMethodPanel(): JSX.Element {
     setGoogleOn((auth.methods ?? []).includes("google"));
     setTtlH(Math.max(1, Math.round((auth.session_ttl_s ?? 28800) / 3600)));
     setFirstRun(auth.local_enabled_first_run ?? true);
+    setTrustLoopback(auth.trust_loopback ?? true);
     setDefaultRole((auth.default_role as PrincipalRole) ?? "deny");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
@@ -93,6 +96,7 @@ export default function AuthMethodPanel(): JSX.Element {
         methods,
         session_ttl_s: Math.max(1, ttlH) * 3600,
         local_enabled_first_run: firstRun,
+        trust_loopback: trustLoopback,
         default_role: defaultRole === "deny" ? null : defaultRole,
       };
       const next = await setAuthConfig(body);
@@ -213,6 +217,26 @@ export default function AuthMethodPanel(): JSX.Element {
           <Toggle checked={firstRun} onChange={setFirstRun} disabled={busy} label="Allow first-run setup" showState />
         </div>
 
+        {/* trust_loopback (G4) — test-mode knob for verifying role gating locally */}
+        <div className="flex items-start justify-between gap-3 py-3 border-t border-line">
+          <div className="min-w-0">
+            <div className="text-sm text-ink">Trust this machine (loopback) as admin</div>
+            <p className="text-[11px] text-dim max-w-md">
+              With no sign-in method enabled, a browser on this same machine
+              (127.0.0.1) normally gets admin automatically. Turn this OFF to make
+              loopback sign in like any other client — the only way to verify
+              operator/viewer gating from the machine running the server.
+            </p>
+          </div>
+          <Toggle
+            checked={trustLoopback}
+            onChange={setTrustLoopback}
+            disabled={busy}
+            label="Trust loopback as admin"
+            showState
+          />
+        </div>
+
         {/* LOUD open-server warning */}
         {openWarning && (
           <div className="flex items-start gap-3 border border-warn/50 bg-warn/10 px-3 py-2 text-xs mt-1">
@@ -223,6 +247,21 @@ export default function AuthMethodPanel(): JSX.Element {
               {adminTokenSet ? (
                 <span className="text-dim">The break-glass admin token still works.</span>
               ) : null}
+            </span>
+          </div>
+        )}
+
+        {/* LOUD lockout warning: open server + loopback untrusted = no way back in
+            for THIS browser (no session cookie exists under the open provider). */}
+        {openWarning && !trustLoopback && (
+          <div className="flex items-start gap-3 border border-bad/50 bg-bad/10 px-3 py-2 text-xs mt-1">
+            <Icon name="alert" size={14} className="text-bad shrink-0 mt-0.5" />
+            <span className="text-ink">
+              This will also lock THIS browser out immediately on loopback — no
+              method is enabled, so there is no session to fall back on. Recover
+              by editing <span className="mono">trust_loopback</span> back to true
+              in the server&apos;s config file and restarting, or with{" "}
+              <span className="mono">python -m astrodeck create-admin</span>.
             </span>
           </div>
         )}
