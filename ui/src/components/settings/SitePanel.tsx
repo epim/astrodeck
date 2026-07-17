@@ -69,6 +69,15 @@ export default function SitePanel(): JSX.Element {
   // horizon carried by the applied location, sent on the next save when the
   // principal holds config.safety (§4/§5). Null = nothing to carry.
   const [appliedHorizon, setAppliedHorizon] = useState<number | null>(null);
+  // R3-SITE-02: "Load selected preset" fills the form but does NOT activate it
+  // (§ two-step flow, deliberate — see applyLocation). That's easy to miss, so
+  // this flags "just loaded, not yet Set" for the transient banner + promoted
+  // Set-site button below. It rides the EXISTING dirty-state baseline rather
+  // than duplicating equality logic: the banner's actual visibility condition
+  // is `justLoaded && !dirty` (declared near `dirty`, below) — editing the form
+  // away from the loaded values makes `dirty` true and hides the banner without
+  // any extra bookkeeping here.
+  const [justLoaded, setJustLoaded] = useState(false);
   // inline "Save current…" name prompt (ConfirmDialog-pattern, but a text field
   // — the modal has no text input).
   const [savingName, setSavingName] = useState<string | null>(null);
@@ -189,6 +198,7 @@ export default function SitePanel(): JSX.Element {
     try {
       await saveSite(buildSite(), config?.version ?? null, horizon);
       await loadConfig();
+      setJustLoaded(false); // R3-SITE-02: Set site pressed — the loaded preset is now active
       showToast("success", "Site saved");
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
@@ -269,6 +279,7 @@ export default function SitePanel(): JSX.Element {
     setSelectedId(loc.id);
     setBaseline(loc);
     setAppliedHorizon(loc.horizon_min_deg);
+    setJustLoaded(true);
   };
 
   // The dropdown's onChange: tracks WHICH preset is picked, nothing more. The
@@ -359,6 +370,7 @@ export default function SitePanel(): JSX.Element {
         await refreshLocations();
         setSelectedId(null);
         setBaseline(null);
+        setJustLoaded(false); // baseline just went away — nothing left to be "loaded"
         showToast("success", "Location deleted");
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "Delete failed");
@@ -372,6 +384,11 @@ export default function SitePanel(): JSX.Element {
   const namePlaceholder = canSeePrecise ? "My Backyard" : "Hidden";
   const elevPlaceholder = canSeePrecise ? "0" : "Hidden";
   const dirty = baseline ? !locationEquals(draft(), baseline) : false;
+  // R3-SITE-02: the "Loaded into form — not active yet" banner + promoted
+  // Set-site button. Only while the loaded values are still exactly what's in
+  // the form — editing away (dirty) or pressing Set site (justLoaded cleared)
+  // both hide it, per the dirty-state baseline this panel already tracks.
+  const loadedNotActive = justLoaded && !dirty;
   const sortedLocations = [...locations].sort((a, b) =>
     a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
   );
@@ -472,7 +489,7 @@ export default function SitePanel(): JSX.Element {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              className="btn btn-accent"
+              className={`btn btn-accent ${loadedNotActive ? "btn-promoted" : ""}`}
               disabled={busy}
               onClick={() => void onSave()}
             >
@@ -552,6 +569,14 @@ export default function SitePanel(): JSX.Element {
                 </button>
               </div>
             </Field>
+
+            {loadedNotActive && baseline && (
+              <p className="text-[11px] text-accent inline-flex items-center gap-1.5">
+                <Icon name="info" size={11} />
+                Loaded &quot;{baseline.name}&quot; into the form — not active yet. Press{" "}
+                <span className="text-ink font-medium">Set site</span> above to activate it.
+              </p>
+            )}
 
             {dirty && baseline && (
               <p className="text-[11px] text-dim">
