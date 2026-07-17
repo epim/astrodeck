@@ -109,6 +109,18 @@ remove +/- steppers — were amended into F2 in-flight.)
 - Root README: replace stale Settings-placeholder rough-edge; hyperbolic (not parabola)
   fit; add Weather to features. [DOC-ROOT-01/03/04]
 
+## QUEUED FOR LOOP-2 WAVE — user-reported 2026-07-16 evening (held: reviews running, no dist rebuild mid-review)
+- Sky Atlas: at some screen widths the drag handle atop the camera/FOV box sits BEHIND
+  a label, making it impossible to see (stacking/z-index or layout collision). Find the
+  widths where it happens; the handle must always be visible and grabbable.
+- Plan screen: COMBINE the Plan Library and Plan boxes into ONE harmonious panel
+  (user-decided; naming a plan should be part of the combined flow). Design judgment
+  delegated — propose the layout in the report.
+- Plan Library rows: plan names are ellipsized to ~3 chars ("Fli…", "To…") while the
+  metadata chips (6t · 300f · 480m), load/export, and delete take the width — names are
+  the PRIMARY identifier and must get width priority (wrap or two-line row layout).
+  Evidence: .superpowers/sdd/loop2/user-plan-library-truncation.png (user screenshot).
+
 ## Deferred (recorded, not this wave)
 - OIDC configuration via UI — server supports Google OIDC via config/API only; a
   Settings→Auth OIDC form is a candidate sub-project. [user smoke 2026-07-16]
