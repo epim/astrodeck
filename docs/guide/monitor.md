@@ -4,10 +4,10 @@ The **Monitor** view is the glanceable live dashboard: what's running, how
 it's going, and whether anything needs your attention — the screen to leave up
 on a second tablet, or to open from the run banner when you're not sure
 things are still healthy. It's read-only except for **Pause / Resume /
-Abort**, which need `control.mount` — by default only an **admin** account
-can use those controls; viewer and operator see the same dashboard with the
-controls in place but **disabled**, next to a lock note naming the required
-access.
+Abort**, which need `control.mount` — held by **operator and admin** accounts
+(operators are meant to run sequences); a **viewer** sees the same dashboard
+with the controls in place but **disabled**, next to a lock note naming the
+required access.
 
 ---
 
@@ -20,28 +20,28 @@ plan name, the active filter, and — while running or paused — a large finish
 clock countdown.
 
 **Controls** (Pause/Resume + Abort) appear only while a run is active
-(running or paused). They're enabled only for an account holding
-`control.mount` — **by default that's admin only**, since a running sequence
-slews the mount to each target; every other role sees them in the same
-position, disabled, with a shared lock note ("View only — pausing, resuming
-or aborting this run needs admin access."). Abort is a hold-to-confirm
+(running or paused). They're enabled for an account holding `control.mount`
+— **operator and admin**, since a running sequence slews the mount to each
+target; a **viewer** sees them in the same position, disabled, with a shared
+lock note ("View only — pausing, resuming or aborting this run needs
+operator or admin access."). Abort is a hold-to-confirm
 control: it shows a persistent
 **"HOLD TO ABORT"** hint and fills as you hold, so it can't fire on a stray
 tap; it still works over plain HTTP if the WebSocket link is down.
 
-> **A note on who can actually press these.** It's tempting to assume
-> operator can, since operator holds `control.capture` and can run captures
-> and guiding — but the server requires `control.mount` on every one of
-> `/api/sequence/pause`, `/resume`, and `/abort` (starting a sequence slews
-> the mount between targets), and operator's capability set excludes
-> `control.mount` (see
-> [remote-access-and-roles.md](remote-access-and-roles.md)). The UI matches
-> the server here: the controls row above renders in its normal position but
-> **disabled** for operator and viewer, with a lock note naming the required
-> access — the same is true of the **≡ Run Sequence** button on
-> [Plan & sequences](plan-and-sequences.md). Screen anatomy stays stable
-> across roles; permissions change enabled state, not what exists. Neither
-> role sees an enabled button that then fails.
+> **A note on who can actually press these.** The server requires
+> `control.mount` on every one of `/api/sequence/pause`, `/resume`, and
+> `/abort` (a running sequence slews the mount between targets) — the same
+> capability that gates mount motion and the **≡ Run Sequence** button on
+> [Plan & sequences](plan-and-sequences.md). Operators are meant to run
+> sequences (the intended use of the role — the eventual basis for a
+> telescope-rental interface), so operator's capability set **includes**
+> `control.mount` and gets the same enabled controls as admin (see
+> [remote-access-and-roles.md](remote-access-and-roles.md)). Only **viewer**
+> sees the controls row in its normal position but **disabled**, with a lock
+> note naming the required access. Screen anatomy stays stable across roles;
+> permissions change enabled state, not what exists. No role sees an enabled
+> button that then fails.
 
 ---
 

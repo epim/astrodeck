@@ -92,7 +92,7 @@ const ALL_CAPS: Capability[] = [
 const admin: Principal = { role: "admin", email: null, caps: ALL_CAPS };
 const operator: Principal = {
   role: "operator", email: "op@x.io",
-  caps: ["view.status", "view.preview", "control.capture", "control.guide"],
+  caps: ["view.status", "view.preview", "control.capture", "control.guide", "control.mount"],
 };
 const viewer: Principal = {
   role: "viewer", email: "v@x.io", caps: ["view.status", "view.preview"],
@@ -118,10 +118,10 @@ test("viewer is denied every control/config cap, allowed view caps", () => {
   assert(!capAllowed(viewer, "config.backend"), "viewer cannot config.backend");
 });
 
-test("operator can capture+guide but NOT mount/power/config", () => {
+test("operator can capture+guide+mount but NOT power/config", () => {
   assert(capAllowed(operator, "control.capture"), "operator can capture");
   assert(capAllowed(operator, "control.guide"), "operator can guide");
-  assert(!capAllowed(operator, "control.mount"), "operator cannot mount");
+  assert(capAllowed(operator, "control.mount"), "operator can mount (2026-07-17 I1)");
   assert(!capAllowed(operator, "control.power"), "operator cannot power");
   assert(!capAllowed(operator, "config.backend"), "operator cannot config.backend");
 });
@@ -266,7 +266,7 @@ test("login gate: method enabled + principal not yet resolved waits", () => {
 
 test("rolesHolding: admin-only caps resolve to exactly [admin]", () => {
   for (const c of [
-    "control.mount", "control.power", "config.backend", "config.safety",
+    "control.power", "config.backend", "config.safety",
     "config.solar_override", "config.site_optics", "config.alerts",
     "admin.users", "system.update", "view.media", "view.site_precise",
   ] as Capability[]) {
@@ -277,6 +277,8 @@ test("rolesHolding: admin-only caps resolve to exactly [admin]", () => {
 test("rolesHolding: operator caps resolve to [operator, admin]", () => {
   eq(rolesHolding("control.capture").join(","), "operator,admin", "capture →");
   eq(rolesHolding("control.guide").join(","), "operator,admin", "guide →");
+  // 2026-07-17 decisions wave I1: operator holds control.mount.
+  eq(rolesHolding("control.mount").join(","), "operator,admin", "mount →");
 });
 
 test("rolesHolding: view caps are held by every role", () => {
@@ -285,7 +287,6 @@ test("rolesHolding: view caps are held by every role", () => {
 });
 
 test("accessPhrase: admin-only caps say 'admin access' — NEVER 'operator or admin'", () => {
-  eq(accessPhrase("control.mount"), "admin access", "mount →");
   eq(accessPhrase("config.backend"), "admin access", "backend →");
   eq(accessPhrase("config.solar_override"), "admin access", "solar →");
 });
@@ -293,6 +294,9 @@ test("accessPhrase: admin-only caps say 'admin access' — NEVER 'operator or ad
 test("accessPhrase: operator-held caps say 'operator or admin access'", () => {
   eq(accessPhrase("control.capture"), "operator or admin access", "capture →");
   eq(accessPhrase("control.guide"), "operator or admin access", "guide →");
+  // 2026-07-17 decisions wave I1: operator now holds control.mount, so the
+  // lock-note copy self-updates from "admin access" back to this phrase.
+  eq(accessPhrase("control.mount"), "operator or admin access", "mount →");
 });
 
 test("accessPhrase mirror never promises a cap the principal model denies", () => {

@@ -14,11 +14,11 @@ with it. What *is* gated:
   the Save / Save as… / Import buttons at all (loading and exporting a
   saved plan stay open to everyone, since neither writes to the rig).
 - **Starting, pausing, resuming, or aborting a sequence** slews the mount
-  between targets and needs `control.mount` — by default that's **admin
-  only**; operator holds `control.capture` but not `control.mount`, so the
-  **≡ Run Sequence** button (and Monitor's Pause/Resume/Abort) stays visible
-  but **disabled** for operator and viewer alike, with a lock note naming
-  the required access ("Running a sequence needs admin access.").
+  between targets and needs `control.mount` — held by **operator and admin**
+  (operators are meant to run sequences); the **≡ Run Sequence** button (and
+  Monitor's Pause/Resume/Abort) stays visible but **disabled** for a
+  **viewer**, with a lock note naming the required access ("Running a
+  sequence needs operator or admin access.").
 
 See [remote-access-and-roles.md](remote-access-and-roles.md) for the full
 matrix.

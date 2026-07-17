@@ -79,11 +79,12 @@ never touched by regrading.
 
 > The review drawer opens for every role (browsing frames is a read), but
 > the **mark accepted** / **mark rejected** buttons are `disabled` for
-> anyone lacking `control.mount` — by default that's viewer *and* operator,
-> since regrading uses the same capability as a manual resume. A lock note
-> under the buttons spells out why: *"Read-only — regrading frames needs
-> admin access."* No role sees an enabled verdict button that
-> then fails to save.
+> anyone lacking `control.mount` — by default that's **viewer** only,
+> since regrading uses the same capability as a manual resume, and operators
+> are meant to run sequences (so operator gets enabled verdict buttons too).
+> A lock note under the buttons spells out why: *"Read-only — regrading
+> frames needs operator or admin access."* No role sees an enabled verdict
+> button that then fails to save.
 > See [remote-access-and-roles.md](remote-access-and-roles.md#screen-by-screen-what-each-role-actually-sees).
 
 ### Update from Plan

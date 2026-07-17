@@ -144,13 +144,15 @@ def test_operator_boundary(tmp_path, monkeypatch):
         # capture + guide allowed (200/409 depending on rig, NOT 403)
         assert c.post("/api/capture", json={}).status_code != 403
         assert c.post("/api/guide/dither", json={"pixels": 3.0}).status_code != 403
-        # mount / power / sequence / polar / media => 403
+        # mount / sequence / polar now allowed too (2026-07-17 decisions wave
+        # I1: operator holds control.mount -- 200/409 depending on rig, NOT 403).
         assert c.post("/api/sequence/start", json={"name": "x", "targets": []}
-                      ).status_code == 403
-        assert c.post("/api/sequence/recover").status_code == 403
-        assert c.post("/api/polar/start").status_code == 403
+                      ).status_code != 403
+        assert c.post("/api/sequence/recover").status_code != 403
+        assert c.post("/api/polar/start").status_code != 403
         assert c.post("/api/mount/goto",
-                      json={"ra_hours": 1.0, "dec_deg": 1.0}).status_code == 403
+                      json={"ra_hours": 1.0, "dec_deg": 1.0}).status_code != 403
+        # power / media stay operator-denied.
         assert c.post("/api/switch/set",
                       json={"port_id": 0, "value": 1.0}).status_code == 403
         assert c.get("/api/preview/1/fits").status_code == 403
