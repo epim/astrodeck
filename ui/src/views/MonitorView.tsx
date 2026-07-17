@@ -59,7 +59,7 @@ import {
   fmtDuration,
   GUIDE_STALE_S,
   LIVE_WINDOW_S,
-  STALL_MARGIN_S,
+  stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
 import { humanizeSeqError } from "../lib/humanize";
@@ -226,11 +226,11 @@ export default function MonitorView() {
     if (state === "running" || state === "idle") vibratedError.current = false;
   }, [state]);
 
-  // ----- stall detection (resolves A5) -----
+  // ----- stall detection (resolves A5; gated to running-only — R3-MON-01) -----
   const curExp = progress?.current_exposure_s ?? 0;
-  const stallSoft = frameAgeS != null && curExp > 0 && frameAgeS > curExp * 2;
-  const stallHard =
-    frameAgeS != null && curExp > 0 && frameAgeS > curExp * 3 + STALL_MARGIN_S;
+  const stallLvl = stallLevel(state, frameAgeS, curExp);
+  const stallSoft = stallLvl !== "none";
+  const stallHard = stallLvl === "red";
   const vibratedStall = useRef(false);
   useEffect(() => {
     if (stallHard && !vibratedStall.current) {
