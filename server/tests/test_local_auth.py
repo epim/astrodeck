@@ -284,9 +284,9 @@ def test_local_session_resolves_to_its_role():
     body = r.json()
     assert body["role"] == "operator"
     assert body["email"] == "op@rig"
-    # operator does NOT hold control.mount -> 403
+    # operator holds control.mount (2026-07-17 decisions wave I1) -> 200
     assert _guarded_client(require(CAP_CONTROL_MOUNT), cookie=tok).get(
-        "/g").status_code == 403
+        "/g").status_code == 200
 
 
 def test_google_session_still_resolves_under_multi():

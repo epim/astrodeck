@@ -89,10 +89,13 @@ def test_viewer_reads_but_paths_stripped_and_mutations_403(client):
                         json={"override": "reject"}).status_code == 403
 
 
-def test_operator_cannot_resume(client):
+def test_operator_can_resume(client):
+    """2026-07-17 decisions wave I1: operator holds control.mount, so resume's
+    gate passes; no camera connected in this harness -> 409 (DeviceError), NOT
+    403 (the RBAC boundary itself is what's under test here)."""
     s = _session()
     set_active_provider(FakeAuthProvider(principal_for_role("operator")))
-    assert client.post(f"/api/sessions/{s.id}/resume").status_code == 403
+    assert client.post(f"/api/sessions/{s.id}/resume").status_code != 403
 
 
 def test_patch_plan_dormant_only_with_id_merge(client):

@@ -43,10 +43,11 @@ def test_has_capability_matrix():
     assert not has_capability("viewer", "view.media")
     assert not has_capability("viewer", CAP_CONTROL_MOUNT)
     assert not has_capability("viewer", CAP_ADMIN_USERS)
-    # operator: imaging+guiding, NOT mount/power/config/media
+    # operator: imaging+guiding+mount (2026-07-17 decisions wave I1: operators
+    # run sequences), NOT power/config/media
     assert has_capability("operator", "control.capture")
     assert has_capability("operator", "control.guide")
-    assert not has_capability("operator", CAP_CONTROL_MOUNT)
+    assert has_capability("operator", CAP_CONTROL_MOUNT)
     assert not has_capability("operator", "control.power")
     assert not has_capability("operator", "view.media")
     assert not has_capability("operator", "config.backend")

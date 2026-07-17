@@ -61,12 +61,15 @@ VIEWER_LINK_CAPS = frozenset({CAP_VIEW_STATUS, CAP_VIEW_PREVIEW})
 ROLES_CAP: dict[str, frozenset[str]] = {
     # NO raw FITS, NO precise site.
     "viewer": VIEWER_LINK_CAPS,
-    # imaging + guiding; NOT mount/power/config/media. An operator can run a
-    # single capture/loop + guiding (dither's bounded pulse_guide is the ONE
-    # accepted motion exception) but CANNOT start a slewing sequence.
+    # imaging + guiding + mount motion; NOT power/config/media. Product-owner
+    # decision (2026-07-17 decisions wave, I1): operators are intended to run
+    # sequences (future: telescope-rental interface), so operator holds
+    # control.mount -- sequence run/pause/resume/abort, session regrade, and
+    # mount slewing are all gated on control.mount and are now operator-usable.
+    # Still NOT control.power/config.*/view.media/view.site_precise.
     "operator": frozenset({
         CAP_VIEW_STATUS, CAP_VIEW_PREVIEW,
-        CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE,
+        CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
     }),
     # everything incl. view.media, view.site_precise.
     "admin": ALL_CAPS,
