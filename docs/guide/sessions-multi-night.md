@@ -82,7 +82,7 @@ never touched by regrading.
 > anyone lacking `control.mount` — by default that's viewer *and* operator,
 > since regrading uses the same capability as a manual resume. A lock note
 > under the buttons spells out why: *"Read-only — regrading frames needs
-> operator or admin access."* No role sees an enabled verdict button that
+> admin access."* No role sees an enabled verdict button that
 > then fails to save.
 > See [remote-access-and-roles.md](remote-access-and-roles.md#screen-by-screen-what-each-role-actually-sees).
 
