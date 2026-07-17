@@ -62,6 +62,46 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
     "Full control — mount motion, power, safety/config, site & optics, alerts, user management, and system updates, plus everything above.",
 };
 
+// ------------------------------------------------------------- lock-note copy
+// Which roles hold each capability — mirrored from the server's role table
+// (server/astrodeck/auth/capabilities.py: ROLES_CAP / VIEWER_LINK_CAPS /
+// ALL_CAPS — the SOURCE OF TRUTH; keep in sync). Lock notes derive their
+// "who can do this" copy from THIS table via accessPhrase(cap), so the text
+// beside a disabled control names the SAME policy the control enforces
+// (R4B-PLAN-01 / R4B-SESS-01/02: hand-written notes claimed "operator or
+// admin" on control.mount / config.* actions that operators do NOT hold).
+const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
+  // VIEWER_LINK_CAPS: live-watch only.
+  viewer: ["view.status", "view.preview"],
+  // ROLES_CAP["operator"]: viewer caps + capture + guide — explicitly NOT
+  // mount/power/config.*/media.
+  operator: ["view.status", "view.preview", "control.capture", "control.guide"],
+  // ALL_CAPS.
+  admin: [
+    "view.status", "view.preview", "view.media", "view.site_precise",
+    "control.capture", "control.mount", "control.guide", "control.power",
+    "config.safety", "config.solar_override", "config.backend",
+    "config.site_optics", "config.alerts", "admin.users", "system.update",
+  ],
+};
+
+/** The roles that hold `cap`, in ascending privilege order. */
+export function rolesHolding(cap: Capability): PrincipalRole[] {
+  return (["viewer", "operator", "admin"] as const).filter((r) =>
+    ROLE_CAPS[r].includes(cap),
+  );
+}
+
+/** Accurate "who can do this" phrase for a lock note, derived from the role
+ *  table above — e.g. control.mount → "admin access", control.capture →
+ *  "operator or admin access". Fail-closed: an unheld/unknown cap reads
+ *  "admin access" (never promises a role that would still be denied). */
+export function accessPhrase(cap: Capability): string {
+  const roles = rolesHolding(cap);
+  if (roles.length === 0) return "admin access";
+  return `${roles.join(" or ")} access`;
+}
+
 /** Resolve a role's connected/error tri-state from backend_links, falling back to
  *  the legacy per-device flag, then the sticky equipment flag — so the live tablet
  *  (which never populates backend_links) keeps working unchanged. */

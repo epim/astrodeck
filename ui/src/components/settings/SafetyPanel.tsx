@@ -24,7 +24,7 @@ import type { SafetyConfig } from "../../types";
 import { setSafetyConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
-import { useCan } from "../../lib/caps";
+import { accessPhrase, useCan } from "../../lib/caps";
 import { confirmDialog } from "../ConfirmDialog";
 import { Panel, Field, Toggle } from "../ui";
 import { Icon } from "../icons";
@@ -236,8 +236,8 @@ export default function SafetyPanel(): JSX.Element {
         <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs mt-4">
           <Icon name="lock" size={14} className="text-dim shrink-0" />
           <span className="text-dim">
-            Changing sun avoidance needs admin access (config.solar_override).
-            The current setting is shown for reference.
+            Changing sun avoidance needs {accessPhrase("config.solar_override")}{" "}
+            (config.solar_override). The current setting is shown for reference.
           </span>
         </div>
       )}

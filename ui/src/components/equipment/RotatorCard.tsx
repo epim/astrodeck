@@ -10,7 +10,7 @@ import type { RotatorConfig } from "../../types";
 import { api, ApiError } from "../../api";
 import { setRotatorConfig } from "../../api/backends";
 import { useConfig, useStatus, useStore } from "../../store";
-import { useCanConfigBackend } from "../../lib/caps";
+import { accessPhrase, useCanConfigBackend } from "../../lib/caps";
 import { adjustedPa, mod360 } from "../../lib/rotation";
 import { allowedSweepDeg, arcPath, polarXY } from "../../lib/rotatorDial";
 import { Panel, InfoDot } from "../ui";
@@ -220,7 +220,7 @@ export default function RotatorCard(): JSX.Element | null {
           {!canConfig && (
             <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
               <Icon name="lock" size={11} />
-              Read-only — changing the range of motion needs operator or admin access.
+              Read-only — changing the range of motion needs {accessPhrase("config.backend")}.
             </p>
           )}
           {err && (

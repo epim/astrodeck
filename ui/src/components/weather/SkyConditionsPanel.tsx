@@ -11,7 +11,7 @@ import { Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { api } from "../../api";
 import { getWeather, setIgnoreTonight } from "../../api/weather";
-import { useCanControlCapture } from "../../lib/caps";
+import { accessPhrase, useCanControlCapture } from "../../lib/caps";
 import { agoLabel, breachSpans, fmtHm, groupEndLabels, weatherSourceLabel } from "../../lib/weather";
 import type { WeatherState } from "../../types";
 
@@ -367,7 +367,7 @@ export default function SkyConditionsPanel() {
         {!canOperate && (
           <span className="text-[11px] text-dim inline-flex items-center gap-1">
             <Icon name="lock" size={11} />
-            operator or admin access needed to override weather
+            {accessPhrase("control.capture")} needed to override weather
           </span>
         )}
       </div>

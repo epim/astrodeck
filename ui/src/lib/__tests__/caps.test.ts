@@ -17,12 +17,29 @@ class MemStorage {
   removeItem(k: string): void { this.m.delete(k); }
   clear(): void { this.m.clear(); }
 }
-const g = globalThis as unknown as { localStorage?: Storage; document?: unknown };
+const g = globalThis as unknown as {
+  localStorage?: Storage;
+  document?: unknown;
+  window?: unknown;
+};
 if (typeof g.localStorage === "undefined") g.localStorage = new MemStorage() as unknown as Storage;
 if (typeof g.document === "undefined") {
   const classList = { toggle() {}, add() {}, remove() {}, contains() { return false; } };
   const style = { setProperty() {}, getPropertyValue() { return ""; } };
   g.document = { documentElement: { classList, style } };
+}
+// lib/base.ts reads window.location.pathname at import time (H1 pulled it into
+// the store graph via ws.ts) — stub it like the other browser globals.
+if (typeof g.window === "undefined") {
+  g.window = {
+    location: { pathname: "/", protocol: "http:", host: "test" },
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    addEventListener() {},
+    removeEventListener() {},
+  };
 }
 
 const {
@@ -32,6 +49,8 @@ const {
   resolveRoleConnected,
   VIEW_REQUIRED_ROLE,
   shouldShowLogin,
+  rolesHolding,
+  accessPhrase,
 } = await import("../caps");
 const { useStore } = await import("../../store");
 import type {
@@ -237,6 +256,54 @@ test("login gate: method enabled + signed-in identity does NOT gate", () => {
 
 test("login gate: method enabled + principal not yet resolved waits", () => {
   assert(shouldShowLogin(M(["local"]), null) === false, "null principal → wait, don't flash login");
+});
+
+// ============================================================ lock-note copy
+// accessPhrase derives "who can do this" from the role table mirrored off
+// server/astrodeck/auth/capabilities.py — the R4B-PLAN-01/SESS-01 fix: lock
+// notes must name the SAME policy the control enforces, never a role promise
+// the server would deny.
+
+test("rolesHolding: admin-only caps resolve to exactly [admin]", () => {
+  for (const c of [
+    "control.mount", "control.power", "config.backend", "config.safety",
+    "config.solar_override", "config.site_optics", "config.alerts",
+    "admin.users", "system.update", "view.media", "view.site_precise",
+  ] as Capability[]) {
+    eq(rolesHolding(c).join(","), "admin", `${c} →`);
+  }
+});
+
+test("rolesHolding: operator caps resolve to [operator, admin]", () => {
+  eq(rolesHolding("control.capture").join(","), "operator,admin", "capture →");
+  eq(rolesHolding("control.guide").join(","), "operator,admin", "guide →");
+});
+
+test("rolesHolding: view caps are held by every role", () => {
+  eq(rolesHolding("view.status").join(","), "viewer,operator,admin", "status →");
+  eq(rolesHolding("view.preview").join(","), "viewer,operator,admin", "preview →");
+});
+
+test("accessPhrase: admin-only caps say 'admin access' — NEVER 'operator or admin'", () => {
+  eq(accessPhrase("control.mount"), "admin access", "mount →");
+  eq(accessPhrase("config.backend"), "admin access", "backend →");
+  eq(accessPhrase("config.solar_override"), "admin access", "solar →");
+});
+
+test("accessPhrase: operator-held caps say 'operator or admin access'", () => {
+  eq(accessPhrase("control.capture"), "operator or admin access", "capture →");
+  eq(accessPhrase("control.guide"), "operator or admin access", "guide →");
+});
+
+test("accessPhrase mirror never promises a cap the principal model denies", () => {
+  // Cross-check the mirror against the SAME fixtures capAllowed uses: if the
+  // phrase names a role, a principal of that role must actually hold the cap.
+  const byRole: Record<string, Principal> = { viewer, operator, admin };
+  for (const c of ALL_CAPS) {
+    for (const r of rolesHolding(c)) {
+      assert(capAllowed(byRole[r], c), `${r} must hold ${c} (phrase promised it)`);
+    }
+  }
 });
 
 // ---------------------------------------------------------------- report

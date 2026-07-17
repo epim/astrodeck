@@ -101,7 +101,7 @@ export default function AccountPanel(): JSX.Element {
           <EmptyState
             icon="lock"
             title="You're viewing in read-only mode"
-            hint="Mount, power, capture and configuration controls are hidden for your role. Sign in with an operator or admin account to take control."
+            hint="Mount, power, capture and configuration controls are locked for your role. Sign in as an operator for capture and guiding, or as an admin for full control."
           />
         </Panel>
       )}

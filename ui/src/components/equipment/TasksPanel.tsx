@@ -16,7 +16,7 @@ import type { DriverInfo, ProvidersConfig } from "../../types";
 import { setProvidersConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useProviders, useStore } from "../../store";
-import { useCanConfigBackend } from "../../lib/caps";
+import { accessPhrase, useCanConfigBackend } from "../../lib/caps";
 import { eligibleTaskDrivers, TASK_CAPS, type TaskCap } from "../../lib/equipment";
 import { Panel, InfoDot } from "../ui";
 import { Icon } from "../icons";
@@ -134,7 +134,7 @@ export default function TasksPanel({
         {!canConfig && (
           <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
             <Icon name="lock" size={11} />
-            Read-only — changing task routing needs operator or admin access.
+            Read-only — changing task routing needs {accessPhrase("config.backend")}.
           </p>
         )}
         {err && (
