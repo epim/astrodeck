@@ -12,6 +12,13 @@
 // `rotation_deg`. The active-panel emphasis (thicker stroke + corner ticks) was
 // removed as a never-fed contract — no caller ever drove which panel was
 // emphasized (wave-2 §4).
+//
+// The rotate-handle grip used to live here (wave-2 §1) but moved out to its own
+// component, RotateHandle.tsx, mounted by SkyCanvas AFTER the HTML label layer
+// so it always paints on top — this SVG's DOM position (BEFORE the label layer)
+// meant the handle could render behind the "Your camera" label at some canvas
+// widths, invisible and ungrabbable (wave-2 G3). See RotateHandle.tsx for the
+// full root-cause note.
 
 import { memo, type JSX } from "react";
 
@@ -37,8 +44,6 @@ export interface FovOverlayProps {
   objectSemiMinorDeg?: number | null;
   /** Whether optics are usable; false => dashed placeholder frame. */
   haveOptics: boolean;
-  /** Draw the grabbable rotation stalk on the box's top edge (wave-2 §1). */
-  rotateHandle?: boolean;
 }
 
 // A single rotated rectangle path centered at (0,0) before the group transform.
@@ -50,7 +55,7 @@ export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.
   const {
     view, cx, cy, pxPerDeg, fovXDeg, fovYDeg, rotationDeg,
     rows, cols, overlap,
-    objectSemiMajorDeg, objectSemiMinorDeg, haveOptics, rotateHandle = false,
+    objectSemiMajorDeg, objectSemiMinorDeg, haveOptics,
   } = props;
 
   const frameW = fovXDeg * pxPerDeg;
@@ -59,10 +64,6 @@ export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.
   const halfH = frameH / 2;
   const stepX = frameW * (1 - overlap);
   const stepY = frameH * (1 - overlap);
-  // Overall mosaic-grid half-height — the stalk hangs off the TOP of the whole
-  // grid (not one panel) so it never overlaps a frame. Grid is symmetric about
-  // the origin: half-height = one panel's half + half the row span.
-  const gridHalfH = halfH + ((rows - 1) * stepY) / 2;
 
   // Object-size ellipse (suppressed when size unknown — stars/doubles, C3-A11).
   const ellipse =
@@ -120,28 +121,6 @@ export const FovOverlay = memo(function FovOverlay(props: FovOverlayProps): JSX.
       {ellipse}
       <g transform={`translate(${cx} ${cy}) rotate(${rotationDeg})`}>
         {panels}
-        {/* rotation stalk — PowerPoint-style grip on the box's top edge. It
-            rotates WITH the box; SkyCanvas hit-tests data-role, so this is a
-            real element hit, valid at any angle/zoom (wave-2 §1). The parent
-            SVG is pointer-events-none; this group re-enables itself. */}
-        {rotateHandle && (
-          <g
-            data-role="rotate-handle"
-            style={{ pointerEvents: "all", cursor: "grab" }}
-          >
-            {/* invisible touch pad: r=64 viewBox units ≈ 46px dia at a 360px
-                canvas — keeps the target ≥44px CSS on the smallest layout */}
-            <circle cx={0} cy={-gridHalfH - 34} r={64} fill="transparent" stroke="none" />
-            <line
-              x1={0} y1={-gridHalfH} x2={0} y2={-gridHalfH - 34}
-              className="svg-halo" stroke="var(--accent)" strokeWidth={2}
-            />
-            <circle
-              cx={0} cy={-gridHalfH - 34} r={10}
-              className="svg-halo" fill="var(--bg)" stroke="var(--accent)" strokeWidth={2}
-            />
-          </g>
-        )}
       </g>
       {targetCross}
     </g>

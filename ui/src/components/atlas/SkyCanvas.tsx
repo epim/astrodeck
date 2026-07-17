@@ -14,6 +14,9 @@
 //      scale bar). Strokes use var(--accent) with the .svg-halo black underlay.
 //   4. HTML label layer — every text label is real CSS px (>=12px), positioned
 //      from the same projection. NO text inside the scaled viewBox (C3-A2).
+//   5. RotateHandle — its own top-level <svg>, mounted LAST so it always
+//      paints above the label layer (wave-2 G3: it used to live inside layer 3
+//      and could render behind the "Your camera" label at some canvas widths).
 //
 // J2000 invariant: center is always J2000; never mix live JNow mount RA in.
 
@@ -26,6 +29,7 @@ import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
 import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
+import { RotateHandle } from "./RotateHandle";
 import { initTileGL } from "../../lib/tileGL";
 import { TileEngine } from "./TileEngine";
 
@@ -582,7 +586,6 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             objectSemiMajorDeg={semiMajorDeg}
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
-            rotateHandle={haveOptics}
           />
           {/* compass N/E ticks (geometry; the N/E letters live on the HTML layer) */}
           <g className="svg-halo" stroke="var(--accent)" strokeWidth={1.5} opacity={0.8}>
@@ -596,11 +599,20 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           {/* compass letters */}
           <span className="absolute left-1/2 -translate-x-1/2 top-1 text-[12px] mono">N</span>
           <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[12px] mono">E</span>
-          {/* "Your camera" + FOV readout, pinned just above the frame footprint */}
+          {/* "Your camera" + FOV readout, pinned just above the frame footprint.
+              Anchored to END short of dead-center (not centered on it) so its
+              text never sits in the rotate handle's central column — the
+              handle's stalk/ring is centered on the same x as this label would
+              be if centered, and always touches the frame's top edge, the same
+              spot this label is pinned to (wave-2 G3: the genuine geometric
+              collision behind the invisible-handle bug). A fixed 16px clearance
+              is width-independent and comfortably exceeds the handle's widest
+              visible reach (10 viewBox-unit ring radius = 1% of canvas width,
+              <=7.2px even at the 720px canvas cap). */}
           {haveOptics && (
             <span
               className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45"
-              style={{ left: ccx, top: ccy - frameHalfHcss - 18, transform: "translateX(-50%)" }}
+              style={{ left: ccx - 16, top: ccy - frameHalfHcss - 18, transform: "translateX(-100%)" }}
             >
               Your camera · {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}
             </span>
@@ -626,6 +638,22 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             {fmtAngle(fovZoomDeg)} wide
           </span>
         </div>
+
+        {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
+              fix) so it ALWAYS paints on top and stays visible/grabbable at
+              every canvas width; see RotateHandle.tsx for the root-cause note. */}
+        {haveOptics && (
+          <RotateHandle
+            view={VIEW}
+            cx={cx}
+            cy={cy}
+            pxPerDeg={pxPerDeg}
+            fovYDeg={fov.fov_y_deg}
+            rotationDeg={rotationDeg}
+            rows={mosaic.rows}
+            overlap={mosaic.overlap}
+          />
+        )}
 
       </div>
 
