@@ -56,6 +56,24 @@ test("planSavedCue: clean local draft (no library plan) reads 'Not saved yet' (d
   assert(d.label === "Not saved yet" && d.tone === "dim", JSON.stringify(d));
 });
 
+test("planSavedCue: viewer (canWrite=false) dirty cue keeps its label but drops to dim", () => {
+  // No Save/Save-as for a viewer → never a warn-toned alarm with no action.
+  const v = planSavedCue(true, true, false);
+  assert(v.label === "Unsaved changes" && v.tone === "dim", `dirty+saved viewer: ${JSON.stringify(v)}`);
+  const w = planSavedCue(true, false, false);
+  assert(w.label === "Unsaved changes" && w.tone === "dim", `dirty+draft viewer: ${JSON.stringify(w)}`);
+});
+
+test("planSavedCue: canWrite only affects the dirty tone — clean cues unchanged for viewers", () => {
+  const s = planSavedCue(false, true, false);
+  assert(s.label === "Saved" && s.tone === "dim", `clean+saved viewer: ${JSON.stringify(s)}`);
+  const n = planSavedCue(false, false, false);
+  assert(n.label === "Not saved yet" && n.tone === "dim", `clean+draft viewer: ${JSON.stringify(n)}`);
+  // default (omitted) canWrite stays the writer behavior
+  const d = planSavedCue(true, false);
+  assert(d.tone === "warn", `default canWrite=true keeps warn: ${JSON.stringify(d)}`);
+});
+
 console.log(`planLibrary.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
   failures.forEach((f) => console.error(f));

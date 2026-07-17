@@ -28,9 +28,18 @@ export interface PlanSavedCue {
  *    never been written to (or loaded from) the library.
  *
  *  `isSaved` is "this editor is tied to a library plan" (loadedPlanId != null),
- *  NOT "the name exists somewhere" — two plans may share a name (spec §7). */
-export function planSavedCue(editorDirty: boolean, isSaved: boolean): PlanSavedCue {
-  if (editorDirty) return { label: "Unsaved changes", tone: "warn" };
+ *  NOT "the name exists somewhere" — two plans may share a name (spec §7).
+ *
+ *  `canWrite` (control.capture): a viewer can edit the plan BUILDER (existing
+ *  contract) but has no Save/Save-as, so a warn-toned "Unsaved changes" would be
+ *  an alarm with no actionable button — for non-writers the cue keeps its honest
+ *  label but drops to dim (informational, not a call to action). */
+export function planSavedCue(
+  editorDirty: boolean, isSaved: boolean, canWrite = true,
+): PlanSavedCue {
+  if (editorDirty) {
+    return { label: "Unsaved changes", tone: canWrite ? "warn" : "dim" };
+  }
   return isSaved
     ? { label: "Saved", tone: "dim" }
     : { label: "Not saved yet", tone: "dim" };

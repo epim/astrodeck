@@ -47,7 +47,9 @@ export default function PlanLibraryPanel() {
   const totalMinutes = plan.targets.reduce(
     (a, t) => a + t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0), 0) / 60;
 
-  const cue = planSavedCue(editorDirty, loadedPlanId !== null);
+  // canWrite threads through so a viewer (no Save button) never sees a warn-toned
+  // alarm they cannot act on — the cue stays, but dim/informational.
+  const cue = planSavedCue(editorDirty, loadedPlanId !== null, canWrite);
 
   const refresh = useCallback(async () => {
     try {
@@ -103,15 +105,22 @@ export default function PlanLibraryPanel() {
 
   const save = () => void savePlan(plan, loadedPlanId);
 
-  // Save as… forks a NEW named copy: adopt the entered name as the working plan's
-  // name and save WITHOUT an id so the server mints a fresh uuid. Name sync
-  // mirrors SitePanel.submitSaveCurrent (the form follows the saved name).
+  // Save as… forks a NEW named copy: build the payload from the ENTERED name
+  // WITHOUT pre-mutating the working plan (SitePanel.submitSaveCurrent idiom —
+  // payload from the prompt value, form synced only after success). Adopting the
+  // name BEFORE the save was a real trap: a cancelled collision prompt would
+  // leave the editor renamed + dirty but still tied to the ORIGINAL loadedPlanId,
+  // so the next plain Save would silently RENAME the original saved plan. Save
+  // WITHOUT an id so the server mints a fresh uuid; only a completed save adopts
+  // the name into the editor (clean — savePlan already marked it).
   const submitSaveAs = async (name: string) => {
     const trimmed = name.trim();
     if (trimmed === "") return;
     const next = { ...plan, name: trimmed };
-    setPlan(next); // dirty=true; the name field follows
-    if (await savePlan(next, null)) setSaveAsName(null);
+    if (await savePlan(next, null)) {
+      setPlan(next, false); // sync the name field to the saved copy, stay clean
+      setSaveAsName(null);
+    }
   };
 
   const load = async (row: PlanRow) => {
