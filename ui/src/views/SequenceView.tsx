@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
-import { Field, HoldButton, IconButton, InfoDot, Panel, Stat, Toggle } from "../components/ui";
+import { HoldButton, IconButton, InfoDot, Panel, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import SessionsPanel from "../components/sequence/SessionsPanel";
 import PlanLibraryPanel from "../components/sequence/PlanLibraryPanel";
@@ -233,7 +233,6 @@ export default function SequenceView() {
   const targetFrames = (t: Target) => t.steps.reduce((b, s) => b + s.count, 0);
   const targetSeconds = (t: Target) => t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0);
   const totalFrames = plan.targets.reduce((a, t) => a + targetFrames(t), 0);
-  const totalMinutes = plan.targets.reduce((a, t) => a + targetSeconds(t), 0) / 60;
 
   // Delete every target sharing a mosaic_group (the whole mosaic), reversibly.
   const deleteGroup = (group: string) =>
@@ -751,16 +750,11 @@ export default function SequenceView() {
 
       {/* ------------------------------------------------------ options */}
       <div className="flex flex-col gap-4">
-        <Panel title="Plan">
-          <Field label="Plan name">
-            <input className="field" value={plan.name}
-              onChange={(e) => setPlan({ ...plan, name: e.target.value })} />
-          </Field>
-          <div className="grid grid-cols-2 gap-3 mt-4">
-            <Stat label="frames" value={totalFrames} />
-            <Stat label="integration" value={`${Math.floor(totalMinutes / 60)}h ${Math.round(totalMinutes % 60)}m`} />
-          </div>
-        </Panel>
+        {/* Unified Plan panel (G2): plan identity (name + saved/unsaved cue +
+            frames/integration) merged with the plan library (save/load/export/
+            import) into one harmonious surface. Sessions stays its own region
+            below. */}
+        <PlanLibraryPanel />
 
         <Panel title="Automation">
           <div className="flex flex-col gap-3 text-xs">
@@ -932,9 +926,10 @@ export default function SequenceView() {
         </Panel>
 
         {/* Multi-night sessions (sessions spec §7): resume/manage cards for
-            non-abandoned sessions. Self-hides when there are none. */}
+            non-abandoned sessions. Self-hides when there are none. Its OWN
+            clearly-bounded region — deliberately NOT merged into the Plan panel
+            (G2). */}
         <SessionsPanel />
-        <PlanLibraryPanel />
 
         {/* Pre-flight gate (F-P0.1): the strip is always visible once the plan has
             frames; Review opens the modal. Run is disabled when blocked and only
