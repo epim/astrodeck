@@ -3263,6 +3263,22 @@ def create_app() -> FastAPI:
 
         @app.get("/{path:path}")
         async def spa(path: str):
+            # API fence (H1): an UNROUTED path under /api, /ws or /auth must NEVER
+            # fall through to the SPA HTML shell. It used to -- an unknown /api/*
+            # (e.g. GET /api/auth, which has no route) returned 200 text/html, and
+            # the client's JSON fetch then blew up with `Unexpected token '<',
+            # "<!doctype "...`. Return a JSON 404 (FastAPI's default detail body)
+            # so an unknown API/auth/ws path reads as a proper API error, not the
+            # index document. Real /api, /auth and /ws routes are registered ABOVE
+            # this catch-all, so they still match first; only genuinely-unrouted
+            # paths reach here. /auth is fenced too (it is an auth surface, never a
+            # client-side SPA route -- the login dance is server-driven and the
+            # in-app sign-in lives at "/"), so a stray GET there also 404s JSON
+            # rather than leaking the shell.
+            if (path == "api" or path.startswith("api/")
+                    or path == "auth" or path.startswith("auth/")
+                    or path == "ws" or path.startswith("ws/")):
+                raise HTTPException(status_code=404, detail="Not Found")
             target = UI_DIST / path
             if path and target.is_file():
                 return FileResponse(target)
