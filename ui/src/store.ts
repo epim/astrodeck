@@ -422,6 +422,11 @@ interface AppState {
   authMethods: AuthMethods | null;
   plan: SequencePlan; // atlas SSOT; setPlan persists localStorage in the setter
   editorDirty: boolean;
+  // id of the library plan currently loaded into the editor (null = a local draft
+  // never saved to / loaded from the library). Drives the unified Plan panel's
+  // saved/unsaved cue + "which saved plan is loaded" row highlight (G2). Session-
+  // only (NOT persisted): a full reload treats the restored draft as unsaved.
+  loadedPlanId: string | null;
   siteDirty: boolean;
   opticsDirty: boolean;
 
@@ -524,6 +529,8 @@ interface AppState {
   // gate. Call at boot next to loadConfig/loadPrincipal and after auth changes.
   loadAuthMethods: () => Promise<void>;
   setPlan: (p: SequencePlan, dirty?: boolean) => void;
+  setEditorDirty: (b: boolean) => void;
+  setLoadedPlanId: (id: string | null) => void;
   setSiteDirty: (b: boolean) => void;
   setOpticsDirty: (b: boolean) => void;
   setSite: (s: SiteInfo) => void;
@@ -610,6 +617,7 @@ export const useStore = create<AppState>((set, get) => ({
   authMethods: null, // unresolved → no login gate until loadAuthMethods() lands
   plan: loadPlan(),
   editorDirty: false,
+  loadedPlanId: null,
   siteDirty: false,
   opticsDirty: false,
 
@@ -742,6 +750,8 @@ export const useStore = create<AppState>((set, get) => ({
     set({ plan: withIds, editorDirty: dirty });
   },
 
+  setEditorDirty: (b) => set({ editorDirty: b }),
+  setLoadedPlanId: (id) => set({ loadedPlanId: id }),
   setSiteDirty: (b) => set({ siteDirty: b }),
   setOpticsDirty: (b) => set({ opticsDirty: b }),
   setSite: (s) => set({ site: s }),
