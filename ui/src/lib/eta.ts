@@ -2,6 +2,8 @@
 // No React, no DOM — unit-tested in eta.test.ts. Also the single source of truth
 // for the Monitor's shared timing constants (master §A.7).
 
+import type { SequenceState } from "../types";
+
 // ----------------------------------------------------------------- constants
 // One source of truth; the cells, store auto-select and stall logic all import
 // from here so the numbers never drift (monitor spec §9 "Shared constants").
@@ -93,4 +95,27 @@ export function deriveFinish(
   const elapsedSinceEmit = (nowMs - receivedAtMs) / 1000;
   const remainingS = Math.max(0, etaS - elapsedSinceEmit);
   return { remainingS, finishAtMs: nowMs + remainingS * 1000 };
+}
+
+// ------------------------------------------------------------------ stall gate
+export type StallLevel = "none" | "amber" | "red";
+
+/**
+ * Capture-stall severity — gated to the ONLY sequence state that can still be
+ * mid-exposure (resolves R3-MON-01: a COMPLETE run showed "CAPTURE STALLED?"
+ * for minutes because the old check ignored state entirely). A finished,
+ * aborted, errored or idle run has no next frame coming, so "stalled" would be
+ * a lie, not a warning; a PAUSED run's frame gap is fully explained by the
+ * pause, not a fault. All five read "none" here — only "running" can escalate.
+ */
+export function stallLevel(
+  seqState: SequenceState["state"],
+  secsSinceFrame: number | null,
+  exposureS: number,
+): StallLevel {
+  if (seqState !== "running") return "none";
+  if (secsSinceFrame == null || exposureS <= 0) return "none";
+  if (secsSinceFrame > exposureS * 3 + STALL_MARGIN_S) return "red";
+  if (secsSinceFrame > exposureS * 2) return "amber";
+  return "none";
 }

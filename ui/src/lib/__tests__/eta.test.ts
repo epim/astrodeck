@@ -11,9 +11,11 @@ import {
   fmtClock,
   fmtCountdown,
   deriveFinish,
+  stallLevel,
   LIVE_WINDOW_S,
   COOLER_AT_TARGET_C,
   ETA_MIN_FRAMES,
+  STALL_MARGIN_S,
 } from "../eta";
 
 // ---------------------------------------------------------------- harness
@@ -152,6 +154,34 @@ test("eta assembly: in-flight frame counted exactly once", () => {
   const naiveRemaining = (framesRemainingAfterCurrent + 1) * exposure; // wrong: includes in-flight
   const naiveEta = naiveRemaining + inFlight + overhead;
   eq(naiveEta - etaS, exposure, "double-count overstates by exactly one exposure");
+});
+
+// ---------------------------------------------------------------- stallLevel
+// Gating regression for R3-MON-01: a COMPLETE run showed "CAPTURE STALLED?"
+// for minutes because the old check ignored sequence state entirely.
+test("stallLevel: running + overdue past 2x exposure -> amber", () => {
+  eq(stallLevel("running", 21, 10), "amber", "10s exposure, 21s since frame");
+});
+test("stallLevel: running + overdue past 3x exposure + margin -> red", () => {
+  eq(stallLevel("running", 10 * 3 + STALL_MARGIN_S + 1, 10), "red", "past hard threshold");
+});
+test("stallLevel: running + fresh frame -> none", () => {
+  eq(stallLevel("running", 3, 10), "none", "well within 2x exposure");
+});
+test("stallLevel: running at exactly 2x exposure boundary is still none (strict >)", () => {
+  eq(stallLevel("running", 20, 10), "none", "boundary itself doesn't amber");
+});
+test("stallLevel: terminal + paused states never escalate even when wildly overdue", () => {
+  const overdueS = 10 * 3 + STALL_MARGIN_S + 999; // absurdly overdue
+  for (const s of ["paused", "complete", "aborted", "error", "idle", "nina_native"] as const) {
+    eq(stallLevel(s, overdueS, 10), "none", `state=${s} must never show stall`);
+  }
+});
+test("stallLevel: null secsSinceFrame (no frame yet) -> none even while running", () => {
+  eq(stallLevel("running", null, 10), "none", "no frame observed yet");
+});
+test("stallLevel: zero/negative exposure can't divide into a threshold -> none", () => {
+  eq(stallLevel("running", 999, 0), "none", "zero exposure");
 });
 
 // ---------------------------------------------------------------- report
