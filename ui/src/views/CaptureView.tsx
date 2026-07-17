@@ -5,6 +5,7 @@ import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Field, Led, Panel, Stat, Toggle } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
+import { isExposureInvalid } from "../lib/exposure";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 
@@ -59,10 +60,12 @@ export default function CaptureView() {
   const captureBlocked = polarBusy || seqOwnsCamera; // can't expose while blocked
 
   // Exposure ≤0 silently produced a blank frame + a misleading "few stars"
-  // error downstream (CAP-02-gemini / r1 CAP-01-neg) — block it here, before
-  // any request is built.
+  // error downstream (CAP-02-gemini / r1 CAP-01-neg); an absurd/unbounded
+  // value (incl. scientific notation, which is a finite number and would
+  // otherwise pass) is just as wrong (R3-CAP-02 note) — block both here,
+  // before any request is built.
   const exposureNum = Number(exposure);
-  const exposureInvalid = exposure.trim() === "" || !Number.isFinite(exposureNum) || exposureNum <= 0;
+  const exposureInvalid = isExposureInvalid(exposure);
   const exposureS = exposureInvalid ? 1 : exposureNum;
   const body = {
     exposure_s: exposureS,
@@ -195,7 +198,7 @@ export default function CaptureView() {
                 onChange={(e) => setExposure(e.target.value)}
               />
               {exposureInvalid && (
-                <p className="text-[11px] text-bad mt-1">Exposure must be greater than 0s</p>
+                <p className="text-[11px] text-bad mt-1">Exposure must be 0–3600s</p>
               )}
             </Field>
             <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`}>
