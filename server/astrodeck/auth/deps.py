@@ -160,6 +160,11 @@ def build_provider(auth_cfg) -> AuthProvider:
         default_role=getattr(auth_cfg, "default_role", None),
         hd=getattr(auth_cfg, "google_hd", "") or "",
         revoked_jti=revoked,
+        # R4B-AUTH-01: session-invalidation floor. Tokens minted under an older
+        # ``auth.session_epoch`` (i.e. before auth was last re-enabled) never
+        # resolve, so a session that survived an auth-off interval carries no
+        # authority into the new epoch.
+        min_epoch=int(getattr(auth_cfg, "session_epoch", 0) or 0),
     )
 
 
