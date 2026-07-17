@@ -38,7 +38,7 @@ import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
-import { useCanControlMount, useCanViewSitePrecise } from "../lib/caps";
+import { accessPhrase, useCanControlMount, useCanViewSitePrecise } from "../lib/caps";
 import {
   CountdownTile,
   deriveHealthIssues,
@@ -119,8 +119,9 @@ export default function MonitorView() {
   // Pause/Resume/Abort. Those hit the same /api/sequence/{pause,resume,abort}
   // routes as SequenceView's run controls, which require control.mount (a
   // running sequence slews the mount) — NOT control.capture. A viewer (and an
-  // operator, who lacks control.mount) sees the dashboard fully but not the
-  // controls row.
+  // operator, who lacks control.mount) sees the dashboard fully; the controls
+  // row stays in place but DISABLED with a lock note (R4B-MON-01/02: stable
+  // screen anatomy — permissions change enabled state, never what exists).
   const canRun = useCanControlMount();
 
   const reducedMotion = useReducedMotion();
@@ -332,22 +333,35 @@ export default function MonitorView() {
           </div>
 
           {/* controls row — only when run-related (idle/complete/nina show none).
-              Hidden for viewers (W2.5: run-control is control.capture). */}
-          {runActive && canRun && (
-            <div className="flex items-center gap-2 mt-3">
-              <PauseButton
-                paused={paused}
-                onPause={() => act(() => api.post("/api/sequence/pause"))}
-                onResume={() => act(() => api.post("/api/sequence/resume"))}
-              />
-              <HoldButton
-                face="Abort"
-                label="Abort sequence"
-                danger
-                onConfirm={abort}
-                hint={!wsConnected ? "link down — sending anyway" : undefined}
-              />
-            </div>
+              Rendered for EVERY role in the same position; non-control.mount
+              roles get the controls DISABLED plus one shared lock note whose
+              copy derives from the enforced capability (R4B-MON-01/02). */}
+          {runActive && (
+            <>
+              <div className="flex items-center gap-2 mt-3">
+                <PauseButton
+                  paused={paused}
+                  disabled={!canRun}
+                  onPause={() => act(() => api.post("/api/sequence/pause"))}
+                  onResume={() => act(() => api.post("/api/sequence/resume"))}
+                />
+                <HoldButton
+                  face="Abort"
+                  label="Abort sequence"
+                  danger
+                  disabled={!canRun}
+                  onConfirm={abort}
+                  hint={!wsConnected && canRun ? "link down — sending anyway" : undefined}
+                />
+              </div>
+              {!canRun && (
+                <p className="text-[11px] text-dim mt-2 inline-flex items-center gap-1.5">
+                  <Icon name="lock" size={11} />
+                  View only — pausing, resuming or aborting this run needs{" "}
+                  {accessPhrase("control.mount")}.
+                </p>
+              )}
+            </>
           )}
         </header>
 

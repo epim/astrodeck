@@ -28,7 +28,7 @@ import {
   setProvidersConfig,
 } from "../api/backends";
 import { useConfig, useStore } from "../store";
-import { useCanConfigBackend } from "../lib/caps";
+import { accessPhrase, useCanConfigBackend } from "../lib/caps";
 import {
   buildRigSpec,
   deviceChoices,
@@ -359,7 +359,7 @@ export default function EquipmentView(): JSX.Element {
           {!canConfig && (
             <p className="text-[11px] text-dim mt-2 inline-flex items-center gap-1.5">
               <Icon name="lock" size={11} />
-              Read-only — connecting equipment needs operator or admin access.
+              Read-only — connecting equipment needs {accessPhrase("config.backend")}.
             </p>
           )}
         </Panel>

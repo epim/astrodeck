@@ -16,7 +16,7 @@ import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { fmtTime } from "../lib/visibility";
-import { useCanControlMount } from "../lib/caps";
+import { accessPhrase, useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
@@ -936,17 +936,20 @@ export default function SequenceView() {
             ever starts via the modal's onProceed (which threads `force`). */}
         <PreflightStrip plan={plan} onReview={() => setPreflightOpen(true)} />
 
-        {canRun ? (
-          <button className="btn btn-accent !py-3 !text-sm"
-            disabled={running || totalFrames === 0 || verdict === "blocked"}
-            onClick={() => setPreflightOpen(true)}>
-            ≡ Run Sequence
-          </button>
-        ) : (
-          // Viewer: no run control — a passive read-only note, never a 403-on-tap.
+        {/* Run stays VISIBLE for every role (R4B-PLAN-02: stable screen anatomy —
+            permissions change enabled state, not what exists). Non-holders get it
+            disabled with a lock note whose copy derives from the SAME capability
+            the control enforces (control.mount — accessPhrase, R4B-PLAN-01). */}
+        <button className="btn btn-accent !py-3 !text-sm"
+          disabled={!canRun || running || totalFrames === 0 || verdict === "blocked"}
+          onClick={() => setPreflightOpen(true)}>
+          ≡ Run Sequence
+        </button>
+        {!canRun && (
           <p className="text-[11px] text-warn text-center inline-flex items-center justify-center gap-2 py-2">
-            <ReadOnlyBadge label="View only" reason="Running a sequence needs operator or admin access." />
-            Running a sequence needs operator or admin access.
+            <ReadOnlyBadge label="View only"
+              reason={`Running a sequence needs ${accessPhrase("control.mount")}.`} />
+            Running a sequence needs {accessPhrase("control.mount")}.
           </p>
         )}
         {canRun && totalFrames === 0 && (
