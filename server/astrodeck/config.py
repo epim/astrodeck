@@ -172,6 +172,19 @@ class AuthConfig(BaseModel):
     session_public_key: str = ""         # home verifies its own sessions
     session_ttl_s: int = 28800           # session lifetime (8h); used by BOTH local + google logins
     local_enabled_first_run: bool = True  # allow the first-admin setup path while the user store is empty
+    trust_loopback: bool = True          # G4: False => a loopback (127.0.0.1/::1) caller no longer
+                                          # auto-resolves to admin under the open/"none" provider -- it
+                                          # is hard-denied (401) exactly like a W3 remote-tunneled caller,
+                                          # so it must authenticate via a configured method (local/google)
+                                          # or admin_token like any other client. Only affects the "none"
+                                          # provider's open-admin short-circuit; a no-op once a real method
+                                          # is configured (loopback already gets no special treatment
+                                          # there). Default True = today's behavior, unchanged. FOOTGUN:
+                                          # flipping this to False over loopback with no session cookie and
+                                          # no other auth configured locks that browser out on its very next
+                                          # request -- recover by editing config/astrodeck.json
+                                          # (auth.trust_loopback -> true) and restarting the server, or seed
+                                          # a local admin with ``python -m astrodeck create-admin``.
     relay_pubkey: str = ""               # verify relay-forwarded principal (W3 seam)
     viewer_link_pubkey: str = ""         # SEPARATE key for viewer links (W3 seam)
     revoked_jti: list[str] = Field(default_factory=list)  # append-only deny registry; admin.users-gated ONLY

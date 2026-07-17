@@ -52,6 +52,21 @@ The default bind is `0.0.0.0` (all interfaces) so the LAN tablet can reach it.
 On startup, binding a non-loopback interface **without** a token logs a loud
 `SECURITY WARNING`.
 
+### Testing role gating from loopback (`auth.trust_loopback`)
+
+Separately from the bind interface above: when a sign-in method (local/Google)
+is enabled, a loopback (127.0.0.1) caller is normally **still** granted admin
+automatically if no method is configured — the same open-admin default every
+other direct caller gets. That makes it impossible to verify operator/viewer
+behavior from the machine running the server. Set `auth.trust_loopback: false`
+(via `POST /api/auth/config` or the Settings → Sign-in methods panel) to make a
+loopback caller authenticate exactly like a remote one. Default is `true`
+(today's behavior, unchanged). **Footgun:** disabling it while no method is
+enabled and no session cookie already exists locks that browser out
+immediately — recover by editing `trust_loopback` back to `true` in the
+server's config file and restarting, or by seeding an account with
+`python -m astrodeck create-admin`.
+
 ## Remote / untrusted-network deployment
 
 A shared token over plain HTTP is still sent in the clear. For anything beyond a

@@ -39,6 +39,16 @@ from .providers import (AuthProvider, GoogleAuthProvider, MultiAuthProvider,
 # at module scope (mirrors the ``hub`` / ``config_store`` singleton pattern).
 _active_provider: AuthProvider = NoneAuthProvider()
 
+# G4 (loopback-trust test mode): mirrors ``AuthConfig.trust_loopback``. Default
+# True = today's behavior (a loopback caller under the "none" provider is
+# admin, same as every other direct caller). Held at module scope like
+# ``_active_provider`` and installed by ``configure_provider_from_auth`` so a
+# runtime ``/api/auth/config`` save takes effect immediately (no restart),
+# exactly like a role-allowlist/provider change.
+_trust_loopback: bool = True
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
 
 def set_active_provider(provider: AuthProvider) -> None:
     """Install the active auth provider (called once at app create)."""
@@ -50,12 +60,37 @@ def get_active_provider() -> AuthProvider:
     return _active_provider
 
 
+def set_trust_loopback(trust: bool) -> None:
+    """Install the G4 loopback-trust flag (mirrors ``set_active_provider``)."""
+    global _trust_loopback
+    _trust_loopback = bool(trust)
+
+
+def get_trust_loopback() -> bool:
+    return _trust_loopback
+
+
+def _is_loopback_request(request: Request) -> bool:
+    """True iff ``request`` arrived from a loopback address (127.0.0.1/::1).
+
+    Mirrors the ``--host`` loopback check in ``__main__.py``. ``request.client``
+    is ``None`` on some synthetic/test scopes -- treated as NOT loopback (the
+    conservative/fail-closed direction: an unknown origin does not get the
+    open-admin short-circuit when ``trust_loopback`` is False)."""
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", None) if client is not None else None
+    return host in _LOOPBACK_HOSTS
+
+
 def reset_active_provider() -> None:
     """Restore the open-default provider (tests + a clean app re-create).
 
     Also disarms the session-secret fail-closed interlock so a prior test that
-    enabled a method cannot leave ``sign_session`` armed for the next test."""
+    enabled a method cannot leave ``sign_session`` armed for the next test, and
+    restores ``trust_loopback`` to its default True so a test that disabled it
+    cannot leak into the next one."""
     set_active_provider(NoneAuthProvider())
+    set_trust_loopback(True)
     from . import session as _session
     _session.set_require_real_secret(False)
 
@@ -116,13 +151,17 @@ def configure_provider_from_auth(auth_cfg) -> AuthProvider:
     unset, and (b) ARM the fail-closed interlock so ``sign_session`` raises and
     sessions refuse to verify if a real secret could NOT be established. With NO
     method enabled (open/admin default) the interlock is disarmed and behavior is
-    byte-for-byte unchanged."""
+    byte-for-byte unchanged.
+
+    Also installs the G4 ``trust_loopback`` flag (default True if the passed
+    ``auth_cfg`` predates the field, e.g. an old in-memory object in a test)."""
     from . import session as _session
     if _effective_methods(auth_cfg):
         ok = _session.ensure_real_secret()
         _session.set_require_real_secret(not ok or _session.secret_is_default())
     else:
         _session.set_require_real_secret(False)
+    set_trust_loopback(bool(getattr(auth_cfg, "trust_loopback", True)))
     provider = build_provider(auth_cfg)
     set_active_provider(provider)
     return provider
@@ -152,10 +191,20 @@ async def resolve_principal(request: Request, *, remote: bool = False) -> Princi
     ``remote`` is the W3 relay interlock (seam): when a scope is REMOTE-flagged
     AND the active provider is ``none``, resolution HARD-DENIES (returns None,
     NOT admin) so the open-default can never leak over a relay. On the
-    LAN-direct path ``remote=False``, so today's open behavior is untouched."""
+    LAN-direct path ``remote=False``, so today's open behavior is untouched.
+
+    G4 (loopback-trust test mode): the SAME hard-deny applies to a loopback
+    caller when ``trust_loopback`` is False -- a loopback request under the
+    open ``none`` provider is treated exactly like a W3 remote caller (None,
+    never admin), so it must authenticate like everyone else. A no-op once a
+    real method/token is configured (that provider's ``name`` is not ``"none"``
+    and never special-cased loopback to begin with)."""
     provider = _active_provider
-    if remote and getattr(provider, "name", None) == "none":
-        return None  # open-default must never be served remotely (W3 interlock)
+    if getattr(provider, "name", None) == "none":
+        if remote:
+            return None  # open-default must never be served remotely (W3 interlock)
+        if not _trust_loopback and _is_loopback_request(request):
+            return None  # G4: loopback no longer auto-admin under the open default
     return await provider.resolve(request)
 
 
@@ -204,6 +253,7 @@ __all__ = [
     "require", "requires", "get_principal", "resolve_principal",
     "_scope_is_remote",
     "set_active_provider", "get_active_provider", "reset_active_provider",
+    "set_trust_loopback", "get_trust_loopback",
     "build_provider", "configure_provider_from_auth",
     # re-export the cap strings most routes reference, so app.py can import the
     # dependency factory and the caps from one module.
