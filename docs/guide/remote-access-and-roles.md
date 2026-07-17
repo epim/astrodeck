@@ -66,7 +66,7 @@ The source of truth is `server/astrodeck/auth/capabilities.py`.
 | Role | Holds | Cannot |
 |------|-------|--------|
 | **viewer** | `view.status`, `view.preview` | everything else |
-| **operator** | viewer + `control.capture`, `control.guide` | mount, power, config, media, precise site |
+| **operator** | viewer + `control.capture`, `control.guide`, `control.mount` | power, config, media, precise site |
 | **admin** | **all** capabilities | — |
 
 What the individual capabilities gate:
@@ -77,10 +77,12 @@ What the individual capabilities gate:
 - **`view.site_precise`** — the exact site coordinates, and (new in the weather
   feature) the whole forecast / Sky Conditions / radar surface. **Admin only.**
 - **`control.capture`** — imaging: capture, loop, autofocus, cooler, dew heater,
-  focuser, filter wheel. (Operator can image but **cannot start a slewing
-  sequence**.)
+  focuser, filter wheel.
 - **`control.mount`** — all mount motion (slew, park, tracking) **and** starting
-  a multi-target sequence (which slews). Admin only.
+  a multi-target sequence (which slews), plus pausing/resuming/aborting a
+  running sequence and session regrade. Operators are meant to run sequences
+  (this is the intended use of the role — the eventual basis for a
+  telescope-rental interface), so **operator holds it too**, not just admin.
 - **`control.guide`** — start/stop/dither guiding.
 - **`control.power`** — switch outputs (can brown out the rig). Admin only.
 - **`config.backend`** — connect rigs, apply/activate profiles. **Admin only**
@@ -111,16 +113,16 @@ tracks what's really hidden/disabled per role, not just the intent:
 | **Equipment** (drivers, device assignment, Rig Actions, Tasks, Rotator, Profiles) | read-only | read-only (`config.backend` required; operator doesn't hold it) | full |
 | **Capture** | preview only, **Read-only** badge | full (`control.capture`) | full |
 | **Focus** | preview only | full (`control.capture`) | full |
-| **Mount** | pointing visible, controls disabled | disabled (`control.mount` — operator doesn't hold it) | full |
-| **Align** (polar) | visible, disabled | disabled (`control.mount`) | full |
+| **Mount** | pointing visible, controls disabled | full (`control.mount`) | full |
+| **Align** (polar) | visible, disabled | full (`control.mount`) | full |
 | **Guide** | graph visible, disabled | full (`control.guide`) | full |
 | **Power** | read-only ports | disabled (`control.power`) | full |
 | **Sky Atlas** | full (search, framing, mosaic, visibility are all local/client-side) | full | full |
 | **Plan** — building the on-screen draft | full (local-only, no capability check) | full | full |
 | **Plan** — plan library save/import/delete | disabled | enabled (`control.capture`) | enabled |
-| **Plan** — Run / Monitor's Pause / Resume / Abort | visible but **disabled**, with a lock note naming the required access | **disabled — same lock note as viewer** (`control.mount` is admin-only; operator doesn't hold it despite holding `control.capture`) | full |
-| **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | resume/auto-resume-arm/update-from-plan/delete need `control.mount` (disabled); regrade controls carry the **same lock note**, for the same reason | full |
-| **Monitor** | dashboard fully visible, controls row **disabled** with a shared lock note | dashboard fully visible, controls row **disabled** (`control.mount` is admin-only — same note as viewer) | full |
+| **Plan** — Run / Monitor's Pause / Resume / Abort | visible but **disabled**, with a lock note naming the required access | full (`control.mount`) | full |
+| **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | full — resume/auto-resume-arm/update-from-plan/delete/regrade all enabled (`control.mount`) | full |
+| **Monitor** | dashboard fully visible, controls row **disabled** with a shared lock note | dashboard fully visible, controls row **enabled** (`control.mount`) | full |
 | **Sky Conditions / Radar** (on Monitor) and the **Weather** settings panel | never rendered — no request even fires | never rendered | full (`view.site_precise`) |
 | **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics` — operator holds neither) | full |
 | **Settings → Safety** (sun avoidance) | current value shown, toggle disabled | disabled (`config.solar_override` is admin-only) | full |
@@ -131,12 +133,13 @@ tracks what's really hidden/disabled per role, not just the intent:
 > "disabled" or "hidden" for a role is enforced **in the UI itself**, not
 > just on the server: the control renders in its normal position, disabled,
 > next to a short lock note naming the real requirement — e.g. the Session
-> review drawer prints *"Read-only — regrading frames needs admin access."*
-> next to a greyed-out **mark accepted** / **mark rejected** pair, and the
-> Plan view shows a disabled **≡ Run Sequence** button over a *"Running a
-> sequence needs admin access."* note. The lock-note wording is generated
-> from the same capability table the gate enforces (`accessPhrase` in
-> `ui/src/lib/caps.ts`, mirroring the server's role table), so the text
+> review drawer prints *"Read-only — regrading frames needs operator or admin
+> access."* next to a greyed-out **mark accepted** / **mark rejected** pair
+> for a viewer, and the Plan view shows a disabled **≡ Run Sequence** button
+> over a *"Running a sequence needs operator or admin access."* note (again,
+> viewer-only now that operator holds `control.mount`). The lock-note wording
+> is generated from the same capability table the gate enforces (`accessPhrase`
+> in `ui/src/lib/caps.ts`, mirroring the server's role table), so the text
 > always names the role that actually holds the capability — and no role
 > gets a surprise 403 from a control that looked enabled.
 

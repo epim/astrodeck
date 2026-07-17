@@ -50,12 +50,12 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
   // raw FITS (view.media) and no precise coordinates (view.site_precise).
   viewer:
     "Live status and preview frames only — no raw FITS, no precise site location, no device control.",
-  // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide;
-  // explicitly NOT control.mount/control.power/config.*/view.media (see the
-  // server comment: "can run a single capture/loop + guiding ... but CANNOT
-  // start a slewing sequence").
+  // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide +
+  // control.mount (2026-07-17 decisions wave I1: operators run sequences —
+  // future telescope-rental interface); explicitly NOT control.power/
+  // config.*/view.media.
   operator:
-    "Runs imaging: capture, capture loops, autofocus, and guiding. Cannot slew the mount, control power, or change settings.",
+    "Runs imaging and sequences: capture, capture loops, autofocus, guiding, and mount motion. Cannot control power or change settings.",
   // ALL_CAPS: every capability, including the DESTRUCTIVE-tier ones (mount
   // motion, power, safety/solar override, admin.users, system.update).
   admin:
@@ -73,9 +73,12 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
 const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
   // VIEWER_LINK_CAPS: live-watch only.
   viewer: ["view.status", "view.preview"],
-  // ROLES_CAP["operator"]: viewer caps + capture + guide — explicitly NOT
-  // mount/power/config.*/media.
-  operator: ["view.status", "view.preview", "control.capture", "control.guide"],
+  // ROLES_CAP["operator"]: viewer caps + capture + guide + mount (2026-07-17
+  // decisions wave I1: operators run sequences) — explicitly NOT power/
+  // config.*/media.
+  operator: [
+    "view.status", "view.preview", "control.capture", "control.guide", "control.mount",
+  ],
   // ALL_CAPS.
   admin: [
     "view.status", "view.preview", "view.media", "view.site_precise",
