@@ -101,13 +101,22 @@ class SessionCookieProvider:
 
     ``revoked_jti`` is checked here so a logged-out / admin-revoked session is
     rejected on its very next request.
+
+    ``min_epoch`` is the session-invalidation floor (R4B-AUTH-01): a token whose
+    ``epoch`` claim is below the configured ``auth.session_epoch`` was minted
+    before authentication was last (re)enabled and resolves to None -- so a
+    session that survived an auth-off interval in some browser can never carry
+    authority into the new epoch. 0 (the default) accepts every token including
+    legacy ones without the claim, keeping existing deployments byte-for-byte.
     """
 
     name = "session"
     COOKIE_NAME = "ad_session"
 
-    def __init__(self, revoked_jti: frozenset[str] | None = None):
+    def __init__(self, revoked_jti: frozenset[str] | None = None, *,
+                 min_epoch: int = 0):
         self._revoked = frozenset(revoked_jti or ())
+        self._min_epoch = int(min_epoch or 0)
 
     def _present_session(self, request: "Request") -> str | None:
         cookie = request.cookies.get(self.COOKIE_NAME)
@@ -130,6 +139,12 @@ class SessionCookieProvider:
         jti = claims.get("jti")
         if jti is not None and jti in self._revoked:
             return None  # revoked -> fail closed
+        if self._min_epoch:
+            try:
+                if int(claims.get("epoch", 0)) < self._min_epoch:
+                    return None  # minted under an older auth epoch -> fail closed
+            except (TypeError, ValueError):
+                return None  # malformed epoch claim -> fail closed
         role = claims.get("role")
         if not isinstance(role, str):
             return None
@@ -158,8 +173,10 @@ class LocalAuthProvider:
 
     name = "local"
 
-    def __init__(self, *, revoked_jti: frozenset[str] | None = None):
-        self._session = SessionCookieProvider(revoked_jti=revoked_jti)
+    def __init__(self, *, revoked_jti: frozenset[str] | None = None,
+                 min_epoch: int = 0):
+        self._session = SessionCookieProvider(revoked_jti=revoked_jti,
+                                              min_epoch=min_epoch)
 
     async def resolve(self, request: "Request") -> Principal | None:
         return await self._session.resolve(request)
@@ -186,7 +203,8 @@ class MultiAuthProvider:
                  admin_token: str = "",
                  role_allowlist: dict[str, str] | None = None,
                  default_role: str | None = None, hd: str = "",
-                 revoked_jti: frozenset[str] | None = None):
+                 revoked_jti: frozenset[str] | None = None,
+                 min_epoch: int = 0):
         # Preserve a stable, deduped method order: local before google.
         ordered = [m for m in ("local", "google") if m in (methods or [])]
         self._methods = ordered
@@ -196,7 +214,9 @@ class MultiAuthProvider:
         token = (admin_token or "").strip()
         self._token_provider = TokenAdminProvider(token) if token else None
         # Step 2: the shared session-cookie resolver (local + google cookies).
-        self._session = SessionCookieProvider(revoked_jti=self._revoked)
+        # ``min_epoch`` rejects sessions minted before auth was (re)enabled.
+        self._session = SessionCookieProvider(revoked_jti=self._revoked,
+                                              min_epoch=min_epoch)
         # Google metadata retained so the login route / allowlist mapping can
         # read it back off the active provider (re-evaluated per request there).
         self.role_allowlist = dict(role_allowlist or {})
@@ -236,11 +256,13 @@ class GoogleAuthProvider:
 
     def __init__(self, *, role_allowlist: dict[str, str] | None = None,
                  default_role: str | None = None, hd: str = "",
-                 revoked_jti: frozenset[str] | None = None):
+                 revoked_jti: frozenset[str] | None = None,
+                 min_epoch: int = 0):
         self.role_allowlist = dict(role_allowlist or {})
         self.default_role = default_role
         self.hd = hd or ""
-        self._session = SessionCookieProvider(revoked_jti=revoked_jti)
+        self._session = SessionCookieProvider(revoked_jti=revoked_jti,
+                                              min_epoch=min_epoch)
 
     def role_for_email(self, email: str) -> str | None:
         """email -> role via the allowlist (re-evaluated EVERY request), else

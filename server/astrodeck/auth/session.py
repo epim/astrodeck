@@ -160,6 +160,20 @@ def ensure_real_secret() -> bool:
     return not secret_is_default()
 
 
+def _current_session_epoch() -> int:
+    """The active config's ``auth.session_epoch``, or 0 when unreadable.
+
+    Lazy config read (mirrors ``_secret_dir``) so this module stays
+    import-light. Every mint path stamps this into the token automatically, so
+    a future login route can never forget the claim and mint a token that dies
+    at the next epoch bump (R4B-AUTH-01)."""
+    try:
+        from ..config import config_store
+        return int(getattr(config_store.cfg().auth, "session_epoch", 0) or 0)
+    except Exception:  # noqa: BLE001 - unreadable config -> epoch 0 (legacy)
+        return 0
+
+
 def set_require_real_secret(value: bool) -> None:
     """Arm/disarm the fail-closed interlock. ARMED => ``sign_session`` raises and
     ``decode_session`` refuses while the secret is still the public dev default."""
@@ -193,12 +207,19 @@ def _sign(signing_input: bytes, secret: bytes) -> str:
 def sign_session(role: str, email: str | None = None, *,
                  jti: str | None = None, ttl_s: int | None = None,
                  secret: bytes | None = None,
-                 now: float | None = None) -> str:
+                 now: float | None = None,
+                 epoch: int | None = None) -> str:
     """Mint a signed session token carrying ``role`` (+ ``email``/``jti``/exp).
 
     ``ttl_s`` (seconds) sets an ``exp`` claim; None => no expiry claim (the
     token never times out -- use only for long-lived dev sessions). ``secret``
     overrides the env secret (tests). Returns the compact ``h.p.s`` string.
+
+    Every token carries an ``epoch`` claim (the active config's
+    ``auth.session_epoch``, or the explicit ``epoch`` override for tests).
+    Providers reject tokens whose epoch is below the configured one, so a
+    session minted before authentication was (re)enabled never survives the
+    transition (R4B-AUTH-01).
 
     FAIL-CLOSED: if the interlock is armed (a real auth method is enabled) and no
     explicit ``secret`` is supplied while the effective secret is still the
@@ -217,6 +238,7 @@ def sign_session(role: str, email: str | None = None, *,
         payload["email"] = email
     if jti is not None:
         payload["jti"] = jti
+    payload["epoch"] = _current_session_epoch() if epoch is None else int(epoch)
     payload["iat"] = int(now)
     if ttl_s is not None:
         payload["exp"] = int(now) + int(ttl_s)

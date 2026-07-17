@@ -188,6 +188,14 @@ class AuthConfig(BaseModel):
     relay_pubkey: str = ""               # verify relay-forwarded principal (W3 seam)
     viewer_link_pubkey: str = ""         # SEPARATE key for viewer links (W3 seam)
     revoked_jti: list[str] = Field(default_factory=list)  # append-only deny registry; admin.users-gated ONLY
+    session_epoch: int = 0               # monotonic session-invalidation epoch (R4B-AUTH-01).
+                                          # Bumped by ``ConfigStore.set_auth`` whenever authentication
+                                          # transitions from OFF (no method) to ON, so every session
+                                          # token minted under an earlier epoch stops verifying the
+                                          # moment auth is (re)enabled. Tokens carry an ``epoch`` claim
+                                          # (auth/session.py); providers reject claims below this value
+                                          # (auth/providers.py). Non-secret; server-owned (a client echo
+                                          # can never LOWER it -- set_auth clamps to max(old, new)).
 
     @model_validator(mode="after")
     def _migrate_legacy_provider(self) -> "AuthConfig":
@@ -568,6 +576,18 @@ class ConfigStore:
         """
         validate_auth_config(auth, current=self.cfg().auth)
         cfg = self.cfg()
+        old = cfg.auth
+        # Session-epoch invariant (R4B-AUTH-01). The epoch is SERVER-owned: a
+        # client echoing a stale redacted block can never lower it (clamp to
+        # max), and the OFF -> ON transition (no enabled method -> any enabled
+        # method) advances it so every session minted under an earlier epoch --
+        # including one that survived an auth-off interval in some browser --
+        # stops verifying the moment authentication is (re)enabled.
+        epoch = max(int(auth.session_epoch or 0), int(old.session_epoch or 0))
+        if not old.methods_effective() and auth.methods_effective():
+            epoch += 1
+        if epoch != auth.session_epoch:
+            auth = auth.model_copy(update={"session_epoch": epoch})
         cfg.auth = auth
         return self.bump_and_save()
 
