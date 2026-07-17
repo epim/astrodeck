@@ -8,10 +8,38 @@ let socket: WebSocket | null = null;
 let retryMs = 1000;
 let everConnected = false;
 let staleTicker: number | null = null;
+let reconnectTimer: number | null = null;
 
 const STALE_MS = 20000; // socket up but no frame for 20s AND not busy
 
+// Resolve the auth signals that decide the login gate — INDEPENDENTLY of the WS.
+// ROOT CAUSE of H1: these used to live ONLY in socket.onopen. But the WS upgrade
+// is rejected (close 1008 before accept) the instant a sign-in method is enabled
+// and this client has no session, so onopen never fires. With the signals trapped
+// there, `authMethods`/`principal` stayed null, shouldShowLogin failed OPEN, and
+// the app rendered the operational shell + a "DISPLAY DISCONNECTED" banner instead
+// of a sign-in form. Fetching them here (at every connect attempt AND on every
+// drop) lets the client learn "auth required" via /api/me → 401 even though the
+// socket never opens. loadPrincipal pins a viewer sentinel on 401; loadAuthMethods
+// serves Login the enabled-method truth. Both are best-effort (a network error
+// leaves the prior value, so a genuine link-down never strips the gate).
+function bootstrapAuth(): void {
+  const st = useStore.getState();
+  void st.loadAuthMethods();
+  void st.loadPrincipal();
+}
+
 export function connectWs(): void {
+  // We're connecting now — drop any scheduled retry so a manual/post-login kick
+  // (reconnectWs) or a fresh boot can't stack a second socket behind a timer.
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  // Discover auth state up front so the Login gate can render even when the WS
+  // handshake is about to be rejected (auth required, no session) — see above.
+  bootstrapAuth();
+
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const s = useStore.getState();
   s.setWsPhase(everConnected ? "reconnecting" : "connecting");
@@ -25,16 +53,14 @@ export function connectWs(): void {
     st.noteWsEvent();
     if (!staleTicker) staleTicker = window.setInterval(tickStale, 1000);
     // Hydrate config at boot (and re-hydrate after reconnect) so settings-derived
-    // UI isn't blank/defaults until a config mutation. Fire-and-forget.
+    // UI isn't blank/defaults until a config mutation. Fire-and-forget. (The
+    // principal + auth-methods signals are already resolved by bootstrapAuth at
+    // the top of connectWs, so they are current for this now-open socket.)
     void st.loadConfig();
-    // Resolve the RBAC principal alongside config (W2.5). Fail-closed: until this
-    // lands the cap gates treat the caller as a viewer; under the `none` provider
-    // it resolves to admin + ALL caps, so the default LAN UI is unchanged.
+    // Refresh the principal on a successful (re)connect too: a post-login
+    // reconnect carries the new session cookie, so /api/me now resolves the
+    // signed-in identity and the role gates flip live.
     void st.loadPrincipal();
-    // Resolve the login-screen signal (W2.6). Under the open default this returns
-    // {methods:[]} ⇒ NO login screen (LAN UI unchanged); when a method is enabled
-    // and the principal can't resolve, App shows the Login gate.
-    void st.loadAuthMethods();
     // Hydrate the self-update snapshot (current/latest/availability). Cheap GET;
     // thereafter the `update` WS event keeps it live. Fail-quiet.
     void st.loadUpdate();
@@ -79,11 +105,44 @@ export function connectWs(): void {
       clearInterval(staleTicker);
       staleTicker = null;
     }
-    setTimeout(connectWs, retryMs);
+    // Re-check auth on EVERY drop (H1 §2d/2e). An admin enabling a sign-in method
+    // live-flips the provider; the server then closes this socket (4401 re-auth,
+    // then 1008 on the retry) — and a browser can't read that close code as
+    // "auth". Re-resolving /api/me (now 401) + /api/auth/methods routes the tab to
+    // the Login gate instead of leaving it on a bare DISPLAY DISCONNECTED banner.
+    bootstrapAuth();
+    reconnectTimer = window.setTimeout(connectWs, retryMs);
     retryMs = Math.min(retryMs * 1.7, 15000);
   };
 
   socket.onerror = () => socket?.close();
+}
+
+// Force an IMMEDIATE (re)connect after a credential change — a login/logout, or
+// an admin flipping the enabled sign-in methods. Resets the exponential backoff
+// and tears down any pending retry + the current socket so a fresh session lands
+// telemetry at once instead of after up to 15s of backoff. Handlers on the old
+// socket are detached first so its deliberate close() does NOT run the onclose
+// reconnect path (which would stack a second socket).
+export function reconnectWs(): void {
+  retryMs = 1000;
+  if (reconnectTimer !== null) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (socket) {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    try {
+      socket.close();
+    } catch {
+      /* already closing/closed */
+    }
+    socket = null;
+  }
+  connectWs();
 }
 
 function tickStale(): void {

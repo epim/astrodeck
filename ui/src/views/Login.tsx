@@ -18,14 +18,19 @@ import { useStore, useAuthMethods } from "../store";
 import { localLogin, setupLocalAdmin } from "../api/backends";
 import { ApiError } from "../api";
 import { u } from "../lib/base";
+import { reconnectWs } from "../ws";
 import { Icon } from "../components/icons";
 import Logo from "../components/Logo";
 
 // Re-resolve identity + gate signals after a credential change. Keep config in
-// sync too (its redacted `auth` block backs the Settings panels).
+// sync too (its redacted `auth` block backs the Settings panels). Then reconnect
+// the WS immediately (H1 §2c): the fresh ad_session cookie now rides the upgrade,
+// so the previously-rejected socket is accepted and telemetry lands at once
+// instead of after up to 15s of reconnect backoff.
 async function refreshSession(): Promise<void> {
   const st = useStore.getState();
   await Promise.all([st.loadPrincipal(), st.loadAuthMethods(), st.loadConfig()]);
+  reconnectWs();
 }
 
 export default function Login(): JSX.Element {
