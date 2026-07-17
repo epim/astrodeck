@@ -7,12 +7,20 @@ centre, autofocus, guide, dither, meridian flip, wind-down).
 **Access.** The plan *builder* on screen — targets, steps, automation
 toggles, schedule — is not access-gated at all: it lives only in this
 browser tab's memory and `localStorage`, so even a viewer can experiment
-with it. What *is* gated: saving/importing/deleting a plan in the
-**Plan library** needs `control.capture`; **starting, pausing, resuming, or
-aborting a sequence** slews the mount and needs `control.mount` (admin —
-see [remote-access-and-roles.md](remote-access-and-roles.md) for the full
-matrix and a caveat about what the Run/Pause/Resume/Abort *buttons*
-currently gate on versus what the server enforces).
+with it. What *is* gated:
+
+- **Saving, saving-as, importing, or deleting** a plan in the library needs
+  `control.capture` — operator and admin both have it; viewer doesn't get
+  the Save / Save as… / Import buttons at all (loading and exporting a
+  saved plan stay open to everyone, since neither writes to the rig).
+- **Starting, pausing, resuming, or aborting a sequence** slews the mount
+  between targets and needs `control.mount` — by default that's **admin
+  only**; operator holds `control.capture` but not `control.mount`, so the
+  **≡ Run Sequence** button (and Monitor's Pause/Resume/Abort) is hidden for
+  operator too, replaced by the same passive "View only" note a viewer gets.
+
+See [remote-access-and-roles.md](remote-access-and-roles.md) for the full
+matrix.
 
 ---
 
@@ -126,29 +134,50 @@ briefly see the run behaving as if it's running: the last frame lands, the
 header banner switches to **SEQUENCE PAUSED** (it no longer misreports
 **SEQUENCE RUNNING** while paused), but a paused run *still counts as owning
 the camera* — manual Single/Loop on [Capture](capture.md) stay blocked with
-*"Sequence paused — camera reserved"* until you resume or abort. A paused run
-can also still trip the [Monitor's stall warning](monitor.md#stall-detection--what-you-actually-see)
-if the in-flight frame that was running when you paused is itself taking
-longer than expected — pausing doesn't retroactively make that frame look
-healthy.
+*"Sequence paused — camera reserved"* until you resume or abort. Once the
+badge actually reads **PAUSED**, the
+[Monitor's stall warning](monitor.md#stall-detection--what-you-actually-see)
+is gated off entirely — it only ever escalates while the state is
+**running**, so a paused run's frame gap is never mistaken for a stall.
 
 Live progress, ETA, and telemetry — plus the stall warning and recovery
 banner in full — are on the [Monitor](monitor.md) view.
 
 ---
 
-## Plan library — save, export, import
+## The Plan panel — identity, library, save/import/export
 
-The **Plan library** panel keeps saved plans (up to 500):
+The Plan panel and the plan library used to be two separate boxes; they're
+now **one panel** (titled **Plan**) so "which plan am I editing, is it
+saved, and what else is saved?" reads as one system:
 
-- **save current** — save the Plan panel's contents (with an *"already exists →
-  Save anyway"* overwrite prompt).
-- **load** — replace the Plan panel with a saved plan (confirmed first).
-- **export** — download a plan as JSON; a toast confirms the file name once
-  the download starts.
-- **import** — load a plan JSON from disk (a plan exported by a *newer* AstroDeck
-  is rejected).
-- **delete** — remove a saved plan.
+- **Header identity.** A **Plan name** field, with a saved/unsaved cue next
+  to it that always tells the truth: **"Unsaved changes"** (warn-coloured,
+  for operator/admin — the editor has diverged since the last save/load),
+  **"Saved"** (matches the loaded library plan), or **"Not saved yet"** (a
+  fresh local draft never written to the library). A viewer sees the same
+  cue, just dimmed, since they have no Save button to act on it with.
+- **Save / Save as… / Import** — a row under the name field, visible only
+  to `control.capture` holders (operator, admin):
+  - **Save** upserts the *loaded* plan in place (no new copy). If nothing is
+    loaded, it mints a new one.
+  - **Save as…** opens an inline name field (prefilled from the current
+    plan name); **Save copy** forks a new, separately-saved plan without
+    touching what's currently loaded, **Cancel** backs out. A name collision
+    prompts *"A plan named '…' already exists — Save anyway as a second
+    copy with the same name?"*.
+  - **Import** loads a plan JSON from disk (a plan exported by a *newer*
+    AstroDeck is rejected).
+- **frames** / **integration** — the plan's headline totals, same numbers as
+  the builder above.
+- **Saved plans (N)** — a collapsible list (up to 500 plans) of two-line
+  rows so a name is never truncated: the **name** on its own full-width
+  line (wraps to two lines rather than ellipsizing), then a metadata chip
+  (*"6t · 300f · 480m"*) plus **load** / **export** / **delete** on the line
+  below. The currently-loaded row is highlighted and tagged **loaded**
+  (**loaded · edited** once you've changed anything). **load** and
+  **export** are open to every role — neither writes to the rig; **delete**
+  needs `control.capture`, so it's hidden for a viewer.
 
 ---
 
@@ -162,8 +191,7 @@ embedded per target in the plan (there is no separate schedule route);
 visibility comes from `GET /api/visibility`. Plan-library writes (save/
 delete/import) require `control.capture`; sequence control
 (start/pause/resume/abort/recover) requires `control.mount` — see the
-**Access** note at the top of this page for the gap between what the UI
-currently shows and what the server enforces.
+**Access** note at the top of this page for who actually holds each one.
 
 ---
 

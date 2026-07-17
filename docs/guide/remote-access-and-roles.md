@@ -83,8 +83,12 @@ What the individual capabilities gate:
   a multi-target sequence (which slews). Admin only.
 - **`control.guide`** — start/stop/dither guiding.
 - **`control.power`** — switch outputs (can brown out the rig). Admin only.
-- **`config.backend`** — connect rigs, apply/activate profiles.
-- **`config.site_optics`** — edit the observing site, optics, and weather config.
+- **`config.backend`** — connect rigs, apply/activate profiles. **Admin only**
+  (operator does not hold it, despite some in-app copy that reads "operator or
+  admin access" — see [equipment-and-profiles.md](equipment-and-profiles.md)).
+- **`config.site_optics`** — edit the observing site, optics, and weather
+  config. **Admin only** (same caveat — see
+  [site-and-locations.md](site-and-locations.md)).
 - **`config.safety`**, **`config.solar_override`** — safety floors and the
   sun-avoidance disarm. Admin only.
 - **`config.alerts`**, **`admin.users`**, **`system.update`** — alerts, user/auth
@@ -114,50 +118,79 @@ tracks what's really hidden/disabled per role, not just the intent:
 | **Sky Atlas** | full (search, framing, mosaic, visibility are all local/client-side) | full | full |
 | **Plan** — building the on-screen draft | full (local-only, no capability check) | full | full |
 | **Plan** — plan library save/import/delete | disabled | enabled (`control.capture`) | enabled |
-| **Plan** — Run / Monitor's Pause / Resume / Abort | hidden (viewer gets a passive "View only" note) | **shown and clickable**, but see the caveat below | full |
-| **Sessions** | cards + review drawer visible; regrade controls are **not disabled in the UI** — see the caveat below | resume/auto-resume-arm/update-from-plan/delete need `control.mount` (disabled); regrade controls not disabled in the UI either | full |
-| **Monitor** | dashboard fully visible, controls row hidden | dashboard visible, controls row shown (same caveat as Plan Run) | full |
+| **Plan** — Run / Monitor's Pause / Resume / Abort | hidden (viewer gets a passive "View only" note) | **hidden — same passive note as viewer** (`control.mount` is admin-only; operator doesn't hold it despite holding `control.capture`) | full |
+| **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | resume/auto-resume-arm/update-from-plan/delete need `control.mount` (disabled); regrade controls carry the **same lock note**, for the same reason | full |
+| **Monitor** | dashboard fully visible, controls row hidden | dashboard fully visible, controls row **hidden** (`control.mount` is admin-only — same as viewer) | full |
 | **Sky Conditions / Radar** (on Monitor) and the **Weather** settings panel | never rendered — no request even fires | never rendered | full (`view.site_precise`) |
-| **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics`) | full |
+| **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics` — operator holds neither) | full |
 | **Settings → Safety** (sun avoidance) | current value shown, toggle disabled | disabled (`config.solar_override` is admin-only) | full |
-| **Settings → Profiles** | hidden (a "needs operator or admin" note instead) | full (`config.backend`) | full |
+| **Settings → Profiles** | hidden (a "needs operator or admin" note instead) | **read-only, same note as viewer** (`config.backend` is admin-only) | full |
 | **Settings → Updates / Users / Auth** | tabs don't exist in the nav | tabs don't exist in the nav | full (`system.update` / `admin.users`) |
 
-> **A caveat worth knowing before you rely on it.** The Plan **≡ Run
-> Sequence** button and Monitor's **Pause / Resume / Abort** row are shown to
-> anyone holding `control.capture` — which includes operator. But the server
-> routes behind all of them (`/api/sequence/start`, `/pause`, `/resume`,
-> `/abort`, `/recover`) require `control.mount`, which **only admin holds**.
-> So today an operator account can open these controls and will get a
-> permission error the moment they press one. Until that's reconciled,
-> treat sequence run-control as **admin-only** in practice, and don't be
-> surprised if an operator reports a button that "doesn't work" here — it's
-> this gap, not a bug in their setup.
->
-> The **Session review drawer**'s regrade controls (mark accepted/rejected)
-> have the same shape of gap, but wider: the drawer applies **no capability
-> check at all** in the UI, so even a **viewer** sees fully-interactive
-> regrade buttons. The server route behind them
-> (`PATCH /api/sessions/{id}/frames/{id}`) requires `control.mount` —
-> admin-only — so a viewer or operator who regrades a frame will get a
-> permission error, not a silent no-op. Treat regrading, like sequence
-> run-control, as admin-only in practice.
+> **What "disabled" actually looks like.** Every row above that reads
+> "disabled" or "hidden" for a role is enforced **in the UI itself**, not
+> just on the server: the button is either not rendered, or rendered
+> `disabled` next to a short lock note quoting the real reason — e.g. the
+> Session review drawer prints *"Read-only — regrading frames needs operator
+> or admin access."* next to a greyed-out **mark accepted** / **mark
+> rejected** pair, and the Plan view swaps the **≡ Run Sequence** button for
+> a passive *"Running a sequence needs operator or admin access."* note. A
+> couple of these in-app messages still say "operator or admin" even though,
+> as the table above shows, only admin actually holds the capability behind
+> them today (`control.mount`, `config.backend`, `config.site_optics`) — the
+> wording is imprecise, but the gate itself is real: no role below the one
+> that's actually required can reach the write, and none of them get a
+> surprise 403 from a control that looked enabled.
 
 ### A disposable way to verify this yourself
 
 Because capability sets can be edited over time, don't just trust this
-table — check it against your own build in a couple of minutes:
+table — check it against your own build in a few minutes. **Order matters**:
+creating a local user account does **not** by itself let anyone sign in as
+that account — the `local` sign-in *method* has to be enabled first, or
+there is no login path at all (see
+[`docs/SECURITY.md`](../SECURITY.md#testing-role-gating-from-loopback-authtrust_loopback)
+and `server/astrodeck/auth/deps.py` `build_provider`).
 
-1. Create a throwaway account of each role you care about:
-   `python -m astrodeck create-admin _verify_admin` (or use **Settings →
-   Users** once you have an admin) and add a `viewer`/`operator` user the
-   same way.
-2. Sign in as each in turn (a private/incognito window keeps sessions from
-   colliding) and walk the screens above, noting what's hidden vs. disabled
-   vs. usable.
-3. Delete the throwaway accounts from **Settings → Users** when you're done
-   — they're accounts only, not tied to state a real user would care about
-   losing.
+1. **Enable the local method.** As an admin, go to **Settings → Auth**
+   (the tab only exists for `admin.users` holders) and turn on **Enable
+   local accounts** under Sign-in methods, then press **Save methods**. This
+   is the step that actually turns on logins — creating users before this
+   does nothing observable.
+2. **Get an admin account signed in.** On a fresh install with no users yet,
+   the next unauthenticated visit shows the **First-run create-admin**
+   screen (username, optional email, password) — use it to create the
+   initial administrator. Already have an admin? Just stay signed in as
+   them. (`python -m astrodeck create-admin <username>` also seeds/resets a
+   local admin from the CLI, but — same caveat — it only writes the user
+   record; it does not enable the `local` method for you.)
+3. **Add a disposable operator/viewer.** As the admin, go to **Settings →
+   Users → Add user**, fill in a throwaway username/email/password, pick
+   **operator** or **viewer** as the role, and press **Create user**.
+4. **Sign in as it.** Sign out (**Settings → Account**) or open a
+   private/incognito window, and sign in as the disposable account.
+5. Walk the screens in the table above, noting what's hidden vs. disabled
+   (with a lock note) vs. usable — it should match.
+6. Delete the throwaway account(s) from **Settings → Users** when you're
+   done — they're accounts only, not tied to state a real user would care
+   about losing.
+
+**Optional strict-mode check (`auth.trust_loopback`).** Everything above
+verifies role gating through an authenticated session, which is the
+mechanism that actually matters. Separately, **Settings → Auth** also has a
+**Trust this machine (loopback) as admin** toggle
+(`auth.trust_loopback`, default **on**). It only does something when **no**
+sign-in method is enabled at all: on, an unauthenticated loopback caller
+still gets the open-admin default (today's behavior); off, that same
+unauthenticated loopback caller is denied, exactly like a remote caller. Use
+it only to verify that specific denial — it is **not** a way to reach
+operator/viewer behavior, and flipping it off with no method enabled just
+locks that browser out (a loud in-app warning says so before you save).
+Recover by editing `trust_loopback` back to `true` in the server's config
+file and restarting, or by seeding an account with
+`python -m astrodeck create-admin`. See
+[`docs/SECURITY.md`](../SECURITY.md#testing-role-gating-from-loopback-authtrust_loopback)
+for the full mechanics.
 
 If the app disagrees with this table, the app is right — open an issue, and
 in the meantime the source of truth is
