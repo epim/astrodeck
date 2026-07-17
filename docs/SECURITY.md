@@ -54,18 +54,29 @@ On startup, binding a non-loopback interface **without** a token logs a loud
 
 ### Testing role gating from loopback (`auth.trust_loopback`)
 
-Separately from the bind interface above: when a sign-in method (local/Google)
-is enabled, a loopback (127.0.0.1) caller is normally **still** granted admin
-automatically if no method is configured — the same open-admin default every
-other direct caller gets. That makes it impossible to verify operator/viewer
-behavior from the machine running the server. Set `auth.trust_loopback: false`
-(via `POST /api/auth/config` or the Settings → Sign-in methods panel) to make a
-loopback caller authenticate exactly like a remote one. Default is `true`
-(today's behavior, unchanged). **Footgun:** disabling it while no method is
-enabled and no session cookie already exists locks that browser out
-immediately — recover by editing `trust_loopback` back to `true` in the
-server's config file and restarting, or by seeding an account with
-`python -m astrodeck create-admin`.
+Separately from the bind interface above: as long as no sign-in method is
+actually **enabled** (`auth.methods` empty), every direct caller — loopback
+included — is granted admin automatically. Creating local user accounts does
+NOT change this by itself; the open-admin provider stays active until a method
+is enabled.
+
+**To verify operator/viewer gating from the machine running the server**, the
+primary mechanism is: enable the `local` method, create a disposable
+operator/viewer account, and sign in as it — the logged-in session carries its
+own role regardless of `trust_loopback`.
+
+`auth.trust_loopback: false` (via `POST /api/auth/config` or the Settings →
+Sign-in methods panel) is an additional **strict mode** on top of that: it
+removes the automatic open-admin fallback for loopback callers, so an
+*unauthenticated* loopback client is denied exactly like a remote one. Use it
+to verify unauthenticated-loopback denial, or to ensure a loopback browser
+can never silently fall back to admin while methods are empty. Flipping the
+flag alone, with no method enabled, only produces 401s — it does not create a
+login path. Default is `true` (today's behavior, unchanged). **Footgun:**
+disabling it while no method is enabled and no session cookie already exists
+locks that browser out immediately — recover by editing `trust_loopback` back
+to `true` in the server's config file and restarting, or by seeding an
+account with `python -m astrodeck create-admin`.
 
 ## Remote / untrusted-network deployment
 

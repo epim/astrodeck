@@ -47,7 +47,7 @@ _active_provider: AuthProvider = NoneAuthProvider()
 # exactly like a role-allowlist/provider change.
 _trust_loopback: bool = True
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_LOOPBACK_NAMES = frozenset({"localhost"})
 
 
 def set_active_provider(provider: AuthProvider) -> None:
@@ -71,15 +71,37 @@ def get_trust_loopback() -> bool:
 
 
 def _is_loopback_request(request: Request) -> bool:
-    """True iff ``request`` arrived from a loopback address (127.0.0.1/::1).
+    """True iff ``request`` arrived from a loopback address.
 
-    Mirrors the ``--host`` loopback check in ``__main__.py``. ``request.client``
-    is ``None`` on some synthetic/test scopes -- treated as NOT loopback (the
-    conservative/fail-closed direction: an unknown origin does not get the
-    open-admin short-circuit when ``trust_loopback`` is False)."""
+    Covers the whole loopback space, not just the two literal spellings:
+    127.0.0.0/8 (any 127.x.y.z), ``::1``, IPv4-mapped IPv6
+    (``::ffff:127.0.0.1``), and the ``localhost`` name (some test scopes carry
+    a hostname, not an IP). Uses ``ipaddress`` so normalization/mapping is not
+    hand-rolled.
+
+    ``request.client`` is ``None`` on some synthetic/test scopes -- treated as
+    NOT loopback, which in THIS check's context is the fail-OPEN direction:
+    the G4 deny is skipped, so a null-client caller under the "none" provider
+    still resolves to the open-default admin even with ``trust_loopback``
+    False. Acceptable for this narrow TEST-MODE scope only: every real
+    uvicorn-borne request carries a concrete peer address, so a null client
+    occurs only in synthetic/in-process harnesses -- but do NOT reuse this
+    helper anywhere a missing client must deny."""
     client = getattr(request, "client", None)
     host = getattr(client, "host", None) if client is not None else None
-    return host in _LOOPBACK_HOSTS
+    if not host:
+        return False
+    if host in _LOOPBACK_NAMES:
+        return True
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # not an IP literal (e.g. "testclient") -> not loopback
+    # Unwrap an IPv4-mapped IPv6 address (::ffff:127.0.0.1) to its IPv4 form
+    # so the v4 loopback check applies to it too.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return (mapped or ip).is_loopback
 
 
 def reset_active_provider() -> None:
