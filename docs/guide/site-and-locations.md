@@ -6,8 +6,11 @@ twilight and dark windows, Atlas visibility, and (if enabled) weather. Until you
 set it, AstroDeck uses a default (0, 0) location and **all of those are wrong**.
 
 Everything here lives under **Settings → Connect**, in the **Observing Site**
-panel. Editing the site needs **operator or admin** access
-(`config.site_optics`).
+panel. Editing the site needs `config.site_optics`, which by default only an
+**admin** account holds — operator does not, despite the panel's own
+read-only note (*"Read-only — changing the site needs `config.site_optics`
+access."*) not spelling that out. See
+[remote-access-and-roles.md](remote-access-and-roles.md).
 
 ---
 
@@ -75,7 +78,12 @@ sites, entirely separate from the one active site above. It appears only for
   flagged the old auto-apply-on-select behaviour as concealing which action
   actually did something). Press **Load selected preset** to actually copy
   its coordinates into the form; you still then need **Set site** to make it
-  the active site.
+  the active site. After **Load selected preset**, the panel makes the next
+  step hard to miss: an inline note reads *"Loaded `<name>` into the form —
+  not active yet. Press Set site above to activate it."*, and the **Set
+  site** button itself is visually promoted while that note is showing.
+  Editing the form away from the loaded values, or pressing **Set site**,
+  clears the notice.
 - **Save as location preset…** opens an inline name field (prefilled from the
   current **Site name**); press **Save** to add the form's current
   coordinates to the library as a new entry, or **Cancel** to back out. If

@@ -77,10 +77,13 @@ Regrades are read-only while the session is actively running — you'll be told
 and the ledger are what the review shows; the saved FITS files themselves are
 never touched by regrading.
 
-> The regrade drawer itself doesn't grey out for a lower-role account — the
-> server is what actually enforces `control.mount` (admin) on a regrade
-> write, so a viewer or operator can open it and tap a verdict, but the
-> save will come back as a permission error rather than a disabled button.
+> The review drawer opens for every role (browsing frames is a read), but
+> the **mark accepted** / **mark rejected** buttons are `disabled` for
+> anyone lacking `control.mount` — by default that's viewer *and* operator,
+> since regrading uses the same capability as a manual resume. A lock note
+> under the buttons spells out why: *"Read-only — regrading frames needs
+> operator or admin access."* No role sees an enabled verdict button that
+> then fails to save.
 > See [remote-access-and-roles.md](remote-access-and-roles.md#screen-by-screen-what-each-role-actually-sees).
 
 ### Update from Plan
