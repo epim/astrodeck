@@ -88,6 +88,10 @@ export default function AuthMethodPanel(): JSX.Element {
     if (busy) return;
     setErr(null);
     setBusy(true);
+    // The auth-boundary transition (R4B-AUTH-02): computed against the SERVER
+    // state before this save, so the message fires exactly when the save flips
+    // the server from open to authenticated.
+    const wasEnabled = (auth.methods ?? []).length > 0;
     try {
       // Echo the redacted block (secrets blank => "unchanged" server-side) with
       // our edits applied. `provider` stays as the redacted value (legacy/migrate
@@ -101,6 +105,17 @@ export default function AuthMethodPanel(): JSX.Element {
         default_role: defaultRole === "deny" ? null : defaultRole,
       };
       const next = await setAuthConfig(body);
+      // Deterministic transition message (R4B-AUTH-02): when this save ENABLED
+      // authentication, say exactly what just changed — every client (including
+      // this tab, which lands on Login next) must now sign in. Sticky (ttl 0)
+      // so the Login transition can't swallow it; Toasts stay mounted there.
+      if (!wasEnabled && methods.length > 0) {
+        useStore.getState().enqueueToast({
+          level: "info",
+          title: "Authentication enabled — every client must now sign in.",
+          ttl: 0,
+        });
+      }
       // Re-hydrate config + the login-screen signal AND the principal so
       // RoleBadge/gates/login flip. loadPrincipal is the H1 fix for the SAVING
       // tab: enabling a method live-flips the provider, so THIS browser (which
