@@ -62,6 +62,7 @@ const COMPONENT_CLASSES = [
   "btn",
   "btn-accent",
   "btn-danger",
+  "btn-promoted",
   "field",
   "mono",
   "label",

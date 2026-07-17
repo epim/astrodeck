@@ -273,6 +273,17 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
 .btn-danger { border-color: color-mix(in srgb, var(--danger-ink) 45%, transparent); color: var(--danger-ink); }
 .btn-danger:hover:not(:disabled) { border-color: var(--danger-ink); color: var(--danger-ink); box-shadow: 0 0 12px color-mix(in srgb, var(--danger-ink) 28%, transparent); }
 
+/* "Next action" promotion (R3-SITE-02) — an accent ring marking the correct
+   next step in a two-step flow (e.g. Set site after Load selected preset).
+   A DEDICATED authored class, not Tailwind's ring-2 utility: .btn's box-shadow
+   above is unlayered CSS (this file has no @layer wrapper), so it silently
+   beats any Tailwind utility box-shadow/ring regardless of class order —
+   unlayered styles always win over @layer utilities in the cascade, no matter
+   specificity or source position (the tooltip-portal war story, again). This
+   class is unlayered too and placed after .btn/.btn:hover, so it wins cleanly. */
+.btn-promoted { box-shadow: 0 0 0 2px var(--accent), inset 0 1px 0 rgba(255,255,255,0.05); }
+.btn-promoted:hover:not(:disabled) { box-shadow: 0 0 0 2px var(--accent), 0 0 12px var(--glow), inset 0 0 12px #ffffff06; }
+
 /* ConfirmDialog confirmPrimary=true (PLAN-01-gemini): a solid fill reads as
    unambiguously primary next to the now-deliberately-quiet Cancel — the
    default outline treatments (.btn-accent/.btn-danger) read as SECONDARY next
