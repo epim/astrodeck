@@ -45,7 +45,7 @@ path if you ever lock yourself out.
 
 Your role and email appear under **Settings → Account**, which also hosts
 sign-out. Viewers get a **View-only** badge there and an explainer that controls
-are hidden for their role.
+are locked for their role.
 
 **Session expiry does not touch the imaging engine.** If your sign-in session
 times out (or you sign out, or your tab loses the connection), all that
@@ -118,29 +118,27 @@ tracks what's really hidden/disabled per role, not just the intent:
 | **Sky Atlas** | full (search, framing, mosaic, visibility are all local/client-side) | full | full |
 | **Plan** — building the on-screen draft | full (local-only, no capability check) | full | full |
 | **Plan** — plan library save/import/delete | disabled | enabled (`control.capture`) | enabled |
-| **Plan** — Run / Monitor's Pause / Resume / Abort | hidden (viewer gets a passive "View only" note) | **hidden — same passive note as viewer** (`control.mount` is admin-only; operator doesn't hold it despite holding `control.capture`) | full |
+| **Plan** — Run / Monitor's Pause / Resume / Abort | visible but **disabled**, with a lock note naming the required access | **disabled — same lock note as viewer** (`control.mount` is admin-only; operator doesn't hold it despite holding `control.capture`) | full |
 | **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | resume/auto-resume-arm/update-from-plan/delete need `control.mount` (disabled); regrade controls carry the **same lock note**, for the same reason | full |
-| **Monitor** | dashboard fully visible, controls row hidden | dashboard fully visible, controls row **hidden** (`control.mount` is admin-only — same as viewer) | full |
+| **Monitor** | dashboard fully visible, controls row **disabled** with a shared lock note | dashboard fully visible, controls row **disabled** (`control.mount` is admin-only — same note as viewer) | full |
 | **Sky Conditions / Radar** (on Monitor) and the **Weather** settings panel | never rendered — no request even fires | never rendered | full (`view.site_precise`) |
 | **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics` — operator holds neither) | full |
 | **Settings → Safety** (sun avoidance) | current value shown, toggle disabled | disabled (`config.solar_override` is admin-only) | full |
-| **Settings → Profiles** | hidden (a "needs operator or admin" note instead) | **read-only, same note as viewer** (`config.backend` is admin-only) | full |
+| **Settings → Profiles** | hidden (a "needs admin access" note instead) | **read-only, same note as viewer** (`config.backend` is admin-only) | full |
 | **Settings → Updates / Users / Auth** | tabs don't exist in the nav | tabs don't exist in the nav | full (`system.update` / `admin.users`) |
 
 > **What "disabled" actually looks like.** Every row above that reads
 > "disabled" or "hidden" for a role is enforced **in the UI itself**, not
-> just on the server: the button is either not rendered, or rendered
-> `disabled` next to a short lock note quoting the real reason — e.g. the
-> Session review drawer prints *"Read-only — regrading frames needs operator
-> or admin access."* next to a greyed-out **mark accepted** / **mark
-> rejected** pair, and the Plan view swaps the **≡ Run Sequence** button for
-> a passive *"Running a sequence needs operator or admin access."* note. A
-> couple of these in-app messages still say "operator or admin" even though,
-> as the table above shows, only admin actually holds the capability behind
-> them today (`control.mount`, `config.backend`, `config.site_optics`) — the
-> wording is imprecise, but the gate itself is real: no role below the one
-> that's actually required can reach the write, and none of them get a
-> surprise 403 from a control that looked enabled.
+> just on the server: the control renders in its normal position, disabled,
+> next to a short lock note naming the real requirement — e.g. the Session
+> review drawer prints *"Read-only — regrading frames needs admin access."*
+> next to a greyed-out **mark accepted** / **mark rejected** pair, and the
+> Plan view shows a disabled **≡ Run Sequence** button over a *"Running a
+> sequence needs admin access."* note. The lock-note wording is generated
+> from the same capability table the gate enforces (`accessPhrase` in
+> `ui/src/lib/caps.ts`, mirroring the server's role table), so the text
+> always names the role that actually holds the capability — and no role
+> gets a surprise 403 from a control that looked enabled.
 
 ### A disposable way to verify this yourself
 
