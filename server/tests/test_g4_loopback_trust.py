@@ -123,6 +123,34 @@ def test_false_non_loopback_direct_caller_unaffected(tmp_path, monkeypatch):
         assert r.json()["role"] == "admin"
 
 
+def test_loopback_detection_covers_whole_loopback_space(tmp_path, monkeypatch):
+    """Hardening: loopback detection is not an exact-string match on
+    "127.0.0.1" -- the whole 127.0.0.0/8 block, ::1, IPv4-mapped IPv6, and
+    the "localhost" name all count; non-IP junk and null clients do not.
+    End-to-end for 127.0.0.2 (any /8 address must be denied when the flag is
+    off), unit-level for the rest via _is_loopback_request directly."""
+    from astrodeck.auth.deps import _is_loopback_request
+
+    app, _, _ = _make_app(tmp_path, monkeypatch, methods=[], trust_loopback=False)
+    with TestClient(app, client=("127.0.0.2", 54321)) as c:
+        assert c.get("/api/me").status_code == 401
+
+    class _Client:
+        def __init__(self, host):
+            self.host = host
+
+    class _Req:
+        def __init__(self, host):
+            self.client = _Client(host) if host is not None else None
+
+    for host in ("127.0.0.1", "127.0.0.2", "127.255.255.254", "::1",
+                 "::ffff:127.0.0.1", "localhost"):
+        assert _is_loopback_request(_Req(host)) is True, host
+    for host in ("203.0.113.7", "10.0.0.5", "::ffff:203.0.113.7",
+                 "testclient", "", None):
+        assert _is_loopback_request(_Req(host)) is False, host
+
+
 # ============================================== False + valid login: role honored
 
 def test_false_plus_valid_login_honors_role(tmp_path, monkeypatch):
