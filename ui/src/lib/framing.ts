@@ -248,6 +248,27 @@ export function mosaicGrid(spec: MosaicGridSpec): GridPanel[] {
   return panels;
 }
 
+// --------------------------------------------------------- rotate-handle geom
+/**
+ * Half-height of the WHOLE mosaic grid footprint, in the same px units as
+ * `pxPerDeg` (viewBox px for the Atlas SVG). The Atlas rotate-handle stalk
+ * (SkyCanvas §6, wave-2 G3) hangs off the TOP of the whole grid — not one
+ * panel — so it never overlaps a frame; this is the shared calc between the
+ * frame geometry and the handle layer, extracted so both agree byte-for-byte
+ * (previously duplicated inline in FovOverlay only).
+ */
+export function gridHalfHeightPx(
+  fovYDeg: number,
+  pxPerDeg: number,
+  rows: number,
+  overlap: number,
+): number {
+  const frameH = fovYDeg * pxPerDeg;
+  const halfH = frameH / 2;
+  const stepY = frameH * (1 - overlap);
+  return halfH + ((rows - 1) * stepY) / 2;
+}
+
 /** Tangent-plane total mosaic extent in degrees (spec §5) — NOT raw degrees of
  *  RA, so high-dec mosaics aren't mislabeled (critique C2-#4). */
 export function mosaicTotalFov(

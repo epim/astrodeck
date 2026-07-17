@@ -21,6 +21,7 @@ import {
   fovFromOptics,
   plausibilityHint,
   wrapRaHours,
+  gridHalfHeightPx,
   RHO_EPS,
   type MosaicGridSpec,
 } from "../framing";
@@ -238,6 +239,31 @@ test("mosaicGrid emits boustrophedon order", () => {
   // row 0: cols 0,1,2 ; row 1: cols 2,1,0
   const cols = panels.map((p) => p.col);
   assert(JSON.stringify(cols) === JSON.stringify([0, 1, 2, 2, 1, 0]), `snake order: ${cols}`);
+});
+
+// gridHalfHeightPx — a single 1x1 panel collapses to just its own half-height
+// (rows=1 drops the row-span term entirely, matching a plain rectangle).
+test("gridHalfHeightPx: single panel is just half its own height", () => {
+  // fovYDeg=2, pxPerDeg=100 -> frameH=200, halfH=100.
+  near(gridHalfHeightPx(2, 100, 1, 0.2), 100, 1e-9, "1x1 collapses to halfH");
+});
+
+// A multi-row mosaic's half-height grows with the row span (wave-2 G3: the
+// rotate handle must clear the WHOLE grid, not just one panel, or a tall
+// mosaic would draw its stalk through the upper panels).
+test("gridHalfHeightPx: multi-row grid extends past one panel's half-height", () => {
+  const oneRow = gridHalfHeightPx(2, 100, 1, 0.2);
+  const threeRows = gridHalfHeightPx(2, 100, 3, 0.2);
+  assert(threeRows > oneRow, `3-row grid (${threeRows}) must exceed 1-row (${oneRow})`);
+  // halfH=100, stepY=200*0.8=160, +((3-1)*160)/2 = +160 -> 260 total.
+  near(threeRows, 260, 1e-9, "3-row half-height");
+});
+
+// Full overlap (1.0, clamped upstream by callers to <=0.5 in practice, but the
+// function itself is a pure arithmetic helper) collapses stepY to 0 — every
+// row stacks on the first, so half-height stays at a single panel's.
+test("gridHalfHeightPx: zero step (overlap=1) ignores row count", () => {
+  near(gridHalfHeightPx(2, 100, 5, 1), 100, 1e-9, "stepY=0 -> halfH only");
 });
 
 // ----------------------------------------------------------------- report
