@@ -73,17 +73,24 @@ the UI.
 Checklist, roughly in the order to check them:
 
 1. **Look at [Monitor](monitor.md) first**, not Plan — it has the live stall
-   read. The **"last frame N ago"** line turns amber past ~2× the current
-   exposure time and red with **"CAPTURE STALLED?"** past ~3×. If it's still
-   dim/grey text, the engine likely isn't actually stalled — you're probably
-   just between frames (plate-solving, a filter change, a meridian flip, a
-   dither settle).
-2. **Check whether it's paused, not stalled.** The header badge and the
-   run banner both read **PAUSED** honestly now — if you (or someone else)
-   hit Pause, that's the whole explanation. Pause only takes effect at a
-   **frame boundary**, so a stall warning can still fire on the last frame
-   that was in flight when you paused; see
-   [plan-and-sequences.md](plan-and-sequences.md#running-a-sequence).
+   read, and it only ever escalates while the sequence state is
+   **RUNNING**. The **"last frame N ago"** line turns amber past ~2× the
+   current exposure time and red with **"CAPTURE STALLED?"** past ~3×. If
+   it's still dim/grey text, the engine likely isn't actually stalled —
+   you're probably just between frames (plate-solving, a filter change, a
+   meridian flip, a dither settle), **or** the run isn't in the running
+   state at all (see the next point).
+2. **Check whether it's paused, not stalled.** The header badge and the run
+   banner both read **PAUSED** honestly — if you (or someone else) hit
+   Pause, that's the whole explanation, and once the badge actually reads
+   **PAUSED** the stall warning **cannot fire**: it's gated to the running
+   state alone, so a paused run's frame gap is never mistaken for a stall.
+   The same is true once a run reaches **COMPLETE**, **ABORTED**, or
+   **ERROR** — none of those can show **"CAPTURE STALLED?"** either. (Right
+   at the moment you press Pause there's a brief, honest window where the
+   last in-flight frame is still genuinely running until its **frame
+   boundary** — a real stall can still surface in that narrow gap; see
+   [plan-and-sequences.md](plan-and-sequences.md#running-a-sequence).)
 3. **Open the Event Log** (below) and look at the last few lines — a stuck
    plate solve, a guiding-recovery loop, or a device timeout usually logs
    something explanatory right before the stall becomes visible.

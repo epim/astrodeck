@@ -89,8 +89,29 @@ The panel has an **ignore weather tonight** toggle. Turning it on tells the
 auto-resume gate to proceed despite clouds **for tonight only** — it is keyed
 to tonight's dusk and expires automatically when the next night begins. It is
 a runtime override, not saved config. Turning it on does **not** dismiss a
-warning already shown; it records "proceed anyway". Changing it needs
-**operator or admin** access (`control.capture`).
+warning already shown; it records "proceed anyway".
+
+> **A quirk worth knowing (pending a product decision).** The server route
+> behind this toggle, `POST /api/weather/ignore-tonight`, only requires
+> `control.capture` — an operator's own capability, not the admin-only
+> `view.site_precise` that gates the rest of this page. The toggle also has
+> a *second* home: it shows up on a session's card in the **Sessions** panel
+> ([plan-and-sequences.md](plan-and-sequences.md)) whenever that session has
+> auto-resume armed and a weather alert is active, and it's `disabled`
+> there for anyone lacking `control.capture` — an operator's account is not
+> blocked. In practice, though, an operator never sees it *enabled*
+> anywhere: the toggle only renders once the client has live weather data
+> (`weather?.alert`), and weather data reaches the browser only two ways —
+> the `GET /api/weather` route and the WebSocket `weather` event — both
+> gated to `view.site_precise` outright (the WS event is **dropped
+> entirely**, not stripped, for non-holders). So today the capability on the
+> write route says "operator can", but the only UI path to it never
+> populates for an operator, because the alert state that would show the
+> toggle is itself admin-only data. Net effect: this is admin-only in
+> practice, through a data-visibility gate rather than a capability gate on
+> the write itself. Whether an operator *should* be able to reach this from
+> the Sessions card even without seeing the forecast is an open product
+> decision, not yet made.
 
 ---
 
@@ -142,11 +163,18 @@ small slippy radar/satellite map centred on your site.
   mouse-only. Arrow keys nudge the pan. The tile layer is dimmed in night
   mode just like sky-survey imagery.
 - **Per-layer tile health.** A broken tile hides itself rather than showing a
-  broken-image glyph, but a badge in the corner still tells you the layer
-  failed: **"loading…"** while the current viewport's tiles haven't painted
-  yet, or **"tiles unavailable"** once every tile in view has errored. The
-  point is that a blank map must never silently read as "no clouds" — if
-  imagery failed to load, the badge says so.
+  broken-image glyph, but a badge in the corner always shows one of three
+  states — it never just disappears once the map looks fine: **"loading…"**
+  while the current viewport's tiles haven't painted yet, **"tiles
+  unavailable"** once every tile in view has errored, or **"updated N ago"**
+  once painting succeeds — and it *stays* on that positive reading, counting
+  up, rather than vanishing after the first successful paint. The point is
+  that a blank map must never silently read as "no clouds", and a later
+  silent failure must never be indistinguishable from a healthy, quiet map —
+  the badge always tells you which of the three states you're looking at.
+  Panning, zooming, or switching layers into fresh tiles resets the badge to
+  **"loading…"** until the new tiles resolve, rather than carrying over a
+  stale "updated N ago" from the old view.
 - A chip shows the mount's current **Az / Alt**, or "no mount" when the
   telescope isn't reporting a position.
 
