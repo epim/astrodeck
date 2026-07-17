@@ -4,9 +4,8 @@ This page connects real gear. AstroDeck separates **drivers** (how to reach a
 backend) from **assignments** (which driver runs each device role) and lets you
 save the whole arrangement as a **profile**. Connecting equipment, applying a
 profile, and managing profiles all need `config.backend`, which by default
-only an **admin** account holds — operator does not, despite some in-app
-copy (e.g. *"Read-only — connecting equipment needs operator or admin
-access."*) reading otherwise. See
+only an **admin** account holds — operator does not, and the in-app lock
+notes say so (*"Read-only — connecting equipment needs admin access."*). See
 [remote-access-and-roles.md](remote-access-and-roles.md).
 
 **Jargon:** a **role** is a device slot — `Camera`, `Mount`, `Focuser`,
