@@ -223,9 +223,11 @@ export default function AuthMethodPanel(): JSX.Element {
             <div className="text-sm text-ink">Trust this machine (loopback) as admin</div>
             <p className="text-[11px] text-dim max-w-md">
               With no sign-in method enabled, a browser on this same machine
-              (127.0.0.1) normally gets admin automatically. Turn this OFF to make
-              loopback sign in like any other client — the only way to verify
-              operator/viewer gating from the machine running the server.
+              (127.0.0.1) gets admin automatically. To verify operator/viewer
+              gating locally, enable local accounts above and sign in as a
+              disposable user — that works regardless of this switch. Turn this
+              OFF only as a strict mode: it removes the automatic admin fallback
+              so an unauthenticated loopback client is denied like any other.
             </p>
           </div>
           <Toggle
