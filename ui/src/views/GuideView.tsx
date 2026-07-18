@@ -1,12 +1,17 @@
-import { useState } from "react";
-import { api } from "../api";
-import { useStore, useStatus, useGuide } from "../store";
+import { useEffect, useState } from "react";
+import { api, ApiError } from "../api";
+import { setProvidersConfig } from "../api/backends";
+import {
+  useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
+} from "../store";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Panel, Stat } from "../components/ui";
-import { useCanControlGuide } from "../lib/caps";
+import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
 import GuideFramePreview from "../components/GuideFramePreview";
+import { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
+import { compareRmsWindows, type RmsWindow } from "../lib/rmsCompare";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
@@ -98,6 +103,8 @@ export default function GuideView() {
           </div>
         </Panel>
 
+        <GuideProviderPanel onToast={showToast} />
+
         <GuideSettingsDrawer canGuide={canGuide} connected={connected} onToast={showToast} />
       </div>
     </div>
@@ -112,6 +119,121 @@ export default function GuideView() {
 // editable server-side today; each algorithm's dossier §15 params are shown
 // read-only for reference (see lib/guideSettings.ts).
 type ToastFn = (level: "success" | "info" | "warning" | "error", msg: string) => void;
+
+// ------------------------------------------------------------ provider switch
+// Per-profile guide-provider override (P5-T1, spec §6 P5) + a same-night
+// head-to-head RMS comparison. Mirrors the Equipment "Tasks" panel's
+// provider-override mechanics EXACTLY (components/equipment/TasksPanel.tsx):
+// same global config write (`POST /api/config/providers`, `config.backend`-
+// gated — not `control.guide`, since it's a backend/connect-shape decision
+// like the other three task overrides, not a guide-safety one), same
+// optimistic-draft-then-revert-on-error pattern, same "Auto (best available)"
+// + ProviderBadge/reason-line idiom. `ProvidersConfig.guide` rides the SAME
+// per-profile snapshot the other three overrides already do (Profile.providers,
+// EquipmentView's doSaveProfile/doLoadProfile spread the whole object) — no
+// new profile plumbing was needed for that half of the brief.
+//
+// The RMS comparison reads store.ts's `guideRmsByKind` (tagged at bus-ingest
+// time from `status.providers.guide.kind`, since the "guide" bus channel
+// itself carries no provider field) and hands the native-family window
+// ("astrodeck", or "sim" on a sim rig — both run the SAME NativeGuider engine,
+// see providers.py::_resolve_guide) and the PHD2/NINA-family window
+// ("backend") to the pure lib/rmsCompare.ts helper.
+function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
+  const config = useConfig();
+  const providers = useProviders();
+  const canConfig = useCanConfigBackend();
+  const rmsByKind = useGuideRmsByKind();
+
+  const seed = config?.providers?.guide ?? "auto";
+  const [draft, setDraft] = useState(seed);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Re-seed whenever a fresh config lands (our own save, another client's, or
+  // a profile activate/load restoring its snapshot) — same idiom as
+  // TasksPanel's persist-and-reseed effect.
+  useEffect(() => {
+    setDraft(seed);
+  }, [seed]);
+
+  const persist = async (value: string) => {
+    if (busy) return;
+    setErr(null);
+    setBusy(true);
+    const next = { ...DEFAULT_PROVIDERS, ...(config?.providers ?? {}), guide: value };
+    setDraft(value); // optimistic — echoed back by loadConfig() below
+    try {
+      await setProvidersConfig(next);
+      await useStore.getState().loadConfig();
+      onToast("success", "Guide provider override saved");
+    } catch (e) {
+      setDraft(seed); // revert the optimistic edit
+      const msg =
+        e instanceof ApiError
+          ? e.status === 403
+            ? "config.backend required to change the guide provider"
+            : e.message
+          : e instanceof Error
+            ? e.message
+            : "couldn't save the guide provider override";
+      setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choice = providers?.guide;
+  const nativeStats = rmsByKind.astrodeck ?? rmsByKind.sim;
+  const phd2Stats = rmsByKind.backend;
+  const nativeWindow: RmsWindow | undefined = nativeStats && {
+    label: nativeStats.providerLabel,
+    rmsTotal: nativeStats.rms_total,
+    samples: nativeStats.recent.length,
+  };
+  const phd2Window: RmsWindow | undefined = phd2Stats && {
+    label: phd2Stats.providerLabel,
+    rmsTotal: phd2Stats.rms_total,
+    samples: phd2Stats.recent.length,
+  };
+  const cmp = compareRmsWindows(nativeWindow, phd2Window);
+  const cmpTone =
+    cmp.verdict === "insufficient-data" ? "text-dim" : cmp.verdict === "comparable" ? "text-dim" : "text-good";
+
+  return (
+    <Panel title="Guide Provider" right={<ProviderBadge cap="guide" />}>
+      <div className="flex flex-col gap-2.5">
+        <label className="flex flex-col gap-1">
+          <span className="label">Provider override</span>
+          <select
+            className="field"
+            value={draft}
+            disabled={!canConfig || busy}
+            onChange={(e) => void persist(e.target.value)}
+            aria-label="Guide provider override"
+          >
+            <option value="auto">Auto (best available)</option>
+            <option value="astrodeck">AstroDeck native</option>
+            <option value="backend">PHD2 / NINA bridge</option>
+            <option value="sim">Simulator</option>
+          </select>
+        </label>
+        {choice?.reason && <p className="text-[11px] text-dim leading-snug">{choice.reason}</p>}
+        {!canConfig && (
+          <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
+            Read-only — changing the guide provider needs {accessPhrase("config.backend")}.
+          </p>
+        )}
+        {err && <p className="text-[11px] text-bad">{err}</p>}
+
+        <div className="border-t border-line pt-2.5 mt-0.5">
+          <span className="label">Same-night RMS: native vs. PHD2</span>
+          <p className={`text-[11px] mt-1 leading-snug ${cmpTone}`}>{cmp.message}</p>
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   canGuide: boolean;

@@ -560,6 +560,13 @@ export interface ProvidersConfig {
   autofocus: ProviderKind;
   polar_align: ProviderKind;
   solve: ProviderKind;
+  // Who autoguides (P5-T1; mirrors server config.py ProvidersConfig.guide,
+  // landed P2-T3). "auto" | "backend" (PHD2/NINA bridge) | "astrodeck"
+  // (native engine) | "sim" (implicit driver id — see providers.py
+  // valid_override_values; _resolve_guide has no dedicated "sim" branch so it
+  // behaves like "auto" on a sim rig today, kept for vocabulary parity with
+  // the other three capabilities).
+  guide: ProviderKind;
 }
 
 // ------------------------------------------------------------- backend drivers

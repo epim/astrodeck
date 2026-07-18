@@ -26,6 +26,13 @@ export const DEFAULT_PROVIDERS: ProvidersConfig = {
   autofocus: "auto",
   polar_align: "auto",
   solve: "auto",
+  // Not one of this panel's TASK_CAPS rows (guide eligibility comes from
+  // connected devices, not driver task offers — see GuideView's own
+  // provider-switch row, P5-T1); included here only so this literal keeps
+  // satisfying ProvidersConfig and the profile save/load round-trip below
+  // (EquipmentView doSaveProfile/doLoadProfile spread the WHOLE providers
+  // object) carries the guide override for free.
+  guide: "auto",
 };
 
 export default function TasksPanel({
