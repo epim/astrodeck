@@ -149,9 +149,13 @@ const GUIDE_PROVIDER_LABELS: Record<string, string> = {
   auto: "Auto (best available)",
   astrodeck: "AstroDeck native",
   backend: "PHD2 / NINA bridge",
+  // Legacy: "sim" was offered pre-fix-round and may persist in an old profile
+  // snapshot; the server never lists it as eligible anymore (it behaved like
+  // Auto), so it only ever appears as the sticky stored-value option.
+  sim: "Simulator (legacy — same as Auto)",
 };
 const guideProviderLabel = (value: string): string =>
-  GUIDE_PROVIDER_LABELS[value] ?? (value === "backend" ? "PHD2 / NINA bridge" : value);
+  GUIDE_PROVIDER_LABELS[value] ?? value;
 
 function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   const config = useConfig();
