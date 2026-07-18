@@ -625,4 +625,70 @@ mod tests {
         let c = gp.result_with(1.0, 10.0, 2.0);
         assert!((gp.last_point().control - c).abs() < 1e-15);
     }
+
+    /// The hysteresis→GP blend weight (dossier §6.8.3; `gaussian_process_guider
+    /// .cpp:337-345`) is `pct = min(t / (min_periods_for_inference · P), 1)`,
+    /// applied as `control = pct·control + (1 − pct)·hysteresis_control`. This
+    /// pins that formula at an INTERIOR weight (0 < pct < 1) — the P4-T1 review
+    /// M8 noted it was previously verified only by inspection, with no fixture.
+    ///
+    /// Recipe: `compute_period = false` freezes `P` at the configured value so
+    /// the blend denominator `min_periods·P` is exactly known; a short `P` (60 s)
+    /// keeps the observed frame inside the window `t < min_periods·P`. The
+    /// pre-blend `control` and the `hysteresis_control` are reconstructed from
+    /// the guider's own post-call state (`kernel.period`, the measured point's
+    /// timestamp, the stored `prediction`, and the second-last control the
+    /// hysteresis term reads), so the assertion pins the WEIGHTING, not a magic
+    /// number. `input = 1.0` is above `min_move` (0.2) so neither the reactive
+    /// term nor the hysteresis term is deadbanded to zero.
+    #[test]
+    fn blend_weight_is_t_over_min_periods_times_period() {
+        // compute_period=false freezes P; a short P keeps the frame interior;
+        // min_periods_for_inference stays at its default 2.0.
+        let params = GpParams {
+            compute_period: false,
+            periodic_period: 60.0,
+            ..GpParams::default()
+        };
+        let dt = 5.0;
+        let u = 1.0; // > min_move ⇒ reactive + hysteresis terms both live
+        let snr = 20.0;
+        let mut gp = GaussianProcessGuider::new(params);
+        // Frames 1..=11: the GP engages at the 11th (n_measurements > 10).
+        for _ in 0..11 {
+            gp.result_with(u, snr, dt);
+        }
+        // The 12th frame is a blend frame; capture the hysteresis input first.
+        let last_control_before = gp.second_last_control();
+        let out = gp.result_with(u, snr, dt);
+
+        // Reconstruct the blend from the guider's own post-call state.
+        let n = gp.buffer.len();
+        let t = gp.buffer[n - 2].timestamp; // this frame's measured point
+        let period = gp.kernel.period; // frozen == 60.0
+        let min_p = gp.params.min_periods_for_inference; // 2.0
+        assert!(
+            t < min_p * period,
+            "frame must be inside the blend window: t={t}, min_periods·P={}",
+            min_p * period
+        );
+        let pct = (t / (min_p * period)).min(1.0);
+        assert!(
+            pct > 0.0 && pct < 1.0,
+            "pct={pct} must be strictly interior"
+        );
+        // Pre-blend control = control_gain·input + prediction_gain·prediction
+        // (both terms above the deadband); reconstructed from the stored
+        // prediction so the test is exact regardless of the GP's numeric output.
+        assert!(gp.prediction.is_finite(), "prediction must be finite here");
+        let control_raw = params.control_gain * u + params.prediction_gain * gp.prediction;
+        let hyst =
+            ((1.0 - HYSTERESIS) * u + HYSTERESIS * last_control_before) * params.control_gain;
+        let expected = pct * control_raw + (1.0 - pct) * hyst;
+        assert!(
+            (out - expected).abs() < 1e-12,
+            "blend at pct={pct}: out={out}, expected {expected} \
+             (control_raw={control_raw}, hyst={hyst}, t={t}, P={period})"
+        );
+    }
 }
