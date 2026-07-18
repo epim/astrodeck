@@ -38,7 +38,7 @@ import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
-import { accessPhrase, useCanControlMount, useCanViewSitePrecise } from "../lib/caps";
+import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
   CountdownTile,
   deriveHealthIssues,
@@ -265,7 +265,9 @@ export default function MonitorView() {
   // Folds safety/disk/backend_links/meridian/nina_link/status.providers/boot +
   // the engine's end_reason into ranked tier-1 (Notice)/tier-2 (Act) issues.
   const weather = useWeather();
-  const canSeePrecise = useCanViewSitePrecise();
+  // view.weather (2026-07-17 decisions wave I2): split off view.site_precise
+  // so an operator sees Sky Conditions + Radar too, not just admin.
+  const canSeeWeather = useCanViewWeather();
   const healthIssues = useMemo(
     () =>
       deriveHealthIssues({
@@ -545,10 +547,10 @@ export default function MonitorView() {
         </Panel>
 
         {/* ==================================== SKY CONDITIONS (weather spec §10) */}
-        {canSeePrecise && <SkyConditionsPanel />}
+        {canSeeWeather && <SkyConditionsPanel />}
 
         {/* ========================================= RADAR MAP (weather spec §11) */}
-        {canSeePrecise && weather?.enabled && <RadarMap />}
+        {canSeeWeather && weather?.enabled && <RadarMap />}
 
         {/* ================================================== THERMAL */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Thermal">

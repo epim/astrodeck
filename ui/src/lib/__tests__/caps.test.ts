@@ -85,6 +85,7 @@ function eq<T>(a: T, b: T, msg = ""): void {
 // ---------------------------------------------------------------- fixtures
 const ALL_CAPS: Capability[] = [
   "view.status", "view.preview", "view.media", "view.site_precise",
+  "view.weather",
   "control.capture", "control.mount", "control.guide", "control.power",
   "config.safety", "config.solar_override", "config.backend",
   "config.site_optics", "config.alerts", "admin.users",
@@ -92,7 +93,10 @@ const ALL_CAPS: Capability[] = [
 const admin: Principal = { role: "admin", email: null, caps: ALL_CAPS };
 const operator: Principal = {
   role: "operator", email: "op@x.io",
-  caps: ["view.status", "view.preview", "control.capture", "control.guide", "control.mount"],
+  caps: [
+    "view.status", "view.preview", "view.weather",
+    "control.capture", "control.guide", "control.mount",
+  ],
 };
 const viewer: Principal = {
   role: "viewer", email: "v@x.io", caps: ["view.status", "view.preview"],
@@ -124,6 +128,12 @@ test("operator can capture+guide+mount but NOT power/config", () => {
   assert(capAllowed(operator, "control.mount"), "operator can mount (2026-07-17 I1)");
   assert(!capAllowed(operator, "control.power"), "operator cannot power");
   assert(!capAllowed(operator, "config.backend"), "operator cannot config.backend");
+});
+
+test("operator can view.weather but NOT view.site_precise (2026-07-17 I2)", () => {
+  assert(capAllowed(operator, "view.weather"), "operator can view.weather");
+  assert(!capAllowed(operator, "view.site_precise"), "operator cannot view.site_precise");
+  assert(!capAllowed(viewer, "view.weather"), "viewer cannot view.weather");
 });
 
 test("empty-caps viewer sentinel denies all (the 401 fail-closed path)", () => {
@@ -279,6 +289,9 @@ test("rolesHolding: operator caps resolve to [operator, admin]", () => {
   eq(rolesHolding("control.guide").join(","), "operator,admin", "guide →");
   // 2026-07-17 decisions wave I1: operator holds control.mount.
   eq(rolesHolding("control.mount").join(","), "operator,admin", "mount →");
+  // 2026-07-17 decisions wave I2: operator holds view.weather (but NOT
+  // view.site_precise, which stays admin-only — see the admin-only test above).
+  eq(rolesHolding("view.weather").join(","), "operator,admin", "weather →");
 });
 
 test("rolesHolding: view caps are held by every role", () => {
@@ -297,6 +310,8 @@ test("accessPhrase: operator-held caps say 'operator or admin access'", () => {
   // 2026-07-17 decisions wave I1: operator now holds control.mount, so the
   // lock-note copy self-updates from "admin access" back to this phrase.
   eq(accessPhrase("control.mount"), "operator or admin access", "mount →");
+  // 2026-07-17 decisions wave I2: same self-update for the new view.weather cap.
+  eq(accessPhrase("view.weather"), "operator or admin access", "weather →");
 });
 
 test("accessPhrase mirror never promises a cap the principal model denies", () => {

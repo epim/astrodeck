@@ -8,11 +8,14 @@ with your telescope's line of sight projected onto it.
 Weather is **off by default** and does nothing until you turn it on. When
 disabled, the server makes **zero** outbound weather requests.
 
-> **Who can see weather?** Everything on this page is visible only to
-> **admins** (principals holding `view.site_precise`). Operators and viewers —
-> including remote users on the relay — never see the forecast, the Sky
-> Conditions panel, or the radar map, and the weather data never crosses the
-> wire to them. See [remote-access-and-roles.md](remote-access-and-roles.md).
+> **Who can see weather?** Everything on this page is visible to **operators
+> and admins** (principals holding `view.weather`) — including remote users
+> on the relay. Viewers never see the forecast, the Sky Conditions panel, or
+> the radar map, and the weather data never crosses the wire to them.
+> Configuring weather (Settings → Connect → Weather panel, below) stays
+> **admin-only** — operators can see the forecast but not change the
+> threshold, sustain window, or Astrospheric key. See
+> [remote-access-and-roles.md](remote-access-and-roles.md).
 
 ---
 
@@ -46,9 +49,9 @@ per day). Data older than 45 minutes is shown as **stale**.
 
 ## The Sky Conditions panel
 
-On the [Monitor](monitor.md) view, admins see a **Sky Conditions** panel: a
-24-hour cloud-cover forecast chart. It has four states, and only ever shows
-one of them:
+On the [Monitor](monitor.md) view, operators and admins see a **Sky
+Conditions** panel: a 24-hour cloud-cover forecast chart. It has four states,
+and only ever shows one of them:
 
 - **disabled** — weather is off: *"Weather is off — enable it in
   Settings → Connect."*
@@ -91,27 +94,24 @@ to tonight's dusk and expires automatically when the next night begins. It is
 a runtime override, not saved config. Turning it on does **not** dismiss a
 warning already shown; it records "proceed anyway".
 
-> **A quirk worth knowing (pending a product decision).** The server route
-> behind this toggle, `POST /api/weather/ignore-tonight`, only requires
-> `control.capture` — an operator's own capability, not the admin-only
-> `view.site_precise` that gates the rest of this page. The toggle also has
-> a *second* home: it shows up on a session's card in the **Sessions** panel
+> **Resolved (2026-07-17 decisions wave I2).** This toggle used to be a quirk:
+> the server route behind it, `POST /api/weather/ignore-tonight`, only ever
+> required `control.capture` — an operator's own capability — but the alert
+> state that would *show* the toggle reached the browser only via routes and
+> WS events gated to the admin-only `view.site_precise`. So an operator's
+> account technically had write access to a control it could never see. The
+> product owner resolved this by giving full weather visibility — the
+> forecast, the Sky Conditions panel, and the radar map — its own capability,
+> `view.weather`, held by **operators and admins** (not viewers). Both the
+> `GET /api/weather` route and the WebSocket `weather` event are now gated to
+> `view.weather`; `view.site_precise` (still admin-only) continues to gate
+> only the exact site coordinates elsewhere. The toggle also has a *second*
+> home on a session's card in the **Sessions** panel
 > ([plan-and-sequences.md](plan-and-sequences.md)) whenever that session has
-> auto-resume armed and a weather alert is active, and it's `disabled`
-> there for anyone lacking `control.capture` — an operator's account is not
-> blocked. In practice, though, an operator never sees it *enabled*
-> anywhere: the toggle only renders once the client has live weather data
-> (`weather?.alert`), and weather data reaches the browser only two ways —
-> the `GET /api/weather` route and the WebSocket `weather` event — both
-> gated to `view.site_precise` outright (the WS event is **dropped
-> entirely**, not stripped, for non-holders). So today the capability on the
-> write route says "operator can", but the only UI path to it never
-> populates for an operator, because the alert state that would show the
-> toggle is itself admin-only data. Net effect: this is admin-only in
-> practice, through a data-visibility gate rather than a capability gate on
-> the write itself. Whether an operator *should* be able to reach this from
-> the Sessions card even without seeing the forecast is an open product
-> decision, not yet made.
+> auto-resume armed and a weather alert is active — that path was never
+> gated on anything but `control.capture`, so it now simply works: an
+> operator with a live weather alert sees the toggle, enabled, in both
+> places.
 
 ---
 
@@ -150,10 +150,21 @@ with no safety monitor still warns you; see the sessions guide.)
 
 ## The radar map
 
-On the [Monitor](monitor.md) view, admins also see a **Radar** panel — but
-only once weather is **enabled** (it stays hidden while weather is off,
-unlike Sky Conditions above, which shows its own disabled state instead): a
-small slippy radar/satellite map centred on your site.
+On the [Monitor](monitor.md) view, operators and admins also see a **Radar**
+panel — but only once weather is **enabled** (it stays hidden while weather is
+off, unlike Sky Conditions above, which shows its own disabled state
+instead): a small slippy radar/satellite map centred on your site.
+
+> **A note for operators.** The radar map necessarily shows *roughly where
+> your site is* — that's the point of a radar map. The product owner made
+> this trade-off explicitly: an operator can already reach the tile proxy and
+> pan/zoom the map, which discloses the site's region either way, so the
+> weather payload also carries the exact site coordinates the map needs to
+> center itself and draw the scope's pierce-point overlay (below). This is a
+> deliberate, narrow exception — every *other* place coordinates appear
+> (Settings → Site, the status/config payloads) still requires the
+> admin-only `view.site_precise` and strips them for everyone else,
+> unchanged. See [remote-access-and-roles.md](remote-access-and-roles.md#site-privacy-for-remote-and-low-role-users).
 
 - Two layers, chosen with the **Radar** and **IR satellite** buttons. **Radar**
   is roughly 5 minutes delayed.
@@ -232,5 +243,5 @@ faster poll would just burn credits for no new data. Data older than 12 hours
   auto-resume veto and the weather-override toggles live.
 - [Safety & automation](safety-and-automation.md) — the safety monitor, the
   hard guard weather never replaces.
-- [Remote access & roles](remote-access-and-roles.md) — why non-admins never
+- [Remote access & roles](remote-access-and-roles.md) — why viewers never
   see any of this.

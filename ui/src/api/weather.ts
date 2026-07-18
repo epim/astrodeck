@@ -1,11 +1,14 @@
 // api/weather.ts — typed client for the weather surfaces (weather spec §7/§9).
 // Thin over the shared `api` fetch wrapper (api.ts): same ApiError throwing.
-// Every weather route is view.site_precise-gated server-side — callers gate on
-// useCanViewSitePrecise() so a non-holder client never issues a request (§8).
+// GET /api/weather + the tile proxy are view.weather-gated server-side
+// (2026-07-17 decisions wave I2 — split off view.site_precise so operators
+// see weather too); callers gate on useCanViewWeather() so a non-holder
+// client never issues a request (§8). Config write (saveWeatherConfig,
+// below) stays config.site_optics-gated, unchanged — see useCanViewSitePrecise.
 import { api } from "../api";
 import type { AppConfig, WeatherState } from "../types";
 
-/** GET /api/weather. view.site_precise. Full spec-§7 payload. */
+/** GET /api/weather. view.weather. Full spec-§7 payload. */
 export const getWeather = (): Promise<WeatherState> =>
   api.get<WeatherState>("/api/weather");
 

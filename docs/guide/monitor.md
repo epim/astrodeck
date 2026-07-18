@@ -122,12 +122,13 @@ against a Plan card that already knows better.
 - **Thermal** — sensor/target temperature and the cooler power bar, or
   **no cooler** when the camera doesn't support it.
 
-## Weather (admins only)
+## Weather (operator + admin)
 
-Admins (`view.site_precise`) additionally see the **Sky Conditions** forecast
-chart and, once weather is enabled, the **Radar** map — both documented in
-full in [weather.md](weather.md). They render nothing for operators or
-viewers; the data never crosses the wire to them.
+Operators and admins (`view.weather`, 2026-07-17 decisions wave I2)
+additionally see the **Sky Conditions** forecast chart and, once weather is
+enabled, the **Radar** map — both documented in full in
+[weather.md](weather.md). They render nothing for viewers; the data never
+crosses the wire to them.
 
 ---
 

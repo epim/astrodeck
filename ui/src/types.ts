@@ -1074,13 +1074,14 @@ export interface ConnectRigResult {
   backend_links: BackendLink[];
 }
 
-// The 14 capability strings (auth/capabilities.py). view.* read; control.* device
+// The 16 capability strings (auth/capabilities.py). view.* read; control.* device
 // motion/imaging; config.* settings writes; admin.* auth/remote admin.
 export type Capability =
   | "view.status"
   | "view.preview"
   | "view.media"
   | "view.site_precise"
+  | "view.weather"
   | "control.capture"
   | "control.mount"
   | "control.guide"
@@ -1235,9 +1236,13 @@ export interface TouchSettings {
 
 // ===================================================================== weather
 // Sub-project C (weather spec §7): the GET /api/weather + WS `weather` event
-// payload. ALL weather data is view.site_precise-gated server-side (WS events
-// are DROPPED for non-holders), so these only ever populate for holders. NO
-// coordinates ride this payload.
+// payload. ALL weather data is view.weather-gated server-side (2026-07-17
+// decisions wave I2 -- split off view.site_precise so operators see it too;
+// WS events are DROPPED for non-holders), so these only ever populate for
+// holders (operator + admin). site_lat/site_lon are the one deliberate
+// coordinate exception (the radar map needs them to center its tiles) --
+// every OTHER coordinate-bearing surface stays view.site_precise-gated
+// (admin only), unchanged.
 export interface WeatherForecast {
   times: string[];        // ISO-8601 Z, 15-min grid, <= 192 samples (48 h)
   cloud: number[];        // TOTAL cloud cover % — the breach metric
@@ -1270,6 +1275,11 @@ export interface WeatherState {
   ignore_tonight: boolean;
   threshold_pct: number;
   sustain_minutes: number;
+  // Site fix for the radar map (RadarMap.tsx) to center on -- null on the
+  // default (0,0) site. The one deliberate exception to "coordinates are
+  // view.site_precise-gated everywhere else" (see the module comment above).
+  site_lat: number | null;
+  site_lon: number | null;
   forecast: WeatherForecast | null;
   astrospheric: WeatherAstrospheric | null;
   alert: WeatherAlert | null;

@@ -66,7 +66,7 @@ The source of truth is `server/astrodeck/auth/capabilities.py`.
 | Role | Holds | Cannot |
 |------|-------|--------|
 | **viewer** | `view.status`, `view.preview` | everything else |
-| **operator** | viewer + `control.capture`, `control.guide`, `control.mount` | power, config, media, precise site |
+| **operator** | viewer + `control.capture`, `control.guide`, `control.mount`, `view.weather` | power, config, media, precise site |
 | **admin** | **all** capabilities | — |
 
 What the individual capabilities gate:
@@ -74,8 +74,20 @@ What the individual capabilities gate:
 - **`view.status`** — read-only status and the live event stream (WebSocket).
 - **`view.preview`** — downsized preview frames (not raw FITS).
 - **`view.media`** — raw FITS / full-resolution science downloads. **Admin only.**
-- **`view.site_precise`** — the exact site coordinates, and (new in the weather
-  feature) the whole forecast / Sky Conditions / radar surface. **Admin only.**
+- **`view.site_precise`** — the exact site coordinates: name, latitude,
+  longitude, elevation. **Admin only.** Stripped (made absent, not blanked)
+  from every status/summary/config payload and the WS hello/status frames for
+  everyone else.
+- **`view.weather`** — the whole forecast / Sky Conditions / radar surface
+  (2026-07-17 decisions wave I2). **Operator and admin** — split off
+  `view.site_precise` so operators get full weather, radar map included, on
+  the theory that a renter/operator needs to see the sky over the rig they're
+  running. The one deliberate exception: the weather payload carries the
+  site's exact coordinates so the radar map can center itself, which the
+  product owner explicitly accepted (an operator who can pan/zoom the radar
+  map already learns the site's rough region from the tiles themselves). This
+  does not touch `view.site_precise` — every other coordinate-bearing surface
+  above is unaffected.
 - **`control.capture`** — imaging: capture, loop, autofocus, cooler, dew heater,
   focuser, filter wheel.
 - **`control.mount`** — all mount motion (slew, park, tracking) **and** starting
@@ -123,7 +135,8 @@ tracks what's really hidden/disabled per role, not just the intent:
 | **Plan** — Run / Monitor's Pause / Resume / Abort | visible but **disabled**, with a lock note naming the required access | full (`control.mount`) | full |
 | **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | full — resume/auto-resume-arm/update-from-plan/delete/regrade all enabled (`control.mount`) | full |
 | **Monitor** | dashboard fully visible, controls row **disabled** with a shared lock note | dashboard fully visible, controls row **enabled** (`control.mount`) | full |
-| **Sky Conditions / Radar** (on Monitor) and the **Weather** settings panel | never rendered — no request even fires | never rendered | full (`view.site_precise`) |
+| **Sky Conditions / Radar** (on Monitor) | never rendered — no request even fires | full (`view.weather`, 2026-07-17 I2) | full |
+| **Weather** settings panel (Settings → Connect, config only) | never rendered | never rendered (`config.site_optics` is admin-only) | full |
 | **Settings → Connect** (drivers, site, weather, Sky Atlas pack) | read-only | read-only (`config.backend`/`config.site_optics` — operator holds neither) | full |
 | **Settings → Safety** (sun avoidance) | current value shown, toggle disabled | disabled (`config.solar_override` is admin-only) | full |
 | **Settings → Profiles** | hidden (a "needs admin access" note instead) | **read-only, same note as viewer** (`config.backend` is admin-only) | full |
@@ -233,15 +246,26 @@ path to. When disabled (the default), the scope never dials out at all.
 
 Because remote viewers are often on a limited role, the location rules matter:
 
-- A principal **without `view.site_precise`** (every viewer and operator) never
-  sees the site's **name, latitude, longitude, or elevation** — anywhere. The
-  coordinates are **removed** (made absent, not blanked) from every status,
-  summary, and config payload at a single server seam.
-- **Weather events are dropped entirely** for non-holders over the WebSocket —
-  not just stripped — so even location-free forecast numbers never reach them.
-- The `GET /api/weather` and radar-tile routes **require** `view.site_precise`
-  outright.
+- A principal **without `view.site_precise`** (every viewer, and operators
+  except via the one weather exception below) never sees the site's **name,
+  latitude, longitude, or elevation** on status, summary, or config payloads,
+  or the WS hello/status frames. The coordinates are **removed** (made
+  absent, not blanked) at a single server seam.
+- **Weather events are dropped entirely** for a principal lacking
+  `view.weather` over the WebSocket — not just stripped. Viewers never
+  receive them; operators and admins do (2026-07-17 decisions wave I2).
+- The `GET /api/weather` and radar-tile routes **require** `view.weather`
+  outright (not `view.site_precise` — split off in the same decisions wave).
+- **The one deliberate exception:** the weather payload (both the REST route
+  and the WS event, `view.weather`-gated) carries the site's exact
+  `site_lat`/`site_lon` so the radar map can center itself and draw the
+  scope's pierce-point overlay. An operator therefore *does* learn the exact
+  site coordinates through this one path — the product owner accepted this
+  because the radar map's tiles disclose the same region anyway. Nowhere
+  else does an operator see them.
 
-So a shared read-only remote link shows the live rig and previews but reveals
-nothing about *where* the observatory is. See
-[site-and-locations.md](site-and-locations.md) and [weather.md](weather.md).
+So a shared read-only remote **viewer** link shows the live rig and previews
+but reveals nothing about *where* the observatory is; a remote **operator**
+link additionally gets full weather, radar map included, which does disclose
+the site's location. See [site-and-locations.md](site-and-locations.md) and
+[weather.md](weather.md).

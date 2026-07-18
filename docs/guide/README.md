@@ -38,7 +38,7 @@ New to AstroDeck? Follow this path:
 | [Sky Atlas](sky-atlas.md) | Search, framing, mosaics, visibility, offline survey pack |
 | [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, scheduling, plan library |
 | [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume |
-| [Monitor](monitor.md) | Live dashboard, stall detection, pause/recovery, admin-only weather panels |
+| [Monitor](monitor.md) | Live dashboard, stall detection, pause/recovery, weather panels (operator + admin) |
 | [Weather](weather.md) | Cloud forecast, night warning, auto-resume veto, radar map, Astrospheric |
 | [Remote access & roles](remote-access-and-roles.md) | Relay, sign-in, viewer/operator/admin, site privacy |
 | [Site & locations](site-and-locations.md) | Observing site, hemispheres, GPS, saved locations |

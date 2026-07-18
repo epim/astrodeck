@@ -31,6 +31,7 @@ from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
                     CAP_CONTROL_POWER, CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA,
                     CAP_VIEW_PREVIEW, CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
+                    CAP_VIEW_WEATHER,
                     Principal, _scope_is_remote,
                     configure_provider_from_auth, get_principal, require,
                     resolve_principal)
@@ -994,21 +995,32 @@ def create_app() -> FastAPI:
 
     # ---------------------------------------------------- weather read (weather spec §7)
     # Full payload, holders only (spec §8: REST requires the cap outright — no
-    # partial payloads). The payload itself is coordinate-free by construction.
+    # partial payloads). Gated on view.weather (2026-07-17 decisions wave I2:
+    # split off view.site_precise so operators see weather too) rather than
+    # view.site_precise -- view.site_precise stays the gate for every OTHER
+    # precise-site surface (status/config/summary/site-sky), unchanged. The
+    # payload carries site_lat/site_lon (the one deliberate exception to "site
+    # coordinates are admin-only everywhere else" -- see weather.payload()),
+    # so it is no longer coordinate-free, but it is still gated identically to
+    # the rest of this payload and NEVER reaches a viewer.
 
     @app.get("/api/weather")
-    @declare(CAP_VIEW_SITE_PRECISE)
+    @declare(CAP_VIEW_WEATHER)
     async def get_weather(
-            principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))):
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))):
         return weather_service.payload()
 
     # ------------------------------------------------- weather tiles (weather spec §6)
+    # Gated on view.weather, same split as the read route above (I2): radar/
+    # satellite tiles are centred on the site, so the owner explicitly accepts
+    # that operators reaching this route can infer the site's rough region --
+    # the trade-off "full weather (radar map included) for operators" makes.
 
     @app.get("/api/weather/tile/{layer}/{z}/{x}/{y}.png")
-    @declare(CAP_VIEW_SITE_PRECISE)
+    @declare(CAP_VIEW_WEATHER)
     async def weather_tile(
             layer: Literal["radar", "satellite"], z: int, x: int, y: int,
-            principal: Principal = Depends(require(CAP_VIEW_SITE_PRECISE))
+            principal: Principal = Depends(require(CAP_VIEW_WEATHER))
     ) -> Response:
         if not (3 <= z <= 11):
             raise HTTPException(status_code=422, detail="z out of range [3,11]")

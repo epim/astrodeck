@@ -149,11 +149,12 @@ def test_upstream_down_502_no_store(client):
     assert r.headers.get("cache-control") == "no-store"
 
 
-def test_tile_route_view_site_precise_gated(client):
-    """Radar tiles centered on the site reveal the site area — holders only
-    (spec §6/§8)."""
+def test_tile_route_view_weather_gated(client):
+    """Radar tiles centered on the site reveal the site area -- gated on
+    view.weather (2026-07-17 decisions wave I2), NOT view.site_precise, so an
+    operator now reaches it (200) while a viewer stays denied (403)."""
     c, store = client
     set_active_provider(_FixedProvider(principal_for_role("viewer")))
     assert c.get("/api/weather/tile/radar/5/8/12.png").status_code == 403
     set_active_provider(_FixedProvider(principal_for_role("operator")))
-    assert c.get("/api/weather/tile/radar/5/8/12.png").status_code == 403
+    assert c.get("/api/weather/tile/radar/5/8/12.png").status_code == 200

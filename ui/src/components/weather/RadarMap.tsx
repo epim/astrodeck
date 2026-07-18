@@ -10,12 +10,22 @@
 // layer must never read as clear sky (R2-WEA-04), and a healthy layer must
 // stay visible too, so a later silent failure isn't indistinguishable from
 // healthy-and-quiet (R3-MON-03). Controls are word-labeled — never hue alone.
+//
+// Site fix source (2026-07-17 decisions wave I2): useSite() (status/config)
+// is view.site_precise-gated and comes back WITHOUT latitude/longitude for an
+// operator (view.weather holder, but not view.site_precise). This panel now
+// only mounts under view.weather (MonitorView.tsx), so it falls back to
+// weather.site_lat/site_lon — the one field the weather payload carries
+// specifically so the radar map can center itself for an operator (the
+// product owner explicitly accepted that the radar's tile coordinates
+// disclose the site region). An admin's useSite() already has full precision,
+// so this fallback changes nothing for admin — same numbers either way.
 import { useEffect, useRef, useState } from "react";
 import type {
   KeyboardEvent as RKeyboardEvent,
   PointerEvent as RPointerEvent,
 } from "react";
-import { useSite, useStore } from "../../store";
+import { useSite, useStore, useWeather } from "../../store";
 import { Panel, Stepper } from "../ui";
 import { Icon } from "../icons";
 import { u } from "../../lib/base";
@@ -55,9 +65,14 @@ function wedgePath(x: number, y: number, bearingDeg: number): string {
 
 export default function RadarMap() {
   const site = useSite();
+  const weather = useWeather();
   const mount = useStore((s) => s.status?.mount);
-  const siteLat = typeof site?.latitude === "number" ? site.latitude : null;
-  const siteLon = typeof site?.longitude === "number" ? site.longitude : null;
+  // useSite() first (admin: full precision already); weather.site_lat/lon as
+  // the operator fallback (see the module comment above).
+  const siteLat = typeof site?.latitude === "number" ? site.latitude
+    : typeof weather?.site_lat === "number" ? weather.site_lat : null;
+  const siteLon = typeof site?.longitude === "number" ? site.longitude
+    : typeof weather?.site_lon === "number" ? weather.site_lon : null;
 
   const [layer, setLayer] = useState<Layer>("radar");
   const [zoom, setZoom] = useState(7);

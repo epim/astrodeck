@@ -30,6 +30,8 @@ const base: WeatherState = {
   ignore_tonight: false,
   threshold_pct: 50,
   sustain_minutes: 30,
+  site_lat: 34.2,
+  site_lon: -118.1,
   forecast: {
     times: ["2026-07-16T01:00:00Z", "2026-07-16T01:15:00Z"],
     cloud: [10, 120],
@@ -46,6 +48,14 @@ test("fresh payload stays fresh; percentages clamp 0-100", () => {
   assert(w.stale === false, `stale=${w.stale}`);
   assert(w.forecast!.cloud[1] === 100, `clamp high ${w.forecast!.cloud[1]}`);
   assert(w.forecast!.cloud_low[1] === 0, `clamp low ${w.forecast!.cloud_low[1]}`);
+});
+
+test("site_lat/site_lon pass through (RadarMap centering, 2026-07-17 I2); null when absent", () => {
+  const w = normalizeWeather(base, NOW)!;
+  assert(w.site_lat === 34.2, `site_lat=${w.site_lat}`);
+  assert(w.site_lon === -118.1, `site_lon=${w.site_lon}`);
+  const w2 = normalizeWeather({ ...base, site_lat: null, site_lon: null }, NOW)!;
+  assert(w2.site_lat === null && w2.site_lon === null, "null site stays null");
 });
 
 test("stale derived FAIL-CLOSED from fetched_ts age (> 45 min)", () => {

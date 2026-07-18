@@ -29,7 +29,8 @@ from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
 import astrodeck.api.redact as redact_module
-from astrodeck.auth import (CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS, Principal,
+from astrodeck.auth import (CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
+                            CAP_VIEW_WEATHER, Principal,
                             principal_for_role, reset_active_provider,
                             set_active_provider)
 from astrodeck.auth.deps import _scope_is_remote
@@ -925,8 +926,9 @@ async def test_on_wire_wss_roundtrip(tmp_path, monkeypatch):
 
 def test_tunneled_ws_drops_weather_for_viewer(tmp_path, monkeypatch):
     """WS `weather` events are DROPPED ENTIRELY (not stripped) for a principal
-    lacking view.site_precise on the RELAY lane too (weather spec §8) — the
-    relay handler must skip the send when _redact_ws_event returns None."""
+    lacking view.weather on the RELAY lane too (weather spec §8; gate split
+    2026-07-17 decisions wave I2) — the relay handler must skip the send when
+    _redact_ws_event returns None."""
     store, app = _make_client(tmp_path, monkeypatch)
     set_active_provider(_FixedPrincipalProvider(principal_for_role("viewer")))
 
@@ -953,7 +955,7 @@ def test_tunneled_ws_drops_weather_for_viewer(tmp_path, monkeypatch):
 
 
 def test_tunneled_ws_delivers_weather_to_admin(tmp_path, monkeypatch):
-    """A view.site_precise holder receives the weather event verbatim over the
+    """A view.weather holder receives the weather event verbatim over the
     relay (the drop rule is non-holder-only)."""
     store, app = _make_client(tmp_path, monkeypatch)
     set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
@@ -978,16 +980,50 @@ def test_tunneled_ws_delivers_weather_to_admin(tmp_path, monkeypatch):
     asyncio.run(_scenario())
 
 
+def test_tunneled_ws_delivers_weather_to_operator(tmp_path, monkeypatch):
+    """2026-07-17 decisions wave I2: an operator holds view.weather (NOT
+    view.site_precise) and still receives the weather event verbatim over the
+    relay -- the drop rule tracks view.weather independently."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("operator")))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsG"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.05)
+        from astrodeck.events import bus
+        bus.publish("weather", enabled=True, stale=False)
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        weather = [p for p in payloads if p["type"] == "weather"]
+        assert weather and weather[0]["data"]["enabled"] is True
+
+    asyncio.run(_scenario())
+
+
 def test_tunneled_ws_downgrade_midstream_drops_weather(tmp_path, monkeypatch):
-    """A holder that stays valid (keeps view.status) but LOSES view.site_precise
-    mid-stream: weather events AFTER the downgrade recheck are DROPPED entirely
-    (weather spec §8) even though the pre-downgrade weather event was delivered
-    verbatim — the drop rule tracks the refreshed caps through the same 60s
-    re-auth seam as the site strip (test_tunneled_ws_downgrade_midstream_strips)."""
+    """A holder that stays valid (keeps view.status) but LOSES view.weather
+    (and view.site_precise) mid-stream: weather events AFTER the downgrade
+    recheck are DROPPED entirely (weather spec §8) even though the
+    pre-downgrade weather event was delivered verbatim — the drop rule tracks
+    the refreshed caps through the same 60s re-auth seam as the site strip
+    (test_tunneled_ws_downgrade_midstream_strips). Weather is gated on
+    view.weather, a SEPARATE cap from view.site_precise (2026-07-17 decisions
+    wave I2); this synthetic holder carries both so the downgrade exercises
+    losing both at once (the operator-specific downgrade -- losing ONLY
+    view.weather, since a real operator never holds view.site_precise -- is
+    test_tunneled_ws_downgrade_midstream_operator_to_viewer_drops_weather)."""
     monkeypatch.setattr(redact_module, "WS_AUTH_RECHECK_S", 0.05)
     store, app = _make_client(tmp_path, monkeypatch)
     holder = Principal(role="viewer", email=None,
-                       caps=frozenset({CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE}),
+                       caps=frozenset({CAP_VIEW_STATUS, CAP_VIEW_SITE_PRECISE,
+                                       CAP_VIEW_WEATHER}),
                        jti=None)
     prov = _FixedPrincipalProvider(holder)
     set_active_provider(prov)
@@ -1004,6 +1040,55 @@ def test_tunneled_ws_downgrade_midstream_drops_weather(tmp_path, monkeypatch):
         bus.publish("weather", enabled=True, stale=False)
         await asyncio.sleep(0.03)
         # downgrade: drop view.site_precise but keep view.status (still allowed)
+        prov.principal = principal_for_role("viewer")
+        await asyncio.sleep(0.15)  # let >=1 recheck refresh the cached principal
+        # weather AFTER downgrade -> dropped entirely; the LATER status marker
+        # proves the loop is still delivering (dropped, not stalled/leaked —
+        # bus ordering would put a leaked weather frame before the marker).
+        bus.publish("weather", enabled=True, stale=True)
+        bus.publish("status", site={"is_default": True, "horizon_min_deg": 15.0})
+        await asyncio.sleep(0.05)
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        payloads = await _ws_data_payloads(channel)
+        weather = [p for p in payloads if p["type"] == "weather"]
+        assert len(weather) == 1, \
+            f"expected ONLY the pre-downgrade weather event, got {len(weather)}"
+        assert weather[0]["data"]["stale"] is False    # it IS the pre-downgrade one
+        assert any(p["type"] == "status" for p in payloads)  # loop alive after drop
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_downgrade_midstream_operator_to_viewer_drops_weather(
+        tmp_path, monkeypatch):
+    """2026-07-17 decisions wave I2 variant: a REAL role downgrade (operator
+    -> viewer, e.g. an admin reassigning the account mid-session) loses
+    view.weather and re-drops weather entirely after the next re-auth
+    recheck, even though the pre-downgrade weather event was delivered
+    verbatim to the operator -- same 60s re-auth seam as
+    test_tunneled_ws_downgrade_midstream_drops_weather, but exercised with
+    natural roles instead of a synthetic cap combo."""
+    monkeypatch.setattr(redact_module, "WS_AUTH_RECHECK_S", 0.05)
+    store, app = _make_client(tmp_path, monkeypatch)
+    prov = _FixedPrincipalProvider(principal_for_role("operator"))
+    set_active_provider(prov)
+
+    async def _scenario():
+        from astrodeck.events import bus
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 7,
+                           {"path": "/ws", "query": "", "ws_id": "wsH"})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        await asyncio.sleep(0.03)  # authorize + hello + enter loop
+        # weather BEFORE downgrade -> delivered verbatim (operator holds
+        # view.weather)
+        bus.publish("weather", enabled=True, stale=False)
+        await asyncio.sleep(0.03)
+        # downgrade: operator -> viewer loses view.weather (and control.*)
+        # but keeps view.status (still allowed)
         prov.principal = principal_for_role("viewer")
         await asyncio.sleep(0.15)  # let >=1 recheck refresh the cached principal
         # weather AFTER downgrade -> dropped entirely; the LATER status marker
