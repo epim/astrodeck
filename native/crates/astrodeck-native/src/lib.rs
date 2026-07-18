@@ -1022,6 +1022,18 @@ fn build_engine_config(d: &Bound<'_, PyDict>) -> PyResult<EngineConfig> {
     }
     if let Some(s) = get_opt::<String>(d, "dec_algorithm")? {
         c.dec_algorithm = parse_algo_kind(&s)?;
+        // PPEC (Gaussian-process predictive PEC) is RA-only (dossier §6.8;
+        // PHD2 `mount.cpp:227-240` — present in `RA_ALGORITHMS`, absent from
+        // `DEC_ALGORITHMS`/`AO_ALGORITHMS`). Reject a Dec `ppec` config here,
+        // at the validation layer, rather than in `engine::make_algo` (whose
+        // never-fails contract is binding); the engine keeps a ResistSwitch
+        // fallback as defense in depth for a string that bypasses this check.
+        if c.dec_algorithm == AlgoKind::Ppec {
+            return Err(PyValueError::new_err(
+                "PPEC (gaussian_process) is RA-only and cannot be used as a Dec \
+                 guide algorithm",
+            ));
+        }
     }
     if let Some(s) = get_opt::<String>(d, "dec_guide_mode")? {
         c.dec_guide_mode = parse_dec_mode(&s)?;
