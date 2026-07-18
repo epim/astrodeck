@@ -433,6 +433,10 @@ class SimTelescope(Telescope):
     #: the box (Batch 4b).
     reports_destination_pier_side = True
 
+    #: the sim mount always accepts PulseGuide (native guider needs no
+    #: capability gating in the sim rig).
+    can_pulse_guide = True
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig
@@ -526,6 +530,13 @@ class SimTelescope(Telescope):
         the western half WEST. Lets the pier-limit guard be exercised without a
         live mount (Batch 4b)."""
         return PierSide.EAST if (ra_hours % 24.0) < 12.0 else PierSide.WEST
+
+    async def guide_rates(self) -> tuple[float, float] | None:
+        """Fixed 0.5x sidereal rate on both axes — matches the sim's
+        ``pulse_guide`` nudge scale so the closed-loop sim stays
+        self-consistent for calibration (P1-T8)."""
+        rate = 15.0 / 3600 * 0.5
+        return rate, rate
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         nudge = ms / 1000.0 * 0.0002

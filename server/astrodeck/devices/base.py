@@ -151,6 +151,13 @@ class Telescope(Device):
     #: unaffected and the destination helper inert (returns UNKNOWN).
     reports_destination_pier_side: bool = False
 
+    #: capability flag — set True only by backends that have confirmed the
+    #: mount accepts ``PulseGuide`` (ASCOM ``CanPulseGuide``, or the sim's
+    #: always-on nudge). Gates whether the native guider will even start:
+    #: spec §4 says a pulse-guide-incapable mount must refuse to start with
+    #: an actionable error rather than silently issuing pulses that go nowhere.
+    can_pulse_guide: bool = False
+
     @abstractmethod
     async def get_position(self) -> tuple[float, float]:
         """Return (ra_hours, dec_degrees), JNow."""
@@ -186,6 +193,12 @@ class Telescope(Device):
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         raise DeviceError(f"{self.name} cannot pulse guide")
+
+    async def guide_rates(self) -> tuple[float, float] | None:
+        """(ra_deg_per_s, dec_deg_per_s) at 1x guide speed, or None when the
+        mount doesn't report them. Calibration uses actual rates when present,
+        else falls back to advisories (dossier §17)."""
+        return None
 
     async def pier_side(self) -> PierSide:
         return PierSide.UNKNOWN
