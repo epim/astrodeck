@@ -210,19 +210,57 @@ class NativeGuider(Guider):
             # (sequence/engine.py:1908-1924), which would otherwise pay a
             # full ~20+ s recalibration on every recovery.
             persisted = self._load_persisted_calibration()
+            reused = False
             if persisted is not None and self._cal_reusable(persisted):
-                self._engine.load_calibration(persisted)
-                # Live current scope pointing feeds RA dec-compensation
-                # (dossier §9 item 6, never persisted) independently of the
-                # reused Cal's own stored declination/pier — same call
-                # _calibrate() makes internally before completing a fresh
-                # calibration.
-                await self._apply_scope_pointing()
-                self._engine.begin_guiding()
-                bus.log("info",
-                        f"native guider: reusing persisted calibration for "
-                        f"profile {self.profile_id}", "guide")
-            else:
+                try:
+                    # STAR-EXISTENCE PRECONDITION (fix round #2): mirror
+                    # _calibrate's one-frame guide_star_find gate. Without
+                    # it, a recovery restart during a PERSISTING occlusion
+                    # "succeeds" instantly — the engine then sits in
+                    # lock-establishment returning Idle forever with
+                    # stats().guiding True (the staleness machinery is
+                    # unreachable while lock is None), permanently silencing
+                    # _maybe_recover_guiding's one-shot retry contract.
+                    # Raising here keeps is_active() false so the recovery
+                    # loop keeps firing until the star is really back.
+                    frame = await self._expose()
+                    stars, _meta = _native.guide_star_find(frame.data)
+                    if not stars:
+                        raise DeviceError(
+                            "native guider: no guide star found — cannot "
+                            "start guiding")
+                    # Strip the image_scale_arcsec SIDECAR key (fix round
+                    # #1) before handing the dict to the engine —
+                    # dict_to_cal reads required Cal keys only.
+                    cal = {k: v for k, v in persisted.items()
+                           if k != "image_scale_arcsec"}
+                    self._engine.load_calibration(cal)
+                    # Live current scope pointing feeds RA dec-compensation
+                    # (dossier §9 item 6, never persisted) independently of
+                    # the reused Cal's own stored declination/pier — same
+                    # call _calibrate() makes internally before completing
+                    # a fresh calibration.
+                    await self._apply_scope_pointing()
+                    self._engine.begin_guiding()
+                    reused = True
+                    bus.log("info",
+                            f"native guider: reusing persisted calibration "
+                            f"for profile {self.profile_id}", "guide")
+                except DeviceError:
+                    # A real refusal (no star) propagates — recalibrating
+                    # would fail on the same missing star anyway; the
+                    # sequence engine's recovery loop retries later.
+                    raise
+                except Exception as e:
+                    # CORRUPT-PERSISTENCE HARDENING (fix round #3b): a
+                    # persisted dict that passes the _cal_reusable gate
+                    # fields can still fail the engine's own PyO3 field
+                    # conversion (corrupt numerics). Never fatal — fall
+                    # back to a fresh calibration.
+                    bus.log("warning",
+                            f"native guider: could not reuse persisted "
+                            f"calibration ({e}); recalibrating", "guide")
+            if not reused:
                 await self._calibrate()           # blocks; raises on failure
             # HOST CONTRACT (T8 / upstream mount.cpp:1338-1344): auto-flip the
             # calibration at guiding start if the mount's pier side differs from
@@ -306,16 +344,25 @@ class NativeGuider(Guider):
         side onto the engine so the completing calibration carries them (and RA
         dec-compensation, dossier §9 item 6, has a real declination). Parity is
         left ``"unknown"`` — the sim mount does not report it and it is not used
-        by the guiding math (only by the flip logic/advisories)."""
-        dec_deg = 0.0
+        by the guiding math (only by the flip logic/advisories).
+
+        DEC-READ SENTINEL (fix round #4): a failed ``get_position`` stamps the
+        engine's ``UNKNOWN_DECLINATION`` sentinel, NOT 0.0 — the engine then
+        SKIPS RA dec-compensation entirely (upstream: ``GetDeclinationRadians``
+        returns ``UNKNOWN_DECLINATION`` on any pointing failure and dec comp is
+        skipped when either declination is unknown, mount.cpp:1380-1381). A
+        0.0 default on the REUSE path (where the persisted ``cal.declination``
+        is real) would silently boost the RA rate by
+        ``cos(cal_dec)/cos(0)`` — 2x at a dec-60° calibration."""
+        dec_rad = _UNKNOWN_DECLINATION
         pier = "unknown"
         with contextlib.suppress(Exception):
             _ra, dec_deg = await self.tel.get_position()
+            dec_rad = math.radians(float(dec_deg))
         with contextlib.suppress(Exception):
             pier = (await self.tel.pier_side()).value
         self._engine.set_scope_pointing(
-            math.radians(float(dec_deg)), pier, "unknown", "unknown",
-            0.0, self._binning)
+            dec_rad, pier, "unknown", "unknown", 0.0, self._binning)
 
     async def _maybe_flip_for_pier(self) -> None:
         """Guiding-start auto-flip host contract (T8; upstream
@@ -621,6 +668,14 @@ class NativeGuider(Guider):
             cal = self._engine.dump_calibration()
             if not cal:
                 return
+            # SIDECAR key (fix round #1): record the image scale this
+            # calibration's px/ms rates were measured under, next to (not
+            # inside) the engine's Cal fields — stripped again before
+            # load_calibration. Upstream clears a calibration outright on a
+            # >=1% image-scale change (mount.cpp:1332 ->
+            # HandleImageScaleChange -> ClearCalibration, myframe.cpp:2902);
+            # _cal_reusable applies the same 1% gate on reuse.
+            cal["image_scale_arcsec"] = self._image_scale
             from ..config import CONFIG_DIR
             d = CONFIG_DIR / "guider"
             d.mkdir(parents=True, exist_ok=True)
@@ -646,7 +701,18 @@ class NativeGuider(Guider):
             p = CONFIG_DIR / "guider" / f"{self.profile_id}.json"
             if not p.exists():
                 return None
-            return json.loads(p.read_text(encoding="utf-8"))
+            data = json.loads(p.read_text(encoding="utf-8"))
+            # CORRUPT-PERSISTENCE HARDENING (fix round #3a): valid JSON that
+            # is not a dict (a list, a string...) must not reach
+            # _cal_reusable's ``cal.get()`` and AttributeError out of the
+            # reuse decision.
+            if not isinstance(data, dict):
+                bus.log("warning",
+                        f"native guider: persisted calibration for profile "
+                        f"{self.profile_id} is not a JSON object; ignoring",
+                        "guide")
+                return None
+            return data
         except Exception as e:  # pragma: no cover - defensive
             bus.log("warning",
                     f"native guider: could not read persisted calibration: "
@@ -675,6 +741,13 @@ class NativeGuider(Guider):
            can only detect and correct a pier-side CHANGE since calibration
            when the stored side is actually known; an unknown stored pier
            would silently skip that safety net.
+        5. was measured at (within 1% of) THIS session's image scale — the
+           ``image_scale_arcsec`` sidecar ``_persist_calibration`` writes
+           (fix round #1). Upstream clears a calibration outright on a
+           >= 1% image-scale change (mount.cpp:1332 ->
+           ``HandleImageScaleChange`` -> ``ClearCalibration``,
+           myframe.cpp:2902); a missing sidecar (a pre-fix-round persisted
+           file) is treated as not reusable.
 
         A pier-side MISMATCH (known but different from the mount's current
         side) is deliberately NOT disqualifying here — that is exactly what
@@ -688,6 +761,14 @@ class NativeGuider(Guider):
                 return False
             dec = cal.get("declination")
             if dec is None or float(dec) == _UNKNOWN_DECLINATION:
+                return False
+            old_scale = cal.get("image_scale_arcsec")
+            if old_scale is None:
+                return False
+            old_scale = float(old_scale)
+            if old_scale <= 0 or self._image_scale <= 0:
+                return False
+            if abs(1.0 - old_scale / self._image_scale) >= 0.01:
                 return False
         except (TypeError, ValueError):
             return False
