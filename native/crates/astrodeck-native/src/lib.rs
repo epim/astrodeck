@@ -1385,10 +1385,14 @@ impl GuideEngine {
     /// resets the axis algorithms, and opens a settle window overlaid with a
     /// fast recenter (dossier §11.2/§12). While the window is open,
     /// [`process`](Self::process) returns fast-recenter `"pulse_pair"`
-    /// actions (dispatch these like any other pulse — the host does not
-    /// need to distinguish them) followed by `"settle"` actions once
-    /// recenter is exhausted; `stats()["settling"]` is `true` for the whole
-    /// window regardless of which action a given frame carries.
+    /// actions, then keeps GUIDING through the settle dwell (P2-T1 fix
+    /// round; guider.cpp:1517-1521 — settle is a parallel monitor, not a
+    /// phase that suspends guiding): ordinary `"pulse_pair"` corrections
+    /// keep flowing, with `"settle"` standing in for frames whose
+    /// correction is empty. Dispatch every pulse like any other — the host
+    /// does not need to distinguish them; `stats()["settling"]` is `true`
+    /// for the whole window regardless of which action a given frame
+    /// carries.
     fn dither(&mut self, dx: f64, dy: f64) {
         self.inner.dither(dx, dy);
         self.settling = true;
@@ -1462,15 +1466,17 @@ impl GuideEngine {
                 }
                 _ => {
                     // P2-T1 punch-list #3: do NOT infer "the window closed"
-                    // from this frame's Action shape alone — a fast-recenter
-                    // frame (dossier §11.2) returns an ordinary
-                    // `Action::PulsePair` while the settle window stays
-                    // open, which the old `Action::Settle => None, _ =>
-                    // settled` toggle would have misread as "settled" on
-                    // the very first recenter pulse. Ask the engine
-                    // directly: it already cleared its own `settle` field
-                    // (Done or Failed) exactly when the window really
-                    // closed, so `is_settling()` is authoritative here.
+                    // from this frame's Action shape alone — fast-recenter
+                    // frames (dossier §11.2) AND the dwell's ordinary guide
+                    // corrections (P2-T1 fix round; guider.cpp:1517-1521)
+                    // both return an ordinary `Action::PulsePair` while the
+                    // settle window stays open, which the old
+                    // `Action::Settle => None, _ => settled` toggle would
+                    // have misread as "settled" on the very first such
+                    // pulse. Ask the engine directly: it already cleared
+                    // its own `settle` field (Done or Failed) exactly when
+                    // the window really closed, so `is_settling()` is
+                    // authoritative here.
                     self.settling = self.inner.is_settling();
                     None
                 }
