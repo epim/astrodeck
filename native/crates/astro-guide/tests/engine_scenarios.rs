@@ -388,3 +388,307 @@ fn stats_reports_guiding_and_recent_window() {
     assert!(s.rms_ra > 0.0);
     assert!((s.snr - 30.0).abs() < 1e-9);
 }
+
+// ---- P1-T7 review coverage round (test-only) ----
+
+/// Drive one +5px-mount-x guide frame and return the RA pulse duration, for
+/// the dec-compensation vectors below. `cal_declination` is stamped on the
+/// injected Cal; `scope_dec` (if any) is injected via set_scope_pointing.
+fn ra_ms_for(cal_declination: f64, scope_dec: Option<f64>) -> u32 {
+    let mut e = GuideEngine::new(EngineConfig::default());
+    let mut c = ident_cal();
+    c.declination = cal_declination;
+    e.set_calibration(c);
+    if let Some(d) = scope_dec {
+        e.set_scope_pointing(ScopePointing {
+            declination: d,
+            ..ScopePointing::default()
+        });
+    }
+    e.begin_guiding();
+    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]);
+    match e.ingest(&frame(2.0), &[star(105.0, 100.0)]) {
+        Action::PulsePair { ra: Some(p), .. } => {
+            assert!(matches!(p.dir, Direction::West), "dir={:?}", p.dir);
+            p.ms
+        }
+        other => panic!("expected an RA pulse, got {:?}", other),
+    }
+}
+
+/// RA dec-compensation numeric vector (dossier §9 item 6:
+/// `x_rate_effective = cal.x_rate / cos(cal.declination) * cos(current_dec)`,
+/// mount.cpp:1253-1409). Cal at declination 0, re-pointed to 60°:
+/// cos(0)/cos(60°) halves the effective rate, so the same 3.15px hysteresis
+/// correction takes exactly twice the pulse (315 -> 630 ms). Also pins the
+/// two skip paths: `|cal.declination| > DEC_COMP_LIMIT` (60°) disables comp
+/// even with a known current declination (comp would have produced ~143 ms —
+/// clearly distinguished from the raw-rate 315), and an UNKNOWN declination
+/// on either side short-circuits to the raw rate.
+#[test]
+fn dec_compensation_scales_ra_pulse() {
+    // Unknown current declination (scope pointing never injected): raw rate.
+    let baseline = ra_ms_for(0.0, None);
+    assert!((baseline as i64 - 315).abs() <= 1, "baseline={baseline}");
+
+    // Real cal dec 0, current dec 60°: rate halves, duration doubles.
+    let compensated = ra_ms_for(0.0, Some(std::f64::consts::FRAC_PI_3));
+    assert!(
+        (compensated as i64 - 630).abs() <= 1,
+        "compensated={compensated}"
+    );
+
+    // Cal declination beyond DEC_COMP_LIMIT (1.1 rad ~ 63° > π/3): comp
+    // disabled, raw rate retained despite a known current declination of 0.
+    let clamped = ra_ms_for(1.1, Some(0.0));
+    assert!((clamped as i64 - 315).abs() <= 1, "clamped={clamped}");
+
+    // Cal declination unknown (sentinel): raw rate despite a known current
+    // declination.
+    let cal_unknown = ra_ms_for(UNKNOWN_DECLINATION, Some(0.5));
+    assert!(
+        (cal_unknown as i64 - 315).abs() <= 1,
+        "cal_unknown={cal_unknown}"
+    );
+}
+
+/// flip_calibration at the engine level (dossier §9 item 4;
+/// `Mount::FlipCalibration`, mount.cpp:891-957): x_angle += π normalized;
+/// y_angle += π only when requires_dec_flip; dec parity flips unless the dec
+/// flip was required; RA parity never changes; pier side toggles;
+/// y_angle_error recomputed from the new angles.
+#[test]
+fn flip_calibration_transforms_cal() {
+    use std::f64::consts::{FRAC_PI_2, PI};
+
+    let mut base = ident_cal();
+    base.x_angle = 0.3;
+    base.y_angle = 0.3 + FRAC_PI_2;
+    base.y_angle_error = Cal::y_angle_error_from(base.x_angle, base.y_angle); // 0.0
+
+    let mut e = GuideEngine::new(EngineConfig::default());
+    e.set_calibration(base);
+
+    // Flip WITHOUT a dec flip (the common mount).
+    assert!(e.flip_calibration(false));
+    let c1 = e.calibration().expect("cal survives the flip");
+    assert!(
+        (c1.x_angle - (0.3 - PI)).abs() < 1e-12,
+        "x_angle={}",
+        c1.x_angle
+    );
+    assert!(
+        (c1.y_angle - (0.3 + FRAC_PI_2)).abs() < 1e-12,
+        "y_angle must be unchanged without dec flip, got {}",
+        c1.y_angle
+    );
+    assert_eq!(c1.dec_parity, Parity::Odd, "dec parity flips");
+    assert_eq!(c1.ra_parity, Parity::Even, "RA parity never changes");
+    assert_eq!(c1.pier_side, PierSide::East, "pier side toggles");
+    // y_angle_error recomputed: the flipped axes are now π apart in error
+    // space (norm(x - y + π/2) = ±π), not the stale pre-flip 0.0.
+    assert_eq!(
+        c1.y_angle_error,
+        Cal::y_angle_error_from(c1.x_angle, c1.y_angle),
+        "y_angle_error must be recomputed from the flipped angles"
+    );
+    assert!(
+        (c1.y_angle_error.abs() - PI).abs() < 1e-9,
+        "expected |err| ~ π, got {}",
+        c1.y_angle_error
+    );
+
+    // Flip back WITH a dec flip (CalFlipRequiresDecFlip mounts).
+    assert!(e.flip_calibration(true));
+    let c2 = e.calibration().expect("cal survives the flip");
+    assert!((c2.x_angle - 0.3).abs() < 1e-12, "x_angle={}", c2.x_angle);
+    assert!(
+        (c2.y_angle - (0.3 - FRAC_PI_2)).abs() < 1e-12,
+        "y_angle += π (normalized) with dec flip, got {}",
+        c2.y_angle
+    );
+    assert_eq!(
+        c2.dec_parity,
+        Parity::Odd,
+        "dec parity stays when the dec flip was required"
+    );
+    assert_eq!(c2.pier_side, PierSide::West, "pier side toggles back");
+    assert_eq!(
+        c2.y_angle_error,
+        Cal::y_angle_error_from(c2.x_angle, c2.y_angle)
+    );
+
+    // No calibration: no-op, returns false.
+    let mut empty = GuideEngine::new(EngineConfig::default());
+    assert!(!empty.flip_calibration(false));
+
+    // Invalid calibration: no-op, returns false, angles untouched.
+    let mut invalid = GuideEngine::new(EngineConfig::default());
+    let mut bad = ident_cal();
+    bad.is_valid = false;
+    invalid.set_calibration(bad);
+    assert!(!invalid.flip_calibration(false));
+    assert_eq!(invalid.calibration().expect("stored").x_angle, 0.0);
+}
+
+/// CalOutcome::Failed surfaces as LockLost through the engine, and the engine
+/// returns to a sane (Idle) phase afterwards. The star never moves, so
+/// GO_WEST exhausts its budget: upstream-literal post-increment semantics
+/// issue exactly max_steps + 1 = 61 pulses before the failure fires
+/// (scope.cpp:1252; the P1-T6 review ruling pinned this count).
+#[test]
+fn calibration_failure_surfaces_lock_lost_and_idles() {
+    let mut e = GuideEngine::new(EngineConfig::default());
+    e.begin_calibration((100.0, 100.0));
+
+    let mut cal_steps = 0u32;
+    let mut got_lock_lost = false;
+    for i in 0..100 {
+        let a = e.ingest(&frame(i as f64 * 2.0), &[star(100.0, 100.0)]);
+        match a {
+            Action::CalStep { .. } => cal_steps += 1,
+            Action::LockLost => {
+                got_lock_lost = true;
+                break;
+            }
+            other => panic!("unexpected during failing calibration: {:?}", other),
+        }
+    }
+    assert!(
+        got_lock_lost,
+        "calibration failure must surface as LockLost"
+    );
+    assert_eq!(
+        cal_steps, 61,
+        "upstream-literal budget: max_steps + 1 pulses before failure"
+    );
+    // Sane phase afterwards: idle, no calibration stored.
+    assert!(e.calibration().is_none());
+    let after = e.ingest(&frame(300.0), &[star(100.0, 100.0)]);
+    assert!(
+        matches!(after, Action::Idle),
+        "engine must idle after a failed calibration, got {:?}",
+        after
+    );
+}
+
+/// SettleState::Failed (timeout) surfaces as LockLost at the engine level,
+/// after which the settle window is cleared and guiding resumes.
+#[test]
+fn settle_timeout_surfaces_lock_lost_then_resumes() {
+    let mut e = GuideEngine::new(EngineConfig::default());
+    e.set_calibration(ident_cal());
+    e.begin_guiding();
+    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]); // lock
+    e.dither(3.0, 3.0); // opens the default 1.5px/10s/60s window
+
+    // 10px error: never in range; the timeout clock anchors at t=2.
+    let a = e.ingest(&frame(2.0), &[star(110.0, 100.0)]);
+    assert!(matches!(a, Action::Settle), "got {:?}", a);
+    // t=62: 60s elapsed >= 60s timeout -> Failed -> LockLost.
+    let a2 = e.ingest(&frame(62.0), &[star(110.0, 100.0)]);
+    assert!(
+        matches!(a2, Action::LockLost),
+        "settle timeout must surface as LockLost, got {:?}",
+        a2
+    );
+    // The window is cleared: normal guiding resumes on the next frame.
+    let a3 = e.ingest(&frame(64.0), &[star(105.0, 100.0)]);
+    assert!(
+        matches!(a3, Action::PulsePair { .. }),
+        "guiding should resume after the failed settle, got {:?}",
+        a3
+    );
+}
+
+/// Drive a full calibration through the engine against a linear mount with
+/// RA 0.02 px/ms and Dec 0.010 px/ms (300 ms steps). Returns the engine for
+/// advisory inspection.
+fn run_rate_mismatch_calibration(scope: Option<ScopePointing>) -> GuideEngine {
+    fn mismatch_mount(dir: Direction, ms: u32, pos: (f64, f64)) -> (f64, f64) {
+        const RA: f64 = 0.02; // px/ms
+        const DEC: f64 = 0.010; // px/ms — half the RA rate, ratio 2.0
+        let ms = ms as f64;
+        match dir {
+            Direction::West => (pos.0 - RA * ms, pos.1),
+            Direction::East => (pos.0 + RA * ms, pos.1),
+            Direction::North => (pos.0, pos.1 + DEC * ms),
+            Direction::South => (pos.0, pos.1 - DEC * ms),
+        }
+    }
+
+    let mut cfg = EngineConfig::default();
+    cfg.cal.calibration_duration_ms = 300; // 6px RA / 3px Dec per pulse
+    let mut e = GuideEngine::new(cfg);
+    if let Some(s) = scope {
+        e.set_scope_pointing(s);
+    }
+    e.begin_calibration((200.0, 200.0));
+
+    let mut pos = (200.0, 200.0);
+    let mut t = 0.0;
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        assert!(guard < 500, "calibration did not complete");
+        let a = e.ingest(&frame(t), &[star(pos.0, pos.1)]);
+        t += 2.0;
+        match a {
+            Action::CalStep { dir, ms, .. } => pos = mismatch_mount(dir, ms, pos),
+            Action::Idle => break, // completed
+            other => panic!("unexpected during calibration: {:?}", other),
+        }
+    }
+    e
+}
+
+/// OBLIGATION (e) end-to-end: sanity check #3 (rates vs cos(dec), dossier
+/// §8.3 item 3, scope.cpp:900-918) only fires because the real declination
+/// was patched onto the Cal. Fixture: x_rate/y_rate = 2.0 vs cos(0.3) =
+/// 0.955 (diff > 0.20 trips check 3), while ra_steps = 5 and dec_steps = 9
+/// (both >= 4) and orthogonal axes keep checks 1-2 quiet. The identical walk
+/// WITHOUT the scope-pointing injection leaves the UNKNOWN_DECLINATION
+/// sentinel, check 3 short-circuits, and no advisory fires — proving the (e)
+/// patch enables the check rather than merely storing the field.
+#[test]
+fn advisory_check3_fires_only_with_real_declination_patch() {
+    // Walk A: real declination injected -> check-3 advisory fires.
+    let with_scope = run_rate_mismatch_calibration(Some(ScopePointing {
+        declination: 0.3,
+        ..ScopePointing::default()
+    }));
+    let advisories = with_scope.calibration_advisories();
+    assert_eq!(
+        advisories.len(),
+        1,
+        "expected exactly the check-3 advisory, got {:?}",
+        advisories
+    );
+    assert!(
+        advisories[0].contains("rates vary"),
+        "expected the rate-ratio advisory, got {:?}",
+        advisories[0]
+    );
+    let cal = with_scope.calibration().expect("calibration completed");
+    assert_eq!(cal.declination, 0.3);
+    assert!(
+        (cal.x_rate / cal.y_rate - 2.0).abs() < 0.05,
+        "ratio fixture"
+    );
+
+    // Walk B: no scope pointing -> sentinel declination -> check 3 is a
+    // no-op -> no advisory.
+    let without_scope = run_rate_mismatch_calibration(None);
+    assert!(
+        without_scope.calibration_advisories().is_empty(),
+        "check 3 must not fire on the UNKNOWN_DECLINATION sentinel, got {:?}",
+        without_scope.calibration_advisories()
+    );
+    assert_eq!(
+        without_scope
+            .calibration()
+            .expect("calibration completed")
+            .declination,
+        UNKNOWN_DECLINATION
+    );
+}
