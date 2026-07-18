@@ -19,6 +19,11 @@ async def sim_hub(tmp_path, monkeypatch):
     # date-independently. monkeypatch restores the field after the test.
     _safety = hub_module.config_store.cfg().safety
     monkeypatch.setattr(_safety, "solar_avoidance", False)
+    # Force the legacy fast deterministic SimGuider (P2-T3 flip escape hatch):
+    # these sequence-MECHANICS tests spy on the sim guider (``dither_count``,
+    # ``_guiding``) and must not pay the native guider's real calibration walk —
+    # the native guiding path itself is covered by test_native_guider_*.py.
+    monkeypatch.setenv("ASTRODECK_SIM_LEGACY_GUIDER", "1")
     h = Hub()
     await h.connect_sim()
     yield h

@@ -18,6 +18,21 @@ from __future__ import annotations
 
 from ..backend import ROLES, BackendSession, ConnSpec, register
 
+#: Sim-tuned FAST calibration engine-config (P2-T3 default flip). The sim's
+#: ``pulse_guide`` AND ``expose`` both sleep for their nominal duration, so an
+#: untuned calibration walk (~25px legs, ~2s exposures, ~300ms+ pulses) costs
+#: ~55s of wall clock per ``start_guiding``. A short guide exposure + a smaller
+#: cal distance crossed in a few longer pulses cuts a full calibrate+settle to
+#: ~12s (measured, converging to ~0.3px RMS) while still producing a valid
+#: calibration the engine can guide on. Tuned ONLY here (the Python config dict)
+#: — the Rust engine defaults are unchanged.
+_SIM_CAL_CONFIG: dict = {
+    "exposure_s": 0.15,
+    "calibration_distance": 10.0,
+    "calibration_duration_ms": 400,
+    "max_steps": 25,
+}
+
 
 class SimSession:
     """A live simulated rig.
@@ -71,16 +86,25 @@ class SimSession:
     def native_guider(self) -> object | None:
         """The sim's own guider, created lazily and once.
 
-        Default is the believable-stream ``SimGuider`` (fast, deterministic —
-        what the hub/sequence tests rely on). The native Rust-engine
-        ``NativeGuider`` — the SAME closed loop the P1 e2e gate exercises — is
-        wired in and available behind an explicit opt-in: set the
-        ``ASTRODECK_SIM_NATIVE_GUIDER`` env var (truthy) with the engine wheel
-        present. Making the native guider the DEFAULT sim provider is deferred to
-        P2-T3 provider resolution (auto->astrodeck, per-profile override,
-        deliberate test updates, a sim-tuned fast CalConfig) — see plan — where
-        it lands once, correctly. SYNC by contract. The hub uses this in place of
-        PHD2 for the sim rig."""
+        P2-T3 DEFAULT FLIP: sim rigs now guide with the native Rust-engine
+        ``NativeGuider`` by DEFAULT — the SAME closed loop the P1 e2e gate
+        exercises — so the simulator exercises the vendor-neutral guiding path
+        AstroDeck ships (provider resolution badges this rig ``sim``). It is
+        built with a sim-tuned FAST calibration config (``_SIM_CAL_CONFIG``:
+        short cal pulses + a small cal distance) because the sim's
+        ``pulse_guide`` sleeps for each pulse's duration, so an untuned
+        calibration walk would cost tens of seconds of wall clock per
+        ``start_guiding`` — the fast config keeps a guided sim session near the
+        old ``SimGuider`` speed. The persisted per-axis algorithm selection
+        (``AppConfig.guide``) rides along via ``guide_algo_config()``.
+
+        The legacy believable-stream ``SimGuider`` (fast, deterministic; some
+        sequence tests spy on its ``dither_count`` / drive its ``_guiding``) is
+        still reachable behind an EXPLICIT escape hatch: set
+        ``ASTRODECK_SIM_LEGACY_GUIDER`` (truthy). The native guider also falls
+        back to ``SimGuider`` when the engine wheel is absent (so a wheel-less
+        box stays green). SYNC by contract; the hub uses this in place of PHD2
+        for the sim rig."""
         if self._guider is None:
             import os
 
@@ -88,19 +112,20 @@ class SimSession:
 
             gcam = self._rig.get("guide_camera")
             tel = self._rig.get("telescope")
-            opt_in = (os.environ.get("ASTRODECK_SIM_NATIVE_GUIDER") or "").strip()
-            want_native = opt_in.lower() not in ("", "0", "false", "no", "off")
-            if (want_native and providers.NATIVE_AVAILABLE
+            legacy = (os.environ.get("ASTRODECK_SIM_LEGACY_GUIDER") or "").strip()
+            want_legacy = legacy.lower() not in ("", "0", "false", "no", "off")
+            if (not want_legacy and providers.NATIVE_AVAILABLE
                     and gcam is not None and tel is not None):
                 # Deferred import: keep module load light (the native guider pulls
                 # the guide stack / numpy).
-                from ...guide.native import NativeGuider
+                from ...guide.native import NativeGuider, guide_algo_config
 
                 rig = self._rig.get("_rig")
                 scale = float(getattr(rig, "guide_scale_arcsec_px", 1.0) or 1.0)
                 self._guider = NativeGuider(
                     gcam, tel,
-                    config={"image_scale_arcsec": scale, "exposure_s": 1.0},
+                    config={"image_scale_arcsec": scale,
+                            **_SIM_CAL_CONFIG, **guide_algo_config()},
                     profile_id="sim")
             else:
                 # Deferred import: keep module import light and avoid pulling the
