@@ -75,12 +75,22 @@ never raises); otherwise the native engine runs if a `guide_camera` + a
 otherwise it falls back to the PHD2 bridge (`backend`, "PHD2 fallback" — never
 raises, matching spec §3.3/§4's "guiding never crashes" contract). An explicit
 per-capability override (`ProvidersConfig.guide`: `auto` / `backend` /
-`astrodeck` / a driver id) is honored when its prerequisites are met; the
-`backend` override is always honored (the bridge is always attemptable). The
-override is validated at write time (`ConfigStore.set_providers` — unknown
-values 422) and rides the same per-profile snapshot mechanism the other three
-task-provider overrides do (`Profile.providers`, restored on profile
-activate/load).
+`astrodeck` / a driver id) is a real SELECTION input applied at guiding start
+(`hub.select_guide_provider`, called from `guide_start`/`guide_calibrate`): it
+is honored when a guider of the requested family is actually constructible on
+the connected rig, and DEGRADES gracefully to whatever is wired otherwise
+(e.g. `backend` on a bridge-less sim rig stays native — pinned by
+`test_guide_provider_selection.py`; never a crash). A running guider is never
+hot-swapped — a switch takes effect at the NEXT guiding start. The honesty
+rule (`_resolve_guide` branch (0)): once a guider is wired, the status badge —
+and everything downstream of it, including the UI's per-provider RMS tagging —
+reports the ACTUAL serving guider (`Guider.provider_family`), never the
+requested override. `providers.guide_eligible_providers` (surfaced as
+`status.providers.guide.eligible`) tells the UI which override values apply to
+the connected rig, so the dropdown never offers a no-op. The override is
+validated at write time (`ConfigStore.set_providers` — unknown values 422) and
+rides the same per-profile snapshot mechanism the other three task-provider
+overrides do (`Profile.providers`, restored on profile activate/load).
 
 **`guide_camera` is a first-class device role** (D6, `devices/backend.py`
 `ROLES`): the dedicated guide camera is any `Camera` device assigned to this
