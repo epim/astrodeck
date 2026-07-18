@@ -6,10 +6,15 @@ per each component's license terms.
 
 ## AstroDeck native crates (`native/crates/*`)
 
-The `native/` Rust workspace (`astro-star`, `astro-focus`, `astro-tppa`,
-`astro-guide`, `astrodeck-native`) is licensed under the Mozilla Public
+The `astro-star`, `astro-focus`, `astro-tppa`, and `astrodeck-native` crates
+in the `native/` Rust workspace are licensed under the Mozilla Public
 License, v. 2.0 (MPL-2.0). A copy of the MPL-2.0 is available at
-https://mozilla.org/MPL/2.0/. Each source file carries the MPL-2.0 header.
+https://mozilla.org/MPL/2.0/. Each of those crates' source files carries the
+MPL-2.0 header.
+
+The `astro-guide` crate is licensed under Apache-2.0 (AstroDeck's project
+license; see the repo-root `LICENSE`), with BSD-3 derivation notices in its
+file headers for the PHD2-ported algorithms per the PHD2 section below.
 
 ## PHD2 — guiding algorithms (BSD-3-Clause)
 
