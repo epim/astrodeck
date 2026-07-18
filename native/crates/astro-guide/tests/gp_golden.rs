@@ -149,9 +149,17 @@ fn regularizer_recovers_trapezoidal_cell_means_of_a_ramp() {
 // ---------------------------------------------------------------------------
 
 /// A pure sinusoid of period 200 s sampled on the 5 s grid (200 samples over
-/// 1000 s = 5 periods) recovers P ≈ 200 within the 3-point quadratic
-/// interpolation tolerance. (`gaussian_process_guider.cpp:582-664`,
+/// 1000 s = 5 periods) recovers P ≈ 200. (`gaussian_process_guider.cpp:582-664`,
 /// `math_tools.cpp:174-219`.)
+///
+/// The tolerance (`< 0.5 s`) is tight enough to PIN the 3-point quadratic
+/// interpolation step (`:607-640`), not merely the FFT bin resolution (P4-T1
+/// review M2). With N_fft = 4096 over a 1000 s span the true peak sits at bin
+/// 102.4: bin-resolution-only recovery gives P = 200.784 (err 0.784), while the
+/// quadratic sub-bin interpolation recovers P = 200.358 (err 0.358). A `< 0.5 s`
+/// bound therefore PASSES the interpolated result and FAILS a hypothetical
+/// bin-only regression — so deleting the interpolation would break this test
+/// (the old `< 5.0` bound passed both and left the interpolation unpinned).
 #[test]
 fn fft_recovers_the_period_of_a_pure_sinusoid() {
     let n = 200usize;
@@ -162,8 +170,9 @@ fn fft_recovers_the_period_of_a_pure_sinusoid() {
         .collect();
     let p = estimate_period_length(&ts, &data, 4096, 1500.0);
     assert!(
-        (p - 200.0).abs() < 5.0,
-        "recovered period {p}, expected ~200"
+        (p - 200.0).abs() < 0.5,
+        "recovered period {p}, expected ~200 within the interpolation tolerance \
+         (bin-only recovery of 200.784 must fail this bound)"
     );
 }
 

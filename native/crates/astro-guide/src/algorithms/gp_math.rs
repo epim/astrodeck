@@ -20,8 +20,10 @@
 // from PHD2 or the MPI-IS contribution.
 //
 // Eigen replacement: all linear algebra uses `nalgebra` (dossier §6.8 note —
-// "Eigen does not travel"). Upstream uses Eigen's `.ldlt()` (Bunch-Kaufman)
-// robust factorization; every matrix factored in PPEC's data path is
+// "Eigen does not travel"). Upstream uses Eigen's `.ldlt()` — a pivoting
+// robust-Cholesky variant (LDLᵀ with symmetric pivoting), NOT the Bunch-Kaufman
+// LDLᵀ used for indefinite systems (P4-T1 review M7); every matrix factored in
+// PPEC's data path is
 // symmetric positive-definite (the Gram matrix is a PSD kernel plus a strictly
 // positive heteroscedastic noise diagonal — measurement variances are
 // `sd² > 0` and dark variance is 1e4; the 2×2 trend feature matrix and the
@@ -610,10 +612,21 @@ impl GpModel {
             .collect();
 
         // sort indices by DESCENDING covariance. ADJUDICATION
-        // (`gaussian_process.cpp:52-56/:265` std::sort, unstable, vs a stable
-        // sort here): ties in covariance require identical timestamps, which
-        // the regularizer's distinct grid-cell centers preclude — the tie
-        // path is unreachable, so stable vs unstable is unobservable.
+        // (`gaussian_process.cpp:52-56/:265` `std::sort`, unstable, vs
+        // nalgebra-free `Vec::sort_by`, which is STABLE — corrected per the
+        // P4-T1 review M3): covariance ties ARE reachable, contrary to an
+        // earlier claim here that they require identical timestamps. Two grid
+        // cells symmetric about the prediction point have bit-identical squared
+        // distance `|d|²` and hence bit-identical covariance, and a prediction
+        // point on a grid boundary (`pred ≡ 0 (mod 5)`, reachable with round
+        // exposures) puts such symmetric pairs in the buffer. The stable-sort
+        // substitution is nonetheless UNOBSERVABLE because `std::sort`'s
+        // relative order of equal elements is itself unspecified: any
+        // deterministic tie-break — including this stable order — is one of
+        // upstream's conforming executions, so no single upstream result is
+        // contradicted. (The selected SET is identical either way when the tie
+        // straddles the `n_points` cut only up to a covariance-equal swap,
+        // which the GP inference is invariant to.)
         let mut index: Vec<usize> = (0..n_data).collect();
         index.sort_by(|&a, &b| {
             cov[b]
