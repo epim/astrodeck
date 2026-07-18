@@ -15,7 +15,9 @@
 
 pub mod algorithms;
 pub mod calibration;
+pub mod engine;
 pub mod select;
+pub mod settle;
 pub mod starfind;
 pub mod track;
 pub mod transforms;
