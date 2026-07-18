@@ -19,9 +19,9 @@ session has one of four states, shown as a status chip on the card:
 | State | Means | What moves it here | What you can do |
 |---|---|---|---|
 | **active** | running right now | you started/resumed it and the sequence engine currently owns it | Pause/Abort from [Plan & sequences](plan-and-sequences.md) or [Monitor](monitor.md) |
-| **dormant** | paused between nights, ready to resume | the run finished a night without completing all quotas, **or** the server booted and found this session still marked active (see below) | **resume** (manual, `control.mount`), arm **auto-resume at dusk**, **update from plan**, delete |
-| **complete** | every step met its count | the engine finishes the last target's last step | review/regrade frames, delete |
-| **abandoned** | retired but kept on disk — hidden from the panel, ledger intact | **no UI path reaches this state today** — it's API-only (`PATCH /api/sessions/{id}` with `status="abandoned"`, refused while active); no button in the app issues it | nothing in the panel (it's filtered out). Note: the card's **Delete** button is a different, harder action — it *removes* the session's ledger and thumbnails outright (FITS frames untouched, cannot be undone; see [Deleting](#what-survives-a-reboot) below), it does not mark it abandoned |
+| **dormant** | paused between nights, ready to resume | the run finished a night without completing all quotas, **or** the server booted and found this session still marked active (see below) | **resume** (manual, `control.mount`), arm **auto-resume at dusk**, **update from plan**, **abandon**, delete |
+| **complete** | every step met its count | the engine finishes the last target's last step | review/regrade frames, **abandon**, delete |
+| **abandoned** | retired but kept on disk — hidden from the panel, ledger intact | pressing **Abandon** on a dormant or complete card (`control.mount`; a plain confirm dialog, refused by the server while the session is active) — issues `PATCH /api/sessions/{id}` with `status="abandoned"` | nothing in the panel (it's filtered out — the same as a completed row you've stopped caring about, minus the disk footprint). **Abandon is deliberately soft**: the ledger and thumbnails stay on disk, and there's no UI path back to dormant/complete, but the row itself is just hidden, not destroyed. Contrast the card's **Delete** button, a different and harder action — it *removes* the session's ledger and thumbnails outright (FITS frames untouched, cannot be undone; see [Deleting](#what-survives-a-reboot) below). Abandon retires; Delete erases. |
 
 The card shows the name, the status, `accepted / total` frames, and a
 per-target progress bar, plus the number of nights it has spanned.
@@ -151,6 +151,13 @@ sessions are built to survive those, specifically:
   quota.
 - The store keeps up to 200 sessions, pruning the oldest **complete/abandoned**
   ones first; **dormant** and **active** sessions are never pruned.
+
+**Abandoning** a session (the **abandon** button on a dormant or complete
+card, with a plain confirm) just hides it from the panel — the ledger and
+thumbnails stay on disk untouched. It's the softer of the two exit actions:
+there's no UI path back from it, but nothing is destroyed either (see the
+state table above). An abandoned session still counts against the
+200-session cap above and is the first kind pruned once you're over it.
 
 **Deleting** a session (from a non-active card, with a confirm) removes its
 ledger and thumbnails only — **your saved FITS frames are not deleted**, and it
