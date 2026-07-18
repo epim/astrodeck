@@ -14,4 +14,5 @@
 //! millisecond unless a function's doc comment states otherwise.
 
 pub mod starfind;
+pub mod transforms;
 pub mod types;
