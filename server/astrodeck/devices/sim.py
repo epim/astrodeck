@@ -194,6 +194,55 @@ class SimRig:
         # native TPPA engine can recover the injected error end to end.
         self.polar_misalignment: PolarMisalignment | None = None
         self._polar_phase_deg = 0.0
+        # --- guide-star model (P1-T9): the ground truth SimGuideCamera renders
+        # and the closed loop SimTelescope.pulse_guide drives. ``_guide_base_px``
+        # is filled in by SimGuideCamera.__init__ (the camera owns its sensor
+        # geometry — the rig doesn't know pixel dimensions on its own);
+        # everything else here is disturbance state a test tunes directly on
+        # the rig, mirroring the ``rotator_pa_offset_deg``/``polar_misalignment``
+        # opt-in precedent. ``guide_scale_arcsec_px`` is what lets
+        # ``SimTelescope.pulse_guide`` convert its RA/Dec nudge (degrees) into
+        # the SAME physical pixel delta applied to ``_guide_offset_px`` — see
+        # ``GUIDE_RATE_DEG_S``'s docstring for the full unit reconciliation.
+        self._guide_base_px: tuple[float, float] = (0.0, 0.0)
+        self._guide_offset_px: tuple[float, float] = (0.0, 0.0)  # accumulated pulse_guide correction
+        self._guide_epoch_s: float = time.time()  # drift zero-point
+        self.guide_scale_arcsec_px: float = 1.0    # guide-cam plate scale, "/px
+        self.guide_drift_px_s: float = 0.0         # constant Dec-axis creep (off by default)
+        self.guide_pe_amplitude_px: float = 0.6    # RA worm periodic-error amplitude
+        self.guide_pe_period_s: float = 383.0      # RA worm period (EQ6-R-class mount)
+        self.guide_seeing_px: float = 0.3          # seeing jitter sigma, both axes
+
+    def guide_star_px(self, now_s: float) -> tuple[float, float]:
+        """Ground-truth guide-star pixel position at instant ``now_s`` —
+        what ``SimGuideCamera.expose`` renders: the base sensor center, plus
+        the accumulated ``pulse_guide`` correction (mount motion — the
+        P1-T9 closed loop), plus a linear Dec-axis drift, plus an RA-axis
+        periodic-error sinusoid at the configured worm period, plus seeing
+        jitter on both axes.
+
+        The jitter draw is deterministically seeded off ``now_s`` (the same
+        state-hashed-seed convention ``SimCamera._render`` uses for its own
+        determinism), so two calls at the SAME instant with the SAME rig
+        state render the SAME frame — this model is intentionally
+        time-varying (that's the point: a static guide star can't exercise a
+        guiding algorithm), but it is still fully reproducible for a given
+        ``now_s``.
+        """
+        base_x, base_y = self._guide_base_px
+        off_x, off_y = self._guide_offset_px
+        elapsed = now_s - self._guide_epoch_s
+        drift_y = self.guide_drift_px_s * elapsed
+        pe_x = 0.0
+        if self.guide_pe_period_s > 0:
+            pe_x = self.guide_pe_amplitude_px * math.sin(
+                2 * math.pi * now_s / self.guide_pe_period_s)
+        seed = abs(hash(round(now_s, 3))) % (2**32)
+        rng = np.random.default_rng(seed)
+        jitter_x, jitter_y = rng.normal(0.0, max(0.0, self.guide_seeing_px), size=2)
+        x = base_x + off_x + pe_x + jitter_x
+        y = base_y + off_y + drift_y + jitter_y
+        return float(x), float(y)
 
     # ------------------------------------------------------ polar misalignment
 
@@ -417,12 +466,154 @@ class SimCamera(Camera):
         field[y0:y1, x0:x1] += flux * psf / (2 * math.pi * sigma**2)
 
 
+class SimGuideCamera(Camera):
+    """Renders a single synthetic guide star at ``rig.guide_star_px`` — the
+    P1-T9 closed loop: ``SimTelescope.pulse_guide`` moves ``rig._guide_offset_px``
+    and the very next ``expose`` renders the star at the new position, with
+    drift/periodic-error/seeing layered on top so the target isn't static.
+
+    Deliberately NOT a sky-catalog render like ``SimCamera`` — a guide camera
+    at guide cadence only needs ONE bright, unambiguous star to lock onto, so
+    this renders exactly that (reusing ``SimCamera._add_star`` for the actual
+    Gaussian PSF) rather than projecting ``rig.ra_hours``/``rig.dec_deg``
+    through a sky-tile lookup.
+    """
+
+    #: modest guide-cam sensor (ZWO ASI220MM-class): small enough to expose
+    #: fast at guide cadence, big enough that a multi-pixel pulse response is
+    #: never clipped against the frame edge.
+    SENSOR_WIDTH = 640
+    SENSOR_HEIGHT = 480
+
+    #: the one dedicated guide star: always present, always the brightest
+    #: thing in frame.
+    STAR_FLUX_PER_S = 15_000.0
+    STAR_SIGMA_PX = 2.5
+
+    #: the guide camera renders a flat noisy background + one star, so it
+    #: reports the same honest linear full-well as SimCamera.
+    can_report_cooler_power: bool = False
+    full_well: int | None = 65535
+
+    def __init__(self, rig: SimRig, name: str = "Sim Guide Cam 220MM"):
+        super().__init__(name)
+        self.rig = rig
+        self.sensor_width = self.SENSOR_WIDTH
+        self.sensor_height = self.SENSOR_HEIGHT
+        self.pixel_size_um = 4.0
+        self.can_cool = False
+        self.has_dew_heater = False
+        self.bayer_pattern = None
+        self._abort = asyncio.Event()
+        self.full_well = 65535
+        # anchor the guide star's base center now, at construction — there is
+        # only ever one SimGuideCamera per rig, so this is the rig's single
+        # source of truth for where "zero guide error" points.
+        rig._guide_base_px = (self.SENSOR_WIDTH / 2.0, self.SENSOR_HEIGHT / 2.0)
+
+    async def connect(self) -> None:
+        await asyncio.sleep(0.05)
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def abort_exposure(self) -> None:
+        self._abort.set()
+
+    async def get_temperature(self) -> float | None:
+        return self.rig.sensor_temp
+
+    async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
+                     light: bool = True, save: bool = False,
+                     target: str = "") -> CameraFrame:
+        self._abort.clear()
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if self._abort.is_set():
+                raise asyncio.CancelledError("exposure aborted")
+            await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        data = self._render(seconds, gain, offset, binning, light)
+        return CameraFrame(
+            data=data,
+            exposure_s=seconds,
+            gain=gain,
+            offset=offset,
+            binning=binning,
+            bayer_pattern=None,
+            temperature_c=await self.get_temperature(),
+            timestamp=time.time(),
+            full_well=self.full_well, data_is_linear=True,
+        )
+
+    def _render(self, seconds: float, gain: int, offset: int, binning: int,
+                light: bool) -> np.ndarray:
+        h, w = self.sensor_height // binning, self.sensor_width // binning
+        # Read the clock ONCE and thread it through both the background-noise
+        # seed and ``guide_star_px``'s own jitter seed, so a single instant
+        # fully determines the frame (SimCamera's determinism convention,
+        # adapted for a model that is deliberately time-varying).
+        now = time.time()
+        seed = abs(hash((round(now, 3), int(gain), int(offset), int(binning),
+                          bool(light)))) % (2**32)
+        rng = np.random.default_rng(seed)
+        bias = 100.0 + offset * 2.0
+        read_noise = 3.0 + gain / 80.0
+        img = rng.normal(bias, read_noise, (h, w))
+
+        if light and not self.rig.parked:
+            # Shot noise is added to the star flux ALONE (not the bias/read-noise
+            # pedestal) — same split SimCamera._render_stars uses, so a bright
+            # star's Poisson noise doesn't also inflate the background.
+            field = np.zeros((h, w), dtype=np.float64)
+            px, py = self.rig.guide_star_px(now)
+            px, py = px / binning, py / binning
+            flux = self.STAR_FLUX_PER_S * seconds * (1 + gain / 100.0) * binning * binning
+            sigma = max(1.0, self.STAR_SIGMA_PX / binning)
+            SimCamera._add_star(field, px, py, flux, sigma)
+            field += rng.poisson(np.clip(field, 0, None)) - field
+            img += field
+
+        return np.clip(img, 0, 65535).astype(np.uint16)
+
+
 #: Defensive mirror of ``hub.TOUCH_MAX_RATE_DEG_S`` (the authoritative server
 #: clamp lives in the ``/api/mount/move`` endpoint). The sim previously stored
 #: the raw rate unclamped; clamping here means even a direct ``move_axis`` call
 #: that bypasses the endpoint can never drive the sim mount faster than the
 #: touch cap. Kept as a literal (not imported) to avoid a hub↔sim import cycle.
 TOUCH_MAX_RATE_DEG_S = 0.6
+
+
+#: The sim's guide-pulse rate — 0.5x sidereal, in DEGREES/second, on BOTH
+#: axes. This is the single source of truth ``SimTelescope.pulse_guide`` and
+#: ``SimTelescope.guide_rates`` both read, so the mount's actual per-pulse
+#: motion and its DECLARED rate can never drift apart again.
+#:
+#: P1-T9 RECONCILIATION (P0-T3 review finding, binding ledger amendment —
+#: supersedes the P0-T3 task's own commentary on this formula): the value
+#: below (``15.0 / 3600 * 0.5`` deg/s ≈ 0.0020833 deg/s) is what
+#: ``guide_rates()`` has always declared. But the ORIGINAL ``pulse_guide``
+#: added a bare ``ms / 1000.0 * 0.0002`` directly onto ``rig.ra_hours``
+#: (HOURS) and ``rig.dec_deg`` (DEGREES) — the same numeric nudge treated as
+#: two different physical units on the two axes:
+#:   RA:  d(ra_hours)/dt = 0.0002 hours/s → ×15 deg/hour = 0.0030000 deg/s
+#:   Dec: d(dec_deg)/dt  = 0.0002 deg/s   (already degrees) = 0.0002000 deg/s
+#: Neither matched the declared 0.0020833 deg/s (RA ran ~1.44x too FAST, Dec
+#: ~10.4x too SLOW) — the declared rate and the mount's actual motion
+#: disagreed, so anything computing "how far did that pulse move the mount"
+#: from ``guide_rates()`` (calibration, the P1-T10 convergence gate) would be
+#: silently wrong by axis-dependent factors.
+#:
+#: Fixed here with the physically sensible choice the review suggested:
+#: ``pulse_guide`` now applies ``GUIDE_RATE_DEG_S * (ms / 1000.0)`` DEGREES on
+#: BOTH axes (RA is converted to hours only at the point it's written to
+#: ``rig.ra_hours`` — dividing by 15), and ``guide_rates()`` returns this
+#: exact constant. The declared rate and the mount's real motion are now the
+#: same number by construction, so the sim's calibration/guiding closed loop
+#: (P1-T8 calibration, P1-T9 SimGuideCamera, P1-T10 convergence gate) is
+#: self-consistent end to end.
+GUIDE_RATE_DEG_S = 15.0 / 3600 * 0.5
 
 
 class SimTelescope(Telescope):
@@ -532,21 +723,39 @@ class SimTelescope(Telescope):
         return PierSide.EAST if (ra_hours % 24.0) < 12.0 else PierSide.WEST
 
     async def guide_rates(self) -> tuple[float, float] | None:
-        """Fixed 0.5x sidereal rate on both axes — matches the sim's
-        ``pulse_guide`` nudge scale so the closed-loop sim stays
-        self-consistent for calibration (P1-T8)."""
-        rate = 15.0 / 3600 * 0.5
-        return rate, rate
+        """Fixed 0.5x sidereal rate on both axes (``GUIDE_RATE_DEG_S``) — the
+        EXACT constant ``pulse_guide`` uses to move ``rig.ra_hours``/
+        ``rig.dec_deg``, so the declared rate and the mount's actual pulse
+        motion are mutually consistent (P1-T9 reconciliation of a P0-T3
+        review finding — see ``GUIDE_RATE_DEG_S``'s docstring for the
+        unit-mismatch this fixes)."""
+        return GUIDE_RATE_DEG_S, GUIDE_RATE_DEG_S
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
-        nudge = ms / 1000.0 * 0.0002
+        """Nudge the mount ``GUIDE_RATE_DEG_S`` degrees/second on the pulsed
+        axis for ``ms`` milliseconds (RA converted to hours only when
+        writing ``rig.ra_hours`` — see ``GUIDE_RATE_DEG_S``'s docstring for
+        the P1-T9 unit reconciliation this closes), AND applies the SAME
+        physical delta — converted through ``rig.guide_scale_arcsec_px`` —
+        to ``rig._guide_offset_px``. That second update is the P1-T9 closed
+        loop: it's what makes ``SimGuideCamera``'s rendered star move when
+        the mount is pulsed, using the identical magnitude that just moved
+        ``ra_hours``/``dec_deg`` (not a separately-tuned pixel nudge)."""
+        delta_deg = GUIDE_RATE_DEG_S * (ms / 1000.0)
+        delta_px = delta_deg * 3600.0 / self.rig.guide_scale_arcsec_px
+        off_x, off_y = self.rig._guide_offset_px
         if direction in ("east", "west"):
+            sign = 1.0 if direction == "east" else -1.0
             # F-sim: wrap RA into [0, 24) (sim-fidelity; consumers are
             # wrap-invariant — keep just the wrap).
             self.rig.ra_hours = (self.rig.ra_hours
-                                 + (nudge if direction == "east" else -nudge)) % 24.0
+                                 + sign * (delta_deg / 15.0)) % 24.0
+            off_x += sign * delta_px
         else:
-            self.rig.dec_deg += nudge if direction == "north" else -nudge
+            sign = 1.0 if direction == "north" else -1.0
+            self.rig.dec_deg += sign * delta_deg
+            off_y += sign * delta_px
+        self.rig._guide_offset_px = (off_x, off_y)
         await asyncio.sleep(ms / 1000.0)
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
@@ -759,7 +968,7 @@ def build_sim_rig() -> dict[str, object]:
     rig = SimRig()
     return {
         "camera": SimCamera(rig),
-        "guide_camera": SimCamera(rig, name="Sim Guide Cam 220MM"),
+        "guide_camera": SimGuideCamera(rig),
         "telescope": SimTelescope(rig),
         "focuser": SimFocuser(rig),
         "filterwheel": SimFilterWheel(rig),
