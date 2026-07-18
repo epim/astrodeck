@@ -136,29 +136,23 @@ async def test_slew_timeout_aborts(sim_hub, temp_store, monkeypatch):
 
 # ------------------------------------------------ P1-7 require_guiding=abort
 
-async def test_require_guiding_abort_when_start_fails(sim_hub, temp_store, monkeypatch):
+@pytest.mark.parametrize("require_guiding, expected_terminal_state", [
+    pytest.param(True, "aborted", id="require_guiding_abort_when_start_fails"),
+    pytest.param(False, "complete", id="warn_guiding_default_continues_unguided"),
+])
+async def test_guiding_start_failure_escalation(sim_hub, temp_store, monkeypatch,
+                                                 require_guiding, expected_terminal_state):
     """require_guiding + guiding_action='abort': if guiding can't start, the run
-    aborts (no all-night unguided/trailed run) — the dead knob is now wired."""
-    temp_store.set_safety(SafetyConfig(enabled=False))
-    temp_store.set_escalation(EscalationConfig(require_guiding=True,
-                                               guiding_action="abort"))
+    aborts (no all-night unguided/trailed run) — the dead knob is now wired.
 
-    async def failing_start():
-        raise RuntimeError("PHD2 calibration failed")
-    monkeypatch.setattr(sim_hub.guider, "start_guiding", failing_start)
-
-    engine = SequenceEngine(sim_hub)
-    engine.start(light_plan(guide=True))
-    assert await wait_for(lambda: not engine.running, timeout=15), engine.state
-    assert engine.state.get("state") == "aborted"
-    assert engine.state.get("end_reason") == "unsafe"
-
-
-async def test_warn_guiding_default_continues_unguided(sim_hub, temp_store, monkeypatch):
-    """Default guiding_action='warn' (require_guiding off): a guiding-start failure
+    Default guiding_action='warn' (require_guiding off): a guiding-start failure
     is logged and the run continues unguided — legacy behavior preserved."""
     temp_store.set_safety(SafetyConfig(enabled=False))
-    temp_store.set_escalation(EscalationConfig())   # all defaults (warn)
+    if require_guiding:
+        temp_store.set_escalation(EscalationConfig(require_guiding=True,
+                                                   guiding_action="abort"))
+    else:
+        temp_store.set_escalation(EscalationConfig())   # all defaults (warn)
 
     async def failing_start():
         raise RuntimeError("PHD2 calibration failed")
@@ -166,19 +160,32 @@ async def test_warn_guiding_default_continues_unguided(sim_hub, temp_store, monk
 
     engine = SequenceEngine(sim_hub)
     engine.start(light_plan(guide=True))
-    assert await wait_for(lambda: engine.state.get("state") == "complete",
-                          timeout=20), engine.state
-    assert engine._frames_done == 3
+    if expected_terminal_state == "aborted":
+        assert await wait_for(lambda: not engine.running, timeout=15), engine.state
+        assert engine.state.get("state") == "aborted"
+        assert engine.state.get("end_reason") == "unsafe"
+    else:
+        assert await wait_for(lambda: engine.state.get("state") == "complete",
+                              timeout=20), engine.state
+        assert engine._frames_done == 3
 
 
 # ------------------------------------------------ P1-7 require_cooling=abort
 
-async def test_require_cooling_abort_on_timeout(sim_hub, temp_store, monkeypatch):
+@pytest.mark.parametrize("cooling_action, expected_end_reason", [
+    pytest.param("abort", "unsafe", id="require_cooling_abort_on_timeout"),
+    pytest.param("skip", "cooling_skip", id="require_cooling_skip_does_not_shoot"),
+])
+async def test_require_cooling_timeout_escalation(sim_hub, temp_store, monkeypatch,
+                                                   cooling_action, expected_end_reason):
     """require_cooling + cooling_action='abort': a cool-timeout aborts instead of
-    shooting warm lights all night."""
+    shooting warm lights all night.
+
+    require_cooling + cooling_action='skip': a cool-timeout completes WITHOUT
+    capturing any light frames (end_reason cooling_skip)."""
     temp_store.set_safety(SafetyConfig(enabled=False))
     temp_store.set_escalation(EscalationConfig(require_cooling=True,
-                                               cooling_action="abort"))
+                                               cooling_action=cooling_action))
 
     cam = sim_hub.require("camera")
 
@@ -190,28 +197,12 @@ async def test_require_cooling_abort_on_timeout(sim_hub, temp_store, monkeypatch
     # tiny cool_timeout so the wait loop exits fast.
     engine.start(light_plan(cool_to=-10.0, cool_timeout_s=1))
     assert await wait_for(lambda: not engine.running, timeout=15), engine.state
-    assert engine.state.get("state") == "aborted"
-    assert engine.state.get("end_reason") == "unsafe"
-
-
-async def test_require_cooling_skip_does_not_shoot(sim_hub, temp_store, monkeypatch):
-    """require_cooling + cooling_action='skip': a cool-timeout completes WITHOUT
-    capturing any light frames (end_reason cooling_skip)."""
-    temp_store.set_safety(SafetyConfig(enabled=False))
-    temp_store.set_escalation(EscalationConfig(require_cooling=True,
-                                               cooling_action="skip"))
-    cam = sim_hub.require("camera")
-
-    async def never_cold():
-        return 99.0
-    monkeypatch.setattr(cam, "get_temperature", never_cold)
-
-    engine = SequenceEngine(sim_hub)
-    engine.start(light_plan(cool_to=-10.0, cool_timeout_s=1))
-    assert await wait_for(lambda: not engine.running, timeout=15), engine.state
-    assert engine.state.get("state") == "complete"
-    assert engine.state.get("end_reason") == "cooling_skip"
-    assert engine._frames_done == 0
+    assert engine.state.get("end_reason") == expected_end_reason
+    if cooling_action == "abort":
+        assert engine.state.get("state") == "aborted"
+    else:
+        assert engine.state.get("state") == "complete"
+        assert engine._frames_done == 0
 
 
 # ----------------------------------------------- P1-7 af_failure_action=abort

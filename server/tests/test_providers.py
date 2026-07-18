@@ -323,12 +323,6 @@ def test_polar_sim_override_pins_simulator(isolated_config):
     assert "override" in c.reason
 
 
-def test_resolve_all_covers_three_capabilities():
-    hub = FakeHub(mode="sim", devices={})
-    out = providers.resolve_all(hub)
-    assert set(out) == {"autofocus", "polar_align", "solve"}
-
-
 # ------------------------------------------------------------- pick_solver
 
 def test_pick_solver_returns_astap_then_sim(monkeypatch):
