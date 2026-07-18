@@ -9,9 +9,11 @@ notes say so (*"Read-only — connecting equipment needs admin access."*). See
 [remote-access-and-roles.md](remote-access-and-roles.md).
 
 **Jargon:** a **role** is a device slot — `Camera`, `Mount`, `Focuser`,
-`Guider`, `Filter wheel`, `Power / switch`, `Safety monitor`, `Rotator`. A
-**driver** is a way to reach a backend: a **NINA** instance, an **Alpaca**
-server, or **PHD2** (plus the built-in Simulator, AstroDeck native, and ASTAP).
+`Guider` (the PHD2/NINA guiding connection), `Guide camera` (a dedicated
+Alpaca/native camera for the native guider — see [Guiding](guiding.md)),
+`Filter wheel`, `Power / switch`, `Safety monitor`, `Rotator`. A **driver** is
+a way to reach a backend: a **NINA** instance, an **Alpaca** server, or
+**PHD2** (plus the built-in Simulator, AstroDeck native, and ASTAP).
 
 ---
 
@@ -88,9 +90,14 @@ want:
 
 Each row explains *why* it resolved the way it did (e.g. *"NINA bridge present —
 using its TPPA plugin"*, *"ASTAP found at …"*, *"native V-curve engine drives the
-camera + focuser"*). Guiding is always PHD2 and isn't routed here. Provider
-badges elsewhere in the app (e.g. **AF · AstroDeck native**, **TPPA · NINA**)
-show which engine is actually running a task.
+camera + focuser"*). Provider badges elsewhere in the app (e.g. **AF · AstroDeck
+native**, **TPPA · NINA**) show which engine is actually running a task.
+
+Guiding has its own provider override with the same "who runs it" shape
+(Auto / AstroDeck native / PHD2 / NINA bridge / Simulator) but lives on the
+**Guide** view instead of this panel, since it depends on a guide camera + mount
+connection rather than a driver's task offer — see
+[Guiding](guiding.md#provider--phd2-fallback).
 
 ---
 
