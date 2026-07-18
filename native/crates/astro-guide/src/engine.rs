@@ -132,8 +132,14 @@ pub struct EngineConfig {
     pub dec_algorithm: AlgoKind,
     /// Static backlash-compensation seed pulse (ms) added on a dec direction
     /// reversal (dossier §10.1). `0` = BLC disabled, matching PHD2's shipped
-    /// default (dossier §10/§15; the adaptive size controller stays OFF per
-    /// D4).
+    /// default (dossier §10/§15).
+    ///
+    /// D4 — STATIC ONLY: this is a fixed seed; the ADAPTIVE size controller
+    /// (dossier §10.2, PHD2 `backlash_comp.cpp`'s `BLC_*` measurement state
+    /// machine) is deliberately NOT implemented — there is no adaptive field on
+    /// this struct or anywhere in the engine, and the seed never grows, shrinks,
+    /// or learns from residual error. That invariance is pinned behaviourally by
+    /// `tests/blc_golden.rs::static_blc_is_invariant_across_reversals`.
     pub blc_pulse_ms: u32,
     /// Multi-star candidate-list cap (dossier §2.6/§4/§15; P3-T1).
     /// `1` (this task's default, matching upstream's `/guider/multistar/
