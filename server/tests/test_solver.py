@@ -20,19 +20,14 @@ class _FakeRig:
     dec_deg = 41.2
 
 
-async def test_simsolver_refuses_in_nina_mode(tmp_path):
-    """A SimSolver built for a real (nina) rig must FAIL with a clear message even
-    when handed a hint — never echo the hint as a successful solve."""
-    solver = SimSolver(sim_rig=None, mode="nina")
+@pytest.mark.parametrize("mode", ["nina", "alpaca"])
+async def test_simsolver_refuses_in_real_modes(tmp_path, mode):
+    """A SimSolver built for a real (nina/alpaca) rig must FAIL with a clear message
+    even when handed a hint — never echo the hint as a successful solve."""
+    solver = SimSolver(sim_rig=None, mode=mode)
     res = await solver.solve(tmp_path / "x.fits", ra_hint=10.0, dec_hint=30.0)
     assert res.success is False
     assert "ASTAP" in res.message  # tells the operator how to fix it
-
-
-async def test_simsolver_refuses_in_alpaca_mode(tmp_path):
-    solver = SimSolver(sim_rig=None, mode="alpaca")
-    res = await solver.solve(tmp_path / "x.fits", ra_hint=10.0, dec_hint=30.0)
-    assert res.success is False
 
 
 async def test_simsolver_refuses_even_with_a_rig_object_in_nina_mode(tmp_path):

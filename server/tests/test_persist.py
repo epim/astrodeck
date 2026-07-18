@@ -130,24 +130,20 @@ def test_config_restores_from_bak_when_primary_corrupt(tmp_path):
     assert read_json(bak)["site"]["name"] == "Backyard"
 
 
-def test_config_defaults_when_no_primary_and_no_bak(tmp_path):
-    """No primary and no usable backup → clean defaults + a freshly-saved file."""
-    path = tmp_path / "astrodeck.json"
-    store = ConfigStore(path=path)
-    cfg = store.cfg()
-    assert cfg.site.is_default is True
-    assert cfg.site.latitude == 0.0
-    assert path.exists()
-
-
-def test_config_corrupt_with_corrupt_bak_falls_back_to_defaults(tmp_path):
-    """A corrupt primary AND an unparseable ``.bak`` → defaults (no crash)."""
+@pytest.mark.parametrize("scenario", ["files_absent", "files_present_but_corrupt"])
+def test_config_falls_back_to_defaults(tmp_path, scenario):
+    """files_absent: no primary and no usable backup -> clean defaults + a
+    freshly-saved file. files_present_but_corrupt: a corrupt primary AND an
+    unparseable ``.bak`` -> defaults (no crash)."""
     path = tmp_path / "astrodeck.json"
     bak = path.with_suffix(path.suffix + ".bak")
-    path.write_text("nonsense", encoding="utf-8")
-    bak.write_text("also nonsense", encoding="utf-8")
+    if scenario == "files_present_but_corrupt":
+        path.write_text("nonsense", encoding="utf-8")
+        bak.write_text("also nonsense", encoding="utf-8")
 
     store = ConfigStore(path=path)
     cfg = store.cfg()
     assert cfg.site.is_default is True
     assert cfg.site.latitude == 0.0
+    if scenario == "files_absent":
+        assert path.exists()

@@ -37,6 +37,10 @@ async def sim_hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "config_store", store)
     import astrodeck.config as config_mod
     monkeypatch.setattr(config_mod, "config_store", store)
+    # providers.resolve() reads its OWN module-level ``config_store`` for the
+    # driver-selection override; without this patch resolution leaks the real
+    # dev-box config (and its polar_align selection) into the test.
+    monkeypatch.setattr(providers, "config_store", store)
     store.set_site(Site(name="Test", latitude=_LAT, longitude=_LON,
                         is_default=False), expected_version=None)
     store.set_safety(SafetyConfig(solar_avoidance=False))
@@ -164,11 +168,27 @@ async def test_provider_routes_astrodeck_for_native_rig(sim_hub):
     assert choice.label == "AstroDeck native", choice
 
 
-async def test_provider_routes_backend_for_nina(sim_hub):
-    """A live NINA bridge wins polar align (its TPPA plugin), even on the same
-    rig where native would otherwise run."""
+async def test_native_outranks_nina_bridge_in_auto(sim_hub):
+    """Driver-selection model: a mere-present NINA bridge does NOT auto-outrank
+    the first-party native engine. On a native-capable rig (camera + mount +
+    trusted solver), AUTO resolves polar align to AstroDeck native even when a
+    NINA bridge is connected — NINA is a transition bridge, used only when
+    EXPLICITLY selected (see the next test)."""
     h = sim_hub
     h.nina_client = type("N", (), {"host": "127.0.0.1", "port": 1})()
+    choice = providers.resolve("polar_align", h)
+    assert choice.kind == "astrodeck", choice
+    assert choice.label == "AstroDeck native", choice
+
+
+async def test_explicit_selection_routes_polar_to_nina(sim_hub):
+    """The driver-selection model DOES route polar align to NINA when the user
+    explicitly selects the backend provider (config ``providers.polar_align`` =
+    the legacy ``"backend"`` NINA-family value), even on a native-capable rig."""
+    from astrodeck.config import ProvidersConfig
+    h = sim_hub
+    h.nina_client = type("N", (), {"host": "127.0.0.1", "port": 1})()
+    providers.config_store.set_providers(ProvidersConfig(polar_align="backend"))
     choice = providers.resolve("polar_align", h)
     assert choice.kind == "backend", choice
     assert choice.label == "NINA", choice
