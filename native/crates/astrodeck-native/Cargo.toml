@@ -14,4 +14,5 @@ pyo3 = { version = "0.22", features = ["abi3-py311"] }
 numpy = "0.22"
 astro-star = { path = "../astro-star" }
 astro-focus = { path = "../astro-focus" }
+astro-guide = { path = "../astro-guide" }
 astro-tppa = { path = "../astro-tppa" }
