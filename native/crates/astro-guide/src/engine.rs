@@ -57,7 +57,7 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
-use crate::algorithms::{GuideAlgorithm, Hysteresis, ResistSwitch};
+use crate::algorithms::{GuideAlgorithm, Hysteresis, Lowpass, Lowpass2, ResistSwitch, ZFilter};
 use crate::calibration::{
     sanity_advisories, CalConfig, CalOutcome, Calibrator, DecMode, UNKNOWN_DECLINATION,
 };
@@ -99,11 +99,12 @@ const DEFAULT_SETTLE_TIMEOUT_S: f64 = 60.0;
 /// `DefaultMaxRaDuration` / `DefaultMaxDecDuration` (dossier §7/§15), ms.
 const DEFAULT_MAX_DURATION_MS: u32 = 2500;
 
-/// Which per-axis guide algorithm an axis runs (dossier §6). P1 constructs
-/// only [`AlgoKind::Hysteresis`] and [`AlgoKind::ResistSwitch`]; the enum is
-/// complete so later tasks slot the remaining algorithms in without changing
-/// [`GuideEngine::new`]'s signature. Until those tasks land, an
-/// unimplemented kind falls back to the axis default (see [`make_algo`]).
+/// Which per-axis guide algorithm an axis runs (dossier §6). P3-T2 adds
+/// [`AlgoKind::Lowpass`]/[`AlgoKind::Lowpass2`]/[`AlgoKind::ZFilter`] to P1's
+/// [`AlgoKind::Hysteresis`]/[`AlgoKind::ResistSwitch`]; the enum is complete
+/// so the remaining kind ([`AlgoKind::Ppec`]) slots in without changing
+/// [`GuideEngine::new`]'s signature. Until that task lands, it falls back to
+/// the axis default (see [`make_algo`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlgoKind {
     Hysteresis,
@@ -339,16 +340,19 @@ pub struct GuideEngine {
     multi_star_broken: bool,
 }
 
-/// Construct a boxed axis algorithm from an [`AlgoKind`]. P1 implements
-/// Hysteresis and ResistSwitch; the other kinds fall back to the axis default
-/// (RA = Hysteresis, Dec = ResistSwitch) so the constructor never fails —
-/// they are filled in by later tasks (dossier §6.3-§6.5/§6.8) without
-/// touching this signature.
+/// Construct a boxed axis algorithm from an [`AlgoKind`]. P3-T2 adds
+/// Lowpass/Lowpass2/ZFilter (dossier §6.3-§6.5); [`AlgoKind::Ppec`] still
+/// falls back to the axis default (RA = Hysteresis, Dec = ResistSwitch) so
+/// the constructor never fails — it is filled in by a later task (dossier
+/// §6.8) without touching this signature.
 fn make_algo(kind: AlgoKind, is_ra: bool) -> Box<dyn GuideAlgorithm> {
     match kind {
         AlgoKind::Hysteresis => Box::new(Hysteresis::default()),
         AlgoKind::ResistSwitch => Box::new(ResistSwitch::default()),
-        _ => {
+        AlgoKind::Lowpass => Box::new(Lowpass::default()),
+        AlgoKind::Lowpass2 => Box::new(Lowpass2::default()),
+        AlgoKind::ZFilter => Box::new(ZFilter::default()),
+        AlgoKind::Ppec => {
             if is_ra {
                 Box::new(Hysteresis::default())
             } else {

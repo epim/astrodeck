@@ -12,10 +12,14 @@
 //! distance (px). RA and Dec each own one instance.
 
 mod hysteresis;
+mod lowpass;
 mod resist_switch;
+mod zfilter;
 
 pub use hysteresis::Hysteresis;
+pub use lowpass::{Lowpass, Lowpass2};
 pub use resist_switch::ResistSwitch;
+pub use zfilter::{Design, Filter, ZFilter};
 
 /// Common interface every guide algorithm implements (dossier §6 intro).
 /// RA and Dec each hold one instance; the guide engine calls
