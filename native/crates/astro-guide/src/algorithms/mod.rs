@@ -11,11 +11,14 @@
 //! that turn one frame's mount-frame pixel error (px) into a correction
 //! distance (px). RA and Dec each own one instance.
 
+mod gaussian_process;
+pub mod gp_math;
 mod hysteresis;
 mod lowpass;
 mod resist_switch;
 mod zfilter;
 
+pub use gaussian_process::{GaussianProcessGuider, GpParams};
 pub use hysteresis::Hysteresis;
 pub use lowpass::{Lowpass, Lowpass2};
 pub use resist_switch::ResistSwitch;
