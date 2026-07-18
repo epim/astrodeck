@@ -422,9 +422,12 @@ async def test_sim_rig_full_comes_up():
     for role in ("camera", "telescope", "focuser", "filterwheel", "switch", "safety"):
         assert role in result.rig, f"missing role {role}"
         assert _result_for(result, role).ok is True
-    # the sim's native SimGuider is present.
+    # the sim's guider is present: the native guider by default (P2-T3 flip)
+    # when the engine wheel is installed, else the legacy SimGuider fallback.
+    from astrodeck.providers import NATIVE_AVAILABLE
     assert result.guider is not None
-    assert result.guider.name == "Sim Guider"
+    assert result.guider.name == ("AstroDeck native" if NATIVE_AVAILABLE
+                                  else "Sim Guider")
     # all sim roles share ONE session (hostless coalescing).
     assert len(result.sessions) == 1
     # the sim guide camera flows through the Protocol accessor.
