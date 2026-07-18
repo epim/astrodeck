@@ -196,8 +196,24 @@ pub struct GuideEngine {
     cal_advisories: Vec<String>,
 
     /// Lock position (camera-frame px). `None` until the first found star of
-    /// a guiding session establishes it.
+    /// a guiding session establishes it. The lock is the OFFSET REFERENCE
+    /// only — never the search origin (see `search_origin`).
     lock: Option<(f64, f64)>,
+
+    /// Search origin for the next frame's [`measure`](Self::measure): the
+    /// star's last found position — upstream's `m_primaryStar` position,
+    /// which the per-frame update searches around
+    /// (`guider_multistar.cpp:943/945`, `Star newStar(m_primaryStar);
+    /// newStar.Find(...)`) and advances on every accepted frame
+    /// (`guider_multistar.cpp:1026`, `m_primaryStar = newStar`); a failed
+    /// find retains the prior position (`star.cpp:479-483`). `None` means no
+    /// star is currently tracked (fresh guiding session before the first
+    /// auto-find). Updated in [`ingest`](Self::ingest): every found frame
+    /// while calibrating, and the lock-establishing / settle-found /
+    /// accepted frames while guiding — never on the mass-reject or
+    /// distance-reject paths (upstream only assigns at `:1026`, after both
+    /// checks pass).
+    search_origin: Option<(f64, f64)>,
 
     ra_algo: Box<dyn GuideAlgorithm>,
     dec_algo: Box<dyn GuideAlgorithm>,
@@ -266,6 +282,7 @@ impl GuideEngine {
             calibrator: None,
             cal_advisories: Vec::new(),
             lock: None,
+            search_origin: None,
             mass_checker: MassChecker::new(MASS_WINDOW_MS),
             distance_checker: DistanceChecker::new(),
             avg_dist: AvgDist::new(),
@@ -302,6 +319,10 @@ impl GuideEngine {
         self.cal_advisories.clear();
         self.phase = Phase::Calibrating;
         self.lock = Some(primary);
+        // Track the star from its starting position; ingest_calibrating
+        // advances this on every found frame (search-origin parity — see the
+        // field doc).
+        self.search_origin = Some(primary);
         self.reset_guiding_state();
     }
 
@@ -320,6 +341,11 @@ impl GuideEngine {
         );
         self.phase = Phase::Guiding;
         self.lock = None;
+        // Host-initiated fresh session: drop the tracked star so the next
+        // measure() runs a full auto_find acquisition. (The internal
+        // calibration-complete transition deliberately KEEPS the origin —
+        // upstream never re-auto-finds the star it just calibrated on.)
+        self.search_origin = None;
         self.reset_guiding_state();
     }
 
@@ -358,10 +384,17 @@ impl GuideEngine {
     fn ingest_calibrating(&mut self, measured: &[MeasuredStar]) -> Action {
         let star = measured.first().copied();
         // Wait (no move) until the calibration star is measured this frame —
-        // upstream simply doesn't advance the state machine on a lost star.
+        // upstream simply doesn't advance the state machine on a lost star
+        // (star.cpp:479-483: a failed find retains the prior position, so
+        // the search origin also stays put).
         let Some(s) = star.filter(|s| s.found) else {
             return Action::Idle;
         };
+        // Search-origin parity (guider_multistar.cpp:943/1026): the next
+        // frame's find searches around THIS frame's found position — the
+        // calibration legs drift the star far beyond search_region of the
+        // starting point, so a fixed origin would lose it mid-leg.
+        self.search_origin = Some((s.x, s.y));
 
         let outcome = self
             .calibrator
@@ -386,7 +419,13 @@ impl GuideEngine {
                 self.cal = Some(cal);
                 self.calibrator = None;
                 // Transition straight into guiding; the next frame's found
-                // star establishes the lock.
+                // star establishes the lock. `search_origin` is deliberately
+                // KEPT (unlike begin_guiding's fresh-session clear): the
+                // just-calibrated star is still tracked at a known position,
+                // so the next measure() star_finds around it rather than
+                // re-running a full-frame auto_find, mirroring upstream's
+                // continuous m_primaryStar tracking across the
+                // calibration->guiding transition.
                 self.phase = Phase::Guiding;
                 self.lock = None;
                 self.reset_guiding_state();
@@ -415,6 +454,7 @@ impl GuideEngine {
         let Some(lock) = self.lock else {
             if let Some(s) = star.filter(|s| s.found) {
                 self.lock = Some((s.x, s.y));
+                self.search_origin = Some((s.x, s.y));
                 self.last_good_find_s = Some(now);
             }
             return Action::Idle;
@@ -430,6 +470,14 @@ impl GuideEngine {
         // 2. Active settle window (dossier §12). While settling, the P1 stub
         //    waits (returns Settle); full dither guiding-during-settle is P2.
         if let Some(settle) = self.settle.as_mut() {
+            // The origin still advances on found frames while settling:
+            // upstream's UpdateCurrentPosition keeps running (and assigning
+            // m_primaryStar at :1026) while the controller settles — the
+            // settle overlay never freezes star tracking. This P1 stub
+            // bypasses the accept machinery, so "found" is the analogue.
+            if let Some(s) = star.filter(|s| s.found) {
+                self.search_origin = Some((s.x, s.y));
+            }
             let (locked_now, err) = match offset {
                 Some((camera, _)) => (true, camera.0.hypot(camera.1)),
                 None => (false, LARGE_DISTANCE),
@@ -503,8 +551,12 @@ impl GuideEngine {
 
         // 6. Accepted frame. OBLIGATION (b): append the star mass on the accept
         //    path too (upstream guider_multistar.cpp:1027), after the distance
-        //    check passes.
+        //    check passes. The search origin advances HERE and only here on
+        //    the guiding path (guider_multistar.cpp:1026, `m_primaryStar =
+        //    newStar` — the mass-reject and distance-reject paths above throw
+        //    before that assignment, retaining the prior origin).
         self.mass_checker.append(now * 1000.0, s.mass); // OBLIGATION (b): accept path
+        self.search_origin = Some((s.x, s.y));
         self.last_good_find_s = Some(now);
         self.frames_since_reset += 1;
         let distance_ra = mount.0.abs();
@@ -610,13 +662,19 @@ impl GuideEngine {
         cal.x_rate / cal.declination.cos() * cur.cos()
     }
 
-    /// Run `star_find` at the current lock (guiding), or `auto_find` +
-    /// `select_primary` when unlocked (dossier §1/§2). Pure — the PyO3
-    /// `process` wrapper calls this then [`ingest`](Self::ingest). Never mutates
-    /// engine state (in particular it never touches the MassChecker, so it
-    /// cannot violate OBLIGATION (a)).
+    /// Run `star_find` around the tracked star's last found position, or
+    /// `auto_find` + `select_primary` when no star is tracked (dossier
+    /// §1/§2). The search origin is the star's PREVIOUS FRAME position —
+    /// upstream parity: `GuiderMultiStar::UpdateCurrentPosition` searches
+    /// around `m_primaryStar` (`guider_multistar.cpp:943/945`), which
+    /// advances on every accepted frame (`:1026`); the lock position is only
+    /// the offset reference and is never used as a search origin. Pure — the
+    /// PyO3 `process` wrapper calls this then [`ingest`](Self::ingest), which
+    /// performs the origin update. Never mutates engine state (in particular
+    /// it never touches the MassChecker, so it cannot violate OBLIGATION
+    /// (a)).
     pub fn measure(&self, frame: &astro_star::GrayFrame) -> Vec<MeasuredStar> {
-        match self.lock {
+        match self.search_origin {
             Some((lx, ly)) => {
                 let r = star_find(frame, lx, ly, &self.cfg.find);
                 vec![MeasuredStar {

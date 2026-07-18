@@ -1109,49 +1109,20 @@ fn guide_star_find<'py>(
     Ok((stars, meta))
 }
 
-/// Wraps `astro_guide::engine::GuideEngine` so [`GuideEngine::process`] can
-/// release the GIL for the frame-scan work (mirrors [`detect_and_measure`]'s
-/// pattern). `astro_guide`'s `GuideEngine` holds `Box<dyn GuideAlgorithm>`
-/// fields; astro-guide's frozen `GuideAlgorithm` trait (naming pinned by the
-/// plan) carries no `Send` bound, so the auto trait can't be derived through
-/// the trait object even though every concrete algorithm the crate actually
-/// boxes (`Hysteresis`, `ResistSwitch`, and later `Lowpass`/`Lowpass2`/
-/// `ZFilter`/`Ppec` — see `astro_guide::engine::make_algo`) is a plain struct
-/// with no interior aliasing or thread affinity. The crate's only other
-/// interior-mutable field (`MassChecker`'s `Cell<f64>` water marks) blocks
-/// `Sync`, not `Send` — irrelevant here since this handle is only ever
-/// touched through a unique `&mut` reference, never shared across threads.
-/// This newtype (and its `unsafe impl Send`) is scoped to `astrodeck-native`
-/// rather than `astro-guide` so the upstream crate's frozen trait/struct
-/// definitions stay untouched, per this task's file scope.
-struct EngineHandle(astro_guide::engine::GuideEngine);
-
-// SAFETY: see the type doc comment above — every field astro-guide actually
-// constructs is `Send`; only `dyn GuideAlgorithm` trait-object erasure blocks
-// the auto-derivation, and this handle is never shared (`Sync`) across
-// threads, only moved by unique reference into one `py.allow_threads` call
-// at a time.
-unsafe impl Send for EngineHandle {}
-
-impl std::ops::Deref for EngineHandle {
-    type Target = astro_guide::engine::GuideEngine;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for EngineHandle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+// `astro_guide::engine::GuideEngine` is `Send` (the `GuideAlgorithm` trait
+// carries a `Send` supertrait precisely so boxed algorithm objects — and the
+// engine holding them — cross the `py.allow_threads` boundary in
+// [`GuideEngine::process`] without any `unsafe`), so it is stored directly in
+// the pyclass below; no wrapper newtype is needed.
 
 /// Which [`Action::LockLost`] source a `process()` call just reported (T8
 /// obligation, binding per the P1-T7 review): the `Action` enum overloads one
 /// variant for three distinct guide failures (star-lost recovery exhausted,
-/// a calibration run failing outright, and a dither/guide-start settle
-/// window timing out), so [`GuideEngine::process`] tracks which is live and
-/// surfaces it as the returned dict's `"reason"` string.
+/// a calibration run failing outright, and a settle window timing out —
+/// in P1 only [`GuideEngine::dither`] opens a settle window; guiding-start
+/// settling arrives with P2's settle params), so [`GuideEngine::process`]
+/// tracks which is live and surfaces it as the returned dict's `"reason"`
+/// string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LostReason {
     StarLost,
@@ -1237,8 +1208,11 @@ fn action_to_dict<'py>(
 /// the P1-T7 review) is `None` except when `"action"` is `"lock_lost"`,
 /// where it is `"star_lost"` (recovery exhausted — re-find the star),
 /// `"calibration_failed"` (the calibration state machine gave up —
-/// recalibrate), or `"settle_timeout"` (a dither/guide-start settle window
-/// blew its deadline — the star itself was never actually lost). This class
+/// recalibrate), or `"settle_timeout"` (a settle window blew its deadline —
+/// the star itself was never actually lost; in P1 only
+/// [`dither`](Self::dither) opens a settle window, so this reason can only
+/// follow a dither — guiding-start settling arrives with P2's settle
+/// params). This class
 /// tracks which of the three `LockLost` sources is live via its own
 /// calibrating/settling shadow of the engine's phase — the underlying
 /// `Calibrator`/`Settle` state is private to `astro_guide::engine::GuideEngine`
@@ -1248,7 +1222,7 @@ fn action_to_dict<'py>(
 /// shadow can never drift from the real engine state.
 #[pyclass]
 struct GuideEngine {
-    inner: EngineHandle,
+    inner: astro_guide::engine::GuideEngine,
     calibrating: bool,
     settling: bool,
 }
@@ -1259,7 +1233,7 @@ impl GuideEngine {
     fn new(config: Bound<'_, PyDict>) -> PyResult<Self> {
         let cfg = build_engine_config(&config)?;
         Ok(GuideEngine {
-            inner: EngineHandle(astro_guide::engine::GuideEngine::new(cfg)),
+            inner: astro_guide::engine::GuideEngine::new(cfg),
             calibrating: false,
             settling: false,
         })
