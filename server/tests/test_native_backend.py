@@ -74,9 +74,11 @@ def test_backend_identity_and_protocols():
     b = NativeBackend()
     assert b.name == "native"
     assert b.label == "Native (direct)"
-    # roles EXCLUDE guider (Alpaca has no guider device); safety stays.
+    # roles EXCLUDE guider (Alpaca has no guider device); safety stays;
+    # guide_camera IS advertised (P2-T3 fix round, D6 — a second Alpaca camera
+    # by dev_num, so the assignment UI can put a guide camera on a real rig).
     assert b.roles == ("camera", "telescope", "focuser", "filterwheel",
-                       "switch", "safety", "rotator")
+                       "switch", "safety", "rotator", "guide_camera")
     assert "guider" not in b.roles
     assert b.discoverable is True
     assert b.hostless is False
@@ -110,6 +112,7 @@ async def test_open_returns_session_bound_to_host():
         ("filterwheel", "filterwheel"),
         ("switch", "switch"),
         ("safety", "safetymonitor"),
+        ("guide_camera", "camera"),   # D6: a dedicated guide cam IS an Alpaca camera
     ],
 )
 async def test_get_device_maps_role_to_dev_type(fake_alpaca, role, dev_type):
@@ -196,6 +199,32 @@ async def test_native_guider_solver_guide_camera_are_none():
     assert s.native_guider() is None
     assert s.native_solver() is None
     assert s.guide_camera() is None
+
+
+@pytest.mark.asyncio
+async def test_native_guider_built_over_guide_camera_and_mount(fake_alpaca):
+    """P2-T3 fix round (D6): once the session has connected a guide_camera +
+    telescope, native_guider() returns the Rust-engine NativeGuider over them
+    (wheel present; None when absent) and guide_camera() returns the assigned
+    device — the first-class real-rig guiding seam."""
+    from astrodeck.providers import NATIVE_AVAILABLE
+
+    s = NativeSession("h")
+    gcam = await s.get_device(
+        "guide_camera", ConnSpec(backend="native", host="h", port=11111,
+                                 dev_num=1, role="guide_camera"))
+    tel = await s.get_device(
+        "telescope", ConnSpec(backend="native", host="h", port=11111,
+                              dev_num=0, role="telescope"))
+    assert s.guide_camera() is gcam
+    g = s.native_guider()
+    if not NATIVE_AVAILABLE:
+        assert g is None
+        return
+    from astrodeck.guide import NativeGuider
+    assert isinstance(g, NativeGuider)
+    assert g.cam is gcam and g.tel is tel
+    assert s.native_guider() is g               # cached / same instance
 
 
 @pytest.mark.asyncio

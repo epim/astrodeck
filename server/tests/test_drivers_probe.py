@@ -127,7 +127,10 @@ def test_implicit_rows_exception_degrades_to_empty(store, monkeypatch):
 def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     """Review finding 1: Alpaca offers MUST carry the ConnSpec addressing
     (dev_type + dev_num); the CAA spec added the mapping so a Rotator row is
-    now returned like any other mapped DeviceType, not skipped."""
+    now returned like any other mapped DeviceType, not skipped. P2-T3 fix
+    round (D6): a Camera is offered under BOTH roles — camera AND
+    guide_camera (same device/addressing, second role) — so the assignment
+    UI's one-rule lights the guide_camera row for Alpaca drivers."""
     store.add_driver("alpaca", "h")
 
     class _Resp:
@@ -158,6 +161,8 @@ def test_alpaca_offer_carries_dev_type_and_dev_num(store, monkeypatch):
     out = _run(drv.describe_all())
     devs = out["drivers"][0]["offers"]["devices"]
     assert devs == [{"role": "camera", "name": "ASI2600MM",
+                     "dev_type": "camera", "dev_num": 0},
+                    {"role": "guide_camera", "name": "ASI2600MM",
                      "dev_type": "camera", "dev_num": 0},
                     {"role": "rotator", "name": "ZWO CAA",
                      "dev_type": "rotator", "dev_num": 0}]
