@@ -15,5 +15,6 @@
 
 pub mod select;
 pub mod starfind;
+pub mod track;
 pub mod transforms;
 pub mod types;
