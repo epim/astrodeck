@@ -57,7 +57,10 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
-use crate::algorithms::{GuideAlgorithm, Hysteresis, Lowpass, Lowpass2, ResistSwitch, ZFilter};
+use crate::algorithms::{
+    GaussianProcessGuider, GpParams, GuideAlgorithm, Hysteresis, Lowpass, Lowpass2, ResistSwitch,
+    ZFilter,
+};
 use crate::calibration::{
     sanity_advisories, CalConfig, CalOutcome, Calibrator, DecMode, UNKNOWN_DECLINATION,
 };
@@ -341,10 +344,15 @@ pub struct GuideEngine {
 }
 
 /// Construct a boxed axis algorithm from an [`AlgoKind`]. P3-T2 adds
-/// Lowpass/Lowpass2/ZFilter (dossier §6.3-§6.5); [`AlgoKind::Ppec`] still
-/// falls back to the axis default (RA = Hysteresis, Dec = ResistSwitch) so
-/// the constructor never fails — it is filled in by a later task (dossier
-/// §6.8) without touching this signature.
+/// Lowpass/Lowpass2/ZFilter (dossier §6.3-§6.5); P4-T1 fills in
+/// [`AlgoKind::Ppec`] on the RA axis with the real
+/// [`GaussianProcessGuider`] (dossier §6.8). PPEC is RA-only (dossier §6.8;
+/// PHD2 `mount.cpp:227-240` — present in `RA_ALGORITHMS`, absent from
+/// `DEC_ALGORITHMS`); a Dec `ppec` configuration is rejected at the PyO3
+/// validation layer (`astrodeck-native/src/lib.rs`) BEFORE it reaches here,
+/// so the constructor still never fails and this signature is unchanged. The
+/// Dec arm keeps the documented [`ResistSwitch`] fallback as defense in depth
+/// for a `ppec` string that somehow bypasses validation.
 fn make_algo(kind: AlgoKind, is_ra: bool) -> Box<dyn GuideAlgorithm> {
     match kind {
         AlgoKind::Hysteresis => Box::new(Hysteresis::default()),
@@ -354,7 +362,7 @@ fn make_algo(kind: AlgoKind, is_ra: bool) -> Box<dyn GuideAlgorithm> {
         AlgoKind::ZFilter => Box::new(ZFilter::default()),
         AlgoKind::Ppec => {
             if is_ra {
-                Box::new(Hysteresis::default())
+                Box::new(GaussianProcessGuider::new(GpParams::default()))
             } else {
                 Box::new(ResistSwitch::default())
             }
@@ -682,7 +690,13 @@ impl GuideEngine {
                 self.search_origin = None;
                 return Action::LockLost;
             }
-            return Action::Idle;
+            // Dead-reckoning move (dossier §3.3; `MOVEOPTS_DEDUCED_MOVE`):
+            // while the star is briefly missing, ask each axis algorithm for
+            // a deduced correction. Every P1-P3 algorithm returns 0.0
+            // (Action::Idle, the prior behavior); only PPEC (dossier §6.8.3)
+            // predicts through the gap, keeping periodic error corrected
+            // during short dropouts.
+            return self.deduce_move();
         }
         let s = star.expect("found implies a star");
         // `mut`: dossier §4's RefineOffset may replace both (step 5 below),
@@ -1016,6 +1030,31 @@ impl GuideEngine {
         // ResistSwitch ignore both and delegate to result().
         let xd = self.ra_algo.result_with(mount.0, snr, dt);
         let yd = self.dec_algo.result_with(mount.1, snr, dt);
+        self.apply_move(xd, yd, false)
+    }
+
+    /// The dossier §3.3 dead-reckoning move for a lost-star frame during
+    /// guiding (`MOVEOPTS_DEDUCED_MOVE = ALGO_DEDUCE | USE_BLC | GRAPH`,
+    /// `mount.cpp:945-957`): each axis algorithm's `deduce_result` is a full
+    /// ALGO move (the `ALGO_DEDUCE` bit passes the `scope.cpp` ALGO guard), so
+    /// dec-mode gating, static BLC, and the max-duration clamps all apply —
+    /// hence `apply_move(.., false)` like an ordinary guide step, NOT a
+    /// recovery move. Only [`GaussianProcessGuider`] returns a non-zero
+    /// deduced result (dossier §6.8.3); every other algorithm returns 0.0, so
+    /// `xd == yd == 0.0` and this yields [`Action::Idle`] — byte-identical to
+    /// the pre-P4-T1 lost-star behavior for the RA=Hysteresis/Dec=ResistSwitch
+    /// default and every non-PPEC configuration.
+    ///
+    /// PPEC's `deduce_result` uses the exposure of the last successful frame
+    /// (the frozen [`GuideAlgorithm::deduce_result`] signature carries no
+    /// `dt`; exposures are near-constant, matching upstream's `GetTimeStep()`
+    /// which returns the current exposure).
+    fn deduce_move(&mut self) -> Action {
+        let xd = self.ra_algo.deduce_result();
+        let yd = self.dec_algo.deduce_result();
+        if xd == 0.0 && yd == 0.0 {
+            return Action::Idle;
+        }
         self.apply_move(xd, yd, false)
     }
 
