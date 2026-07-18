@@ -27,8 +27,15 @@ discharged. P2-T1 landed the real ``dither``: a mount-frame lock shift, axis
 algorithm reset, fast recenter (dossier §11.2 — the loop dispatches its
 pulses exactly like any other correction), and a real settle-dwell wait
 (dossier §12), wired end to end via ``stats()["settling"]`` rather than any
-single frame's Action shape (see ``_sync_settle_window``). Full calibration
-REUSE across sessions and further guiding policy remain future work.
+single frame's Action shape (see ``_sync_settle_window``). P2-T2 lands the
+persistence READ side: ``start_guiding`` now loads any calibration this
+profile persisted and reuses it when still compatible (dossier §8.4/§9,
+``_cal_reusable``) instead of driving a fresh ~20+ s calibration walk — the
+fast path ``_maybe_recover_guiding`` (``sequence/engine.py:1908-1924``)
+relies on after a real star loss — plus the guider-level
+``flip_calibration`` contract (delegates to the already-P1-verified engine
+method) and star-lost recovery hardening (bounded auto-reselect, dossier
+§3.3; see ``engine.rs``'s ``ingest_guiding``).
 """
 from __future__ import annotations
 
@@ -76,11 +83,21 @@ _CAL_TIMEOUT_S = 180.0
 
 # Consecutive ``star_lost`` frames tolerated before the loop reports itself
 # inactive (so the sequence engine's _maybe_recover_guiding sees is_active go
-# false on a real loss). Full multi-step reacquire lands in P2.
+# false on a real loss). P2-T2: the engine itself now broadens its search to
+# a full-frame auto-reselect once a star is stale (engine.rs's
+# ingest_guiding), so every one of these budgeted frames is a genuine
+# reacquire attempt, not just a narrow local re-check.
 _REACQUIRE_BUDGET = 8
 
 # Cap on how long ``dither`` waits for the engine's settle window to close.
 _SETTLE_TIMEOUT_S = 90.0
+
+# The Rust engine's sentinel for "no real declination stamped" (dossier §8.4
+# `UNKNOWN_DECLINATION`; astro_guide::calibration::UNKNOWN_DECLINATION).
+# Mirrored here — the wheel exposes no Python constant for it — so the P2
+# calibration-reuse gate below can recognize a persisted calibration that was
+# never really scope-anchored.
+_UNKNOWN_DECLINATION = 997.0
 
 
 class NativeGuider(Guider):
@@ -185,12 +202,33 @@ class NativeGuider(Guider):
             rates = await self._read_guide_rates()
             self._engine = _native.GuideEngine(self._build_engine_config(rates))
 
-            await self._calibrate()              # blocks; raises on failure
+            # P2-T2 persistence READ side (dossier §8.4/§9): reuse the
+            # profile's persisted calibration when it is still trustworthy
+            # for THIS session rather than always driving a fresh
+            # calibration walk — critical for _maybe_recover_guiding's
+            # fast-restart contract after a real star loss
+            # (sequence/engine.py:1908-1924), which would otherwise pay a
+            # full ~20+ s recalibration on every recovery.
+            persisted = self._load_persisted_calibration()
+            if persisted is not None and self._cal_reusable(persisted):
+                self._engine.load_calibration(persisted)
+                # Live current scope pointing feeds RA dec-compensation
+                # (dossier §9 item 6, never persisted) independently of the
+                # reused Cal's own stored declination/pier — same call
+                # _calibrate() makes internally before completing a fresh
+                # calibration.
+                await self._apply_scope_pointing()
+                self._engine.begin_guiding()
+                bus.log("info",
+                        f"native guider: reusing persisted calibration for "
+                        f"profile {self.profile_id}", "guide")
+            else:
+                await self._calibrate()           # blocks; raises on failure
             # HOST CONTRACT (T8 / upstream mount.cpp:1338-1344): auto-flip the
             # calibration at guiding start if the mount's pier side differs from
             # the stored calibration's. A no-op for a fresh calibration (the
-            # scope pointing already stamped the current pier); load-bearing once
-            # P2 reuses a persisted calibration across a pier-side change.
+            # scope pointing already stamped the current pier); load-bearing
+            # for a reused persisted calibration across a pier-side change.
             await self._maybe_flip_for_pier()
             self._persist_calibration()
 
@@ -594,6 +632,68 @@ class NativeGuider(Guider):
         except Exception as e:  # pragma: no cover - best effort
             bus.log("warning",
                     f"native guider: could not persist calibration: {e}", "guide")
+
+    def _load_persisted_calibration(self) -> dict | None:
+        """Read this profile's persisted calibration
+        (``CONFIG_DIR/guider/<profile>.json`` — the file ``_persist_calibration``
+        writes), or ``None`` if there is no profile, no file, or the file is
+        unreadable/corrupt. Never raises — any failure here just means
+        ``start_guiding`` falls back to a fresh calibration."""
+        if not self.profile_id:
+            return None
+        try:
+            from ..config import CONFIG_DIR
+            p = CONFIG_DIR / "guider" / f"{self.profile_id}.json"
+            if not p.exists():
+                return None
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:  # pragma: no cover - defensive
+            bus.log("warning",
+                    f"native guider: could not read persisted calibration: "
+                    f"{e}", "guide")
+            return None
+
+    def _cal_reusable(self, cal: dict) -> bool:
+        """P2 reuse-compatibility gate (dossier §8.4 calibration data model +
+        §9 items 3/4/6 "calibration adjustments at guide start"): a persisted
+        calibration is safe to hand straight to
+        ``GuideEngine.load_calibration`` + ``begin_guiding`` only when it is
+
+        1. ``is_valid`` — a partial/failed calibration was never really
+           stored as usable in the first place.
+        2. recorded at the SAME camera binning as this session — §9 item 3's
+           binning rescale (``rate *= old_binning/new_binning``) is not
+           implemented here, so reusing a different-binning calibration's
+           px/ms rates verbatim would silently misguide.
+        3. carries a KNOWN declination (not the ``UNKNOWN_DECLINATION``
+           sentinel) — §9 item 6's live RA dec-compensation, and sanity
+           check #3 on the next flip, both need a real calibration
+           declination to mean anything; a sentinel there means this
+           calibration was never really scope-anchored.
+        4. carries a KNOWN pier side (not "unknown") — the guiding-start
+           auto-flip host contract (§9 item 4, ``_maybe_flip_for_pier``)
+           can only detect and correct a pier-side CHANGE since calibration
+           when the stored side is actually known; an unknown stored pier
+           would silently skip that safety net.
+
+        A pier-side MISMATCH (known but different from the mount's current
+        side) is deliberately NOT disqualifying here — that is exactly what
+        ``_maybe_flip_for_pier`` (called by ``start_guiding`` right after
+        this gate, for both the fresh and reused paths) corrects, the same
+        way it would for a freshly-measured calibration."""
+        if not cal or not cal.get("is_valid"):
+            return False
+        try:
+            if int(cal.get("binning", -1)) != self._binning:
+                return False
+            dec = cal.get("declination")
+            if dec is None or float(dec) == _UNKNOWN_DECLINATION:
+                return False
+        except (TypeError, ValueError):
+            return False
+        if cal.get("pier_side") in (None, "unknown"):
+            return False
+        return True
 
     # ------------------------------------------------------------ guide frame
 
