@@ -212,6 +212,16 @@ class SimRig:
         self.guide_pe_amplitude_px: float = 0.6    # RA worm periodic-error amplitude
         self.guide_pe_period_s: float = 383.0      # RA worm period (EQ6-R-class mount)
         self.guide_seeing_px: float = 0.3          # seeing jitter sigma, both axes
+        # --- star-loss injection (P2-T2): a "cloud" hook for the native
+        # guider's star-lost recovery gate. OFF by default (False) so every
+        # existing SimGuideCamera render is byte-for-byte unaffected — the
+        # same opt-in idiom as ``rotator_pa_offset_deg``/
+        # ``polar_misalignment`` above. A test flips this True to blank the
+        # guide star from every subsequent frame (background noise still
+        # renders — a real cloud attenuates the star, not the sky) and False
+        # again to let it "return"; ``SimGuideCamera._render`` is the sole
+        # reader.
+        self.guide_star_hidden: bool = False
 
     def guide_star_px(self, now_s: float) -> tuple[float, float]:
         """Ground-truth guide-star pixel position at instant ``now_s`` —
@@ -566,11 +576,17 @@ class SimGuideCamera(Camera):
             # pedestal) — same split SimCamera._render_stars uses, so a bright
             # star's Poisson noise doesn't also inflate the background.
             field = np.zeros((h, w), dtype=np.float64)
-            px, py = self.rig.guide_star_px(now)
-            px, py = px / binning, py / binning
-            flux = self.STAR_FLUX_PER_S * seconds * (1 + gain / 100.0) * binning * binning
-            sigma = max(1.0, self.STAR_SIGMA_PX / binning)
-            SimCamera._add_star(field, px, py, flux, sigma)
+            # P2-T2 star-loss injection: a "cloud" renders background noise
+            # only — no star signal — so guide_star_find legitimately reports
+            # not-found until ``guide_star_hidden`` clears (rig.guide_star_px
+            # itself is not consulted while hidden — the star's ground-truth
+            # position is unaffected, it just isn't drawn).
+            if not self.rig.guide_star_hidden:
+                px, py = self.rig.guide_star_px(now)
+                px, py = px / binning, py / binning
+                flux = self.STAR_FLUX_PER_S * seconds * (1 + gain / 100.0) * binning * binning
+                sigma = max(1.0, self.STAR_SIGMA_PX / binning)
+                SimCamera._add_star(field, px, py, flux, sigma)
             field += rng.poisson(np.clip(field, 0, None)) - field
             img += field
 

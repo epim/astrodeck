@@ -560,6 +560,27 @@ impl GuideEngine {
                 .map(|t| now - t > LOST_STAR_TIMEOUT_S)
                 .unwrap_or(true);
             if stale {
+                // P2-T2 hardening (bounded auto-reselect; NOT upstream-derived
+                // — PHD2 has no analogue here, this is new AstroDeck policy):
+                // a star missing this long is no longer well-modeled by a
+                // narrow search around its last local position — it may have
+                // drifted, or whatever occluded it (cloud, satellite trail)
+                // cleared while the mount kept tracking elsewhere. Dropping
+                // the search origin makes the NEXT measure() fall back to the
+                // same full-frame auto_find/select_primary pass a session's
+                // very first lock uses (measure()'s `None` branch) — a
+                // strictly BROADER search than the narrow search_region this
+                // frame's failed local star_find just used. `lock` (the
+                // offset reference) is left untouched: this only changes
+                // WHERE the next frame searches, not what a subsequently
+                // found star's offset is measured against. The engine keeps
+                // signalling LockLost{star_lost} on every frame the star
+                // stays missing, exactly as before `last_good_find_s` is
+                // never touched here — so the HOST's own bounded give-up
+                // budget (NativeGuider._REACQUIRE_BUDGET, guide/native.py)
+                // is unchanged and remains the "bounded" half of "bounded
+                // auto-reselect".
+                self.search_origin = None;
                 return Action::LockLost;
             }
             return Action::Idle;
