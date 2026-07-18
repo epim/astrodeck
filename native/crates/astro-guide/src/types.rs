@@ -61,7 +61,11 @@ pub enum Action {
         dec: Option<AxisPulse>,
     },
     /// A calibration state-machine step (dossier §8.2).
-    CalStep { leg: CalLeg, dir: Direction, ms: u32 },
+    CalStep {
+        leg: CalLeg,
+        dir: Direction,
+        ms: u32,
+    },
     /// Within a start/dither settle window; the host waits (dossier §12).
     Settle,
     /// Guide star lost and recovery exhausted this frame (dossier §3.3).
