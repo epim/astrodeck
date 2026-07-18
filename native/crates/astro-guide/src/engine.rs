@@ -40,12 +40,19 @@
 //! [`GuideEngine::begin_guiding`], and the calibration-complete path; see each
 //! tag for the upstream citation. Three more, from the P1-T7/T10 reviews'
 //! P2 punch list, are discharged in [`GuideEngine::dither`] and
-//! [`GuideEngine::ingest_guiding`]'s settle branch (tagged `P2-T1 punch-list
-//! #1/#2/#3`): the settle evaluator is fed the SMOOTHED `avg_dist` rather
-//! than a frame's raw offset (#1), a fresh `AvgDist` is constructed at the
-//! post-fast-recenter boundary (#2), and the host-side settle handshake in
-//! `guide/native.py` is wired to the engine's real settle lifecycle rather
-//! than a single frame's `Action` shape (#3, host-side — see that file).
+//! [`GuideEngine::ingest_guiding`]'s settle overlay (tagged `P2-T1
+//! punch-list #1/#2/#3`): the settle evaluator is fed the SMOOTHED
+//! `avg_dist` rather than a frame's raw offset (#1), a fresh `AvgDist` is
+//! constructed at the post-fast-recenter boundary (#2), and the host-side
+//! settle handshake in `guide/native.py` is wired to the engine's real
+//! settle lifecycle rather than a single frame's `Action` shape (#3,
+//! host-side — see that file). The P2-T1 fix round (opus review) further
+//! made the settle a parallel MONITOR over live guiding rather than a
+//! phase that suspends it (`guider.cpp:1517-1521`), and modeled upstream's
+//! ALGO-vs-RECOVERY moveOptions split (clamps + dec-mode gating are
+//! ALGO-only; `scope.cpp:727/:736/:761`) and the dither-settle DEC_AUTO
+//! override (`phdcontrol.cpp:181-196/:501-505/:570-575`) — see
+//! [`GuideEngine::apply_move`].
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
@@ -178,9 +185,11 @@ impl Default for ScopePointing {
 /// per accepted frame, newest last. `settling` (P2-T1 Produces line) is the
 /// authoritative settle-window state — `true` for every frame from
 /// [`GuideEngine::dither`] until the window closes (Done or Failed),
-/// INCLUDING fast-recenter frames, whose [`Action`] is an ordinary
-/// [`Action::PulsePair`] (dossier §11.2) and so cannot be told apart from
-/// normal guiding by its shape alone.
+/// INCLUDING fast-recenter frames AND the dwell's ordinary guide-correction
+/// frames (P2-T1 fix round: guiding continues through the settle,
+/// `guider.cpp:1517-1521`), whose [`Action`] is an ordinary
+/// [`Action::PulsePair`] and so cannot be told apart from normal guiding by
+/// its shape alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuideStatsSnapshot {
     pub guiding: bool,
@@ -518,78 +527,34 @@ impl GuideEngine {
             (camera, camera_to_mount(camera, &cal))
         });
 
-        // 2. Active settle window (dossier §12), optionally overlaid with an
-        //    active fast recenter (dossier §11.2) — see `dither`/
-        //    `step_recenter`. `settle.is_some()` covers both.
-        if self.settle.is_some() {
-            // The origin still advances on found frames while settling:
-            // upstream's UpdateCurrentPosition keeps running (and assigning
-            // m_primaryStar at :1026) while the controller settles — the
-            // settle overlay never freezes star tracking.
-            if let Some(s) = star.filter(|s| s.found) {
-                self.search_origin = Some((s.x, s.y));
-            }
+        // Settle-window flag for this frame (dossier §12). P2-T1 fix round
+        // (CRITICAL): settling is a parallel MONITOR overlaid on guiding,
+        // not a phase that suspends it — upstream keeps the Guider in
+        // STATE_GUIDING issuing ordinary MOVEOPTS_GUIDE_STEP corrections on
+        // every settling frame (guider.cpp:1517-1521) while PhdController
+        // watches `current_guide_error`. Settling frames therefore flow
+        // through the NORMAL mass/distance/accept/move machinery below; the
+        // settle overlay after the accept bookkeeping (step 6) decides
+        // whether this frame's Action is a fast-recenter step, the ordinary
+        // guide correction, the Settle wait signal, or the window closing.
+        let settling = self.settle.is_some();
 
-            // P2-T1 punch-list #1 (SETTLE INPUT FIX, binding per the P1-T7
-            // review): upstream's UpdateCurrentPosition
-            // (guider_multistar.cpp:1043) keeps calling UpdateCurrentDistance
-            // on every settling frame too — dossier §12's note "the
-            // DistanceChecker also treats settling frames as automatically
-            // acceptable" is why nothing here gates the update on a
-            // mass/distance-check accept — and STATE_SETTLE_WAIT feeds
-            // `current_guide_error()` (phdcontrol.cpp:516,
-            // `AvgDist::current_error`, the fast EMA), never the raw
-            // per-frame offset. A single lucky in-tolerance frame must not
-            // declare settled; keep `avg_dist` updated across the whole
-            // window and feed it the smoothed value.
-            let dist_ra = offset.map(|(_, mount)| mount.0.abs()).unwrap_or(0.0);
-            let dist_cam = offset
-                .map(|(camera, _)| {
-                    if dec_guiding {
-                        camera.0.hypot(camera.1)
-                    } else {
-                        camera.0.abs()
-                    }
-                })
-                .unwrap_or(0.0);
-            if offset.is_some() {
-                self.avg_dist.update(now, dist_cam, dist_ra);
-            }
-            let err = self.avg_dist.current_error(now, dec_guiding);
-            let locked_now = offset.is_some(); // IsLocked() == primary star WasFound() this frame.
-
-            let settle = self
-                .settle
-                .as_mut()
-                .expect("settle branch: self.settle is Some");
-            let state = settle.evaluate(err, locked_now, now);
-            return match state {
-                SettleState::Failed(_) => {
-                    self.settle = None;
-                    self.recenter = None; // abandon any in-flight recenter too
-                    Action::LockLost
-                }
-                SettleState::Done => {
-                    self.settle = None;
-                    self.recenter = None; // normally already None; be safe
-                    Action::Idle
-                }
-                SettleState::Settling => {
-                    // Fast recenter (dossier §11.2) takes this frame's Action
-                    // when active — bypasses the guide algorithms entirely
-                    // (one Action per ingest: the "still settling" wait
-                    // signal only surfaces once recenter is exhausted).
-                    self.step_recenter().unwrap_or(Action::Settle)
-                }
-            };
-        }
-
-        // 3. Lost star (dossier §3.3): schedule a dead-reckoning move — every
+        // 2. Lost star (dossier §3.3): schedule a dead-reckoning move — every
         //    P1 algorithm's deduce_result is 0.0, so no pulse — and give up the
         //    lock once the star has been missing longer than the staleness
-        //    threshold.
+        //    threshold. While a settle window is open the settle monitor OWNS
+        //    the failure path instead (reason classification: a settling
+        //    LockLost must mean settle_timeout and nothing else): the frame
+        //    is dropped exactly as upstream drops it (no avg update), and the
+        //    monitor still evaluates with locked=false — upstream's
+        //    IsLocked() is `m_primaryStar.WasFound()`
+        //    (guider_multistar.h:174-177), false after the failed find
+        //    SetErrors the star (star.cpp:48-70).
         if !found {
             self.distance_checker.activate(now);
+            if settling {
+                return self.settle_monitor_dropped_frame(now, dec_guiding);
+            }
             let stale = self
                 .last_good_find_s
                 .map(|t| now - t > LOST_STAR_TIMEOUT_S)
@@ -602,19 +567,27 @@ impl GuideEngine {
         let s = star.expect("found implies a star");
         let (camera, mount) = offset.expect("found implies an offset");
 
-        // 4. Star-mass gate (dossier §3.1). OBLIGATION (a): CheckMass is called
+        // 3. Star-mass gate (dossier §3.1). OBLIGATION (a): CheckMass is called
         //    EXACTLY ONCE per frame — it drifts the low-water mark through a
         //    Cell on every call, so a second/preview call would corrupt state.
+        //    Runs on settling frames too (upstream UpdateCurrentPosition runs
+        //    the full gate stack while the controller settles).
         let mass_ok = self.mass_checker.check(s.mass, MASS_CHANGE_THRESHOLD); // OBLIGATION (a)
         if !mass_ok {
             // STAR_MASSCHANGE: frame dropped, DistanceChecker activated. The new
-            // mass IS still appended (upstream guider_multistar.cpp:984).
+            // mass IS still appended (upstream guider_multistar.cpp:984). While
+            // settling, the settle monitor evaluates this dropped frame too,
+            // with locked=false: the mass reject SetErrors the star
+            // (guider_multistar.cpp:972), so IsLocked()/WasFound() is false.
             self.mass_checker.append(now * 1000.0, s.mass); // OBLIGATION (b): reject path
             self.distance_checker.activate(now);
+            if settling {
+                return self.settle_monitor_dropped_frame(now, dec_guiding);
+            }
             return Action::Idle;
         }
 
-        // 5. Jump rejection / lost-star recovery (dossier §3.2). OBLIGATION (d):
+        // 4. Jump rejection / lost-star recovery (dossier §3.2). OBLIGATION (d):
         //    feed the staleness-gated current_error_smoothed as err_smoothed,
         //    and compute small_context from the not-guiding / paused / settling
         //    / <10-frames predicate (guider_multistar.cpp _CheckDistance).
@@ -626,8 +599,11 @@ impl GuideEngine {
         };
         let err_smoothed = self.avg_dist.current_error_smoothed(now, dec_guiding); // OBLIGATION (d)
         let not_guiding = self.phase != Phase::Guiding;
-        let paused = false; // no host-pause channel in P1 (P2 seam)
-        let settling = self.settle.is_some(); // false here — settle returns early above
+        let paused = false; // no host-pause channel yet (P2+ seam)
+                            // `settling` (computed above) is LIVE here since the P2-T1 fix round:
+                            // settling frames run this machinery too, and dossier §12's "the
+                            // DistanceChecker also treats settling frames as automatically
+                            // acceptable" is exactly this small_context term.
         let small_context = not_guiding || paused || settling || self.frames_since_reset < 10; // OBLIGATION (d)
         let accepted =
             self.distance_checker
@@ -638,12 +614,15 @@ impl GuideEngine {
             return Action::Idle;
         }
 
-        // 6. Accepted frame. OBLIGATION (b): append the star mass on the accept
+        // 5. Accepted frame. OBLIGATION (b): append the star mass on the accept
         //    path too (upstream guider_multistar.cpp:1027), after the distance
         //    check passes. The search origin advances HERE and only here on
         //    the guiding path (guider_multistar.cpp:1026, `m_primaryStar =
         //    newStar` — the mass-reject and distance-reject paths above throw
-        //    before that assignment, retaining the prior origin).
+        //    before that assignment, retaining the prior origin). All of this
+        //    bookkeeping runs on accepted settling frames too (upstream's
+        //    UpdateCurrentPosition, incl. the avg-dist update at :1043, never
+        //    pauses for the settle).
         self.mass_checker.append(now * 1000.0, s.mass); // OBLIGATION (b): accept path
         self.search_origin = Some((s.x, s.y));
         self.last_good_find_s = Some(now);
@@ -653,31 +632,116 @@ impl GuideEngine {
         self.last_snr = s.snr;
         self.push_recent(now, mount.0, mount.1);
 
+        // 6. Settle overlay (dossier §12; P2-T1 fix round, CRITICAL).
+        //    Evaluated AFTER this frame's avg-dist update so the monitor
+        //    reads the freshly smoothed error — P2-T1 punch-list #1 (SETTLE
+        //    INPUT FIX, binding per the P1-T7 review): STATE_SETTLE_WAIT
+        //    feeds `current_guide_error()` (phdcontrol.cpp:516; the fast
+        //    EMA, `Guider::CurrentError`, guider.cpp:1116-1132), never a
+        //    frame's raw instantaneous offset — a single lucky in-tolerance
+        //    frame must not declare settled.
+        if settling {
+            let err = self.avg_dist.current_error(now, dec_guiding); // P2-T1 punch-list #1
+            let state = self
+                .settle
+                .as_mut()
+                .expect("settling flag implies self.settle is Some")
+                .evaluate(err, true, now);
+            match state {
+                SettleState::Failed(_) => {
+                    self.settle = None;
+                    self.recenter = None; // abandon any in-flight recenter too
+                    return Action::LockLost;
+                }
+                SettleState::Done => {
+                    // Window closed. Fall through to the ordinary move below
+                    // — the settle-complete frame still guides (guiding
+                    // never stopped, guider.cpp:1517-1521), and apply_move's
+                    // dec-mode override reverts with the cleared window.
+                    self.settle = None;
+                    self.recenter = None; // normally already None; be safe
+                }
+                SettleState::Settling => {
+                    // Fast recenter (dossier §11.2) REPLACES the ordinary
+                    // guide step while active (guider.cpp:1485-1511: the
+                    // recenter branch, ELSE the ordinary guide step)...
+                    if let Some(a) = self.step_recenter() {
+                        return a;
+                    }
+                    // ...otherwise GUIDE THROUGH THE DWELL (P2-T1 fix
+                    // round, CRITICAL; guider.cpp:1517-1521): the ordinary
+                    // ALGO correction. A vetoed/empty correction surfaces
+                    // as the Settle wait signal — the host-visible "still
+                    // settling" — instead of a bare Idle.
+                    let a = self.compute_move(mount, s.snr, meta.exposure_s);
+                    return if matches!(a, Action::Idle) {
+                        Action::Settle
+                    } else {
+                        a
+                    };
+                }
+            }
+        }
+
         // 7. Move pipeline (dossier §7): algorithms -> direction/rate -> ms,
         //    static BLC, dec-mode gating, duration clamps.
         self.compute_move(mount, s.snr, meta.exposure_s)
     }
 
+    /// The settle monitor's evaluation for a DROPPED settling frame (star
+    /// not found, or a mass-change reject): no avg-dist update (upstream
+    /// drops the frame before `UpdateCurrentDistance`), `locked == false`
+    /// (upstream's IsLocked() is `m_primaryStar.WasFound()`,
+    /// guider_multistar.h:174-177 — false after the drop path SetErrors the
+    /// star, star.cpp:48-70), and the error input is the stale-gated
+    /// smoothed current error (LARGE_DISTANCE once the star has been
+    /// missing > 20 s — dossier §13, guider.cpp:1108-1114). While the
+    /// window is open this monitor OWNS the LockLost failure path (reason
+    /// classification: a settling LockLost is always settle_timeout). A
+    /// dropped frame can never be Done (in-range requires locked), and no
+    /// correction is possible (dead-reckoning `deduce_result` is 0), so any
+    /// non-failure outcome is the Settle wait signal. An in-flight recenter
+    /// does NOT step — upstream schedules no move on dropped frames.
+    fn settle_monitor_dropped_frame(&mut self, now: f64, dec_guiding: bool) -> Action {
+        let err = self.avg_dist.current_error(now, dec_guiding);
+        let state = self
+            .settle
+            .as_mut()
+            .expect("caller verified self.settle is Some")
+            .evaluate(err, false, now);
+        match state {
+            SettleState::Failed(_) => {
+                self.settle = None;
+                self.recenter = None;
+                Action::LockLost
+            }
+            _ => Action::Settle,
+        }
+    }
+
     /// The dossier §7 move pipeline for one accepted frame's mount-frame
     /// error: runs the per-axis algorithms, then [`apply_move`](Self::apply_move)
-    /// for the rest of the pipeline (direction/rate/BLC/gating/clamps).
+    /// as an ALGO move for the rest of the pipeline
+    /// (direction/rate/BLC/gating/clamps).
     fn compute_move(&mut self, mount: (f64, f64), snr: f64, dt: f64) -> Action {
         // Per-axis transfer functions (dossier §6). result_with threads snr +
         // exposure for a future predictive (PPEC) axis; Hysteresis and
         // ResistSwitch ignore both and delegate to result().
         let xd = self.ra_algo.result_with(mount.0, snr, dt);
         let yd = self.dec_algo.result_with(mount.1, snr, dt);
-        self.apply_move(xd, yd)
+        self.apply_move(xd, yd, false)
     }
 
     /// One fast-recenter step (dossier §11.2; `guider.cpp:1485-1511`), if a
     /// recenter is currently in flight. Bypasses the guide algorithms
-    /// entirely — goes straight to [`apply_move`](Self::apply_move), which
-    /// still runs BLC/dec-mode-gating/duration clamps, matching upstream's
-    /// `MOVEOPTS_RECOVERY_MOVE` ("bypasses guide algorithms; BLC still
-    /// applies"). The move is open-loop: it does not re-read the star's
-    /// current position, just walks down the pre-planned `remaining`
-    /// distance from [`dither`](Self::dither) one `step` at a time.
+    /// entirely — goes straight to [`apply_move`](Self::apply_move) as a
+    /// RECOVERY move, matching upstream's `MOVEOPTS_RECOVERY_MOVE`
+    /// (`mount.h:139`: the `MOVEOPT_USE_BLC` bit alone): BLC still applies,
+    /// but dec-mode gating and the max-duration clamps do NOT (both sit
+    /// inside scope.cpp's ALGO-only guard — see `apply_move`). The move is
+    /// open-loop: it does not re-read the star's current position, just
+    /// walks down the pre-planned `remaining` distance from
+    /// [`dither`](Self::dither) one `step` at a time.
     ///
     /// Returns `None` when there is nothing to recenter (already finished,
     /// or `dither` never armed one — a zero-distance dither, dossier
@@ -708,22 +772,47 @@ impl GuideEngine {
         } else {
             self.recenter = Some(r);
         }
-        Some(self.apply_move(signed.0, signed.1))
+        Some(self.apply_move(signed.0, signed.1, true))
     }
 
     /// The dossier §7 move pipeline's post-algorithm half: direction from
     /// sign, duration from magnitude/rate, dec-mode gating, static BLC,
     /// duration clamps. Shared by the normal per-axis-algorithm path
-    /// ([`compute_move`](Self::compute_move)) and the fast-recenter path
-    /// ([`step_recenter`](Self::step_recenter)), which bypasses the
-    /// algorithms but still runs this pipeline (dossier §11.2: "bypasses
-    /// guide algorithms; BLC still applies"). `xd`/`yd` are mount-frame
-    /// pixel corrections (post-algorithm for the normal path; the raw
-    /// signed recenter step for the fast-recenter path). Returns
-    /// [`Action::PulsePair`] (or [`Action::Idle`] when both axes are
-    /// vetoed/clamped to zero).
-    fn apply_move(&mut self, xd: f64, yd: f64) -> Action {
+    /// ([`compute_move`](Self::compute_move), `recovery == false`, upstream
+    /// `MOVEOPTS_GUIDE_STEP`) and the fast-recenter path
+    /// ([`step_recenter`](Self::step_recenter), `recovery == true`, upstream
+    /// `MOVEOPTS_RECOVERY_MOVE`). `xd`/`yd` are mount-frame pixel
+    /// corrections (post-algorithm for the normal path; the raw signed
+    /// recenter step for the fast-recenter path).
+    ///
+    /// The `recovery` flag models upstream's moveOptions bits (P2-T1 fix
+    /// round): dec-mode gating (scope.cpp:727-734) and the max-duration
+    /// clamps (scope.cpp:736-741 dec, :761-768 RA) are BOTH inside the
+    /// `moveOptions & (MOVEOPT_ALGO_RESULT | MOVEOPT_ALGO_DEDUCE)` guard,
+    /// and `MOVEOPTS_RECOVERY_MOVE` carries neither bit (`mount.h:139` — it
+    /// is `MOVEOPT_USE_BLC` alone), so recovery moves bypass both while BLC
+    /// still applies. Returns [`Action::PulsePair`] (or [`Action::Idle`]
+    /// when both axes are vetoed/clamped to zero).
+    fn apply_move(&mut self, xd: f64, yd: f64, recovery: bool) -> Action {
         let cal = self.cal.expect("guiding phase implies a valid Cal");
+
+        // Effective dec guide mode (dossier §12 note; P2-T1 fix round,
+        // Minor): while a dither settle window is open, upstream temporarily
+        // sets a uni-directional DEC_NORTH/DEC_SOUTH mode to DEC_AUTO for
+        // the whole settle and restores it after
+        // (phdcontrol.cpp:181-187 arms the override, :501-505 sets
+        // DEC_AUTO at STATE_SETTLE_BEGIN, :570-575 restores), so the
+        // dither's dec displacement can be guided back out in either
+        // direction. Off is NOT overridden — an Off-mode dither is forced
+        // RA-only at the source instead (see [`dither`](Self::dither)),
+        // matching phdcontrol.cpp:188-196.
+        let dec_mode = if self.settle.is_some()
+            && matches!(self.cfg.dec_guide_mode, DecMode::North | DecMode::South)
+        {
+            DecMode::Auto
+        } else {
+            self.cfg.dec_guide_mode
+        };
 
         // Directions from the post-algorithm correction (dossier §7:
         // xd > 0 => WEST, yd > 0 => SOUTH).
@@ -745,21 +834,28 @@ impl GuideEngine {
         let mut y_ms = (yd / cal.y_rate).abs().round() as i64;
 
         // Dec-mode gating (dossier §7 MoveAxis, scope.cpp:726-733): Off zeroes
-        // dec; North blocks a SOUTH pulse; South blocks a NORTH pulse.
-        match self.cfg.dec_guide_mode {
-            DecMode::Off => y_ms = 0,
-            DecMode::North if ydir == Direction::South => y_ms = 0,
-            DecMode::South if ydir == Direction::North => y_ms = 0,
-            _ => {}
+        // dec; North blocks a SOUTH pulse; South blocks a NORTH pulse. ALGO
+        // moves only (P2-T1 fix round, Minor): upstream's scope.cpp:727 guard
+        // exempts recovery moves, so a fast-recenter dec pulse fires
+        // regardless of mode.
+        if !recovery {
+            match dec_mode {
+                DecMode::Off => y_ms = 0,
+                DecMode::North if ydir == Direction::South => y_ms = 0,
+                DecMode::South if ydir == Direction::North => y_ms = 0,
+                _ => {}
+            }
         }
 
         // Static backlash compensation (dossier §10.1; D4: static only,
-        // adaptive controller OFF). Only in DEC_AUTO, only with a configured
-        // seed pulse, only when the dec correction is non-zero (mirroring
-        // apply()'s early returns, which also skip updating last_dir on a
-        // zero move). Adds one fixed pulse on a dec direction reversal.
+        // adaptive controller OFF). Only in (effective) DEC_AUTO, only with a
+        // configured seed pulse, only when the dec correction is non-zero
+        // (mirroring apply()'s early returns, which also skip updating
+        // last_dir on a zero move). Adds one fixed pulse on a dec direction
+        // reversal. Applies to recovery moves too — MOVEOPT_USE_BLC is the
+        // one bit MOVEOPTS_RECOVERY_MOVE carries (mount.h:139).
         let mut eff_max_dec = self.cfg.max_dec_duration_ms as i64;
-        if self.cfg.dec_guide_mode == DecMode::Auto && self.cfg.blc_pulse_ms > 0 && yd != 0.0 {
+        if dec_mode == DecMode::Auto && self.cfg.blc_pulse_ms > 0 && yd != 0.0 {
             if let Some(last) = self.last_dec_dir {
                 if ydir != last {
                     y_ms += self.cfg.blc_pulse_ms as i64;
@@ -771,9 +867,14 @@ impl GuideEngine {
             eff_max_dec = eff_max_dec.max(self.cfg.blc_pulse_ms as i64);
         }
 
-        // MoveAxis duration clamps (dossier §7/§14).
-        x_ms = x_ms.clamp(0, self.cfg.max_ra_duration_ms as i64);
-        y_ms = y_ms.clamp(0, eff_max_dec);
+        // MoveAxis duration clamps (dossier §7/§14): ALGO moves only (P2-T1
+        // fix round, Important) — the same scope.cpp guard (:736-741 dec,
+        // :761-768 RA) exempts recovery moves, whose deliberately large
+        // recenter steps go out unclamped.
+        if !recovery {
+            x_ms = x_ms.clamp(0, self.cfg.max_ra_duration_ms as i64);
+            y_ms = y_ms.clamp(0, eff_max_dec);
+        }
 
         let ra = (x_ms > 0).then_some(AxisPulse {
             dir: xdir,
@@ -868,15 +969,30 @@ impl GuideEngine {
     /// fast-recenter [`Action::PulsePair`]s (dossier §11.2's
     /// `GuidingDitherSettleDone` "notify algorithms of a direct move" step
     /// has no analogue in this crate's frozen [`GuideAlgorithm`] trait — see
-    /// `step_recenter`'s doc comment) followed by [`Action::Settle`] until
-    /// the window closes (`Action::Idle` on success, [`Action::LockLost`] on
-    /// timeout).
+    /// `step_recenter`'s doc comment), then GUIDES THROUGH THE DWELL
+    /// (P2-T1 fix round; `guider.cpp:1517-1521` — settle is a parallel
+    /// monitor, not a phase that suspends guiding): ordinary corrections
+    /// keep flowing, with [`Action::Settle`] standing in for frames whose
+    /// correction is vetoed/empty, until the window closes (the ordinary
+    /// correction on the Done frame, [`Action::LockLost`] on timeout).
     ///
     /// A no-op when there is no calibration or no established lock yet (the
     /// host only dithers while guiding, so this never fires live).
     pub fn dither(&mut self, dx_px: f64, dy_px: f64) {
         let (Some(cal), Some(lock)) = (self.cal, self.lock) else {
             return;
+        };
+
+        // DEC_OFF forces an RA-only dither (dossier §11.1 "forced true if
+        // dec guide mode makes dec dithering impossible" + the §12 note;
+        // phdcontrol.cpp:188-196: DEC_NONE forces raOnly): with dec guiding
+        // off the dec displacement could never be guided back out, so it
+        // must not be applied. North/South modes keep their dy — they get
+        // the temporary DEC_AUTO override instead (see `apply_move`).
+        let dy_px = if self.cfg.dec_guide_mode == DecMode::Off {
+            0.0
+        } else {
+            dy_px
         };
 
         // ADJUDICATION (dossier §11.2 "4-sign validity search",
@@ -951,8 +1067,10 @@ impl GuideEngine {
     /// is currently open (dossier §12). P2-T1 punch-list #3: hosts that need
     /// the authoritative settle lifecycle use this (or the equivalent
     /// [`GuideStatsSnapshot::settling`]) rather than inferring it from a
-    /// single frame's [`Action`] — a fast-recenter frame (dossier §11.2)
-    /// returns a normal [`Action::PulsePair`] while the window stays open.
+    /// single frame's [`Action`] — fast-recenter frames (dossier §11.2) and
+    /// the dwell's guide-correction frames (P2-T1 fix round,
+    /// `guider.cpp:1517-1521`) both return a normal [`Action::PulsePair`]
+    /// while the window stays open.
     pub fn is_settling(&self) -> bool {
         self.settle.is_some()
     }

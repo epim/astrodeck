@@ -600,12 +600,13 @@ fn calibration_failure_surfaces_lock_lost_and_idles() {
 
 /// SettleState::Failed (timeout) surfaces as LockLost at the engine level,
 /// after which the settle window (and any still-active recenter) is cleared
-/// and guiding resumes. Updated for P2-T1's real dither/recenter/settle: the
-/// timeout clock anchors on the FIRST `settle.evaluate()` call, which now
-/// happens on the first settling frame regardless of whether that frame's
-/// dispatched Action is a fast-recenter pulse or an `Action::Settle` wait
-/// (both run `evaluate()` underneath — see the settle branch in
-/// `ingest_guiding`).
+/// and guiding resumes. Updated for P2-T1's real dither/recenter/settle
+/// (and its fix round): the timeout clock anchors on the FIRST
+/// `settle.evaluate()` call, which happens on the first settling frame
+/// regardless of the frame's dispatched Action shape — and since the fix
+/// round, out-of-tolerance dwell frames carry ordinary guide corrections
+/// (guider.cpp:1517-1521), so the settle window state is read from
+/// `is_settling()`, never inferred from the Action.
 #[test]
 fn settle_timeout_surfaces_lock_lost_then_resumes() {
     let mut e = GuideEngine::new(EngineConfig::default());
@@ -626,15 +627,26 @@ fn settle_timeout_surfaces_lock_lost_then_resumes() {
 
     // Star never actually reaches the new lock (110,100 relative to
     // (103,103) is a persistent ~7.6px error > the 1.5px tolerance): never
-    // in range.
+    // in range — but the dwell still GUIDES at it (P2-T1 fix round,
+    // guider.cpp:1517-1521), so the frame carries an ordinary correction
+    // while is_settling() stays true.
     let a2 = e.ingest(&frame(30.0), &[star(110.0, 100.0)]);
-    assert!(matches!(a2, Action::Settle), "got {:?}", a2);
+    assert!(
+        matches!(a2, Action::PulsePair { .. }),
+        "the dwell must keep guiding, got {:?}",
+        a2
+    );
+    assert!(e.is_settling(), "still settling at t=30");
     // t=62: 60s elapsed since the t=2 anchor >= 60s timeout -> Failed -> LockLost.
     let a3 = e.ingest(&frame(62.0), &[star(110.0, 100.0)]);
     assert!(
         matches!(a3, Action::LockLost),
         "settle timeout must surface as LockLost, got {:?}",
         a3
+    );
+    assert!(
+        !e.is_settling(),
+        "the window must be cleared by the timeout"
     );
     // The window is cleared: normal guiding resumes on the next frame.
     let a4 = e.ingest(&frame(64.0), &[star(108.0, 103.0)]);

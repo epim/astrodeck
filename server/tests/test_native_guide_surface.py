@@ -106,8 +106,13 @@ def test_process_reason_settle_timeout():
         "the settle window must stay open across a fast-recenter frame, "
         "not just frames whose action is literally 'settle'")
 
+    # Out-of-tolerance dwell frame: since the P2-T1 fix round the dwell keeps
+    # GUIDING (guider.cpp:1517-1521 -- settle is a parallel monitor, not a
+    # phase that suspends guiding), so this frame carries an ordinary
+    # correction while stats()["settling"] stays True.
     a = e.process(off, 30.0, 2.0)
-    assert a["action"] == "settle" and a["reason"] is None
+    assert a["action"] == "pulse_pair" and a["reason"] is None
+    assert e.stats()["settling"] is True
     a = e.process(off, 62.0, 2.0)  # past the 60 s deadline (anchored at t=2)
     assert a["action"] == "lock_lost"
     assert a["reason"] == "settle_timeout"
