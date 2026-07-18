@@ -258,12 +258,25 @@ function UserRow({
 }
 
 // ---------------------------------------------------------------- add-user form
-function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Element {
+// Exported (I4, 2026-07-17 decisions wave): the guided "Secure this server"
+// setup card (AuthMethodPanel.tsx) inlines this SAME form for its "Create an
+// admin account" step rather than re-implementing account creation — same F7
+// email-required validation, same createUser() call, same error surfacing.
+// `defaultRole` only seeds the initial <select> value (still editable); the
+// guided card passes "admin" so step 1 defaults to what it asks for, while
+// UsersPanel's own "Add user" call site is unchanged (defaults to "operator").
+export function AddUserForm({
+  onCreated,
+  defaultRole = "operator",
+}: {
+  onCreated: () => Promise<void>;
+  defaultRole?: PrincipalRole;
+}): JSX.Element {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
-  const [role, setRole] = useState<PrincipalRole>("operator");
+  const [role, setRole] = useState<PrincipalRole>(defaultRole);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -294,7 +307,7 @@ function AddUserForm({ onCreated }: { onCreated: () => Promise<void> }): JSX.Ele
       setPassword("");
       setEmail("");
       setEmailTouched(false);
-      setRole("operator");
+      setRole(defaultRole);
       await onCreated();
     } catch (e) {
       setErr(errText(e, "Could not create user."));

@@ -16,13 +16,15 @@
 // panel surfaces their *configured* state rather than editing the secret here.
 
 import { useEffect, useMemo, useState, type JSX } from "react";
-import type { AuthState, PrincipalRole } from "../../types";
-import { setAuthConfig } from "../../api/backends";
+import type { AuthState, PrincipalRole, User } from "../../types";
+import { setAuthConfig, listUsers } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { reconnectWs } from "../../ws";
 import { Panel, Field, Toggle } from "../ui";
 import { Icon } from "../icons";
+import { AddUserForm } from "./UsersPanel";
+import { setupCardState, SETUP_CARD_DISMISSED_KEY } from "../../lib/setupCard";
 
 const ROLES: (PrincipalRole | "deny")[] = ["deny", "viewer", "operator", "admin"];
 
@@ -42,6 +44,47 @@ export default function AuthMethodPanel(): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // ---- I4 guided "Secure this server" card (2026-07-17 decisions wave) ----
+  // `setupUsers` is read from the SAME source UsersPanel uses (listUsers() ->
+  // GET /api/users, admin.users-gated same as this whole tab) — no server
+  // change, just this second panel reading the same list so step 1's
+  // done-state ("an ENABLED admin-role local user exists") isn't a guess.
+  const [setupUsers, setSetupUsers] = useState<User[] | null>(null);
+  const [setupDismissed, setSetupDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SETUP_CARD_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const refreshSetupUsers = async () => {
+    try {
+      setSetupUsers(await listUsers());
+    } catch {
+      // Leave setupUsers as-is; the guided card just stays honest about what
+      // it could actually confirm (no confirmed enabled admin -> step 1
+      // stays open rather than claiming "done" on a failed fetch).
+    }
+  };
+
+  const dismissSetupCard = () => {
+    setSetupDismissed(true);
+    try {
+      localStorage.setItem(SETUP_CARD_DISMISSED_KEY, "1");
+    } catch {
+      /* quota / unavailable — dismissal just won't survive reload */
+    }
+  };
+  const reopenSetupCard = () => {
+    setSetupDismissed(false);
+    try {
+      localStorage.setItem(SETUP_CARD_DISMISSED_KEY, "0");
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+  };
 
   const seedKey = useMemo(
     () =>
@@ -65,6 +108,11 @@ export default function AuthMethodPanel(): JSX.Element {
     setFirstRun(auth.local_enabled_first_run ?? true);
     setTrustLoopback(auth.trust_loopback ?? true);
     setDefaultRole((auth.default_role as PrincipalRole) ?? "deny");
+    // I4: only worth fetching the user list while auth is still open
+    // (methods==[]) — once a method is enabled the guided card can never
+    // show again (see setupCardState), so skip the extra admin.users
+    // GET /api/users call in steady state.
+    if ((auth.methods ?? []).length === 0) void refreshSetupUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
@@ -83,6 +131,13 @@ export default function AuthMethodPanel(): JSX.Element {
     ...(googleOn ? ["google"] : []),
   ];
   const openWarning = methods.length === 0;
+
+  // I4 guided card: keyed off the SERVER-persisted methods (not the draft
+  // toggles above) so the card doesn't vanish the instant an admin flips a
+  // checkbox that hasn't been saved yet — see setupCard.ts's doc comment.
+  const methodsEnabledPersisted = (auth.methods ?? []).length > 0;
+  const hasEnabledAdmin = (setupUsers ?? []).some((u) => u.role === "admin" && u.enabled);
+  const setup = setupCardState(methodsEnabledPersisted, hasEnabledAdmin, setupDismissed);
 
   const save = async () => {
     if (busy) return;
@@ -149,6 +204,115 @@ export default function AuthMethodPanel(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* I4 guided "Secure this server" card — only while auth is open (no
+          methods enabled) and not dismissed. Enforces the enable-method-first
+          ORDER from docs/guide/remote-access-and-roles.md's verification
+          procedure: step 2 stays locked until step 1's admin account is
+          confirmed ENABLED, not merely created. */}
+      {setup.visible && (
+        <Panel
+          title="Secure this server"
+          right={
+            <button
+              type="button"
+              className="btn !py-1 !px-2 min-h-[44px] sm:min-h-0 inline-flex items-center"
+              onClick={dismissSetupCard}
+              aria-label="Dismiss setup guide"
+              title="Dismiss"
+            >
+              <Icon name="x" size={14} />
+            </button>
+          }
+        >
+          <p className="text-[11px] text-dim leading-relaxed max-w-xl mb-3">
+            This server is open right now — every client on the network is
+            admin and there&apos;s no sign-in screen. Follow these steps, in
+            order, to lock it down.
+          </p>
+          <ol className="flex flex-col divide-y divide-line">
+            {/* step 1 */}
+            <li className="flex items-start gap-3 py-3">
+              <StepBadge n={1} state={setup.step1Done ? "done" : "active"} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-ink inline-flex items-center gap-2">
+                  Create an admin account
+                  {setup.step1Done && (
+                    <span className="text-[11px] text-good inline-flex items-center gap-1.5">
+                      <Icon name="check" size={13} /> Done
+                    </span>
+                  )}
+                </div>
+                {!setup.step1Done ? (
+                  <>
+                    <p className="text-[11px] text-dim max-w-md mb-2">
+                      This is the account you&apos;ll sign in as once Local
+                      sign-in is on. Create it here, or manage accounts any
+                      time from the Users tab above.
+                    </p>
+                    <AddUserForm defaultRole="admin" onCreated={refreshSetupUsers} />
+                  </>
+                ) : (
+                  <p className="text-[11px] text-dim max-w-md">
+                    An enabled admin account exists. Manage accounts any time
+                    from the Users tab above.
+                  </p>
+                )}
+              </div>
+            </li>
+
+            {/* step 2 */}
+            <li className="flex items-start gap-3 py-3">
+              <StepBadge n={2} state={!setup.step2Enabled ? "locked" : "active"} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-ink">Enable Local sign-in</div>
+                <p className="text-[11px] text-dim max-w-md mb-2">
+                  {!setup.step2Enabled
+                    ? "Unlocks once step 1's admin account is confirmed enabled — creating a user alone doesn't turn on sign-in."
+                    : localOn
+                      ? "Armed — press Save methods below to finish."
+                      : "Turns on the Local username & password method below."}
+                </p>
+                <button
+                  type="button"
+                  className="btn btn-accent !py-1 !px-2.5 text-[10px] min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
+                  disabled={!setup.step2Enabled || busy || localOn}
+                  onClick={() => setLocalOn(true)}
+                >
+                  <Icon name="unlock" size={13} />
+                  {localOn ? "Enabled — save below" : "Enable local sign-in"}
+                </button>
+              </div>
+            </li>
+
+            {/* step 3 — explanatory only, no button (composes with the
+                post-save toast below + the Login routing it hands off to). */}
+            <li className="flex items-start gap-3 py-3">
+              <StepBadge n={3} state="active" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-ink">Saving signs you out too</div>
+                <p className="text-[11px] text-dim max-w-md">
+                  Saving signs every client out — including this one.
+                  You&apos;ll land on the sign-in page.
+                </p>
+              </div>
+            </li>
+          </ol>
+        </Panel>
+      )}
+
+      {/* Reappears only while auth is open AND it was dismissed — the un-dismiss
+          affordance (spec: "small 'Setup guide' affordance to un-dismiss"). */}
+      {!methodsEnabledPersisted && setupDismissed && (
+        <button
+          type="button"
+          className="self-start text-[11px] text-dim underline decoration-dotted inline-flex items-center gap-1.5"
+          onClick={reopenSetupCard}
+        >
+          <Icon name="info" size={12} />
+          Setup guide
+        </button>
+      )}
+
       <Panel
         title="Sign-in methods"
         right={
@@ -344,5 +508,39 @@ export default function AuthMethodPanel(): JSX.Element {
         </div>
       </Panel>
     </div>
+  );
+}
+
+// ------------------------------------------------------- I4 guided-card badge
+// Shape (icon) + short numeral, never color alone — mirrors the rest of this
+// file's idioms (the "Saved" check, the open/lockout alert icons).
+function StepBadge({ n, state }: { n: number; state: "done" | "locked" | "active" }): JSX.Element {
+  if (state === "done") {
+    return (
+      <span
+        className="inline-flex items-center justify-center w-6 h-6 border border-good/50 text-good shrink-0 mt-0.5"
+        aria-hidden
+      >
+        <Icon name="check" size={13} />
+      </span>
+    );
+  }
+  if (state === "locked") {
+    return (
+      <span
+        className="inline-flex items-center justify-center w-6 h-6 border border-line2 text-faint shrink-0 mt-0.5"
+        aria-hidden
+      >
+        <Icon name="lock" size={12} />
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center justify-center w-6 h-6 border border-line2 text-ink mono text-[11px] shrink-0 mt-0.5"
+      aria-hidden
+    >
+      {n}
+    </span>
   );
 }
