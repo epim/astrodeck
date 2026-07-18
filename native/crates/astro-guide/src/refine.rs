@@ -569,6 +569,23 @@ mod tests {
         assert_eq!(out, None);
     }
 
+    /// `search_position` (dossier §4, guider_multistar.cpp:802-810): a
+    /// tracked star is searched where last seen; a lost star is searched
+    /// at `primary + offset_from_primary` instead (the dither/occlusion
+    /// recovery path).
+    #[test]
+    fn search_position_normal_vs_was_lost() {
+        let mut s = SecondaryStar::new(100.0, 50.0, 10.0, (70.0, -50.0));
+        // Not lost: own last position, primary's position irrelevant.
+        assert_eq!(s.search_position((40.0, 90.0)), (100.0, 50.0));
+        // Lost: expected location = primary + offset_from_primary.
+        s.was_lost = true;
+        assert_eq!(s.search_position((40.0, 90.0)), (110.0, 40.0));
+        // Recovered (was_lost cleared): back to own last position.
+        s.was_lost = false;
+        assert_eq!(s.search_position((0.0, 0.0)), (100.0, 50.0));
+    }
+
     #[test]
     fn primary_dist_stats_matches_hand_computed_sample_sigma() {
         let mut s = PrimaryDistStats::new();

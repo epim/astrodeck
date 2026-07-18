@@ -161,3 +161,47 @@ def test_multi_star_guiding_converges_on_synthetic_drift():
     # The secondaries must still be tracked at the end (not erased/dropped
     # by a spurious hot-pixel or panic-guard path over the whole run).
     assert len(e.stats()["secondaries"]) == 2
+
+
+def test_max_stars_flows_through_native_guider_config_allowlist():
+    """P3-T1 fix round (review ruling #4): `max_stars` must survive
+    `NativeGuider._build_engine_config`'s pass-through allowlist
+    (guide/native.py) — pre-fix it was silently dropped, so a NativeGuider
+    configured for multi-star always handed the engine the single-star
+    default of 1. Asserts the whole chain: NativeGuider config dict ->
+    allowlist -> engine config -> a real engine built from that exact dict
+    acquires secondaries (the `stats()["secondaries"]` observable)."""
+    from astrodeck.devices.sim import build_sim_rig
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(
+        rig["guide_camera"],
+        rig["telescope"],
+        config={"image_scale_arcsec": 2.0, "max_stars": 12},
+        profile_id=None,
+    )
+    engine_cfg = g._build_engine_config(None)
+    assert engine_cfg.get("max_stars") == 12, (
+        f"max_stars must pass the allowlist, got {engine_cfg!r}"
+    )
+
+    # End-to-end: the engine built from THIS dict (the same construction
+    # NativeGuider.connect() performs) actually runs multi-star.
+    e = native.GuideEngine(engine_cfg)
+    e.load_calibration(_ident_cal())
+    e.begin_guiding()
+    e.process(_field(0.0, 0.0), 0.0, 2.0)  # multi-star acquisition + lock
+    assert len(e.stats()["secondaries"]) == 2, (
+        "an engine built from the allowlisted config must acquire secondaries"
+    )
+
+    # Guard the negative too: without max_stars in the caller's config the
+    # allowlist adds nothing and the engine stays single-star.
+    g1 = NativeGuider(
+        rig["guide_camera"],
+        rig["telescope"],
+        config={"image_scale_arcsec": 2.0},
+        profile_id=None,
+    )
+    assert "max_stars" not in g1._build_engine_config(None)
