@@ -39,6 +39,7 @@ name = "astrodeck-native"
 version = "0.1.0"
 dependencies = [
  "astro-focus",
+ "astro-guide",
  "astro-star",
  "astro-tppa",
  "numpy",

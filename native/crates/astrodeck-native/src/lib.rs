@@ -2,20 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Provenance: PyO3 binding layer over astro-star / astro-focus / astro-tppa,
-// which are reimplemented from the audited algorithm dossiers in
+// Provenance: PyO3 binding layer over astro-star / astro-focus / astro-guide /
+// astro-tppa, which are reimplemented from the audited algorithm dossiers in
 // docs/native-parity/algorithms/. See those crates' lib.rs for per-crate
 // provenance detail. This file adds no algorithm math of its own; it only
 // marshals values across the Python boundary per the architecture spec
 // docs/superpowers/specs/2026-07-03-native-parity-architecture-design.md §4.4/§5.
 
 //! `astrodeck_native`: PyO3 extension module bundling `astro-star`,
-//! `astro-focus`, and `astro-tppa` for use from the AstroDeck Python backend.
+//! `astro-focus`, `astro-guide`, and `astro-tppa` for use from the AstroDeck
+//! Python backend.
 //!
 //! Built with maturin as an abi3 (cp311+) wheel. The public Python surface is:
 //! - [`detect_and_measure`] — star detection + measurement over a numpy frame.
 //! - [`fit_focus_curve`] — one-shot focus-curve fit.
 //! - [`FocusSweep`] — the autofocus sweep state machine.
+//! - [`guide_star_find`] — full-frame guide-star search + measurement.
+//! - [`GuideEngine`] — the autoguider engine (dossier §7 composition).
 //! - [`tppa_from_three`] / [`tppa_update`] — three-point polar alignment.
 //! - `__version__` — the crate version string.
 //!
@@ -35,6 +38,12 @@ use pyo3::types::{PyDict, PyList};
 use astro_focus::{
     AfMethod, BacklashModel, CurveFitting, FailReason, FitOutcome, FocusConfig, Step,
 };
+use astro_guide::calibration::{default_calibration_distance, DecMode};
+use astro_guide::engine::{AlgoKind, EngineConfig, ScopePointing};
+use astro_guide::select::{auto_find, saturation_threshold, SelectParams};
+use astro_guide::starfind::FindParams;
+use astro_guide::transforms::{Cal, Parity, PierSide};
+use astro_guide::types::{Action, Axis, AxisPulse, CalLeg, Direction, FrameMeta};
 use astro_star::{
     HfrTauPolicy, MeasurementAverage, PsfFitType, PsfModel, StarDetectionParams,
     StarSensitivityLevel,
@@ -846,6 +855,638 @@ fn tppa_update<'py>(
 }
 
 // --------------------------------------------------------------------------
+// 6. guide_star_find  +  GuideEngine class
+// --------------------------------------------------------------------------
+
+fn parse_algo_kind(s: &str) -> PyResult<AlgoKind> {
+    match s.to_lowercase().replace('-', "_").as_str() {
+        "hysteresis" => Ok(AlgoKind::Hysteresis),
+        "resist_switch" | "resistswitch" => Ok(AlgoKind::ResistSwitch),
+        "lowpass" => Ok(AlgoKind::Lowpass),
+        "lowpass2" => Ok(AlgoKind::Lowpass2),
+        "z_filter" | "zfilter" => Ok(AlgoKind::ZFilter),
+        "ppec" | "gaussian_process" | "predictive_pec" => Ok(AlgoKind::Ppec),
+        other => Err(PyValueError::new_err(format!(
+            "unknown guide algorithm '{other}'"
+        ))),
+    }
+}
+
+fn parse_dec_mode(s: &str) -> PyResult<DecMode> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(DecMode::Auto),
+        "off" => Ok(DecMode::Off),
+        "north" => Ok(DecMode::North),
+        "south" => Ok(DecMode::South),
+        other => Err(PyValueError::new_err(format!(
+            "unknown dec_guide_mode '{other}'"
+        ))),
+    }
+}
+
+fn pier_side_label(p: PierSide) -> &'static str {
+    match p {
+        PierSide::East => "east",
+        PierSide::West => "west",
+        PierSide::Unknown => "unknown",
+    }
+}
+
+fn parse_pier_side(s: &str) -> PyResult<PierSide> {
+    match s.to_lowercase().as_str() {
+        "east" => Ok(PierSide::East),
+        "west" => Ok(PierSide::West),
+        "unknown" => Ok(PierSide::Unknown),
+        other => Err(PyValueError::new_err(format!("bad pier_side '{other}'"))),
+    }
+}
+
+fn parity_label(p: Parity) -> &'static str {
+    match p {
+        Parity::Even => "even",
+        Parity::Odd => "odd",
+        Parity::Unknown => "unknown",
+    }
+}
+
+fn parse_parity(s: &str) -> PyResult<Parity> {
+    match s.to_lowercase().as_str() {
+        "even" => Ok(Parity::Even),
+        "odd" => Ok(Parity::Odd),
+        "unknown" => Ok(Parity::Unknown),
+        other => Err(PyValueError::new_err(format!("bad parity '{other}'"))),
+    }
+}
+
+fn axis_label(a: Axis) -> &'static str {
+    match a {
+        Axis::Ra => "ra",
+        Axis::Dec => "dec",
+    }
+}
+
+fn direction_label(d: Direction) -> &'static str {
+    match d {
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::East => "east",
+        Direction::West => "west",
+    }
+}
+
+fn cal_leg_label(l: CalLeg) -> &'static str {
+    match l {
+        CalLeg::GoWest => "go_west",
+        CalLeg::GoEast => "go_east",
+        CalLeg::ClearBacklash => "clear_backlash",
+        CalLeg::GoNorth => "go_north",
+        CalLeg::GoSouth => "go_south",
+        CalLeg::NudgeSouth => "nudge_south",
+    }
+}
+
+fn cal_to_dict<'py>(py: Python<'py>, c: &Cal) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("x_rate", c.x_rate)?;
+    d.set_item("y_rate", c.y_rate)?;
+    d.set_item("x_angle", c.x_angle)?;
+    d.set_item("y_angle", c.y_angle)?;
+    d.set_item("y_angle_error", c.y_angle_error)?;
+    d.set_item("declination", c.declination)?;
+    d.set_item("pier_side", pier_side_label(c.pier_side))?;
+    d.set_item("ra_parity", parity_label(c.ra_parity))?;
+    d.set_item("dec_parity", parity_label(c.dec_parity))?;
+    d.set_item("rotator_angle", c.rotator_angle)?;
+    d.set_item("binning", c.binning)?;
+    d.set_item("is_valid", c.is_valid)?;
+    Ok(d)
+}
+
+fn dict_to_cal(d: &Bound<'_, PyDict>) -> PyResult<Cal> {
+    Ok(Cal {
+        x_rate: get_req(d, "x_rate")?,
+        y_rate: get_req(d, "y_rate")?,
+        x_angle: get_req(d, "x_angle")?,
+        y_angle: get_req(d, "y_angle")?,
+        y_angle_error: get_req(d, "y_angle_error")?,
+        declination: get_req(d, "declination")?,
+        pier_side: parse_pier_side(&get_req::<String>(d, "pier_side")?)?,
+        ra_parity: parse_parity(&get_req::<String>(d, "ra_parity")?)?,
+        dec_parity: parse_parity(&get_req::<String>(d, "dec_parity")?)?,
+        rotator_angle: get_req(d, "rotator_angle")?,
+        binning: get_req(d, "binning")?,
+        is_valid: get_req(d, "is_valid")?,
+    })
+}
+
+/// Build an [`EngineConfig`] from a `config` dict (snake_case field names;
+/// missing keys take the dossier §15 defaults from [`EngineConfig::default`]).
+/// `image_scale_arcsec`, when present, derives `cal.calibration_distance` via
+/// the dossier §8.1 formula ([`default_calibration_distance`]) before any
+/// explicit `calibration_distance` override is applied, so a caller can still
+/// hand-tune it directly.
+fn build_engine_config(d: &Bound<'_, PyDict>) -> PyResult<EngineConfig> {
+    let mut c = EngineConfig::default();
+
+    if let Some(scale) = get_opt::<f64>(d, "image_scale_arcsec")? {
+        c.cal.calibration_distance = default_calibration_distance(scale);
+    }
+    override_field!(d, "calibration_distance", c.cal.calibration_distance, f64);
+    override_field!(
+        d,
+        "calibration_duration_ms",
+        c.cal.calibration_duration_ms,
+        u32
+    );
+    override_field!(d, "max_steps", c.cal.max_steps, u32);
+    override_field!(d, "assume_orthogonal", c.cal.assume_orthogonal, bool);
+
+    override_field!(d, "search_region", c.find.search_region, i32);
+    override_field!(d, "min_hfd", c.find.min_hfd, f64);
+    override_field!(d, "max_hfd", c.find.max_hfd, f64);
+    override_field!(d, "max_adu", c.find.max_adu, u32);
+    override_field!(d, "pedestal", c.find.pedestal, u16);
+    override_field!(d, "bits_per_pixel", c.find.bits_per_pixel, u32);
+
+    override_field!(d, "max_ra_duration_ms", c.max_ra_duration_ms, u32);
+    override_field!(d, "max_dec_duration_ms", c.max_dec_duration_ms, u32);
+    override_field!(d, "blc_pulse_ms", c.blc_pulse_ms, u32);
+
+    if let Some(s) = get_opt::<String>(d, "ra_algorithm")? {
+        c.ra_algorithm = parse_algo_kind(&s)?;
+    }
+    if let Some(s) = get_opt::<String>(d, "dec_algorithm")? {
+        c.dec_algorithm = parse_algo_kind(&s)?;
+    }
+    if let Some(s) = get_opt::<String>(d, "dec_guide_mode")? {
+        c.dec_guide_mode = parse_dec_mode(&s)?;
+    }
+
+    Ok(c)
+}
+
+/// Build the `(FindParams, SelectParams)` pair [`guide_star_find`] needs from
+/// an optional `params` dict (snake_case; union of both structs' field
+/// names). `search_region` (when present) sets both — `SelectParams`'s copy
+/// governs candidate generation, `FindParams`'s copy governs the
+/// [`saturation_threshold`] probe.
+fn build_guide_search_params(
+    params: Option<&Bound<'_, PyDict>>,
+) -> PyResult<(FindParams, SelectParams)> {
+    let mut find = FindParams::default();
+    let mut sel = SelectParams::default();
+    let Some(d) = params else {
+        return Ok((find, sel));
+    };
+
+    override_field!(d, "search_region", find.search_region, i32);
+    override_field!(d, "min_hfd", find.min_hfd, f64);
+    override_field!(d, "max_hfd", find.max_hfd, f64);
+    override_field!(d, "max_adu", find.max_adu, u32);
+    override_field!(d, "pedestal", find.pedestal, u16);
+    override_field!(d, "bits_per_pixel", find.bits_per_pixel, u32);
+    sel.search_region = find.search_region;
+
+    override_field!(d, "af_min_snr", sel.af_min_snr, f64);
+    override_field!(d, "extra_edge_allowance", sel.extra_edge_allowance, i32);
+    override_field!(d, "max_stars", sel.max_stars, usize);
+
+    Ok((find, sel))
+}
+
+/// Full-frame guide-star search (dossier §2; [`auto_find`] +
+/// [`saturation_threshold`]). Mirrors [`detect_and_measure`]'s calling
+/// convention: `frame` is a numpy `uint16` `(H,W)` array, viewed read-only
+/// and zero-copy; `params` mirrors the union of `FindParams`'s and
+/// `SelectParams`'s field names (snake case); `None` selects the shipped
+/// defaults (GIL released for the heavy scan).
+///
+/// Returns `(stars, meta)`: each star is `{x, y, snr, mass, hfd, peak}`
+/// (pixels; `peak` is the raw peak ADU seen in the search window),
+/// brightest-first; `meta` is `{sat_thresh}` (the near-saturation ADU cutoff
+/// a primary-star selection pass would use).
+#[pyfunction]
+#[pyo3(signature = (frame, params=None))]
+fn guide_star_find<'py>(
+    py: Python<'py>,
+    frame: PyReadonlyArray2<'py, u16>,
+    params: Option<Bound<'py, PyDict>>,
+) -> PyResult<(Bound<'py, PyList>, Bound<'py, PyDict>)> {
+    let shape = frame.shape();
+    if shape.len() != 2 {
+        return Err(PyValueError::new_err("frame must be a 2D array"));
+    }
+    let height = shape[0];
+    let width = shape[1];
+    let slice = frame
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(format!("frame must be C-contiguous: {e}")))?;
+    let (find_params, sel_params) = build_guide_search_params(params.as_ref())?;
+
+    // Heavy compute with the GIL released (full-frame PSF scan), mirroring
+    // detect_and_measure.
+    let (candidates, sat_thresh) = py.allow_threads(|| {
+        let gf = astro_star::GrayFrame::new(slice, width, height);
+        let cands = auto_find(&gf, &sel_params);
+        let peaks: Vec<(i32, i32)> = cands.iter().map(|c| (c.x as i32, c.y as i32)).collect();
+        let sat = saturation_threshold(&gf, &peaks, &find_params);
+        (cands, sat)
+    });
+
+    let stars = PyList::empty_bound(py);
+    for c in &candidates {
+        let sd = PyDict::new_bound(py);
+        sd.set_item("x", c.x)?;
+        sd.set_item("y", c.y)?;
+        sd.set_item("snr", c.snr)?;
+        sd.set_item("mass", c.mass)?;
+        sd.set_item("hfd", c.hfd)?;
+        sd.set_item("peak", c.peak_val)?;
+        stars.append(sd)?;
+    }
+    let meta = PyDict::new_bound(py);
+    meta.set_item("sat_thresh", sat_thresh)?;
+    Ok((stars, meta))
+}
+
+/// Wraps `astro_guide::engine::GuideEngine` so [`GuideEngine::process`] can
+/// release the GIL for the frame-scan work (mirrors [`detect_and_measure`]'s
+/// pattern). `astro_guide`'s `GuideEngine` holds `Box<dyn GuideAlgorithm>`
+/// fields; astro-guide's frozen `GuideAlgorithm` trait (naming pinned by the
+/// plan) carries no `Send` bound, so the auto trait can't be derived through
+/// the trait object even though every concrete algorithm the crate actually
+/// boxes (`Hysteresis`, `ResistSwitch`, and later `Lowpass`/`Lowpass2`/
+/// `ZFilter`/`Ppec` — see `astro_guide::engine::make_algo`) is a plain struct
+/// with no interior aliasing or thread affinity. The crate's only other
+/// interior-mutable field (`MassChecker`'s `Cell<f64>` water marks) blocks
+/// `Sync`, not `Send` — irrelevant here since this handle is only ever
+/// touched through a unique `&mut` reference, never shared across threads.
+/// This newtype (and its `unsafe impl Send`) is scoped to `astrodeck-native`
+/// rather than `astro-guide` so the upstream crate's frozen trait/struct
+/// definitions stay untouched, per this task's file scope.
+struct EngineHandle(astro_guide::engine::GuideEngine);
+
+// SAFETY: see the type doc comment above — every field astro-guide actually
+// constructs is `Send`; only `dyn GuideAlgorithm` trait-object erasure blocks
+// the auto-derivation, and this handle is never shared (`Sync`) across
+// threads, only moved by unique reference into one `py.allow_threads` call
+// at a time.
+unsafe impl Send for EngineHandle {}
+
+impl std::ops::Deref for EngineHandle {
+    type Target = astro_guide::engine::GuideEngine;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for EngineHandle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Which [`Action::LockLost`] source a `process()` call just reported (T8
+/// obligation, binding per the P1-T7 review): the `Action` enum overloads one
+/// variant for three distinct guide failures (star-lost recovery exhausted,
+/// a calibration run failing outright, and a dither/guide-start settle
+/// window timing out), so [`GuideEngine::process`] tracks which is live and
+/// surfaces it as the returned dict's `"reason"` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LostReason {
+    StarLost,
+    CalibrationFailed,
+    SettleTimeout,
+}
+
+impl LostReason {
+    fn label(self) -> &'static str {
+        match self {
+            LostReason::StarLost => "star_lost",
+            LostReason::CalibrationFailed => "calibration_failed",
+            LostReason::SettleTimeout => "settle_timeout",
+        }
+    }
+}
+
+fn axis_pulse_to_dict<'py>(py: Python<'py>, p: &AxisPulse) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    d.set_item("dir", direction_label(p.dir))?;
+    d.set_item("ms", p.ms)?;
+    Ok(d)
+}
+
+/// Serialize one [`Action`] plus its (possibly absent) [`LostReason`] into
+/// the frozen dict shape: `{"action": ..., "reason": ..., ...action-specific
+/// fields...}`. `"reason"` is `None` for every action except `"lock_lost"`,
+/// where it is one of `"star_lost"`, `"calibration_failed"`, or
+/// `"settle_timeout"` (T8 obligation — see [`LostReason`]).
+fn action_to_dict<'py>(
+    py: Python<'py>,
+    action: &Action,
+    reason: Option<LostReason>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    match action {
+        Action::Idle => {
+            d.set_item("action", "idle")?;
+        }
+        Action::Pulse { axis, dir, ms } => {
+            d.set_item("action", "pulse")?;
+            d.set_item("axis", axis_label(*axis))?;
+            d.set_item("dir", direction_label(*dir))?;
+            d.set_item("ms", *ms)?;
+        }
+        Action::PulsePair { ra, dec } => {
+            d.set_item("action", "pulse_pair")?;
+            match ra {
+                Some(p) => d.set_item("ra", axis_pulse_to_dict(py, p)?)?,
+                None => d.set_item("ra", py.None())?,
+            }
+            match dec {
+                Some(p) => d.set_item("dec", axis_pulse_to_dict(py, p)?)?,
+                None => d.set_item("dec", py.None())?,
+            }
+        }
+        Action::CalStep { leg, dir, ms } => {
+            d.set_item("action", "cal_step")?;
+            d.set_item("leg", cal_leg_label(*leg))?;
+            d.set_item("dir", direction_label(*dir))?;
+            d.set_item("ms", *ms)?;
+        }
+        Action::Settle => {
+            d.set_item("action", "settle")?;
+        }
+        Action::LockLost => {
+            d.set_item("action", "lock_lost")?;
+        }
+    }
+    match reason {
+        Some(r) => d.set_item("reason", r.label())?,
+        None => d.set_item("reason", py.None())?,
+    }
+    Ok(d)
+}
+
+/// The autoguider engine (dossier §7 composition). Construct with a `config`
+/// dict (snake_case, mirrors [`EngineConfig`]; missing keys take the dossier
+/// §15 defaults — see [`build_engine_config`]), drive it with
+/// [`GuideEngine::process`] once per exposed guide frame.
+///
+/// `process()`'s returned dict's `"reason"` key (T8 obligation, binding per
+/// the P1-T7 review) is `None` except when `"action"` is `"lock_lost"`,
+/// where it is `"star_lost"` (recovery exhausted — re-find the star),
+/// `"calibration_failed"` (the calibration state machine gave up —
+/// recalibrate), or `"settle_timeout"` (a dither/guide-start settle window
+/// blew its deadline — the star itself was never actually lost). This class
+/// tracks which of the three `LockLost` sources is live via its own
+/// calibrating/settling shadow of the engine's phase — the underlying
+/// `Calibrator`/`Settle` state is private to `astro_guide::engine::GuideEngine`
+/// and not queryable directly — and every phase transition happens through
+/// this class's own methods ([`begin_calibration`](Self::begin_calibration),
+/// [`begin_guiding`](Self::begin_guiding), [`dither`](Self::dither)), so the
+/// shadow can never drift from the real engine state.
+#[pyclass]
+struct GuideEngine {
+    inner: EngineHandle,
+    calibrating: bool,
+    settling: bool,
+}
+
+#[pymethods]
+impl GuideEngine {
+    #[new]
+    fn new(config: Bound<'_, PyDict>) -> PyResult<Self> {
+        let cfg = build_engine_config(&config)?;
+        Ok(GuideEngine {
+            inner: EngineHandle(astro_guide::engine::GuideEngine::new(cfg)),
+            calibrating: false,
+            settling: false,
+        })
+    }
+
+    /// Begin measuring a fresh calibration starting from the primary star's
+    /// camera-frame `(x, y)` position (dossier §8.2). Subsequent
+    /// [`process`](Self::process) calls return `"cal_step"` actions until the
+    /// state machine completes (or fails), at which point guiding begins (or
+    /// the engine idles — see the `"calibration_failed"` reason).
+    fn begin_calibration(&mut self, x: f64, y: f64) {
+        self.inner.begin_calibration((x, y));
+        self.calibrating = true;
+        self.settling = false;
+    }
+
+    /// Begin guiding with the current calibration (from
+    /// [`load_calibration`](Self::load_calibration) or a prior
+    /// [`begin_calibration`](Self::begin_calibration) run). Raises
+    /// `ValueError` instead of the underlying engine's panic when no valid
+    /// calibration is present.
+    fn begin_guiding(&mut self) -> PyResult<()> {
+        let valid = self
+            .inner
+            .calibration()
+            .map(|c| c.is_valid)
+            .unwrap_or(false);
+        if !valid {
+            return Err(PyValueError::new_err(
+                "begin_guiding requires a valid calibration (load_calibration, or a completed begin_calibration, first)",
+            ));
+        }
+        self.inner.begin_guiding();
+        self.calibrating = false;
+        self.settling = false;
+        Ok(())
+    }
+
+    /// Inject the live scope pointing (dossier §9 item 6 / calibration-
+    /// complete OBLIGATION (e)): declination and rotator angle in radians;
+    /// `pier_side` (`"east"`/`"west"`/`"unknown"`) and `ra_parity`/
+    /// `dec_parity` (`"even"`/`"odd"`/`"unknown"`); camera binning factor.
+    /// Used live for RA dec-compensation and patched onto the next completed
+    /// calibration's sentinel fields. See the P1-T8 report's host-contract
+    /// notes on why this is exposed beyond the frozen method list.
+    #[pyo3(signature = (declination, pier_side, ra_parity, dec_parity, rotator_angle, binning))]
+    fn set_scope_pointing(
+        &mut self,
+        declination: f64,
+        pier_side: &str,
+        ra_parity: &str,
+        dec_parity: &str,
+        rotator_angle: f64,
+        binning: u16,
+    ) -> PyResult<()> {
+        self.inner.set_scope_pointing(ScopePointing {
+            declination,
+            pier_side: parse_pier_side(pier_side)?,
+            ra_parity: parse_parity(ra_parity)?,
+            dec_parity: parse_parity(dec_parity)?,
+            rotator_angle,
+            binning,
+        });
+        Ok(())
+    }
+
+    /// Post-calibration sanity advisories from the last completed calibration
+    /// (dossier §8.3); empty until one completes. Distinct from the
+    /// `"calibration_failed"` `process()` reason — these are quality
+    /// warnings on a calibration that still succeeded.
+    fn calibration_advisories(&self) -> Vec<String> {
+        self.inner.calibration_advisories().to_vec()
+    }
+
+    /// Run one guide frame: `measure` (locate/measure the guide star) then
+    /// `ingest` (the per-frame decision), composed as a single GIL-released
+    /// step. `frame` is a numpy `uint16` `(H,W)` array; `timestamp_s` is the
+    /// frame's wall-clock timestamp (seconds, host clock); `exposure_s` is
+    /// its exposure duration (seconds).
+    ///
+    /// Returns the serialized [`Action`] — see [`action_to_dict`] for the
+    /// exact shape, and the class doc comment for the `"reason"` field.
+    #[pyo3(signature = (frame, timestamp_s, exposure_s))]
+    fn process<'py>(
+        &mut self,
+        py: Python<'py>,
+        frame: PyReadonlyArray2<'py, u16>,
+        timestamp_s: f64,
+        exposure_s: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let shape = frame.shape();
+        if shape.len() != 2 {
+            return Err(PyValueError::new_err("frame must be a 2D array"));
+        }
+        let height = shape[0];
+        let width = shape[1];
+        let slice = frame
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(format!("frame must be C-contiguous: {e}")))?;
+        let meta = FrameMeta {
+            timestamp_s,
+            exposure_s,
+        };
+
+        // Composition per the plan's ambiguity resolution #1: measure() (the
+        // frame scan — the expensive part, GIL released like
+        // detect_and_measure) then ingest() (the cheap per-frame decision)
+        // run as one atomic step under one GIL release.
+        let engine = &mut self.inner;
+        let action = py.allow_threads(move || {
+            let gf = astro_star::GrayFrame::new(slice, width, height);
+            let measured = engine.measure(&gf);
+            engine.ingest(&meta, &measured)
+        });
+
+        let reason = self.classify_lock_lost(&action);
+        action_to_dict(py, &action, reason)
+    }
+
+    /// Current guide-error statistics in the host's `GuideStats` bus shape
+    /// (spec §3.2/§3.5): `{guiding, rms_ra, rms_dec, rms_total, snr,
+    /// recent:[[t,ra,dec],...]}`.
+    fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = self.inner.stats();
+        let d = PyDict::new_bound(py);
+        d.set_item("guiding", s.guiding)?;
+        d.set_item("rms_ra", s.rms_ra)?;
+        d.set_item("rms_dec", s.rms_dec)?;
+        d.set_item("rms_total", s.rms_total)?;
+        d.set_item("snr", s.snr)?;
+        let recent = PyList::empty_bound(py);
+        for &(t, ra, dec) in &s.recent {
+            recent.append(PyList::new_bound(py, [t, ra, dec]))?;
+        }
+        d.set_item("recent", recent)?;
+        Ok(d)
+    }
+
+    /// Dither by a mount-frame `(dx, dy)` offset (px); opens a settle window
+    /// (dossier §12) — [`process`](Self::process) returns `"settle"` actions
+    /// until it closes.
+    fn dither(&mut self, dx: f64, dy: f64) {
+        self.inner.dither(dx, dy);
+        self.settling = true;
+    }
+
+    /// Adjust the stored calibration for a meridian flip (dossier §9 item 4).
+    /// Returns `false` (no-op) when there is no valid calibration. Host
+    /// contract: auto-flip at guiding-start is a HOST responsibility (the
+    /// host compares the mount's current pier side against the stored
+    /// calibration's — via [`dump_calibration`](Self::dump_calibration)'s
+    /// `"pier_side"` — and calls this when they differ); the engine never
+    /// flips on its own. See the P1-T8 report's host-contract notes.
+    fn flip_calibration(&mut self, requires_dec_flip: bool) -> bool {
+        self.inner.flip_calibration(requires_dec_flip)
+    }
+
+    /// The current calibration as a dict (see [`cal_to_dict`] for the exact
+    /// shape, including `"pier_side"`), or `None` if no calibration is
+    /// stored. Serializable for persistence across sessions.
+    fn dump_calibration<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        match self.inner.calibration() {
+            Some(cal) => Ok(cal_to_dict(py, &cal)?.into()),
+            None => Ok(py.None()),
+        }
+    }
+
+    /// Install a calibration dict (e.g. one persisted from a prior session or
+    /// round-tripped from [`dump_calibration`](Self::dump_calibration)).
+    /// Stored verbatim; follow with [`begin_guiding`](Self::begin_guiding).
+    fn load_calibration(&mut self, cal: Bound<'_, PyDict>) -> PyResult<()> {
+        let c = dict_to_cal(&cal)?;
+        self.inner.set_calibration(c);
+        Ok(())
+    }
+}
+
+// Plain (non-`#[pymethods]`) impl block: `classify_lock_lost` takes `&Action`,
+// which has no `FromPyObject`/`IntoPy` conversion and so cannot itself be a
+// `#[pymethods]` entry — it is a Rust-only helper `process()` calls.
+impl GuideEngine {
+    /// Update the calibrating/settling shadow from this frame's [`Action`]
+    /// and report which `LockLost` source (if any) just fired (T8
+    /// obligation). See the class doc comment.
+    fn classify_lock_lost(&mut self, action: &Action) -> Option<LostReason> {
+        if self.calibrating {
+            return match action {
+                Action::CalStep { .. } => None,
+                Action::Idle => {
+                    if self
+                        .inner
+                        .calibration()
+                        .map(|c| c.is_valid)
+                        .unwrap_or(false)
+                    {
+                        self.calibrating = false; // completed -> guiding
+                    }
+                    None
+                }
+                Action::LockLost => {
+                    self.calibrating = false;
+                    Some(LostReason::CalibrationFailed)
+                }
+                _ => None,
+            };
+        }
+        if self.settling {
+            return match action {
+                Action::Settle => None,
+                Action::LockLost => {
+                    self.settling = false;
+                    Some(LostReason::SettleTimeout)
+                }
+                _ => {
+                    self.settling = false; // settled (Idle) or otherwise cleared
+                    None
+                }
+            };
+        }
+        match action {
+            Action::LockLost => Some(LostReason::StarLost),
+            _ => None,
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
 // module init
 // --------------------------------------------------------------------------
 
@@ -855,8 +1496,10 @@ fn astrodeck_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(detect_and_measure, m)?)?;
     m.add_function(wrap_pyfunction!(fit_focus_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(guide_star_find, m)?)?;
     m.add_function(wrap_pyfunction!(tppa_from_three, m)?)?;
     m.add_function(wrap_pyfunction!(tppa_update, m)?)?;
     m.add_class::<FocusSweep>()?;
+    m.add_class::<GuideEngine>()?;
     Ok(())
 }
