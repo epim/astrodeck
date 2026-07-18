@@ -24,13 +24,21 @@ The algorithms in `astro-star`, `astro-focus`, and `astro-tppa` are
 **reimplemented from scratch** against the audited algorithm dossiers in
 [`docs/native-parity/algorithms/`](../docs/native-parity/algorithms/) — exact
 formulas, constants, and solver semantics extracted and verified from the
-original NINA, Hocus Focus, and TPPA sources, not copied C#/C++ code. NINA and
-Hocus Focus are MPL-2.0 licensed; TPPA is likewise MPL-2.0. This workspace is
-licensed MPL-2.0 to match (see `license.workspace` in each crate's
-`Cargo.toml`).
+original NINA, Hocus Focus, and TPPA sources, not copied C#/C++ code. These
+three crates (plus `astrodeck-native`) are licensed MPL-2.0, the workspace
+default (see `license.workspace` in each crate's `Cargo.toml`). See the
+repo-root [`THIRD-PARTY-NOTICES.md`](../THIRD-PARTY-NOTICES.md) for the full
+NINA/Hocus-Focus MPL-2.0 attribution.
 
-PHD2 (BSD-3) is reserved for a future guiding crate and is not part of this
-workspace yet.
+The `astro-guide` crate reimplements PHD2's guiding stack (BSD-3-Clause); see
+the repo-root `THIRD-PARTY-NOTICES.md` for attributions. Because AstroDeck's
+own project license is Apache-2.0 (root `LICENSE`), `astro-guide` carries
+**Apache-2.0** file headers (a per-crate `license` override of the workspace
+MPL-2.0 default, set in its `Cargo.toml`) with BSD-3 derivation notes naming
+the specific PHD2 source each file ports — BSD-3-Clause permits Apache
+sublicensing. See
+[`docs/native-parity/rust-header-policy.md`](../docs/native-parity/rust-header-policy.md)
+for the exact header text.
 
 ## Build instructions
 
