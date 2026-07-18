@@ -48,6 +48,29 @@ test("defaultGuideSettings returns a fresh object each call (no shared mutation)
   assert(b.ra.params.aggression === 0.7, `b.ra.aggression leaked: ${b.ra.params.aggression}`);
 });
 
+test("defaultGuideSettings disables static BLC (blcPulseMs 0)", () => {
+  const s = defaultGuideSettings();
+  assert(s.blcPulseMs === 0, `blcPulseMs: ${s.blcPulseMs}`);
+});
+
+test("validateGuideSettings clamps the static BLC pulse (integer, >= 0, <= 10000)", () => {
+  const neg = defaultGuideSettings();
+  neg.blcPulseMs = -50;
+  assert(validateGuideSettings(neg).blcPulseMs === 0, "negative BLC floors to 0");
+
+  const frac = defaultGuideSettings();
+  frac.blcPulseMs = 199.6;
+  assert(validateGuideSettings(frac).blcPulseMs === 200, "BLC rounds to an integer ms");
+
+  const huge = defaultGuideSettings();
+  huge.blcPulseMs = 999999;
+  assert(validateGuideSettings(huge).blcPulseMs === 10000, "BLC caps at 10000 ms");
+
+  const ok = defaultGuideSettings();
+  ok.blcPulseMs = 250;
+  assert(validateGuideSettings(ok).blcPulseMs === 250, "in-range BLC unchanged");
+});
+
 // (b) validate — clamps out-of-range params.
 test("validateGuideSettings clamps aggression to <= 2.0", () => {
   const s = defaultGuideSettings();

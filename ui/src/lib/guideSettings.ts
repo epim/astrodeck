@@ -98,6 +98,13 @@ export interface AxisGuideSettings {
 export interface GuideSettings {
   ra: AxisGuideSettings;
   dec: AxisGuideSettings;
+  /** Static Dec backlash-compensation seed pulse (ms) added on a Dec direction
+   *  reversal (dossier §10.1; the engine's `blc_pulse_ms` config key). 0 =
+   *  disabled, matching PHD2's shipped default. It is an engine-level Dec-axis
+   *  property (backlash is mechanical, not per-algorithm), so it lives here
+   *  rather than in an axis's params. The ADAPTIVE size controller (dossier
+   *  §10.2) is not implemented (D4). */
+  blcPulseMs: number;
 }
 
 /** A FRESH default GuideSettings: RA Hysteresis (0.7/0.1/0.2), Dec Resist Switch
@@ -113,6 +120,7 @@ export function defaultGuideSettings(): GuideSettings {
       algorithm: DEFAULT_DEC_ALGORITHM,
       params: { ...GUIDE_ALGORITHM_DEFAULTS[DEFAULT_DEC_ALGORITHM] },
     },
+    blcPulseMs: 0, // static BLC disabled by default (PHD2's shipped default)
   };
 }
 
@@ -121,9 +129,19 @@ export function defaultGuideSettings(): GuideSettings {
 const MAX_AGGRESSION = 2.0;
 /** Hysteresis hard cap (PHD2 clamps hysteresis strictly below 1.0). */
 const MAX_HYSTERESIS = 0.99;
+/** Static BLC seed-pulse hard cap (ms). Far above any real Dec backlash pulse;
+ *  the engine raises its Dec ceiling to admit the seed (dossier §10.1). */
+const MAX_BLC_PULSE_MS = 10000;
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
+}
+
+/** Clamp the static BLC seed pulse: a non-negative INTEGER ms, capped. A
+ *  non-number or NaN falls back to 0 (disabled). */
+function clampBlcPulse(v: number): number {
+  if (typeof v !== "number" || Number.isNaN(v)) return 0;
+  return clamp(Math.round(v), 0, MAX_BLC_PULSE_MS);
 }
 
 function validateAxis(
@@ -146,12 +164,14 @@ function validateAxis(
 }
 
 /** Validate + clamp a GuideSettings: rejects an unknown per-axis algorithm name
- *  (PPEC on Dec included, since it is RA-only), and clamps aggression to
- *  <= 2.0, hysteresis to <= 0.99, and every param to >= 0. Returns a clamped
- *  COPY; throws on an unknown algorithm. */
+ *  (PPEC on Dec included, since it is RA-only), clamps aggression to <= 2.0,
+ *  hysteresis to <= 0.99, and every param to >= 0, and clamps the static BLC
+ *  pulse to a non-negative integer ms (<= 10000). Returns a clamped COPY;
+ *  throws on an unknown algorithm. */
 export function validateGuideSettings(s: GuideSettings): GuideSettings {
   return {
     ra: validateAxis(s.ra, isValidRaAlgorithm, "RA"),
     dec: validateAxis(s.dec, isValidDecAlgorithm, "Dec"),
+    blcPulseMs: clampBlcPulse(s.blcPulseMs),
   };
 }
