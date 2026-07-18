@@ -35,13 +35,38 @@
 //!   coordinate-mapping formula (`imgx = x*downsample + downsample/2`) is
 //!   kept in [`find_local_maxima`] with `downsample` fixed at 1 so the
 //!   seam is visible if a future task threads a real downsample factor in.
-//! - **Multi-star candidate management is P3-T1 scope.** Dossier §2.6
-//!   guards its candidate-collection loop with `maxStars > 1` and, when
-//!   active, rejects any peak within 25px of an *already-accepted*
-//!   candidate (`CloseToReference`, `star.cpp:710-715`,
-//!   `star.cpp:1043-1056`) and caps the list at `max_stars`. This port
-//!   does not implement that de-dup-against-accepted-set or the cap — see
-//!   the seam comment in [`auto_find`].
+//! - **Multi-star candidate management (dossier §2.6, P3-T1).** When
+//!   `max_stars > 1`, [`auto_find`] additionally rejects any measured
+//!   candidate whose SNR is below `af_min_snr`, then rejects any survivor
+//!   within 25px of an *already-accepted* candidate (`CloseToReference`,
+//!   `star.cpp:710-715`, applied at `star.cpp:1043-1051`) — see
+//!   [`multi_star_candidates`]. The `max_stars` CAP itself is deliberately
+//!   **not** applied here: upstream defers it until after primary
+//!   selection erases every candidate "ahead of" (brighter than) the
+//!   chosen primary (`star.cpp:1116-1119`) — seaming with the still-brighter
+//!   candidates the pass-1/2/3 loop rejected as saturated/degraded would be
+//!   wrong to prune before that.  [`primary_and_secondaries`] performs that
+//!   tail. For `max_stars <= 1` (this crate's frozen single-star default),
+//!   [`auto_find`]'s output is completely unaffected by this task's
+//!   changes — the P1-T3 review's regression guard.
+//!
+//!   **Accepted narrowing vs. upstream** (documented adjudication): this
+//!   port's P1-T3 architecture already merges upstream's two independent
+//!   per-peak `Star::Find` measurement passes (the §2.6 candidate-list
+//!   loop and the §2.7 primary-selection loop) into ONE shared measured
+//!   list (`auto_find`'s `out`). When `max_stars > 1`, [`select_primary`]
+//!   therefore picks the primary FROM the SAME SNR-filtered/deduped list
+//!   [`multi_star_candidates`] built — unlike upstream, whose §2.7 pass 3
+//!   ("any found star, even below `af_min_snr`") can still select a
+//!   peak the independent §2.6 loop excluded, if it's the last resort.
+//!   In this port, once `max_stars > 1`, a peak that failed the SNR gate is
+//!   never a `select_primary` candidate at all — pass 3's "even low-SNR"
+//!   reach is narrowed to whatever survived the multi-star SNR/dedup
+//!   filter. A direct, mechanical consequence: upstream's "primary star
+//!   not found in the candidate list -> clear it, insert the primary
+//!   alone" fallback (`star.cpp:1120-1126`) is UNREACHABLE here BY
+//!   CONSTRUCTION — see [`primary_and_secondaries`]'s doc comment. Single-
+//!   star mode (`max_stars <= 1`) is untouched by any of this.
 
 use crate::starfind::{self, FindParams};
 use std::collections::HashSet;
@@ -89,21 +114,27 @@ pub struct Candidate {
 /// `AutoFind`/selection parameters (dossier §2). `Default` matches PHD2's
 /// shipped defaults: `search_region` 15 (shared with `Star::Find`),
 /// `af_min_snr` 6.0 (`/guider/StarMinSNR`), `extra_edge_allowance` 0 (no
-/// uncalibrated-mount safety margin), `max_stars` 1 (single-star, P1
-/// scope — see module doc).
+/// uncalibrated-mount safety margin), `max_stars` 1 (single-star default,
+/// matching upstream's `/guider/multistar/enabled = false`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectParams {
     /// half-width of the `Star::Find` search window used to measure each
     /// candidate, and the base edge/search-box-conflict distance, pixels.
     pub search_region: i32,
-    /// `select_primary` pass 1/2 SNR floor (dossier §2.7).
+    /// `select_primary` pass 1/2 SNR floor (dossier §2.7), and (P3-T1)
+    /// [`auto_find`]'s multi-star candidate SNR floor (dossier §2.6) when
+    /// `max_stars > 1`.
     pub af_min_snr: f64,
     /// extra edge-drop margin beyond `search_region`, pixels (dossier
     /// §2.4 — normally the calibration distance for an uncalibrated
     /// mount; 0 when calibrated or unknown).
     pub extra_edge_allowance: i32,
-    /// candidate-list cap. Unused by [`auto_find`] in this port — see the
-    /// module doc's P3-T1 scope note.
+    /// Multi-star candidate-list gate (dossier §2.6; P3-T1). `<= 1`
+    /// (default) keeps [`auto_find`]'s single-star behavior completely
+    /// unchanged — see the module doc's multi-star section. `> 1` (up to
+    /// `MAX_LIST_SIZE` 12 upstream) additionally SNR-gates and 25px-dedups
+    /// the returned candidate list; the actual list-size CAP is applied
+    /// later by [`primary_and_secondaries`], not by [`auto_find`] itself.
     pub max_stars: usize,
 }
 
@@ -538,12 +569,13 @@ fn drop_edge_peaks(peaks: &mut Vec<Peak>, width: i32, height: i32, edge_dist: i3
 /// (`auto_find`) from selection (`select_primary`) into two functions, so
 /// `select_primary` needs a materialized list to choose from regardless of
 /// `max_stars` — this port therefore generalizes the §2.6 measurement loop
-/// to run unconditionally (every surviving peak, brightest to dimmest) but
-/// **without** the 25px accepted-set de-dup or the `max_stars` cap (both
-/// P3-T1 scope, per the brief). For `max_stars == 1` today, only
-/// [`select_primary`]'s pick is actually used by a caller; the rest of the
-/// list is there for a future multi-star caller to consume once P3-T1
-/// lands.
+/// to run unconditionally (every surviving peak, brightest to dimmest).
+///
+/// For `max_stars > 1` (P3-T1), the resulting list is additionally run
+/// through [`multi_star_candidates`] (the §2.6 SNR gate + 25px accepted-set
+/// de-dup) before being returned — see the module doc's multi-star section
+/// for what that changes and the single-star (`max_stars <= 1`) regression
+/// guard.
 pub fn auto_find(frame: &astro_star::GrayFrame, p: &SelectParams) -> Vec<Candidate> {
     let w = frame.width as i32;
     let h = frame.height as i32;
@@ -588,7 +620,90 @@ pub fn auto_find(frame: &astro_star::GrayFrame, p: &SelectParams) -> Vec<Candida
             saturated: r.result == starfind::FindResult::StarSaturated,
         });
     }
-    out
+
+    if p.max_stars > 1 {
+        multi_star_candidates(out, p.af_min_snr)
+    } else {
+        out
+    }
+}
+
+/// Multi-star candidate-list management (dossier §2.6; the §2.6 collection
+/// loop's body, `star.cpp:1036-1057`, minus the re-measurement this port
+/// avoids by reusing `auto_find`'s already-measured `cands` — `Star::Find`
+/// is a pure function of `(frame, position, params)`, so re-invoking it at
+/// the SAME peak position the caller already measured would return
+/// bit-identical results; skipping the redundant call changes nothing
+/// observable). Rejects candidates below `af_min_snr` (`/guider/StarMinSNR`,
+/// default 6.0), then rejects any survivor within 25px of an
+/// already-accepted survivor ([`close_to_reference`]). Preserves the
+/// input's brightest-first order. NOT capped at any list-size limit here —
+/// see [`auto_find`]'s doc comment and [`primary_and_secondaries`] for why
+/// that cap is deferred.
+fn multi_star_candidates(cands: Vec<Candidate>, af_min_snr: f64) -> Vec<Candidate> {
+    let mut accepted: Vec<Candidate> = Vec::with_capacity(cands.len());
+    for c in cands {
+        if c.snr < af_min_snr {
+            continue;
+        }
+        let duplicate = accepted.iter().any(|a| close_to_reference(*a, c));
+        if duplicate {
+            continue;
+        }
+        accepted.push(c);
+    }
+    accepted
+}
+
+/// `CloseToReference` (dossier §2.6; `star.cpp:710-715`): `true` when
+/// `other` is within 25px (Euclidean, strictly less than) of `reference`.
+fn close_to_reference(reference: Candidate, other: Candidate) -> bool {
+    const MIN_SEPARATION: f64 = 25.0;
+    let dx = other.x - reference.x;
+    let dy = other.y - reference.y;
+    dx.hypot(dy) < MIN_SEPARATION
+}
+
+/// The dossier §2.7 tail (`star.cpp:1096-1119`): given the multi-star
+/// candidate list [`auto_find`] returns when `max_stars > 1` and the index
+/// [`select_primary`] chose within it, split `(primary, secondaries)`.
+/// Candidates AHEAD of the primary in `cands` (brighter, but rejected
+/// during selection — e.g. saturated or near-saturated) are dropped
+/// entirely (`star.cpp:1116-1117`); the primary and every dimmer survivor
+/// are kept, capped at `max_stars` total (`star.cpp:1118-1119`). Each
+/// secondary's `offset_from_primary` is `(x, y) - primary(x, y)`
+/// (dossier: `reference_point - primary_ref`; at this port's
+/// [`multi_star_candidates`] construction time `reference_point == (x,
+/// y)`, the just-measured position, so the two are equal — the caller
+/// computes this from the returned `Candidate`s directly).
+///
+/// # Panics
+/// If `primary_idx >= cands.len()` (caller contract: `primary_idx` must be
+/// an index [`select_primary`] returned for this exact `cands` slice).
+///
+/// Upstream's "primary not found in the candidate list -> clear it, insert
+/// the primary alone" fallback (`star.cpp:1120-1126`) is UNREACHABLE here
+/// BY CONSTRUCTION: [`select_primary`] picks `primary_idx` FROM `cands`
+/// directly (this port's single shared measurement list, established
+/// P1-T3), so the chosen primary is always an element of `cands` — unlike
+/// upstream, which re-measures the primary independently over the raw peak
+/// set and searches for it by exact-position match in a SEPARATELY built
+/// `foundStars` list (where, e.g., a saturated bright duplicate can shadow
+/// a dimmer non-saturated primary out of the SNR+dedup gate). See the
+/// module doc's multi-star section for the accepted narrowing this
+/// implies.
+pub fn primary_and_secondaries(
+    cands: &[Candidate],
+    primary_idx: usize,
+    max_stars: usize,
+) -> (Candidate, Vec<Candidate>) {
+    let kept = &cands[primary_idx..];
+    let kept = if max_stars > 0 && kept.len() > max_stars {
+        &kept[..max_stars]
+    } else {
+        kept
+    };
+    (kept[0], kept[1..].to_vec())
 }
 
 /// Saturation-level near-threshold inference (dossier §2.5;
@@ -772,5 +887,103 @@ mod tests {
         ];
         merge_close_peaks(&mut peaks);
         assert_eq!(peaks.len(), 2);
+    }
+
+    // Provenance: direct unit coverage of `multi_star_candidates` /
+    // `primary_and_secondaries` (dossier §2.6/§2.7 tail; P3-T1). These
+    // operate on already-measured `Candidate`s, so a hand-built list
+    // exercises the list-management logic without needing a synthetic
+    // frame (the frame-level `auto_find` pipeline is already covered by
+    // this file's other tests and by select_golden.rs).
+
+    fn cand(x: f64, y: f64, snr: f64) -> Candidate {
+        Candidate {
+            x,
+            y,
+            snr,
+            mass: 5000.0,
+            hfd: 3.0,
+            peak_val: 20000,
+            saturated: false,
+        }
+    }
+
+    #[test]
+    fn multi_star_candidates_rejects_below_af_min_snr() {
+        let cands = vec![cand(10.0, 10.0, 20.0), cand(100.0, 10.0, 4.0)];
+        let out = multi_star_candidates(cands, 6.0);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].x, out[0].y), (10.0, 10.0));
+    }
+
+    #[test]
+    fn multi_star_candidates_dedups_within_25px_keeps_brighter_first_occurrence() {
+        // Input is brightest-first (as auto_find returns); the second
+        // candidate is 20px from the first (< 25) -> rejected as a
+        // duplicate of the already-accepted (brighter) first one.
+        let cands = vec![
+            cand(100.0, 100.0, 30.0),
+            cand(115.0, 100.0, 25.0), // 15px away -> duplicate, dropped
+            cand(300.0, 300.0, 20.0), // far away -> kept
+        ];
+        let out = multi_star_candidates(cands, 6.0);
+        assert_eq!(out.len(), 2);
+        assert_eq!((out[0].x, out[0].y), (100.0, 100.0));
+        assert_eq!((out[1].x, out[1].y), (300.0, 300.0));
+    }
+
+    #[test]
+    fn multi_star_candidates_boundary_25px_not_a_duplicate() {
+        // Exactly 25px apart: `< 25.0` is false at the boundary -> both
+        // survive (dossier §2.6; star.cpp:713's strict `<`).
+        let cands = vec![cand(0.0, 0.0, 30.0), cand(25.0, 0.0, 20.0)];
+        let out = multi_star_candidates(cands, 6.0);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn primary_and_secondaries_drops_candidates_ahead_of_primary() {
+        // 4 candidates; primary is chosen at index 1 (e.g. index 0 was
+        // rejected during selection as saturated). Index 0 must be
+        // dropped entirely; 1..end survive with offsets relative to the
+        // primary.
+        let cands = vec![
+            cand(0.0, 0.0, 50.0),     // ahead of primary -> dropped
+            cand(100.0, 100.0, 20.0), // primary
+            cand(110.0, 90.0, 10.0),  // secondary
+            cand(80.0, 130.0, 8.0),   // secondary
+        ];
+        let (primary, secondaries) = primary_and_secondaries(&cands, 1, 12);
+        assert_eq!((primary.x, primary.y), (100.0, 100.0));
+        assert_eq!(secondaries.len(), 2);
+        assert_eq!((secondaries[0].x, secondaries[0].y), (110.0, 90.0));
+        assert_eq!((secondaries[1].x, secondaries[1].y), (80.0, 130.0));
+    }
+
+    #[test]
+    fn primary_and_secondaries_caps_total_list_at_max_stars() {
+        let cands = vec![
+            cand(0.0, 0.0, 50.0), // primary
+            cand(1.0, 0.0, 40.0), // kept (within cap)
+            cand(2.0, 0.0, 30.0), // kept (within cap)
+            cand(3.0, 0.0, 20.0), // dropped (cap = 3 total)
+        ];
+        let (primary, secondaries) = primary_and_secondaries(&cands, 0, 3);
+        assert_eq!((primary.x, primary.y), (0.0, 0.0));
+        assert_eq!(
+            secondaries.len(),
+            2,
+            "capped to max_stars=3 total incl. primary"
+        );
+        assert_eq!((secondaries[0].x, secondaries[0].y), (1.0, 0.0));
+        assert_eq!((secondaries[1].x, secondaries[1].y), (2.0, 0.0));
+    }
+
+    #[test]
+    fn primary_and_secondaries_single_candidate_no_secondaries() {
+        let cands = vec![cand(5.0, 5.0, 20.0)];
+        let (primary, secondaries) = primary_and_secondaries(&cands, 0, 12);
+        assert_eq!((primary.x, primary.y), (5.0, 5.0));
+        assert!(secondaries.is_empty());
     }
 }
