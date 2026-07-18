@@ -78,7 +78,10 @@ async def _probe_nina(host: str, port: int) -> dict:
 #: Alpaca DeviceType (lowercased) -> AstroDeck role. Inverse of the native
 #: backend's ``_ROLE_TO_DEV_TYPE``. ``rotator`` is now mapped (the CAA spec
 #: added the role); genuinely unknown types (e.g. ``dome``) are still SKIPPED,
-#: not an error here.
+#: not an error here. A ``camera`` device is additionally offered under the
+#: ``guide_camera`` role (P2-T3 fix round, D6: the guide camera is any Camera
+#: device assigned to that role) — see ``_probe_alpaca``, since this one-to-one
+#: map cannot express a dev type serving two roles.
 _DEV_TYPE_TO_ROLE: dict[str, str] = {
     "camera": "camera", "telescope": "telescope", "focuser": "focuser",
     "filterwheel": "filterwheel", "switch": "switch",
@@ -104,10 +107,17 @@ async def _probe_alpaca(host: str, port: int) -> dict:
         role = _DEV_TYPE_TO_ROLE.get(dev_type)
         if role is None:
             continue
-        devices.append({"role": role,
-                        "name": d.get("DeviceName") or dev_type,
-                        "dev_type": dev_type,
-                        "dev_num": int(d.get("DeviceNumber", 0))})
+        entry = {"role": role,
+                 "name": d.get("DeviceName") or dev_type,
+                 "dev_type": dev_type,
+                 "dev_num": int(d.get("DeviceNumber", 0))}
+        devices.append(entry)
+        # D6 (P2-T3 fix round): every Alpaca camera is ALSO offerable as the
+        # dedicated guide camera — same device, same addressing, second role —
+        # so the assignment UI's one-rule (offers-carry-the-role) lights the
+        # guide_camera row for Alpaca drivers.
+        if role == "camera":
+            devices.append(dict(entry) | {"role": "guide_camera"})
     return _ok(devices, [])
 
 

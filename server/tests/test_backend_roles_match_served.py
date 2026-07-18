@@ -85,3 +85,27 @@ def test_nina_serves_rotator():
     b = get_backend("nina")
     assert "rotator" in b.roles
     assert "rotator" in _ROLE_CLASSES
+
+
+# --------------------------- guide_camera role (P2-T3 fix round, D6) ---------
+
+def test_native_serves_guide_camera():
+    """The dedicated guide camera is a first-class native role: advertised AND
+    mapped to a real Alpaca camera device (a second camera by dev_num), so the
+    assignment UI can put a guide camera on a real Alpaca rig."""
+    b = get_backend("native")
+    assert "guide_camera" in b.roles
+    assert _ROLE_TO_DEV_TYPE["guide_camera"] == "camera"
+
+
+def test_sim_serves_guide_camera():
+    b = get_backend("sim")
+    assert "guide_camera" in b.roles     # SimBackend.roles = ROLES → automatic
+    assert "guide_camera" in build_sim_rig()
+
+
+def test_nina_and_phd2_do_not_advertise_guide_camera():
+    """D5: a NINA rig lets NINA own guiding (its guide camera lives inside
+    NINA/PHD2, never assigned by AstroDeck); PHD2 stays guider-only."""
+    assert "guide_camera" not in get_backend("nina").roles
+    assert get_backend("phd2").roles == ("guider",)

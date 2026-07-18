@@ -115,8 +115,13 @@ def test_list_backends_shape_and_ordering():
 
 
 def test_roles_constant_matches_device_roles():
+    # guide_camera appended in the P2-T3 fix round (D6): a dedicated guide
+    # camera is a first-class assignable role (describe_all enumerates ROLES
+    # for the assignment UI), served by sim (rig dict) and native (a second
+    # Alpaca camera by dev_num).
     assert ROLES == ("camera", "telescope", "focuser", "guider",
-                     "filterwheel", "switch", "safety", "rotator")
+                     "filterwheel", "switch", "safety", "rotator",
+                     "guide_camera")
 
 
 def test_rigspec_resolve_default_uses_primary():

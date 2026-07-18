@@ -25,6 +25,9 @@ from typing import Any, Protocol, runtime_checkable
 
 #: The device roles a rig fills. Mirrors ``hub.ROLES`` / the device ABCs in
 #: ``devices/base.py`` but kept as a local literal so this module imports nothing.
+#: ``guide_camera`` (P2-T3 fix round, D6): the dedicated guide camera is any
+#: Camera DEVICE assigned to this role — first-class so ``drivers.describe_all``
+#: offers it and the standard rig-assignment UI can assign one on real rigs.
 ROLES: tuple[str, ...] = (
     "camera",
     "telescope",
@@ -34,6 +37,7 @@ ROLES: tuple[str, ...] = (
     "switch",
     "safety",
     "rotator",
+    "guide_camera",
 )
 
 

@@ -132,6 +132,15 @@ class NativeSession:
         # Deferred import: keep module load light (the native guider pulls the
         # guide stack / numpy) and avoid a cycle just to register the backend.
         from ...guide.native import NativeGuider, guide_algo_config
+        # KNOWN GAP (P2-T3 fix round F2, ledgered): no ``image_scale_arcsec``
+        # is passed, so published RMS/error stats default-scale at 1.0 "/px on
+        # a real rig. There is NO principled source yet: ``Optics`` describes
+        # the MAIN imaging train (a guide SCOPE's focal length has no config
+        # field), and the guide camera's own ``pixel_size_um`` alone cannot
+        # yield a scale. Deliberately NOT hardcoded/guessed — guiding
+        # correctness is unaffected (calibration measures px/ms empirically);
+        # only the arcsec badge units mis-scale until a guide-optics config
+        # field exists (sim path is correct via ``rig.guide_scale_arcsec_px``).
         self._guider = NativeGuider(
             gcam, tel,
             config={"exposure_s": 2.0, **guide_algo_config()},
@@ -182,10 +191,12 @@ class NativeBackend:
     # W1.9 drift guard keeps it off ``roles``. The native autoguider is served
     # via ``native_guider()`` (the Rust engine over an assigned guide camera +
     # mount, P2-T3) when a profile explicitly overrides the ``guider`` role onto
-    # this endpoint — never auto-advertised. ``safety`` stays (``safetymonitor``
-    # is served).
+    # this endpoint — never auto-advertised. ``guide_camera`` IS advertised
+    # (P2-T3 fix round, D6): it is a real Alpaca camera device addressed by its
+    # own dev_num, so the assignment UI can put a dedicated guide camera on a
+    # real rig. ``safety`` stays (``safetymonitor`` is served).
     roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety",
-             "rotator")
+             "rotator", "guide_camera")
     discoverable = True
     hostless = False                # Alpaca is a network endpoint (host:port)
 
