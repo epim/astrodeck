@@ -19,12 +19,23 @@ from astrodeck.providers import NATIVE_AVAILABLE
 pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_config_dir(tmp_path, monkeypatch):
+    """P2-T2 fix round, coverage (d): point ``CONFIG_DIR`` at ``tmp_path`` so
+    NO test in this module reads or writes the real ``server/config/guider/``
+    (both ``_persist_calibration`` and ``_load_persisted_calibration`` do
+    ``from ..config import CONFIG_DIR`` at CALL time, so patching the module
+    attribute is sufficient and takes effect immediately)."""
+    import astrodeck.config as config
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    return tmp_path
+
+
 def _profile_id(tag: str) -> str:
-    """A fresh profile id per test invocation. ``CONFIG_DIR/guider/`` is
-    gitignored but NOT test-isolated (P1's ``_persist_calibration`` writes to
-    the real ``CONFIG_DIR``), so leftover files from a previous run could
-    otherwise satisfy the P2 reuse-compatibility gate with stale numbers and
-    change a scenario's timing out from under it."""
+    """A fresh profile id per test invocation. Belt-and-braces on top of the
+    ``_isolated_config_dir`` fixture (which already keeps every run in its
+    own ``tmp_path``): a unique id also documents each scenario's
+    persistence file as its own, never shared across scenarios."""
     return f"test-recovery-{tag}-{uuid.uuid4().hex[:8]}"
 
 
@@ -185,3 +196,178 @@ async def test_persisted_calibration_reused_across_guider_instances():
 
     await g2.stop_guiding()
     await g2.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_restart_under_cloud_stays_inactive_and_retries():
+    """Scenario 4 (P2-T2 fix round, coverage (a) — the review's missing
+    fourth gate scenario): a recovery restart while the occlusion PERSISTS
+    must NOT succeed silently. Pre-fix, the reuse branch had no
+    star-existence precondition: start_guiding() reused the persisted
+    calibration instantly, the engine sat in lock-establishment returning
+    Idle forever with stats().guiding True, and the sequence engine's
+    one-shot recovery (``_maybe_recover_guiding``: is_active check, then ONE
+    start_guiding call) was permanently silenced. Post-fix the reuse path
+    mirrors ``_calibrate``'s one-frame guide_star_find precondition: it
+    raises, is_active stays false, and recovery retries keep firing."""
+    from astrodeck.devices.base import DeviceError
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    cam, tel, srig = rig["guide_camera"], rig["telescope"], rig["_rig"]
+    await cam.connect()
+    await tel.connect()
+    g = NativeGuider(cam, tel, config={"image_scale_arcsec": 2.0,
+                                       "exposure_s": 0.2},
+                     profile_id=_profile_id("cloud"))
+    await g.connect()
+    await asyncio.wait_for(g.start_guiding(), timeout=120.0)
+    assert await g.is_active()
+    await asyncio.sleep(1.0)
+
+    # The cloud rolls in and STAYS.
+    srig.guide_star_hidden = True
+    became_inactive = await _wait_until(lambda: not g.stats().guiding,
+                                        timeout=60.0)
+    assert became_inactive, "expected guiding to report inactive after sustained star loss"
+
+    # Recovery attempt #1 while the star is still hidden: must REFUSE
+    # (raise), not silently "succeed" into a starless lock-establishment
+    # loop that reports guiding True.
+    with pytest.raises(DeviceError):
+        await asyncio.wait_for(g.start_guiding(), timeout=60.0)
+    assert not await g.is_active(), (
+        "is_active must stay false after a refused restart — the sequence "
+        "engine's recovery loop keys off it")
+
+    # Recovery attempt #2 (the sequence engine keeps retrying on later
+    # frames): still hidden -> still a clean refusal, not a wedged state.
+    with pytest.raises(DeviceError):
+        await asyncio.wait_for(g.start_guiding(), timeout=60.0)
+    assert not await g.is_active()
+
+    # The cloud clears -> the NEXT retry succeeds (reusing the persisted
+    # calibration; the refused attempts must not have corrupted anything).
+    srig.guide_star_hidden = False
+    await asyncio.wait_for(g.start_guiding(), timeout=60.0)
+    assert await g.is_active()
+    assert g.stats().guiding
+
+    await g.stop_guiding()
+    await g.disconnect()
+
+
+# --------------------------------------------------------------------------
+# P2-T2 fix round, coverage (c): _cal_reusable rejection arms + corrupt
+# persistence files — each arm asserts the guider falls back to a FRESH
+# calibration (proven via a _calibrate stub that raises a sentinel), with no
+# crash on the way there.
+# --------------------------------------------------------------------------
+
+def _good_cal_dict(scale: float = 2.0) -> dict:
+    """A persisted-calibration dict that passes every _cal_reusable arm for a
+    guider configured with image_scale_arcsec=2.0, binning=1 (the shape
+    ``_persist_calibration`` writes: the engine's dump_calibration keys +
+    the image_scale_arcsec sidecar)."""
+    return {"x_rate": 0.0035, "y_rate": 0.0035, "x_angle": 0.0,
+            "y_angle": 1.5707963, "y_angle_error": 0.0,
+            "declination": -0.0941, "pier_side": "west",
+            "ra_parity": "unknown", "dec_parity": "unknown",
+            "rotator_angle": 0.0, "binning": 1, "is_valid": True,
+            "image_scale_arcsec": scale}
+
+
+class _CalibrateStub(Exception):
+    """Sentinel: the fresh-calibration fallback path was reached."""
+
+
+async def _assert_falls_back_to_calibrate(tmp_path, file_content) -> None:
+    """Write ``file_content`` as the profile's persisted-calibration JSON,
+    stub out ``_calibrate`` with a sentinel-raiser, and assert
+    ``start_guiding`` reaches it (the reuse path was refused / failed
+    cleanly) rather than crashing anywhere else."""
+    import json as _json
+
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    cam, tel = rig["guide_camera"], rig["telescope"]
+    await cam.connect()
+    await tel.connect()
+    profile = _profile_id("arm")
+    d = tmp_path / "guider"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{profile}.json").write_text(_json.dumps(file_content),
+                                       encoding="utf-8")
+
+    g = NativeGuider(cam, tel, config={"image_scale_arcsec": 2.0,
+                                       "exposure_s": 0.2}, profile_id=profile)
+    await g.connect()
+
+    async def _stub_calibrate():
+        raise _CalibrateStub("fresh calibration path reached")
+
+    g._calibrate = _stub_calibrate
+    with pytest.raises(_CalibrateStub):
+        await asyncio.wait_for(g.start_guiding(), timeout=30.0)
+    await g.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_binning_mismatch(_isolated_config_dir):
+    cal = _good_cal_dict()
+    cal["binning"] = 2  # session binning is 1
+    await _assert_falls_back_to_calibrate(_isolated_config_dir, cal)
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_unknown_declination(_isolated_config_dir):
+    cal = _good_cal_dict()
+    cal["declination"] = 997.0  # UNKNOWN_DECLINATION sentinel
+    await _assert_falls_back_to_calibrate(_isolated_config_dir, cal)
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_image_scale_mismatch(_isolated_config_dir):
+    # Fix round #1 (upstream: >=1% scale change clears calibration —
+    # mount.cpp:1332 -> HandleImageScaleChange -> ClearCalibration,
+    # myframe.cpp:2902): persisted at 2.5"/px, session at 2.0"/px -> 25%.
+    await _assert_falls_back_to_calibrate(_isolated_config_dir,
+                                          _good_cal_dict(scale=2.5))
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_missing_image_scale(_isolated_config_dir):
+    # A pre-fix-round persisted file has no image_scale_arcsec sidecar ->
+    # not reusable (fix round #1's "missing key" rule).
+    cal = _good_cal_dict()
+    del cal["image_scale_arcsec"]
+    await _assert_falls_back_to_calibrate(_isolated_config_dir, cal)
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_non_dict_file(_isolated_config_dir):
+    # Valid JSON, wrong shape (fix round #3a): must not AttributeError.
+    await _assert_falls_back_to_calibrate(_isolated_config_dir,
+                                          ["not", "a", "dict"])
+
+
+@pytest.mark.asyncio
+async def test_reuse_rejected_on_corrupt_numerics(_isolated_config_dir):
+    # Passes _cal_reusable's gate fields but load_calibration's PyO3
+    # conversion raises (fix round #3b): must fall back, not crash.
+    cal = _good_cal_dict()
+    cal["x_rate"] = "bogus"
+    await _assert_falls_back_to_calibrate(_isolated_config_dir, cal)
+
+
+def test_cal_reusable_accepts_the_good_dict():
+    """Control for the rejection arms: the same dict every arm perturbs IS
+    reusable unperturbed (so each arm's False verdict is attributable to
+    its one perturbation)."""
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    g = NativeGuider(rig["guide_camera"], rig["telescope"],
+                     config={"image_scale_arcsec": 2.0}, profile_id=None)
+    assert g._cal_reusable(_good_cal_dict()) is True
