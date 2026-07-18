@@ -13,6 +13,9 @@ from .base import Guider, GuideStats
 
 class SimGuider(Guider):
     name = "Sim Guider"
+    #: Native family (see Guider.provider_family): the legacy believable-stream
+    #: sim guider is badged ``sim`` — never the PHD2/NINA ``backend`` family.
+    provider_family = "native"
 
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
