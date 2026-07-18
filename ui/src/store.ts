@@ -402,6 +402,17 @@ interface AppState {
   // never blank it. null until the first autofocus run completes this session.
   lastAutofocusResult: AutofocusResult | null;
   guide: (GuideStats & { name?: string }) | null;
+  // Same-night per-provider RMS windows (P5-T1, spec §6 P5): the LAST
+  // guide-stats tick seen while a given provider KIND ("astrodeck"/"backend"/
+  // "sim") was resolved, keyed by `status.providers.guide.kind` at the moment
+  // each "guide" bus event is ingested (see handleEvent's "guide" case). The
+  // `guide` bus channel itself carries no provider tag, so this is where it
+  // gets one. Session-only (not persisted; resets on reload) — feeds
+  // GuideView's head-to-head RMS comparison via lib/rmsCompare.ts. Empty
+  // until the guide provider resolves AND a "guide" tick lands.
+  guideRmsByKind: Partial<
+    Record<string, GuideStats & { providerLabel: string; atMs: number }>
+  >;
   sequence: SequenceState;
   polar: PolarState;
   logs: LogLine[];
@@ -607,6 +618,7 @@ export const useStore = create<AppState>((set, get) => ({
   focus: null,
   lastAutofocusResult: null,
   guide: null,
+  guideRmsByKind: {},
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
   logs: [],
@@ -1192,9 +1204,31 @@ export const useStore = create<AppState>((set, get) => ({
         }
         break;
       }
-      case "guide":
-        set({ guide: ev.data as unknown as GuideStats, lastGuideAtMs: Date.now() });
+      case "guide": {
+        const stats = ev.data as unknown as GuideStats;
+        // Tag this tick by the CURRENTLY resolved guide provider (the "guide"
+        // bus event itself carries no provider field) so GuideView's
+        // same-night RMS comparison (lib/rmsCompare.ts) has a per-provider
+        // window to read back later, including after a provider switch mid-
+        // session. `status.providers` may not have landed yet (pre-first-poll)
+        // or the resolver may be between capabilities — in that case just skip
+        // the tag, matching useProviders'/ProviderBadge's own null-safety.
+        const providers = (
+          get().status as (RigStatus & { providers?: ProvidersStatus }) | null
+        )?.providers;
+        const choice = providers?.guide;
+        set((s) => ({
+          guide: stats,
+          lastGuideAtMs: Date.now(),
+          guideRmsByKind: choice
+            ? {
+                ...s.guideRmsByKind,
+                [choice.kind]: { ...stats, providerLabel: choice.label, atMs: Date.now() },
+              }
+            : s.guideRmsByKind,
+        }));
         break;
+      }
       case "sequence": {
         const seq = ev.data as unknown as SequenceState;
         const prevState = get().sequence.state;
@@ -1304,6 +1338,12 @@ export const useNight = () => useStore((s) => s.night);
 export const useStatus = () => useStore((s) => s.status);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
+// Same-night per-provider RMS windows (P5-T1) — see AppState.guideRmsByKind.
+// useShallow so an unrelated guide tick under the SAME kind (which replaces
+// the object at that key but leaves the other keys alone) doesn't spuriously
+// re-render a consumer that only reads a different key.
+export const useGuideRmsByKind = () =>
+  useStore(useShallow((s) => s.guideRmsByKind));
 export const useFocus = () => useStore((s) => s.focus);
 export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResult);
 export const usePreview = () => useStore((s) => s.preview);

@@ -17,8 +17,8 @@ New to AstroDeck? Follow this path:
    this early — everything sky-related depends on it).
 3. **[Equipment & profiles](equipment-and-profiles.md)** — connect real gear and
    save a profile.
-4. **[Capture](capture.md)** and **[Focus](focus.md)** — take exposures and get
-   the stars sharp.
+4. **[Capture](capture.md)**, **[Focus](focus.md)**, and **[Guiding](guiding.md)**
+   — take exposures, get the stars sharp, and keep the mount tracking true.
 5. **[Sky Atlas](sky-atlas.md)** → **[Plan & sequences](plan-and-sequences.md)**
    → **[Sessions](sessions-multi-night.md)** — frame a target, build an
    autonomous run, and accumulate it across nights.
@@ -35,6 +35,7 @@ New to AstroDeck? Follow this path:
 | [Equipment & profiles](equipment-and-profiles.md) | Drivers, device assignment, task providers, rotator, profiles |
 | [Capture](capture.md) | Exposure, live preview, histogram/stretch, cooler, filter wheel |
 | [Focus](focus.md) | Manual focus, autofocus, reading the V-curve, HFR |
+| [Guiding](guiding.md) | Native autoguider, calibration, algorithm selection, PHD2 fallback, same-night RMS compare |
 | [Sky Atlas](sky-atlas.md) | Search, framing, mosaics, visibility, offline survey pack |
 | [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, scheduling, plan library |
 | [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume |
@@ -74,6 +75,11 @@ New to AstroDeck? Follow this path:
   [Monitor](monitor.md#recovering-an-interrupted-run)
 - **"Can I search for a planet in the Atlas?"** → Not yet — see
   [Sky Atlas](sky-atlas.md#searching-for-a-target)
+- **"How do I switch guiding back to PHD2 / NINA?"** →
+  [Guiding](guiding.md#provider--phd2-fallback)
+- **"Is native guiding actually better than PHD2 on my rig?"** →
+  [Guiding](guiding.md#same-night-rms-native-vs-phd2) — a same-night
+  head-to-head RMS comparison once you've guided under both.
 
 ---
 
