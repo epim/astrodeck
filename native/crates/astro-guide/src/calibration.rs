@@ -117,12 +117,11 @@ const BL_MAX_CLEARING_TIME_MS: u32 = 60_000;
 const BL_MIN_CLEARING_DISTANCE: f64 = 3.0;
 
 /// `MAX_NUDGES` (`scope.cpp:64`). Upstream's literal check is
-/// `m_calibrationSteps <= MAX_NUDGES` against a *post*-increment counter,
-/// which (like `MAX_CALIBRATION_STEPS`'s own post-increment check) actually
-/// permits one extra nudge beyond the documented bound. This port uses the
-/// clean bound instead (`steps < MAX_NUDGES`, capping at exactly 3 nudges) —
-/// same adjudication as [`Calibrator::step`]'s `GoWest`/`GoNorth` step
-/// limit, see that doc comment.
+/// `m_calibrationSteps <= MAX_NUDGES` against a counter incremented after
+/// each issued nudge (`scope.cpp:1712`/`:1731`), so pre-values 0..=3 all
+/// pass and up to **4** nudges are actually issued. Ported literally
+/// (P1-T6 review ruling: upstream-literal semantics govern; observable
+/// step/nudge counts are parity surface, not incidental artifacts).
 const MAX_NUDGES: u32 = 3;
 
 /// `NUDGE_TOLERANCE` (`scope.cpp:65`) pixels.
@@ -155,7 +154,11 @@ pub struct CalConfig {
     /// `DefaultCalibrationDuration` = 750).
     pub calibration_duration_ms: u32,
     /// Per-leg pulse budget before GO_WEST/GO_NORTH fail (dossier §8.2;
-    /// `MAX_CALIBRATION_STEPS` = 60).
+    /// `MAX_CALIBRATION_STEPS` = 60). Upstream-literal post-increment
+    /// semantics (`scope.cpp:1252`/`:1526`, `m_calibrationSteps++ >
+    /// MAX_CALIBRATION_STEPS`): pre-increment values 0..=`max_steps` all
+    /// pass, so up to `max_steps + 1` pulses are issued before the leg
+    /// fails.
     pub max_steps: u32,
     /// Dec calibration/guide mode (dossier §8.2; default `Auto`).
     pub dec_guide_mode: DecMode,
@@ -326,8 +329,18 @@ impl Calibrator {
                 CalLeg::GoWest => {
                     let dist = distance(self.leg_start, current);
                     if dist < self.cfg.calibration_distance {
+                        // Upstream-literal post-increment check
+                        // (scope.cpp:1252, `m_calibrationSteps++ >
+                        // MAX_CALIBRATION_STEPS`): the PRE-increment value
+                        // is compared, so pre-values 0..=max_steps all pass
+                        // — max_steps + 1 pulses are issued and failure
+                        // fires on the (max_steps + 2)-th evaluation
+                        // (P1-T6 review ruling: upstream-literal semantics
+                        // govern; the clean-bound reading was rejected as
+                        // an observable parity break).
+                        let steps_before = self.steps;
                         self.steps += 1;
-                        if self.steps > self.cfg.max_steps {
+                        if steps_before > self.cfg.max_steps {
                             return self.fail("RA Calibration Failed: star did not move enough");
                         }
                         return CalOutcome::Pulse {
@@ -456,8 +469,18 @@ impl Calibrator {
                 CalLeg::GoNorth => {
                     let dist = distance(self.leg_start, current);
                     if dist < self.cfg.calibration_distance {
+                        // Upstream-literal post-increment check
+                        // (scope.cpp:1526) — same semantics as GO_WEST's,
+                        // see that comment. Note the entry value of `steps`
+                        // differs by CLEAR_BACKLASH outcome: 1 when the
+                        // last clearing move was adopted as north step 1
+                        // (scope.cpp:1497), 0 on the proceed-anyway path
+                        // (scope.cpp:1469) — so the north pulse budget is
+                        // one smaller in the former case, exactly as
+                        // upstream.
+                        let steps_before = self.steps;
                         self.steps += 1;
-                        if self.steps > self.cfg.max_steps {
+                        if steps_before > self.cfg.max_steps {
                             return self.fail("DEC Calibration Failed: star did not move enough");
                         }
                         return CalOutcome::Pulse {
@@ -541,7 +564,13 @@ impl Calibrator {
                         // 40 deg of 180 deg), scope.cpp:1710.
                         if (theta_deg - 180.0).abs() < 40.0 {
                             let bl_distance_moved = distance(self.bl_marker, self.initial_location);
-                            if self.steps < MAX_NUDGES
+                            // Upstream-literal `<=` on the post-increment
+                            // counter (scope.cpp:1712, `m_calibrationSteps
+                            // <= MAX_NUDGES`): pre-values 0..=3 all pass,
+                            // so up to MAX_NUDGES + 1 == 4 nudges are
+                            // issued (P1-T6 review ruling — see the
+                            // GO_WEST step-cap comment).
+                            if self.steps <= MAX_NUDGES
                                 && nudge_amt > NUDGE_TOLERANCE
                                 && nudge_amt < self.cfg.calibration_distance + bl_distance_moved
                             {
@@ -552,6 +581,17 @@ impl Calibrator {
                                 let dec_amt_signed = self.to_mount(offset).1;
                                 if dec_amt_signed * self.total_south_amt > 0.0 {
                                     let dec_amt = dec_amt_signed.abs();
+                                    // Upstream clamps `decAmt` to the
+                                    // guider's max_move_px BEFORE the
+                                    // division (scope.cpp:1725, `decAmt =
+                                    // wxMin(decAmt, GetMaxMovePixels())`);
+                                    // `CalConfig` has no max_move_px field
+                                    // (the same omission as the GO_EAST
+                                    // fast-recenter budget — see
+                                    // `recenter_pulses_left`'s doc
+                                    // comment), so only the outer
+                                    // calibration-duration clamp
+                                    // (scope.cpp:1726-1729) is retained.
                                     let mut pulse_ms = (dec_amt / self.y_rate).floor() as u32;
                                     if pulse_ms > self.cfg.calibration_duration_ms {
                                         pulse_ms = self.cfg.calibration_duration_ms;
