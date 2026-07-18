@@ -48,3 +48,68 @@ def test_calibration_roundtrips():
     out = e.dump_calibration()
     assert out is not None
     assert abs(out["x_rate"] - 0.02) < 1e-9 and out["pier_side"] == "east"
+
+
+# ---- lock_lost reason disambiguation (T8 obligation, P1-T7 review binding:
+# the Action enum overloads LockLost for three distinct failures; process()'s
+# "reason" field must let the host distinguish re-acquire vs recalibrate vs
+# settle-timeout) ----
+
+def _ident_cal():
+    return {"x_rate": 0.01, "y_rate": 0.01, "x_angle": 0.0,
+            "y_angle": math.pi/2, "y_angle_error": 0.0,
+            "declination": 0.0, "pier_side": "west",
+            "ra_parity": "even", "dec_parity": "even",
+            "rotator_angle": 0.0, "binning": 1, "is_valid": True}
+
+
+def test_process_reason_star_lost():
+    e = native.GuideEngine({})
+    e.load_calibration(_ident_cal())
+    e.begin_guiding()
+    a = e.process(_gaussian_frame(64, 64, 32.0, 32.0), 0.0, 2.0)  # lock
+    assert a["action"] == "idle" and a["reason"] is None
+    blank = np.full((64, 64), 100, dtype=np.uint16)  # starless frames
+    t, last = 2.0, None
+    for _ in range(30):
+        last = e.process(blank, t, 2.0)
+        t += 2.0
+        if last["action"] == "lock_lost":
+            break
+    assert last["action"] == "lock_lost"
+    assert last["reason"] == "star_lost"
+
+
+def test_process_reason_settle_timeout():
+    e = native.GuideEngine({})
+    e.load_calibration(_ident_cal())
+    e.begin_guiding()
+    e.process(_gaussian_frame(64, 64, 32.0, 32.0), 0.0, 2.0)  # lock
+    e.dither(3.0, 3.0)  # opens the default 1.5px/10s/60s settle window
+    off = _gaussian_frame(64, 64, 42.0, 32.0)  # 10px error: never in range
+    a = e.process(off, 2.0, 2.0)
+    assert a["action"] == "settle" and a["reason"] is None
+    a = e.process(off, 62.0, 2.0)  # past the 60 s deadline
+    assert a["action"] == "lock_lost"
+    assert a["reason"] == "settle_timeout"
+    # the window and shadow flag both clear: guiding resumes next frame
+    a = e.process(_gaussian_frame(64, 64, 37.0, 32.0), 64.0, 2.0)
+    assert a["action"] == "pulse_pair" and a["reason"] is None
+
+
+def test_process_reason_calibration_failed():
+    e = native.GuideEngine({})
+    static = _gaussian_frame(64, 64, 32.0, 32.0)  # star never moves
+    e.begin_calibration(32.0, 32.0)
+    t, cal_steps, last = 0.0, 0, None
+    for _ in range(100):
+        last = e.process(static, t, 2.0)
+        t += 2.0
+        if last["action"] == "cal_step":
+            cal_steps += 1
+        else:
+            break
+    assert last["action"] == "lock_lost"
+    assert last["reason"] == "calibration_failed"
+    # upstream-literal budget: max_steps + 1 = 61 pulses before GO_WEST fails
+    assert cal_steps == 61

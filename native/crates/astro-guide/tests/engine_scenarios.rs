@@ -601,6 +601,105 @@ fn settle_timeout_surfaces_lock_lost_then_resumes() {
     );
 }
 
+/// Render a Gaussian star (amp 4000, sigma 1.6, bg 100 — the same fixture the
+/// Python surface tests use) into a `w`x`h` u16 buffer for
+/// [`GuideEngine::measure`]-driven walks.
+fn gaussian_frame(w: usize, h: usize, cx: f64, cy: f64) -> Vec<u16> {
+    let mut data = vec![0u16; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f64 - cx;
+            let dy = y as f64 - cy;
+            let g = 4000.0 * (-(dx * dx + dy * dy) / (2.0 * 1.6 * 1.6)).exp();
+            data[y * w + x] = (100.0 + g).min(65535.0) as u16;
+        }
+    }
+    data
+}
+
+/// P1-T8 fix-round STALL VECTOR (search-origin parity, upstream
+/// guider_multistar.cpp:943/945/1026 + star.cpp:479-483): PHD2 re-finds the
+/// star around its PREVIOUS FRAME's position — the search origin advances
+/// with every found frame; the lock is only the offset reference, never the
+/// search origin. A fixed-origin search (the pre-fix bug: `measure()`
+/// searched around `self.lock`, which `begin_calibration` pins to the
+/// starting position for the whole run) loses the star as soon as a
+/// calibration leg's cumulative drift exceeds `search_region`, and the
+/// calibration stalls (Idle forever) or mismeasures the leg. This walk uses
+/// the DEFAULT config (search_region 15, calibration_distance 25) with a
+/// 6 px/pulse mount, so the GO_WEST leg alone drifts ~30 px — well past the
+/// window. Pre-fix this test fails; post-fix the tracked origin follows the
+/// star (6 px/frame, always in-window) and calibration completes with the
+/// correct measured rate.
+#[test]
+fn calibration_tracks_drifting_star_at_default_search_region() {
+    const W: usize = 200;
+    const H: usize = 200;
+    const RA: f64 = 0.008; // px/ms -> 6 px per default 750 ms pulse
+    const DEC: f64 = 0.008;
+
+    let mut e = GuideEngine::new(EngineConfig::default());
+    let mut pos = (100.0f64, 100.0f64);
+    e.begin_calibration(pos);
+
+    let mut t = 0.0;
+    let mut cal_steps = 0u32;
+    let mut idle_streak = 0u32;
+    let mut completed = false;
+    for _ in 0..300 {
+        let data = gaussian_frame(W, H, pos.0, pos.1);
+        let gf = astro_star::GrayFrame::new(&data, W, H);
+        let measured = e.measure(&gf);
+        let a = e.ingest(&frame(t), &measured);
+        t += 2.0;
+        match a {
+            Action::CalStep { dir, ms, .. } => {
+                idle_streak = 0;
+                cal_steps += 1;
+                let ms = ms as f64;
+                match dir {
+                    Direction::West => pos.0 -= RA * ms,
+                    Direction::East => pos.0 += RA * ms,
+                    Direction::North => pos.1 += DEC * ms,
+                    Direction::South => pos.1 -= DEC * ms,
+                }
+            }
+            Action::Idle => {
+                if e.calibration().is_some() {
+                    completed = true;
+                    break;
+                }
+                // Calibrating-phase Idle == "star not found this frame".
+                idle_streak += 1;
+                assert!(
+                    idle_streak < 25,
+                    "STALL: star never re-found after {cal_steps} steps — \
+                     fixed-origin search bug (search origin must track the \
+                     last-found star, not the lock)"
+                );
+            }
+            Action::LockLost => panic!(
+                "calibration failed after {cal_steps} steps — fixed-origin \
+                 search lost or mismeasured the drifting star"
+            ),
+            other => panic!("unexpected during calibration: {:?}", other),
+        }
+    }
+
+    assert!(completed, "calibration must complete");
+    assert!(
+        cal_steps >= 10,
+        "sanity: the walk actually moved ({cal_steps})"
+    );
+    let cal = e.calibration().expect("completed");
+    assert!(cal.is_valid);
+    assert!(
+        (cal.x_rate - RA).abs() < 0.2 * RA,
+        "x_rate should measure ~{RA}, got {}",
+        cal.x_rate
+    );
+}
+
 /// Drive a full calibration through the engine against a linear mount with
 /// RA 0.02 px/ms and Dec 0.010 px/ms (300 ms steps). Returns the engine for
 /// advisory inspection.
