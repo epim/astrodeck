@@ -847,3 +847,78 @@ fn advisory_check3_fires_only_with_real_declination_patch() {
         UNKNOWN_DECLINATION
     );
 }
+
+// ---- P2-T2 fix-round coverage (b): stale-star full-frame auto-reselect ----
+
+/// P2-T2 bounded auto-reselect (dossier §3.3 hardening; NOT upstream-derived
+/// — new AstroDeck policy documented in `ingest_guiding`): once a lost star
+/// goes STALE (missing > 20 s, `LOST_STAR_TIMEOUT_S`), the engine drops its
+/// search origin, so the NEXT `measure()` runs the FULL-FRAME
+/// auto_find/select_primary pass instead of the narrow `search_region` (15
+/// px) box around the last known position. A star reappearing 30 px away —
+/// twice the search region, invisible to the narrow local search — is
+/// therefore reacquired, and its offset is measured against the OLD
+/// (deliberately unchanged) lock position, producing an ordinary corrective
+/// pulse toward it.
+#[test]
+fn stale_star_reacquired_by_full_frame_autofind_against_old_lock() {
+    let mut e = GuideEngine::new(EngineConfig::default());
+    e.set_calibration(ident_cal());
+    e.begin_guiding();
+    // t=0: the lock establishes at (100,100).
+    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]);
+
+    // The star vanishes. Frames at t=2..22: at t=22 the 20s staleness
+    // threshold is crossed -> LockLost (and the search origin drops).
+    let lost = MeasuredStar {
+        x: 100.0,
+        y: 100.0,
+        snr: 0.0,
+        mass: 0.0,
+        hfd: 0.0,
+        found: false,
+    };
+    let mut last = Action::Idle;
+    for i in 1..=11 {
+        last = e.ingest(&frame(i as f64 * 2.0), &[lost]);
+    }
+    assert!(matches!(last, Action::LockLost), "got {:?}", last);
+
+    // The star reappears at (130,100) — 30px from its last known position,
+    // WELL beyond the 15px search_region a local star_find around (100,100)
+    // covers (a sigma-1.6 Gaussian at 130 has no measurable flux at x<=115),
+    // so only the full-frame auto-find fallback can see it.
+    let (w, h) = (200usize, 200usize);
+    let px = gaussian_frame(w, h, 130.0, 100.0);
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let measured = e.measure(&gf);
+    assert_eq!(measured.len(), 1, "expected the auto-find to reacquire");
+    assert!(
+        measured[0].found,
+        "expected found=true, got {:?}",
+        measured[0]
+    );
+    assert!((measured[0].x - 130.0).abs() < 0.5, "x={}", measured[0].x);
+    assert!((measured[0].y - 100.0).abs() < 0.5, "y={}", measured[0].y);
+
+    // The reacquired star's offset is measured against the OLD lock
+    // (100,100): camera (+30, ~0) == mount (+30, ~0) under ident_cal ->
+    // an RA WEST pulse of ~0.9*30*0.7/0.01 = 1890 ms (fresh-reset
+    // Hysteresis at 0.01 px/ms), dec vetoed by ResistSwitch on ~0 input.
+    let a = e.ingest(&frame(24.0), &measured);
+    match a {
+        Action::PulsePair { ra: Some(p), dec } => {
+            assert_eq!(p.dir, Direction::West, "offset must be vs the OLD lock");
+            assert!(
+                (1800..=1980).contains(&i64::from(p.ms)),
+                "ms={} (expected ~1890 from a +30px offset vs the old lock)",
+                p.ms
+            );
+            assert!(dec.is_none(), "dec should veto on ~0 input, got {:?}", dec);
+        }
+        other => panic!(
+            "expected an RA correction against the OLD lock, got {:?}",
+            other
+        ),
+    }
+}
