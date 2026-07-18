@@ -448,9 +448,10 @@ impl GuideEngine {
         self.phase = Phase::Guiding;
         self.lock = None;
         // Host-initiated fresh session: drop the tracked star so the next
-        // measure() runs a full auto_find acquisition. (The internal
-        // calibration-complete transition deliberately KEEPS the origin —
-        // upstream never re-auto-finds the star it just calibrated on.)
+        // measure() runs a full auto_find acquisition. (Since the P3-T1 fix
+        // round the internal calibration-complete transition does the same —
+        // see ingest_calibrating's CalOutcome::Done arm for the review-ruled
+        // rationale.)
         self.search_origin = None;
         self.reset_guiding_state();
     }
@@ -547,15 +548,31 @@ impl GuideEngine {
                 self.cal = Some(cal);
                 self.calibrator = None;
                 // Transition straight into guiding; the next frame's found
-                // star establishes the lock. `search_origin` is deliberately
-                // KEPT (unlike begin_guiding's fresh-session clear): the
-                // just-calibrated star is still tracked at a known position,
-                // so the next measure() star_finds around it rather than
-                // re-running a full-frame auto_find, mirroring upstream's
-                // continuous m_primaryStar tracking across the
-                // calibration->guiding transition.
+                // star establishes the lock. `search_origin` is CLEARED
+                // (P3-T1 fix round, review ruling #3): the next `measure()`
+                // runs exactly one full-frame auto_find, which is the ONLY
+                // path that acquires multi-star secondaries — keeping the
+                // origin here (the pre-fix behavior) left `max_stars > 1`
+                // dead on the default calibrate->guide flow. DELIBERATE
+                // DIFFERENCE vs upstream: PHD2 acquires the full guide-star
+                // list at SELECT time and persists it through calibration
+                // (`GuiderMultiStar::AutoSelect`,
+                // guider_multistar.cpp:445-531 — `newStar.AutoFind(...,
+                // m_guideStars, MAX_LIST_SIZE)` runs before any calibration
+                // does, and calibration never touches `m_guideStars`); this
+                // engine's acquisition lives inside `measure()`'s auto_find
+                // branch instead, so re-running it here is the equivalent
+                // seam. Functionally identical list contents: the star
+                // field is unchanged across calibration, so the one
+                // full-frame re-find returns the same stars at the same
+                // places — and the continuous-tracking property this
+                // replaces was cosmetic (the just-calibrated primary is
+                // re-found by auto_find at its current position; asserted
+                // by the auto-transition witness test in
+                // engine_scenarios.rs).
                 self.phase = Phase::Guiding;
                 self.lock = None;
+                self.search_origin = None;
                 self.reset_guiding_state();
                 Action::Idle
             }
@@ -1506,5 +1523,163 @@ impl GuideEngine {
             self.recent.pop_front();
         }
         self.recent.push_back((t, ra, dec));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Provenance: direct unit coverage of `refine_multistar`'s PERSISTED
+    // stabilization state machine (dossier §4; `m_stabilizing` /
+    // `m_primaryDistStats` / `m_lockPositionMoved`,
+    // guider_multistar.cpp:744-799) — the review's top thin item on P3-T1:
+    // `refine_offset`'s own golden vectors only exercise the STATELESS
+    // sigma-sentinel re-check, never the engine's real hysteresis with
+    // memory across frames. These tests drive `refine_multistar` directly
+    // (in-module, private access) with hand-seeded `PrimaryDistStats`
+    // state so every threshold crossing is an exact hand-traced Welford
+    // literal, per the crate's golden-vector style.
+
+    /// One well-behaved secondary at reference (200, 50), SNR 20 (equal to
+    /// the tests' primary SNR, so its weight is exactly 1.0).
+    fn one_secondary() -> Vec<SecondaryStar> {
+        vec![SecondaryStar::new(200.0, 50.0, 20.0, (100.0, -50.0))]
+    }
+
+    /// Its per-frame re-measurement: displacement (+0.05, +0.05) from the
+    /// reference point — nonzero on both axes (zero-count gate silent),
+    /// hypot ~0.0707 (far inside every excursion gate these tests reach).
+    fn small_move() -> Vec<MeasuredStar> {
+        vec![MeasuredStar {
+            x: 200.05,
+            y: 50.05,
+            snr: 20.0,
+            mass: 1000.0,
+            hfd: 3.0,
+            found: true,
+        }]
+    }
+
+    /// Engine with `primary_dist_stats` seeded to a KNOWN state: 100
+    /// samples alternating 0.9/1.1 -> mean exactly 1.0, M2 exactly 1.0
+    /// (Welford is order-exact for the final sum of squared deviations),
+    /// sample sigma sqrt(1/99) ~ 0.100504. `stabilizing` starts false.
+    fn seeded_engine() -> GuideEngine {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.secondaries = one_secondary();
+        for _ in 0..50 {
+            e.primary_dist_stats.add(0.9);
+            e.primary_dist_stats.add(1.1);
+        }
+        e
+    }
+
+    /// Collection phase (dossier §4 `else { m_stabilizing = true }`,
+    /// guider_multistar.cpp:790): with 5 or fewer samples every call
+    /// returns None and forces `stabilizing`, and each call still feeds
+    /// the running stats.
+    #[test]
+    fn stabilization_collects_first_five_samples() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.secondaries = one_secondary();
+        assert!(!e.stabilizing, "fresh engine starts non-stabilizing");
+        for i in 1..=5u64 {
+            let out = e.refine_multistar((1.0, 0.0), 20.0, &small_move());
+            assert_eq!(out, None, "call {i}: still collecting");
+            assert!(e.stabilizing, "call {i}: collection forces stabilizing");
+            assert_eq!(e.primary_dist_stats.count(), i);
+        }
+    }
+
+    /// 5-sigma ENTRY (guider_multistar.cpp:749-753): a non-stabilizing
+    /// engine whose primary distance exceeds 5x the (post-add) sample
+    /// sigma enters stabilization and skips refinement that same frame.
+    /// Hand trace: seeded stats (count 100, mean 1.0, M2 1.0) + this
+    /// call's 2.0 -> count 101, new mean 1 + 1/101, M2' = 1 +
+    /// (2-1)(2 - 1.009901) = 1.990099, sigma = sqrt(1.990099/100) =
+    /// 0.141071; 5*sigma = 0.705356 < 2.0 -> enter.
+    #[test]
+    fn stabilization_enters_at_five_sigma_excursion() {
+        let mut e = seeded_engine();
+        let out = e.refine_multistar((2.0, 0.0), 20.0, &small_move());
+        assert_eq!(out, None);
+        assert!(e.stabilizing, "5-sigma excursion must enter stabilization");
+    }
+
+    /// HYSTERESIS MEMORY between 2 and 5 sigma (the review's exact thin
+    /// spot): the SAME seeded stats and the SAME 0.5px distance produce
+    /// OPPOSITE outcomes depending only on the persisted `stabilizing`
+    /// flag. Hand trace of the shared sigma: seeded + 0.5 -> count 101,
+    /// new mean 1 - 0.5/101 = 0.995050, M2' = 1 + (0.5-1)(0.5-0.995050)
+    /// = 1.247525, sigma = sqrt(1.247525/100) = 0.111693; 2*sigma =
+    /// 0.223387 < 0.5 < 5*sigma = 0.558467 — inside the hysteresis band:
+    /// too large to EXIT, too small to ENTER.
+    #[test]
+    fn stabilization_memory_persists_between_two_and_five_sigma() {
+        // Already stabilizing: 0.5 does not exit -> None, flag persists.
+        let mut stab = seeded_engine();
+        stab.stabilizing = true;
+        let out = stab.refine_multistar((0.5, 0.0), 20.0, &small_move());
+        assert_eq!(out, None, "inside the band, a stabilizing engine stays");
+        assert!(stab.stabilizing, "the flag is MEMORY, not a per-frame test");
+
+        // Not stabilizing: the identical distance does not enter, so the
+        // same frame refines. Weighted average (weight 1.0):
+        // ((0.5 + 0.05)/2, 0.05/2) = (0.275, 0.025), hypot 0.276 < 0.5.
+        let mut calm = seeded_engine();
+        let out = calm.refine_multistar((0.5, 0.0), 20.0, &small_move());
+        let (rx, ry) = out.expect("non-stabilizing engine refines in the band");
+        assert!((rx - 0.275).abs() < 1e-9, "rx={rx}");
+        assert!((ry - 0.025).abs() < 1e-9, "ry={ry}");
+        assert!(!calm.stabilizing);
+    }
+
+    /// 2-sigma EXIT with same-frame fall-through
+    /// (guider_multistar.cpp:755-760 exit, then the same invocation runs
+    /// the secondary loop at :800): the exit frame itself refines — no
+    /// dead frame between exit and first refinement. Hand trace: seeded +
+    /// 0.2 -> count 101, new mean 1 - 0.8/101 = 0.992079, M2' = 1 +
+    /// (0.2-1)(0.2-0.992079) = 1.633663, sigma = sqrt(1.633663/100) =
+    /// 0.127815; 2*sigma = 0.255629 >= 0.2 -> exit; refined = ((0.2 +
+    /// 0.05)/2, 0.05/2) = (0.125, 0.025), hypot 0.127 < 0.2 -> Some.
+    #[test]
+    fn stabilization_exits_at_two_sigma_and_refines_same_frame() {
+        let mut e = seeded_engine();
+        e.stabilizing = true;
+        let out = e.refine_multistar((0.2, 0.0), 20.0, &small_move());
+        let (rx, ry) = out.expect("the exit frame must fall through to refinement");
+        assert!((rx - 0.125).abs() < 1e-9, "rx={rx}");
+        assert!((ry - 0.025).abs() < 1e-9, "ry={ry}");
+        assert!(!e.stabilizing, "exited");
+    }
+
+    /// 2-sigma exit with `lock_position_moved` armed (a dither happened;
+    /// guider_multistar.cpp:761-791): the exit frame consumes the flag,
+    /// refreshes every secondary's reference point from this frame's
+    /// measurement, and does NOT refine (upstream `return false`).
+    #[test]
+    fn stabilization_exit_with_lock_moved_recovers_secondaries_without_refining() {
+        let mut e = seeded_engine();
+        e.stabilizing = true;
+        e.lock_position_moved = true;
+        let recovered = vec![MeasuredStar {
+            x: 210.0,
+            y: 40.0,
+            snr: 20.0,
+            mass: 1000.0,
+            hfd: 3.0,
+            found: true,
+        }];
+        let out = e.refine_multistar((0.2, 0.0), 20.0, &recovered);
+        assert_eq!(out, None, "the lock-recovery frame never refines");
+        assert!(!e.stabilizing, "still exits stabilization");
+        assert!(!e.lock_position_moved, "the flag is consumed");
+        assert_eq!(
+            e.secondaries[0].reference_point,
+            (210.0, 40.0),
+            "reference point refreshed from the recovery measurement"
+        );
+        assert!(!e.secondaries[0].was_lost);
     }
 }

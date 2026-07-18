@@ -545,10 +545,13 @@ class NativeGuider(Guider):
             "dec_guide_mode": cfg.get("dec_guide_mode", "auto"),
         }
         # Pass through any explicitly-pinned engine tunables verbatim.
+        # "max_stars" (P3-T1 fix round, review ruling #4): the multi-star
+        # tracking knob (dossier §2.6/§4) — absent from this allowlist the
+        # engine silently stayed at its single-star default of 1.
         for k in ("calibration_distance", "calibration_duration_ms", "max_steps",
                   "assume_orthogonal", "max_ra_duration_ms", "max_dec_duration_ms",
                   "blc_pulse_ms", "search_region", "min_hfd", "max_hfd", "max_adu",
-                  "pedestal", "bits_per_pixel"):
+                  "pedestal", "bits_per_pixel", "max_stars"):
             if k in cfg:
                 engine_cfg[k] = cfg[k]
 

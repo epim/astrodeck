@@ -850,6 +850,168 @@ fn advisory_check3_fires_only_with_real_declination_patch() {
 
 // ---- P2-T2 fix-round coverage (b): stale-star full-frame auto-reselect ----
 
+/// Render a multi-star field (one Gaussian per `(cx, cy, amp)` entry, sigma
+/// 1.6, bg 100 — `gaussian_frame` generalized) into a `w`x`h` u16 buffer.
+fn multi_gaussian_frame(w: usize, h: usize, stars: &[(f64, f64, f64)]) -> Vec<u16> {
+    let mut acc = vec![100.0f64; w * h];
+    for &(cx, cy, amp) in stars {
+        for y in 0..h {
+            for x in 0..w {
+                let dx = x as f64 - cx;
+                let dy = y as f64 - cy;
+                acc[y * w + x] += amp * (-(dx * dx + dy * dy) / (2.0 * 1.6 * 1.6)).exp();
+            }
+        }
+    }
+    acc.into_iter().map(|v| v.min(65535.0) as u16).collect()
+}
+
+/// P3-T1 fix-round WITNESS (review ruling #3): the calibration-complete
+/// auto-transition (`CalOutcome::Done` -> guiding) must clear the search
+/// origin so the FIRST guiding frame runs a full-frame `auto_find` — the
+/// only path that acquires multi-star secondaries. Pre-fix, the Done arm
+/// deliberately KEPT the origin (continuous single-star tracking), so a
+/// fresh-calibration session NEVER ran `auto_find` and `max_stars > 1` was
+/// dead on the default flow. Upstream acquires the full guide-star list at
+/// SELECT time and persists it through calibration
+/// (`GuiderMultiStar::AutoSelect`, guider_multistar.cpp:445-531:
+/// `newStar.AutoFind(..., m_guideStars, MAX_LIST_SIZE)` before any
+/// calibration runs); this engine's acquisition lives in `measure()`'s
+/// auto_find branch instead, so the equivalent is one full-frame re-find at
+/// the transition — functionally identical list contents (the star field is
+/// unchanged across calibration), verified here by asserting the re-found
+/// primary lands within tolerance of the calibrated star's final position
+/// (the continuous-tracking property the fix replaces was cosmetic).
+///
+/// Walk: full calibration on a 3-star field (whole field moves rigidly with
+/// the mount) -> auto-transition -> first guiding frame acquires primary +
+/// 2 secondaries -> 6 steady 1px-offset frames feed the stabilization
+/// stats (dossier §4: collection then stabilizing) -> a 0.2px frame drops
+/// below the 2-sigma exit and the SAME frame runs `refine_offset`, whose
+/// per-star position update is the public observable that refinement is
+/// live (`stats().secondaries` moves to the frame-7 field position).
+#[test]
+fn calibration_auto_transition_acquires_secondaries_and_refines() {
+    const W: usize = 260;
+    const H: usize = 260;
+    // Base field: primary (brightest) + 2 secondaries, all pairwise
+    // separations > 25px (dedup) and > search_region+5 (conflict box).
+    const BASE: [(f64, f64, f64); 3] = [
+        (120.0, 120.0, 4000.0), // primary
+        (190.0, 70.0, 2500.0),  // secondary A
+        (60.0, 190.0, 1500.0),  // secondary B
+    ];
+    fn field(shift: (f64, f64)) -> Vec<u16> {
+        let stars: Vec<(f64, f64, f64)> = BASE
+            .iter()
+            .map(|&(x, y, a)| (x + shift.0, y + shift.1, a))
+            .collect();
+        multi_gaussian_frame(W, H, &stars)
+    }
+
+    let mut cfg = EngineConfig::default();
+    cfg.max_stars = 12;
+    let mut e = GuideEngine::new(cfg);
+
+    // --- calibration on the moving field (linear mount, 0.02 px/ms) ---
+    const RATE: f64 = 0.02;
+    let mut shift = (0.0f64, 0.0f64);
+    e.begin_calibration((BASE[0].0, BASE[0].1));
+    let mut t = 0.0;
+    let mut guard = 0;
+    loop {
+        guard += 1;
+        assert!(guard < 500, "calibration did not complete");
+        let data = field(shift);
+        let gf = astro_star::GrayFrame::new(&data, W, H);
+        let measured = e.measure(&gf);
+        let a = e.ingest(&frame(t), &measured);
+        t += 2.0;
+        match a {
+            Action::CalStep { dir, ms, .. } => {
+                let ms = ms as f64;
+                match dir {
+                    Direction::West => shift.0 -= RATE * ms,
+                    Direction::East => shift.0 += RATE * ms,
+                    Direction::North => shift.1 += RATE * ms,
+                    Direction::South => shift.1 -= RATE * ms,
+                }
+            }
+            Action::Idle => break, // completed -> auto-transitioned to guiding
+            other => panic!("unexpected during calibration: {:?}", other),
+        }
+    }
+    assert!(e.calibration().expect("cal completed").is_valid);
+
+    // --- first guiding frame: full-frame auto_find acquisition ---
+    let cal_end_primary = (BASE[0].0 + shift.0, BASE[0].1 + shift.1);
+    let data = field(shift);
+    let gf = astro_star::GrayFrame::new(&data, W, H);
+    let measured = e.measure(&gf);
+    assert!(
+        measured.len() >= 3,
+        "the acquisition frame must measure primary + 2 secondaries, got {} \
+         (pre-fix: the kept search origin skipped auto_find entirely)",
+        measured.len()
+    );
+    // Continuous-tracking-was-cosmetic verification (review ruling #3): the
+    // auto_find primary is the SAME star the calibration tracked, at the
+    // same place.
+    assert!(
+        (measured[0].x - cal_end_primary.0).abs() < 1.0
+            && (measured[0].y - cal_end_primary.1).abs() < 1.0,
+        "auto_find primary ({}, {}) must land on the calibrated star ({}, {})",
+        measured[0].x,
+        measured[0].y,
+        cal_end_primary.0,
+        cal_end_primary.1
+    );
+    let a = e.ingest(&frame(t), &measured); // lock-establishing frame
+    t += 2.0;
+    assert!(matches!(a, Action::Idle), "lock frame: {a:?}");
+    let acquired = e.stats().secondaries;
+    assert_eq!(
+        acquired.len(),
+        2,
+        "THE WITNESS: secondaries must acquire on the default \
+         calibrate->guide flow (pre-fix: 0 — auto_find never ran)"
+    );
+
+    // --- refinement live-ness: 6 collection frames, then the 2-sigma exit
+    //     frame runs refine_offset, which advances each tracked secondary's
+    //     stored position (its only writer) ---
+    let lock_shift = shift;
+    for _ in 0..6 {
+        let data = field((lock_shift.0 + 1.0, lock_shift.1));
+        let gf = astro_star::GrayFrame::new(&data, W, H);
+        let measured = e.measure(&gf);
+        let _ = e.ingest(&frame(t), &measured);
+        t += 2.0;
+    }
+    // During collection/stabilizing, refine_offset never ran: positions
+    // still exactly the acquisition ones.
+    assert_eq!(
+        e.stats().secondaries,
+        acquired,
+        "secondary positions must not move before the stabilization exit"
+    );
+    // Frame 7: 0.2px offset <= 2*sigma (sigma ~0.30 from the 6x1.0-then-0.2
+    // Welford trace) -> exits stabilizing -> same-frame refine_offset.
+    let data = field((lock_shift.0 + 0.2, lock_shift.1));
+    let gf = astro_star::GrayFrame::new(&data, W, H);
+    let measured = e.measure(&gf);
+    let _ = e.ingest(&frame(t), &measured);
+    let refined = e.stats().secondaries;
+    assert_eq!(refined.len(), 2, "both secondaries still tracked");
+    for (i, (before, after)) in acquired.iter().zip(refined.iter()).enumerate() {
+        assert!(
+            (after.0 - (before.0 + 0.2)).abs() < 0.15,
+            "secondary {i} position must advance with the frame-7 field \
+             (refine_offset is its only writer): before={before:?} after={after:?}"
+        );
+    }
+}
+
 /// P2-T2 bounded auto-reselect (dossier §3.3 hardening; NOT upstream-derived
 /// — new AstroDeck policy documented in `ingest_guiding`): once a lost star
 /// goes STALE (missing > 20 s, `LOST_STAR_TIMEOUT_S`), the engine drops its
