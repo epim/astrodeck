@@ -14,6 +14,7 @@
 //! millisecond unless a function's doc comment states otherwise.
 
 pub mod algorithms;
+pub mod calibration;
 pub mod select;
 pub mod starfind;
 pub mod track;
