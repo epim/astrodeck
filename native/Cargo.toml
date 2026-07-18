@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/astro-star",
     "crates/astro-focus",
+    "crates/astro-guide",
     "crates/astro-tppa",
     "crates/astrodeck-native",
 ]
@@ -11,3 +12,6 @@ members = [
 edition = "2021"
 license = "MPL-2.0"
 rust-version = "1.85"
+
+[workspace.dependencies]
+nalgebra = "0.33"
