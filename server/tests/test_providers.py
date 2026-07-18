@@ -200,7 +200,7 @@ def test_resolve_all_shape_and_never_raises():
     # to the simulator, and resolve_all returns well-formed rows for both.
     hub = FakeHub(mode="none", devices={})
     out = providers.resolve_all(hub)
-    assert set(out) == {"autofocus", "polar_align", "solve"}
+    assert set(out) == {"autofocus", "polar_align", "solve", "guide"}
     for row in out.values():
         assert set(row) == {"kind", "label", "reason"}
     assert out["autofocus"]["kind"] == "unavailable"
@@ -220,7 +220,7 @@ async def test_poll_status_carries_providers(tmp_path, monkeypatch):
     h = hub_module.Hub()
     status = await h.poll_status()
     assert "providers" in status
-    assert set(status["providers"]) == {"autofocus", "polar_align", "solve"}
+    assert set(status["providers"]) == {"autofocus", "polar_align", "solve", "guide"}
     # nothing connected -> autofocus unavailable, polar simulator, no exception.
     for row in status["providers"].values():
         assert "kind" in row and "label" in row and "reason" in row

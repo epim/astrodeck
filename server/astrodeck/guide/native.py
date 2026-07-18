@@ -100,6 +100,20 @@ _SETTLE_TIMEOUT_S = 90.0
 _UNKNOWN_DECLINATION = 997.0
 
 
+def guide_algo_config() -> dict:
+    """The persisted per-axis guide-algorithm selection (``AppConfig.guide``)
+    as engine-config keys (``ra_algorithm`` / ``dec_algorithm``), for the backend
+    guider constructors (P2-T3). Defensive: any failure (no config store, an old
+    config without the block) yields ``{}`` so ``_build_engine_config`` falls
+    back to its dossier §15 defaults rather than raising during connect."""
+    try:
+        from ..config import config_store
+        g = config_store.cfg().guide
+        return {"ra_algorithm": g.ra_algorithm, "dec_algorithm": g.dec_algorithm}
+    except Exception:  # pragma: no cover - defensive
+        return {}
+
+
 class NativeGuider(Guider):
     """The native Rust-engine autoguider (spec §3.2/§5).
 
@@ -690,6 +704,30 @@ class NativeGuider(Guider):
         except Exception as e:  # pragma: no cover - best effort
             bus.log("warning",
                     f"native guider: could not persist calibration: {e}", "guide")
+
+    def clear_calibration(self) -> bool:
+        """Delete this profile's persisted calibration
+        (``CONFIG_DIR/guider/<profile>.json``) so the NEXT ``start_guiding``
+        drives a fresh calibration walk instead of reusing the stored one
+        (dossier §8.4). Best-effort and non-fatal (used by
+        ``DELETE /api/guide/calibration``); returns True when a file was
+        removed. Does not disturb an in-flight guide loop — a running session
+        keeps its live calibration until it is next (re)started."""
+        if not self.profile_id:
+            return False
+        try:
+            from ..config import CONFIG_DIR
+            p = CONFIG_DIR / "guider" / f"{self.profile_id}.json"
+            if p.exists():
+                p.unlink()
+                bus.log("info",
+                        f"native guider: cleared persisted calibration for "
+                        f"profile {self.profile_id}", "guide")
+                return True
+        except Exception as e:  # pragma: no cover - best effort
+            bus.log("warning",
+                    f"native guider: could not clear calibration: {e}", "guide")
+        return False
 
     def _load_persisted_calibration(self) -> dict | None:
         """Read this profile's persisted calibration
