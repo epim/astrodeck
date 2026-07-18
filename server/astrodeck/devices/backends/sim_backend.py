@@ -69,15 +69,45 @@ class SimSession:
             ) from None
 
     def native_guider(self) -> object | None:
-        """The sim's own guider (``SimGuider``), created lazily and once.
+        """The sim's own guider, created lazily and once.
 
-        SYNC by contract. The hub uses this in place of PHD2 for the sim rig."""
+        Default is the believable-stream ``SimGuider`` (fast, deterministic —
+        what the hub/sequence tests rely on). The native Rust-engine
+        ``NativeGuider`` — the SAME closed loop the P1 e2e gate exercises — is
+        wired in and available behind an explicit opt-in: set the
+        ``ASTRODECK_SIM_NATIVE_GUIDER`` env var (truthy) with the engine wheel
+        present. Making the native guider the DEFAULT sim provider is deferred to
+        P2-T3 provider resolution (auto->astrodeck, per-profile override,
+        deliberate test updates, a sim-tuned fast CalConfig) — see plan — where
+        it lands once, correctly. SYNC by contract. The hub uses this in place of
+        PHD2 for the sim rig."""
         if self._guider is None:
-            # Deferred import: keep module import light and avoid pulling the
-            # guide stack in just to register the backend.
-            from ...guide import SimGuider
+            import os
 
-            self._guider = SimGuider()
+            from ... import providers
+
+            gcam = self._rig.get("guide_camera")
+            tel = self._rig.get("telescope")
+            opt_in = (os.environ.get("ASTRODECK_SIM_NATIVE_GUIDER") or "").strip()
+            want_native = opt_in.lower() not in ("", "0", "false", "no", "off")
+            if (want_native and providers.NATIVE_AVAILABLE
+                    and gcam is not None and tel is not None):
+                # Deferred import: keep module load light (the native guider pulls
+                # the guide stack / numpy).
+                from ...guide.native import NativeGuider
+
+                rig = self._rig.get("_rig")
+                scale = float(getattr(rig, "guide_scale_arcsec_px", 1.0) or 1.0)
+                self._guider = NativeGuider(
+                    gcam, tel,
+                    config={"image_scale_arcsec": scale, "exposure_s": 1.0},
+                    profile_id="sim")
+            else:
+                # Deferred import: keep module import light and avoid pulling the
+                # guide stack in just to register the backend.
+                from ...guide import SimGuider
+
+                self._guider = SimGuider()
         return self._guider
 
     def native_solver(self) -> object | None:
