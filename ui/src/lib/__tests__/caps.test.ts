@@ -88,7 +88,7 @@ const ALL_CAPS: Capability[] = [
   "view.weather",
   "control.capture", "control.mount", "control.guide", "control.power",
   "config.safety", "config.solar_override", "config.backend",
-  "config.site_optics", "config.alerts", "admin.users",
+  "config.site_optics", "config.alerts", "admin.users", "system.update",
 ];
 const admin: Principal = { role: "admin", email: null, caps: ALL_CAPS };
 const operator: Principal = {
