@@ -52,10 +52,11 @@ export const ROLE_DESCRIPTIONS: Record<PrincipalRole, string> = {
     "Live status and preview frames only — no raw FITS, no precise site location, no device control.",
   // ROLES_CAP["operator"] = viewer caps + control.capture + control.guide +
   // control.mount (2026-07-17 decisions wave I1: operators run sequences —
-  // future telescope-rental interface); explicitly NOT control.power/
-  // config.*/view.media.
+  // future telescope-rental interface) + view.weather (same wave, I2: full
+  // weather incl. radar map); explicitly NOT control.power/config.*/
+  // view.media/view.site_precise.
   operator:
-    "Runs imaging and sequences: capture, capture loops, autofocus, guiding, and mount motion. Cannot control power or change settings.",
+    "Runs imaging and sequences: capture, capture loops, autofocus, guiding, mount motion, and full weather (forecast, radar map). Cannot control power or change settings.",
   // ALL_CAPS: every capability, including the DESTRUCTIVE-tier ones (mount
   // motion, power, safety/solar override, admin.users, system.update).
   admin:
@@ -74,14 +75,17 @@ const ROLE_CAPS: Record<PrincipalRole, readonly Capability[]> = {
   // VIEWER_LINK_CAPS: live-watch only.
   viewer: ["view.status", "view.preview"],
   // ROLES_CAP["operator"]: viewer caps + capture + guide + mount (2026-07-17
-  // decisions wave I1: operators run sequences) — explicitly NOT power/
-  // config.*/media.
+  // decisions wave I1: operators run sequences) + view.weather (same wave,
+  // I2: full weather incl. radar map is visible to operators) — explicitly
+  // NOT power/config.*/media/view.site_precise.
   operator: [
-    "view.status", "view.preview", "control.capture", "control.guide", "control.mount",
+    "view.status", "view.preview", "view.weather",
+    "control.capture", "control.guide", "control.mount",
   ],
   // ALL_CAPS.
   admin: [
     "view.status", "view.preview", "view.media", "view.site_precise",
+    "view.weather",
     "control.capture", "control.mount", "control.guide", "control.power",
     "config.safety", "config.solar_override", "config.backend",
     "config.site_optics", "config.alerts", "admin.users", "system.update",
@@ -96,7 +100,7 @@ export function rolesHolding(cap: Capability): PrincipalRole[] {
 }
 
 /** Accurate "who can do this" phrase for a lock note, derived from the role
- *  table above — e.g. control.mount → "admin access", control.capture →
+ *  table above — e.g. config.backend → "admin access", control.capture →
  *  "operator or admin access". Fail-closed: an unheld/unknown cap reads
  *  "admin access" (never promises a role that would still be denied). */
 export function accessPhrase(cap: Capability): string {
@@ -217,8 +221,12 @@ export const useCanAdminUsers = () => useCapability("admin.users");
 /** system.update — admin-only; gates the Updates panel (self-update). */
 export const useCanSystemUpdate = () => useCapability("system.update");
 /** view.site_precise — gates precise-coordinate display (Site panel "Hidden"
- *  placeholder) and, in sub-project C, the weather/radar panel. Admin-only. */
+ *  placeholder) and the Settings → Connect Weather CONFIG panel. Admin-only. */
 export const useCanViewSitePrecise = () => useCapability("view.site_precise");
+/** view.weather — gates the Monitor Sky Conditions + Radar panels (2026-07-17
+ *  decisions wave I2: split off view.site_precise so operators see full
+ *  weather, radar map included). Operator + admin. */
+export const useCanViewWeather = () => useCapability("view.weather");
 
 /** True when the caller is a viewer (or unresolved). Drives the "View-only"
  *  badge + read-only surfaces (controls HIDDEN/disabled, not 403-on-tap). */

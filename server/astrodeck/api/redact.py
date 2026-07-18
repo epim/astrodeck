@@ -11,17 +11,25 @@ This is the ONLY place the cap is enforced, so every precise-site surface
 (REST status/summary/config + the WS hello frame and status pushes) must
 route through here.
 
+``view.weather`` (operator + admin; 2026-07-17 decisions wave I2) is the
+SEPARATE access-control decision for the WS ``weather`` event -- split off
+``view.site_precise`` so an operator (who never holds view.site_precise) can
+still see the forecast/Sky Conditions/radar surface. This module enforces
+BOTH caps independently: a weather event is gated on view.weather, every
+other event's precise-site keys are gated on view.site_precise.
+
 These helpers were originally nested closures inside ``api.app.create_app``.
 They are extracted here -- module-level and IMPORT-LIGHT (only ``..auth`` for
-``Principal``/``CAP_VIEW_SITE_PRECISE`` + stdlib) -- so BOTH the on-LAN /ws
-handler (``api.app``) AND the relay-tunneled /ws handler
+``Principal``/``CAP_VIEW_SITE_PRECISE``/``CAP_VIEW_WEATHER`` + stdlib) -- so
+BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 (``remote.relay_client``) share ONE implementation. ``api.app`` already imports
 ``remote.relay_client``, so relay_client importing the helpers back out of
 ``api.app`` would be circular; a neutral module breaks the cycle.
 """
 from __future__ import annotations
 
-from ..auth.capabilities import CAP_CONFIG_BACKEND, CAP_VIEW_SITE_PRECISE
+from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_PRECISE,
+                                 CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
@@ -76,20 +84,30 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     change (status carries ``data.site``; config carries ``data.config.site``).
     A holder sees the event verbatim (no copy).
 
-    Weather events (sub-project C, weather spec §8) are DROPPED ENTIRELY (not
-    stripped) for non-holders: this returns ``None`` and BOTH WS lanes (the
-    LAN /ws handler in api/app.py and the relay ``_run_ws`` in
-    remote/relay_client.py) skip the send on None. Rationale: max-privacy —
-    even location-free forecast numbers describe conditions at the site.
+    Weather events (sub-project C, weather spec §8; gate split off in the
+    2026-07-17 decisions wave I2) are DROPPED ENTIRELY (not stripped) for a
+    principal lacking ``view.weather`` — this returns ``None`` and BOTH WS
+    lanes (the LAN /ws handler in api/app.py and the relay ``_run_ws`` in
+    remote/relay_client.py) skip the send on None. This is a SEPARATE cap
+    from view.site_precise: operators hold view.weather (product-owner
+    decision — full weather, radar map included, is visible to operators;
+    the owner accepts that the radar map's tile coordinates disclose the
+    site region to an operator) but do NOT hold view.site_precise, so a
+    weather event is checked FIRST and independently of the site-precision
+    branch below (which still gates every OTHER coordinate-bearing event on
+    view.site_precise, unchanged). A viewer holds neither cap, so weather
+    stays dropped for it.
 
     CONTRACT (spec §8): any FUTURE event or payload that embeds site
     coordinates MUST place them at ``data.site`` or ``data.config.site`` so this
     seam catches them. Site data reachable by no other path is the invariant
     that makes this the single enforcement point; do NOT add a second lane."""
+    if ev_json.get("type") == "weather":
+        if principal is not None and principal.has(CAP_VIEW_WEATHER):
+            return ev_json  # holder (operator or admin): verbatim, unstripped
+        return None          # non-holder (viewer): dropped entirely
     if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
         return ev_json
-    if ev_json.get("type") == "weather":
-        return None
     data = ev_json.get("data")
     if not isinstance(data, dict):
         return ev_json

@@ -66,6 +66,11 @@ export function normalizeWeather(
       typeof raw.sustain_minutes === "number" && Number.isFinite(raw.sustain_minutes)
         ? raw.sustain_minutes
         : 30,
+    // Site fix for RadarMap centering (2026-07-17 decisions wave I2) — passed
+    // through as-is; null on the default site (server contract) or if absent
+    // (an older/other caller of normalizeWeather that never set them).
+    site_lat: typeof raw.site_lat === "number" ? raw.site_lat : null,
+    site_lon: typeof raw.site_lon === "number" ? raw.site_lon : null,
     forecast,
     astrospheric: astro,
     alert: raw.alert ?? null,
