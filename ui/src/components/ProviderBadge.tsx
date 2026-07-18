@@ -17,12 +17,13 @@ import { useProviders, type ResolvedProviderKind } from "../store";
    night mode and color-blindness. `reason` is the hover title. All colors come
    from tokens via the `.prov*` classes — no hardcoded hex here. */
 
-type Cap = "autofocus" | "polar_align" | "solve";
+type Cap = "autofocus" | "polar_align" | "solve" | "guide";
 
 const CAP_META: Record<Cap, { abbr: string; full: string }> = {
   autofocus: { abbr: "AF", full: "Autofocus" },
   polar_align: { abbr: "TPPA", full: "Polar alignment" },
   solve: { abbr: "SOLVE", full: "Plate solving" },
+  guide: { abbr: "GUIDE", full: "Autoguiding" },
 };
 
 export function ProviderBadge({ cap, className = "" }: {

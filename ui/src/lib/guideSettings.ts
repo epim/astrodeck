@@ -81,3 +81,77 @@ export function isValidRaAlgorithm(kind: string): kind is GuideAlgorithmKind {
 export function isValidDecAlgorithm(kind: string): kind is GuideAlgorithmKind {
   return DEC_GUIDE_ALGORITHMS.some((o) => o.value === kind);
 }
+
+// ---------------------------------------------------------------- edit model
+// The per-axis selection the GuideView settings drawer edits and PUTs to
+// `/api/guide/settings`. Each axis carries its algorithm KIND plus the dossier
+// §15 default parameter set for display/tuning. Only the algorithm kind flows to
+// the engine today (see the module doc); the params are display-only until a
+// config-key allowlist lands, but they are clamped so an out-of-range value can
+// never be persisted or shown.
+
+export interface AxisGuideSettings {
+  algorithm: GuideAlgorithmKind;
+  params: GuideAlgorithmParamDefaults;
+}
+
+export interface GuideSettings {
+  ra: AxisGuideSettings;
+  dec: AxisGuideSettings;
+}
+
+/** A FRESH default GuideSettings: RA Hysteresis (0.7/0.1/0.2), Dec Resist Switch
+ *  (1.0) — the dossier §15 PHD2 defaults. Deep-copies GUIDE_ALGORITHM_DEFAULTS so
+ *  a caller mutating the result never poisons the shared default table. */
+export function defaultGuideSettings(): GuideSettings {
+  return {
+    ra: {
+      algorithm: DEFAULT_RA_ALGORITHM,
+      params: { ...GUIDE_ALGORITHM_DEFAULTS[DEFAULT_RA_ALGORITHM] },
+    },
+    dec: {
+      algorithm: DEFAULT_DEC_ALGORITHM,
+      params: { ...GUIDE_ALGORITHM_DEFAULTS[DEFAULT_DEC_ALGORITHM] },
+    },
+  };
+}
+
+/** Aggression/gain hard cap (PHD2 `GuideAlgorithmHysteresis::SetAggression`
+ *  range; dossier §15). */
+const MAX_AGGRESSION = 2.0;
+/** Hysteresis hard cap (PHD2 clamps hysteresis strictly below 1.0). */
+const MAX_HYSTERESIS = 0.99;
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+function validateAxis(
+  axis: AxisGuideSettings,
+  isValid: (k: string) => boolean,
+  which: "RA" | "Dec",
+): AxisGuideSettings {
+  if (!isValid(axis.algorithm)) {
+    throw new Error(`unknown ${which} guide algorithm: ${axis.algorithm}`);
+  }
+  const params: GuideAlgorithmParamDefaults = { ...axis.params };
+  for (const key of Object.keys(params)) {
+    const val = params[key];
+    if (typeof val !== "number" || Number.isNaN(val)) continue;
+    if (key === "aggression") params[key] = clamp(val, 0, MAX_AGGRESSION);
+    else if (key === "hysteresis") params[key] = clamp(val, 0, MAX_HYSTERESIS);
+    else params[key] = Math.max(0, val); // minMove and the rest are non-negative
+  }
+  return { algorithm: axis.algorithm, params };
+}
+
+/** Validate + clamp a GuideSettings: rejects an unknown per-axis algorithm name
+ *  (PPEC on Dec included, since it is RA-only), and clamps aggression to
+ *  <= 2.0, hysteresis to <= 0.99, and every param to >= 0. Returns a clamped
+ *  COPY; throws on an unknown algorithm. */
+export function validateGuideSettings(s: GuideSettings): GuideSettings {
+  return {
+    ra: validateAxis(s.ra, isValidRaAlgorithm, "RA"),
+    dec: validateAxis(s.dec, isValidDecAlgorithm, "Dec"),
+  };
+}
