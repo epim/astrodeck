@@ -51,9 +51,9 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
-                      EscalationConfig, Optics, ProvidersConfig, RotatorConfig,
-                      SafetyConfig, Site, SurveyConfig, UpdateConfig, WeatherConfig,
-                      config_store, redacted)
+                      EscalationConfig, GuideConfig, Optics, ProvidersConfig,
+                      RotatorConfig, SafetyConfig, Site, SurveyConfig,
+                      UpdateConfig, WeatherConfig, config_store, redacted)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
                          location_store)
 from .. import __version__
@@ -2809,6 +2809,63 @@ def create_app() -> FastAPI:
             raise HTTPException(404, "no guide frame available")
         return Response(png, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/guide/calibrate",
+              dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_calibrate():
+        """Force a FRESH calibration: stop any live guiding, clear the active
+        profile's stored calibration, then (re)start guiding so the engine
+        recalibrates from scratch instead of reusing a persisted calibration.
+        409 when no guider is connected. A guider that owns its own calibration
+        lifecycle (PHD2/NINA/sim) has no ``clear_calibration`` and simply
+        re-starts (its backend re-runs calibration as needed)."""
+        if not hub.guider or not hub.guider.connected:
+            raise HTTPException(409, "no guider connected")
+        await hub.guider.stop_guiding()
+        clear = getattr(hub.guider, "clear_calibration", None)
+        if callable(clear):
+            clear()
+        return _spawn("guide", hub.guider.start_guiding(), replace=True)
+
+    @app.delete("/api/guide/calibration",
+                dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_clear_calibration():
+        """Clear the active profile's PERSISTED calibration so the next start
+        drives a fresh calibration walk (dossier §8.4). 409 when no guider is
+        connected; 400 when the connected guider manages no clearable persisted
+        calibration (PHD2/NINA/sim own their own calibration lifecycle)."""
+        if not hub.guider:
+            raise HTTPException(409, "no guider connected")
+        clear = getattr(hub.guider, "clear_calibration", None)
+        if not callable(clear):
+            raise HTTPException(
+                400, "this guider does not manage a clearable calibration")
+        return {"cleared": bool(clear())}
+
+    @app.get("/api/guide/settings",
+             dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_settings_get():
+        """The persisted native-guider per-axis algorithm selection
+        (``AppConfig.guide``)."""
+        return config_store.cfg().guide.model_dump()
+
+    @app.put("/api/guide/settings",
+             dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_settings_put(body: GuideConfig):
+        """Persist the native-guider per-axis algorithm selection (write-time
+        validated against the PHD2-parity pick lists; PPEC is RA-only —
+        ValueError→422). Takes effect on the next ``start_guiding`` (the guider
+        reads it at construction)."""
+        try:
+            cfg = await asyncio.to_thread(config_store.set_guide, body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return config_store.cfg().guide.model_dump()
 
     # ------------------------------------------------------------- sequence
 

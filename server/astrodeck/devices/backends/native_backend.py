@@ -19,9 +19,12 @@ from .. import alpaca
 from ..backend import Backend, BackendSession, ConnSpec, register
 
 #: Map a pluggable role to the ASCOM Alpaca device-type string ``make_device``
-#: expects. Note ``safety`` -> ``"safetymonitor"`` (the Alpaca name) and that
-#: ``guider`` is intentionally absent: Alpaca has no guider device; native
-#: guiding is done via PHD2 (``native_guider()`` returns None).
+#: expects. Note ``safety`` -> ``"safetymonitor"`` (the Alpaca name). ``guider``
+#: is intentionally absent: Alpaca has no guider device — native guiding runs the
+#: Rust engine over a guide CAMERA (``native_guider()``), it is never a
+#: ``get_device`` role. ``guide_camera`` DOES map to a real Alpaca ``camera`` (a
+#: second camera addressed by its own ``dev_num``), so a rig that explicitly
+#: assigns a native guide camera can hand it to the native guider (P2-T3, D6).
 _ROLE_TO_DEV_TYPE: dict[str, str] = {
     "camera": "camera",
     "telescope": "telescope",
@@ -30,6 +33,7 @@ _ROLE_TO_DEV_TYPE: dict[str, str] = {
     "switch": "switch",
     "safety": "safetymonitor",
     "rotator": "rotator",
+    "guide_camera": "camera",
 }
 
 
@@ -53,6 +57,7 @@ class NativeSession:
         # (host, port) -> shared AlpacaConnection. Distinct endpoints get
         # distinct connections; same endpoint reuses one (the pool).
         self._conns: dict[tuple[str | None, int | None], object] = {}
+        self._guider: object | None = None       # lazily-built NativeGuider (P2-T3)
 
     def _connection(self, host: str | None, port: int | None) -> object:
         """Look up (or create) the shared ``AlpacaConnection`` for ``host:port``.
@@ -105,13 +110,39 @@ class NativeSession:
         return dev
 
     def native_guider(self) -> object | None:
-        """None: native guiding is done via PHD2, not an Alpaca device."""
-        return None
+        """The native Rust-engine autoguider over this session's guide camera +
+        mount, or None to let the hub fall back to the PHD2 bridge (P2-T3, spec
+        §3.3/§5).
+
+        Built lazily from the roles already connected on THIS session: an
+        explicitly-assigned ``guide_camera`` (else the imaging ``camera`` as an
+        OAG-style fallback) plus the ``telescope``. Returns None when the wheel
+        is absent or either device is missing — so a native rig with no guide
+        camera cleanly degrades to PHD2 instead of a guider that can't run.
+        SYNC by contract."""
+        if self._guider is not None:
+            return self._guider
+        from ...providers import NATIVE_AVAILABLE
+        if not NATIVE_AVAILABLE:
+            return None
+        gcam = self._devices.get("guide_camera") or self._devices.get("camera")
+        tel = self._devices.get("telescope")
+        if gcam is None or tel is None:
+            return None
+        # Deferred import: keep module load light (the native guider pulls the
+        # guide stack / numpy) and avoid a cycle just to register the backend.
+        from ...guide.native import NativeGuider, guide_algo_config
+        self._guider = NativeGuider(
+            gcam, tel,
+            config={"exposure_s": 2.0, **guide_algo_config()},
+            profile_id=None)
+        return self._guider
 
     def guide_camera(self) -> object | None:
-        """None: the native path has no dedicated guide-camera pseudo-device
-        (the imaging camera is a real Alpaca camera). SYNC by contract."""
-        return None
+        """The native rig's dedicated guide camera (the ``guide_camera`` role's
+        Alpaca device), or None when the rig assigns no separate guide camera.
+        SYNC by contract."""
+        return self._devices.get("guide_camera")
 
     def native_solver(self) -> object | None:
         """None: the hub picks the solver via ``solve.get_solver``."""
@@ -147,8 +178,12 @@ class NativeBackend:
     name = "native"
     label = "Native (direct)"
     # Explicit fillable set (W1.2 table), EXCLUDING ``guider``: Alpaca has no
-    # guider device (no ``guider`` key in ``_ROLE_TO_DEV_TYPE``), so native
-    # guiding is done via PHD2. ``safety`` stays -- ``safetymonitor`` is served.
+    # guider *device* (no ``guider`` key in ``_ROLE_TO_DEV_TYPE``), so the
+    # W1.9 drift guard keeps it off ``roles``. The native autoguider is served
+    # via ``native_guider()`` (the Rust engine over an assigned guide camera +
+    # mount, P2-T3) when a profile explicitly overrides the ``guider`` role onto
+    # this endpoint — never auto-advertised. ``safety`` stays (``safetymonitor``
+    # is served).
     roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "safety",
              "rotator")
     discoverable = True

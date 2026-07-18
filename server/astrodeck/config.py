@@ -279,6 +279,30 @@ class ProvidersConfig(BaseModel):
     autofocus: str = "auto"
     polar_align: str = "auto"
     solve: str = "auto"
+    guide: str = "auto"
+
+
+# --------------------------------------------------- native guider settings (§3.5)
+#
+# Per-axis guide-ALGORITHM selection for the native autoguider (distinct from
+# ``ProvidersConfig.guide``, which routes WHO guides). The vocabulary is the
+# PHD2-parity pick list (dossier §15; upstream ``mount.cpp:227-234``, mirrored in
+# ``ui/src/lib/guideSettings.ts``): PPEC is RA-ONLY. Only the algorithm KIND flows
+# to the engine today (``guide/native.py::_build_engine_config``); the pick is
+# validated at write time in ``ConfigStore.set_guide``. APPENDED to AppConfig
+# (additive — old config files without a ``guide`` block load fine).
+
+#: RA algorithm vocabulary (PHD2 ``RA_ALGORITHMS`` — includes PPEC + ResistSwitch).
+RA_GUIDE_ALGORITHMS: tuple[str, ...] = (
+    "hysteresis", "lowpass", "lowpass2", "resist_switch", "ppec", "z_filter")
+#: Dec algorithm vocabulary (PHD2 ``DEC_ALGORITHMS`` — PPEC is RA-only, so absent).
+DEC_GUIDE_ALGORITHMS: tuple[str, ...] = (
+    "hysteresis", "lowpass", "lowpass2", "resist_switch", "z_filter")
+
+
+class GuideConfig(BaseModel):
+    ra_algorithm: str = "hysteresis"       # DefaultRaGuideAlgorithm (dossier §6/§17)
+    dec_algorithm: str = "resist_switch"   # DefaultDecGuideAlgorithm (dossier §6/§17)
 
 
 class RotatorConfig(BaseModel):
@@ -358,6 +382,8 @@ class AppConfig(BaseModel):
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     # --- capability providers (native parity; appended — old configs load fine) ---
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    # --- native guider algorithm selection (spec §3.5; appended — old configs load fine) ---
+    guide: GuideConfig = Field(default_factory=GuideConfig)
     # --- backend drivers (equipment-drivers spec; appended — old configs load fine) ---
     drivers: list[DriverEntry] = Field(default_factory=list)
     # --- rotator ROM/tolerance (rotator/CAA spec §3.2; appended — old configs load fine) ---
@@ -648,7 +674,7 @@ class ConfigStore:
         write time (the route maps this ValueError to 422) rather than silently
         resolving to auto forever."""
         valid = self.valid_override_values()
-        for cap in ("autofocus", "polar_align", "solve"):
+        for cap in ("autofocus", "polar_align", "solve", "guide"):
             v = getattr(providers, cap, "auto")
             if v not in valid:
                 raise ValueError(
@@ -658,6 +684,25 @@ class ConfigStore:
                     f"driver id")
         cfg = self.cfg()
         cfg.providers = providers
+        return self.bump_and_save()
+
+    # -- native guider algorithm mutation (spec §3.5) --------------------------
+
+    def set_guide(self, guide: "GuideConfig") -> AppConfig:
+        """Persist the native guider's per-axis algorithm selection. Write-time
+        validated against the PHD2-parity pick lists (PPEC is RA-only) so an
+        unknown/mis-axised algorithm is rejected here (route maps ValueError→422)
+        rather than silently reaching the engine."""
+        if guide.ra_algorithm not in RA_GUIDE_ALGORITHMS:
+            raise ValueError(
+                f"unknown RA guide algorithm: {guide.ra_algorithm!r} — valid "
+                f"values are {', '.join(RA_GUIDE_ALGORITHMS)}")
+        if guide.dec_algorithm not in DEC_GUIDE_ALGORITHMS:
+            raise ValueError(
+                f"unknown Dec guide algorithm: {guide.dec_algorithm!r} — valid "
+                f"values are {', '.join(DEC_GUIDE_ALGORITHMS)}")
+        cfg = self.cfg()
+        cfg.guide = guide
         return self.bump_and_save()
 
     # -- rotator ROM/tolerance mutation (rotator/CAA spec §3.2) -----------------

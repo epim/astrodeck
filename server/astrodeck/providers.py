@@ -25,11 +25,13 @@ stays green and native providers degrade to a clear DeviceError / the simulator.
 ``resolve_all`` never raises — it maps any resolution failure to a
 ``kind:"unavailable"`` row so ``poll_status`` never 500s.
 
-Three capabilities are resolved here: ``autofocus``, ``polar_align``, ``solve``
-(``guide`` stays hard-wired PHD2). The simulator plate solver is guarded by
-CONNECTED MOTION HARDWARE, not the global hub mode — a faked solve would
-fake-center a real mount/focuser even on an otherwise-mixed rig (review
-finding 6), so the guard cannot be beaten by any override, explicit or not.
+Four capabilities are resolved here: ``autofocus``, ``polar_align``, ``solve``,
+``guide``. The native autoguider (``guide``) targets Alpaca/native/sim rigs
+where AstroDeck owns the devices; a NINA rig keeps NINA/PHD2 guiding (D5). The
+simulator plate solver is guarded by CONNECTED MOTION HARDWARE, not the global
+hub mode — a faked solve would fake-center a real mount/focuser even on an
+otherwise-mixed rig (review finding 6), so the guard cannot be beaten by any
+override, explicit or not.
 """
 from __future__ import annotations
 
@@ -53,8 +55,8 @@ try:  # pragma: no cover - trivially guarded; covered both ways via monkeypatch
 except ImportError:  # pragma: no cover
     NATIVE_AVAILABLE = False
 
-# The capabilities the resolver answers for (``guide`` stays hard-wired PHD2).
-Capability = Literal["autofocus", "polar_align", "solve"]
+# The capabilities the resolver answers for.
+Capability = Literal["autofocus", "polar_align", "solve", "guide"]
 
 # Device ``backend`` attribute values that mean REAL hardware. Sim devices leave
 # the Device default ("" — devices/base.py:82); only nina.py / alpaca.py set one.
@@ -275,10 +277,60 @@ def _resolve_solve(hub: object, override: str) -> ProviderChoice:
         "ASTAP_PATH)")
 
 
+def _resolve_guide(hub: object, override: str) -> ProviderChoice:
+    """Who autoguides. NINA rigs keep NINA/PHD2 guiding (Global Constraint D5);
+    an Alpaca/native rig with a connected guide camera + mount and the wheel runs
+    the native Rust engine; a sim rig runs the native engine too but is badged
+    ``sim`` (the guider OBJECT is a ``NativeGuider`` over the sim devices after
+    the P2-T3 default flip). Anything else degrades to the PHD2 bridge
+    (``backend``) — guiding NEVER raises (spec §3.3/§4). Mirrors
+    ``_resolve_autofocus`` / the native-first ``_resolve_polar`` model."""
+    nina = getattr(hub, "nina_client", None) is not None
+    gcam = _connected(hub, "guide_camera")
+    tel = _connected(hub, "telescope")
+    native_ok = bool(NATIVE_AVAILABLE and gcam is not None and tel is not None)
+    # A sim rig owns non-real ('' / sim) devices; a native/Alpaca rig owns real
+    # hardware. Both run the NativeGuider engine — ``kind`` is only the UI badge.
+    real_rig = gcam is not None and getattr(gcam, "backend", "") in _REAL_BACKENDS
+
+    # (1) explicit override — honored only when runnable.
+    if override == "backend":
+        # The NINA/PHD2 bridge is always selectable (a NINA rig owns guiding; the
+        # legacy PHD2 socket is one the host can always attempt), so honor it.
+        return ProviderChoice("backend", "NINA" if nina else "PHD2",
+                              "override: NINA/PHD2 bridge guiding")
+    if override == "astrodeck" and native_ok:
+        return ProviderChoice("astrodeck", "AstroDeck native",
+                              "override: native guider on guide camera + mount")
+
+    # (2) auto (or an override whose prerequisites were absent). NINA owns
+    # guiding on a NINA rig (D5); native guiding targets rigs AstroDeck owns.
+    if nina:
+        return ProviderChoice("backend", "NINA",
+                              "NINA owns guiding on a NINA rig")
+    if native_ok:
+        if real_rig:
+            return ProviderChoice("astrodeck", "AstroDeck native",
+                                  "native guider (guide camera + mount connected)")
+        return ProviderChoice("sim", "Simulator",
+                              "native guider over the simulated rig")
+
+    # No guide camera / wheel absent: the PHD2 bridge is the vendor-neutral
+    # fallback (spec §3.3/§4 — never a crash).
+    if not NATIVE_AVAILABLE:
+        reason = "native engine not installed — using the PHD2 bridge"
+    elif gcam is None:
+        reason = "no guide camera connected — using the PHD2 bridge"
+    else:
+        reason = "no mount connected — using the PHD2 bridge"
+    return ProviderChoice("backend", "PHD2", reason)
+
+
 _RESOLVERS = {
     "autofocus": _resolve_autofocus,
     "polar_align": _resolve_polar,
     "solve": _resolve_solve,
+    "guide": _resolve_guide,
 }
 
 
@@ -299,7 +351,7 @@ def resolve_all(hub: object) -> dict[str, dict[str, str]]:
     failure becomes a ``kind:"unavailable"`` row carrying the reason, so status
     never 500s and the UI can badge every panel."""
     out: dict[str, dict[str, str]] = {}
-    for cap in ("autofocus", "polar_align", "solve"):
+    for cap in ("autofocus", "polar_align", "solve", "guide"):
         try:
             c = resolve(cap, hub)  # type: ignore[arg-type]
             out[cap] = {"kind": c.kind, "label": c.label, "reason": c.reason}
