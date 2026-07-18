@@ -168,6 +168,23 @@ there is no login path at all (see
 [`docs/SECURITY.md`](../SECURITY.md#testing-role-gating-from-loopback-authtrust_loopback)
 and `server/astrodeck/auth/deps.py` `build_provider`).
 
+> **Primary path: the guided card.** For the initial bootstrap specifically
+> (getting the server from wide-open to secured), you don't have to do this
+> by hand — go to **Settings → Auth**. While no sign-in method is enabled
+> yet, a **"Secure this server"** card walks through the two steps that
+> matter, live, in the correct order: create an admin account first (its
+> "Enable Local sign-in" step stays locked until that account is confirmed
+> **enabled**, not merely created — this is the ordering mistake this
+> procedure exists to catch), then enable Local sign-in, with an explicit
+> note that saving signs every client out, including the one you're on. It's
+> dismissible (and re-openable from a small "Setup guide" link) and only
+> ever appears while the server is actually open. The numbered walkthrough
+> below remains the exact manual procedure — the card's Step 1 is the same
+> account-creation form as **Settings → Users**, and Step 2 flips the same
+> **Enable local accounts** / **Save methods** control described here — so
+> it stays the reference for scripted/CLI setups or if you'd rather drive it
+> directly.
+
 1. **Enable the local method.** As an admin, go to **Settings → Auth**
    (the tab only exists for `admin.users` holders) and turn on **Enable
    local accounts** under Sign-in methods, then press **Save methods**. This
