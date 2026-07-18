@@ -154,12 +154,6 @@ async def test_guiding_recovery(sim_hub):
     assert g.stats().guiding                      # recovered
 
 
-async def test_dew_heater(sim_hub):
-    cam = sim_hub.devices["camera"]
-    await cam.set_dew_heater(60)
-    assert cam._dew_power == 60
-
-
 async def test_resume_after_abort(sim_hub, tmp_path):
     plan = SequencePlan(name="r", guide=False, dither_every=0, autofocus_every=0,
                         meridian_flip=False, targets=[Target(

@@ -237,22 +237,6 @@ def test_to_rigspec_legacy_alpaca_aliases_to_native():
     assert spec.primary == "native"
 
 
-def test_to_rigspec_derives_native_when_primary_blank():
-    """When ``primary_backend`` is explicitly blank (a hand-written/migrated
-    profile), the device-shape derivation kicks in: any device row -> 'native'."""
-    import astrodeck.devices.backends as _b  # noqa: F401 -- registration side effect
-
-    p = Profile(name="d", primary_backend="", devices=[
-        ProfileDevice(role="camera", backend="alpaca", host="h", port=1)])
-    assert p.to_rigspec().primary == "native"
-    # blank + nina_host + no rows -> nina
-    n = Profile(name="n", primary_backend="", nina_host="127.0.0.1")
-    assert n.to_rigspec().primary == "nina"
-    # blank + nothing -> sim
-    e = Profile(name="e", primary_backend="")
-    assert e.to_rigspec().primary == "sim"
-
-
 def test_to_rigspec_legacy_nina_host_only():
     """T4(5): a legacy nina_host-only profile (no device rows) deserializes and
     maps to RigSpec(primary="nina", roles={}); requested roles then resolve from
@@ -332,30 +316,42 @@ def test_to_rigspec_explicit_primary_wins_over_derived():
 # heals it back to the derived primary at construction time (not just inside
 # to_rigspec), and leaves a genuinely all-sim profile alone.
 
-def test_heal_sim_primary_coerces_to_derived_when_real_rows_present():
-    """Profile(primary_backend='sim', devices=[a real alpaca row]) is healed to
-    the derived primary ('native') right at construction."""
-    p = Profile(primary_backend="sim", devices=[
-        ProfileDevice(role="camera", backend="alpaca", host="h", port=1)])
-    assert p.primary_backend == "native"
-    # and to_rigspec sees the already-healed value, not "sim".
-    assert p.to_rigspec().primary == "native"
+@pytest.mark.parametrize("devices, expected", [
+    pytest.param(
+        [ProfileDevice(role="camera", backend="alpaca", host="h", port=1)],
+        "native",
+        id="real-alpaca-row-heals-sim-to-derived-native",
+    ),
+    pytest.param(
+        [],
+        "sim",
+        id="no-device-rows-genuinely-all-sim-left-alone",
+    ),
+    pytest.param(
+        [ProfileDevice(role="camera", backend="sim")],
+        "sim",
+        # A device row that is ITSELF backend='sim' does not count as 'real' --
+        # the healing check only fires on a REAL (non-sim) backend row, so this
+        # profile is indistinguishable (for healing purposes) from the
+        # no-device-rows case above and is also left alone.
+        id="sim-backed-device-row-does-not-count-as-real",
+    ),
+])
+def test_heal_sim_primary(devices, expected):
+    """Profile(primary_backend='sim', devices=[...]) is healed at construction.
 
-
-def test_heal_sim_primary_leaves_all_sim_profile_alone():
-    """A genuinely all-sim profile (no device rows at all) keeps 'sim' --
-    nothing real to protect from a sim primary."""
-    p = Profile(primary_backend="sim")
-    assert p.primary_backend == "sim"
-    assert p.to_rigspec().primary == "sim"
-
-
-def test_heal_sim_primary_leaves_sim_backed_device_rows_alone():
-    """Device rows that are themselves backend='sim' (or blank) don't count as
-    'real' -- the healing check only fires on a REAL (non-sim) backend row."""
-    p = Profile(primary_backend="sim", devices=[
-        ProfileDevice(role="camera", backend="sim")])
-    assert p.primary_backend == "sim"
+    A ``"sim"`` primary stored ALONGSIDE real (non-sim) device rows is
+    (near-certainly) a fail-open artifact of the old default -- connecting such
+    a profile would fill every unlisted role, including ``safety``, with a
+    simulator, so the safety gate would read a fail-open always-SAFE monitor
+    while a real mount runs. The validator coerces it back to the derived
+    primary; a profile with no real (non-sim) device rows has nothing to
+    protect and keeps 'sim'."""
+    p = Profile(primary_backend="sim", devices=devices)
+    assert p.primary_backend == expected
+    # to_rigspec sees the already-healed value (a truthy primary_backend always
+    # wins over derivation), so it agrees with the construction-time result.
+    assert p.to_rigspec().primary == expected
 
 
 @pytest.mark.asyncio

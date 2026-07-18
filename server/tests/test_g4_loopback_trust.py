@@ -153,43 +153,36 @@ def test_loopback_detection_covers_whole_loopback_space(tmp_path, monkeypatch):
 
 # ============================================== False + valid login: role honored
 
-def test_false_plus_valid_login_honors_role(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "username, role, email",
+    [
+        pytest.param("olivia", "operator", "o@rig", id="operator"),
+        pytest.param("vic", "viewer", "v@rig", id="viewer"),
+    ],
+)
+def test_false_plus_valid_login_honors_role(tmp_path, monkeypatch, username, role,
+                                            email):
     """The unblocked scenario (R3-ROLE-01): with trust_loopback=False and a
     real local account, a loopback browser that actually logs in gets ITS OWN
     role/caps -- not admin -- so operator/viewer gating can finally be proven
-    from the same machine the reviewer is running on."""
+    from the same machine the reviewer is running on (both operator AND
+    viewer, per R3-ROLE-01)."""
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
                               trust_loopback=False)
-    users.create(username="olivia", password="hunter2", role="operator",
-                email="o@rig")
+    users.create(username=username, password="hunter2", role=role, email=email)
     with TestClient(app, client=LOOPBACK) as c:
         # methods=["local"] -> MultiAuthProvider is active, not "none" at all,
         # so trust_loopback was never in play here to begin with: unauthenticated
         # is 401 pre-login, same as it always was for a configured method.
         assert c.get("/api/me").status_code == 401
         r = c.post("/auth/local",
-                   json={"username": "olivia", "password": "hunter2"})
+                   json={"username": username, "password": "hunter2"})
         assert r.status_code == 200, r.text
         me = c.get("/api/me")
         assert me.status_code == 200
-        assert me.json()["role"] == "operator"
-        # operator does NOT hold admin.users -> the user-CRUD route 403s
+        assert me.json()["role"] == role
+        # this role does NOT hold admin.users -> the user-CRUD route 403s
         # (proves this is a REAL role, not a leaked admin principal)
-        assert c.get("/api/users").status_code == 403
-
-
-def test_false_plus_viewer_login_honors_role(tmp_path, monkeypatch):
-    """Same as above for viewer, to directly exercise the disposable-account
-    procedure R3-ROLE-01 asked for (viewer AND operator, not just one)."""
-    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
-                              trust_loopback=False)
-    users.create(username="vic", password="hunter2", role="viewer", email="v@rig")
-    with TestClient(app, client=LOOPBACK) as c:
-        r = c.post("/auth/local", json={"username": "vic", "password": "hunter2"})
-        assert r.status_code == 200, r.text
-        me = c.get("/api/me")
-        assert me.status_code == 200
-        assert me.json()["role"] == "viewer"
         assert c.get("/api/users").status_code == 403
 
 

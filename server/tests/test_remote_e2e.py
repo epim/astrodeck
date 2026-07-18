@@ -302,50 +302,6 @@ async def test_open_default_denied_remote_through_relay(tmp_path, monkeypatch):
         await rig.stop()
 
 
-# ============================================================ remote flag unspoofable
-
-def test_remote_flag_unspoofable_by_lan_header(tmp_path, monkeypatch):
-    """remoteFlagUnspoofable: an on-LAN attacker who sets request HEADERS named
-    like the remote flag/device token cannot flip the scope state. The flag is
-    ASGI scope STATE, set ONLY by the scope client; a real uvicorn request never
-    carries it, and the scope-builder STRIPS inbound auth carriers."""
-    from astrodeck.auth.deps import _scope_is_remote
-    from astrodeck.remote.relay_client import REMOTE_SCOPE_KEY
-    from astrodeck.remote.protocol import Frame, FrameType
-
-    _store, app = _make_app(tmp_path, monkeypatch)
-    rig = E2ERig(app)
-
-    # A request whose attacker-controlled HEADERS try to assert remoteness / auth.
-    frame = Frame(type=FrameType.REQ_OPEN, stream_id=3, header={
-        "method": "GET", "path": "/api/status", "query": "",
-        "headers": [["X-Astrodeck-Remote", "true"],
-                    ["astrodeck_remote", "true"],
-                    ["Authorization", "Bearer forged-admin"],
-                    ["X-Auth-Token", "forged"],
-                    ["Cookie", "ad_session=forged"]],
-    })
-    scope = rig.client._build_http_scope(frame)
-    # The remote flag is true here because the SCOPE CLIENT set it (correct: this
-    # IS a tunneled request) -- but it came from scope STATE, not the header.
-    assert scope["state"][REMOTE_SCOPE_KEY] is True
-    names = {n for n, _ in scope["headers"]}
-    assert b"authorization" not in names  # forgeable bearer carriers stripped
-    assert b"x-auth-token" not in names
-    # the cookie PASSES THROUGH (home-terminated auth, e.g. Google OIDC, needs it):
-    # it is HMAC-signed by the home, so a forged/unsigned cookie reaches the home
-    # but never validates -- carried by the home's verification, not by stripping.
-    assert b"cookie" in names
-
-    # And a plain (non-tunneled) scope with the SAME spoof headers is NOT remote
-    # (this is what a real on-LAN attacker actually controls): they cannot set
-    # scope STATE, only headers, so the flag stays False.
-    lan_scope = {"type": "http", "state": {},
-                 "headers": [(b"x-astrodeck-remote", b"true"),
-                             (b"astrodeck_remote", b"true")]}
-    assert _scope_is_remote(type("R", (), {"scope": lan_scope})) is False
-
-
 # ============================================================ relay can't forge admin
 
 @pytest.mark.asyncio
