@@ -81,17 +81,37 @@ def test_process_reason_star_lost():
 
 
 def test_process_reason_settle_timeout():
+    # P2-T1: dither() now does a REAL lock shift + fast recenter (dossier
+    # §11.2), not the P1 stub's immediate settle-wait. dither(3.0, 3.0) with
+    # the default search_region (15px) recenters in exactly ONE step (step
+    # size 0.7*15=10.5px > the 3*sqrt(2)~=4.24px dither distance), so the
+    # very first settling frame is a fast-recenter "pulse_pair", not
+    # "settle" -- proving process()'s "action" alone cannot tell a recenter
+    # frame apart from normal guiding, which is exactly why stats() gained
+    # the "settling" key (P2-T1 Produces line / punch-list #3).
     e = native.GuideEngine({})
     e.load_calibration(_ident_cal())
     e.begin_guiding()
-    e.process(_gaussian_frame(64, 64, 32.0, 32.0), 0.0, 2.0)  # lock
-    e.dither(3.0, 3.0)  # opens the default 1.5px/10s/60s settle window
-    off = _gaussian_frame(64, 64, 42.0, 32.0)  # 10px error: never in range
+    e.process(_gaussian_frame(64, 64, 32.0, 32.0), 0.0, 2.0)  # lock (32,32)
+    e.dither(3.0, 3.0)  # new lock ~(35,35); opens the default 1.5px/10s/60s
+                         # settle window; 1-step recenter (3 < 10.5)
+    off = _gaussian_frame(64, 64, 42.0, 32.0)  # 10px-ish error: never in range
+
+    # First settling frame: fast recenter fires (and finishes, for this
+    # dither distance) before any Settle wait. The 60s timeout clock
+    # anchors here (t=2) regardless.
     a = e.process(off, 2.0, 2.0)
+    assert a["action"] == "pulse_pair" and a["reason"] is None
+    assert e.stats()["settling"] is True, (
+        "the settle window must stay open across a fast-recenter frame, "
+        "not just frames whose action is literally 'settle'")
+
+    a = e.process(off, 30.0, 2.0)
     assert a["action"] == "settle" and a["reason"] is None
-    a = e.process(off, 62.0, 2.0)  # past the 60 s deadline
+    a = e.process(off, 62.0, 2.0)  # past the 60 s deadline (anchored at t=2)
     assert a["action"] == "lock_lost"
     assert a["reason"] == "settle_timeout"
+    assert e.stats()["settling"] is False
     # the window and shadow flag both clear: guiding resumes next frame
     a = e.process(_gaussian_frame(64, 64, 37.0, 32.0), 64.0, 2.0)
     assert a["action"] == "pulse_pair" and a["reason"] is None
