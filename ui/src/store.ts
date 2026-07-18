@@ -38,6 +38,7 @@ import { normalizeSafety } from "./lib/safety";
 import { normalizeWeather } from "./lib/weather";
 import { normalizeAutofocusResult, filterNameFromStatus, type AutofocusResult } from "./lib/autofocus";
 import { humanizeLog, humanizeSeqError } from "./lib/humanize";
+import { tagGuideRms, type GuideRmsByKind } from "./lib/guideRms";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
 import { ensurePlanIds } from "./lib/ids";
@@ -69,6 +70,10 @@ export interface ProviderChoiceView {
   kind: ResolvedProviderKind;
   label: string;
   reason: string;
+  // Only the `guide` row carries this (P5-T1 fix round I1): the override VALUES
+  // actually selectable on the connected rig, so the Guide view offers only
+  // what applies (hub.poll_status → providers.guide_eligible_providers).
+  eligible?: string[];
 }
 export interface ProvidersStatus {
   autofocus?: ProviderChoiceView;
@@ -410,9 +415,7 @@ interface AppState {
   // gets one. Session-only (not persisted; resets on reload) — feeds
   // GuideView's head-to-head RMS comparison via lib/rmsCompare.ts. Empty
   // until the guide provider resolves AND a "guide" tick lands.
-  guideRmsByKind: Partial<
-    Record<string, GuideStats & { providerLabel: string; atMs: number }>
-  >;
+  guideRmsByKind: GuideRmsByKind;
   sequence: SequenceState;
   polar: PolarState;
   logs: LogLine[];
@@ -1209,10 +1212,13 @@ export const useStore = create<AppState>((set, get) => ({
         // Tag this tick by the CURRENTLY resolved guide provider (the "guide"
         // bus event itself carries no provider field) so GuideView's
         // same-night RMS comparison (lib/rmsCompare.ts) has a per-provider
-        // window to read back later, including after a provider switch mid-
-        // session. `status.providers` may not have landed yet (pre-first-poll)
-        // or the resolver may be between capabilities — in that case just skip
-        // the tag, matching useProviders'/ProviderBadge's own null-safety.
+        // window to read back later. After the C1 server honesty fix the badge
+        // reports the ACTUAL serving guider, so the tag can't be mislabeled;
+        // a provider switch takes effect on the NEXT guiding start (see
+        // lib/guideRms.ts). `status.providers` may not have landed yet
+        // (pre-first-poll) or the resolver may be between capabilities — in
+        // that case tagGuideRms just drops the tag (never files it under an
+        // arbitrary kind).
         const providers = (
           get().status as (RigStatus & { providers?: ProvidersStatus }) | null
         )?.providers;
@@ -1220,12 +1226,7 @@ export const useStore = create<AppState>((set, get) => ({
         set((s) => ({
           guide: stats,
           lastGuideAtMs: Date.now(),
-          guideRmsByKind: choice
-            ? {
-                ...s.guideRmsByKind,
-                [choice.kind]: { ...stats, providerLabel: choice.label, atMs: Date.now() },
-              }
-            : s.guideRmsByKind,
+          guideRmsByKind: tagGuideRms(s.guideRmsByKind, stats, choice, Date.now()),
         }));
         break;
       }

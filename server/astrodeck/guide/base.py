@@ -18,6 +18,15 @@ class Guider(ABC):
     name: str = "guider"
     connected: bool = False
 
+    #: Provider FAMILY this guider belongs to, used by
+    #: ``providers.actual_guide_family`` to report the ACTUAL serving guider on
+    #: the status badge (and so tag the UI's same-night RMS ticks truthfully —
+    #: P5-T1 fix round C1). The vendor-neutral default is ``"backend"`` (the
+    #: PHD2/NINA bridge family); the native-engine guiders override to
+    #: ``"native"``. Never the finer ``astrodeck``/``sim`` badge split — that is
+    #: a RIG property (real vs simulated devices), decided by the resolver.
+    provider_family: str = "backend"
+
     @abstractmethod
     async def connect(self) -> None: ...
 

@@ -90,20 +90,26 @@ choice above:
   connected (badged **AstroDeck native** on real hardware, or **Simulator** on
   the sim rig — same engine, different badge); otherwise it falls back to the
   **PHD2** bridge.
-- **AstroDeck native** — force the native engine (works only when a guide
-  camera + mount are connected; the override is ignored otherwise, falling
-  through to Auto's logic).
+- **AstroDeck native** — force the native engine. Offered only when it can
+  actually run on this rig (a guide camera + mount connected). If you force it
+  where it can't run, guiding *degrades* to whatever is wired instead of
+  failing — and the badge then shows what is **actually** guiding, never the
+  option you picked.
 - **PHD2 / NINA bridge** — force the legacy bridge (NINA's own guiding on a
-  NINA rig, or the standalone PHD2 socket otherwise). Always selectable — this
-  is the fallback path while the native engine matures, or if you simply
-  prefer PHD2.
-- **Simulator** — an explicit pin to the simulator vocabulary; behaves the
-  same as Auto on a sim rig today.
+  NINA rig, or a standalone PHD2 socket otherwise). Offered only when a bridge
+  guider is available on the connected rig.
 
-The line under the dropdown always explains *why* it resolved the way it did
-(e.g. *"native guider (guide camera + mount connected)"*, *"NINA owns guiding
-on a NINA rig"*), matching the provider badge shown at the top of the Guide
-Error panel. Changing the provider needs `config.backend` (admin) — it's a
+The dropdown lists **only the providers that apply to the connected rig** — the
+same "only offer what's eligible" rule the Equipment tab's task routing uses.
+
+A switch takes effect at the **next guiding start**: it never swaps a guider
+that's already running. Change the provider, then stop and (re)start guiding
+for it to take hold. The line under the dropdown always explains *why* it
+resolved the way it did (e.g. *"the native guider is running (guide camera +
+mount)"*, *"NINA is guiding this rig"*), and the badge at the top of the Guide
+Error panel always reflects the guider that is **really** serving right now —
+so the head-to-head comparison below can never compare a guider against itself
+under two names. Changing the provider needs `config.backend` (admin) — it's a
 backend/connect-shape decision, the same capability the Equipment tab's task
 routing (autofocus/polar align/plate solve) uses, not `control.guide`.
 
@@ -113,13 +119,15 @@ loading/activating that profile restores it.
 
 ### Same-night RMS: native vs. PHD2
 
-Once you've guided under **both** providers in the same session (e.g. you
-switched mid-session to compare), the panel shows a head-to-head verdict —
-which one guided tighter, "comparable" (within roughly 10% of each other —
-ordinary seeing noise, not a real difference), or "insufficient data" if one
-side hasn't guided long enough yet. This is a same-night comparison only: it
-resets when you reload the page, and it does not track history across
-different nights.
+Once you've guided under **both** providers in the same session — switch the
+provider, then stop and restart guiding, and do a run under each — the panel
+shows a head-to-head verdict: which one guided tighter, "comparable" (within
+roughly 10% of each other — ordinary seeing noise, not a real difference), or
+"insufficient data" if one side hasn't guided long enough yet. Because each
+window is tagged by the guider that *actually* served it (not the option you
+selected), the verdict compares real like-for-like data. This is a same-night
+comparison only: it resets when you reload the page, and it does not track
+history across different nights.
 
 ---
 

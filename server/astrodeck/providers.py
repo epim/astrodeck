@@ -277,6 +277,68 @@ def _resolve_solve(hub: object, override: str) -> ProviderChoice:
         "ASTAP_PATH)")
 
 
+# ---- guide-provider SELECTION + honesty (P5-T1 fix round C1) --------------
+#
+# The per-profile guide override is a real SELECTION input applied at guiding
+# START by ``hub.select_guide_provider``: it swaps ``hub.guider`` to a guider of
+# the requested FAMILY when one is constructible on the connected rig, and
+# DEGRADES to whatever is already wired otherwise (never a crash). The badge
+# (``_resolve_guide`` below) then reports the ACTUAL serving guider — never the
+# requested override — so the UI's same-night RMS ticks, tagged by this badge,
+# can never be mislabeled (the C1 root fix).
+
+def actual_guide_family(guider: object) -> str | None:
+    """The provider FAMILY of a LIVE guider object (``"native"`` | ``"backend"``),
+    or None when there is no guider / its family is unknown. Reads the guider's
+    ``Guider.provider_family`` marker — NOT its class — so this stays free of a
+    ``guide.native`` → ``providers`` import cycle and works on test fakes."""
+    if guider is None:
+        return None
+    fam = getattr(guider, "provider_family", None)
+    return fam if fam in ("native", "backend") else None
+
+
+def guide_override_family(hub: object) -> str:
+    """The effective guide-provider override family for this rig
+    (``"auto"`` | ``"backend"`` | ``"astrodeck"`` | ``"sim"``), profile-over-
+    config, degraded to ``"auto"`` for junk/deleted values (spec §3.4). One
+    source of truth the hub's guide-start selection shares with the resolver."""
+    return _override_family(_override("guide", hub))
+
+
+def _rig_has_bridge_session(hub: object) -> bool:
+    """True when the connected rig wired a NINA/PHD2 backend session, so a bridge
+    (``backend``) guider is genuinely available to switch to. Reads the retained
+    ``ConnectResult`` endpoint keys — cheap, constructs no guider."""
+    res = getattr(hub, "last_connect_result", None)
+    sessions = getattr(res, "sessions", None) if res is not None else None
+    if not isinstance(sessions, dict):
+        return False
+    return any(isinstance(k, tuple) and k and k[0] in ("phd2", "nina")
+               for k in sessions)
+
+
+def guide_eligible_providers(hub: object) -> list[str]:
+    """The guide-provider override VALUES actually selectable on the connected
+    rig — the Guide view dropdown's vocabulary (mirrors the UI's
+    ``eligibleTaskDrivers``: only offer what applies, review I1). Always
+    ``"auto"``; ``"astrodeck"`` when the native engine can run (guide-capable
+    camera + mount + wheel, and NOT a NINA rig, D5); ``"backend"`` when a
+    NINA/PHD2 bridge guider is actually available. A no-op value (e.g. a bare
+    ``"sim"`` pin, which has no resolver branch) is never offered."""
+    out = ["auto"]
+    nina = getattr(hub, "nina_client", None) is not None
+    gcam = _connected(hub, "guide_camera") or _connected(hub, "camera")
+    tel = _connected(hub, "telescope")
+    native_ok = bool(NATIVE_AVAILABLE and gcam is not None and tel is not None)
+    if native_ok and not nina:
+        out.append("astrodeck")
+    if (nina or actual_guide_family(getattr(hub, "guider", None)) == "backend"
+            or _rig_has_bridge_session(hub)):
+        out.append("backend")
+    return out
+
+
 def _resolve_guide(hub: object, override: str) -> ProviderChoice:
     """Who autoguides. NINA rigs keep NINA/PHD2 guiding (Global Constraint D5);
     an Alpaca/native rig with a connected guide camera + mount and the wheel runs
@@ -292,6 +354,30 @@ def _resolve_guide(hub: object, override: str) -> ProviderChoice:
     # A sim rig owns non-real ('' / sim) devices; a native/Alpaca rig owns real
     # hardware. Both run the NativeGuider engine — ``kind`` is only the UI badge.
     real_rig = gcam is not None and getattr(gcam, "backend", "") in _REAL_BACKENDS
+
+    # (0) HONESTY (fix round C1): when a guider is actually WIRED, the badge
+    # reports what is REALLY serving this rig — never the requested override —
+    # so the UI's per-provider RMS ticks (tagged by this badge) can't be
+    # mislabeled. The override became a real selection input at guiding START
+    # (hub.select_guide_provider), which either honored it or degraded to what
+    # exists; this reflects that outcome. The pure matrix below still answers
+    # the "what WOULD guide" preview for a rig with no guider wired yet (a
+    # disconnected rig / the unit fixtures).
+    actual = actual_guide_family(getattr(hub, "guider", None))
+    if actual == "backend":
+        return ProviderChoice("backend", "NINA" if nina else "PHD2",
+                              "NINA is guiding this rig" if nina
+                              else "the PHD2/NINA bridge is guiding this rig")
+    if actual == "native":
+        # sim-vs-real badge: the native engine runs over EITHER; the badge keys
+        # off whether the guide (or, for an OAG, the imaging) camera is real.
+        cam2 = gcam if gcam is not None else _connected(hub, "camera")
+        is_real = cam2 is not None and getattr(cam2, "backend", "") in _REAL_BACKENDS
+        if is_real:
+            return ProviderChoice("astrodeck", "AstroDeck native",
+                                  "the native guider is running (guide camera + mount)")
+        return ProviderChoice("sim", "Simulator",
+                              "the native guider is running over the simulated rig")
 
     # (1) explicit override — honored only when runnable.
     if override == "backend":

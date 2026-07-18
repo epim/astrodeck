@@ -420,6 +420,83 @@ class Hub:
         self.guider = PHD2Guider(host, port)
         await self.guider.connect()
 
+    def _candidate_guiders(self) -> list:
+        """The guiders CONSTRUCTIBLE on the currently-connected rig: the active
+        one plus each open backend session's ``native_guider()`` (deduped by
+        identity). Used to honor the guide-provider override at guiding start
+        without a reconnect. Cheap: ``native_guider()`` only INSTANTIATES a
+        guider (no I/O); the connect happens later, only for the one we pick."""
+        cands: list = []
+        if self.guider is not None:
+            cands.append(self.guider)
+        res = self.last_connect_result
+        sessions = getattr(res, "sessions", None) if res is not None else None
+        if isinstance(sessions, dict):
+            for session in sessions.values():
+                get = getattr(session, "native_guider", None)
+                if not callable(get):
+                    continue
+                try:
+                    g = get()
+                except Exception:
+                    g = None
+                if g is not None and all(g is not c for c in cands):
+                    cands.append(g)
+        return cands
+
+    async def select_guide_provider(self) -> None:
+        """Reconcile ``self.guider`` with the guide-provider override for the
+        NEXT guiding start (fix round C1). Chooses among the guiders
+        CONSTRUCTIBLE on the connected rig; an override whose family is not
+        constructible DEGRADES to the connect-time guider (never a crash). NINA
+        rigs are left untouched (D5). Never hot-swaps a guider that is CURRENTLY
+        guiding — the switch takes effect only when guiding is (re)started."""
+        from . import providers as _providers
+        current = self.guider
+        if current is None:
+            return
+        if self.nina_client is not None:
+            return                                   # D5: NINA owns its guiding
+        # never yank a running guider out from under a live session.
+        try:
+            if await current.is_active():
+                return
+        except Exception:
+            pass
+        want = _providers.guide_override_family(self)   # auto/backend/astrodeck/sim
+        candidates = self._candidate_guiders()
+        if want == "backend":
+            target = "backend"
+        elif want in ("astrodeck", "sim"):
+            target = "native"
+        else:  # auto: native-first, the resolver's own auto preference
+            target = "native" if any(
+                _providers.actual_guide_family(g) == "native" for g in candidates
+            ) else "backend"
+        if _providers.actual_guide_family(current) == target:
+            return                                   # already serving the target
+        for g in candidates:
+            if _providers.actual_guide_family(g) == target and g is not current:
+                try:
+                    await g.connect()                # idempotent; may refuse
+                except Exception as exc:  # noqa: BLE001 - degrade, keep current
+                    bus.log("warning",
+                            f"guide provider '{want}' unavailable ({exc}); "
+                            f"keeping {getattr(current, 'name', 'current guider')}",
+                            "guide")
+                    return
+                self.guider = g
+                if current is not g:
+                    try:
+                        await current.disconnect()
+                    except Exception:  # noqa: BLE001
+                        pass
+                bus.log("info",
+                        f"guide provider -> {getattr(g, 'name', 'guider')} "
+                        f"(override: {want})", "guide")
+                return
+        # target family not constructible on this rig: degrade — keep current.
+
     # ------------------------------------------------- connect by profile / rig
 
     async def connect_rigspec(self, spec: "RigSpec", *, set_active: str | None = None,
@@ -2090,6 +2167,12 @@ class Hub:
         try:
             from . import providers as _providers
             out["providers"] = _providers.resolve_all(self)
+            # Additive: the guide row carries the override values actually
+            # SELECTABLE on this rig, so the Guide view offers only what applies
+            # (review I1), never a no-op vocabulary option.
+            guide_row = out["providers"].get("guide")
+            if isinstance(guide_row, dict):
+                guide_row["eligible"] = _providers.guide_eligible_providers(self)
         except Exception as e:
             out["providers"] = {
                 cap: {"kind": "unavailable", "label": "Unavailable",
