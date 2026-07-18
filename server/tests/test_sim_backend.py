@@ -3,7 +3,8 @@
 Pins the WRAPPING contract for ``SimBackend`` / ``SimSession``: it registers
 itself, opens a session, and that session hands out the same sim devices the hub
 uses today (camera/telescope/focuser, plus the dedicated guide_camera), exposes
-the ``SimGuider`` as the native guider, and has no native solver / health.
+the ``SimGuider`` as the native guider by default (``NativeGuider`` behind the
+``ASTRODECK_SIM_NATIVE_GUIDER`` opt-in), and has no native solver / health.
 Behavior-preserving: it does not change what the sim devices do.
 """
 import pytest
@@ -102,14 +103,48 @@ async def test_unknown_role_raises_keyerror():
 
 
 @pytest.mark.asyncio
-async def test_native_guider_not_none_and_sync():
-    """native_guider() is SYNC and returns a SimGuider; cached across calls."""
+async def test_native_guider_not_none_and_sync(monkeypatch):
+    """native_guider() is SYNC and returns a SimGuider by default (no opt-in);
+    cached across calls."""
+    monkeypatch.delenv("ASTRODECK_SIM_NATIVE_GUIDER", raising=False)
     session = await SimBackend().open(ConnSpec(backend="sim"))
     g = session.native_guider()                     # NOT awaited -- sync by contract
     assert g is not None
     from astrodeck.guide import SimGuider
     assert isinstance(g, SimGuider)
     assert session.native_guider() is g             # cached / same instance
+
+
+@pytest.mark.asyncio
+async def test_native_guider_opt_in_seam(monkeypatch):
+    """The ASTRODECK_SIM_NATIVE_GUIDER opt-in seam (P1-T10, milestone review
+    M4): unset -> SimGuider (the fast deterministic default the hub/sequence
+    tests rely on); truthy + native wheel present -> the NativeGuider over the
+    sim guide camera + mount (the same closed loop the P1 e2e gate exercises).
+    Each state uses a FRESH session — the guider is cached per session."""
+    from astrodeck.guide import NativeGuider, SimGuider
+    from astrodeck.providers import NATIVE_AVAILABLE
+
+    # unset -> SimGuider, always.
+    monkeypatch.delenv("ASTRODECK_SIM_NATIVE_GUIDER", raising=False)
+    s = await SimBackend().open(ConnSpec(backend="sim"))
+    assert isinstance(s.native_guider(), SimGuider)
+
+    # explicit falsy -> still SimGuider.
+    monkeypatch.setenv("ASTRODECK_SIM_NATIVE_GUIDER", "false")
+    s = await SimBackend().open(ConnSpec(backend="sim"))
+    assert isinstance(s.native_guider(), SimGuider)
+
+    # truthy -> NativeGuider when the wheel is present (SimGuider fallback when
+    # absent, so this test is green either way).
+    monkeypatch.setenv("ASTRODECK_SIM_NATIVE_GUIDER", "1")
+    s = await SimBackend().open(ConnSpec(backend="sim"))
+    g = s.native_guider()
+    if NATIVE_AVAILABLE:
+        assert isinstance(g, NativeGuider)
+        assert g.name == "AstroDeck native"
+    else:
+        assert isinstance(g, SimGuider)
 
 
 @pytest.mark.asyncio
