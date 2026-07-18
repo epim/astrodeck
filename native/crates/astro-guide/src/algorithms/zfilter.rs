@@ -246,6 +246,36 @@ fn eval(coeffs: &[C64], z: C64) -> C64 {
     sum
 }
 
+/// Why [`Filter::build`] can refuse its inputs — the port of upstream's
+/// degrade-don't-crash `bError` path (`GuideAlgorithmZFilter::BuildFilter`
+/// catches these as `wxString` throws from `ZFilterFactory`'s constructor,
+/// `guide_algorithm_zfilter.cpp:116-166` / `zfilterfactory.cpp:85-92`).
+/// P3-T2 review ruling: `Filter::build` is exported API inside an engine
+/// that must never crash a guiding session, so invalid parameters return
+/// `Err` rather than panicking (the reviewer-offered alternative,
+/// `pub(crate)` + a documented assert, would put the brief-required
+/// coefficient golden tests — which call this from `tests/`, an external
+/// crate — out of reach).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterError {
+    /// `order < 1` (upstream "invalid filter order", `zfilterfactory.cpp:85-88`).
+    InvalidOrder,
+    /// `corner_period < 2.0` (upstream "invalid corner period multiplier",
+    /// `zfilterfactory.cpp:89-92`).
+    InvalidCornerPeriod,
+}
+
+impl std::fmt::Display for FilterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FilterError::InvalidOrder => write!(f, "invalid filter order"),
+            FilterError::InvalidCornerPeriod => write!(f, "invalid corner period multiplier"),
+        }
+    }
+}
+
+impl std::error::Error for FilterError {}
+
 /// A synthesized digital filter's runtime coefficients: `xcoeffs`/`ycoeffs`
 /// in the newest-first order [`ZFilter::result`] consumes directly, plus the
 /// unnormalized DC gain magnitude used to pre-scale the reconstructed input.
@@ -263,12 +293,15 @@ impl Filter {
     /// module's header note; upstream's wrapper never requests MZT).
     ///
     /// `corner_period` is the corner period in guide-exposure units
-    /// (`exp_factor * 4.0` at the call site, dossier §6.5).
-    pub fn build(design: Design, order: usize, corner_period: f64) -> Filter {
-        assert!(
-            order >= 1 && corner_period >= 2.0,
-            "invalid filter order/corner_period"
-        );
+    /// (`exp_factor * 4.0` at the call site, dossier §6.5). Errors instead
+    /// of panicking on out-of-range inputs (see [`FilterError`]).
+    pub fn build(design: Design, order: usize, corner_period: f64) -> Result<Filter, FilterError> {
+        if order < 1 {
+            return Err(FilterError::InvalidOrder);
+        }
+        if corner_period < 2.0 {
+            return Err(FilterError::InvalidCornerPeriod);
+        }
         // 1. s-plane prototype poles.
         let spoles = splane(design, order);
         // 2. prewarp (bilinear transform only — MZT is never requested).
@@ -289,11 +322,11 @@ impl Filter {
         let leading = botcoeffs.last().expect("botcoeffs is never empty").re;
         let xcoeffs: Vec<f64> = topcoeffs.iter().rev().map(|c| c.re / leading).collect();
         let ycoeffs: Vec<f64> = botcoeffs.iter().rev().map(|c| -(c.re / leading)).collect();
-        Filter {
+        Ok(Filter {
             xcoeffs,
             ycoeffs,
             gain,
-        }
+        })
     }
 }
 
@@ -341,8 +374,8 @@ impl ZFilter {
     /// Port of `ZFilterFactory`'s coefficient synthesis
     /// (`zfilterfactory.cpp:50-105`). Exposed under `ZFilter`'s own
     /// namespace (this task's frozen interface) as a thin forward to
-    /// [`Filter::build`].
-    pub fn build(design: Design, order: usize, corner_period: f64) -> Filter {
+    /// [`Filter::build`] (fallible — see [`FilterError`]).
+    pub fn build(design: Design, order: usize, corner_period: f64) -> Result<Filter, FilterError> {
         Filter::build(design, order, corner_period)
     }
 
@@ -373,7 +406,12 @@ impl ZFilter {
         } else {
             Design::Bessel
         };
-        let filter = Filter::build(design, ORDER, corner);
+        // Infallible by construction: ORDER is the constant 4 (>= 1), and
+        // `corner = exp_factor * 4.0 >= 4.0 >= 2.0` because the fallback
+        // above guarantees `exp_factor >= 1.0` — so neither `FilterError`
+        // arm is reachable from this call site.
+        let filter = Filter::build(design, ORDER, corner)
+            .expect("ORDER >= 1 and corner >= 4.0 are guaranteed above");
         let n_x = filter.xcoeffs.len();
         let n_y = filter.ycoeffs.len();
         ZFilter {

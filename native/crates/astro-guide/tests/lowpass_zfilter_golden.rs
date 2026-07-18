@@ -21,7 +21,9 @@
 // literals below actually pin the "leaves sum_corr unchanged" behavior
 // rather than passing vacuously.
 
-use astro_guide::algorithms::{Design, Filter, GuideAlgorithm, Lowpass2, ZFilter};
+use astro_guide::algorithms::{
+    Design, Filter, FilterError, GuideAlgorithm, Lowpass, Lowpass2, ZFilter,
+};
 
 // ---------------------------------------------------------------------------
 // Lowpass2 (dossier §6.4)
@@ -109,7 +111,7 @@ fn zfilter_bessel4_corner8_coefficients_match_pole_table_trace() {
     // table (dossier §6.5) at p=order*order/4=4: bessel_poles[4]/[5] and
     // their conjugates. Coefficients cross-checked via the independent
     // Python mkfilter re-implementation described in this file's header.
-    let f = ZFilter::build(Design::Bessel, 4, 8.0);
+    let f = ZFilter::build(Design::Bessel, 4, 8.0).expect("valid parameters");
     assert_eq!(f.xcoeffs.len(), 5);
     assert_eq!(f.ycoeffs.len(), 5);
     // xcoeffs are the expansion of (z+1)^4 (all four z-plane zeros are -1,
@@ -141,9 +143,29 @@ fn zfilter_bessel4_corner8_coefficients_match_pole_table_trace() {
 fn zfilter_build_is_reachable_from_zfilter_namespace() {
     // The task's frozen interface names this `ZFilter::build` (a thin
     // forward to `Filter::build`, dossier interfaces section).
-    let a = ZFilter::build(Design::Butterworth, 4, 4.0);
-    let b = Filter::build(Design::Butterworth, 4, 4.0);
+    let a = ZFilter::build(Design::Butterworth, 4, 4.0).expect("valid parameters");
+    let b = Filter::build(Design::Butterworth, 4, 4.0).expect("valid parameters");
     assert_eq!(a, b);
+}
+
+#[test]
+fn zfilter_build_rejects_invalid_parameters_without_panicking() {
+    // P3-T2 review ruling: `Filter::build` is exported API in an engine that
+    // must never crash a session, so it degrades via `Err` (the port of
+    // upstream's `bError` path, `guide_algorithm_zfilter.cpp:116-166` /
+    // `zfilterfactory.cpp:85-92`) instead of upstream-of-this-fix's
+    // `assert!`.
+    assert_eq!(
+        ZFilter::build(Design::Bessel, 0, 8.0),
+        Err(FilterError::InvalidOrder)
+    );
+    assert_eq!(
+        ZFilter::build(Design::Bessel, 4, 1.9),
+        Err(FilterError::InvalidCornerPeriod)
+    );
+    // Boundary: corner_period == 2.0 is VALID (upstream throws only on
+    // `p < 2.0`, zfilterfactory.cpp:89-92).
+    assert!(ZFilter::build(Design::Butterworth, 4, 2.0).is_ok());
 }
 
 #[test]
@@ -239,4 +261,97 @@ fn zfilter_constructor_fallbacks() {
     let c = ZFilter::new(0.3, 3.0);
     assert_eq!((c.min_move, c.exp_factor), (0.3, 3.0));
     assert_eq!(c.min_move(), 0.3);
+}
+
+// ---------------------------------------------------------------------------
+// Lowpass (dossier §6.3) — P3-T2 fix round, review coverage item. Literals
+// hand-traced per the P1-T5 idiom and cross-checked with an independent
+// exact-rational (Python `fractions.Fraction`) re-implementation of the
+// §6.3 pseudocode, so every expected value below is exact arithmetic, not a
+// float echo of the code under test. A trim-BEFORE-median buggy variant of
+// that script diverges from this trace at frames 5-6 (0.40757.../0.55 vs
+// the correct 0.35757.../0.45606...), proving the vector pins upstream's
+// median-on-11-then-trim ordering (guide_algorithm_lowpass.cpp:80-85), not
+// just the steady state.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lowpass_step_response_default_params() {
+    // Defaults: min_move=0.2, slope_weight=5.0. reset() zero-fills the
+    // window to 10 entries at t=0..9 (guide_algorithm_lowpass.cpp:65-75),
+    // so frame 0's add() is t=10. Per frame: add sample -> median over the
+    // UNTRIMMED 11 -> drop oldest -> linear fit over 10 -> r = median +
+    // 5.0*slope -> clamp |r| <= |input| (using raw input, NOT attenuated)
+    // -> min-move deadband on INPUT (cpp:77-103).
+    //
+    //  f0 in=0.55: median(10 zeros + .55)=0; fit y=[0]*9+[.55] over t=1..10:
+    //     slope=45*.55/825=0.03 -> r=0.15
+    //  f1 in=0.55: median 0; slope=44/825 -> r=4/15=0.266666...
+    //  f2 in=0.55: median 0; slope=57.75/825=0.07 -> r=0.35
+    //  f3 in=0.1:  r_pre=0.27727... > |0.1| -> clamp r=input=0.1; then
+    //     |0.1| < 0.2 -> min-move on INPUT vetoes -> 0.0 (both guards in
+    //     one frame, in upstream's order: clamp first, deadband last)
+    //  f4 in=0.2:  r_pre=0.22575... > |0.2| -> clamp r=input=0.2; deadband
+    //     is STRICT `<` (cpp:95) so |0.2| < 0.2 is false -> 0.2 passes
+    //     through EXACTLY (pins both clamp-to-raw-input and the boundary)
+    //  f5 in=0.55: median over 11 [0*5,.1,.2,.55*4] = idx5 = 0.1 (nonzero
+    //     median finally contributes); slope=42.5/825 -> r = 0.1 +
+    //     212.5/825 = 59/165 = 0.357575...  <- differs from trim-first
+    //  f6 in=0.55: r = 301/660 = 0.456060...  <- differs from trim-first
+    //  f7-f9 in=0.55: r_pre exceeds input -> clamp -> 0.55 exactly
+    let mut lp = Lowpass::default();
+    let ins = [0.55, 0.55, 0.55, 0.1, 0.2, 0.55, 0.55, 0.55, 0.55, 0.55];
+    let exp = [
+        0.15,
+        4.0 / 15.0,
+        0.35,
+        0.0,
+        0.2,
+        59.0 / 165.0,
+        301.0 / 660.0,
+        0.55,
+        0.55,
+        0.55,
+    ];
+    for (i, (input, e)) in ins.iter().zip(exp.iter()).enumerate() {
+        let got = lp.result(*input);
+        assert!(
+            (got - e).abs() < 1e-9,
+            "frame {} in={} got={} exp={}",
+            i,
+            input,
+            got,
+            e
+        );
+    }
+}
+
+#[test]
+fn lowpass_reset_restores_zero_filled_window() {
+    // reset() re-zero-fills to 10 entries (guide_algorithm_lowpass.cpp:
+    // 65-75), so the first post-reset frame must equal a fresh instance's
+    // frame 0 (0.15 for input 0.55, above) — not continue the old slope.
+    let mut lp = Lowpass::default();
+    for _ in 0..5 {
+        lp.result(0.55);
+    }
+    lp.reset();
+    let got = lp.result(0.55);
+    assert!((got - 0.15).abs() < 1e-9, "post-reset got={}", got);
+}
+
+#[test]
+fn lowpass_constructor_fallbacks() {
+    // min_move < 0 -> default 0.2; slope_weight < 0 -> default 5.0
+    // (SetMinMove/SetSlopeWeight, guide_algorithm_lowpass.cpp:105-153; both
+    // setters assign the real member in their catch, unlike Lowpass2's
+    // SetAggressiveness — no divergence needed here).
+    let a = Lowpass::new(-1.0, 5.0);
+    assert_eq!(a.min_move, 0.2);
+    let b = Lowpass::new(0.2, -2.0);
+    assert_eq!(b.slope_weight, 5.0);
+    // 0.0 is VALID for both (only `< 0` rejects, cpp:111/:136).
+    let c = Lowpass::new(0.0, 0.0);
+    assert_eq!((c.min_move, c.slope_weight), (0.0, 0.0));
+    assert_eq!(c.min_move(), 0.0);
 }

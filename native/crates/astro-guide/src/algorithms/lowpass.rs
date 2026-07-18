@@ -268,12 +268,30 @@ pub struct Lowpass2 {
 }
 
 impl Lowpass2 {
-    /// Constructs with upstream's constructor-time validation
+    /// Constructs with upstream's constructor-time validation folded in
     /// (`SetMinMove`/`SetAggressiveness`,
-    /// `guide_algorithm_lowpass2.cpp:125-207`): `min_move < 0` and
-    /// `aggressiveness < 0` each fall back to their default. Unlike
-    /// `min_move`, upstream's `SetAggressiveness` has no code-enforced upper
-    /// bound (the 0..100 range is a UI slider limit only), so values above
+    /// `guide_algorithm_lowpass2.cpp:125-207`): `min_move < 0` falls back to
+    /// the default (upstream-faithful: `m_minMove = DefaultMinMove` in the
+    /// catch, `guide_algorithm_lowpass2.cpp:138-143`).
+    ///
+    /// ADJUDICATION — `aggressiveness < 0` falls back to the default, which
+    /// is a **deliberate divergence from upstream's literal code**:
+    /// `SetAggressiveness`'s catch assigns the *local parameter*, not the
+    /// member (`aggressiveness = DefaultAggressiveness;`,
+    /// `guide_algorithm_lowpass2.cpp:201` — contrast `SetMinMove`'s correct
+    /// `m_minMove = DefaultMinMove` at `:142`), so upstream leaves
+    /// `m_aggressiveness` untouched on invalid input — stale at runtime, and
+    /// *uninitialized memory* on the constructor path — while persisting the
+    /// default to the profile (`:204`), which then masks the bug on the next
+    /// restart. Replicating that would mean constructing with an undefined
+    /// aggressiveness; assigning the default to the real field is what
+    /// upstream's own `SetMinMove` pattern (and its profile write) shows was
+    /// intended. Safer-than-upstream, consciously chosen — the P1-T1/P1-T5
+    /// adjudication idiom.
+    ///
+    /// Unlike `min_move`, upstream's `SetAggressiveness` has no
+    /// code-enforced upper bound (the 0..100 range is a UI spin-control
+    /// limit only, `guide_algorithm_lowpass2.cpp:231-232`), so values above
     /// 100 pass through unclamped here too.
     pub fn new(min_move: f64, aggressiveness: f64) -> Self {
         let min_move = if min_move < 0.0 {
