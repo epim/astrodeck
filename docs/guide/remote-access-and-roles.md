@@ -92,9 +92,11 @@ What the individual capabilities gate:
   focuser, filter wheel.
 - **`control.mount`** — all mount motion (slew, park, tracking) **and** starting
   a multi-target sequence (which slews), plus pausing/resuming/aborting a
-  running sequence and session regrade. Operators are meant to run sequences
-  (this is the intended use of the role — the eventual basis for a
-  telescope-rental interface), so **operator holds it too**, not just admin.
+  running sequence, session regrade, and the session-card lifecycle actions
+  (resume, auto-resume arm, update-from-plan, abandon, delete). Operators are
+  meant to run sequences (this is the intended use of the role — the eventual
+  basis for a telescope-rental interface), so **operator holds it too**, not
+  just admin.
 - **`control.guide`** — start/stop/dither guiding.
 - **`control.power`** — switch outputs (can brown out the rig). Admin only.
 - **`config.backend`** — connect rigs, apply/activate profiles. **Admin only**
@@ -133,7 +135,7 @@ tracks what's really hidden/disabled per role, not just the intent:
 | **Plan** — building the on-screen draft | full (local-only, no capability check) | full | full |
 | **Plan** — plan library save/import/delete | disabled | enabled (`control.capture`) | enabled |
 | **Plan** — Run / Monitor's Pause / Resume / Abort | visible but **disabled**, with a lock note naming the required access | full (`control.mount`) | full |
-| **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | full — resume/auto-resume-arm/update-from-plan/delete/regrade all enabled (`control.mount`) | full |
+| **Sessions** | cards + review drawer visible; regrade controls **disabled with a lock note** (`control.mount`) | full — resume/auto-resume-arm/update-from-plan/abandon/delete/regrade all enabled (`control.mount`) | full |
 | **Monitor** | dashboard fully visible, controls row **disabled** with a shared lock note | dashboard fully visible, controls row **enabled** (`control.mount`) | full |
 | **Sky Conditions / Radar** (on Monitor) | never rendered — no request even fires | full (`view.weather`, 2026-07-17 I2) | full |
 | **Weather** settings panel (Settings → Connect, config only) | never rendered | never rendered (`config.site_optics` is admin-only) | full |

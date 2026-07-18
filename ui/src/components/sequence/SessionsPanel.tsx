@@ -1,9 +1,10 @@
 // SessionsPanel.tsx — multi-night session cards (sessions spec §7): name +
 // status chip + per-target accepted/total bars; Resume (dormant), Update from
 // Plan (dormant, id-safe with kept/new/dropped confirm), auto-resume arm (with
-// the no-safety-monitor confirm + persistent warning chip), delete
-// (confirm-then-delete, no undo — server state). Night-mode safe: existing
-// tokens/classes only.
+// the no-safety-monitor confirm + persistent warning chip), abandon
+// (dormant/complete, soft-retire — plain confirm, reversible only via the
+// API, never active), delete (confirm-then-delete, no undo — server state).
+// Night-mode safe: existing tokens/classes only.
 import { useCallback, useEffect, useState } from "react";
 import { useStore, useWeather } from "../../store";
 import { Panel, Toggle } from "../ui";
@@ -113,6 +114,17 @@ export default function SessionsPanel() {
     await act("Auto-resume", () => patchSession(r.id, { auto_resume: v }));
   };
 
+  const onAbandon = async (r: SessionRow) => {
+    const ok = await confirmDialog({
+      title: `Abandon "${r.name}"?`,
+      body: "Removes it from the panel but keeps its ledger and thumbnails on disk. Delete, by contrast, permanently removes them.",
+      tone: "warn",
+      mode: "confirm",
+      confirmLabel: "Abandon",
+    });
+    if (ok) await act("Abandon", () => patchSession(r.id, { status: "abandoned" }));
+  };
+
   const onDelete = async (r: SessionRow) => {
     const ok = await confirmDialog({
       title: `Delete session "${r.name}"?`,
@@ -163,6 +175,15 @@ export default function SessionsPanel() {
                   onClick={() => setReviewId(r.id)}>
                   <Icon name="eye" size={12} /> review
                 </button>
+                {canControl && (r.status === "dormant" || r.status === "complete") && (
+                  <button
+                    className="tap min-h-[44px] inline-flex items-center gap-1 !px-3 !text-[11px]
+                      border border-line2 text-dim hover:text-warn hover:border-warn/50"
+                    title={`Abandon ${r.name} — soft-retire, keeps ledger and thumbnails on disk`}
+                    onClick={() => void onAbandon(r)}>
+                    <Icon name="x" size={12} /> abandon
+                  </button>
+                )}
                 {canControl && r.status !== "active" && (
                   <button
                     className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
