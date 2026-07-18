@@ -1011,6 +1011,11 @@ fn build_engine_config(d: &Bound<'_, PyDict>) -> PyResult<EngineConfig> {
     override_field!(d, "max_ra_duration_ms", c.max_ra_duration_ms, u32);
     override_field!(d, "max_dec_duration_ms", c.max_dec_duration_ms, u32);
     override_field!(d, "blc_pulse_ms", c.blc_pulse_ms, u32);
+    // Multi-star tracking (dossier §2.6/§4; P3-T1). `1` (default) keeps
+    // `process()` on the single-star path end to end; `> 1` enables
+    // `GuideEngine::measure`'s multi-star acquisition/tracking and
+    // `ingest`'s `RefineOffset` call.
+    override_field!(d, "max_stars", c.max_stars, usize);
 
     if let Some(s) = get_opt::<String>(d, "ra_algorithm")? {
         c.ra_algorithm = parse_algo_kind(&s)?;
@@ -1065,6 +1070,16 @@ fn build_guide_search_params(
 /// (pixels; `peak` is the raw peak ADU seen in the search window),
 /// brightest-first; `meta` is `{sat_thresh}` (the near-saturation ADU cutoff
 /// a primary-star selection pass would use).
+///
+/// **Multi-star (dossier §2.6; P3-T1)**: when `params["max_stars"]` is `> 1`,
+/// `stars` is the SNR-gated, 25px-deduped multi-star candidate list
+/// [`auto_find`] builds instead of the unfiltered single-star list — see
+/// `astro_guide::select`'s module doc for exactly what that gate excludes.
+/// A UI overlay can render `stars[0]` as the presumptive primary and the
+/// rest as candidate secondaries (final primary/secondary assignment is a
+/// `GuideEngine::process` acquisition-frame concern, not this function's —
+/// see [`GuideEngine::stats`]'s `"secondaries"` key for the CURRENTLY
+/// TRACKED set during live guiding).
 #[pyfunction]
 #[pyo3(signature = (frame, params=None))]
 fn guide_star_find<'py>(
@@ -1358,7 +1373,7 @@ impl GuideEngine {
 
     /// Current guide-error statistics in the host's `GuideStats` bus shape
     /// (spec §3.2/§3.5): `{guiding, rms_ra, rms_dec, rms_total, snr,
-    /// recent:[[t,ra,dec],...]}`.
+    /// recent:[[t,ra,dec],...], secondaries:[[x,y],...]}`.
     fn stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.inner.stats();
         let d = PyDict::new_bound(py);
@@ -1378,6 +1393,14 @@ impl GuideEngine {
             recent.append(PyList::new_bound(py, [t, ra, dec]))?;
         }
         d.set_item("recent", recent)?;
+        // Multi-star (dossier §2.6/§4; P3-T1): currently tracked secondary
+        // guide stars' last-known camera-frame positions, for a UI
+        // overlay. Empty in single-star mode.
+        let secondaries = PyList::empty_bound(py);
+        for &(x, y) in &s.secondaries {
+            secondaries.append(PyList::new_bound(py, [x, y]))?;
+        }
+        d.set_item("secondaries", secondaries)?;
         Ok(d)
     }
 

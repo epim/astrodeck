@@ -61,7 +61,10 @@ use crate::algorithms::{GuideAlgorithm, Hysteresis, ResistSwitch};
 use crate::calibration::{
     sanity_advisories, CalConfig, CalOutcome, Calibrator, DecMode, UNKNOWN_DECLINATION,
 };
-use crate::select::{auto_find, saturation_threshold, select_primary, SelectParams};
+use crate::refine::{self, PrimaryDistStats, SecondaryStar};
+use crate::select::{
+    auto_find, primary_and_secondaries, saturation_threshold, select_primary, SelectParams,
+};
 use crate::settle::{Settle, SettleState};
 use crate::starfind::{star_find, was_found, FindParams};
 use crate::track::{AvgDist, DistanceChecker, MassChecker};
@@ -128,6 +131,18 @@ pub struct EngineConfig {
     /// default (dossier §10/§15; the adaptive size controller stays OFF per
     /// D4).
     pub blc_pulse_ms: u32,
+    /// Multi-star candidate-list cap (dossier §2.6/§4/§15; P3-T1).
+    /// `1` (this task's default, matching upstream's `/guider/multistar/
+    /// enabled = false`) keeps the engine on the P1/P2 single-star path
+    /// end to end — [`GuideEngine::measure`]'s acquisition branch, the
+    /// per-frame secondary tracking, and [`GuideEngine::ingest_guiding`]'s
+    /// refinement call are all no-ops whenever `self.secondaries` stays
+    /// empty, which it does unless this is `> 1`. Values above 12
+    /// (`MAX_LIST_SIZE`) are accepted but have no additional effect —
+    /// [`SelectParams`]/`auto_find`'s candidate scan already caps out at
+    /// the top-100 PSF-response peaks (dossier §2.3 `TOP_N`) long before a
+    /// list this large could form.
+    pub max_stars: usize,
 }
 
 impl Default for EngineConfig {
@@ -144,6 +159,7 @@ impl Default for EngineConfig {
             ra_algorithm: AlgoKind::Hysteresis,
             dec_algorithm: AlgoKind::ResistSwitch,
             blc_pulse_ms: 0,
+            max_stars: 1,
         }
     }
 }
@@ -199,6 +215,11 @@ pub struct GuideStatsSnapshot {
     pub rms_total: f64,
     pub snr: f64,
     pub recent: Vec<(f64, f64, f64)>,
+    /// Currently tracked secondary guide stars' last-known camera-frame
+    /// `(x, y)` positions (dossier §2.6/§4; P3-T1), for a UI overlay.
+    /// Empty in single-star mode (`EngineConfig::max_stars <= 1`) or
+    /// before the first multi-star acquisition of a session.
+    pub secondaries: Vec<(f64, f64)>,
 }
 
 /// Fast-recenter-after-dither state (dossier §11.2; `guider.cpp:912-919`
@@ -285,6 +306,37 @@ pub struct GuideEngine {
 
     recent: VecDeque<(f64, f64, f64)>,
     last_snr: f64,
+
+    /// Tracked secondary guide stars (dossier §2.6/§4; P3-T1). Empty in
+    /// single-star mode. Rebuilt wholesale on every full re-acquisition
+    /// (see [`rebuild_secondaries`](Self::rebuild_secondaries)), otherwise
+    /// mutated in place by [`refine::refine_offset`] each accepted guiding
+    /// frame.
+    secondaries: Vec<SecondaryStar>,
+    /// Running statistics on the primary star's per-frame distance from
+    /// the lock position (dossier §4 `m_primaryDistStats`), feeding the
+    /// stabilization gate's sigma.
+    primary_dist_stats: PrimaryDistStats,
+    /// Stabilization hysteresis flag (dossier §4 `m_stabilizing`): entered
+    /// when the primary excursion exceeds
+    /// [`refine::STABILITY_SIGMA_ENTER`] sigma, only exited at or below
+    /// [`refine::STABILITY_SIGMA_EXIT`] sigma. While `true`,
+    /// [`ingest_guiding`](Self::ingest_guiding) never calls
+    /// [`refine::refine_offset`] in normal (non-recovery) mode.
+    stabilizing: bool,
+    /// Set by [`dither`](Self::dither) (dossier §4: "a dither sets
+    /// lock_position_moved = true"); consumed on the frame the
+    /// stabilization period exits, triggering a one-time secondary
+    /// reference-point recovery re-find instead of the ordinary weighted
+    /// average.
+    lock_position_moved: bool,
+    /// Set permanently once a panic inside the multi-star refinement path
+    /// has been caught (dossier §4: "any exception... permanently drops
+    /// back to single-star mode for the session"). Gates every subsequent
+    /// [`refine_multistar`](Self::refine_multistar) call for the rest of
+    /// this engine's life (cleared only by [`reset_guiding_state`]
+    /// (Self::reset_guiding_state), i.e. a fresh session).
+    multi_star_broken: bool,
 }
 
 /// Construct a boxed axis algorithm from an [`AlgoKind`]. P1 implements
@@ -341,6 +393,11 @@ impl GuideEngine {
             recenter: None,
             recent: VecDeque::with_capacity(RECENT_CAP),
             last_snr: 0.0,
+            secondaries: Vec::new(),
+            primary_dist_stats: PrimaryDistStats::new(),
+            stabilizing: false,
+            lock_position_moved: false,
+            multi_star_broken: false,
         }
     }
 
@@ -429,10 +486,21 @@ impl GuideEngine {
         self.recenter = None;
         self.recent.clear();
         self.last_snr = 0.0;
+        // Multi-star state (dossier §4): a fresh session boundary is also
+        // where `multi_star_broken`'s "for the session" scope ends.
+        self.secondaries.clear();
+        self.primary_dist_stats = PrimaryDistStats::new();
+        self.stabilizing = false;
+        self.lock_position_moved = false;
+        self.multi_star_broken = false;
     }
 
-    /// The per-frame decision (dossier §7). `measured[0]` is the primary star
-    /// (secondaries follow in P3). Returns the [`Action`] the host performs.
+    /// The per-frame decision (dossier §7). `measured[0]` is the primary
+    /// star; `measured[1..]`, when multi-star tracking is active
+    /// (`EngineConfig::max_stars > 1` and a secondary list has been
+    /// established), are this frame's re-measurements of `self.secondaries`
+    /// in the same order (dossier §2.6/§4; P3-T1) — see [`measure`](Self::measure).
+    /// Returns the [`Action`] the host performs.
     pub fn ingest(&mut self, meta: &FrameMeta, measured: &[MeasuredStar]) -> Action {
         match self.phase {
             Phase::Idle => Action::Idle,
@@ -507,6 +575,15 @@ impl GuideEngine {
         let dec_guiding = self.cfg.dec_guide_mode != DecMode::Off;
         let star = measured.first().copied();
         let found = star.map(|s| s.found).unwrap_or(false);
+        // Whether THIS frame's `measured` came from a fresh `auto_find`
+        // acquisition pass rather than per-star tracking (dossier §2.6/§4;
+        // P3-T1): `measure()` decides this from `self.search_origin` — see
+        // its doc comment — so it must be captured here, BEFORE this
+        // function's own mutations, to still reflect the state `measure()`
+        // saw. True both on a session's very first lock-establishing frame
+        // and on a post-long-lost bounded re-acquisition (dossier's
+        // `AutoSelect` always rebuilds the whole guide-star list).
+        let was_acquiring = self.search_origin.is_none();
 
         // 1. Establish the lock on the first found star of the session. The
         //    lock frame issues no correction and is not an accepted guide
@@ -516,6 +593,7 @@ impl GuideEngine {
                 self.lock = Some((s.x, s.y));
                 self.search_origin = Some((s.x, s.y));
                 self.last_good_find_s = Some(now);
+                self.rebuild_secondaries(measured); // dossier §2.6/§4; P3-T1
             }
             return Action::Idle;
         };
@@ -586,7 +664,9 @@ impl GuideEngine {
             return Action::Idle;
         }
         let s = star.expect("found implies a star");
-        let (camera, mount) = offset.expect("found implies an offset");
+        // `mut`: dossier §4's RefineOffset may replace both (step 5 below),
+        // once the frame is accepted — see the `refine_multistar` call.
+        let (mut camera, mut mount) = offset.expect("found implies an offset");
 
         // 3. Star-mass gate (dossier §3.1). OBLIGATION (a): CheckMass is called
         //    EXACTLY ONCE per frame — it drifts the low-water mark through a
@@ -613,7 +693,15 @@ impl GuideEngine {
         //    and compute small_context from the not-guiding / paused / settling
         //    / <10-frames predicate (guider_multistar.cpp _CheckDistance).
         let ra_only = !dec_guiding;
-        let distance = if ra_only {
+        // `mut`: RefineOffset (below) reports the refined distance to
+        // `UpdateCurrentDistance` as a full 2D hypot regardless of
+        // `ra_only` (dossier §4/§3.2; `guider_multistar.cpp:1026-1027`:
+        // "distance = hypot(ofs->cameraOfs.X, ofs->cameraOfs.Y)"
+        // unconditionally on a successful refine) — but the JUMP-CHECK
+        // value computed here, used immediately below, is always the
+        // PRE-refine distance (refinement only ever runs on an already-
+        // accepted frame, dossier §3 step 7).
+        let mut distance = if ra_only {
             camera.0.abs()
         } else {
             camera.0.hypot(camera.1)
@@ -645,9 +733,54 @@ impl GuideEngine {
         //    UpdateCurrentPosition, incl. the avg-dist update at :1043, never
         //    pauses for the settle).
         self.mass_checker.append(now * 1000.0, s.mass); // OBLIGATION (b): accept path
+        if was_acquiring {
+            // `measured` on this frame came from a fresh `auto_find` pass
+            // (a session's first lock, or a post-long-lost bounded
+            // re-acquisition) — the secondary list it may carry replaces
+            // whatever was tracked before (dossier §2.6/§4; P3-T1).
+            self.rebuild_secondaries(measured);
+        }
         self.search_origin = Some((s.x, s.y));
         self.last_good_find_s = Some(now);
         self.frames_since_reset += 1;
+
+        // Multi-star offset refinement (dossier §4). Preconditions mirror
+        // `guider_multistar.cpp:734` (`IsGuiding() && m_guideStars.size() >
+        // 1 && GetGuidingEnabled() && !IsSettling()`): guiding is implied
+        // by `Phase::Guiding` (this function's caller), "guiding enabled"
+        // has no analogue in this crate's frozen host contract (assumed
+        // true), `!settling` is `settling` computed above, and
+        // `m_guideStars.size() > 1` is `!self.secondaries.is_empty()`.
+        // `multi_star_broken` is the panic-guard latch (module doc,
+        // dossier §4's "any exception... permanently drops to single-star
+        // mode for the session"). Runs BEFORE `avg_dist.update` so a
+        // refined offset feeds the smoothed statistics AND the move
+        // pipeline (guider_multistar.cpp:1023-1034).
+        if !settling && !self.multi_star_broken && !self.secondaries.is_empty() {
+            let secondary_measured = &measured[1..];
+            if secondary_measured.len() == self.secondaries.len() {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.refine_multistar(camera, s.snr, secondary_measured)
+                }));
+                match outcome {
+                    Ok(Some(new_offset)) => {
+                        camera = new_offset;
+                        mount = camera_to_mount(camera, &cal);
+                        distance = camera.0.hypot(camera.1);
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        // Panic guard (dossier §4): drop to single-star for
+                        // the rest of this session. `self.secondaries` may
+                        // be left in a partially-mutated state by the
+                        // aborted call; clearing it makes that moot.
+                        self.multi_star_broken = true;
+                        self.secondaries.clear();
+                    }
+                }
+            }
+        }
+
         let distance_ra = mount.0.abs();
         self.avg_dist.update(now, distance, distance_ra);
         self.last_snr = s.snr;
@@ -738,6 +871,118 @@ impl GuideEngine {
             }
             _ => Action::Settle,
         }
+    }
+
+    /// Rebuild the secondary-star list from a fresh acquisition's
+    /// `measured` output (dossier §2.6/§2.7; P3-T1): `measured[0]` is the
+    /// primary, `measured[1..]` are the freshly found secondaries. Each
+    /// becomes a [`SecondaryStar`] with `reference_point == (x, y)`
+    /// (dossier: "set in AutoFind") and `offset_from_primary` computed
+    /// against `measured[0]` — equivalent to upstream's `referencePoint -
+    /// primaryRef` (`star.cpp:1108`), since `referencePoint` is freshly
+    /// stamped to the just-measured position at this exact moment
+    /// ([`select::primary_and_secondaries`]'s doc comment). A `measured`
+    /// with fewer than 2 entries (single-star mode, or a failed
+    /// acquisition) clears the list. Also resets the stabilization state
+    /// machine (dossier §4) fresh, matching upstream's `SetMultiStarMode`/
+    /// a fresh `AutoSelect` clearing `m_primaryDistStats` together with the
+    /// secondary list (this crate has no literal analogue to port from —
+    /// DERIVED, but the only choice consistent with "every full
+    /// `auto_find`+`select_primary` pass replaces the whole guide-star
+    /// list": stale primary-distance history from a DIFFERENT star's
+    /// tracking history is not meaningful to the new one).
+    fn rebuild_secondaries(&mut self, measured: &[MeasuredStar]) {
+        self.primary_dist_stats = PrimaryDistStats::new();
+        self.stabilizing = false;
+        self.lock_position_moved = false;
+        if measured.len() < 2 {
+            self.secondaries.clear();
+            return;
+        }
+        let (px, py) = (measured[0].x, measured[0].y);
+        self.secondaries = measured[1..]
+            .iter()
+            .map(|m| SecondaryStar::new(m.x, m.y, m.snr, (m.x - px, m.y - py)))
+            .collect();
+    }
+
+    /// Multi-star offset refinement for one accepted, non-settling guiding
+    /// frame (dossier §4). Owns the persisted stabilization state machine
+    /// (`primary_dist_stats`/`stabilizing`/`lock_position_moved`) that
+    /// [`refine::refine_offset`] itself cannot — it is a pure, stateless
+    /// function per this task's frozen signature (see `refine.rs`'s module
+    /// doc for the full split-of-responsibility argument). Returns
+    /// `Some(refined_camera_offset)` when refinement should replace the
+    /// caller's `camera` offset for this frame; `None` otherwise
+    /// (stabilizing, no shrink, or a lock-recovery frame that only
+    /// refreshed secondary reference points).
+    ///
+    /// **Why the redundant gate inside [`refine::refine_offset`] never
+    /// disagrees with this method's own hysteresis**: this method only
+    /// calls [`refine::refine_offset`] in normal (non-recovery) mode from
+    /// the `!self.stabilizing` branch below — i.e. only on a frame where
+    /// THIS method has just confirmed, using the real persisted hysteresis
+    /// (enter at [`refine::STABILITY_SIGMA_ENTER`] sigma, exit at
+    /// [`refine::STABILITY_SIGMA_EXIT`] sigma, with memory across frames),
+    /// that refinement should be attempted. [`refine::refine_offset`]'s own
+    /// stateless `primary_dist > 5*sigma` re-check can therefore only ever
+    /// see a primary distance already known to be within the enter
+    /// threshold — it is authoritative only when [`refine::refine_offset`]
+    /// is called in isolation (as this crate's golden-vector tests do,
+    /// without this surrounding state machine).
+    fn refine_multistar(
+        &mut self,
+        camera: (f64, f64),
+        primary_snr: f64,
+        secondary_measured: &[MeasuredStar],
+    ) -> Option<(f64, f64)> {
+        let primary_dist = camera.0.hypot(camera.1);
+        self.primary_dist_stats.add(primary_dist);
+
+        if self.primary_dist_stats.count() > 5 {
+            let sigma = self.primary_dist_stats.sigma();
+            if !self.stabilizing && primary_dist > refine::STABILITY_SIGMA_ENTER * sigma {
+                self.stabilizing = true;
+            } else if self.stabilizing && primary_dist <= refine::STABILITY_SIGMA_EXIT * sigma {
+                self.stabilizing = false;
+                if self.lock_position_moved {
+                    // Lock-recovery frame (dossier §4): refresh secondary
+                    // reference points only, no averaging this frame.
+                    // `secondary_measured` was already re-searched using
+                    // each star's [`SecondaryStar::search_position`] (see
+                    // `measure()`) — the one accepted narrowing from
+                    // upstream's dedicated "expected location" re-find is
+                    // documented on `refine.rs`'s module doc.
+                    self.lock_position_moved = false;
+                    refine::refine_offset(
+                        camera,
+                        &mut self.secondaries,
+                        secondary_measured,
+                        primary_snr,
+                        sigma,
+                        true,
+                    );
+                    self.secondaries.retain(|sec| !sec.erase);
+                    return None;
+                }
+            }
+
+            if !self.stabilizing {
+                let refined = refine::refine_offset(
+                    camera,
+                    &mut self.secondaries,
+                    secondary_measured,
+                    primary_snr,
+                    sigma,
+                    false,
+                );
+                self.secondaries.retain(|sec| !sec.erase);
+                return refined;
+            }
+        } else {
+            self.stabilizing = true;
+        }
+        None
     }
 
     /// The dossier §7 move pipeline for one accepted frame's mount-frame
@@ -939,22 +1184,67 @@ impl GuideEngine {
     /// performs the origin update. Never mutates engine state (in particular
     /// it never touches the MassChecker, so it cannot violate OBLIGATION
     /// (a)).
+    ///
+    /// **Multi-star (dossier §2.6/§4; P3-T1)**: the returned `Vec` is
+    /// `[primary, secondary_0, secondary_1, ...]` whenever
+    /// `self.secondaries` is non-empty (index-aligned to it) — see
+    /// [`ingest_guiding`](Self::ingest_guiding) and
+    /// [`refine_multistar`](Self::refine_multistar) for how the secondaries
+    /// are consumed. Each secondary is re-measured at
+    /// [`SecondaryStar::search_position`] (own last position, or
+    /// `primary + offset_from_primary` if it was lost last frame) using
+    /// the JUST-FOUND primary's fresh position — this is the same "search
+    /// where last seen" strategy dossier §4's per-frame loop uses
+    /// (`guider_multistar.cpp:802-810`). It is deliberately used
+    /// UNCONDITIONALLY here, even during a stabilization period or on the
+    /// one frame that should use upstream's dedicated lock-recovery
+    /// "expected location" re-find instead
+    /// (`guider_multistar.cpp:762-791`): this method is `&self` (pure, no
+    /// mutation — an established P1/P2 contract this task does not
+    /// change), so it has no access to `self.stabilizing`/
+    /// `self.lock_position_moved`, which only `ingest`'s `&mut self` call
+    /// updates. The accepted consequence (DERIVED, not upstream-literal):
+    /// on the one frame stabilization exits after a dither, a secondary
+    /// whose pre-dither position is now well outside its search window may
+    /// come back `not found` here and get marked `was_lost` by
+    /// [`refine_multistar`]'s lock-recovery branch instead of being
+    /// instantly relocated — it then self-heals via the ordinary
+    /// `was_lost` branch of [`SecondaryStar::search_position`] on the VERY
+    /// NEXT frame, i.e. at most one extra frame of delay, never a stuck or
+    /// incorrect state.
     pub fn measure(&self, frame: &astro_star::GrayFrame) -> Vec<MeasuredStar> {
         match self.search_origin {
             Some((lx, ly)) => {
                 let r = star_find(frame, lx, ly, &self.cfg.find);
-                vec![MeasuredStar {
+                let primary = MeasuredStar {
                     x: r.x,
                     y: r.y,
                     snr: r.snr,
                     mass: r.mass,
                     hfd: r.hfd,
                     found: was_found(r.result),
-                }]
+                };
+                let mut out = Vec::with_capacity(1 + self.secondaries.len());
+                let primary_pos = (primary.x, primary.y);
+                out.push(primary);
+                for sec in &self.secondaries {
+                    let (sx, sy) = sec.search_position(primary_pos);
+                    let rs = star_find(frame, sx, sy, &self.cfg.find);
+                    out.push(MeasuredStar {
+                        x: rs.x,
+                        y: rs.y,
+                        snr: rs.snr,
+                        mass: rs.mass,
+                        hfd: rs.hfd,
+                        found: was_found(rs.result),
+                    });
+                }
+                out
             }
             None => {
                 let sp = SelectParams {
                     search_region: self.cfg.find.search_region,
+                    max_stars: self.cfg.max_stars,
                     ..SelectParams::default()
                 };
                 let cands = auto_find(frame, &sp);
@@ -962,6 +1252,28 @@ impl GuideEngine {
                     cands.iter().map(|c| (c.x as i32, c.y as i32)).collect();
                 let sat = saturation_threshold(frame, &peaks, &self.cfg.find);
                 match select_primary(&cands, sat, sp.af_min_snr) {
+                    Some(i) if sp.max_stars > 1 => {
+                        let (primary, secondaries) =
+                            primary_and_secondaries(&cands, i, sp.max_stars);
+                        let mut out = Vec::with_capacity(1 + secondaries.len());
+                        out.push(MeasuredStar {
+                            x: primary.x,
+                            y: primary.y,
+                            snr: primary.snr,
+                            mass: primary.mass,
+                            hfd: primary.hfd,
+                            found: true,
+                        });
+                        out.extend(secondaries.iter().map(|c| MeasuredStar {
+                            x: c.x,
+                            y: c.y,
+                            snr: c.snr,
+                            mass: c.mass,
+                            hfd: c.hfd,
+                            found: true,
+                        }));
+                        out
+                    }
                     Some(i) => {
                         let c = cands[i];
                         vec![MeasuredStar {
@@ -1040,6 +1352,13 @@ impl GuideEngine {
         // GuidingDithered -> reset() (dossier §11.1/§11.2).
         self.ra_algo.reset();
         self.dec_algo.reset();
+
+        // Multi-star (dossier §4): "A dither sets lock_position_moved =
+        // true and stabilizing = true" (`SetLockPosition` override,
+        // `guider_multistar.cpp:766`/`1183`-ish path via the lock-position
+        // setter). No-op (harmlessly) when `self.secondaries` is empty.
+        self.lock_position_moved = true;
+        self.stabilizing = true;
 
         // Immediately inflate the error statistics by the dither distance
         // (dossier §11.2; `guider.cpp:903-908`, "update average distance
@@ -1122,6 +1441,7 @@ impl GuideEngine {
             rms_total: rms(stot),
             snr: self.last_snr,
             recent: self.recent.iter().copied().collect(),
+            secondaries: self.secondaries.iter().map(|s| (s.x, s.y)).collect(),
         }
     }
 
