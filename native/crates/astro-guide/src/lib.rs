@@ -16,6 +16,7 @@
 pub mod algorithms;
 pub mod calibration;
 pub mod engine;
+pub mod refine;
 pub mod select;
 pub mod settle;
 pub mod starfind;
