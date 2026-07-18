@@ -1,7 +1,8 @@
 // SkyConditionsPanel.tsx — Monitor-mosaic cloud forecast cell (weather spec
-// §10). The CALLER mounts this ONLY for view.site_precise holders (conditional
-// -mount idiom, SettingsView.tsx:140) — nothing weather-related renders for
-// non-holders (spec §8). Holders with weather disabled get an empty state.
+// §10). The CALLER mounts this ONLY for view.weather holders -- operator +
+// admin, 2026-07-17 decisions wave I2 (conditional-mount idiom,
+// MonitorView.tsx) — nothing weather-related renders for non-holders (spec
+// §8). Holders with weather disabled get an empty state.
 // Hand-rolled SVG time-series (GuideGraph/Sparkline precedent): series
 // differentiated by dash pattern + stroke width + inline labels, NEVER hue
 // alone (night rule, monitor.tsx:266-267).

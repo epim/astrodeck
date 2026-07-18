@@ -416,8 +416,8 @@ async def test_payload_shape_matches_spec_7(svc):
     await s.tick()
     p = s.payload(now["t"])
     assert set(p) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
-                      "threshold_pct", "sustain_minutes", "forecast",
-                      "astrospheric", "alert"}
+                      "threshold_pct", "sustain_minutes", "site_lat",
+                      "site_lon", "forecast", "astrospheric", "alert"}
     assert p["enabled"] is True and p["ignore_tonight"] is False
     assert p["threshold_pct"] == 50 and p["sustain_minutes"] == 30
     f = p["forecast"]
@@ -428,11 +428,23 @@ async def test_payload_shape_matches_spec_7(svc):
     assert set(a) == {"times", "seeing", "transparency", "fetched_ts", "stale",
                       "credits_used_today"}
     assert p["alert"] is None
-    # NO coordinates anywhere in the payload (spec §7)
-    assert "34.2" not in str(p) and "118.1" not in str(p)
+    # site_lat/site_lon DO ride this payload (2026-07-17 decisions wave I2 --
+    # the one deliberate exception; see weather.WeatherService.payload()). The
+    # svc fixture seeds a real, non-default site (34.2, -118.1).
+    assert p["site_lat"] == 34.2 and p["site_lon"] == -118.1
     # a successful refresh published the same shape on the bus
     published = [d for t, d in rec.published if t == "weather"]
     assert published and set(published[-1]) == set(p)
+
+
+async def test_payload_site_coords_null_on_default_site(svc):
+    """The default (0, 0) site is not a real fix -- site_lat/site_lon stay
+    null (same "no real site = no data" convention as the rest of the
+    service, e.g. test_default_site_never_fetches)."""
+    s, now, store, rec = svc
+    store.cfg().site.is_default = True
+    p = s.payload(now["t"])
+    assert p["site_lat"] is None and p["site_lon"] is None
 
 
 # ==================================================== breach / veto / warning

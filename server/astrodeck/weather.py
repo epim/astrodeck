@@ -449,11 +449,28 @@ class WeatherService:
     # -- payload (spec §7) -----------------------------------------------------
 
     def payload(self, now: float | None = None) -> dict:
-        """The GET /api/weather + WS ``weather`` event payload. NO coordinates
-        anywhere — the series are site-derived but location-free; access
-        control is the event-drop rule (spec §8), not key-stripping."""
+        """The GET /api/weather + WS ``weather`` event payload.
+
+        The forecast series are site-derived but location-free, as originally
+        designed. ``site_lat``/``site_lon`` are the ONE deliberate exception
+        (2026-07-17 decisions wave I2): the radar map (RadarMap.tsx) needs the
+        site fix client-side to center its tiles and project the scope's
+        pierce-point overlay, and the product owner explicitly accepted that
+        the radar map's tile coordinates disclose the site region to an
+        operator (consistent with the future telescope-rental interface).
+        Both fields are null on the default (0, 0) site, same convention as
+        everywhere else. This does NOT reopen the general "site coordinates
+        are admin-only everywhere else" rule: every other coordinate-bearing
+        surface (status/summary/config, the WS hello/status frames) is still
+        gated on the separate, unchanged ``view.site_precise``. This payload
+        is safe to carry them because access control here is the event-drop /
+        route-gate rule on ``view.weather`` (spec §8; api/redact.py,
+        api/app.py get_weather/weather_tile), not key-stripping -- a viewer
+        never reaches this payload at all, over REST (403) or WS (dropped
+        entirely)."""
         now = self._clock() if now is None else now
         cfg = config_store.cfg().weather
+        site = config_store.cfg().site
         out: dict = {
             "enabled": bool(cfg.enabled),
             "fetched_ts": self._om_fetched_ts,
@@ -462,6 +479,8 @@ class WeatherService:
             "ignore_tonight": self._ignore_active(now),
             "threshold_pct": cfg.cloud_threshold_pct,
             "sustain_minutes": cfg.sustain_minutes,
+            "site_lat": None if site.is_default else site.latitude,
+            "site_lon": None if site.is_default else site.longitude,
             "forecast": None,
             "astrospheric": None,
             "alert": None,

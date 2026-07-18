@@ -939,10 +939,15 @@ def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
     assert lon_s not in blob, "precise longitude leaked into bus.log"
 
 
-# ===================================================== weather (spec §7/§8/§14)
+# ===================================================== weather (spec §7/§8/§14;
+# gate split 2026-07-17 decisions wave I2)
 # All four weather routes are @declare-gated (the boot assertion covers them at
-# create_app time); WS `weather` events are DROPPED entirely (not stripped) for
-# non-holders of view.site_precise on the LAN lane; the astrospheric key is
+# create_app time); the GET + tile routes and the WS `weather` event drop rule
+# are gated on view.weather (operator + admin -- NOT view.site_precise, split
+# off in I2 so operators see weather without the precise site fix); ignore-
+# tonight stays control.capture and config.weather stays config.site_optics,
+# both unchanged. WS `weather` events are DROPPED entirely (not stripped) for
+# non-holders of view.weather on the LAN lane; the astrospheric key is
 # absent from redacted config, config echoes, and 409 bodies (T-RBAC-13b
 # family). The relay-lane drop test lives in tests/test_remote_relay.py.
 
@@ -961,7 +966,7 @@ def _make_weather_client(tmp_path, monkeypatch):
 
 
 def test_weather_routes_gated_for_viewer(tmp_path, monkeypatch):
-    """Viewer holds view.status only: 403 on the weather GET (view.site_precise),
+    """Viewer holds view.status only: 403 on the weather GET (view.weather),
     ignore-tonight (control.capture), and config (config.site_optics)."""
     store, app = _make_weather_client(tmp_path, monkeypatch)
     _install(principal_for_role("viewer"))
@@ -976,10 +981,12 @@ def test_weather_routes_gated_for_viewer(tmp_path, monkeypatch):
         assert r.status_code == 403
 
 
-def test_operator_ignore_tonight_allowed_config_and_get_denied(tmp_path, monkeypatch):
+def test_operator_ignore_tonight_and_weather_get_allowed_config_denied(
+        tmp_path, monkeypatch):
     """Operator holds control.capture (ignore-tonight passes the gate; a
-    default site then yields the 409 no_night contract) but NOT
-    config.site_optics nor view.site_precise."""
+    default site then yields the 409 no_night contract) AND view.weather
+    (2026-07-17 decisions wave I2: GET /api/weather now 200 for operator) but
+    NOT config.site_optics (config write stays 403)."""
     store, app = _make_weather_client(tmp_path, monkeypatch)
     _install(principal_for_role("operator"))
     with TestClient(app) as c:
@@ -991,7 +998,9 @@ def test_operator_ignore_tonight_allowed_config_and_get_denied(tmp_path, monkeyp
                         "sustain_minutes": 30, "astrospheric_api_key": None},
             "version": None})
         assert r.status_code == 403
-        assert c.get("/api/weather").status_code == 403
+        r2 = c.get("/api/weather")
+        assert r2.status_code == 200
+        assert r2.json()["site_lat"] is None         # default site -> null, not 403
 
 
 def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
@@ -1003,13 +1012,29 @@ def test_admin_weather_get_and_ignore_roundtrip(tmp_path, monkeypatch):
         assert r.status_code == 200
         body = r.json()
         assert set(body) == {"enabled", "fetched_ts", "stale", "ignore_tonight",
-                             "threshold_pct", "sustain_minutes", "forecast",
-                             "astrospheric", "alert"}
+                             "threshold_pct", "sustain_minutes", "site_lat",
+                             "site_lon", "forecast", "astrospheric", "alert"}
         assert body["enabled"] is False and body["forecast"] is None
+        # site_lat/site_lon ride this payload for a view.weather holder (I2)
+        assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON
         r2 = c.post("/api/weather/ignore-tonight", json={"ignore": True})
         assert r2.status_code == 200
         assert r2.json()["ignore_tonight"] is True
         assert c.get("/api/weather").json()["ignore_tonight"] is True
+
+
+def test_operator_weather_get_matches_admin_shape(tmp_path, monkeypatch):
+    """An operator's GET /api/weather is the SAME payload an admin gets
+    (view.weather, not view.site_precise, is the gate) -- including
+    site_lat/site_lon, the deliberate I2 exception."""
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        r = c.get("/api/weather")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON
 
 
 def test_ws_weather_event_dropped_for_viewer_kept_for_admin(tmp_path, monkeypatch):
@@ -1035,6 +1060,25 @@ def test_ws_weather_event_dropped_for_viewer_kept_for_admin(tmp_path, monkeypatc
                     break
             assert "weather" not in seen, f"weather frame leaked: {seen}"
     _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            ws.receive_json()                        # hello
+            bus.publish("weather", enabled=True, stale=False)
+            while True:                              # holder receives verbatim
+                ev = ws.receive_json()
+                if ev["type"] == "weather":
+                    break
+            assert ev["data"]["enabled"] is True
+
+
+def test_ws_weather_event_delivered_to_operator(tmp_path, monkeypatch):
+    """LAN lane (spec §8; 2026-07-17 decisions wave I2): an operator holds
+    view.weather (NOT view.site_precise) and still receives the weather event
+    verbatim -- the drop rule tracks view.weather, independently of the
+    site-precision cap that gates everything else."""
+    from astrodeck.events import bus
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
     with TestClient(app) as c:
         with c.websocket_connect("/ws") as ws:
             ws.receive_json()                        # hello

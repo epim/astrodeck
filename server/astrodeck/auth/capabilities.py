@@ -20,6 +20,9 @@ CAP_VIEW_STATUS = "view.status"            # read-only status + WS subscribe
 CAP_VIEW_PREVIEW = "view.preview"          # downsized preview frames (NOT raw FITS)
 CAP_VIEW_MEDIA = "view.media"              # raw FITS / full-res science (bulk)
 CAP_VIEW_SITE_PRECISE = "view.site_precise"  # precise lat/lon in hello/config frames
+CAP_VIEW_WEATHER = "view.weather"          # forecast/Sky Conditions/radar (2026-07-17
+                                            # decisions wave I2: split off view.site_precise
+                                            # so operators get weather without precise site)
 
 CAP_CONTROL_CAPTURE = "control.capture"    # imaging: capture/loop/AF, cooler, dew, focuser, filter
 CAP_CONTROL_MOUNT = "control.mount"        # ALL mount MOTION (motion-boundary derived)
@@ -36,6 +39,7 @@ CAP_SYSTEM_UPDATE = "system.update"            # DESTRUCTIVE: download + restart
 
 ALL_CAPS = frozenset({
     CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_MEDIA, CAP_VIEW_SITE_PRECISE,
+    CAP_VIEW_WEATHER,
     CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT, CAP_CONTROL_GUIDE, CAP_CONTROL_POWER,
     CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONFIG_BACKEND,
     CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS, CAP_SYSTEM_UPDATE,
@@ -53,7 +57,9 @@ DESTRUCTIVE_CAPS = frozenset({
 RETIRED_CAPS = frozenset({"view", "config.mount_limits"})
 
 # ---------------------------------------------------------------- role -> caps
-# The DEFAULT viewer set: live-watch only. EXCLUDES view.media + view.site_precise.
+# The DEFAULT viewer set: live-watch only. EXCLUDES view.media +
+# view.site_precise + view.weather (2026-07-17 decisions wave I2: weather
+# visibility stops at operator; viewers stay fully stripped).
 # A future relay viewer-LINK carries this same default set (W2.5/W3.3), so the
 # local viewer role and the remote viewer link never drift apart.
 VIEWER_LINK_CAPS = frozenset({CAP_VIEW_STATUS, CAP_VIEW_PREVIEW})
@@ -66,9 +72,15 @@ ROLES_CAP: dict[str, frozenset[str]] = {
     # sequences (future: telescope-rental interface), so operator holds
     # control.mount -- sequence run/pause/resume/abort, session regrade, and
     # mount slewing are all gated on control.mount and are now operator-usable.
-    # Still NOT control.power/config.*/view.media/view.site_precise.
+    # Product-owner decision (2026-07-17 decisions wave, I2): full weather
+    # (forecast, Sky Conditions, radar map) is also visible to operators --
+    # the owner accepts that the radar map's tile coordinates disclose the
+    # site region to an operator (consistent with the rental model), so
+    # operator holds view.weather even though it still lacks
+    # view.site_precise. Still NOT control.power/config.*/view.media/
+    # view.site_precise (the exact GPS fix stays admin-only everywhere else).
     "operator": frozenset({
-        CAP_VIEW_STATUS, CAP_VIEW_PREVIEW,
+        CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_WEATHER,
         CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
     }),
     # everything incl. view.media, view.site_precise.
