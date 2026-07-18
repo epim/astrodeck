@@ -50,7 +50,7 @@ class LibraryFull(ValueError):
 
 
 class ProfileDevice(BaseModel):
-    role: str                    # camera|telescope|focuser|guider|filterwheel|switch|safety|rotator
+    role: str                    # camera|telescope|focuser|guider|filterwheel|switch|safety|rotator|guide_camera
     backend: str = "alpaca"      # "alpaca"|"native"|"nina"|... (PER-DEVICE — mixed rigs)
     host: str = ""
     port: int = 0
