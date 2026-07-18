@@ -339,35 +339,61 @@ fn calibration_complete_patches_real_scope_pointing() {
     );
 }
 
-/// dither() opens a settle window (P1 stub): ingest returns Settle while the
-/// window is open, then guiding resumes once it settles.
+/// dither() opens a real settle window overlaid with a fast recenter
+/// (dossier §11.2/§12, P2-T1 — this test superseded the P1-stub version,
+/// which asserted `Action::Settle` on the very first post-dither frame; the
+/// real engine instead bypasses the guide algorithms with a direct
+/// fast-recenter pulse first, per dossier §11.2's "bypasses guide
+/// algorithms" MOVEOPTS_RECOVERY_MOVE). `dither(3.0, 3.0)` with the default
+/// search_region (15px) recenters in exactly one step (step size
+/// `0.7*15=10.5px` > the 3√2≈4.24px dither distance), so the very next
+/// frame both finishes the recenter AND is the one and only recenter pulse.
 #[test]
 fn dither_opens_settle_window_then_resumes() {
     let mut e = GuideEngine::new(EngineConfig::default());
     e.set_calibration(ident_cal());
     e.begin_guiding();
-    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]);
-    e.dither(3.0, 3.0);
-    // star at the lock (0 error) but the default 10 s dwell isn't met yet.
+    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]); // lock (100,100)
+    e.dither(3.0, 3.0); // new lock (103,103); recenter armed (1-step: 3<10.5)
+
+    // First settling frame: fast recenter fires (star hasn't moved from the
+    // test's perspective — the pulse is open-loop, dossier §11.2 — so it
+    // bypasses the per-axis algorithms directly rather than computing a
+    // Hysteresis/ResistSwitch result).
     let a = e.ingest(&frame(2.0), &[star(100.0, 100.0)]);
+    match a {
+        Action::PulsePair {
+            ra: Some(ra),
+            dec: Some(dec),
+        } => {
+            assert_eq!(ra.dir, Direction::East, "ra dir={:?}", ra.dir);
+            assert_eq!(dec.dir, Direction::North, "dec dir={:?}", dec.dir);
+        }
+        other => panic!("expected the fast-recenter PulsePair, got {:?}", other),
+    }
+
+    // Recenter is exhausted; the star has reached the new lock (103,103):
+    // an immediate in-range reading starts the dwell clock right away.
+    let a2 = e.ingest(&frame(4.0), &[star(103.0, 103.0)]);
     assert!(
-        matches!(a, Action::Settle),
-        "expected Settle during window, got {:?}",
-        a
-    );
-    // after the dwell elapses the window closes (Done -> Idle)...
-    let a2 = e.ingest(&frame(12.0), &[star(100.0, 100.0)]);
-    assert!(
-        matches!(a2, Action::Idle),
-        "settle should complete, got {:?}",
+        matches!(a2, Action::Settle),
+        "expected Settle, got {:?}",
         a2
     );
-    // ...and guiding resumes: a steady +x offset pulses WEST again.
-    let a3 = e.ingest(&frame(14.0), &[star(105.0, 100.0)]);
+    // after the 10s dwell elapses the window closes (Done -> Idle)...
+    let a3 = e.ingest(&frame(14.0), &[star(103.0, 103.0)]);
     assert!(
-        matches!(a3, Action::PulsePair { .. }),
-        "guiding should resume, got {:?}",
+        matches!(a3, Action::Idle),
+        "settle should complete, got {:?}",
         a3
+    );
+    // ...and guiding resumes: a steady +x offset from the NEW lock pulses
+    // WEST again.
+    let a4 = e.ingest(&frame(16.0), &[star(108.0, 103.0)]);
+    assert!(
+        matches!(a4, Action::PulsePair { .. }),
+        "guiding should resume, got {:?}",
+        a4
     );
 }
 
@@ -573,31 +599,49 @@ fn calibration_failure_surfaces_lock_lost_and_idles() {
 }
 
 /// SettleState::Failed (timeout) surfaces as LockLost at the engine level,
-/// after which the settle window is cleared and guiding resumes.
+/// after which the settle window (and any still-active recenter) is cleared
+/// and guiding resumes. Updated for P2-T1's real dither/recenter/settle: the
+/// timeout clock anchors on the FIRST `settle.evaluate()` call, which now
+/// happens on the first settling frame regardless of whether that frame's
+/// dispatched Action is a fast-recenter pulse or an `Action::Settle` wait
+/// (both run `evaluate()` underneath — see the settle branch in
+/// `ingest_guiding`).
 #[test]
 fn settle_timeout_surfaces_lock_lost_then_resumes() {
     let mut e = GuideEngine::new(EngineConfig::default());
     e.set_calibration(ident_cal());
     e.begin_guiding();
-    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]); // lock
-    e.dither(3.0, 3.0); // opens the default 1.5px/10s/60s window
+    let _ = e.ingest(&frame(0.0), &[star(100.0, 100.0)]); // lock (100,100)
+    e.dither(3.0, 3.0); // new lock (103,103); 1-step recenter (3 < 10.5)
 
-    // 10px error: never in range; the timeout clock anchors at t=2.
-    let a = e.ingest(&frame(2.0), &[star(110.0, 100.0)]);
-    assert!(matches!(a, Action::Settle), "got {:?}", a);
-    // t=62: 60s elapsed >= 60s timeout -> Failed -> LockLost.
-    let a2 = e.ingest(&frame(62.0), &[star(110.0, 100.0)]);
+    // First settling frame: the fast-recenter pulse fires (and finishes —
+    // dossier §11.2, one step for this dither distance); the timeout clock
+    // anchors here (t=2) regardless.
+    let a = e.ingest(&frame(2.0), &[star(100.0, 100.0)]);
     assert!(
-        matches!(a2, Action::LockLost),
+        matches!(a, Action::PulsePair { .. }),
+        "expected the fast-recenter pulse, got {:?}",
+        a
+    );
+
+    // Star never actually reaches the new lock (110,100 relative to
+    // (103,103) is a persistent ~7.6px error > the 1.5px tolerance): never
+    // in range.
+    let a2 = e.ingest(&frame(30.0), &[star(110.0, 100.0)]);
+    assert!(matches!(a2, Action::Settle), "got {:?}", a2);
+    // t=62: 60s elapsed since the t=2 anchor >= 60s timeout -> Failed -> LockLost.
+    let a3 = e.ingest(&frame(62.0), &[star(110.0, 100.0)]);
+    assert!(
+        matches!(a3, Action::LockLost),
         "settle timeout must surface as LockLost, got {:?}",
-        a2
+        a3
     );
     // The window is cleared: normal guiding resumes on the next frame.
-    let a3 = e.ingest(&frame(64.0), &[star(105.0, 100.0)]);
+    let a4 = e.ingest(&frame(64.0), &[star(108.0, 103.0)]);
     assert!(
-        matches!(a3, Action::PulsePair { .. }),
+        matches!(a4, Action::PulsePair { .. }),
         "guiding should resume after the failed settle, got {:?}",
-        a3
+        a4
     );
 }
 

@@ -1209,17 +1209,20 @@ fn action_to_dict<'py>(
 /// where it is `"star_lost"` (recovery exhausted — re-find the star),
 /// `"calibration_failed"` (the calibration state machine gave up —
 /// recalibrate), or `"settle_timeout"` (a settle window blew its deadline —
-/// the star itself was never actually lost; in P1 only
-/// [`dither`](Self::dither) opens a settle window, so this reason can only
-/// follow a dither — guiding-start settling arrives with P2's settle
-/// params). This class
+/// the star itself was never actually lost; only [`dither`](Self::dither)
+/// opens a settle window in this version, so this reason can only follow a
+/// dither — guiding-start settling is a possible future task). This class
 /// tracks which of the three `LockLost` sources is live via its own
-/// calibrating/settling shadow of the engine's phase — the underlying
-/// `Calibrator`/`Settle` state is private to `astro_guide::engine::GuideEngine`
-/// and not queryable directly — and every phase transition happens through
-/// this class's own methods ([`begin_calibration`](Self::begin_calibration),
-/// [`begin_guiding`](Self::begin_guiding), [`dither`](Self::dither)), so the
-/// shadow can never drift from the real engine state.
+/// calibrating/settling shadow of the engine's phase, and every phase
+/// transition happens through this class's own methods
+/// ([`begin_calibration`](Self::begin_calibration),
+/// [`begin_guiding`](Self::begin_guiding), [`dither`](Self::dither)). The
+/// settling half of the shadow additionally cross-checks the engine's own
+/// [`is_settling`](astro_guide::engine::GuideEngine::is_settling) on every
+/// non-`LockLost` frame (P2-T1 punch-list #3) rather than inferring "the
+/// window closed" from the frame's `Action` shape alone — a fast-recenter
+/// frame (dossier §11.2) returns an ordinary `pulse_pair` while the window
+/// stays open, which a pure shape-based shadow would misclassify.
 #[pyclass]
 struct GuideEngine {
     inner: astro_guide::engine::GuideEngine,
@@ -1360,6 +1363,12 @@ impl GuideEngine {
         let s = self.inner.stats();
         let d = PyDict::new_bound(py);
         d.set_item("guiding", s.guiding)?;
+        // P2-T1 Produces line: the authoritative settle-window state, valid
+        // for every settling frame including fast-recenter frames (dossier
+        // §11.2), whose Action is an ordinary "pulse_pair" and so cannot be
+        // told apart from normal guiding by the "action" key alone. See
+        // `classify_lock_lost` below for why the host wiring needs this.
+        d.set_item("settling", s.settling)?;
         d.set_item("rms_ra", s.rms_ra)?;
         d.set_item("rms_dec", s.rms_dec)?;
         d.set_item("rms_total", s.rms_total)?;
@@ -1372,9 +1381,14 @@ impl GuideEngine {
         Ok(d)
     }
 
-    /// Dither by a mount-frame `(dx, dy)` offset (px); opens a settle window
-    /// (dossier §12) — [`process`](Self::process) returns `"settle"` actions
-    /// until it closes.
+    /// Dither by a mount-frame `(dx, dy)` offset (px): shifts the lock,
+    /// resets the axis algorithms, and opens a settle window overlaid with a
+    /// fast recenter (dossier §11.2/§12). While the window is open,
+    /// [`process`](Self::process) returns fast-recenter `"pulse_pair"`
+    /// actions (dispatch these like any other pulse — the host does not
+    /// need to distinguish them) followed by `"settle"` actions once
+    /// recenter is exhausted; `stats()["settling"]` is `true` for the whole
+    /// window regardless of which action a given frame carries.
     fn dither(&mut self, dx: f64, dy: f64) {
         self.inner.dither(dx, dy);
         self.settling = true;
@@ -1442,13 +1456,22 @@ impl GuideEngine {
         }
         if self.settling {
             return match action {
-                Action::Settle => None,
                 Action::LockLost => {
                     self.settling = false;
                     Some(LostReason::SettleTimeout)
                 }
                 _ => {
-                    self.settling = false; // settled (Idle) or otherwise cleared
+                    // P2-T1 punch-list #3: do NOT infer "the window closed"
+                    // from this frame's Action shape alone — a fast-recenter
+                    // frame (dossier §11.2) returns an ordinary
+                    // `Action::PulsePair` while the settle window stays
+                    // open, which the old `Action::Settle => None, _ =>
+                    // settled` toggle would have misread as "settled" on
+                    // the very first recenter pulse. Ask the engine
+                    // directly: it already cleared its own `settle` field
+                    // (Done or Failed) exactly when the window really
+                    // closed, so `is_settling()` is authoritative here.
+                    self.settling = self.inner.is_settling();
                     None
                 }
             };
