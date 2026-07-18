@@ -3,7 +3,9 @@
 // Provenance: clean-room Rust reimplementation from the audited algorithm
 // dossier docs/native-parity/algorithms/phd2-guiding.md (§2.1-§2.5, §2.7).
 // Derived from PHD2 star.cpp:515-544 (`GetStats`), star.cpp:574-656
-// (`psf_conv`), star.cpp:718-1154 (`GuideStar::AutoFind`) (BSD-3-Clause; see
+// (`psf_conv`), star.cpp:718-1154 (`GuideStar::AutoFind`), and
+// image_math.cpp:150-505 (`Median3` + the `median4`/`median6`/`median9`
+// selection helpers it dispatches to) (BSD-3-Clause; see
 // THIRD-PARTY-NOTICES.md). No code copied from PHD2.
 
 //! `GuideStar::AutoFind` parity — full-frame star search and single-star
@@ -17,17 +19,19 @@
 //! response) first. [`select_primary`] then runs the §2.7 three-pass
 //! primary-star selection over that list.
 //!
-//! Three scope notes, all deliberate simplifications of dossier §2.1 for
-//! this task (see brief P1-T3):
+//! Two scope notes, both deliberate simplifications of dossier §2.1 for
+//! this task (see brief P1-T3 + fix round 1):
 //!
-//! - **No hot-pixel pre-filter, no downsampling.** Upstream's pipeline
-//!   opens with a 3x3 median (`Median3`) and an optional box-average
-//!   downsample (`Downsample`, `star.cpp:658-680`, driven by
-//!   `/guider/AutoSelDownsample` and the camera's arcsec/px scale) before
-//!   the PSF convolution. Neither knob exists on [`SelectParams`] (which
-//!   this task's interface freezes to `search_region`/`af_min_snr`/
-//!   `extra_edge_allowance`/`max_stars`), so this port convolves the raw
-//!   frame directly — equivalent to upstream's `downsample = 1` path. The
+//! - **No downsampling.** Upstream's pipeline runs an unconditional 3x3
+//!   median (`Median3`, `star.cpp:752` — ported here as [`median3x3`],
+//!   applied to the PSF-convolution input in every configuration) and then
+//!   an *optional* box-average downsample (`Downsample`,
+//!   `star.cpp:658-680`, driven by `/guider/AutoSelDownsample` and the
+//!   camera's arcsec/px scale) before the PSF convolution. The downsample
+//!   knob doesn't exist on [`SelectParams`] (which this task's interface
+//!   freezes to `search_region`/`af_min_snr`/`extra_edge_allowance`/
+//!   `max_stars`), so this port convolves the median-filtered frame
+//!   directly — equivalent to upstream's `downsample = 1` path. The
 //!   coordinate-mapping formula (`imgx = x*downsample + downsample/2`) is
 //!   kept in [`find_local_maxima`] with `downsample` fixed at 1 so the
 //!   seam is visible if a future task threads a real downsample factor in.
@@ -38,12 +42,6 @@
 //!   `star.cpp:1043-1056`) and caps the list at `max_stars`. This port
 //!   does not implement that de-dup-against-accepted-set or the cap — see
 //!   the seam comment in [`auto_find`].
-//! - **`Candidate` carries no `FindResult`.** This task's frozen interface
-//!   (P1-T4/P1-T7 consume it verbatim) gives `Candidate` exactly six
-//!   fields, none of which is `star_find`'s outcome code. `select_primary`
-//!   therefore can't independently test dossier §2.7's "hard `not
-//!   saturated`" condition (`STAR_SATURATED`) apart from the `peak_val` vs.
-//!   `sat_thresh` comparison — see the adjudication on [`select_primary`].
 
 use crate::starfind::{self, FindParams};
 use std::collections::HashSet;
@@ -69,7 +67,8 @@ const SIGNIFICANCE_THRESH: f64 = 0.1;
 const DOWNSAMPLE: i32 = 1;
 
 /// One auto-found, `star_find`-measured star candidate (dossier §2.6/§2.7
-/// fields subset — this task's frozen interface).
+/// fields subset — this task's frozen interface, plus the additive
+/// `saturated` flag from review fix round 1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Candidate {
     pub x: f64,
@@ -78,6 +77,13 @@ pub struct Candidate {
     pub mass: f64,
     pub hfd: f64,
     pub peak_val: u16,
+    /// `star_find` reported `StarSaturated` for this candidate (dossier
+    /// §1.3 step 10). [`auto_find`] measures with `max_adu = 0`, so this
+    /// is the flat-top heuristic outcome. Carried so [`select_primary`]
+    /// can apply upstream's hard-saturation rejection in passes 1 and 2
+    /// (`star.cpp:1084`, `star.cpp:1089`) independently of the soft
+    /// `peak_val` vs. `sat_thresh` cutoff.
+    pub saturated: bool,
 }
 
 /// `AutoFind`/selection parameters (dossier §2). `Default` matches PHD2's
@@ -153,6 +159,137 @@ fn stats(conv: &[f64], w: i32, rect: (i32, i32, i32, i32)) -> (f64, f64) {
         }
     }
     (mean, (sq / n as f64).sqrt())
+}
+
+/// Median of the two middle values of 4, truncated integer average
+/// (`median4`, `image_math.cpp:364-382`: sorts implicitly, returns
+/// `(2nd + 3rd) / 2` in integer arithmetic).
+fn median4(v: [u16; 4]) -> u16 {
+    let mut v = v;
+    v.sort_unstable();
+    (((v[1] as u32) + (v[2] as u32)) / 2) as u16
+}
+
+/// Median of the two middle values of 6, truncated integer average
+/// (`median6`, `image_math.cpp:300-335`: returns `(3rd + 4th) / 2`).
+fn median6(v: [u16; 6]) -> u16 {
+    let mut v = v;
+    v.sort_unstable();
+    (((v[2] as u32) + (v[3] as u32)) / 2) as u16
+}
+
+/// True median (5th smallest) of 9 (`median9`, `image_math.cpp:182-241`).
+fn median9(v: [u16; 9]) -> u16 {
+    let mut v = v;
+    v.sort_unstable();
+    v[4]
+}
+
+/// 3x3 median filter over the whole frame — upstream's unconditional
+/// hot-pixel pre-filter for AutoFind (dossier §2.1; `Median3`,
+/// `image_math.cpp:150-173` full-frame path dispatching to
+/// `image_math.cpp:396-505`, called from `star.cpp:752`). Interior pixels
+/// take the true median of their 3x3 neighborhood; edge pixels the median
+/// of the clipped 2x3/3x2 block; corner pixels the median of the 2x2
+/// block. Even-count medians use upstream's truncated integer average of
+/// the two middle values.
+///
+/// Upstream's branch-free `swap`-network `median4`/`median6`/`median9`
+/// helpers are ported as sort-then-index over the same fixed-size arrays —
+/// identical selection semantics (upstream's networks compute exactly the
+/// order statistics indexed here), simpler Rust. AutoFind rejects
+/// subframes outright (`star.cpp:721-725`) and `GrayFrame` has no
+/// subframe/ROI concept, so only the full-frame rect path is ported.
+/// Frames narrower/shorter than 2px are returned unfiltered (upstream's
+/// pointer walk assumes >= 2 in each dimension; such frames can't contain
+/// a 9x9 PSF site anyway).
+#[allow(clippy::needless_range_loop)] // index loops mirror upstream's per-row pixel walk
+fn median3x3(frame: &astro_star::GrayFrame) -> Vec<u16> {
+    let w = frame.width;
+    let h = frame.height;
+    if w < 2 || h < 2 {
+        return frame.data.to_vec();
+    }
+
+    let src = frame.data;
+    let px = |x: usize, y: usize| src[y * w + x];
+    let mut dst = vec![0u16; src.len()];
+
+    // top-left corner
+    dst[0] = median4([px(0, 0), px(1, 0), px(0, 1), px(1, 1)]);
+    // top row middle pixels
+    for x in 1..=(w - 2) {
+        dst[x] = median6([
+            px(x - 1, 0),
+            px(x, 0),
+            px(x + 1, 0),
+            px(x - 1, 1),
+            px(x, 1),
+            px(x + 1, 1),
+        ]);
+    }
+    // top-right corner
+    dst[w - 1] = median4([px(w - 2, 0), px(w - 1, 0), px(w - 2, 1), px(w - 1, 1)]);
+
+    for y in 1..=(h - 2) {
+        let row = y * w;
+        // leftmost pixel
+        dst[row] = median6([
+            px(0, y - 1),
+            px(1, y - 1),
+            px(0, y),
+            px(1, y),
+            px(0, y + 1),
+            px(1, y + 1),
+        ]);
+        // interior
+        for x in 1..=(w - 2) {
+            dst[row + x] = median9([
+                px(x - 1, y - 1),
+                px(x, y - 1),
+                px(x + 1, y - 1),
+                px(x - 1, y),
+                px(x, y),
+                px(x + 1, y),
+                px(x - 1, y + 1),
+                px(x, y + 1),
+                px(x + 1, y + 1),
+            ]);
+        }
+        // rightmost pixel
+        dst[row + w - 1] = median6([
+            px(w - 2, y - 1),
+            px(w - 1, y - 1),
+            px(w - 2, y),
+            px(w - 1, y),
+            px(w - 2, y + 1),
+            px(w - 1, y + 1),
+        ]);
+    }
+
+    // bottom-left corner
+    let brow = (h - 1) * w;
+    dst[brow] = median4([px(0, h - 2), px(1, h - 2), px(0, h - 1), px(1, h - 1)]);
+    // bottom row middle pixels
+    for x in 1..=(w - 2) {
+        dst[brow + x] = median6([
+            px(x - 1, h - 2),
+            px(x, h - 2),
+            px(x + 1, h - 2),
+            px(x - 1, h - 1),
+            px(x, h - 1),
+            px(x + 1, h - 1),
+        ]);
+    }
+    // bottom-right corner
+    dst[brow + w - 1] = median4([
+        px(w - 2, h - 2),
+        px(w - 1, h - 2),
+        px(w - 2, h - 1),
+        px(w - 1, h - 1),
+    ]);
+
+    dst
 }
 
 /// 9x9 PSF matched-filter convolution (dossier §2.2; `psf_conv`,
@@ -315,13 +452,14 @@ fn find_local_maxima(conv: &[f64], w: i32, h: i32) -> Vec<Peak> {
 /// `h` would already have collapsed to one entry before this merge step
 /// ever ran, and only one is retained regardless of `(x, y)`. A `Vec`
 /// doesn't have that insertion-time collapse; it relies on this loop to do
-/// the deduplication instead. The two only disagree in the (float-tie)
-/// case this file's golden tests deliberately avoid; for the ordinary case
-/// — genuinely different peaks compared by `h` — both give the same
-/// dimmer-dropped result. Preferring the well-defined `Vec` + explicit-loop
-/// behavior over blindly reproducing a `std::set` comparator quirk follows
-/// the P1-T2 `norm_angle` precedent (dossier's own contract over an
-/// incidental implementation artifact).
+/// the deduplication instead. The two only disagree in the float-tie case
+/// (covered directly by this module's unit tests, since no non-tied pair
+/// can reach this loop — see the reachability note there); for the
+/// ordinary case — genuinely different peaks compared by `h` — both give
+/// the same dimmer-dropped result. Preferring the well-defined `Vec` +
+/// explicit-loop behavior over blindly reproducing a `std::set` comparator
+/// quirk follows the P1-T2 `norm_angle` precedent (dossier's own contract
+/// over an incidental implementation artifact).
 fn merge_close_peaks(peaks: &mut Vec<Peak>) {
     'restart: loop {
         for a in 0..peaks.len() {
@@ -410,7 +548,14 @@ pub fn auto_find(frame: &astro_star::GrayFrame, p: &SelectParams) -> Vec<Candida
     let w = frame.width as i32;
     let h = frame.height as i32;
 
-    let conv = psf_conv(frame);
+    // Unconditional 3x3 median pre-filter (hot-pixel removal) feeding the
+    // PSF convolution ONLY — candidate measurement below runs on the
+    // original frame, exactly as upstream measures `image`, not
+    // `smoothed` (dossier §2.1; `star.cpp:733-752` vs. `star.cpp:1072`).
+    let smoothed_buf = median3x3(frame);
+    let smoothed = astro_star::GrayFrame::new(&smoothed_buf, frame.width, frame.height);
+
+    let conv = psf_conv(&smoothed);
     let mut peaks = find_local_maxima(&conv, w, h);
 
     merge_close_peaks(&mut peaks);
@@ -440,6 +585,7 @@ pub fn auto_find(frame: &astro_star::GrayFrame, p: &SelectParams) -> Vec<Candida
             mass: r.mass,
             hfd: r.hfd,
             peak_val: r.peak_val,
+            saturated: r.result == starfind::FindResult::StarSaturated,
         });
     }
     out
@@ -497,36 +643,38 @@ pub fn saturation_threshold(
 /// pass scans in the given order and the first candidate to satisfy that
 /// pass's test wins, returning its index. `None` if `cands` is empty.
 ///
-/// **Adjudication — "not saturated" without a `FindResult`.** Upstream's
-/// pass 1 rejects on *two* independent saturation signals: the near-
-/// saturation cutoff (`tmp.PeakVal > sat_thresh`) and the hard
-/// `STAR_SATURATED` outcome from `Star::Find` itself
-/// (`star.cpp:1076-1085`); pass 2 drops the `sat_thresh` check but keeps
-/// the hard-saturation one (`star.cpp:1087-1095`). This task's frozen
-/// `Candidate` (six fields: `x, y, snr, mass, hfd, peak_val` — no
-/// `FindResult`) can't carry the hard-saturation flag independently of
-/// `peak_val`, so this port folds both upstream checks into the one signal
-/// available: pass 1 requires `peak_val <= sat_thresh`, and pass 2 drops
-/// that requirement entirely (relying on `snr` alone), rather than
-/// swapping in a second, unavailable condition. This preserves the
-/// dossier's pass-to-pass *shape* (progressively fewer constraints,
-/// terminating in "any found star") while adapting to the interface this
-/// task is required to ship. Pass 3 is unconditional because every
-/// `Candidate` already passed `star_find`'s `was_found` gate inside
-/// [`auto_find`] — "found" needs no re-checking here.
+/// Pass semantics match upstream exactly (fix round 1 restored the hard-
+/// saturation checks via [`Candidate::saturated`]):
+///
+/// 1. **Pass 1** (`star.cpp:1076-1085`): `peak_val <= sat_thresh` (soft,
+///    90%-of-range near-saturation cutoff) AND not `STAR_SATURATED` (the
+///    independent hard flag from `Star::Find` — flat-top heuristic here,
+///    since [`auto_find`] measures with `max_adu = 0`) AND
+///    `snr >= af_min_snr`.
+/// 2. **Pass 2** (`star.cpp:1087-1095`): drops the `sat_thresh` cutoff but
+///    keeps the hard `STAR_SATURATED` rejection and the SNR gate.
+/// 3. **Pass 3** (`star.cpp:1097+`): any candidate at all. Unconditional
+///    because every `Candidate` already passed `star_find`'s `was_found`
+///    gate inside [`auto_find`] — "found" needs no re-checking here (and
+///    `StarSaturated` counts as found, dossier §1.2, so saturated
+///    candidates are legitimately selectable in this last-resort pass).
 ///
 /// Citations: dossier §2.7; `star.cpp:1059-1150` (`AutoFind`'s three-pass
 /// loop).
 pub fn select_primary(cands: &[Candidate], sat_thresh: u16, af_min_snr: f64) -> Option<usize> {
-    // pass 1: near-/non-saturated (peak_val <= sat_thresh) AND snr gate.
+    // pass 1: near-saturation cutoff AND hard-saturation AND snr gates.
     if let Some(i) = cands
         .iter()
-        .position(|c| c.peak_val <= sat_thresh && c.snr >= af_min_snr)
+        .position(|c| c.peak_val <= sat_thresh && !c.saturated && c.snr >= af_min_snr)
     {
         return Some(i);
     }
-    // pass 2: snr gate only (near-saturated candidates now eligible).
-    if let Some(i) = cands.iter().position(|c| c.snr >= af_min_snr) {
+    // pass 2: hard-saturation and snr gates only (near-saturated
+    // peak_val values now eligible).
+    if let Some(i) = cands
+        .iter()
+        .position(|c| !c.saturated && c.snr >= af_min_snr)
+    {
         return Some(i);
     }
     // pass 3: any candidate at all (brightest, i.e. first in the list).
@@ -534,4 +682,95 @@ pub fn select_primary(cands: &[Candidate], sat_thresh: u16, af_min_snr: f64) -> 
         return Some(0);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Provenance: direct unit coverage of `merge_close_peaks` (dossier
+    // §2.4; star.cpp:867-891). REACHABILITY (upheld by the P1-T3 review):
+    // the local-max scan preceding this step rejects a candidate whenever
+    // ANY pixel in its Chebyshev-4 (9x9) window has a strictly greater
+    // response (star.cpp:812-834), and integer Euclidean distance < 5
+    // always implies Chebyshev distance <= 4 — so any pair close enough to
+    // merge has already had its strictly-dimmer member suppressed, and the
+    // ONLY peak pairs that can reach this loop within merge range are
+    // bit-identical `h` ties. These tests therefore hand-construct tied
+    // peaks (bypassing the scan) to pin the erase-the-earlier (ascending
+    // order: dimmer-or-equal) behavior and the restart-to-fixpoint
+    // cascade.
+
+    #[test]
+    fn merge_close_peaks_tied_pair_erases_earlier_keeps_later() {
+        // Two bit-tied peaks 3px apart (d^2 = 9 < 25). Ascending sort
+        // order (h tie broken by x) puts (10,10) first; the merge loop
+        // erases the earlier element, keeping (13,10).
+        let mut peaks = vec![
+            Peak {
+                x: 10,
+                y: 10,
+                h: 1.0,
+            },
+            Peak {
+                x: 13,
+                y: 10,
+                h: 1.0,
+            },
+        ];
+        merge_close_peaks(&mut peaks);
+        assert_eq!(peaks.len(), 1);
+        assert_eq!((peaks[0].x, peaks[0].y), (13, 10));
+    }
+
+    #[test]
+    fn merge_close_peaks_tied_chain_restarts_to_fixpoint() {
+        // Three bit-tied peaks in a chain: A(10,10)-B(13,10)-C(16,10).
+        // d^2(A,B) = d^2(B,C) = 9 < 25 but d^2(A,C) = 36 >= 25. First
+        // sweep erases A and restarts (upstream's `goto repeat`,
+        // star.cpp:887); the fresh sweep then sees B-C in range and erases
+        // B; C alone is the fixpoint. Without the restart, a
+        // single-forward-pass implementation could skip the B-C pair after
+        // the removal shifted indices.
+        let mut peaks = vec![
+            Peak {
+                x: 10,
+                y: 10,
+                h: 1.0,
+            },
+            Peak {
+                x: 13,
+                y: 10,
+                h: 1.0,
+            },
+            Peak {
+                x: 16,
+                y: 10,
+                h: 1.0,
+            },
+        ];
+        merge_close_peaks(&mut peaks);
+        assert_eq!(peaks.len(), 1);
+        assert_eq!((peaks[0].x, peaks[0].y), (16, 10));
+    }
+
+    #[test]
+    fn merge_close_peaks_distant_pair_untouched() {
+        // Exactly at the boundary: d^2 = 25 is NOT < 25 -> no merge
+        // (upstream `d2 < minlimitsq`, star.cpp:880).
+        let mut peaks = vec![
+            Peak {
+                x: 10,
+                y: 10,
+                h: 1.0,
+            },
+            Peak {
+                x: 15,
+                y: 10,
+                h: 1.0,
+            },
+        ];
+        merge_close_peaks(&mut peaks);
+        assert_eq!(peaks.len(), 2);
+    }
 }

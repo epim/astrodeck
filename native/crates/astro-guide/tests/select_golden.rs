@@ -3,7 +3,8 @@
 // Provenance: golden-vector tests for astro-guide's AutoFind + primary
 // selection port (src/select.rs). Derived from PHD2 star.cpp:515-544
 // (`GetStats`), star.cpp:574-656 (`psf_conv`), star.cpp:718-1154
-// (`GuideStar::AutoFind`) via the audited algorithm dossier
+// (`GuideStar::AutoFind`), and image_math.cpp:150-505 (`Median3` pre-filter)
+// via the audited algorithm dossier
 // docs/native-parity/algorithms/phd2-guiding.md (§2.1-§2.5, §2.7)
 // (BSD-3-Clause; see THIRD-PARTY-NOTICES.md). No code copied from PHD2.
 
@@ -58,10 +59,24 @@ fn auto_find_returns_three_brightest_first_merges_duplicate_drops_edge() {
     let gf = astro_star::GrayFrame::new(&px, w, h);
     let cands = auto_find(&gf, &SelectParams::default());
 
-    // The 3px duplicate is absorbed into A's candidate (either by local-max
-    // suppression or the explicit merge step — see src/select.rs's
-    // `merge_close_peaks` doc comment) and the edge star is dropped, so
+    // The 3px duplicate is absorbed into A's candidate (by local-max
+    // suppression: at 3px the two peaks share a Chebyshev-4 window, and the
+    // dimmer one's local-max test fails — see src/select.rs's
+    // `merge_close_peaks` doc comment for why the explicit merge step only
+    // fires on exact response ties) and the edge star is dropped, so
     // exactly the three named stars (A, B, C) survive.
+    //
+    // Fix round 1 re-derivation: auto_find now applies the unconditional
+    // Median3 pre-filter (image_math.cpp:150-505 via star.cpp:752) to the
+    // PSF-convolution INPUT only. For these smooth sigma-1.8 Gaussians the
+    // 3x3 median erodes each conv-input peak toward its edge-neighbor
+    // value (~86% of amplitude) uniformly across all planted stars, so
+    // detection, the h brightness ordering (A > B > C tracks amplitude),
+    // and the merge/edge outcomes are unchanged. Candidate MEASUREMENT
+    // (star_find: positions/mass/snr/hfd/peak_val) runs on the ORIGINAL
+    // frame exactly as upstream measures `image`, not `smoothed`
+    // (star.cpp:1072), so every position/mass assertion below is untouched
+    // by the median. Re-verified: all tolerances hold unchanged.
     assert_eq!(cands.len(), 3, "cands={cands:?}");
 
     // Brightest-first ordering (by measured mass, monotonic with the
@@ -83,6 +98,10 @@ fn auto_find_returns_three_brightest_first_merges_duplicate_drops_edge() {
 
     // No survivor near the planted edge star (x=10).
     assert!(cands.iter().all(|c| c.x > 20.0), "cands={cands:?}");
+
+    // None of the planted Gaussians is flat-topped, so no candidate
+    // carries the hard-saturation flag (fix round 1 field).
+    assert!(cands.iter().all(|c| !c.saturated), "cands={cands:?}");
 }
 
 #[test]
@@ -104,6 +123,10 @@ fn select_primary_returns_brightest_non_saturated() {
 }
 
 fn cand(peak_val: u16, snr: f64) -> Candidate {
+    sat_cand(peak_val, snr, false)
+}
+
+fn sat_cand(peak_val: u16, snr: f64, saturated: bool) -> Candidate {
     Candidate {
         x: 0.0,
         y: 0.0,
@@ -111,6 +134,7 @@ fn cand(peak_val: u16, snr: f64) -> Candidate {
         mass: 1000.0,
         hfd: 3.0,
         peak_val,
+        saturated,
     }
 }
 
@@ -141,6 +165,87 @@ fn select_primary_pass3_falls_back_to_brightest_when_all_fail_snr() {
 #[test]
 fn select_primary_empty_list_returns_none() {
     assert_eq!(select_primary(&[], 50000, 6.0), None);
+}
+
+#[test]
+fn select_primary_hard_saturated_rejected_in_pass1_and_pass2() {
+    // Fix round 1 (review): upstream rejects STAR_SATURATED candidates in
+    // BOTH pass 1 and pass 2 (star.cpp:1084, star.cpp:1089), independently
+    // of the soft peak_val <= sat_thresh cutoff. A flat-topped star with
+    // good SNR whose peak_val is *below* sat_thresh must therefore not win
+    // pass 1 (previously it could); one above sat_thresh must not win
+    // pass 2 (previously it could).
+
+    // Pass 1: brightest candidate is hard-saturated but below sat_thresh
+    // with high SNR -> rejected on `saturated`; the clean dimmer candidate
+    // wins pass 1.
+    let flat_top = sat_cand(40000, 50.0, true);
+    let clean = sat_cand(20000, 20.0, false);
+    assert_eq!(select_primary(&[flat_top, clean], 50000, 6.0), Some(1));
+
+    // Pass 2: both candidates exceed sat_thresh (pass 1 empty); the hard-
+    // saturation rejection still applies, so the clean one wins pass 2.
+    let flat_top_hi = sat_cand(60000, 50.0, true);
+    let clean_hi = sat_cand(58000, 20.0, false);
+    assert_eq!(
+        select_primary(&[flat_top_hi, clean_hi], 50000, 6.0),
+        Some(1)
+    );
+
+    // Alone, the flat-top star fails pass 1 and pass 2 on `saturated` and
+    // is selectable only via the unconditional pass 3.
+    assert_eq!(select_primary(&[flat_top], 50000, 6.0), Some(0));
+}
+
+#[test]
+fn auto_find_populates_saturated_and_pass1_defers_flat_top() {
+    // End-to-end version of the vector above: auto_find must populate
+    // Candidate::saturated from star_find's flat-top heuristic (auto_find
+    // measures with max_adu = 0), and select_primary must then defer the
+    // brighter flat-topped star. Fixture: a flat-top star built with the
+    // starfind_golden.rs `default_flat_top_heuristic_saturated` recipe
+    // scaled to peak 50000 (center 50000, 4-neighborhood 49998 stamped on
+    // a 50000-amp sigma-2.0 Gaussian: max3 = [50000, 49998, 49998], d = 2,
+    // d*65535 = 131070 < 32*50000 = 1600000 -> StarSaturated), plus a
+    // clean amp-8000 star. With a camera-known saturation ADU of 65535
+    // (sat_thresh = 9*65535/10 = 58981), the flat-top's peak_val 50000 is
+    // BELOW sat_thresh — so before fix round 1 it (wrongly) won pass 1 on
+    // SNR alone; upstream and this port defer it, and the clean star wins.
+    let (w, h) = (121usize, 121usize);
+    let mut px = multi_gaussian_frame(
+        w,
+        h,
+        100,
+        &[(40.0, 60.0, 50000.0, 2.0), (85.0, 60.0, 8000.0, 1.8)],
+    );
+    px[60 * w + 40] = 50000;
+    for &(ox, oy) in &[(39usize, 60usize), (41, 60), (40, 59), (40, 61)] {
+        px[oy * w + ox] = 49998;
+    }
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let cands = auto_find(&gf, &SelectParams::default());
+
+    assert_eq!(cands.len(), 2, "cands={cands:?}");
+    // Brightest-first: the flat-top star leads, and carries the flag.
+    assert!(cands[0].saturated, "cands={cands:?}");
+    assert!(!cands[1].saturated, "cands={cands:?}");
+    assert!((cands[1].x - 85.0).abs() < 0.5, "x={}", cands[1].x);
+
+    // sat_thresh from a camera-known saturation ADU (dossier §2.5 known-
+    // ADU branch): 0 + 9*65535/10 = 58981.
+    let fp = FindParams {
+        max_adu: 65535,
+        ..FindParams::default()
+    };
+    let sat_thresh = saturation_threshold(&gf, &[], &fp);
+    assert_eq!(sat_thresh, 58981);
+    assert!(cands[0].peak_val <= sat_thresh, "cands={cands:?}");
+
+    // Pass 1 defers the hard-saturated (yet below-sat_thresh) flat top;
+    // the clean star wins.
+    assert_eq!(select_primary(&cands, sat_thresh, 6.0), Some(1));
+    // Alone, the flat top is still selectable — via pass 3 only.
+    assert_eq!(select_primary(&cands[..1], sat_thresh, 6.0), Some(0));
 }
 
 #[test]
