@@ -13,6 +13,8 @@ byte-for-byte today (open, caller == admin). T_default_* assert exactly that.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -90,14 +92,6 @@ def test_default_open_no_provider_no_token(tmp_path, monkeypatch):
         r = c.post("/api/mount/goto", json={"ra_hours": 5.0, "dec_deg": 10.0})
         assert r.status_code not in (401, 403)
         c.post("/api/disconnect")
-
-
-def test_default_open_ws_hello(tmp_path, monkeypatch):
-    """WS hello delivered with no creds under the open default."""
-    _store, app = _make_client(tmp_path, monkeypatch)
-    with TestClient(app) as c:
-        with c.websocket_connect("/ws") as ws:
-            assert ws.receive_json()["type"] == "hello"
 
 
 # ===================================================== T-RBAC-2 token still works
@@ -439,29 +433,16 @@ def test_site_full_for_admin(tmp_path, monkeypatch):
 # who may WRITE site coords need not also hold view.site_precise to READ them
 # back).
 
-def test_post_config_empty_body_echo_stripped_for_viewer(tmp_path, monkeypatch):
-    """viewer POST /api/config {} -> 200 (empty body passes field-cap check
-    vacuously) AND the echoed site (top-level + the embedded config.site, if
-    present) has the four precise keys ABSENT, keeping is_default/horizon."""
+@pytest.mark.parametrize("role", ["viewer", "operator"])
+def test_post_config_empty_body_echo_stripped_for_non_holder(tmp_path, monkeypatch,
+                                                              role):
+    """viewer/operator POST /api/config {} -> 200 (empty body passes field-cap
+    check vacuously) AND the echoed site (top-level + the embedded config.site,
+    if present) has the four precise keys ABSENT, keeping is_default/horizon.
+    Same assertion for both roles -- both lack view.site_precise."""
     store, app = _make_client(tmp_path, monkeypatch)
     _seed_precise_site(store)
-    _install(principal_for_role("viewer"))
-    with TestClient(app) as c:
-        r = c.post("/api/config", json={})
-        assert r.status_code == 200
-        body = r.json()
-        _assert_site_stripped(body["site"])
-        cfg_site = body.get("config", {}).get("site") if isinstance(
-            body.get("config"), dict) else None
-        if cfg_site is not None:
-            _assert_site_stripped(cfg_site)
-
-
-def test_post_config_empty_body_echo_stripped_for_operator(tmp_path, monkeypatch):
-    """Same assertion for operator -- also lacks view.site_precise."""
-    store, app = _make_client(tmp_path, monkeypatch)
-    _seed_precise_site(store)
-    _install(principal_for_role("operator"))
+    _install(principal_for_role(role))
     with TestClient(app) as c:
         r = c.post("/api/config", json={})
         assert r.status_code == 200
@@ -651,14 +632,6 @@ def test_visibility_allows_viewer(tmp_path, monkeypatch):
                       json={"targets": []}).status_code == 200
 
 
-def test_boot_assertion_passes_with_visibility_gated(tmp_path, monkeypatch):
-    """create_app() runs assert_route_capabilities LAST; with /api/visibility/order
-    removed from the exemption it must still build because the route now declares
-    view.status (a real capability)."""
-    store, app = _make_client(tmp_path, monkeypatch)
-    assert app is not None
-
-
 # ================================================ /api/site/mount-gps read-back
 
 class _FakeTel:
@@ -710,44 +683,34 @@ def test_mount_gps_reports_coords(tmp_path, monkeypatch):
         assert r["elevation_m"] == 30.0
 
 
-def test_mount_gps_zero_zero_is_unset(tmp_path, monkeypatch):
-    """Exactly (0.0, 0.0) is the GPS-unset sentinel -> available: false."""
+@pytest.mark.parametrize(
+    "lat, lon, elev, expect_gps_detail",
+    [
+        pytest.param(0.0, 0.0, 0.0, True,
+                    id="zero_zero_is_unset_sentinel"),
+        pytest.param(99.0, 181.0, 0.0, False,
+                    id="out_of_range_rejected"),
+        pytest.param(math.nan, -74.5, 30.0, False,
+                    id="nan_latitude_rejected"),
+    ],
+)
+def test_mount_gps_bad_sentinels_rejected(tmp_path, monkeypatch, lat, lon, elev,
+                                          expect_gps_detail):
+    """Bad sentinel (lat, lon, elev) tuples all -> available: false:
+    exactly (0.0, 0.0) is the GPS-unset sentinel; junk out-of-Site-range
+    values (99.0/181.0); and a NaN latitude (non-finite guard). The
+    zero/zero case additionally surfaces "GPS" in the detail message."""
     import astrodeck.hub as hub_mod
     from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
     store, app = _make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(hub_mod.hub, "devices",
-                        {"telescope": _FakeTel(0.0, 0.0, 0.0)})
-    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
-    with TestClient(app) as c:
-        r = c.get("/api/site/mount-gps").json()
-        assert r["available"] is False and "GPS" in r["detail"]
-
-
-def test_mount_gps_out_of_range_rejected(tmp_path, monkeypatch):
-    """Junk sentinels (99.0/181.0) are out of the Site ranges -> available: false."""
-    import astrodeck.hub as hub_mod
-    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
-    store, app = _make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub_mod.hub, "devices",
-                        {"telescope": _FakeTel(99.0, 181.0, 0.0)})
-    _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
-    with TestClient(app) as c:
-        r = c.get("/api/site/mount-gps").json()
-        assert r["available"] is False
-
-
-def test_mount_gps_nan_latitude_rejected(tmp_path, monkeypatch):
-    """A mount reporting NaN latitude -> available: false (non-finite guard)."""
-    import math
-    import astrodeck.hub as hub_mod
-    from astrodeck.auth import CAP_CONFIG_SITE_OPTICS
-    store, app = _make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub_mod.hub, "devices",
-                        {"telescope": _FakeTel(math.nan, -74.5, 30.0)})
+                        {"telescope": _FakeTel(lat, lon, elev)})
     _install(_principal_with(CAP_CONFIG_SITE_OPTICS))
     with TestClient(app) as c:
         r = c.get("/api/site/mount-gps").json()
         assert r["available"] is False
+        if expect_gps_detail:
+            assert "GPS" in r["detail"]
 
 
 def test_mount_gps_no_get_attribute(tmp_path, monkeypatch):

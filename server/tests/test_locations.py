@@ -84,13 +84,11 @@ def test_update_rename_collision_vs_other_id(tmp_path):
     assert out.latitude == 9.0
 
 
-def test_update_unknown_id_raises_keyerror(tmp_path):
+@pytest.mark.parametrize("method_name, args", [
+    pytest.param("update", ("nope", "X", 1.0, 2.0, 0.0), id="update-unknown-id"),
+    pytest.param("delete", ("nope",), id="delete-unknown-id"),
+])
+def test_unknown_id_raises_keyerror(tmp_path, method_name, args):
     s = _store(tmp_path)
     with pytest.raises(KeyError):
-        s.update("nope", "X", 1.0, 2.0, 0.0)
-
-
-def test_delete_unknown_id_raises_keyerror(tmp_path):
-    s = _store(tmp_path)
-    with pytest.raises(KeyError):
-        s.delete("nope")
+        getattr(s, method_name)(*args)

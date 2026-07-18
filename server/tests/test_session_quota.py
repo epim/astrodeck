@@ -294,46 +294,53 @@ def _unbounded_accepted_payload() -> dict:
     }
 
 
-def test_sequence_start_refuses_unbounded_accepted_quota(api_client):
-    r = api_client.post("/api/sequence/start", json=_unbounded_accepted_payload())
-    assert r.status_code == 400, r.text
-    assert "unbounded" in r.json()["detail"].lower()
-    assert api_client.started["n"] == 0        # never reached engine.start
+def _mutate_none(payload):
+    return payload
 
 
-def test_sequence_start_allows_accepted_quota_with_one_guard_set(api_client):
-    payload = _unbounded_accepted_payload()
+def _mutate_one_guard(payload):
     payload["max_consecutive_rejects"] = 5      # one guard set -> bounded
-    r = api_client.post("/api/sequence/start", json=payload)
-    assert r.status_code == 200, r.text
-    assert api_client.started["n"] == 1
+    return payload
 
 
-def test_sequence_start_allows_accepted_quota_with_default_guards(api_client):
+def _mutate_default_guards(payload):
     # dropping both keys falls back to the model defaults (10 / 20) -- the
     # existing accepted-mode default-guard behavior must be unaffected.
-    payload = _unbounded_accepted_payload()
     del payload["max_consecutive_rejects"]
     del payload["max_consecutive_rejects_night"]
-    r = api_client.post("/api/sequence/start", json=payload)
-    assert r.status_code == 200, r.text
-    assert api_client.started["n"] == 1
+    return payload
 
 
-def test_sequence_start_allows_unbounded_guards_with_a_stop_boundary(api_client):
-    payload = _unbounded_accepted_payload()
+def _mutate_stop_boundary(payload):
     payload["targets"][0]["schedule"] = {"max_run_min": 30}
-    r = api_client.post("/api/sequence/start", json=payload)
-    assert r.status_code == 200, r.text
-    assert api_client.started["n"] == 1
+    return payload
 
 
-def test_sequence_start_leaves_attempts_mode_unaffected(api_client):
-    payload = _unbounded_accepted_payload()
+def _mutate_attempts_mode(payload):
     payload["count_mode"] = "attempts"
+    return payload
+
+
+@pytest.mark.parametrize("payload_mutator, expected_status, expected_started", [
+    pytest.param(_mutate_none, 400, 0,
+                 id="refuses_unbounded_accepted_quota"),
+    pytest.param(_mutate_one_guard, 200, 1,
+                 id="allows_accepted_quota_with_one_guard_set"),
+    pytest.param(_mutate_default_guards, 200, 1,
+                 id="allows_accepted_quota_with_default_guards"),
+    pytest.param(_mutate_stop_boundary, 200, 1,
+                 id="allows_unbounded_guards_with_a_stop_boundary"),
+    pytest.param(_mutate_attempts_mode, 200, 1,
+                 id="leaves_attempts_mode_unaffected"),
+])
+def test_sequence_start_quota_gate(api_client, payload_mutator, expected_status,
+                                   expected_started):
+    payload = payload_mutator(_unbounded_accepted_payload())
     r = api_client.post("/api/sequence/start", json=payload)
-    assert r.status_code == 200, r.text
-    assert api_client.started["n"] == 1
+    assert r.status_code == expected_status, r.text
+    if expected_status == 400:
+        assert "unbounded" in r.json()["detail"].lower()
+    assert api_client.started["n"] == expected_started        # never reached engine.start when refused
 
 
 def test_sequence_start_mixed_plan_refused_until_every_target_bounded(api_client):

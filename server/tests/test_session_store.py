@@ -168,25 +168,18 @@ def test_legacy_resume_migration_bad_ts_falls_back_to_now(capture_dir):
     assert before - 1 <= s.created_ts <= after + 1     # fell back to now()
 
 
-def test_legacy_resume_migration_bad_json_unlink_oserror_swallowed(capture_dir, monkeypatch):
-    """Review finding #2: the early-exit unlink on unparseable JSON must be
-    guarded like the success-path unlink — a locked/AV-held file must not
-    propagate an OSError."""
+@pytest.mark.parametrize("content", [
+    pytest.param("{not valid json", id="bad_json"),
+    pytest.param(json.dumps({"plan": {"targets": "not-a-list"}, "done": {}, "ts": 1.0}),
+                 id="bad_plan"),
+])
+def test_legacy_resume_migration_unlink_oserror_swallowed(capture_dir, monkeypatch, content):
+    """Review finding #2: the early-exit unlink on unparseable JSON (bad_json)
+    or an unparseable ``plan`` (bad_plan) must be guarded like the
+    success-path unlink — a locked/AV-held file must not propagate an
+    OSError."""
     path = capture_dir / ".sequence_resume.json"
-    path.write_text("{not valid json", encoding="utf-8")
-
-    def _boom(self, missing_ok=False):
-        raise OSError("locked")
-    monkeypatch.setattr(Path, "unlink", _boom)
-    assert migrate_legacy_resume() is None             # must not raise
-
-
-def test_legacy_resume_migration_bad_plan_unlink_oserror_swallowed(capture_dir, monkeypatch):
-    """Review finding #2: the early-exit unlink on an unparseable ``plan``
-    must be guarded like the success-path unlink."""
-    legacy = {"plan": {"targets": "not-a-list"}, "done": {}, "ts": 1.0}
-    path = capture_dir / ".sequence_resume.json"
-    path.write_text(json.dumps(legacy), encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
 
     def _boom(self, missing_ok=False):
         raise OSError("locked")
