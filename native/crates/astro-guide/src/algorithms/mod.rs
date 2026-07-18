@@ -22,7 +22,13 @@ pub use resist_switch::ResistSwitch;
 /// [`result`](Self::result) (or [`result_with`](Self::result_with)) once per
 /// accepted frame and [`reset`](Self::reset) on guiding stopped, guiding
 /// resumed after a full pause, dither, or guiding re-enabled.
-pub trait GuideAlgorithm {
+///
+/// `Send` supertrait: the engine (holding boxed algorithm objects) is driven
+/// from Python through a PyO3 layer that releases the GIL around the
+/// per-frame work, so every implementation must be transferable across
+/// threads — a compiler-enforced invariant here rather than a promise (all
+/// implementations are plain data structs, so the bound costs nothing).
+pub trait GuideAlgorithm: Send {
     /// This frame's correction (px) for `input` px of measured mount-frame
     /// error.
     fn result(&mut self, input: f64) -> f64;
