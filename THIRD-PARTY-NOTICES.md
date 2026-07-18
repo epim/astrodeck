@@ -1,0 +1,113 @@
+# Third-Party Notices
+
+AstroDeck includes components derived from or bundled with third-party
+open-source software. The notices below are mandatory attributions preserved
+per each component's license terms.
+
+## AstroDeck native crates (`native/crates/*`)
+
+The `native/` Rust workspace (`astro-star`, `astro-focus`, `astro-tppa`,
+`astro-guide`, `astrodeck-native`) is licensed under the Mozilla Public
+License, v. 2.0 (MPL-2.0). A copy of the MPL-2.0 is available at
+https://mozilla.org/MPL/2.0/. Each source file carries the MPL-2.0 header.
+
+## PHD2 — guiding algorithms (BSD-3-Clause)
+
+The `astro-guide` crate is a clean-room Rust reimplementation of PHD2's guiding
+stack, produced from the source-mapped algorithm dossier
+`docs/native-parity/algorithms/phd2-guiding.md` (extracted from PHD2 at commit
+4a13cf245d7e485e79533697f87b032b304df952). Because the port derives from PHD2's
+expressed logic, PHD2's BSD-3-Clause notice is preserved here (licensing report
+§4, Path (a)):
+
+```
+This software includes code derived from PHD2
+(https://github.com/OpenPHDGuiding/phd2), used under the following license:
+
+Copyright (c) 2013-2019, Open PHD Guiding development team
+Copyright (c) 2014-2015, Max Planck Society
+Copyright (c) 2012, Bret McKee            [hysteresis, resist-switch, multi-star guider, mount/calibration]
+Copyright (c) 2006-2010, Craig Stark      [star centroid, multi-star guider base]
+Copyright (c) 2018, Ken Self              [Z-filter guide algorithm]
+Copyright (c) 2020, Bruce Waddington      [multi-star guider extensions]
+Copyright (c) 2023, Bruce Waddington      [calibration assistant / backlash tool]
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Predictive PEC / Gaussian-process guider (BSD-3-Clause, additionally)
+
+The GP/PPEC algorithm (`astro-guide/src/algorithms/gaussian_process.rs`) is
+ported from PHD2's `contributions/MPI_IS_gaussian_process` (Max Planck Institute
+for Intelligent Systems, Tübingen). Its BSD-3-Clause notice is preserved:
+
+```
+Copyright 2014-2017, Max Planck Society.
+Authors: Edgar D. Klenske, Stephan Wenninger, Raffi Enficiaud
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+Algorithm reference (academic citation, per licensing report §4 Path (b)):
+Edgar D. Klenske, Melanie N. Zeilinger, Bernhard Schölkopf, Philipp Hennig,
+"Gaussian Process Based Predictive Control for Periodic Error Correction,"
+IEEE Transactions on Control Systems Technology, vol. 24, no. 1, pp. 110-121, 2016.
+
+The GP port uses `nalgebra` for linear algebra; PHD2's C++ used Eigen (MPL-2.0),
+which is a separable build dependency of PHD2 and does NOT travel to this port
+(licensing report §3).
+
+## NINA / Hocus Focus — autofocus + star detection (Mozilla Public License 2.0)
+
+`astro-star` and `astro-focus` are clean-room reimplementations from the audited
+dossiers `docs/native-parity/algorithms/nina-autofocus.md` and
+`hocusfocus-autofocus-tilt.md`. No code was copied from NINA or Hocus Focus; the
+upstream projects are MPL-2.0 and this reimplementation is likewise MPL-2.0.
