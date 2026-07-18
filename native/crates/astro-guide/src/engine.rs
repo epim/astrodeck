@@ -2,8 +2,8 @@
 //
 // Provenance: clean-room Rust reimplementation from the audited algorithm
 // dossier docs/native-parity/algorithms/phd2-guiding.md (§3, §5, §6, §7, §9,
-// §10.1, §12, §13). This is the composition layer: it wires the already-
-// committed, already-tested starfind / select / track / transforms /
+// §10.1, §11.2, §12, §13). This is the composition layer: it wires the
+// already-committed, already-tested starfind / select / track / transforms /
 // algorithms / calibration primitives into one per-frame decision. Derived
 // from PHD2 `guider_multistar.cpp:925-1060`
 // (`GuiderMultiStar::UpdateCurrentPosition`: the star-find -> mass-check ->
@@ -13,9 +13,16 @@
 // `mount.cpp:1253-1409` (`Mount::AdjustCalibrationForScopePointing`: dec
 // compensation + pier flip), `backlash_comp.cpp:371-583` (`BacklashComp::
 // ApplyBacklashComp`: the static direction-reversal pulse, §10.1),
-// `scope.cpp:1752-1760` (COMPLETE-state calibration stamping), and
-// `guider.cpp:1261-1553` (the guide-loop dispatch that sequences these)
-// (BSD-3-Clause; see THIRD-PARTY-NOTICES.md). No code copied from PHD2.
+// `scope.cpp:1752-1760` (COMPLETE-state calibration stamping),
+// `guider.cpp:1261-1553` (the guide-loop dispatch that sequences these),
+// `guider.cpp:838-929` (`Guider::MoveLockPosition`: the dither lock-shift +
+// average-distance inflate + fast-recenter arming, §11.2),
+// `guider.cpp:1485-1511` (the per-frame fast-recenter step, bypassing the
+// guide algorithms), and `phdcontrol.cpp:514-567`
+// (`PhdController::UpdateControllerState` STATE_SETTLE_WAIT, §12 — this
+// module's call site for [`settle::Settle::evaluate`], not the settle state
+// machine itself, which lives in `settle.rs`) (BSD-3-Clause; see
+// THIRD-PARTY-NOTICES.md). No code copied from PHD2.
 
 //! Pure guide engine (dossier §7 composition): the per-frame decision that
 //! turns a measured star into an [`Action`] the host executes.
@@ -31,7 +38,14 @@
 //! The five hard obligations from prior task reviews are discharged at the
 //! sites tagged `OBLIGATION (a)..(e)` in [`GuideEngine::ingest`],
 //! [`GuideEngine::begin_guiding`], and the calibration-complete path; see each
-//! tag for the upstream citation.
+//! tag for the upstream citation. Three more, from the P1-T7/T10 reviews'
+//! P2 punch list, are discharged in [`GuideEngine::dither`] and
+//! [`GuideEngine::ingest_guiding`]'s settle branch (tagged `P2-T1 punch-list
+//! #1/#2/#3`): the settle evaluator is fed the SMOOTHED `avg_dist` rather
+//! than a frame's raw offset (#1), a fresh `AvgDist` is constructed at the
+//! post-fast-recenter boundary (#2), and the host-side settle handshake in
+//! `guide/native.py` is wired to the engine's real settle lifecycle rather
+//! than a single frame's `Action` shape (#3, host-side — see that file).
 
 use std::collections::VecDeque;
 use std::f64::consts::PI;
@@ -44,7 +58,7 @@ use crate::select::{auto_find, saturation_threshold, select_primary, SelectParam
 use crate::settle::{Settle, SettleState};
 use crate::starfind::{star_find, was_found, FindParams};
 use crate::track::{AvgDist, DistanceChecker, MassChecker};
-use crate::transforms::{camera_to_mount, norm_angle, Cal, Parity, PierSide};
+use crate::transforms::{camera_to_mount, mount_to_camera, norm_angle, Cal, Parity, PierSide};
 use crate::types::{Action, AxisPulse, Direction, FrameMeta, MeasuredStar};
 
 /// `MassChecker` base time window (dossier §3.1 `DefaultTimeWindowMs`).
@@ -57,9 +71,6 @@ const MASS_CHANGE_THRESHOLD: f64 = 0.5;
 /// been found for this long, `current_error` already reports `LARGE_DISTANCE`
 /// and upstream treats guiding as non-functional.
 const LOST_STAR_TIMEOUT_S: f64 = 20.0;
-/// Guide error reported for a lost-star frame while settling (dossier §13
-/// `LARGE_DISTANCE`; `guider.cpp:1114`).
-const LARGE_DISTANCE: f64 = 100.0;
 /// `DEC_COMP_LIMIT` (dossier §9; `scope.cpp:68`, `M_PI/3`, i.e. 60°): beyond
 /// this calibration declination, RA dec-compensation is disabled.
 const DEC_COMP_LIMIT: f64 = PI / 3.0;
@@ -68,8 +79,10 @@ const DEC_COMP_LIMIT: f64 = PI / 3.0;
 const DEC_COMP_MAX_DEC: f64 = 89.0 * PI / 180.0;
 /// Rolling window of recent accepted frames kept for [`GuideStatsSnapshot`].
 const RECENT_CAP: usize = 100;
-/// Default dither/settle window used by the P1 [`GuideEngine::dither`] stub
-/// (dossier §12). Full dither params thread through in P2.
+/// Default dither/settle window (dossier §12) [`GuideEngine::dither`] opens.
+/// Not yet threaded through [`EngineConfig`] (the brief's frozen
+/// `dither(dx_px, dy_px)` signature carries no settle-params override; a
+/// per-call tolerance/time/timeout knob is a possible future task).
 const DEFAULT_SETTLE_TOL_PX: f64 = 1.5;
 const DEFAULT_SETTLE_TIME_S: f64 = 10.0;
 const DEFAULT_SETTLE_TIMEOUT_S: f64 = 60.0;
@@ -162,15 +175,36 @@ impl Default for ScopePointing {
 
 /// A snapshot of guide-error statistics matching the host's `GuideStats` bus
 /// shape (spec §3.2/§3.5). `recent` is `(timestamp_s, ra_err_px, dec_err_px)`
-/// per accepted frame, newest last.
+/// per accepted frame, newest last. `settling` (P2-T1 Produces line) is the
+/// authoritative settle-window state — `true` for every frame from
+/// [`GuideEngine::dither`] until the window closes (Done or Failed),
+/// INCLUDING fast-recenter frames, whose [`Action`] is an ordinary
+/// [`Action::PulsePair`] (dossier §11.2) and so cannot be told apart from
+/// normal guiding by its shape alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GuideStatsSnapshot {
     pub guiding: bool,
+    pub settling: bool,
     pub rms_ra: f64,
     pub rms_dec: f64,
     pub rms_total: f64,
     pub snr: f64,
     pub recent: Vec<(f64, f64, f64)>,
+}
+
+/// Fast-recenter-after-dither state (dossier §11.2; `guider.cpp:912-919`
+/// `MoveLockPosition`'s `m_ditherRecenter*` fields + `guider.cpp:1485-1511`'s
+/// per-frame step). `remaining`/`step` are mount-frame pixel MAGNITUDES
+/// (always `>= 0`); `dir` is the correction's per-axis sign. The dither
+/// moved the LOCK by `mount_delta`, so the star's offset from the new lock
+/// is `-mount_delta` — `dir` shares that sign (`-sign(mount_delta)`),
+/// matching [`GuideEngine::apply_move`]'s `xd/yd` sign convention (the same
+/// sign a normal negative-feedback correction of that offset would have).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Recenter {
+    remaining: (f64, f64),
+    step: (f64, f64),
+    dir: (f64, f64),
 }
 
 /// Engine lifecycle phase.
@@ -234,6 +268,11 @@ pub struct GuideEngine {
     last_dec_dir: Option<Direction>,
 
     settle: Option<Settle>,
+    /// Active fast-recenter (dossier §11.2), overlaid on `settle` while a
+    /// dither's post-move recenter hasn't finished. Always `None` when
+    /// `settle` is `None` (both are armed together in [`dither`](Self::dither)
+    /// and `recenter` never outlives the window it belongs to).
+    recenter: Option<Recenter>,
 
     recent: VecDeque<(f64, f64, f64)>,
     last_snr: f64,
@@ -290,6 +329,7 @@ impl GuideEngine {
             last_good_find_s: None,
             last_dec_dir: None,
             settle: None,
+            recenter: None,
             recent: VecDeque::with_capacity(RECENT_CAP),
             last_snr: 0.0,
         }
@@ -353,10 +393,20 @@ impl GuideEngine {
     /// **fresh** [`AvgDist`] rather than mutating the old one — OBLIGATION (c):
     /// the average-distance reinit-collapse (dossier §13's "not guiding /
     /// need-reset" branches both collapse to `avg = dist; cnt = 1`) is only
-    /// faithful under reconstruction, so this is the single entry point for
-    /// the guiding-start / post-fast-recenter / resume-from-pause boundaries
-    /// (post-fast-recenter and resume-from-pause are P2 dither/pause seams;
-    /// guiding-start is live here).
+    /// faithful under reconstruction. This is the entry point for the
+    /// guiding-start boundary (live here) and resume-from-pause (still a P2+
+    /// seam — no host-pause channel exists yet).
+    ///
+    /// **Not** used for the post-fast-recenter boundary (dossier §11.2,
+    /// P2-T1 punch-list #2), even though it is also an `AvgDist`
+    /// reinitialization point: this method resets far more than `AvgDist` —
+    /// `distance_checker`, `mass_checker`, both axis algorithms,
+    /// `last_dec_dir`, and (critically) `self.settle` itself — none of which
+    /// the dossier's post-recenter action touches, and clearing `settle`
+    /// mid-window would abort the in-flight dwell timer entirely. See
+    /// [`step_recenter`](Self::step_recenter)'s narrower fresh-`AvgDist`
+    /// reconstruction (the same "construct rather than mutate" technique,
+    /// applied to only the one field the boundary actually resets).
     fn reset_guiding_state(&mut self) {
         self.avg_dist = AvgDist::new(); // OBLIGATION (c)
         self.distance_checker = DistanceChecker::new();
@@ -367,6 +417,7 @@ impl GuideEngine {
         self.last_good_find_s = None;
         self.last_dec_dir = None;
         self.settle = None;
+        self.recenter = None;
         self.recent.clear();
         self.last_snr = 0.0;
     }
@@ -467,30 +518,68 @@ impl GuideEngine {
             (camera, camera_to_mount(camera, &cal))
         });
 
-        // 2. Active settle window (dossier §12). While settling, the P1 stub
-        //    waits (returns Settle); full dither guiding-during-settle is P2.
-        if let Some(settle) = self.settle.as_mut() {
+        // 2. Active settle window (dossier §12), optionally overlaid with an
+        //    active fast recenter (dossier §11.2) — see `dither`/
+        //    `step_recenter`. `settle.is_some()` covers both.
+        if self.settle.is_some() {
             // The origin still advances on found frames while settling:
             // upstream's UpdateCurrentPosition keeps running (and assigning
             // m_primaryStar at :1026) while the controller settles — the
-            // settle overlay never freezes star tracking. This P1 stub
-            // bypasses the accept machinery, so "found" is the analogue.
+            // settle overlay never freezes star tracking.
             if let Some(s) = star.filter(|s| s.found) {
                 self.search_origin = Some((s.x, s.y));
             }
-            let (locked_now, err) = match offset {
-                Some((camera, _)) => (true, camera.0.hypot(camera.1)),
-                None => (false, LARGE_DISTANCE),
-            };
-            return match settle.evaluate(err, locked_now, now) {
-                SettleState::Settling => Action::Settle,
-                SettleState::Done => {
-                    self.settle = None;
-                    Action::Idle
-                }
+
+            // P2-T1 punch-list #1 (SETTLE INPUT FIX, binding per the P1-T7
+            // review): upstream's UpdateCurrentPosition
+            // (guider_multistar.cpp:1043) keeps calling UpdateCurrentDistance
+            // on every settling frame too — dossier §12's note "the
+            // DistanceChecker also treats settling frames as automatically
+            // acceptable" is why nothing here gates the update on a
+            // mass/distance-check accept — and STATE_SETTLE_WAIT feeds
+            // `current_guide_error()` (phdcontrol.cpp:516,
+            // `AvgDist::current_error`, the fast EMA), never the raw
+            // per-frame offset. A single lucky in-tolerance frame must not
+            // declare settled; keep `avg_dist` updated across the whole
+            // window and feed it the smoothed value.
+            let dist_ra = offset.map(|(_, mount)| mount.0.abs()).unwrap_or(0.0);
+            let dist_cam = offset
+                .map(|(camera, _)| {
+                    if dec_guiding {
+                        camera.0.hypot(camera.1)
+                    } else {
+                        camera.0.abs()
+                    }
+                })
+                .unwrap_or(0.0);
+            if offset.is_some() {
+                self.avg_dist.update(now, dist_cam, dist_ra);
+            }
+            let err = self.avg_dist.current_error(now, dec_guiding);
+            let locked_now = offset.is_some(); // IsLocked() == primary star WasFound() this frame.
+
+            let settle = self
+                .settle
+                .as_mut()
+                .expect("settle branch: self.settle is Some");
+            let state = settle.evaluate(err, locked_now, now);
+            return match state {
                 SettleState::Failed(_) => {
                     self.settle = None;
+                    self.recenter = None; // abandon any in-flight recenter too
                     Action::LockLost
+                }
+                SettleState::Done => {
+                    self.settle = None;
+                    self.recenter = None; // normally already None; be safe
+                    Action::Idle
+                }
+                SettleState::Settling => {
+                    // Fast recenter (dossier §11.2) takes this frame's Action
+                    // when active — bypasses the guide algorithms entirely
+                    // (one Action per ingest: the "still settling" wait
+                    // signal only surfaces once recenter is exhausted).
+                    self.step_recenter().unwrap_or(Action::Settle)
                 }
             };
         }
@@ -570,16 +659,71 @@ impl GuideEngine {
     }
 
     /// The dossier §7 move pipeline for one accepted frame's mount-frame
-    /// error. Returns [`Action::PulsePair`] (or [`Action::Idle`] when both
-    /// axes are vetoed/clamped to zero).
+    /// error: runs the per-axis algorithms, then [`apply_move`](Self::apply_move)
+    /// for the rest of the pipeline (direction/rate/BLC/gating/clamps).
     fn compute_move(&mut self, mount: (f64, f64), snr: f64, dt: f64) -> Action {
-        let cal = self.cal.expect("guiding phase implies a valid Cal");
-
         // Per-axis transfer functions (dossier §6). result_with threads snr +
         // exposure for a future predictive (PPEC) axis; Hysteresis and
         // ResistSwitch ignore both and delegate to result().
         let xd = self.ra_algo.result_with(mount.0, snr, dt);
         let yd = self.dec_algo.result_with(mount.1, snr, dt);
+        self.apply_move(xd, yd)
+    }
+
+    /// One fast-recenter step (dossier §11.2; `guider.cpp:1485-1511`), if a
+    /// recenter is currently in flight. Bypasses the guide algorithms
+    /// entirely — goes straight to [`apply_move`](Self::apply_move), which
+    /// still runs BLC/dec-mode-gating/duration clamps, matching upstream's
+    /// `MOVEOPTS_RECOVERY_MOVE` ("bypasses guide algorithms; BLC still
+    /// applies"). The move is open-loop: it does not re-read the star's
+    /// current position, just walks down the pre-planned `remaining`
+    /// distance from [`dither`](Self::dither) one `step` at a time.
+    ///
+    /// Returns `None` when there is nothing to recenter (already finished,
+    /// or `dither` never armed one — a zero-distance dither, dossier
+    /// §11.2's div-by-zero guard).
+    fn step_recenter(&mut self) -> Option<Action> {
+        let mut r = self.recenter.take()?;
+        let step = (r.step.0.min(r.remaining.0), r.step.1.min(r.remaining.1));
+        let signed = (r.dir.0 * step.0, r.dir.1 * step.1);
+        r.remaining = (r.remaining.0 - step.0, r.remaining.1 - step.1);
+        if r.remaining.0 < 0.5 && r.remaining.1 < 0.5 {
+            // Fast recenter is done (dossier §11.2). P2-T1 punch-list #2:
+            // reconstruct a FRESH AvgDist right here — the post-fast-recenter
+            // boundary (guider.cpp:1504 `m_avgDistanceNeedReset = true`,
+            // reinitialized on the NEXT UpdateCurrentDistance call,
+            // guider.cpp:1100-1106) — using the same "construct fresh rather
+            // than mutate" technique `reset_guiding_state` uses for
+            // OBLIGATION (c) (see `AvgDist`'s own doc comment: the two are
+            // formula-identical, only a narrower entry point).
+            // `frames_since_reset` mirrors `AvgDist`'s own `count`
+            // (`m_avgDistanceCnt` / `CurrentErrorFrameCount()`, per its own
+            // field doc) 1:1, so it is reset alongside — NOT via
+            // `reset_guiding_state()`, which would also clear the still-open
+            // `self.settle` mid-dwell and wipe `mass_checker`/
+            // `distance_checker`/`last_dec_dir` state the recenter never
+            // touched (see `reset_guiding_state`'s doc comment).
+            self.avg_dist = AvgDist::new();
+            self.frames_since_reset = 0;
+        } else {
+            self.recenter = Some(r);
+        }
+        Some(self.apply_move(signed.0, signed.1))
+    }
+
+    /// The dossier §7 move pipeline's post-algorithm half: direction from
+    /// sign, duration from magnitude/rate, dec-mode gating, static BLC,
+    /// duration clamps. Shared by the normal per-axis-algorithm path
+    /// ([`compute_move`](Self::compute_move)) and the fast-recenter path
+    /// ([`step_recenter`](Self::step_recenter)), which bypasses the
+    /// algorithms but still runs this pipeline (dossier §11.2: "bypasses
+    /// guide algorithms; BLC still applies"). `xd`/`yd` are mount-frame
+    /// pixel corrections (post-algorithm for the normal path; the raw
+    /// signed recenter step for the fast-recenter path). Returns
+    /// [`Action::PulsePair`] (or [`Action::Idle`] when both axes are
+    /// vetoed/clamped to zero).
+    fn apply_move(&mut self, xd: f64, yd: f64) -> Action {
+        let cal = self.cal.expect("guiding phase implies a valid Cal");
 
         // Directions from the post-algorithm correction (dossier §7:
         // xd > 0 => WEST, yd > 0 => SOUTH).
@@ -713,15 +857,89 @@ impl GuideEngine {
         }
     }
 
-    /// Dither by a mount-frame offset (px). **P1 stub**: resets the axis
-    /// algorithms (dossier §11.2 `GuidingDithered` -> `reset()`) and opens a
-    /// settle window (dossier §12); the full lock reposition + fast recenter
-    /// is P2. While the window is open, [`ingest`](Self::ingest) returns
-    /// [`Action::Settle`].
+    /// Dither by a mount-frame offset (px; dossier §11.2 `MoveLockPosition`,
+    /// `guider.cpp:838-929`). Shifts the lock position (`mount_to_camera`),
+    /// resets the axis algorithms (`GuidingDithered` -> `reset()`),
+    /// immediately inflates the guide-error statistics by the dither
+    /// distance, arms a fast-recenter walk back toward the new lock (dossier
+    /// §11.2 `FastRecenter`, default-on with no disable knob in this crate's
+    /// frozen [`EngineConfig`]), and opens a settle window (dossier §12).
+    /// While the window is open, [`ingest`](Self::ingest) returns
+    /// fast-recenter [`Action::PulsePair`]s (dossier §11.2's
+    /// `GuidingDitherSettleDone` "notify algorithms of a direct move" step
+    /// has no analogue in this crate's frozen [`GuideAlgorithm`] trait — see
+    /// `step_recenter`'s doc comment) followed by [`Action::Settle`] until
+    /// the window closes (`Action::Idle` on success, [`Action::LockLost`] on
+    /// timeout).
+    ///
+    /// A no-op when there is no calibration or no established lock yet (the
+    /// host only dithers while guiding, so this never fires live).
     pub fn dither(&mut self, dx_px: f64, dy_px: f64) {
-        let _ = (dx_px, dy_px); // lock reposition + fast recenter: P2
+        let (Some(cal), Some(lock)) = (self.cal, self.lock) else {
+            return;
+        };
+
+        // ADJUDICATION (dossier §11.2 "4-sign validity search",
+        // `guider.cpp:864-895`): upstream tries the 4 sign combinations of
+        // the requested mount delta and keeps whichever produces a lock
+        // position at least `search_region+1` inside the CAMERA FRAME,
+        // falling back to the combination farthest from the nearest edge.
+        // That check needs the frame's pixel bounds, which this crate's
+        // frozen `dither(dx_px, dy_px)` signature never receives (D1: no
+        // camera-loop machinery in Rust — `GuideEngine` never stores frame
+        // width/height; [`measure`](Self::measure) only borrows a
+        // `GrayFrame` for the duration of one call). Established ruling
+        // "clean-bounds require unobservability proof": with no frame size
+        // observable at this call, the 4-sign search has nothing to
+        // validate against, so it degenerates to the literal (unflipped)
+        // request — the only choice definable without a size the engine
+        // cannot see. A host that must avoid pushing the star off-frame
+        // sizes its dither amount conservatively before calling this (a
+        // host-side, not engine-side, concern).
+        let mount_delta = (dx_px, dy_px);
+        let camera_delta = mount_to_camera(mount_delta, &cal);
+        self.lock = Some((lock.0 + camera_delta.0, lock.1 + camera_delta.1));
+
+        // GuidingDithered -> reset() (dossier §11.1/§11.2).
         self.ra_algo.reset();
         self.dec_algo.reset();
+
+        // Immediately inflate the error statistics by the dither distance
+        // (dossier §11.2; `guider.cpp:903-908`, "update average distance
+        // right away so GetCurrentDistance reflects the increased distance
+        // from the dither") so settle logic — and anyone polling `stats()`
+        // right after `dither()` returns, before the next frame — sees the
+        // displacement at once. Camera- and mount-frame deltas have the same
+        // magnitude (`mount_to_camera` is a rotation, possibly with an
+        // axis-reversal flip — neither changes length), so `dist` below
+        // equals both `camera_delta`'s and `mount_delta`'s hypot.
+        let dist = dx_px.hypot(dy_px);
+        let dist_ra = dx_px.abs();
+        self.avg_dist.inflate(dist, dist_ra);
+
+        // Fast recenter (dossier §11.2). Zero-distance dithers (a
+        // settle-only trigger, `guider.cpp:910-912`) skip it to avoid the
+        // div-by-zero in `f`.
+        self.recenter = if dist != 0.0 {
+            let remaining = (mount_delta.0.abs(), mount_delta.1.abs());
+            let dir = (
+                if mount_delta.0 < 0.0 { 1.0 } else { -1.0 },
+                if mount_delta.1 < 0.0 { 1.0 } else { -1.0 },
+            );
+            // "make each step a bit less than the full search region
+            // distance to avoid losing the star" (guider.cpp:917).
+            let max_move_px = self.cfg.find.search_region as f64;
+            let f = 0.7 * max_move_px / dist;
+            let step = (f * remaining.0, f * remaining.1);
+            Some(Recenter {
+                remaining,
+                step,
+                dir,
+            })
+        } else {
+            None
+        };
+
         self.settle = Some(Settle::new(
             DEFAULT_SETTLE_TOL_PX,
             DEFAULT_SETTLE_TIME_S,
@@ -729,10 +947,20 @@ impl GuideEngine {
         ));
     }
 
+    /// Whether a settle window (dither or a future start-of-guiding settle)
+    /// is currently open (dossier §12). P2-T1 punch-list #3: hosts that need
+    /// the authoritative settle lifecycle use this (or the equivalent
+    /// [`GuideStatsSnapshot::settling`]) rather than inferring it from a
+    /// single frame's [`Action`] — a fast-recenter frame (dossier §11.2)
+    /// returns a normal [`Action::PulsePair`] while the window stays open.
+    pub fn is_settling(&self) -> bool {
+        self.settle.is_some()
+    }
+
     /// Current guide-error statistics in the host's `GuideStats` shape
     /// (spec §3.2/§3.5). RMS is over the retained recent-frame window.
     pub fn stats(&self) -> GuideStatsSnapshot {
-        let guiding = self.phase == Phase::Guiding && self.settle.is_none();
+        let guiding = self.phase == Phase::Guiding && !self.is_settling();
         let n = self.recent.len();
         let (mut sra, mut sdec, mut stot) = (0.0f64, 0.0f64, 0.0f64);
         for &(_, ra, dec) in &self.recent {
@@ -749,6 +977,7 @@ impl GuideEngine {
         };
         GuideStatsSnapshot {
             guiding,
+            settling: self.settle.is_some(),
             rms_ra: rms(sra),
             rms_dec: rms(sdec),
             rms_total: rms(stot),

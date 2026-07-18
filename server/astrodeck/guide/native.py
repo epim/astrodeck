@@ -21,11 +21,14 @@ We publish the SAME ``GuideStats`` shape on the SAME ``"guide"`` bus channel the
 PHD2 path publishes (spec §3.2/§3.5 — the MonitorView/Sparkline/SessionsPanel/
 GuideView contract), so the UI works unchanged whichever provider is guiding.
 
-Scope of this task (P1): a working converging loop + minimal sim wiring. Full
-calibration REUSE across sessions, the full dither behavior, and the UI provider
-wiring land in P2 — the seams are here (calibration is persisted on calibrate;
-``dither`` shifts the lock and waits for settle; the guiding-start pier-flip host
-contract is discharged) but the richer policy is deferred.
+P1 scope: a working converging loop + minimal sim wiring, with calibration
+persisted on calibrate and the guiding-start pier-flip host contract
+discharged. P2-T1 landed the real ``dither``: a mount-frame lock shift, axis
+algorithm reset, fast recenter (dossier §11.2 — the loop dispatches its
+pulses exactly like any other correction), and a real settle-dwell wait
+(dossier §12), wired end to end via ``stats()["settling"]`` rather than any
+single frame's Action shape (see ``_sync_settle_window``). Full calibration
+REUSE across sessions and further guiding policy remain future work.
 """
 from __future__ import annotations
 
@@ -116,8 +119,11 @@ class NativeGuider(Guider):
         self._reacquire = 0
 
         # Dither settle coordination: ``dither`` opens the engine's settle window
-        # and awaits ``_settle_done``; the guide loop sets it when the window
-        # (which only ``dither`` opens in P1) closes.
+        # and awaits ``_settle_done``; the guide loop's ``_sync_settle_window``
+        # sets it when the window (which only ``dither`` opens) closes, tracked
+        # via ``stats()["settling"]`` rather than any one frame's Action shape
+        # (P2-T1 punch-list #3 — a fast-recenter frame, dossier §11.2, returns
+        # an ordinary "pulse_pair" while the window is still open).
         self._settle_open = False
         self._settle_done = asyncio.Event()
         self._settle_error: str | None = None
@@ -308,6 +314,7 @@ class NativeGuider(Guider):
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
                 await self._dispatch(action)
+                self._sync_settle_window(action)
                 self._last_stats = self.stats()
                 bus.publish("guide", **self._last_stats.__dict__)
         except asyncio.CancelledError:
@@ -328,22 +335,20 @@ class NativeGuider(Guider):
         kind = action["action"]
         reason = action.get("reason")
 
-        # Dither settle-window bookkeeping (only dither opens one in P1). While
-        # the window is open every frame returns "settle"; the first non-settle
-        # action after it closes wakes the dither() awaiter.
-        if kind == "settle":
-            self._settle_open = True
+        # Settle-timeout lock_lost (dither only, dossier §12): the star
+        # itself was never lost — the guider's settle window blew its
+        # deadline. Skip `_handle_lock_lost`'s star-loss/fatal accounting
+        # entirely; guiding resumes on the next frame regardless.
+        # `_sync_settle_window` (called after this by `_guide_loop`) closes
+        # the window and wakes the `dither()` awaiter with this reason.
+        if kind == "lock_lost" and reason == "settle_timeout":
             return
-        if self._settle_open:
-            self._settle_open = False
-            if kind == "lock_lost" and reason == "settle_timeout":
-                self._settle_error = "settle timed out"
-            self._settle_done.set()
-            if kind == "lock_lost" and reason == "settle_timeout":
-                # The star itself was never lost — guiding resumes next frame.
-                return
 
         if kind in ("pulse", "pulse_pair"):
+            # Applies uniformly whether this pulse is a normal per-axis-
+            # algorithm correction or a fast-recenter direct move (dossier
+            # §11.2) — the host does not need to tell them apart, it just
+            # dispatches the pulse either way.
             self._reacquire = 0
             await self._pulse(action)
         elif kind == "cal_step":
@@ -353,6 +358,40 @@ class NativeGuider(Guider):
             pass  # lock-establishment / recovering frame — no correction
         elif kind == "lock_lost":
             await self._handle_lock_lost(reason)
+        # kind == "settle": no host action (dossier §12; the host waits) —
+        # falls through with no branch matched.
+
+    def _engine_settling(self) -> bool:
+        """Whether the engine's settle window (dither, dossier §12) is
+        currently open — the authoritative state, independent of any single
+        frame's dispatched Action. A fast-recenter frame (dossier §11.2)
+        returns an ordinary ``pulse_pair`` while the window stays open, so
+        the Action alone cannot answer this."""
+        if self._engine is None:
+            return False
+        try:
+            return bool(self._engine.stats().get("settling", False))
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def _sync_settle_window(self, action: dict) -> None:
+        """Wire the ``dither()`` settle-wait handshake (``_settle_open``/
+        ``_settle_done``) to the REAL engine settle lifecycle (P2-T1
+        punch-list #3) via ``stats()["settling"]``, rather than inferring
+        window state from a single frame's Action shape — a fast-recenter
+        frame (dossier §11.2) returns an ordinary ``pulse_pair`` while the
+        window stays open, which the old ``action == "settle"`` toggle would
+        have misread as "settled" on the very first recenter pulse."""
+        if self._engine_settling():
+            self._settle_open = True
+            return
+        if not self._settle_open:
+            return  # no window was open; nothing to close
+        self._settle_open = False
+        if (action.get("action") == "lock_lost"
+                and action.get("reason") == "settle_timeout"):
+            self._settle_error = "settle timed out"
+        self._settle_done.set()
 
     async def _pulse(self, action: dict) -> None:
         """Apply a single-axis pulse or a (RA, Dec) pulse pair (dossier §7:
@@ -444,9 +483,13 @@ class NativeGuider(Guider):
     # ------------------------------------------------------------------ dither
 
     async def dither(self, pixels: float = 3.0) -> None:
-        """Dither by ``pixels`` and wait for settle (P1: shift the lock + wait;
-        the richer dither-during-settle guiding lands in P2). Delegates to the
-        engine's settle window, which the guide loop drives."""
+        """Dither by ``pixels`` and wait for settle (dossier §11/§12): shifts
+        the lock, resets the axis algorithms, and runs a real fast-recenter +
+        settle-dwell in the engine (the guide loop dispatches the
+        fast-recenter pulses like any other correction). Mirrors
+        ``PHD2Guider``'s settle-wait shape (``guide/phd2.py:353-359``): wait
+        for the settle handshake or ``_SETTLE_TIMEOUT_S``, whichever comes
+        first."""
         if self._engine is None or not self._active:
             raise DeviceError("native guider: cannot dither when not guiding")
         ang = random.uniform(0.0, 2 * math.pi)
@@ -454,8 +497,9 @@ class NativeGuider(Guider):
         dy = pixels * math.sin(ang)
         self._settle_error = None
         self._settle_done.clear()
-        # The loop flips _settle_open on the first "settle" action; do NOT set it
-        # here (a pulse frame already in flight must not prematurely wake us).
+        # The loop's `_sync_settle_window` flips `_settle_open` from
+        # `stats()["settling"]`, not from this call — do NOT set it here (a
+        # pulse frame already in flight must not prematurely wake us).
         self._engine.dither(dx, dy)
         try:
             await asyncio.wait_for(self._settle_done.wait(),

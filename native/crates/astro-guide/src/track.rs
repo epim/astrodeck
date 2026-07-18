@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Provenance: frame-to-frame tracking primitives from the audited algorithm
-// dossier docs/native-parity/algorithms/phd2-guiding.md (§3.1, §3.2, §13).
-// Derived from PHD2 guider_multistar.cpp:52-180 (`MassChecker`),
-// guider_multistar.cpp:601-704 (`DistanceChecker`), and guider.cpp:1065-1139
-// (`Guider::UpdateCurrentDistance` / `CurrentError`) (BSD-3-Clause; see
-// THIRD-PARTY-NOTICES.md). [`MassChecker`] and [`DistanceChecker`] port
-// their state machines literally per this task's brief ("port exception for
-// the state machines"); [`AvgDist`] is a clean-room reimplementation with a
-// scope-narrowed `update()` interface (see its doc comment). No code copied
-// from PHD2.
+// dossier docs/native-parity/algorithms/phd2-guiding.md (§3.1, §3.2, §11.2,
+// §13). Derived from PHD2 guider_multistar.cpp:52-180 (`MassChecker`),
+// guider_multistar.cpp:601-704 (`DistanceChecker`), guider.cpp:1065-1139
+// (`Guider::UpdateCurrentDistance` / `CurrentError`), and guider.cpp:903-908
+// (`Guider::MoveLockPosition`'s post-dither average-distance inflate)
+// (BSD-3-Clause; see THIRD-PARTY-NOTICES.md). [`MassChecker`] and
+// [`DistanceChecker`] port their state machines literally per this task's
+// brief ("port exception for the state machines"); [`AvgDist`] is a
+// clean-room reimplementation with a scope-narrowed `update()` interface
+// (see its doc comment) plus the P2-T1 `inflate()` addition (see its own
+// doc comment). No code copied from PHD2.
 
 //! Per-frame tracking building blocks: star-mass gating, jump-rejection /
 //! lost-star recovery, and the guide-error EMAs (dossier §3, §13).
@@ -343,6 +345,28 @@ impl AvgDist {
             count: 0,
             last_update_s: None,
         }
+    }
+
+    /// Immediately inflate the guide-error statistics by an externally
+    /// applied disturbance (dossier §11.2/§13; `Guider::MoveLockPosition`,
+    /// `guider.cpp:903-908`): adds `dist`/`dist_ra` directly onto BOTH the
+    /// fast EMA (`avg_dist`/`avg_dist_ra`) and the slow EMA
+    /// (`avg_long`/`avg_long_ra`) — no blending, matching upstream's plain
+    /// `m_avgDistance += dist; ...`. Unlike [`update`](Self::update), this
+    /// does NOT touch `last_update_s` (the caller — a dither, whose frozen
+    /// `(dx_px, dy_px)` signature carries no clock — has no timestamp to
+    /// stamp it with; the staleness gate keeps using the last real frame's
+    /// time) and does NOT special-case a fresh (`count == 0`) filter: a
+    /// dither before any guiding frame has ever been accepted inflates a
+    /// value the very next real [`update`](Self::update) call immediately
+    /// overwrites via its own hard-reinit branch — matching upstream, which
+    /// has the identical corner case (its own "not yet guiding" branch also
+    /// discards any earlier inflate).
+    pub fn inflate(&mut self, dist: f64, dist_ra: f64) {
+        self.avg_dist += dist;
+        self.avg_long += dist;
+        self.avg_dist_ra += dist_ra;
+        self.avg_long_ra += dist_ra;
     }
 
     /// Feed one accepted frame's distance-from-lock (`dist`, full 2D
