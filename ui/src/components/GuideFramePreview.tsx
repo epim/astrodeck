@@ -25,9 +25,13 @@ const POLL_MS = 2500;
 
 type FrameState = "loading" | "image" | "unavailable";
 
-export default function GuideFramePreview({ className = "", compact = false }: {
+export default function GuideFramePreview({ className = "", compact = false, reticle = false }: {
   className?: string;
   compact?: boolean;
+  // reticle: overlay a center guide-region crosshair (the lock-region marker on
+  // the GuideView). The GuideStats bus carries no per-frame star coordinates, so
+  // this marks the frame's lock REGION rather than tracking the star pixel.
+  reticle?: boolean;
 }) {
   const status = useStatus();
   const [open, setOpen] = useState(false);
@@ -109,6 +113,19 @@ export default function GuideFramePreview({ className = "", compact = false }: {
                   className={`max-w-full max-h-full object-contain ${state === "image" ? "" : "hidden"}`}
                   draggable={false}
                 />
+              )}
+
+              {/* lock-region reticle: a subtle center crosshair marking the
+                  guide region (no per-frame star coords on the stats bus). */}
+              {reticle && state === "image" && (
+                <span
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center"
+                  aria-hidden
+                >
+                  <span className="absolute w-full h-px bg-accent/40" />
+                  <span className="absolute h-full w-px bg-accent/40" />
+                  <span className="w-6 h-6 rounded-full border border-accent/70" />
+                </span>
               )}
 
               {/* loading placeholder — only before the first frame ever lands */}

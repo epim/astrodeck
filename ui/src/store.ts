@@ -74,6 +74,7 @@ export interface ProvidersStatus {
   autofocus?: ProviderChoiceView;
   polar_align?: ProviderChoiceView;
   solve?: ProviderChoiceView;
+  guide?: ProviderChoiceView;
 }
 
 // ---------------------------------------------------------------- toast policy
