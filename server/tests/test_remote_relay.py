@@ -1084,17 +1084,21 @@ def test_tunneled_ws_downgrade_midstream_operator_to_viewer_drops_weather(
         task = asyncio.create_task(client._serve_once(client._config()))
         await asyncio.sleep(0.03)  # authorize + hello + enter loop
         # weather BEFORE downgrade -> delivered verbatim (operator holds
-        # view.weather)
-        bus.publish("weather", enabled=True, stale=False)
+        # view.weather); payload carries site_lat/site_lon (the real I2
+        # payload shape) so the coordinate-bearing frame exercises the path.
+        bus.publish("weather", enabled=True, stale=False,
+                    site_lat=_PRECISE_LAT, site_lon=_PRECISE_LON)
         await asyncio.sleep(0.03)
         # downgrade: operator -> viewer loses view.weather (and control.*)
         # but keeps view.status (still allowed)
         prov.principal = principal_for_role("viewer")
         await asyncio.sleep(0.15)  # let >=1 recheck refresh the cached principal
-        # weather AFTER downgrade -> dropped entirely; the LATER status marker
-        # proves the loop is still delivering (dropped, not stalled/leaked —
-        # bus ordering would put a leaked weather frame before the marker).
-        bus.publish("weather", enabled=True, stale=True)
+        # weather AFTER downgrade -> dropped entirely (coords never reach the
+        # viewer); the LATER status marker proves the loop is still delivering
+        # (dropped, not stalled/leaked — bus ordering would put a leaked
+        # weather frame before the marker).
+        bus.publish("weather", enabled=True, stale=True,
+                    site_lat=_PRECISE_LAT, site_lon=_PRECISE_LON)
         bus.publish("status", site={"is_default": True, "horizon_min_deg": 15.0})
         await asyncio.sleep(0.05)
         channel.finish()
@@ -1105,6 +1109,7 @@ def test_tunneled_ws_downgrade_midstream_operator_to_viewer_drops_weather(
         assert len(weather) == 1, \
             f"expected ONLY the pre-downgrade weather event, got {len(weather)}"
         assert weather[0]["data"]["stale"] is False    # it IS the pre-downgrade one
+        assert weather[0]["data"]["site_lat"] == _PRECISE_LAT  # operator saw coords
         assert any(p["type"] == "status" for p in payloads)  # loop alive after drop
 
     asyncio.run(_scenario())

@@ -973,13 +973,22 @@ def create_app() -> FastAPI:
         return _config_payload(principal)
 
     # ------------------------------------------------- ignore-tonight (weather spec §4)
-    # Runtime flag on the WeatherService, NOT persisted config. Gated
+    # Runtime flag on the WeatherService, NOT persisted config. Gated on BOTH
     # control.capture (operator — it affects sequencing, like other control
-    # caps). Keyed to tonight's dusk; auto-expires when a new night begins.
+    # caps) AND view.weather (defense-in-depth, I2 review): the response
+    # echoes the full weather payload, which since I2 carries site_lat/
+    # site_lon, so the route must also require the cap that gates reading
+    # that payload. For the three fixed roles this changes nothing (every
+    # control.capture holder also holds view.weather), but that implication
+    # is NOT a stated invariant — if custom/split roles ever exist (queued
+    # product decision), a control.capture-without-view.weather principal
+    # must NOT be able to read coordinates off this write route's echo.
+    # Keyed to tonight's dusk; auto-expires when a new night begins.
     # The updated flag rides the weather payload so ALL clients see it.
 
-    @app.post("/api/weather/ignore-tonight")
-    @declare(CAP_CONTROL_CAPTURE)
+    @app.post("/api/weather/ignore-tonight",
+              dependencies=[Depends(require(CAP_VIEW_WEATHER))])
+    @declare(CAP_CONTROL_CAPTURE, CAP_VIEW_WEATHER)
     async def weather_ignore_tonight(
             body: IgnoreTonightBody,
             principal: Principal = Depends(require(CAP_CONTROL_CAPTURE))):

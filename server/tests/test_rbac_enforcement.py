@@ -1037,6 +1037,29 @@ def test_operator_weather_get_matches_admin_shape(tmp_path, monkeypatch):
         assert body["site_lat"] == _PRECISE_LAT and body["site_lon"] == _PRECISE_LON
 
 
+def test_ignore_tonight_requires_view_weather_not_just_capture(
+        tmp_path, monkeypatch):
+    """Defense-in-depth (I2 review): POST /api/weather/ignore-tonight echoes
+    the full weather payload, which carries site_lat/site_lon since I2, so
+    the route requires view.weather IN ADDITION to control.capture. For the
+    three fixed roles this is unobservable (every control.capture holder also
+    holds view.weather), but that implication is not a stated invariant --
+    a custom/split-role principal holding control.capture WITHOUT
+    view.weather must be denied outright, never reading coordinates off a
+    write route's echo."""
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    _seed_precise_site(store)                       # real coords at stake
+    capture_only = Principal(
+        role="operator", email=None,
+        caps=frozenset({"view.status", "view.preview", "control.capture"}),
+        jti=None)
+    _install(capture_only)
+    with TestClient(app) as c:
+        r = c.post("/api/weather/ignore-tonight", json={"ignore": True})
+        assert r.status_code == 403
+        assert "site_lat" not in r.text             # no payload echo on deny
+
+
 def test_ws_weather_event_dropped_for_viewer_kept_for_admin(tmp_path, monkeypatch):
     """LAN lane (spec §8): type=='weather' + non-holder -> the frame is NEVER
     sent (dropped, not stripped). A later marker event proves ordering."""
@@ -1088,6 +1111,52 @@ def test_ws_weather_event_delivered_to_operator(tmp_path, monkeypatch):
                 if ev["type"] == "weather":
                     break
             assert ev["data"]["enabled"] is True
+
+
+def test_ws_downgrade_midstream_operator_to_viewer_drops_weather(
+        tmp_path, monkeypatch):
+    """LAN lane mid-stream re-tighten (I2 review fix round): an operator
+    whose role is downgraded to viewer mid-socket loses view.weather at the
+    next WS_AUTH_RECHECK_S re-auth, and weather events published AFTER that
+    are DROPPED entirely -- the LAN-lane twin of
+    test_remote_relay.test_tunneled_ws_downgrade_midstream_operator_to_viewer
+    _drops_weather. The published payloads carry site_lat/site_lon (the real
+    I2 payload shape), so the coordinate-bearing frame literally exercises
+    the drop path -- the post-downgrade viewer never sees the coordinates."""
+    import time
+    from astrodeck.events import bus
+    monkeypatch.setattr(app_module, "WS_AUTH_RECHECK_S", 0.05)
+    store, app = _make_weather_client(tmp_path, monkeypatch)
+    prov = _SwitchProvider(principal_for_role("operator"))
+    set_active_provider(prov)
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            # weather BEFORE downgrade -> delivered verbatim, coords included
+            bus.publish("weather", enabled=True, stale=False,
+                        site_lat=_PRECISE_LAT, site_lon=_PRECISE_LON)
+            while True:
+                ev = ws.receive_json()
+                if ev["type"] == "weather":
+                    break
+            assert ev["data"]["site_lat"] == _PRECISE_LAT     # operator sees coords
+            # downgrade: operator -> viewer (keeps view.status, loses
+            # view.weather); let >=1 recheck refresh the cached principal
+            prov.principal = principal_for_role("viewer")
+            time.sleep(0.2)
+            # weather AFTER downgrade -> dropped entirely; the LATER safety
+            # marker proves the loop is alive (bus ordering would put a
+            # leaked weather frame before the marker).
+            bus.publish("weather", enabled=True, stale=True,
+                        site_lat=_PRECISE_LAT, site_lon=_PRECISE_LON)
+            bus.publish("safety", is_safe=True)               # ordered marker
+            seen = []
+            while True:
+                ev = ws.receive_json()
+                seen.append(ev["type"])
+                if ev["type"] == "safety":
+                    break
+            assert "weather" not in seen, f"post-downgrade weather leaked: {seen}"
 
 
 def test_astrospheric_key_scrubbed_everywhere(tmp_path, monkeypatch):
