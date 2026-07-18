@@ -37,12 +37,14 @@ CONTROLLER-DECIDED (recorded for ratification; overridable without rework debt):
 - D6. Guide camera = any `Camera` device assigned to a new `guide_camera` RigSpec
   role (Alpaca camera N, sim guide cam). No new device class; the existing `Camera`
   ABC contract (expose → CameraFrame) is sufficient at guide cadences (0.5-5s).
-QUEUED USER DECISIONS (not blocking):
-- AstroDeck's own project license (repo has NO LICENSE file; native workspace is
-  MPL-2.0). Options at close: MPL-2.0 project-wide (matches crates, file-level
-  copyleft, permissive-friendly); Apache-2.0 (patent grant, most-permissive norm);
-  GPLv3 (strong copyleft — conflicts with nothing here but changes contributor
-  posture). Needed before any public release; not needed to build.
+RESOLVED USER DECISIONS:
+- AstroDeck project license = **Apache-2.0** (user-decided 2026-07-17; root LICENSE
+  committed). Consequence for this project: the `astro-guide` crate carries
+  **Apache-2.0** file headers (with BSD-3 derivation notes naming the PHD2 source),
+  NOT MPL-2.0 — BSD-3 permits Apache sublicensing. MPL-2.0 remains ONLY on the
+  files genuinely derived from MPL sources (NINA/Hocus-Focus ports in the existing
+  crates); the workspace license field becomes per-crate. THIRD-PARTY-NOTICES
+  obligations unchanged.
 
 ## 1. Goals / non-goals
 
@@ -75,7 +77,7 @@ our guider).
 
 ## 3. Components
 
-### 3.1 `native/crates/astro-guide` (new, pure; MPL-2.0 headers + BSD-3 derivation notes)
+### 3.1 `native/crates/astro-guide` (new, pure; Apache-2.0 headers + BSD-3 derivation notes — see §0 license resolution)
 Modules mirror the dossier's sections; each cites its dossier § + PHD2 source map:
 - `starfind.rs` — PHD2 `Star::Find` parity (annulus background, Simonetti SNR, HFD;
   dossier §1). Parallel to, not shared with, astro-star's NINA-parity detector;
