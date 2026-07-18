@@ -149,6 +149,9 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
       const v = validateGuideSettings({
         ra: { algorithm: ra, params: { ...GUIDE_ALGORITHM_DEFAULTS[ra] } },
         dec: { algorithm: dec, params: { ...GUIDE_ALGORITHM_DEFAULTS[dec] } },
+        // This drawer edits only the algorithm kinds today; the static BLC
+        // pulse keeps its disabled default until a settings editor surfaces it.
+        blcPulseMs: 0,
       });
       await api.put("/api/guide/settings", {
         ra_algorithm: v.ra.algorithm,

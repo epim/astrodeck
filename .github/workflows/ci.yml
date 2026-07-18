@@ -81,4 +81,4 @@ jobs:
         run: |
           pip install -e "./server[dev]"
           pip install --no-index --find-links wheels astrodeck-native
-          cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py tests/test_native_guide_surface.py tests/test_native_guider_e2e.py -q
+          cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py tests/test_native_guide_surface.py tests/test_native_guider_e2e.py tests/test_native_guider_ppec.py -q
