@@ -47,10 +47,11 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  # The Rust native engine (star detection / autofocus / TPPA) + its PyO3 wheel.
-  # Without this, a Rust regression sails through and the native-provider tests
-  # skip on CI (no wheel). This job gates the workspace AND builds the wheel so
-  # the three native test files actually run against the real engine.
+  # The Rust native engine (star detection / autofocus / TPPA / guiding) + its
+  # PyO3 wheel. Without this, a Rust regression sails through and the
+  # native-provider tests skip on CI (no wheel). This job gates the workspace
+  # AND builds the wheel so the native test files — including the P1 guiding
+  # e2e convergence gate — actually run against the real engine.
   native:
     runs-on: ubuntu-latest
     steps:
@@ -80,4 +81,4 @@ jobs:
         run: |
           pip install -e "./server[dev]"
           pip install --no-index --find-links wheels astrodeck-native
-          cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py -q
+          cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py tests/test_native_guide_surface.py tests/test_native_guider_e2e.py -q

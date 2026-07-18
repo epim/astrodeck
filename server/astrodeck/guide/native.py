@@ -164,9 +164,15 @@ class NativeGuider(Guider):
     async def start_guiding(self) -> None:
         """Select the star, calibrate, and begin guiding; returns once guiding
         is active (calibration complete + the engine in its guiding phase)."""
-        if self._active and self._loop_task is not None and not self._loop_task.done():
-            return
         async with self._start_lock:
+            # Already-active guard INSIDE the lock (milestone review I2): two
+            # idle-state initiators (an API start racing a sequence-engine direct
+            # call) would otherwise both pass an outside guard, serialize on the
+            # lock, and BOTH calibrate — orphaning the first loop task. Checked
+            # here, the second starter sees the first's active loop and returns.
+            if (self._active and self._loop_task is not None
+                    and not self._loop_task.done()):
+                return
             self._lost = False
             self._reacquire = 0
             self._settle_open = False
@@ -309,6 +315,13 @@ class NativeGuider(Guider):
         except Exception as e:  # pragma: no cover - defensive
             bus.log("error", f"native guide loop stopped on error: {e}", "guide")
             self._active = False
+            self._stop.set()
+            # Fail any dither() waiter FAST (milestone review M1): the loop that
+            # drives the settle window is dead, so without this a dither in
+            # flight would hang out its full settle timeout.
+            if not self._settle_done.is_set():
+                self._settle_error = self._settle_error or f"guide loop error: {e}"
+                self._settle_done.set()
             bus.publish("guide", **self.stats().__dict__)
 
     async def _dispatch(self, action: dict) -> None:
@@ -484,22 +497,32 @@ class NativeGuider(Guider):
         """Map the engine's stats dict onto the shared ``GuideStats`` bus shape.
         ``guiding`` reflects BOTH our host intent (``_active`` and not latched
         lost) AND the engine's own phase, so is_active() goes false on a real
-        loss / after stop (the sequence engine's recovery contract)."""
+        loss / after stop (the sequence engine's recovery contract).
+
+        UNITS: the engine reports errors in guide-camera PIXELS (its ``recent``
+        is ``(t, ra_err_px, dec_err_px)``), but the ``GuideStats`` bus contract
+        is ARCSEC (``base.py``'s recent doc; ``phd2.py`` multiplies PHD2's raw
+        px by its pixel scale the same way). Convert every error quantity by
+        ``self._image_scale`` (arcsec/px) — the SAME scale this guider was
+        constructed with (``config["image_scale_arcsec"]``) and handed to the
+        engine as ``image_scale_arcsec``; the sim wiring sources it from
+        ``rig.guide_scale_arcsec_px``. ``snr`` is unitless and passes through."""
         if self._engine is None:
             return GuideStats(guiding=False)
         try:
             s = self._engine.stats()
         except Exception:  # pragma: no cover - defensive
             return self._last_stats
-        recent = [{"t": round(float(t), 3), "ra": round(float(ra), 3),
-                   "dec": round(float(dec), 3)}
+        scale = self._image_scale if self._image_scale > 0 else 1.0
+        recent = [{"t": round(float(t), 3), "ra": round(float(ra) * scale, 3),
+                   "dec": round(float(dec) * scale, 3)}
                   for t, ra, dec in s.get("recent", [])]
         guiding = bool(self._active and not self._lost and s.get("guiding"))
         return GuideStats(
             guiding=guiding,
-            rms_ra=round(float(s.get("rms_ra", 0.0)), 2),
-            rms_dec=round(float(s.get("rms_dec", 0.0)), 2),
-            rms_total=round(float(s.get("rms_total", 0.0)), 2),
+            rms_ra=round(float(s.get("rms_ra", 0.0)) * scale, 2),
+            rms_dec=round(float(s.get("rms_dec", 0.0)) * scale, 2),
+            rms_total=round(float(s.get("rms_total", 0.0)) * scale, 2),
             snr=round(float(s.get("snr", 0.0)), 1),
             recent=recent[-120:],
         )
