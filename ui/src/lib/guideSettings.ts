@@ -30,20 +30,25 @@ export interface GuideAlgorithmOption {
   label: string;
 }
 
-/** RA algorithm pick list (dossier §6/§17; PHD2 `RA_ALGORITHMS`). */
+/** RA algorithm pick list, upstream-verbatim membership + order (PHD2
+ *  `RA_ALGORITHMS`, `mount.cpp:227-230` — includes ResistSwitch on RA). */
 export const RA_GUIDE_ALGORITHMS: readonly GuideAlgorithmOption[] = [
   { value: "hysteresis", label: "Hysteresis (default)" },
   { value: "lowpass", label: "Lowpass" },
   { value: "lowpass2", label: "Lowpass 2" },
-  { value: "z_filter", label: "Z Filter" },
+  { value: "resist_switch", label: "Resist Switch" },
   { value: "ppec", label: "Predictive PEC (Gaussian Process)" },
+  { value: "z_filter", label: "Z Filter" },
 ];
 
-/** Dec algorithm pick list — PPEC is RA-only, see module doc. */
+/** Dec algorithm pick list, upstream-verbatim membership + order (PHD2
+ *  `DEC_ALGORITHMS`, `mount.cpp:231-234` — includes Hysteresis on Dec;
+ *  PPEC is RA-only, see module doc). */
 export const DEC_GUIDE_ALGORITHMS: readonly GuideAlgorithmOption[] = [
-  { value: "resist_switch", label: "Resist Switch (default)" },
+  { value: "hysteresis", label: "Hysteresis" },
   { value: "lowpass", label: "Lowpass" },
   { value: "lowpass2", label: "Lowpass 2" },
+  { value: "resist_switch", label: "Resist Switch (default)" },
   { value: "z_filter", label: "Z Filter" },
 ];
 
