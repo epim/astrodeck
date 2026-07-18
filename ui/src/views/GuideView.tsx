@@ -11,7 +11,8 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
-import { compareRmsWindows, type RmsWindow } from "../lib/rmsCompare";
+import { compareRmsWindows } from "../lib/rmsCompare";
+import { selectGuideWindows } from "../lib/guideRms";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
@@ -139,6 +140,19 @@ type ToastFn = (level: "success" | "info" | "warning" | "error", msg: string) =>
 // ("astrodeck", or "sim" on a sim rig — both run the SAME NativeGuider engine,
 // see providers.py::_resolve_guide) and the PHD2/NINA-family window
 // ("backend") to the pure lib/rmsCompare.ts helper.
+// Friendly labels for the guide-provider override VALUES. The option VOCABULARY
+// itself comes from the server (`status.providers.guide.eligible`) so the
+// dropdown only ever offers what actually applies to the connected rig — the
+// same "only offer what's eligible" rule TasksPanel follows (review I1). A bare
+// "sim" pin is no longer offered (it was a no-op; the server never lists it).
+const GUIDE_PROVIDER_LABELS: Record<string, string> = {
+  auto: "Auto (best available)",
+  astrodeck: "AstroDeck native",
+  backend: "PHD2 / NINA bridge",
+};
+const guideProviderLabel = (value: string): string =>
+  GUIDE_PROVIDER_LABELS[value] ?? (value === "backend" ? "PHD2 / NINA bridge" : value);
+
 function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   const config = useConfig();
   const providers = useProviders();
@@ -184,18 +198,14 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   };
 
   const choice = providers?.guide;
-  const nativeStats = rmsByKind.astrodeck ?? rmsByKind.sim;
-  const phd2Stats = rmsByKind.backend;
-  const nativeWindow: RmsWindow | undefined = nativeStats && {
-    label: nativeStats.providerLabel,
-    rmsTotal: nativeStats.rms_total,
-    samples: nativeStats.recent.length,
-  };
-  const phd2Window: RmsWindow | undefined = phd2Stats && {
-    label: phd2Stats.providerLabel,
-    rmsTotal: phd2Stats.rms_total,
-    samples: phd2Stats.recent.length,
-  };
+  // Options the connected rig actually supports (server-resolved); "auto" is
+  // always present. The stored draft stays listed even if it's momentarily not
+  // eligible (disconnected rig) so it never silently vanishes — TasksPanel's
+  // sticky-option idiom.
+  const eligible = choice?.eligible ?? ["auto"];
+  const options = eligible.includes("auto") ? eligible : ["auto", ...eligible];
+  const draftInList = options.includes(draft);
+  const { native: nativeWindow, backend: phd2Window } = selectGuideWindows(rmsByKind);
   const cmp = compareRmsWindows(nativeWindow, phd2Window);
   const cmpTone =
     cmp.verdict === "insufficient-data" ? "text-dim" : cmp.verdict === "comparable" ? "text-dim" : "text-good";
@@ -212,13 +222,23 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
             onChange={(e) => void persist(e.target.value)}
             aria-label="Guide provider override"
           >
-            <option value="auto">Auto (best available)</option>
-            <option value="astrodeck">AstroDeck native</option>
-            <option value="backend">PHD2 / NINA bridge</option>
-            <option value="sim">Simulator</option>
+            {options.map((v) => (
+              <option key={v} value={v}>
+                {guideProviderLabel(v)}
+              </option>
+            ))}
+            {/* sticky: a stored value not currently eligible (e.g. a
+                disconnected rig) stays listed rather than vanishing */}
+            {!draftInList && (
+              <option value={draft}>{guideProviderLabel(draft)}</option>
+            )}
           </select>
         </label>
         {choice?.reason && <p className="text-[11px] text-dim leading-snug">{choice.reason}</p>}
+        <p className="text-[11px] text-dim leading-snug">
+          A switch takes effect at the next guiding start (it never swaps a
+          running guider).
+        </p>
         {!canConfig && (
           <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
             Read-only — changing the guide provider needs {accessPhrase("config.backend")}.

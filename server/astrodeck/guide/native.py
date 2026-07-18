@@ -124,6 +124,9 @@ class NativeGuider(Guider):
     """
 
     name = "AstroDeck native"
+    #: Native-engine family (see Guider.provider_family): the status badge
+    #: reports this guider as ``astrodeck`` (real rig) or ``sim`` (sim rig).
+    provider_family = "native"
     #: The native engine can flip its calibration for a meridian flip (dossier
     #: §9 item 4) — the meridian-flip path (hub.meridian_flip) calls
     #: ``flip_calibration``; the guiding-START flip is the host contract below.

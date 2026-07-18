@@ -2775,6 +2775,11 @@ def create_app() -> FastAPI:
     async def guide_start():
         if not hub.guider or not hub.guider.connected:
             raise HTTPException(409, "no guider connected")
+        # honor the per-profile guide-provider override at THIS start (never
+        # hot-swaps a running guider; degrades to what's wired) — fix round C1.
+        await hub.select_guide_provider()
+        if not hub.guider or not hub.guider.connected:
+            raise HTTPException(409, "no guider connected")
         return _spawn("guide", hub.guider.start_guiding())
 
     @app.post("/api/guide/stop", dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
@@ -2823,6 +2828,11 @@ def create_app() -> FastAPI:
         if not hub.guider or not hub.guider.connected:
             raise HTTPException(409, "no guider connected")
         await hub.guider.stop_guiding()
+        # honor the guide-provider override for the fresh calibration (guiding is
+        # stopped above, so this may swap the guider) — fix round C1.
+        await hub.select_guide_provider()
+        if not hub.guider or not hub.guider.connected:
+            raise HTTPException(409, "no guider connected")
         clear = getattr(hub.guider, "clear_calibration", None)
         if callable(clear):
             clear()
