@@ -366,19 +366,18 @@ async def test_solver_falls_back_to_get_solver_when_session_has_none(registry):
 
 
 @pytest.mark.asyncio
-async def test_guide_camera_surfaced_from_camera_session(registry):
-    be = FakeBackend("gcbe", ("camera",), guide_cam="GUIDE-CAM")
+@pytest.mark.parametrize("guide_cam, expected", [
+    pytest.param("GUIDE-CAM", "GUIDE-CAM", id="surfaced_from_camera_session"),
+    pytest.param(None, None, id="none_when_backend_has_no_guide_cam"),
+])
+async def test_guide_camera_from_camera_session(registry, guide_cam, expected):
+    be = FakeBackend("gcbe", ("camera",), guide_cam=guide_cam)
     registry(be)
     result = await connect_profile(RigSpec(primary="gcbe"))
-    assert result.guide_camera == "GUIDE-CAM"
-
-
-@pytest.mark.asyncio
-async def test_guide_camera_none_when_backend_has_no_guide_cam(registry):
-    be = FakeBackend("nogc", ("camera",), guide_cam=None)
-    registry(be)
-    result = await connect_profile(RigSpec(primary="nogc"))
-    assert result.guide_camera is None
+    if expected is None:
+        assert result.guide_camera is None
+    else:
+        assert result.guide_camera == expected
 
 
 # ---------------------------------------------- T2(8): teardown on unexpected raise

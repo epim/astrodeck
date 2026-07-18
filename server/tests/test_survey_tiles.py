@@ -72,17 +72,11 @@ def test_offline_miss_404_no_store_no_client(offline, monkeypatch):
     assert r.headers["Cache-Control"] == "no-store"
 
 
-def test_unknown_slug_404(offline):
+def test_unknown_slug_and_range_validation(offline):
     r = offline.get("/api/survey/tile/nope/0/0.jpg")
     assert r.status_code == 404
     assert r.json()["detail"] == "unknown slug"
-
-
-def test_order_out_of_range_422(offline):
     assert offline.get("/api/survey/tile/dss2color/10/0.jpg").status_code == 422
-
-
-def test_npix_out_of_range_422(offline):
     # order 0 has 12 tiles -> npix 12 is out of range
     assert offline.get("/api/survey/tile/dss2color/0/12.jpg").status_code == 422
 
