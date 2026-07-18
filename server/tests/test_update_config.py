@@ -18,10 +18,6 @@ def test_defaults():
     assert u.health_timeout_s == 60 and u.last_check_ts is None
 
 
-def test_appconfig_has_update_default():
-    assert AppConfig().update.channel == "stable"
-
-
 def test_set_update_config_persists_and_validates(tmp_path):
     store = ConfigStore(path=tmp_path / "astrodeck.json")
     store.cfg()

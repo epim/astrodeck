@@ -223,13 +223,17 @@ def _resolve_polar(hub: object, override: str) -> ProviderChoice:
         return ProviderChoice("astrodeck", "AstroDeck native",
                               "override: native TPPA on camera + mount + solver")
 
-    # (2) auto (or an override whose prerequisites were absent).
-    if nina:
-        return ProviderChoice("backend", "NINA",
-                              "NINA bridge present — using its TPPA plugin")
+    # (2) auto (or an override whose prerequisites were absent). The first-party
+    # native engine is PREFERRED over the NINA bridge when it can run: NINA is a
+    # transition bridge, so a mere-present bridge no longer auto-outranks native.
+    # The driver-selection model routes polar align to NINA only when the user
+    # EXPLICITLY selects it (override == "backend"/a NINA driver id, handled above).
     if native_polar:
         return ProviderChoice("astrodeck", "AstroDeck native",
                               "native TPPA (camera + mount + real solver)")
+    if nina:
+        return ProviderChoice("backend", "NINA",
+                              "native prerequisites absent — using the NINA TPPA plugin")
 
     # Polar ALWAYS has a fallback: the built-in simulator (AstroDeck-side, no
     # external backend).

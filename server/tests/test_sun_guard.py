@@ -283,28 +283,25 @@ def test_forced_sequence_still_sun_blocked(tmp_path, monkeypatch):
 
 # ============================================================ config cap gate
 
-def test_toggle_solar_avoidance_requires_cap(tmp_path, monkeypatch):
+@pytest.mark.parametrize("field, value", [
+    pytest.param("solar_avoidance", False, id="toggle_solar_avoidance_requires_cap"),
+    pytest.param("solar_exclusion_deg", 5.0, id="toggle_solar_exclusion_deg_requires_cap"),
+])
+def test_toggle_solar_field_requires_override_cap(tmp_path, monkeypatch, field, value):
     """Toggling solar_avoidance via POST /api/config needs BOTH config.safety AND
-    config.solar_override. A config.safety-only principal is 403; nothing merged."""
+    config.solar_override. A config.safety-only principal is 403; nothing merged.
+
+    Changing the cone half-angle (solar_exclusion_deg) is equally gated on
+    config.solar_override."""
     store, app = _make_client(tmp_path, monkeypatch)
     _install(_principal_with(CAP_VIEW_STATUS, CAP_CONFIG_SAFETY))
     with TestClient(app) as c:
         before = store.cfg().version
         r = c.post("/api/config",
-                   json={"safety": {"solar_avoidance": False}})
+                   json={"safety": {field: value}})
         assert r.status_code == 403, r.text
         assert store.cfg().version == before               # nothing merged
         assert store.cfg().safety.solar_avoidance is True   # still armed
-
-
-def test_toggle_solar_exclusion_deg_requires_cap(tmp_path, monkeypatch):
-    """Changing the cone half-angle is equally gated on config.solar_override."""
-    store, app = _make_client(tmp_path, monkeypatch)
-    _install(_principal_with(CAP_VIEW_STATUS, CAP_CONFIG_SAFETY))
-    with TestClient(app) as c:
-        r = c.post("/api/config",
-                   json={"safety": {"solar_exclusion_deg": 5.0}})
-        assert r.status_code == 403, r.text
 
 
 def test_toggle_solar_avoidance_with_override_cap_succeeds(tmp_path, monkeypatch):

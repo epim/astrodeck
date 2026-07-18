@@ -16,11 +16,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Run in parallel by default (pytest-xdist). The full suite is ~800s serial but
+# ~90s across a multi-core box. Each xdist worker is its own process, so the
+# process-wide hub singleton stays isolated per worker (see conftest's
+# _reset_hub_singleton_locks). For interactive debugging use `-n0` (disables
+# parallelism, restores --pdb / clean -x / live output).
+addopts = "-n auto"
 markers = [
     "selftest: real-I/O end-to-end self-update checks (CI runs on win+linux)",
 ]
