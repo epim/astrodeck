@@ -487,6 +487,15 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
             await self.destination_pier_side(ra, dec)
         except Exception:
             pass
+        # Probe CanPulseGuide ONCE at connect — same rationale as the pier
+        # probe above: the native guider's start-gate (spec §4) checks the
+        # flag before the FIRST pulse, so a lazy first-call probe would leave
+        # it inert. Best-effort: a mount that doesn't support the property (or
+        # any transport error) leaves the flag at its False default.
+        try:
+            self.can_pulse_guide = bool(await self._get("canpulseguide"))
+        except Exception:
+            pass
 
     async def get_position(self) -> tuple[float, float]:
         ra = await self._get("rightascension")
@@ -530,6 +539,18 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         await self._put("pulseguide", Direction=_PULSE_DIRS[direction], Duration=ms)
+
+    async def guide_rates(self) -> tuple[float, float] | None:
+        """Read ``GuideRateRightAscension``/``GuideRateDeclination`` (ASCOM
+        deg/s at 1x guide speed). Mirrors ``pier_side``'s try/except: any
+        driver that doesn't support the properties (or a transport error)
+        yields None, and calibration falls back to advisories (dossier §17)."""
+        try:
+            ra = await self._get("guideraterightascension")
+            dec = await self._get("guideratedeclination")
+            return float(ra), float(dec)
+        except (DeviceError, httpx.HTTPError, OSError):
+            return None
 
     async def pier_side(self) -> PierSide:
         try:
