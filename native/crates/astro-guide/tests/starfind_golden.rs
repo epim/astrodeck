@@ -90,4 +90,146 @@ fn saturated_star_still_found() {
     let r = star_find(&gf, 20.0, 20.0, &p);
     assert!(matches!(r.result, FindResult::StarSaturated));
     assert!(was_found(r.result));
+    // Reviewer check: the HFD must genuinely land inside (min_hfd, max_hfd)
+    // = (1.5, 20.0) so control reaches the saturation branch
+    // (star.cpp:412-446) rather than exiting at an HFD gate.
+    assert!(r.hfd > 1.5 && r.hfd < 20.0, "hfd={}", r.hfd);
+}
+
+#[test]
+fn hot_pixel_single_survivor_hfr_quarter_branch() {
+    // Provenance: hand-trace of star.cpp:229-297 (annulus loop) + :83-124
+    // (hfr single-pixel branch). Fixture: 31x31 checkerboard background
+    // (98 where (x+y) is even, else 102 — a deterministic few-ADU
+    // dispersion so sigma_bg > 0 and thresh > bg, unlike the flat-bg
+    // hot-pixel vector above whose zero-sigma thresh keeps every aperture
+    // pixel), hot pixel 60000 at (15,15). The 3x3-smoothed peak lands on
+    // the hot pixel; the annulus (49 < r^2 <= 144) around it holds 292
+    // pixels: 156 at 98, 136 at 102 (the hot pixel is at r=0, outside it).
+    //   iter0: mean = (156*98 + 136*102)/292 = 29160/292 = 99.86301,
+    //          sigma2 = 3.99492, sigma = 1.99873.
+    //   iter1: clip bounds 99.863 +/- 2*1.99873 = (95.866, 103.860) keep
+    //          both bg values -> identical mean, |dmean| = 0 < 0.5 ->
+    //          converged break.
+    // thresh = (99.86301 + 3*1.99873 + 0.5) as u16 = trunc(106.359) = 106;
+    // both bg values (98, 102) < 106, so ONLY the hot pixel survives the
+    // r <= 7 aperture: hfrvec.len() == 1 -> hfr() == 0.25 (star.cpp:85-86)
+    // -> HFD = 0.5 < min_hfd 1.5 -> StarLowHfd (the computed HFD is kept
+    // in the result on this gate, per star.cpp:396-404).
+    // mass = 60000 - 29160/292 = 59900.137 (exact in f64: integer sum /
+    // count); snr = mass/sqrt(mass/0.5 + 3.99492*1*(1 + 1/292)) = 173.058.
+    let (w, h) = (31usize, 31usize);
+    let mut px: Vec<u16> = (0..w * h)
+        .map(|i| if (i % w + i / w) % 2 == 0 { 98 } else { 102 })
+        .collect();
+    px[15 * w + 15] = 60000;
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let r = star_find(&gf, 15.0, 15.0, &FindParams::default());
+    assert!(
+        matches!(r.result, FindResult::StarLowHfd),
+        "result={:?}",
+        r.result
+    );
+    assert!(!was_found(r.result));
+    // The genuine hfr()==0.25 single-pixel branch: hfd exactly 0.5.
+    assert!((r.hfd - 0.5).abs() < 1e-12, "hfd={}", r.hfd);
+    // Centroid collapsed onto the hot pixel (cx = 0*d): position (15, 15).
+    assert!((r.x - 15.0).abs() < 1e-12, "x={}", r.x);
+    assert!((r.y - 15.0).abs() < 1e-12, "y={}", r.y);
+    let expected_mass = 60000.0 - 29160.0 / 292.0;
+    assert!((r.mass - expected_mass).abs() < 1e-9, "mass={}", r.mass);
+    assert!((r.snr - 173.058).abs() < 1e-3, "snr={}", r.snr);
+    assert_eq!(r.peak_val, 60000);
+}
+
+#[test]
+fn annulus_outliers_clipped_then_converges() {
+    // Provenance: hand-trace of star.cpp:248-297 (the 9-iteration 2-sigma
+    // clip: outlier rejection at iter > 0 AND the |dmean| < 0.5 convergence
+    // break). Fixture: 41x41, flat bg 100, Gaussian star amp 4000 sigma 1.6
+    // centered exactly at (20,20) (its tail adds < 0.28 ADU at r >= 7, so
+    // every non-outlier annulus pixel truncates to exactly 100), plus 4
+    // outlier pixels = 3000 injected INTO the annulus at r=9:
+    // (29,20),(11,20),(20,29),(20,11). Annulus (49 < r^2 <= 144) around
+    // the peak (20,20) holds 292 pixels: 288 at 100, 4 at 3000.
+    //   iter0: mean = (288*100 + 4*3000)/292 = 40800/292 = 139.726,
+    //          sigma = 337.67 -> clip bounds (-535.6, 815.1).
+    //   iter1: the 4 outliers (3000) fall outside the bounds -> rejected;
+    //          nbg = 288, mean = 100 exactly, sigma = 0;
+    //          |dmean| = 39.726 >= 0.5 -> NO convergence break yet.
+    //   iter2: bounds 100 +/- 0 keep exactly the 288 pixels at 100 ->
+    //          mean = 100, |dmean| = 0 < 0.5 -> converged break.
+    // Final: mean_bg = 100, sigma2_bg = 0, nbg = 288.
+    // thresh = (100 + 0 + 0.5) as u16 = 100, so every pixel of the r <= 7
+    // disk (149 px) survives (star.cpp:344-345 skips only val < thresh;
+    // bg pixels contribute d = 0) and mass = sum(val - 100) over the disk
+    // = 64252 (reference value; asserted below against an independent sum
+    // over the fixture buffer to stay exact under libm exp() ULP
+    // variation). With sigma2_bg = 0 the Simonetti SNR reduces exactly to
+    // snr = mass/sqrt(mass/0.5) = sqrt(mass/2) = 179.237. The outliers sit
+    // outside the disk, so they affect neither mass nor max3
+    // (3000 < the star's 3390 edge-neighbors): max3 = [4100, 3390, 3390],
+    // d = 710, d*65535 >= 32*4100 -> not saturated -> StarOk.
+    let (w, h) = (41usize, 41usize);
+    let mut px = gaussian_frame(w, h, 100, 20.0, 20.0, 4000.0, 1.6);
+    for &(ox, oy) in &[(29usize, 20usize), (11, 20), (20, 29), (20, 11)] {
+        px[oy * w + ox] = 3000;
+    }
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let r = star_find(&gf, 20.0, 20.0, &FindParams::default());
+    assert!(
+        matches!(r.result, FindResult::StarOk),
+        "result={:?}",
+        r.result
+    );
+    // Independent expected mass: sum(val - 100) over the r <= 7 disk of
+    // the fixture buffer (valid because the traced thresh is exactly 100).
+    let mut expected_mass = 0.0f64;
+    for y in 0..h {
+        for x in 0..w {
+            let (dx, dy) = (x as i32 - 20, y as i32 - 20);
+            if dx * dx + dy * dy <= 49 {
+                expected_mass += (px[y * w + x] - 100) as f64;
+            }
+        }
+    }
+    assert!((expected_mass - 64252.0).abs() < 4.0, "{}", expected_mass);
+    assert!((r.mass - expected_mass).abs() < 1e-9, "mass={}", r.mass);
+    let expected_snr = (expected_mass / 2.0).sqrt();
+    assert!((r.snr - expected_snr).abs() < 1e-6, "snr={}", r.snr);
+    // Symmetric star, integer-valued pixels: centroid is exactly (20, 20).
+    assert!((r.x - 20.0).abs() < 1e-9, "x={}", r.x);
+    assert!((r.y - 20.0).abs() < 1e-9, "y={}", r.y);
+    assert!(r.hfd > 3.0 && r.hfd < 4.5, "hfd={}", r.hfd);
+}
+
+#[test]
+fn default_flat_top_heuristic_saturated() {
+    // Provenance: dossier §1.3 step 10 / star.cpp:430-446 — the flat-top
+    // saturation heuristic on the SHIPPED default path (max_adu == 0,
+    // bits_per_pixel == 16), which the explicit-max_adu vector above never
+    // reaches. Fixture: Gaussian amp 50000 sigma 2.0 at (20,20) (center px
+    // 50100 — no clipping), then a NEAR-equal flat top stamped on:
+    // (20,20) = 60000 and its 4-neighborhood = 59998 (diagonals stay at
+    // the Gaussian's 39040, so the top-3 raw values are 60000, 59998,
+    // 59998). Trace: max3 = [60000, 59998, 59998] -> d = max3[0] - max3[2]
+    // = 2; mx = 60000 - pedestal(0) = 60000. 16-bit branch (bpp 16 >= 12):
+    // d*65535 = 131070 < 32*mx = 1920000 -> StarSaturated (still "found").
+    let (w, h) = (41usize, 41usize);
+    let mut px = gaussian_frame(w, h, 100, 20.0, 20.0, 50000.0, 2.0);
+    px[20 * w + 20] = 60000;
+    for &(ox, oy) in &[(19usize, 20usize), (21, 20), (20, 19), (20, 21)] {
+        px[oy * w + ox] = 59998;
+    }
+    let gf = astro_star::GrayFrame::new(&px, w, h);
+    let r = star_find(&gf, 20.0, 20.0, &FindParams::default());
+    assert!(
+        matches!(r.result, FindResult::StarSaturated),
+        "result={:?}",
+        r.result
+    );
+    assert!(was_found(r.result));
+    assert_eq!(r.peak_val, 60000);
+    // Control reached step 10: HFD passed both gates on the way.
+    assert!(r.hfd > 1.5 && r.hfd < 20.0, "hfd={}", r.hfd);
 }
