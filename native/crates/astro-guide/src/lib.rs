@@ -13,4 +13,5 @@
 //! durations are in milliseconds, and axis rates are in pixels per
 //! millisecond unless a function's doc comment states otherwise.
 
+pub mod starfind;
 pub mod types;
