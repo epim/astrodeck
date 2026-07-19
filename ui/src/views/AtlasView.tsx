@@ -592,7 +592,10 @@ export default function AtlasView(): JSX.Element {
           </p>
         </div>
         <CatalogSearch onPick={pickSearchTarget} />
-        <div className="flex-1" />
+        {/* right-align the optics fields on desktop only; on phone this spacer
+            would force each field onto its own full-width row (they read as huge
+            stacked boxes) — let them pack tightly instead. */}
+        <div className="hidden lg:block flex-1" />
         {/* inline focal-length field — self-contained optics (spec §6 C1-B1) */}
         <label className="flex flex-col gap-1">
           <span className="label">Focal length</span>
@@ -785,8 +788,12 @@ export default function AtlasView(): JSX.Element {
 
       {/* -------------------------------------------- desktop split / phone stack */}
       <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
-        {/* canvas — pinned at top on phone (first in DOM, sticky there) */}
-        <div className="lg:static sticky top-0 z-10 bg-bg/0">
+        {/* canvas — scrolls inline with the page on phone; on desktop it sits in
+            the left grid column. (Was `sticky top-0 z-10 bg-bg/0` on phone, which
+            pinned the map and let the planner controls scroll *behind* the
+            transparent map — they vanished. Normal in-flow scroll is what users
+            expect; a proper pinned-map affordance can be designed later.) */}
+        <div className="min-w-0">
           <SkyCanvas
             center={center}
             rotationDeg={rotation_deg}
