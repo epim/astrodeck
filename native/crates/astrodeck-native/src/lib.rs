@@ -1465,8 +1465,9 @@ impl GuideEngine {
 
     /// Dump the RA algorithm's trained GP window (A5, dossier §6.8.6) for
     /// cross-session persistence: a list of `[timestamp, measurement,
-    /// variance, control]` rows (empty for a non-PPEC RA algorithm or an
-    /// untrained model). Serializable beside the calibration.
+    /// variance, control]` rows — completed measurements only, the trailing
+    /// pending point excluded (amended spec §3-A5). Empty for a non-PPEC RA
+    /// algorithm or an untrained model. Serializable beside the calibration.
     fn dump_gp_window<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let out = PyList::empty_bound(py);
         for (t, m, v, c) in self.inner.dump_gp_window() {
@@ -1476,12 +1477,15 @@ impl GuideEngine {
     }
 
     /// Restore a persisted GP window (from `dump_gp_window`) into the RA
-    /// algorithm, applying `GuidingStarted` retention (keep the newest
-    /// `retain_pct`% of one period; A5, dossier §6.8.6). No-op for a non-PPEC
-    /// RA algorithm.
-    #[pyo3(signature = (points, retain_pct=40.0))]
-    fn restore_gp_window(&mut self, points: Vec<(f64, f64, f64, f64)>, retain_pct: f64) {
-        self.inner.restore_gp_window(&points, retain_pct);
+    /// algorithm, applying the upstream `GuidingStarted` retain-or-reset gate
+    /// (A5, amended spec §3-A5; dossier §6.8.6): the ENTIRE window is
+    /// restored — its gear clock advanced by `downtime_s`, the wall seconds
+    /// between dump and restore — iff the downtime is within
+    /// `retain_max_pct_period`% (default 40) of one period; otherwise the
+    /// model stays fresh. Returns True iff restored (False for a non-PPEC RA
+    /// algorithm, a too-long or negative downtime, or a < 2-point window).
+    fn restore_gp_window(&mut self, points: Vec<(f64, f64, f64, f64)>, downtime_s: f64) -> bool {
+        self.inner.restore_gp_window(&points, downtime_s)
     }
 }
 

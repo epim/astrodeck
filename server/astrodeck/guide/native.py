@@ -108,10 +108,6 @@ _SETTLE_TIMEOUT_S = 90.0
 # never really scope-anchored.
 _UNKNOWN_DECLINATION = 997.0
 
-# A5 (P4-T1 ruling B; dossier §6.8.6): retain the newest 40% of one period of
-# the trained PPEC gear-time model across a stop/start, per profile.
-_GP_RETAIN_PCT_PERIOD = 40.0
-
 
 def guide_algo_config() -> dict:
     """The persisted per-axis guide-algorithm selection (``AppConfig.guide``)
@@ -842,8 +838,11 @@ class NativeGuider(Guider):
     def _persist_gp_window(self) -> None:
         """Persist the trained PPEC gear-time model to
         ``CONFIG_DIR/guider/<profile>-gp.json`` on guiding stop (A5, dossier
-        §6.8.6). Best-effort; nothing to save for a non-PPEC RA algorithm or an
-        untrained model (dump returns empty / seed-only)."""
+        §6.8.6) as ``{"dumped_at": <wall epoch s>, "window": [[t, m, v, c],
+        ...]}`` — ``dumped_at`` feeds the restore-side retain-or-reset
+        downtime gate (amended spec §3-A5). Best-effort; nothing to save for a
+        non-PPEC RA algorithm or an untrained model (the dump — completed
+        measurements only, no pending row — is empty or a single point)."""
         if not self.profile_id or self._engine is None:
             return
         try:
@@ -854,7 +853,8 @@ class NativeGuider(Guider):
             d = CONFIG_DIR / "guider"
             d.mkdir(parents=True, exist_ok=True)
             (d / f"{self.profile_id}-gp.json").write_text(
-                json.dumps(window), encoding="utf-8")
+                json.dumps({"dumped_at": time.time(), "window": window}),
+                encoding="utf-8")
             bus.log("info",
                     f"native guider: saved PPEC model for profile "
                     f"{self.profile_id}", "guide")
@@ -862,12 +862,13 @@ class NativeGuider(Guider):
             bus.log("warning",
                     f"native guider: could not persist PPEC model: {e}", "guide")
 
-    def _load_gp_window(self) -> list | None:
+    def _load_gp_window(self) -> tuple[float, list] | None:
         """Read this profile's persisted GP window
-        (``CONFIG_DIR/guider/<profile>-gp.json``) as a list of
-        ``(t, measurement, variance, control)`` tuples, or None when absent /
-        corrupt. Never raises — a corrupt file logs and yields None (fresh
-        model), mirroring the calibration-persistence hardening."""
+        (``CONFIG_DIR/guider/<profile>-gp.json``) as ``(dumped_at, points)``
+        where ``points`` is a list of ``(t, measurement, variance, control)``
+        tuples, or None when absent / corrupt. Never raises — a corrupt file
+        logs and yields None (fresh model), mirroring the
+        calibration-persistence hardening."""
         if not self.profile_id:
             return None
         try:
@@ -876,14 +877,17 @@ class NativeGuider(Guider):
             if not p.exists():
                 return None
             data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
+            if not isinstance(data, dict) or not isinstance(
+                    data.get("window"), list):
                 bus.log("warning",
                         f"native guider: persisted GP window for profile "
-                        f"{self.profile_id} is not a JSON array; ignoring",
+                        f"{self.profile_id} has an unexpected shape; ignoring",
                         "guide")
                 return None
-            return [(float(t), float(m), float(v), float(c))
-                    for t, m, v, c in data]
+            dumped_at = float(data["dumped_at"])
+            points = [(float(t), float(m), float(v), float(c))
+                      for t, m, v, c in data["window"]]
+            return dumped_at, points
         except Exception as e:  # pragma: no cover - defensive
             bus.log("warning",
                     f"native guider: could not read persisted GP window "
@@ -892,18 +896,33 @@ class NativeGuider(Guider):
 
     def _restore_gp_window(self) -> None:
         """Restore the persisted PPEC model into the live engine on the
-        calibration-reuse path (A5). No-op for a non-PPEC RA algorithm or when
-        there is no persisted window."""
+        calibration-reuse path (A5). The engine applies the upstream
+        retain-or-reset gate (amended spec §3-A5; ``GuidingStarted``,
+        dossier §6.8.6): the ENTIRE window is restored — re-phased by the
+        downtime since the dump — only when that downtime is within
+        ``GpParams::retain_max_pct_period`` (40%) of one period (the threshold
+        lives in the Rust engine; this side passes only the downtime).
+        Otherwise the model starts fresh (logged). No-op for a non-PPEC RA
+        algorithm or when there is no persisted window."""
         if not self.profile_id or self._engine is None:
             return
-        points = self._load_gp_window()
-        if not points:
+        loaded = self._load_gp_window()
+        if not loaded:
             return
+        dumped_at, points = loaded
+        downtime_s = time.time() - dumped_at
         try:
-            self._engine.restore_gp_window(points, _GP_RETAIN_PCT_PERIOD)
-            bus.log("info",
-                    f"native guider: restored PPEC model for profile "
-                    f"{self.profile_id}", "guide")
+            if self._engine.restore_gp_window(points, downtime_s):
+                bus.log("info",
+                        f"native guider: restored PPEC model for profile "
+                        f"{self.profile_id} (downtime {downtime_s:.0f}s)",
+                        "guide")
+            else:
+                bus.log("info",
+                        f"native guider: PPEC model for profile "
+                        f"{self.profile_id} not restored (downtime "
+                        f"{downtime_s:.0f}s outside the retention window); "
+                        f"starting fresh", "guide")
         except Exception as e:  # pragma: no cover - defensive
             bus.log("warning",
                     f"native guider: could not restore PPEC model ({e}); "
