@@ -17,6 +17,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
+# Bundled Windows COM->Alpaca host (astrodeck.comhost). comtypes is Windows-only
+# (marker-gated) so Mac/Linux installs never pull it; the Windows bundle installs
+# `.[comhost]`. Absent comtypes -> the host/registry modules degrade (import
+# guards) and ascom-local is simply not offered.
+comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
