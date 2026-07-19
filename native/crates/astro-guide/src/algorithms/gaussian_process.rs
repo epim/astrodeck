@@ -590,8 +590,9 @@ impl GaussianProcessGuider {
     /// retain-or-reset GATE (A5 fix round, amended spec §3-A5; upstream
     /// GuidingStarted, guide_algorithm_gaussian_process.cpp:1017-1087, dossier
     /// §6.8.6): when `downtime_s` — the wall-clock seconds between dump and
-    /// restore — is within `retain_max_pct_period`% (default 40,
-    /// `noreset_max_pct_period`) of one period, the ENTIRE window is restored
+    /// restore — is STRICTLY below `retain_max_pct_period`% (default 40,
+    /// `noreset_max_pct_period`) of one period (upstream's strict `<`, `:1062`
+    /// — exactly the threshold resets), the ENTIRE window is restored
     /// and gear-time continuity advances by the downtime through the
     /// GuidingDithered-style offset (`:427-434` — the same machinery upstream's
     /// retention path uses to re-phase the kept model by the stopped time).
@@ -620,7 +621,11 @@ impl GaussianProcessGuider {
             return false;
         }
         let horizon = (self.params.retain_max_pct_period / 100.0).max(0.0) * self.period_length();
-        if !(0.0..=horizon).contains(&downtime_s) {
+        // Upstream's comparison is STRICT `<` (guide_algorithm_gaussian_process
+        // .cpp:1062, dossier §6.8.6): exactly the threshold RESETS. The lower
+        // bound (negative downtime -> reset) is the on-disk adaptation's own
+        // clock-trust guard.
+        if !(0.0..horizon).contains(&downtime_s) {
             return false;
         }
         let t_max = points.last().map(|p| p.0).unwrap_or(0.0);
@@ -906,10 +911,12 @@ mod tests {
     /// A5 fix round (amended spec §3-A5; upstream GuidingStarted
     /// guide_algorithm_gaussian_process.cpp:1017-1087, dossier §6.8.6):
     /// retention is upstream's BINARY retain-or-reset gate on the downtime,
-    /// NOT a trim. downtime <= `retain_max_pct_period`% (default 40) of one
-    /// period -> the ENTIRE window is kept; beyond -> nothing is restored
-    /// (fresh model). A negative downtime (host clock stepped backwards
-    /// between the sessions) is untrustworthy -> fresh model too.
+    /// NOT a trim. downtime < `retain_max_pct_period`% (default 40) of one
+    /// period -> the ENTIRE window is kept; at or beyond the threshold ->
+    /// nothing is restored (fresh model) — upstream's comparison is STRICT
+    /// `<` (`:1062`), so exactly the threshold resets. A negative downtime
+    /// (host clock stepped backwards between the sessions) is untrustworthy
+    /// -> fresh model too.
     #[test]
     fn restore_gate_retains_all_or_resets_on_downtime() {
         let mut gp = GaussianProcessGuider::new(GpParams::default());
@@ -921,19 +928,22 @@ mod tests {
         // Threshold: 40% of P=200 s = 80 s (GpParams::retain_max_pct_period —
         // the single source; restore_window takes no percentage argument).
         let mut within = GaussianProcessGuider::new(GpParams::default());
-        assert!(within.restore_window(&dumped, 80.0), "at-threshold retains");
+        assert!(
+            within.restore_window(&dumped, 80.0 - 1e-9),
+            "below-threshold retains"
+        );
         assert_eq!(
             within.buffer.len(),
             dumped.len() + 1,
             "ENTIRE window kept (no trim) + fresh pending"
         );
 
-        let mut beyond = GaussianProcessGuider::new(GpParams::default());
+        let mut at = GaussianProcessGuider::new(GpParams::default());
         assert!(
-            !beyond.restore_window(&dumped, 80.0 + 1e-9),
-            "past-threshold resets"
+            !at.restore_window(&dumped, 80.0),
+            "AT-threshold resets (upstream strict <, :1062)"
         );
-        assert_eq!(beyond.buffer.len(), 1, "fresh model (seed only)");
+        assert_eq!(at.buffer.len(), 1, "fresh model (seed only)");
 
         let mut backwards = GaussianProcessGuider::new(GpParams::default());
         assert!(
