@@ -227,3 +227,10 @@ def serve(port: int = 0, portfile: "str | None" = None, *,
                          daemon=True)
     t.start()
     return httpd
+
+
+# Register the device-type method tables (COM-T3+): importing each module runs
+# its register() into DEVICE_API. Kept at module end to avoid an import cycle
+# (handlers import DEVICE_API from here).
+from . import handlers_telescope as _ht  # noqa: E402,F401
+from . import handlers_camera as _hc  # noqa: E402,F401
