@@ -96,7 +96,7 @@ export default function HeaderControls() {
           aria-expanded={dimOpen}
           onClick={() => setDimOpen((o) => !o)}
         >
-          <Icon name="sun" size={16} />
+          <Icon name="brightness" size={16} />
         </button>
         {dimOpen && (
           <div
