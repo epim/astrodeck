@@ -440,7 +440,14 @@ class NativeGuider(Guider):
                         self._lost = True
                         self._active = False
                         self._stop.set()
-                        bus.publish("guide", **self.stats().__dict__)
+                        # Refresh the cached snapshot before publishing, like
+                        # every other loop exit (the star-lost fatal path falls
+                        # through to the loop bottom's `_last_stats = stats()`)
+                        # — so stats()'s defensive cached-fallback can never
+                        # hand a caller a stale guiding=True from before this
+                        # death (a-t2-review Minor).
+                        self._last_stats = self.stats()
+                        bus.publish("guide", **self._last_stats.__dict__)
                         break
                     bus.log("warning",
                             f"native guider: lost frame to camera fault "
