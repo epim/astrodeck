@@ -74,6 +74,7 @@ _RENDER_EXP_S = 0.1        # real exposure — only sizes the rendered star flux
 _LEARN_FRAMES = 100        # 500 engine-s > 400 s blend/FFT threshold (~2.5 P)
 _MEASURE_FRAMES = 50       # ~1.25 periods of post-learning window
 _VT_BASE = 1000.0          # virtual-clock start (identical phase per arm)
+_MAX_DITHER_SETTLE = 20    # frames (~100 engine-s) for the dither to settle out
 
 
 class _VirtualClock:
@@ -257,3 +258,99 @@ def test_native_config_rejects_dec_ppec():
     assert cfg["dec_algorithm"] == "ppec"
     with pytest.raises(ValueError):
         native.GuideEngine(cfg)
+
+
+async def _guide_arm_with_dither(cal: dict, clock, dither_at: int) -> float:
+    """Guide a PPEC arm that DITHERS mid-run, returning the post-dither RA RMS
+    (px) over the measurement window. Proves A2: the model SURVIVES the dither
+    (RA=PPEC is not reset), so post-dither RMS still beats the reactive arm."""
+    import astrodeck_native as native
+    from astrodeck.devices.sim import build_sim_rig
+    from astrodeck.guide.native import NativeGuider
+
+    clock.vt = _VT_BASE
+    rig = build_sim_rig()
+    r = rig["_rig"]
+    cam, tel = rig["guide_camera"], rig["telescope"]
+    r.guide_scale_arcsec_px = _GUIDE_SCALE
+    r.guide_pe_amplitude_px = _PE_AMPLITUDE_PX
+    r.guide_pe_period_s = _PE_PERIOD_S
+    r.guide_seeing_px = _SEEING_PX
+    r.guide_drift_px_s = 0.0
+    await cam.connect()
+    await tel.connect()
+
+    guider = NativeGuider(cam, tel, config={
+        "ra_algorithm": "ppec", "image_scale_arcsec": _GUIDE_SCALE,
+        "exposure_s": _RENDER_EXP_S}, profile_id=None)
+    rates = await tel.guide_rates()
+    eng = native.GuideEngine(guider._build_engine_config(rates))
+    eng.load_calibration({k: v for k, v in cal.items()
+                          if k != "image_scale_arcsec"})
+    eng.begin_guiding()
+
+    errs: list[float] = []
+    dithered = False
+    window_start = _LEARN_FRAMES + _MAX_DITHER_SETTLE
+    for i in range(_LEARN_FRAMES + _MAX_DITHER_SETTLE + _MEASURE_FRAMES):
+        clock.vt += _LOGICAL_DT_S
+        frame = await cam.expose(_RENDER_EXP_S, 100, 30, binning=1)
+        if i == dither_at and not dithered:
+            pre = eng.dump_gp_window() if hasattr(eng, "dump_gp_window") else None
+            eng.dither(3.0, 0.0)  # RA-axis dither; PPEC must NOT reset
+            dithered = True
+        a = eng.process(frame.data, frame.timestamp, _LOGICAL_DT_S)
+        k = a["action"]
+        if k == "pulse":
+            await tel.pulse_guide(a["dir"], int(a["ms"]))
+        elif k == "pulse_pair":
+            if a.get("ra"):
+                await tel.pulse_guide(a["ra"]["dir"], int(a["ra"]["ms"]))
+            if a.get("dec"):
+                await tel.pulse_guide(a["dec"]["dir"], int(a["dec"]["ms"]))
+        rec = eng.stats().get("recent", [])
+        if rec and i >= window_start:
+            errs.append(float(rec[-1][1]))
+    assert not eng.stats()["settling"], "settle window closed before the window"
+    assert errs, "no post-dither measurement frames recorded"
+    return math.sqrt(sum(e * e for e in errs) / len(errs))
+
+
+@pytest.mark.asyncio
+async def test_ppec_survives_mid_run_dither(monkeypatch):
+    """A2 GATE third arm (spec §3 A2 / §5): PPEC dithered mid-run recovers to
+    beat reactive Hysteresis on the SAME injected PE — proving the model was
+    compensated, not reset. Deterministic (virtual clock); <= ~40 s added."""
+    import astrodeck.devices.sim as simmod
+    from astrodeck.devices.sim import build_sim_rig
+
+    clock = _VirtualClock()
+    monkeypatch.setattr(simmod, "time", clock)
+
+    # Shared quiet-sky calibration (PE off), reused by both arms.
+    clock.vt = _VT_BASE
+    rig = build_sim_rig()
+    r = rig["_rig"]
+    cam, tel = rig["guide_camera"], rig["telescope"]
+    r.guide_scale_arcsec_px = _GUIDE_SCALE
+    r.guide_pe_amplitude_px = 0.0
+    r.guide_seeing_px = 0.05
+    r.guide_drift_px_s = 0.0
+    await cam.connect()
+    await tel.connect()
+    cal = await _calibrate(
+        cam, tel,
+        {"image_scale_arcsec": _GUIDE_SCALE, "exposure_s": _RENDER_EXP_S,
+         "ra_algorithm": "ppec"},
+        clock,
+    )
+
+    hyst_rms = await _guide_arm("hysteresis", cal, clock)
+    ppec_dither_rms = await _guide_arm_with_dither(cal, clock,
+                                                   dither_at=_LEARN_FRAMES // 2)
+
+    assert ppec_dither_rms < 0.8 * hyst_rms, (
+        f"post-dither PPEC must still beat hysteresis (model survived the "
+        f"dither): ppec={ppec_dither_rms:.4f}px hyst={hyst_rms:.4f}px "
+        f"ratio={ppec_dither_rms / hyst_rms:.3f}")
+    assert ppec_dither_rms < 1.5, f"ppec arm did not reconverge: {ppec_dither_rms:.4f}px"
