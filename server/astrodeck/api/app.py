@@ -1138,6 +1138,19 @@ def create_app() -> FastAPI:
             # lives in AlpacaScanError; surface only that.
             raise HTTPException(502, str(e))
 
+    @app.get("/api/discover/ascom-local",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def discover_ascom_local():
+        """The native ASCOM scan (spec §3.2): registry-enumerated COM drivers
+        per type, role-tagged, each carrying dev_type + dev_num addressing so
+        the assignment UI can pick one with no host/port/ProgID typing. Empty
+        off Windows (winreg absent) — the panel then shows no ascom-local
+        devices and the UI degrades cleanly. No COM is instantiated here; this
+        is a pure registry read."""
+        from ..devices import ascom_registry
+        return await asyncio.to_thread(ascom_registry.enumerate_offers)
+
     @app.get("/api/backends", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def backends():
