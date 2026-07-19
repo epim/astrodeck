@@ -48,14 +48,26 @@ that task to stop it.
 
 Your scope's devices (`ASCOM.ASIMount`, `ASCOM.EAF` focuser, Wanderer Snowflake
 filter wheel, `ASCOM.ASICAA` rotator, ZWO/Player One cameras) are **COM** drivers,
-which the native (Alpaca) backend can't talk to directly. Two ways to bridge:
+which the native (Alpaca) backend can't talk to directly. Three ways to bridge:
 
-1. **Native Alpaca drivers** (cleanest where available): ZWO and Player One ship
-   Alpaca drivers for some products. Install those and they appear as Alpaca
+1. **`ascom-local` — the bundled COM host (recommended; the single-install path).**
+   AstroDeck now ships its own COM→Alpaca bridge, so native COM connectivity works
+   from **one install** — no separate bridge process to install or run. On the
+   Equipment tab pick the **ASCOM (local)** device per role and Connect Rig; the
+   server spawns a loopback-only, ephemeral-port COM host on demand and drives your
+   COM drivers through the existing Alpaca client. Windows-only; install the server
+   with `pip install -e "server/.[comhost]"`. Full operator/developer guide,
+   lifecycle, troubleshooting, and the astrotown migration + on-ASCOM-box validation
+   checklist: **[docs/comhost.md](../comhost.md)**.
+2. **Native Alpaca drivers** (cleanest where a vendor ships one): ZWO and Player One
+   ship Alpaca drivers for some products. Install those and they appear as Alpaca
    devices directly — no bridge.
-2. **ASCOM Remote Server** (the general COM→Alpaca bridge): install it, add each
-   COM driver as an Alpaca device (each gets a `dev_num`), and it serves Alpaca on
-   a port (default `11111`). Point AstroDeck's native profile at `127.0.0.1:11111`.
+3. **ASCOM Remote Server** (the general COM→Alpaca bridge; now superseded by
+   `ascom-local` for single-install use): install it, add each COM driver as an
+   Alpaca device (each gets a `dev_num`), and it serves Alpaca on a port (default
+   `11111`). Point AstroDeck's native profile at `127.0.0.1:11111`. On astrotown
+   this is the outgoing path — keep it until `ascom-local` is validated on the real
+   rig (docs/comhost.md checklist), then retire it.
 
 ### ⚠️ The single-client caveat (retiring NINA)
 
