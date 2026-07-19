@@ -111,3 +111,66 @@ async def test_filterwheel_change_through_comhost(host_port):
     finally:
         await fw.disconnect()
         await conn.close()
+
+
+# --------------------------------------------------------------------------
+# COM-T5 gates: CoverCalibrator + Dome + ObservingConditions through the real
+# ASCOM Simulator drivers. No AstroDeck ABC/client class exists for these yet
+# (host-side only this wave — a later flats/dome/weather wave adds the client),
+# so each gate drives the raw Alpaca surface directly via AlpacaConnection.
+# Each is independently skip-guarded on ITS OWN simulator so a box missing one
+# aux type still runs the rest.
+# --------------------------------------------------------------------------
+_CC = "ASCOM.Simulator.CoverCalibrator"
+_DOME = "ASCOM.Simulator.Dome"
+_OC = "ASCOM.Simulator.ObservingConditions"
+
+
+@pytest.mark.skipif(not _sim_present("covercalibrator", _CC),
+                    reason="ASCOM Simulator CoverCalibrator not registered")
+@pytest.mark.asyncio
+async def test_covercalibrator_read_through_comhost(host_port):
+    # No AstroDeck client class yet -> drive the raw Alpaca surface directly.
+    from astrodeck.devices.alpaca import AlpacaConnection
+    conn = AlpacaConnection("127.0.0.1", host_port)
+    try:
+        await conn.put("covercalibrator", _dev_num("covercalibrator", _CC),
+                       "connected", Connected=True)
+        state = await conn.get("covercalibrator",
+                               _dev_num("covercalibrator", _CC), "coverstate")
+        assert isinstance(state, int)
+    finally:
+        await conn.close()
+
+
+@pytest.mark.skipif(not _sim_present("dome", _DOME),
+                    reason="ASCOM Simulator Dome not registered")
+@pytest.mark.asyncio
+async def test_dome_read_through_comhost(host_port):
+    # No AstroDeck client class yet -> drive the raw Alpaca surface directly.
+    from astrodeck.devices.alpaca import AlpacaConnection
+    conn = AlpacaConnection("127.0.0.1", host_port)
+    try:
+        await conn.put("dome", _dev_num("dome", _DOME),
+                       "connected", Connected=True)
+        az = await conn.get("dome", _dev_num("dome", _DOME), "azimuth")
+        assert isinstance(az, (int, float))
+    finally:
+        await conn.close()
+
+
+@pytest.mark.skipif(not _sim_present("observingconditions", _OC),
+                    reason="ASCOM Simulator ObservingConditions not registered")
+@pytest.mark.asyncio
+async def test_observingconditions_read_through_comhost(host_port):
+    # No AstroDeck client class yet -> drive the raw Alpaca surface directly.
+    from astrodeck.devices.alpaca import AlpacaConnection
+    conn = AlpacaConnection("127.0.0.1", host_port)
+    try:
+        await conn.put("observingconditions", _dev_num("observingconditions", _OC),
+                       "connected", Connected=True)
+        temp = await conn.get("observingconditions",
+                              _dev_num("observingconditions", _OC), "temperature")
+        assert isinstance(temp, (int, float))
+    finally:
+        await conn.close()
