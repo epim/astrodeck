@@ -52,6 +52,19 @@ pub trait GuideAlgorithm: Send {
         self.result(input)
     }
 
+    /// Notify a predictive algorithm of a dither so it compensates the
+    /// gear-time gap IN PLACE (keeping its trained model) instead of being
+    /// reset (A2; P4-T1 rulings A+C). `ra_amt_px` is the RA dither magnitude
+    /// (px); `ra_rate` is the calibration-derived RA rate the engine holds.
+    /// Returns `true` if the algorithm handled it and the engine must SKIP
+    /// its `reset()`. Defaulted `false` (no-op) for every reactive algorithm;
+    /// only the Gaussian-process predictor overrides it (upstream
+    /// `GuidingDithered`, gaussian_process_guider.cpp:427-434, dossier §6.8.6).
+    fn dither_notify(&mut self, ra_amt_px: f64, ra_rate: f64) -> bool {
+        let _ = (ra_amt_px, ra_rate);
+        false
+    }
+
     /// Clear all history (dossier §6 intro: guiding stopped, guiding
     /// resumed after a full pause, dither, guiding re-enabled).
     fn reset(&mut self);
