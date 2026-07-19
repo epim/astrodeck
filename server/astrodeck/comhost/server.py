@@ -67,6 +67,19 @@ class ComHost:
         with self._lock:
             self._devices.pop((dev_type, dev_num), None)
 
+    def _evict(self, dev_type: str, dev_num: int) -> None:
+        """Fault-evict a wedged device (COM-T6 obligation 1): pop its slot and
+        abandon its (blocked) STA thread. The next _get_or_create reconstructs a
+        fresh ComDevice on a fresh thread, so a single timeout does not brick the
+        device for the host's lifetime. Best-effort — abandon() never raises."""
+        with self._lock:
+            dev = self._devices.pop((dev_type, dev_num), None)
+        if dev is not None:
+            try:
+                dev.abandon()
+            except Exception:  # pragma: no cover - abandon is already best-effort
+                pass
+
     def close(self) -> None:
         with self._lock:
             devs = list(self._devices.values())
@@ -84,18 +97,23 @@ class ComHost:
         try:
             value = self._dispatch(verb, dev_type, dev_num, method, params)
             return 200, self._ok(value, ctid), "application/json"
-        except (ComTimeoutError, KeyError) as e:
-            # Timeout / unknown route -> HTTP 500 so the client's _unwrap raises
-            # DeviceError immediately (fast, honest failure; spec §4).
-            return 500, {"Value": None, "ErrorNumber": _ALPACA_DRIVER_ERROR,
-                         "ErrorMessage": str(e),
-                         "ClientTransactionID": ctid,
-                         "ServerTransactionID": _next_server_txn()}, "application/json"
+        except ComTimeoutError as e:
+            # Fault-eviction (COM-T2 review, Medium; assigned to COM-T6): a wedged
+            # COM call leaks its STA thread AND head-of-line-blocks every future
+            # call to this device (a new call would queue behind the wedge). Drop
+            # the device slot + abandon its thread so the NEXT call builds a FRESH
+            # ComDevice on a FRESH thread — recovery is per-device, NOT "restart
+            # the whole host". Then surface the fault as HTTP 500 (client _unwrap
+            # -> DeviceError).
+            self._evict(dev_type, dev_num)
+            return 500, self._err(str(e), ctid), "application/json"
+        except KeyError as e:
+            # Unknown route / no driver -> HTTP 500 so the client's _unwrap raises
+            # DeviceError immediately (fast, honest failure; spec §4). No device
+            # slot to evict (either none was created or the method is unmapped).
+            return 500, self._err(str(e), ctid), "application/json"
         except Exception as e:  # a COM/driver exception -> Alpaca ErrorNumber
-            return 200, {"Value": None, "ErrorNumber": _ALPACA_DRIVER_ERROR,
-                         "ErrorMessage": str(e),
-                         "ClientTransactionID": ctid,
-                         "ServerTransactionID": _next_server_txn()}, "application/json"
+            return 200, self._err(str(e), ctid), "application/json"
 
     def _dispatch(self, verb: str, dev_type: str, dev_num: int, method: str,
                   params: dict) -> Any:
@@ -128,6 +146,12 @@ class ComHost:
     def _ok(value: Any, ctid: int) -> dict:
         return {"Value": value, "ErrorNumber": 0, "ErrorMessage": "",
                 "ClientTransactionID": ctid,
+                "ServerTransactionID": _next_server_txn()}
+
+    @staticmethod
+    def _err(message: str, ctid: int) -> dict:
+        return {"Value": None, "ErrorNumber": _ALPACA_DRIVER_ERROR,
+                "ErrorMessage": message, "ClientTransactionID": ctid,
                 "ServerTransactionID": _next_server_txn()}
 
 

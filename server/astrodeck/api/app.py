@@ -303,6 +303,15 @@ async def _lifespan(app: "FastAPI"):
             await hub.disconnect_all()
         except Exception:
             pass
+        # Stop the bundled COM host if this install ever started one (COM-T6):
+        # the ascom-local backend owns a process-lifetime ComHostManager, and its
+        # child is a no-orphan supervised process torn down here on app shutdown.
+        # No-op when never spawned. Best-effort — must never raise out of shutdown.
+        try:
+            from ..comhost.manager import get_manager
+            get_manager().stop()
+        except Exception:
+            pass
 
 
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
@@ -1185,7 +1194,7 @@ def create_app() -> FastAPI:
         (sim/astrodeck/astap) are accepted — they recompute on every describe."""
         from .. import drivers as drivers_mod
         known = ({d.id for d in config_store.cfg().drivers}
-                 | {"sim", "astrodeck", "astap"})
+                 | {"sim", "astrodeck", "astap", "ascom-local"})
         if driver_id not in known:
             raise HTTPException(404, "unknown driver")
         drivers_mod.invalidate(driver_id)

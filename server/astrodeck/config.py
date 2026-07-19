@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -352,7 +353,15 @@ class WeatherConfig(BaseModel):
 
 #: The DETECTED (non-configured) driver ids drivers._implicit_rows() serves —
 #: also the implicit half of the provider-override vocabulary (spec §3.4).
-IMPLICIT_DRIVER_IDS: tuple[str, ...] = ("sim", "astrodeck", "astap")
+#: ``ascom-local`` (COM-T6) is Windows-ONLY: the bundled COM host is a built-in
+#: only where COM exists, so it joins the vocabulary only on win32 (keeping it in
+#: lockstep with the Windows-gated _implicit_rows() row). Off Windows a rig or
+#: provider-override referencing it is correctly rejected — there is no such
+#: driver — and the UI never surfaces it.
+IMPLICIT_DRIVER_IDS: tuple[str, ...] = (
+    ("sim", "astrodeck", "astap", "ascom-local")
+    if sys.platform == "win32"
+    else ("sim", "astrodeck", "astap"))
 
 DriverType = Literal["nina", "alpaca", "phd2"]
 
