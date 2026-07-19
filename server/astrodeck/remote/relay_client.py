@@ -85,6 +85,35 @@ _BACKOFF_MAX_EXP = 40
 _WS_BUFFER_MAX = 200
 
 
+class _WsSendGuard:
+    """Per-ws throttle + counter for 'dropped an unsendable event' warnings.
+
+    A single /ws event whose JSON exceeds the per-frame ceiling
+    (``DEFAULT_MAX_PAYLOAD``) -- a status/preview/config payload that grew past
+    64 KiB -- makes ``encode_frame`` raise ``ProtocolError``. That must DROP just
+    that event and keep the shared telemetry stream alive, but a repeating
+    oversize event (e.g. a large preview frame every exposure) would spam the bus
+    log. Warn at most once per ``_WARN_INTERVAL_S`` and fold the running count
+    into that one line."""
+
+    _WARN_INTERVAL_S = 30.0
+
+    def __init__(self) -> None:
+        self.dropped = 0
+        self._last_warn = float("-inf")
+
+    def note_drop(self, exc: Exception) -> None:
+        import time as _t
+        self.dropped += 1
+        now = _t.monotonic()
+        if now - self._last_warn >= self._WARN_INTERVAL_S:
+            self._last_warn = now
+            bus.log("warning",
+                    f"tunneled ws: dropped {self.dropped} oversize/unsendable "
+                    f"event(s); telemetry stream kept alive "
+                    f"(last: {type(exc).__name__}: {exc})", "remote")
+
+
 def scope_is_remote(scope: dict) -> bool:
     """True iff this ASGI scope was relay-tunneled (the W3 remote flag).
 
@@ -377,6 +406,34 @@ class RelayClient:
         await self._raw_send(encode_frame(
             frame.type, frame.stream_id, frame.header, frame.payload))
 
+    async def _send_ws_event(self, wire_stream_id: int, ws_id: Any, seq: int,
+                             obj: dict, guard: _WsSendGuard) -> None:
+        """Encode + send ONE /ws event as a WS_DATA frame, ISOLATING an encode
+        failure so it can never tear down the shared telemetry stream.
+
+        The event JSON is encoded FIRST; if that raises -- the payload grew past
+        ``DEFAULT_MAX_PAYLOAD`` (``encode_frame`` -> ``ProtocolError``) or is not
+        JSON-serializable -- we DROP just this one event (throttled warning) and
+        return, leaving the stream live so the next (small) status frame still
+        arrives. This is the fix for 'TELEMETRY CATCHING UP': previously the
+        ``ProtocolError`` propagated to ``_run_ws``'s ``except`` and closed the
+        WHOLE ws stream, so ONE oversize frame starved the UI of ALL subsequent
+        status frames (and the relay's redial just hit the same oversize frame
+        again -> a repeating exception that never delivered telemetry).
+
+        A raw-SEND failure (a dead socket) is deliberately NOT caught here: it
+        propagates so the stream closes -- a broken transport is not a per-event
+        problem and must end the stream, exactly as before."""
+        try:
+            data = encode_frame(FrameType.WS_DATA, wire_stream_id,
+                                {"ws_id": ws_id, "seq": seq}, _event_payload(obj))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - oversize/unserializable: drop 1 event
+            guard.note_drop(exc)
+            return
+        await self._raw_send(data)
+
     # -- dispatch --------------------------------------------------------------
 
     async def _dispatch(self, frame: Frame) -> None:
@@ -558,18 +615,18 @@ class RelayClient:
         # refreshed caps. Read the cadence live (a test shrinks it).
         import time as _t
         next_check = _t.monotonic() + redact.WS_AUTH_RECHECK_S
+        # Per-ws guard: an oversize/unsendable event drops itself (keeping the
+        # telemetry stream alive) instead of tearing down the whole stream.
+        guard = _WsSendGuard()
         try:
             # Mirror the on-LAN hello frame (REDACTED) so a remote viewer renders
             # immediately without leaking precise site coords it may not hold.
             from ..hub import hub
             seq += 1
-            await self._send_frame(Frame(
-                type=FrameType.WS_DATA, stream_id=wire_stream_id,
-                header={"ws_id": ws_id, "seq": seq},
-                payload=_event_payload({
-                    "type": "hello",
-                    "data": redact._redact_site_for(hub.summary(), principal),
-                    "ts": 0})))
+            await self._send_ws_event(wire_stream_id, ws_id, seq, {
+                "type": "hello",
+                "data": redact._redact_site_for(hub.summary(), principal),
+                "ts": 0}, guard)
             while True:
                 # Wake for either the next event or the recheck deadline, so a quiet
                 # socket is still re-validated on schedule (not only on traffic).
@@ -590,10 +647,8 @@ class RelayClient:
                     out = redact._redact_ws_event(ev.to_json(), principal)
                     if out is not None:  # None = dropped event (weather spec §8)
                         seq += 1
-                        await self._send_frame(Frame(
-                            type=FrameType.WS_DATA, stream_id=wire_stream_id,
-                            header={"ws_id": ws_id, "seq": seq},
-                            payload=_event_payload(out)))
+                        await self._send_ws_event(
+                            wire_stream_id, ws_id, seq, out, guard)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - close just this ws stream
