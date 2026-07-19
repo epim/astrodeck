@@ -36,6 +36,14 @@ from .base import (
 DISCOVERY_PORT = 32227
 DISCOVERY_MSG = b"alpacadiscovery1"
 
+# A3 (final-branch-review tonight-risk #5): overall deadline for the
+# AlpacaCamera.expose imageready poll = exposure_s + this margin. Guards a
+# responsive-but-stuck camera (driver answers imageready=false forever) that
+# would otherwise hang the guide loop indefinitely; expiry raises
+# DeviceError("imageready timeout"), which the native guider's retry envelope
+# then handles in guiding contexts (imaging surfaces the DeviceError path).
+_IMAGEREADY_POLL_MARGIN_S = 30.0
+
 _client_id = 4242
 _txn = 0
 
@@ -366,8 +374,11 @@ class AlpacaCamera(_AlpacaDevice, Camera):
         await self._put("numy", NumY=self.sensor_height // binning)
         await self._put("startexposure", Duration=seconds, Light=light)
         self._exposing = True
+        deadline = time.monotonic() + seconds + _IMAGEREADY_POLL_MARGIN_S
         try:
             while not await self._get("imageready"):
+                if time.monotonic() > deadline:
+                    raise DeviceError("imageready timeout")
                 await asyncio.sleep(min(0.5, max(0.1, seconds / 20)))
         except asyncio.CancelledError:
             await self.abort_exposure()
