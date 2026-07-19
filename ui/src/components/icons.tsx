@@ -10,7 +10,7 @@ export type IconName =
   | "settings" | "monitor" | "atlas"
   // actions
   | "play" | "stop" | "pause" | "refresh" | "bridge" | "link"
-  | "sun" | "moon" | "lock" | "unlock" | "frame"
+  | "sun" | "moon" | "brightness" | "lock" | "unlock" | "frame"
   // account / rbac
   | "user" | "logout" | "eye" | "key" | "shield"
   // status
@@ -49,6 +49,10 @@ const PATHS: Record<IconName, JSX.Element> = {
   link: <><path d="M10 14a3.5 3.5 0 005-5l1.5-1.5a3.5 3.5 0 00-5-5L10 4" /><path d="M14 10a3.5 3.5 0 00-5 5l-1.5 1.5a3.5 3.5 0 005 5l1.5-1.5" /><path d="M9 15l6-6" /></>,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4l1.4-1.4M17 7l1.4-1.4" /></>,
   moon: <><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" /></>,
+  // brightness/dimmer — the universal half-filled "contrast" glyph, deliberately
+  // NOT a sun: in night mode the day/night toggle shows a sun, so the dimmer must
+  // read as a distinct control (fixes the two-identical-suns header confusion).
+  brightness: <><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 010 16z" fill="currentColor" stroke="none" /><path d="M12 3v2M12 19v2M3 12h2M19 12h2" /></>,
   lock: <><rect x="5" y="11" width="14" height="10" rx="1" /><path d="M8 11V7a4 4 0 118 0v4" /><circle cx="12" cy="16" r="1.5" /></>,
   unlock: <><rect x="5" y="11" width="14" height="10" rx="1" /><path d="M8 11V7a4 4 0 117.5-2" /><circle cx="12" cy="16" r="1.5" /></>,
   user: <><circle cx="12" cy="8" r="4" /><path d="M4 22c0-4.4 3.6-8 8-8s8 3.6 8 8" /></>,
