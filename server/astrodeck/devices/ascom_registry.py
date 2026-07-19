@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 try:  # Windows-only; absent on Mac/Linux and in the portable test path.
-    import winreg  # noqa: F401
+    import winreg
     _WINREG_OK = True
 except ImportError:  # pragma: no cover - exercised via monkeypatch on non-win
     winreg = None  # type: ignore
