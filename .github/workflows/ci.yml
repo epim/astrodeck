@@ -89,3 +89,55 @@ jobs:
           pip install -e "./server[dev]"
           pip install --no-index --find-links wheels astrodeck-native
           cd server && pytest tests/test_native_module.py tests/test_autofocus_native.py tests/test_polar_native.py tests/test_native_guide_surface.py tests/test_native_guider_e2e.py tests/test_native_guider_dither.py tests/test_native_guider_recovery.py tests/test_native_guider_algorithms.py tests/test_native_guider_ppec.py tests/test_native_guider_unattended_night.py -q
+
+  # The bundled COM host (ascom-local) — the Windows-only COM->Alpaca path.
+  #
+  # HONESTY NOTE (COM-T7): the real "single-install" acceptance gate
+  # (test_ascom_local_gate.py) drives the ASCOM *Simulator* drivers, which only
+  # exist once the ASCOM Platform is installed. Hosted GitHub Windows runners have
+  # NO ASCOM Platform / NO simulator drivers / NO comtypes runtime COM, so the gate
+  # + simulator tests SKIP here (skips are not failures — a green job does NOT imply
+  # simulator coverage; the log shows the skips). What this job DOES prove, that no
+  # Linux job can, is the Windows-native surface: winreg registry enumeration, the
+  # real `python -m astrodeck.comhost` subprocess spawn/health/teardown lifecycle,
+  # taskkill/tasklist no-orphan reaping, and the degrade row inverting to PRESENT on
+  # Windows. The true end-to-end simulator proof is the operator's on-ASCOM-box run
+  # documented in docs/comhost.md (the astrotown validation checklist).
+  windows-com:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Best-effort ASCOM Platform install (registers the Simulators). Hosted
+      # runners usually cannot (no admin/GUI installer), so this is allowed to fail
+      # and the gate + simulator tests then SKIP — acceptable, documented degradation.
+      - name: Install ASCOM Platform (best effort; registers the Simulators)
+        continue-on-error: true
+        run: choco install ascom-platform -y --no-progress
+      - run: pip install -e ".[dev,comhost]"
+      # -n auto matches the server job (hosted runners have few cores). The gate +
+      # simulator files SKIP without the Platform; the rest (registry/mapping/harness/
+      # contract/manager/backend/degrade + the real-subprocess lifecycle) run for real.
+      - run: >-
+          pytest -q -n auto
+          tests/test_ascom_registry.py
+          tests/test_comhost_alpaca_contract.py
+          tests/test_comhost_sta_harness.py
+          tests/test_comhost_telescope_camera_map.py
+          tests/test_comhost_aux_map.py
+          tests/test_comhost_misc_map.py
+          tests/test_comhost_fault_eviction.py
+          tests/test_comhost_manager.py
+          tests/test_ascom_local_backend.py
+          tests/test_discover_ascom_local.py
+          tests/test_ascom_local_absent_off_windows.py
+          tests/test_ascom_local_gate_meta.py
+          tests/test_comhost_simulators.py
+          tests/test_ascom_local_gate.py
+          -rs

@@ -154,3 +154,20 @@ On astrotown, `ascom-local` replaces the manually-installed ASCOM Remote (:11111
 devices, now served by the bundled host. Keep the ASCOM Remote install until the native path
 is validated on the real rig, then it can be uninstalled. The device MAP (ProgIDs) is already
 known (memory `astrodeck-project`), so migration is re-assigning roles to `ascom-local`.
+
+---
+
+## Delivered (COM-T1..T7)
+
+Delivered by the plan `docs/superpowers/plans/2026-07-19-native-com-device-backend.md`
+(tasks COM-T1..T7). Operator + developer runbook, the astrotown ASCOM-Remote
+retirement note, and the **on-ASCOM-box validation checklist** (the real gate run,
+the first real comhost subprocess launch, the first real `comtypes` connect,
+fault-eviction vs a real wedged driver, and `Park()`/`SyncToCoordinates()` vs the
+30s deadline on a real mount) live in `docs/comhost.md`. The single-install
+acceptance gate is `server/tests/test_ascom_local_gate.py` (skips cleanly without
+the ASCOM Platform + simulators; the real proof is the on-ASCOM-box run). The
+`ascom-local` Windows CI job (`.github/workflows/ci.yml`, job `windows-com`) runs
+the portable COM surface on a real Windows interpreter and skips the
+simulator-exercising gate on hosted runners (no Platform) — see the doc's CI
+honesty note.
