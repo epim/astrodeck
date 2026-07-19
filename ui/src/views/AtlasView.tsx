@@ -728,6 +728,7 @@ export default function AtlasView(): JSX.Element {
               step={1}
               value={guideFocalDraft}
               placeholder="optional"
+              disabled={!optics}
               onChange={(e) => setGuideFocalDraft(e.target.value)}
               onBlur={commitGuideFocal}
               onKeyDown={(e) => {
