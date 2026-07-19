@@ -469,6 +469,7 @@ export interface Optics {
   sensor_width_px: number;
   sensor_height_px: number;
   auto_from_camera: boolean;
+  guide_focal_length_mm?: number | null; // A4: optional guide-scope focal length (mm)
 }
 
 export interface OpticsComputed {
