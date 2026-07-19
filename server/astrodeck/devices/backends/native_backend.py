@@ -132,18 +132,26 @@ class NativeSession:
         # Deferred import: keep module load light (the native guider pulls the
         # guide stack / numpy) and avoid a cycle just to register the backend.
         from ...guide.native import NativeGuider, guide_algo_config
-        # KNOWN GAP (P2-T3 fix round F2, ledgered): no ``image_scale_arcsec``
-        # is passed, so published RMS/error stats default-scale at 1.0 "/px on
-        # a real rig. There is NO principled source yet: ``Optics`` describes
-        # the MAIN imaging train (a guide SCOPE's focal length has no config
-        # field), and the guide camera's own ``pixel_size_um`` alone cannot
-        # yield a scale. Deliberately NOT hardcoded/guessed — guiding
-        # correctness is unaffected (calibration measures px/ms empirically);
-        # only the arcsec badge units mis-scale until a guide-optics config
-        # field exists (sim path is correct via ``rig.guide_scale_arcsec_px``).
+        # A4 (P2-T3 review F2, CLOSED): compute a real image_scale_arcsec from
+        # the configured guide-scope focal length + the guide camera's pixel
+        # size, so on-sky RMS is reported in true arcsec. Falls back to 1.0
+        # (the documented default, guiding correctness unaffected — calibration
+        # measures px/ms empirically) when either input is missing. The guide
+        # loop runs at bin 1, so binning = 1 here.
+        image_scale = 1.0
+        try:
+            from ...config import config_store
+            guide_fl = config_store.cfg().optics.guide_focal_length_mm
+            px = getattr(gcam, "pixel_size_um", None)
+            binning = 1
+            if guide_fl and guide_fl > 0 and px and px > 0:
+                image_scale = 206.265 * float(px) / float(guide_fl) * binning
+        except Exception:  # pragma: no cover - defensive; scale stays 1.0
+            image_scale = 1.0
         self._guider = NativeGuider(
             gcam, tel,
-            config={"exposure_s": 2.0, **guide_algo_config()},
+            config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
+                    **guide_algo_config()},
             profile_id=None)
         return self._guider
 

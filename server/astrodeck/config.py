@@ -69,6 +69,12 @@ class Optics(BaseModel):
     sensor_width_px: int = Field(0, ge=0)            # 0 = use camera
     sensor_height_px: int = Field(0, ge=0)           # 0 = use camera
     auto_from_camera: bool = True
+    # A4 (P2-T3 review F2): the GUIDE scope's focal length (mm), optional and
+    # independent of the main imaging train's focal_length_mm above. When set
+    # (with the guide camera's pixel_size_um) it gives the native guider a real
+    # image_scale_arcsec so on-sky RMS is reported in true arcsec instead of the
+    # 1.0 "/px badge default. Validated > 0 when present.
+    guide_focal_length_mm: float | None = Field(default=None, gt=0, le=20000)
 
 
 # ------------------------------------------------------- automation (Batch 4b)

@@ -216,6 +216,9 @@ export default function AtlasView(): JSX.Element {
   const [pixelDraft, setPixelDraft] = useState<string>("");
   const [sensorWDraft, setSensorWDraft] = useState<string>("");
   const [sensorHDraft, setSensorHDraft] = useState<string>("");
+  // A4 (P2-T3 review F2): optional guide-scope focal length. Empty clears it
+  // (server stores null); a value commits through the shared optics PUT.
+  const [guideFocalDraft, setGuideFocalDraft] = useState<string>("");
   // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
   // single target (the server round-trip is async).
   const [sending, setSending] = useState(false);
@@ -232,6 +235,11 @@ export default function AtlasView(): JSX.Element {
     setSensorWDraft(String(optics.sensor_width_px || ""));
     setSensorHDraft(String(optics.sensor_height_px || ""));
   }, [optics?.pixel_size_um, optics?.sensor_width_px, optics?.sensor_height_px]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Seed/refresh the guide-scope focal draft on config change (A4).
+  useEffect(() => {
+    setGuideFocalDraft(String(optics?.guide_focal_length_mm || ""));
+  }, [optics?.guide_focal_length_mm]);
 
   // A survey-source change is a fresh chance — clear the degraded flag.
   useEffect(() => {
@@ -322,6 +330,20 @@ export default function AtlasView(): JSX.Element {
     if (n === (optics?.pixel_size_um ?? 0)) return;
     void commitOpticsPatch({ pixel_size_um: n });
   }, [pixelDraft, optics?.pixel_size_um, commitOpticsPatch]);
+
+  // Guide-scope focal length (A4): empty commits null ("no guide optics
+  // configured"), unlike the main/pixel/sensor fields' empty-means-0 idiom —
+  // there is no "use camera" fallback for a guide SCOPE's focal length.
+  const commitGuideFocal = useCallback(() => {
+    const raw = guideFocalDraft.trim();
+    const n = raw === "" ? null : Number(raw);
+    if (n !== null && (!Number.isFinite(n) || n <= 0)) {
+      setGuideFocalDraft(String(optics?.guide_focal_length_mm || ""));
+      return;
+    }
+    if (n === (optics?.guide_focal_length_mm ?? null)) return;
+    void commitOpticsPatch({ guide_focal_length_mm: n });
+  }, [guideFocalDraft, optics?.guide_focal_length_mm, commitOpticsPatch]);
 
   const commitSensorW = useCallback(() => {
     const raw = sensorWDraft.trim();
@@ -690,6 +712,34 @@ export default function AtlasView(): JSX.Element {
             />
             <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
               px
+            </span>
+          </span>
+        </label>
+        {/* A4 (P2-T3 review F2): optional guide-scope focal length, independent
+            of the main imaging-train focal length above. Feeds the native
+            guider's image_scale_arcsec (server-side); no live FOV effect here. */}
+        <label className="flex flex-col gap-1">
+          <span className="label inline-flex items-center gap-1">Guide scope FL</span>
+          <span className="inline-flex items-stretch">
+            <input
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={1}
+              value={guideFocalDraft}
+              placeholder="optional"
+              onChange={(e) => setGuideFocalDraft(e.target.value)}
+              onBlur={commitGuideFocal}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Guide scope focal length in millimetres (optional; feeds real guide-scale arcsec stats)"
+              className="field btn-touch w-24 mono text-right"
+            />
+            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+              mm
             </span>
           </span>
         </label>
