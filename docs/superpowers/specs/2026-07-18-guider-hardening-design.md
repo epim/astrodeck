@@ -134,11 +134,23 @@ Non-goals (explicit):
   computation.
 
 ### A5 — GP cross-session retention (Rust + Python)
-- Rust: `GuideEngine`/GP expose `dump_gp_window() -> Vec<(t, y, w)>`-style
-  serialization and a `restore_gp_window(...)` applying upstream
-  `GuidingStarted` retention (keep newest `retain_max_pct_period` = 40% of one
-  period worth; source: `gaussian_process_guider.cpp` GuidingStarted + §6.8.6).
-  PyO3 surface mirrors `dump_calibration` conventions.
+- **AMENDED 2026-07-18 after A-T5 review finding #4** (the original "trim to
+  newest 40% of one period" was a controller mis-derivation; upstream
+  `noreset_max_pct_period` = 40 is a BINARY retain-or-reset GATE, wrapper
+  `guide_algorithm_gaussian_process.cpp:1017-1087`): on restore, compute the
+  downtime between dump and restore (wall-clock seconds, persisted as
+  `dumped_at` in the JSON; tracking assumed continuous across a short restart —
+  the same assumption upstream makes for guiding stop/start). If downtime ≤
+  40% of one period: restore the ENTIRE window and advance the gear-clock
+  continuity by the downtime (the GuidingDithered-style phase adjustment,
+  machinery landed in A-T4). Otherwise: discard and start a fresh model (log
+  line). No trim. The 40% threshold lives in ONE place
+  (`GpParams::retain_max_pct_period`).
+- Rust: `dump_window()` serialization (4-tuple `(t, y, var, control)`,
+  EXCLUDING the trailing pending `DataPoint{timestamp: 0}` row — including it
+  makes any t-derived logic inert and double-counts its control sum) and
+  `restore_window(...)` applying the gate above. PyO3 surface mirrors
+  `dump_calibration` conventions.
 - Python: persist beside calibration — `CONFIG_DIR/guider/<profile-id>-gp.json`
   — written on guiding stop, restored on start IF the same profile + same
   calibration (reuse-gate result) applies; cleared by the existing
