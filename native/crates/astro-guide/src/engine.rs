@@ -1653,10 +1653,13 @@ impl GuideEngine {
         self.ra_algo.dump_gp_window()
     }
 
-    /// Restore a persisted GP window into the RA algorithm with retention
-    /// (A5; dossier §6.8.6). No-op for non-PPEC.
-    pub fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], retain_pct: f64) {
-        self.ra_algo.restore_gp_window(points, retain_pct);
+    /// Restore a persisted GP window into the RA algorithm, applying the
+    /// upstream retain-or-reset downtime gate (A5, amended spec §3-A5;
+    /// dossier §6.8.6). Returns `true` iff the algorithm restored it
+    /// (`false` for non-PPEC, a too-long or negative downtime, or a
+    /// < 2-point window).
+    pub fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], downtime_s: f64) -> bool {
+        self.ra_algo.restore_gp_window(points, downtime_s)
     }
 
     /// Install a calibration (e.g. one persisted from a prior session). Stored
