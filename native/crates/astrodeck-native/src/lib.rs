@@ -1462,6 +1462,27 @@ impl GuideEngine {
         self.inner.set_calibration(c);
         Ok(())
     }
+
+    /// Dump the RA algorithm's trained GP window (A5, dossier §6.8.6) for
+    /// cross-session persistence: a list of `[timestamp, measurement,
+    /// variance, control]` rows (empty for a non-PPEC RA algorithm or an
+    /// untrained model). Serializable beside the calibration.
+    fn dump_gp_window<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let out = PyList::empty_bound(py);
+        for (t, m, v, c) in self.inner.dump_gp_window() {
+            out.append(PyList::new_bound(py, [t, m, v, c]))?;
+        }
+        Ok(out)
+    }
+
+    /// Restore a persisted GP window (from `dump_gp_window`) into the RA
+    /// algorithm, applying `GuidingStarted` retention (keep the newest
+    /// `retain_pct`% of one period; A5, dossier §6.8.6). No-op for a non-PPEC
+    /// RA algorithm.
+    #[pyo3(signature = (points, retain_pct=40.0))]
+    fn restore_gp_window(&mut self, points: Vec<(f64, f64, f64, f64)>, retain_pct: f64) {
+        self.inner.restore_gp_window(&points, retain_pct);
+    }
 }
 
 // Plain (non-`#[pymethods]`) impl block: `classify_lock_lost` takes `&Action`,
