@@ -1,6 +1,6 @@
 [project]
 name = "astrodeck"
-version = "0.2.3"
+version = "0.2.4"
 description = "Open multi-vendor astrophotography controller (ASIAIR replacement)"
 requires-python = ">=3.11"
 dependencies = [
