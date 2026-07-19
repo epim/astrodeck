@@ -27,7 +27,13 @@ def store(tmp_path):
 # ------------------------------------------------------------- store level
 
 def test_implicit_ids_are_the_spec_triple():
-    assert set(IMPLICIT_DRIVER_IDS) == {"sim", "astrodeck", "astap"}
+    # sim/astrodeck/astap are the cross-platform triple; ascom-local (COM-T6) is
+    # a Windows-only addition to the implicit vocabulary (the bundled COM host).
+    import sys
+    expected = {"sim", "astrodeck", "astap"}
+    if sys.platform == "win32":
+        expected |= {"ascom-local"}
+    assert set(IMPLICIT_DRIVER_IDS) == expected
 
 
 def test_valid_values_include_legacy_implicit_and_configured(store):

@@ -12,5 +12,7 @@ from . import sim_backend  # noqa: F401  (import for self-registration side effe
 from . import nina_backend  # noqa: F401  (import for self-registration side effect)
 from . import native_backend  # noqa: F401  (import for self-registration side effect)
 from . import phd2_backend  # noqa: F401  (import for self-registration side effect)
+from . import ascom_local  # noqa: F401  (Windows-only self-registration side effect)
 
-__all__ = ["sim_backend", "nina_backend", "native_backend", "phd2_backend"]
+__all__ = ["sim_backend", "nina_backend", "native_backend", "phd2_backend",
+           "ascom_local"]

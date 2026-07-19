@@ -26,6 +26,12 @@ except Exception:  # pragma: no cover - non-Windows / wheel absent
 # Per COM-call deadline (s). Mirrors alpaca._IMAGEREADY_POLL_MARGIN_S (082dd79).
 _COM_CALL_TIMEOUT_S = 30.0
 
+# Bounded join on normal-path teardown (COM-T6 obligation 2): a cleanly-working
+# STA thread exits in microseconds once it reads the stop sentinel, so this only
+# ever elapses for a wedged thread — which the fault-eviction path (abandon())
+# handles WITHOUT joining, so disconnect() never blocks a shutdown for long.
+_THREAD_JOIN_TIMEOUT_S = 5.0
+
 
 class ComTimeoutError(Exception):
     """A marshaled COM call exceeded its per-call deadline."""
@@ -63,6 +69,15 @@ class ComDevice:
         self._q: "queue.Queue" = queue.Queue()
         self._obj: Any = None
         self.connected = False
+        # Connect-state ownership (COM-T6 obligation 3): serialize concurrent
+        # connects so a double-connect race can never double-create the COM
+        # object (the sidecar is a ThreadingHTTPServer — two `Connected=true`
+        # PUTs for one device CAN arrive at once).
+        self._connect_lock = threading.Lock()
+        # Fault-eviction flag (COM-T6 obligation 1): set when the host abandons a
+        # wedged device; the STA thread may be unjoinable and is left to die with
+        # the process. Purely informational (submit already fails fast).
+        self._evicted = False
         self._started = threading.Event()
         self._thread = threading.Thread(
             target=self._run, name=f"comdev-{progid}", daemon=True)
@@ -98,14 +113,21 @@ class ComDevice:
                 f"{self._timeout_s:.0f}s deadline") from None
 
     def connect(self) -> None:
-        def _do(_obj):
-            self._obj = self._create(self.progid)
-            self._obj.Connected = True
-        # _obj is None until created, so run against self, not the arg:
-        fut: Future = Future()
-        self._q.put((lambda _ignored: _do(_ignored), fut))
-        fut.result(timeout=self._timeout_s)
-        self.connected = True
+        # Idempotent + race-guarded (COM-T6 obligation 3): the lock serializes
+        # concurrent connects and the early-return short-circuits the second, so
+        # N overlapping connects create EXACTLY ONE COM object, never N. The
+        # inner `if self._obj is None` is a second guard on the STA thread itself.
+        with self._connect_lock:
+            if self.connected and self._obj is not None:
+                return
+            def _do(_ignored):
+                if self._obj is None:
+                    self._obj = self._create(self.progid)
+                self._obj.Connected = True
+            fut: Future = Future()
+            self._q.put((_do, fut))
+            fut.result(timeout=self._timeout_s)
+            self.connected = True
 
     def disconnect(self) -> None:
         if self._obj is not None:
@@ -115,3 +137,19 @@ class ComDevice:
                 pass
         self.connected = False
         self._q.put(None)  # stop the STA loop
+        # Prove-teardown (COM-T6 obligation 2): join the STA thread so a clean
+        # close actually reaps it (no lingering apartment thread). Bounded so a
+        # wedged device — which is fault-EVICTED via abandon(), not disconnected
+        # — could never hang shutdown here.
+        self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_S)
+
+    def abandon(self) -> None:
+        """Fault-eviction teardown (COM-T6 obligation 1): drop this device WITHOUT
+        joining. Its STA thread is wedged in a COM call and cannot be joined; it is
+        a daemon and dies with the process. We queue the stop sentinel so the
+        thread exits cleanly IF the wedged call ever returns (no permanent leak
+        when it merely ran long), but we do not wait. The host recreates a fresh
+        ComDevice (fresh thread) on the next call, so the device is not bricked."""
+        self._evicted = True
+        self.connected = False
+        self._q.put(None)

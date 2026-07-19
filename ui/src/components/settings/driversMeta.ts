@@ -10,6 +10,7 @@ export const DRIVER_TYPE_LABEL: Record<string, string> = {
   sim: "Simulator",
   astrodeck: "AstroDeck native",
   astap: "ASTAP",
+  "ascom-local": "ASCOM (local)",
 };
 
 export const DRIVER_DEFAULT_PORT: Record<string, number> = {
