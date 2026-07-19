@@ -1647,6 +1647,18 @@ impl GuideEngine {
         self.cal
     }
 
+    /// Dump the RA algorithm's trained GP window for cross-session persistence
+    /// (A5; dossier §6.8.6). Empty for every non-PPEC RA algorithm.
+    pub fn dump_gp_window(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.ra_algo.dump_gp_window()
+    }
+
+    /// Restore a persisted GP window into the RA algorithm with retention
+    /// (A5; dossier §6.8.6). No-op for non-PPEC.
+    pub fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], retain_pct: f64) {
+        self.ra_algo.restore_gp_window(points, retain_pct);
+    }
+
     /// Install a calibration (e.g. one persisted from a prior session). Stored
     /// verbatim — no sentinel patching (unlike the calibration-complete path,
     /// this Cal is assumed already real). Follow with

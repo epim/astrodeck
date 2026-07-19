@@ -108,6 +108,10 @@ _SETTLE_TIMEOUT_S = 90.0
 # never really scope-anchored.
 _UNKNOWN_DECLINATION = 997.0
 
+# A5 (P4-T1 ruling B; dossier §6.8.6): retain the newest 40% of one period of
+# the trained PPEC gear-time model across a stop/start, per profile.
+_GP_RETAIN_PCT_PERIOD = 40.0
+
 
 def guide_algo_config() -> dict:
     """The persisted per-axis guide-algorithm selection (``AppConfig.guide``)
@@ -274,6 +278,12 @@ class NativeGuider(Guider):
                     bus.log("info",
                             f"native guider: reusing persisted calibration "
                             f"for profile {self.profile_id}", "guide")
+                    # A5 (P4-T1 ruling B): restore the persisted PPEC model
+                    # window ONLY on the calibration-REUSE path (same profile +
+                    # same calibration). A fresh calibration means the geometry
+                    # changed, so the trained gear-time model no longer applies.
+                    # No-op for a non-PPEC RA algorithm.
+                    self._restore_gp_window()
                 except DeviceError:
                     # A real refusal (no star) propagates — recalibrating
                     # would fail on the same missing star anyway; the
@@ -317,6 +327,7 @@ class NativeGuider(Guider):
         if not self._settle_done.is_set():
             self._settle_error = self._settle_error or "guiding stopped"
             self._settle_done.set()
+        self._persist_gp_window()  # A5: save the trained PPEC model on stop
         bus.publish("guide", **self.stats().__dict__)
         bus.log("info", "native guider stopped", "guide")
 
@@ -771,28 +782,31 @@ class NativeGuider(Guider):
                     f"native guider: could not persist calibration: {e}", "guide")
 
     def clear_calibration(self) -> bool:
-        """Delete this profile's persisted calibration
-        (``CONFIG_DIR/guider/<profile>.json``) so the NEXT ``start_guiding``
-        drives a fresh calibration walk instead of reusing the stored one
-        (dossier §8.4). Best-effort and non-fatal (used by
+        """Delete this profile's persisted calibration AND its persisted PPEC
+        model (``<profile>.json`` + ``<profile>-gp.json``) so the NEXT
+        ``start_guiding`` drives a fresh calibration walk and a fresh model
+        (dossier §8.4/§6.8.6). Best-effort and non-fatal (used by
         ``DELETE /api/guide/calibration``); returns True when a file was
-        removed. Does not disturb an in-flight guide loop — a running session
-        keeps its live calibration until it is next (re)started."""
+        removed. Does not disturb an in-flight guide loop."""
         if not self.profile_id:
             return False
+        removed = False
         try:
             from ..config import CONFIG_DIR
-            p = CONFIG_DIR / "guider" / f"{self.profile_id}.json"
-            if p.exists():
-                p.unlink()
+            d = CONFIG_DIR / "guider"
+            for name in (f"{self.profile_id}.json", f"{self.profile_id}-gp.json"):
+                p = d / name
+                if p.exists():
+                    p.unlink()
+                    removed = True
+            if removed:
                 bus.log("info",
-                        f"native guider: cleared persisted calibration for "
-                        f"profile {self.profile_id}", "guide")
-                return True
+                        f"native guider: cleared persisted calibration + PPEC "
+                        f"model for profile {self.profile_id}", "guide")
         except Exception as e:  # pragma: no cover - best effort
             bus.log("warning",
                     f"native guider: could not clear calibration: {e}", "guide")
-        return False
+        return removed
 
     def _load_persisted_calibration(self) -> dict | None:
         """Read this profile's persisted calibration
@@ -824,6 +838,76 @@ class NativeGuider(Guider):
                     f"native guider: could not read persisted calibration: "
                     f"{e}", "guide")
             return None
+
+    def _persist_gp_window(self) -> None:
+        """Persist the trained PPEC gear-time model to
+        ``CONFIG_DIR/guider/<profile>-gp.json`` on guiding stop (A5, dossier
+        §6.8.6). Best-effort; nothing to save for a non-PPEC RA algorithm or an
+        untrained model (dump returns empty / seed-only)."""
+        if not self.profile_id or self._engine is None:
+            return
+        try:
+            window = self._engine.dump_gp_window()
+            if not window or len(window) < 2:
+                return
+            from ..config import CONFIG_DIR
+            d = CONFIG_DIR / "guider"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{self.profile_id}-gp.json").write_text(
+                json.dumps(window), encoding="utf-8")
+            bus.log("info",
+                    f"native guider: saved PPEC model for profile "
+                    f"{self.profile_id}", "guide")
+        except Exception as e:  # pragma: no cover - best effort
+            bus.log("warning",
+                    f"native guider: could not persist PPEC model: {e}", "guide")
+
+    def _load_gp_window(self) -> list | None:
+        """Read this profile's persisted GP window
+        (``CONFIG_DIR/guider/<profile>-gp.json``) as a list of
+        ``(t, measurement, variance, control)`` tuples, or None when absent /
+        corrupt. Never raises — a corrupt file logs and yields None (fresh
+        model), mirroring the calibration-persistence hardening."""
+        if not self.profile_id:
+            return None
+        try:
+            from ..config import CONFIG_DIR
+            p = CONFIG_DIR / "guider" / f"{self.profile_id}-gp.json"
+            if not p.exists():
+                return None
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                bus.log("warning",
+                        f"native guider: persisted GP window for profile "
+                        f"{self.profile_id} is not a JSON array; ignoring",
+                        "guide")
+                return None
+            return [(float(t), float(m), float(v), float(c))
+                    for t, m, v, c in data]
+        except Exception as e:  # pragma: no cover - defensive
+            bus.log("warning",
+                    f"native guider: could not read persisted GP window "
+                    f"({e}); starting fresh", "guide")
+            return None
+
+    def _restore_gp_window(self) -> None:
+        """Restore the persisted PPEC model into the live engine on the
+        calibration-reuse path (A5). No-op for a non-PPEC RA algorithm or when
+        there is no persisted window."""
+        if not self.profile_id or self._engine is None:
+            return
+        points = self._load_gp_window()
+        if not points:
+            return
+        try:
+            self._engine.restore_gp_window(points, _GP_RETAIN_PCT_PERIOD)
+            bus.log("info",
+                    f"native guider: restored PPEC model for profile "
+                    f"{self.profile_id}", "guide")
+        except Exception as e:  # pragma: no cover - defensive
+            bus.log("warning",
+                    f"native guider: could not restore PPEC model ({e}); "
+                    f"starting fresh", "guide")
 
     def _cal_reusable(self, cal: dict) -> bool:
         """P2 reuse-compatibility gate (dossier §8.4 calibration data model +

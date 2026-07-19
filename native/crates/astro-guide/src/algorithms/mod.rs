@@ -65,6 +65,21 @@ pub trait GuideAlgorithm: Send {
         false
     }
 
+    /// Serialize the trained predictive-model window for cross-session
+    /// persistence (A5; dossier §6.8.6). Each row is
+    /// `(timestamp, measurement, variance, control)`. Non-predictive
+    /// algorithms hold no model — default empty; only PPEC overrides.
+    fn dump_gp_window(&self) -> Vec<(f64, f64, f64, f64)> {
+        Vec::new()
+    }
+
+    /// Restore a persisted predictive-model window with `GuidingStarted`
+    /// retention (A5; keep the newest `retain_pct`% of one period). Default
+    /// no-op; only PPEC overrides.
+    fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], retain_pct: f64) {
+        let _ = (points, retain_pct);
+    }
+
     /// Clear all history (dossier §6 intro: guiding stopped, guiding
     /// resumed after a full pause, dither, guiding re-enabled).
     fn reset(&mut self);
