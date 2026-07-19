@@ -28,22 +28,32 @@
 //!
 //! **Clock model (Eigen/wall-clock replacement).** Upstream reads a
 //! `steady_clock` for measurement timestamps and prediction anchors. This
-//! crate is I/O-free and deterministic (D1), so the wall clock is synthesized
-//! from the per-frame exposure `dt` (the `time_step` argument): each frame
-//! advances an internal clock by `dt` (the inter-frame period ≈ the exposure),
-//! reproducing upstream's midpoint timestamps `now − dt/2 + dither_offset` and
-//! prediction anchors `now`, `now + dt`. The first measurement frame anchors
-//! `now = 0` (upstream sets `start_time_ = last_time_ = now` at that frame).
+//! crate is I/O-free and deterministic (D1), so the algorithm holds no clock
+//! of its own: it advances an internal clock by whatever per-frame `dt` (the
+//! `time_step` argument) the engine hands it, reproducing upstream's midpoint
+//! timestamps `now − dt/2 + dither_offset` and prediction anchors `now`,
+//! `now + dt`. The first measurement frame anchors `now = 0` (upstream sets
+//! `start_time_ = last_time_ = now` at that frame). Since A2 (finding M6) the
+//! `dt` the engine passes is the GUARDED real frame-timestamp delta (the
+//! engine's `gp_clock_dt` helper — a non-monotone or `> 10×` exposure delta
+//! falls back to the exposure for that frame), NOT accumulated exposure, so
+//! the synthesized clock tracks the real inter-frame period over which the
+//! periodic error actually evolves. The algorithm is agnostic to which `dt`
+//! it receives; the choice lives entirely in the engine.
 //!
 //! **Engine integration scope.** The engine drives PPEC through
 //! [`GuideAlgorithm::result_with`] (per-frame RA correction) and
 //! [`GuideAlgorithm::deduce_result`] (dead reckoning on a lost star, dossier
-//! §3.3/§6.8.3). The engine's dither model (lock shift + fast recenter +
-//! settle) is algorithm-agnostic and does NOT forward PHD2's `GuidingDithered`
-//! gear-time correction to the algorithm; [`GaussianProcessGuider::
-//! guiding_dithered`] / [`GaussianProcessGuider::guiding_dither_settle_done`]
-//! are provided (and unit-covered) for a future wiring task but are not called
-//! by [`crate::engine::GuideEngine`] today — see the P4-T1 report.
+//! §3.3/§6.8.3). On a dither the engine forwards PHD2's `GuidingDithered`
+//! gear-time correction to the algorithm through
+//! [`GuideAlgorithm::dither_notify`] (A2): [`GaussianProcessGuider::
+//! guiding_dithered`] is called by [`crate::engine::GuideEngine::dither`] via
+//! that hook, compensating the gear-time gap IN PLACE so the trained model
+//! SURVIVES the dither instead of being reset (the engine skips
+//! `ra_algo.reset()` when the hook returns `true`).
+//! [`GaussianProcessGuider::guiding_dither_settle_done`] is provided (and
+//! unit-covered) for a future settle-completion wiring task but is not yet
+//! called by [`crate::engine::GuideEngine`] — see the P4-T1 report.
 
 use std::collections::VecDeque;
 
@@ -566,6 +576,15 @@ impl GuideAlgorithm for GaussianProcessGuider {
         self.reset_impl();
     }
 
+    /// A2 (P4-T1 rulings A+C; upstream GuidingDithered
+    /// gaussian_process_guider.cpp:427-434, dossier §6.8.6): compensate the
+    /// dither's gear-time gap and KEEP the trained model. Returns true so the
+    /// engine skips `reset()` on the RA axis.
+    fn dither_notify(&mut self, ra_amt_px: f64, ra_rate: f64) -> bool {
+        self.guiding_dithered(ra_amt_px, ra_rate);
+        true
+    }
+
     /// Dead reckoning (dossier §3.3/§6.8.3): uses the last exposure seen
     /// through [`result_with`](GuideAlgorithm::result_with) as the frozen trait
     /// signature carries no `dt`. A regularizer overrun (dithering path only)
@@ -690,5 +709,44 @@ mod tests {
             "blend at pct={pct}: out={out}, expected {expected} \
              (control_raw={control_raw}, hyst={hyst}, t={t}, P={period})"
         );
+    }
+
+    /// A2 (P4-T1 rulings A+C / M6; upstream GuidingDithered
+    /// gaussian_process_guider.cpp:427-434, dossier §6.8.6): dither_notify
+    /// applies the gear-time compensation (dither_offset += amt/rate) and
+    /// PRESERVES the trained buffer — the whole point of A2 (no reset). It
+    /// returns true so the engine skips ra_algo.reset().
+    #[test]
+    fn dither_notify_shifts_gear_time_and_preserves_buffer() {
+        let mut gp = GaussianProcessGuider::new(GpParams::default());
+        for _ in 0..15 {
+            gp.result_with(1.0, 20.0, 5.0);
+        }
+        let n_before = gp.buffer.len();
+        assert!(n_before > 10, "buffer trained: {n_before}");
+        let off_before = gp.dither_offset;
+
+        let handled = gp.dither_notify(3.0, 2.0); // amt=3px, rate=2px/s
+        assert!(handled, "PPEC handles the dither (engine must skip reset)");
+        assert!(
+            (gp.dither_offset - (off_before + 3.0 / 2.0)).abs() < 1e-12,
+            "gear time shifted by amt/rate"
+        );
+        assert!(gp.dithering_active, "dark-guiding window opened");
+        assert_eq!(gp.dither_steps, MAX_DITHER_STEPS);
+        assert_eq!(
+            gp.buffer.len(),
+            n_before,
+            "dither_notify must NOT reset the trained buffer"
+        );
+    }
+
+    /// A2: a reactive algorithm keeps the defaulted dither_notify (false, no
+    /// state change) so the engine resets it on dither as before.
+    #[test]
+    fn default_dither_notify_is_false_for_reactive_algo() {
+        use crate::algorithms::Hysteresis;
+        let mut h = Hysteresis::default();
+        assert!(!h.dither_notify(3.0, 2.0));
     }
 }

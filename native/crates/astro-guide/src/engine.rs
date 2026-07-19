@@ -316,6 +316,9 @@ pub struct GuideEngine {
 
     recent: VecDeque<(f64, f64, f64)>,
     last_snr: f64,
+    /// Timestamp of the last accepted frame that advanced the GP gear clock
+    /// (finding M6); `None` at a session boundary. Feeds `gp_clock_dt`.
+    last_gp_ts: Option<f64>,
 
     /// Tracked secondary guide stars (dossier §2.6/§4; P3-T1). Empty in
     /// single-star mode. Rebuilt wholesale on every full re-acquisition
@@ -384,6 +387,18 @@ fn flip_parity(p: Parity) -> Parity {
     }
 }
 
+/// GP gear-clock dt (finding M6): the real inter-frame wall-clock delta from
+/// `timestamp_s`, guarding host clock jumps — a non-monotone or absurd
+/// (> 10x exposure) delta falls back to the exposure for that frame, so a host
+/// clock jump can't corrupt the synthesized GP clock. Only PPEC consumes this;
+/// reactive algorithms ignore the `dt` argument.
+fn gp_clock_dt(prev_ts: Option<f64>, now: f64, exposure_s: f64) -> f64 {
+    match prev_ts {
+        Some(p) if now - p > 0.0 && now - p <= 10.0 * exposure_s => now - p,
+        _ => exposure_s,
+    }
+}
+
 impl GuideEngine {
     /// Build an engine from a config. The engine starts idle: a caller drives
     /// it via [`begin_calibration`](Self::begin_calibration) (measure a fresh
@@ -411,6 +426,7 @@ impl GuideEngine {
             recenter: None,
             recent: VecDeque::with_capacity(RECENT_CAP),
             last_snr: 0.0,
+            last_gp_ts: None,
             secondaries: Vec::new(),
             primary_dist_stats: PrimaryDistStats::new(),
             stabilizing: false,
@@ -505,6 +521,7 @@ impl GuideEngine {
         self.recenter = None;
         self.recent.clear();
         self.last_snr = 0.0;
+        self.last_gp_ts = None;
         // Multi-star state (dossier §4): a fresh session boundary is also
         // where `multi_star_broken`'s "for the session" scope ends.
         self.secondaries.clear();
@@ -666,7 +683,9 @@ impl GuideEngine {
         if !found {
             self.distance_checker.activate(now);
             if settling {
-                return self.settle_monitor_dropped_frame(now, dec_guiding);
+                // A lost STAR during the settle window: dead-reckon like an
+                // ordinary lost frame (A2; P4-T1 ruling C).
+                return self.settle_monitor_dropped_frame(now, dec_guiding, true);
             }
             let stale = self
                 .last_good_find_s
@@ -724,7 +743,9 @@ impl GuideEngine {
             self.mass_checker.append(now * 1000.0, s.mass); // OBLIGATION (b): reject path
             self.distance_checker.activate(now);
             if settling {
-                return self.settle_monitor_dropped_frame(now, dec_guiding);
+                // A mass-REJECT frame: the measurement was rejected, not
+                // missing, so it does NOT dead-reckon (A2; P4-T1 ruling C).
+                return self.settle_monitor_dropped_frame(now, dec_guiding, false);
             }
             return Action::Idle;
         }
@@ -827,6 +848,11 @@ impl GuideEngine {
         self.last_snr = s.snr;
         self.push_recent(now, mount.0, mount.1);
 
+        // M6 (finding M6): advance PPEC's gear clock on the real frame
+        // timestamp delta, not accumulated exposure, guarding host clock jumps.
+        let gp_dt = gp_clock_dt(self.last_gp_ts, now, meta.exposure_s);
+        self.last_gp_ts = Some(now);
+
         // 6. Settle overlay (dossier §12; P2-T1 fix round, CRITICAL).
         //    Evaluated AFTER this frame's avg-dist update so the monitor
         //    reads the freshly smoothed error — P2-T1 punch-list #1 (SETTLE
@@ -868,7 +894,7 @@ impl GuideEngine {
                     // ALGO correction. A vetoed/empty correction surfaces
                     // as the Settle wait signal — the host-visible "still
                     // settling" — instead of a bare Idle.
-                    let a = self.compute_move(mount, s.snr, meta.exposure_s);
+                    let a = self.compute_move(mount, s.snr, gp_dt);
                     return if matches!(a, Action::Idle) {
                         Action::Settle
                     } else {
@@ -880,7 +906,7 @@ impl GuideEngine {
 
         // 7. Move pipeline (dossier §7): algorithms -> direction/rate -> ms,
         //    static BLC, dec-mode gating, duration clamps.
-        self.compute_move(mount, s.snr, meta.exposure_s)
+        self.compute_move(mount, s.snr, gp_dt)
     }
 
     /// The settle monitor's evaluation for a DROPPED settling frame (star
@@ -897,7 +923,12 @@ impl GuideEngine {
     /// correction is possible (dead-reckoning `deduce_result` is 0), so any
     /// non-failure outcome is the Settle wait signal. An in-flight recenter
     /// does NOT step — upstream schedules no move on dropped frames.
-    fn settle_monitor_dropped_frame(&mut self, now: f64, dec_guiding: bool) -> Action {
+    fn settle_monitor_dropped_frame(
+        &mut self,
+        now: f64,
+        dec_guiding: bool,
+        dead_reckon: bool,
+    ) -> Action {
         let err = self.avg_dist.current_error(now, dec_guiding);
         let state = self
             .settle
@@ -910,7 +941,23 @@ impl GuideEngine {
                 self.recenter = None;
                 Action::LockLost
             }
-            _ => Action::Settle,
+            _ => {
+                // A2 (P4-T1 ruling C; upstream deduceResult
+                // gaussian_process_guider.cpp:372-406, dossier §3.3/§6.8.3):
+                // a lost-STAR frame during the settle window dead-reckons
+                // exactly like an ordinary lost frame, so PPEC keeps
+                // correcting periodic error through the settle. Non-predictive
+                // algorithms deduce 0.0 -> Idle -> the Settle wait signal
+                // (prior behavior). A mass-REJECT frame (dead_reckon == false)
+                // does not deduce: the measurement was rejected, not missing.
+                if dead_reckon {
+                    let mv = self.deduce_move();
+                    if !matches!(mv, Action::Idle) {
+                        return mv;
+                    }
+                }
+                Action::Settle
+            }
         }
     }
 
@@ -1415,8 +1462,38 @@ impl GuideEngine {
         let camera_delta = mount_to_camera(mount_delta, &cal);
         self.lock = Some((lock.0 + camera_delta.0, lock.1 + camera_delta.1));
 
-        // GuidingDithered -> reset() (dossier §11.1/§11.2).
-        self.ra_algo.reset();
+        // GuidingDithered (dossier §11.1/§11.2/§6.8.6): a predictive RA
+        // algorithm (PPEC) compensates the gear-time gap IN PLACE and keeps
+        // its trained model (dither_notify -> true, upstream
+        // gaussian_process_guider.cpp:427-434); every reactive algorithm
+        // returns false and is reset as before (upstream reset(), :408-425).
+        // Dec is always reset (A2; P4-T1 rulings A+C).
+        //
+        // ADJUDICATION (gear-rate units; DEVIATION from the plan's literal
+        // `cal.x_rate`, toward the upstream-literal value the plan's own dual
+        // citation mandates). `GuidingDithered(amt, rate)` does
+        // `dither_offset += amt/rate` in SECONDS of gear time, so `rate` must
+        // be px per SECOND of worm motion at 1x sidereal. Upstream computes it
+        // in `GetRAGuideRate` as `1000. * mount->xRate() / guide_speed`
+        // (guide_algorithm_gaussian_process.cpp:1116-1136, the rate handed to
+        // GPG->GuidingDithered at :1141), where `guide_speed` DEFAULTS to 1.0
+        // when the mount's RA guide speed is unknown (:1121-1130). The dossier
+        // states the same: `gear_rate = 1000*x_rate / speed_multiple`, "falls
+        // back to speed multiple 1.0 if unknown" (dossier §6.8.6). Our
+        // `cal.x_rate` is px/MILLISECOND (calibration.rs: `x_rate =
+        // dist/total_ms`), exactly PHD2's `xRate()`, so `1000*cal.x_rate` is
+        // px/second. The engine holds no guide-speed channel (neither
+        // `EngineConfig` nor `Cal` carries it, and the PyO3 `dither(dx,dy)`
+        // signature is frozen), so the speed multiple is the dossier's
+        // documented unknown-fallback 1.0. Passing the plan's raw `cal.x_rate`
+        // (px/ms) would make `dither_offset` ~1000x too large (~200 s of gear
+        // time for a 3 px dither vs the physical ~0.1 s), corrupting the
+        // synthesized GP clock; `1000.0 * cal.x_rate` is the upstream-literal
+        // gear rate under the unknown-guide-speed fallback.
+        let ra_gear_rate = 1000.0 * cal.x_rate;
+        if !self.ra_algo.dither_notify(dx_px, ra_gear_rate) {
+            self.ra_algo.reset();
+        }
         self.dec_algo.reset();
 
         // Multi-star (dossier §4): "A dither sets lock_position_moved =
@@ -1730,5 +1807,22 @@ mod tests {
             "reference point refreshed from the recovery measurement"
         );
         assert!(!e.secondaries[0].was_lost);
+    }
+
+    /// A2/M6 (finding M6): the GP gear clock advances on the real frame
+    /// timestamp delta, guarding host clock jumps (non-monotone or > 10x
+    /// exposure) by falling back to the exposure for that frame.
+    #[test]
+    fn gp_clock_dt_guards_host_clock_jumps() {
+        // First frame (no previous timestamp) uses the exposure.
+        assert_eq!(gp_clock_dt(None, 100.0, 5.0), 5.0);
+        // A normal forward delta is used verbatim.
+        assert_eq!(gp_clock_dt(Some(100.0), 105.0, 5.0), 5.0);
+        // Non-monotone (clock went backwards) -> exposure fallback.
+        assert_eq!(gp_clock_dt(Some(105.0), 100.0, 5.0), 5.0);
+        // Absurd jump (> 10x exposure) -> exposure fallback.
+        assert_eq!(gp_clock_dt(Some(100.0), 160.0, 5.0), 5.0);
+        // At exactly 10x it is still accepted (boundary).
+        assert_eq!(gp_clock_dt(Some(100.0), 150.0, 5.0), 50.0);
     }
 }
