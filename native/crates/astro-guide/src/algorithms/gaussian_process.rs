@@ -14,10 +14,11 @@
 //     parameters, and the `result(input, SNR, time_step)` /
 //     `deduceResult(time_step)` entry points)
 //   and src/guide_algorithm_gaussian_process.cpp:1017-1087 (GuidingStarted
-//     cross-session model retention, dossier §6.8.6 — the retain-pct constant
-//     and reset-vs-retain intent; A5. The on-disk cross-session variant is a
-//     DERIVED buffer-trim adaptation, not upstream-literal — see
-//     `restore_window`).
+//     cross-session model retention, dossier §6.8.6 — the retain-or-reset
+//     gate (`noreset_max_pct_period`, default 40) and its GuidingDithered
+//     re-phasing of the kept model; A5. The on-disk cross-session variant
+//     substitutes the dump→restore downtime for upstream's live worm offset —
+//     see `restore_window`).
 // The GP controller and GP regression carry Max Planck Society BSD-3-Clause
 // provenance (Klenske, Zeilinger, Schölkopf & Hennig, "Gaussian Process Based
 // Predictive Control for Periodic Error Correction," IEEE Transactions on
@@ -119,8 +120,10 @@ pub struct GpParams {
     /// Auto-adjust the period via FFT, `gp_compute_period` (true).
     pub compute_period: bool,
     /// Retain the trained model after stop, % of period, `noreset_max_pct_period`
-    /// (40). Carried for parameter completeness; cross-session model retention
-    /// (dossier §6.8.6 `GuidingStarted`) is not wired by the current engine.
+    /// (40): the cross-session retain-or-reset gate threshold `restore_window`
+    /// applies (A5; upstream `GuidingStarted`,
+    /// `guide_algorithm_gaussian_process.cpp:1017-1087`, dossier §6.8.6). The
+    /// SINGLE source for the threshold — the host passes only the downtime.
     pub retain_max_pct_period: f64,
 }
 
@@ -562,39 +565,67 @@ impl GaussianProcessGuider {
     // --- cross-session model retention (A5; not yet wired by the engine's own
     //     lifecycle — persisted by the Python host across a stop/start) --------
 
-    /// Serialize the trained window for cross-session persistence (A5; P4-T1
-    /// ruling B; upstream model retention around GuidingStarted,
+    /// Serialize the trained window for cross-session persistence (A5 fix
+    /// round; P4-T1 ruling B; upstream model retention around GuidingStarted,
     /// guide_algorithm_gaussian_process.cpp:1017-1087, dossier §6.8.6). Each
     /// row is `(timestamp, measurement, variance, control)` — the four
     /// DataPoint fields `update_gp` reconstructs the GP from (control is
     /// required for the cumulative gear-error sum; the spec's `(t,y,w)` sketch
-    /// is amplified to these four). Includes the seed; an untrained guider
-    /// dumps just it.
+    /// is amplified to these four). EXCLUDES the buffer's trailing pending
+    /// point — the un-measured `DataPoint{timestamp: 0}` that `add_one_point`
+    /// leaves at the back (amended spec §3-A5; the A-T5 review measured that
+    /// including it makes every t-derived retention decision inert — `t_max`
+    /// via `last()` reads 0 — and double-counts its control in `update_gp`'s
+    /// cumulative sum). An untrained guider (seed-only buffer) dumps nothing.
     pub fn dump_window(&self) -> Vec<(f64, f64, f64, f64)> {
+        let n = self.buffer.len();
         self.buffer
             .iter()
+            .take(n.saturating_sub(1))
             .map(|p| (p.timestamp, p.measurement, p.variance, p.control))
             .collect()
     }
 
-    /// Restore a persisted window from `dump_window`, applying retention (A5;
-    /// dossier §6.8.6): keep only the NEWEST points spanning at most
-    /// `retain_pct`% of one period of gear time — the DERIVED cross-session
-    /// adaptation of upstream's `|worm_offset| < retain_pct/100·P` retain rule
-    /// (the on-disk context has no live pier/RA offset; Python gates
-    /// restoration on the calibration reuse-gate instead). An empty or
-    /// seed-only window (or one that trims below 2 points) leaves a fresh
-    /// model. Continues the synthesized clock from the newest retained point.
-    pub fn restore_window(&mut self, points: &[(f64, f64, f64, f64)], retain_pct: f64) {
+    /// Restore a persisted window from `dump_window`, applying the upstream
+    /// retain-or-reset GATE (A5 fix round, amended spec §3-A5; upstream
+    /// GuidingStarted, guide_algorithm_gaussian_process.cpp:1017-1087, dossier
+    /// §6.8.6): when `downtime_s` — the wall-clock seconds between dump and
+    /// restore — is within `retain_max_pct_period`% (default 40,
+    /// `noreset_max_pct_period`) of one period, the ENTIRE window is restored
+    /// and gear-time continuity advances by the downtime through the
+    /// GuidingDithered-style offset (`:427-434` — the same machinery upstream's
+    /// retention path uses to re-phase the kept model by the stopped time).
+    /// Otherwise — too much un-observed worm rotation, or a NEGATIVE downtime
+    /// (the host clock stepped backwards; untrustworthy) — nothing is restored
+    /// and the model stays fresh. No trim anywhere: upstream's gate is binary
+    /// and never truncates the buffer. Upstream reads the live worm offset;
+    /// the on-disk cross-session context has none, so the downtime (tracking
+    /// assumed continuous across the restart — upstream's own stop/start
+    /// assumption) stands in for it, and the Python host additionally gates
+    /// restoration on the calibration reuse-gate (same profile + same
+    /// calibration) in place of upstream's pier-side check. Returns `true` iff
+    /// the window was restored; a dump with fewer than 2 points never is.
+    ///
+    /// On restore the buffer is rebuilt as the dumped points plus ONE fresh
+    /// pending point (control 0 — no correction was applied over the gap),
+    /// the invariant every `result_impl` frame maintains; the synthesized
+    /// clock continues from the newest restored point with the downtime in
+    /// `dither_offset`, so the first live frame's midpoint timestamp lands at
+    /// `t_max + downtime + dt/2` (both `set_timestamp` and
+    /// `predict_gear_error` add the offset — one coherent gear-time axis).
+    /// Unlike a real dither, NO dark-guiding window opens: the host restores
+    /// only after a fresh star lock, so the first live measurement is trusted.
+    pub fn restore_window(&mut self, points: &[(f64, f64, f64, f64)], downtime_s: f64) -> bool {
         if points.len() < 2 {
-            return;
+            return false;
+        }
+        let horizon = (self.params.retain_max_pct_period / 100.0).max(0.0) * self.period_length();
+        if !(0.0..=horizon).contains(&downtime_s) {
+            return false;
         }
         let t_max = points.last().map(|p| p.0).unwrap_or(0.0);
-        let horizon = (retain_pct / 100.0).max(0.0) * self.period_length();
-        let cutoff = t_max - horizon;
-        let kept: VecDeque<DataPoint> = points
+        self.buffer = points
             .iter()
-            .filter(|p| p.0 >= cutoff)
             .map(|&(timestamp, measurement, variance, control)| DataPoint {
                 timestamp,
                 measurement,
@@ -602,22 +633,24 @@ impl GaussianProcessGuider {
                 control,
             })
             .collect();
-        if kept.len() < 2 {
-            return;
+        self.buffer.push_back(DataPoint::default()); // fresh pending, control 0
+        while self.buffer.len() > CIRCULAR_BUFFER_SIZE {
+            self.buffer.pop_front(); // capacity cap only (add_one_point's), not a trim
         }
-        self.buffer = kept;
-        // Continue the synthesized clock from the newest retained point so the
-        // next set_timestamp advances coherently (module clock model). Dither
-        // state and the prediction anchor reset; the learned period (kernel)
-        // and gear-error periodicity are what retention preserves.
+        // Continue the synthesized clock from the newest restored point; the
+        // downtime rides in dither_offset (the GuidingDithered machinery), so
+        // the gear-time axis advances by the gap without re-anchoring. The
+        // learned period is not persisted — the restored data re-feeds the FFT
+        // period estimation once enough gear time accumulates.
         self.wall = t_max;
         self.start_wall = 0.0;
         self.last_wall = t_max;
         self.first_since_start = false;
         self.last_prediction_end = -1.0;
-        self.dither_offset = 0.0;
+        self.dither_offset = downtime_s;
         self.dither_steps = 0;
         self.dithering_active = false;
+        true
     }
 }
 
@@ -655,8 +688,8 @@ impl GuideAlgorithm for GaussianProcessGuider {
         self.dump_window()
     }
 
-    fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], retain_pct: f64) {
-        self.restore_window(points, retain_pct);
+    fn restore_gp_window(&mut self, points: &[(f64, f64, f64, f64)], downtime_s: f64) -> bool {
+        self.restore_window(points, downtime_s)
     }
 
     /// Dead reckoning (dossier §3.3/§6.8.3): uses the last exposure seen
@@ -824,44 +857,90 @@ mod tests {
         assert!(!h.dither_notify(3.0, 2.0));
     }
 
-    /// A5 (P4-T1 ruling B; upstream GuidingStarted
-    /// guide_algorithm_gaussian_process.cpp:1017-1087, dossier §6.8.6):
-    /// dump_window round-trips the trained buffer; restore_window rebuilds it
-    /// with 100% retention (a full period is far wider than the trained span).
+    /// A5 fix round (review Central finding + amended spec §3-A5): a REAL
+    /// dump — built by driving frames through `result_with` — EXCLUDES the
+    /// trailing pending `DataPoint{timestamp: 0}` row that `add_one_point`
+    /// leaves at the back of the buffer. Including it made every t-derived
+    /// retention decision inert (`t_max` via `last()` read 0) and
+    /// double-counted its control in `update_gp`'s cumulative sum — both
+    /// measured by the review's real-dump probe. A within-gate restore then
+    /// rebuilds the ENTIRE window field-for-field plus one fresh pending
+    /// point (control 0 — no correction was applied over the gap).
     #[test]
-    fn dump_window_roundtrips_the_trained_buffer() {
+    fn real_dump_excludes_pending_row_and_roundtrips() {
+        let mut gp = GaussianProcessGuider::new(GpParams::default());
+        for _ in 0..20 {
+            gp.result_with(1.0, 20.0, 5.0);
+        }
+        // Buffer = 20 measured + 1 pending; the dump must hold ONLY the 20.
+        assert_eq!(gp.buffer.len(), 21);
+        let dumped = gp.dump_window();
+        assert_eq!(dumped.len(), 20, "pending row excluded");
+        // No pending row anywhere: timestamps strictly increasing, and the
+        // last dumped row is the newest MEASURED point, not (0,0,0,c).
+        for w in dumped.windows(2) {
+            assert!(w[1].0 > w[0].0, "monotone timestamps: {:?}", w);
+        }
+        let nb = gp.buffer.len();
+        assert!((dumped.last().unwrap().0 - gp.buffer[nb - 2].timestamp).abs() < 1e-12);
+
+        // Restore within the gate (downtime 10 s <= 40% of P=200 s = 80 s).
+        let mut gp2 = GaussianProcessGuider::new(GpParams::default());
+        assert!(gp2.restore_window(&dumped, 10.0), "within-gate restore");
+        assert_eq!(gp2.buffer.len(), dumped.len() + 1, "window + fresh pending");
+        for (i, &(t, m, v, c)) in dumped.iter().enumerate() {
+            assert!((gp2.buffer[i].timestamp - t).abs() < 1e-12);
+            assert!((gp2.buffer[i].measurement - m).abs() < 1e-12);
+            assert!((gp2.buffer[i].variance - v).abs() < 1e-12);
+            assert!((gp2.buffer[i].control - c).abs() < 1e-12);
+        }
+        let pending = gp2.buffer.back().unwrap();
+        assert_eq!(pending.timestamp, 0.0);
+        assert_eq!(pending.control, 0.0, "no control carried into the gap");
+
+        // An untrained guider's buffer is JUST the pending seed: dumps nothing.
+        let fresh = GaussianProcessGuider::new(GpParams::default());
+        assert!(fresh.dump_window().is_empty());
+    }
+
+    /// A5 fix round (amended spec §3-A5; upstream GuidingStarted
+    /// guide_algorithm_gaussian_process.cpp:1017-1087, dossier §6.8.6):
+    /// retention is upstream's BINARY retain-or-reset gate on the downtime,
+    /// NOT a trim. downtime <= `retain_max_pct_period`% (default 40) of one
+    /// period -> the ENTIRE window is kept; beyond -> nothing is restored
+    /// (fresh model). A negative downtime (host clock stepped backwards
+    /// between the sessions) is untrustworthy -> fresh model too.
+    #[test]
+    fn restore_gate_retains_all_or_resets_on_downtime() {
         let mut gp = GaussianProcessGuider::new(GpParams::default());
         for _ in 0..20 {
             gp.result_with(1.0, 20.0, 5.0);
         }
         let dumped = gp.dump_window();
-        assert_eq!(dumped.len(), gp.buffer.len());
 
-        let mut gp2 = GaussianProcessGuider::new(GpParams::default());
-        gp2.restore_window(&dumped, 100.0);
-        assert_eq!(gp2.buffer.len(), dumped.len(), "full retention keeps all");
-        let (t0, m0, v0, c0) = dumped[0];
-        assert!((gp2.buffer[0].timestamp - t0).abs() < 1e-12);
-        assert!((gp2.buffer[0].measurement - m0).abs() < 1e-12);
-        assert!((gp2.buffer[0].variance - v0).abs() < 1e-12);
-        assert!((gp2.buffer[0].control - c0).abs() < 1e-12);
-    }
+        // Threshold: 40% of P=200 s = 80 s (GpParams::retain_max_pct_period —
+        // the single source; restore_window takes no percentage argument).
+        let mut within = GaussianProcessGuider::new(GpParams::default());
+        assert!(within.restore_window(&dumped, 80.0), "at-threshold retains");
+        assert_eq!(
+            within.buffer.len(),
+            dumped.len() + 1,
+            "ENTIRE window kept (no trim) + fresh pending"
+        );
 
-    /// A5: 40% retention keeps only the NEWEST points within 0.40*period of
-    /// gear time; the oldest are discarded (upstream retain_max_pct_period=40).
-    #[test]
-    fn restore_window_retains_newest_pct_of_period() {
-        // Hand-built window spanning 300 s at the default period P=200 s.
-        // horizon = 0.40 * 200 = 80 s; cutoff = 300 - 80 = 220 s. Points at
-        // 0,20,...,300 (16 points): kept are t in [220, 300] -> 220..300 step
-        // 20 = {220,240,260,280,300} = 5 points.
-        let window: Vec<(f64, f64, f64, f64)> =
-            (0..=15).map(|i| (i as f64 * 20.0, 0.1, 1.0, 0.0)).collect();
-        let mut gp = GaussianProcessGuider::new(GpParams::default());
-        gp.restore_window(&window, 40.0);
-        assert_eq!(gp.buffer.len(), 5, "kept newest 80s (0.4*200) of 300s");
-        assert!((gp.buffer.front().unwrap().timestamp - 220.0).abs() < 1e-12);
-        assert!((gp.buffer.back().unwrap().timestamp - 300.0).abs() < 1e-12);
+        let mut beyond = GaussianProcessGuider::new(GpParams::default());
+        assert!(
+            !beyond.restore_window(&dumped, 80.0 + 1e-9),
+            "past-threshold resets"
+        );
+        assert_eq!(beyond.buffer.len(), 1, "fresh model (seed only)");
+
+        let mut backwards = GaussianProcessGuider::new(GpParams::default());
+        assert!(
+            !backwards.restore_window(&dumped, -1.0),
+            "negative downtime resets"
+        );
+        assert_eq!(backwards.buffer.len(), 1);
     }
 
     /// A5: an empty or seed-only window leaves a fresh model (nothing to trust).
@@ -869,57 +948,63 @@ mod tests {
     fn restore_empty_window_is_a_noop() {
         let mut gp = GaussianProcessGuider::new(GpParams::default());
         let n0 = gp.buffer.len();
-        gp.restore_window(&[], 40.0);
+        assert!(!gp.restore_window(&[], 0.0));
         assert_eq!(gp.buffer.len(), n0);
-        gp.restore_window(&[(0.0, 0.0, 0.0, 0.0)], 40.0); // single point < 2
+        assert!(!gp.restore_window(&[(0.0, 0.0, 0.0, 0.0)], 0.0)); // single point < 2
         assert_eq!(gp.buffer.len(), n0);
     }
 
-    /// A5: a reactive algorithm dumps an empty window (no model to persist).
+    /// A5: a reactive algorithm dumps an empty window (no model to persist)
+    /// and its defaulted restore reports nothing restored.
     #[test]
     fn default_dump_window_is_empty_for_reactive_algo() {
         use crate::algorithms::Hysteresis;
-        let h = Hysteresis::default();
+        let mut h = Hysteresis::default();
         assert!(h.dump_gp_window().is_empty());
+        assert!(!h.restore_gp_window(&[(0.0, 0.1, 1.0, 0.0), (5.0, 0.1, 1.0, 0.0)], 0.0));
     }
 
-    /// A5 cross-session clock coherence — the on-disk analog of the A-T4 gap
-    /// fix `gp_clock_ticks_on_dead_reckoned_frames_no_double_count`
-    /// (engine.rs). After restore, the FIRST live frame must advance the
-    /// synthesized GP clock by exactly one frame's `dt` past the newest
-    /// retained point; the between-session downtime is NOT counted as gear
-    /// time. `restore_window` seeds the clock (`wall = last_wall = t_max`,
-    /// `first_since_start = false`) so `set_timestamp` adds exactly `dt`, and
-    /// the engine feeds `dt = exposure` on the first post-restore frame
-    /// (`gp_clock_dt` returns the exposure at a session boundary, never the
-    /// gap). The measured point's midpoint timestamp is therefore
-    /// `t_max + dt/2`, not `t_max + downtime`.
+    /// A5 fix round cross-session clock coherence — the on-disk analog of the
+    /// A-T4 gap fix `gp_clock_ticks_on_dead_reckoned_frames_no_double_count`
+    /// (engine.rs), now driven by a REAL dump (the review showed the previous
+    /// ideal-window variant validated only the no-pending-row case). A
+    /// within-gate restore advances gear-time continuity by the DOWNTIME via
+    /// the GuidingDithered-style offset (upstream GuidingStarted re-phases the
+    /// retained model by the stopped time,
+    /// guide_algorithm_gaussian_process.cpp:1017-1087 -> the GuidingDithered
+    /// machinery :427-434, dossier §6.8.6), so the first live frame's measured
+    /// point lands at `t_max + downtime + dt/2` (midpoint convention) — one
+    /// frame past the gap-adjusted newest point: neither re-anchored to zero
+    /// nor spanning the raw wall gap twice.
     #[test]
-    fn restore_continues_clock_without_spanning_downtime() {
-        // Window spanning 0..100 s at a 5 s cadence (21 points), full retention.
-        let t_max = 100.0;
-        let window: Vec<(f64, f64, f64, f64)> =
-            (0..=20).map(|i| (i as f64 * 5.0, 0.1, 1.0, 0.0)).collect();
-        let mut gp = GaussianProcessGuider::new(GpParams::default());
-        gp.restore_window(&window, 100.0);
-        assert!((gp.buffer.back().unwrap().timestamp - t_max).abs() < 1e-12);
-
-        // A conceptually long downtime elapses. The engine hands the first live
-        // frame a `dt` of one exposure (5 s) — the GP must advance its clock by
-        // exactly that, not by the gap.
+    fn restore_applies_downtime_phase_advance_with_one_dt_continuity() {
         let dt = 5.0;
-        gp.result_with(0.1, 20.0, dt);
-
-        // The just-measured point is now the second-last (a fresh pending point
-        // was pushed). Its midpoint timestamp is t_max + dt - dt/2 = t_max +
-        // dt/2 — exactly one frame past the newest retained point.
-        let n = gp.buffer.len();
-        let measured_ts = gp.buffer[n - 2].timestamp;
+        let mut gp = GaussianProcessGuider::new(GpParams::default());
+        for _ in 0..20 {
+            gp.result_with(1.0, 20.0, dt);
+        }
+        let dumped = gp.dump_window();
+        let t_max = dumped.last().unwrap().0;
         assert!(
-            (measured_ts - (t_max + dt / 2.0)).abs() < 1e-9,
-            "first live frame must continue one dt past t_max (expected {}), \
-             got {measured_ts}",
-            t_max + dt / 2.0
+            t_max > 0.0,
+            "real dump's newest point is a real measurement"
+        );
+
+        let downtime = 30.0; // within the 80 s gate
+        let mut gp2 = GaussianProcessGuider::new(GpParams::default());
+        assert!(gp2.restore_window(&dumped, downtime));
+
+        gp2.result_with(0.1, 20.0, dt);
+        // The just-measured point is the second-last (a fresh pending was
+        // pushed). set_timestamp: wall t_max -> t_max + dt, delta = dt, ts =
+        // wall - dt/2 + dither_offset(=downtime) = t_max + downtime + dt/2.
+        let n = gp2.buffer.len();
+        let measured_ts = gp2.buffer[n - 2].timestamp;
+        let expected = t_max + downtime + dt / 2.0;
+        assert!(
+            (measured_ts - expected).abs() < 1e-9,
+            "first live frame must advance gear time by downtime + one dt \
+             (expected {expected}), got {measured_ts}"
         );
     }
 }
