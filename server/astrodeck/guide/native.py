@@ -89,6 +89,15 @@ _CAL_TIMEOUT_S = 180.0
 # reacquire attempt, not just a narrow local re-check.
 _REACQUIRE_BUDGET = 8
 
+# A1 (final-branch-review I2): a transient guide-camera exposure fault is
+# absorbed by bounded retry+backoff around every guide/cal exposure; a
+# persistent one dies loudly through the existing honest-death path. Retries
+# after the first attempt, backoff seconds between attempts (one per retry),
+# and the consecutive-exhausted-frame budget that trips honest death.
+_EXPOSE_RETRIES = 3
+_EXPOSE_BACKOFF_S = (0.5, 1.0, 2.0)
+_FAULT_FRAME_BUDGET = 5
+
 # Cap on how long ``dither`` waits for the engine's settle window to close.
 _SETTLE_TIMEOUT_S = 90.0
 
@@ -151,6 +160,7 @@ class NativeGuider(Guider):
         self._active = False
         self._lost = False
         self._reacquire = 0
+        self._fault_frames = 0
 
         # Dither settle coordination: ``dither`` opens the engine's settle window
         # and awaits ``_settle_done``; the guide loop's ``_sync_settle_window``
@@ -215,6 +225,7 @@ class NativeGuider(Guider):
                 return
             self._lost = False
             self._reacquire = 0
+            self._fault_frames = 0
             self._settle_open = False
             rates = await self._read_guide_rates()
             self._engine = _native.GuideEngine(self._build_engine_config(rates))
@@ -412,7 +423,30 @@ class NativeGuider(Guider):
         star loss latches ``_lost``."""
         try:
             while not self._stop.is_set():
-                frame = await self._expose()
+                try:
+                    frame = await self._expose()
+                except DeviceError as e:
+                    # A1 (final-branch-review I2): a fully-exhausted exposure is
+                    # ONE lost frame. Consecutive exhaustions past the budget mean
+                    # a wedged camera — die loudly through the existing honest-death
+                    # path (bus error names the device fault; guiding=False;
+                    # is_active goes false so the sequence engine's recovery sees
+                    # it). The engine's own star-lost _REACQUIRE_BUDGET is unchanged.
+                    self._fault_frames += 1
+                    if self._fault_frames >= _FAULT_FRAME_BUDGET:
+                        bus.log("error",
+                                f"native guider: guide camera fault — stopping "
+                                f"({e})", "guide")
+                        self._lost = True
+                        self._active = False
+                        self._stop.set()
+                        bus.publish("guide", **self.stats().__dict__)
+                        break
+                    bus.log("warning",
+                            f"native guider: lost frame to camera fault "
+                            f"({self._fault_frames}/{_FAULT_FRAME_BUDGET})", "guide")
+                    continue
+                self._fault_frames = 0
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
                 await self._dispatch(action)
@@ -538,10 +572,31 @@ class NativeGuider(Guider):
     # -------------------------------------------------------------- exposures
 
     async def _expose(self):
-        frame = await self.cam.expose(
-            self._exposure_s, self._gain, self._offset, binning=self._binning)
-        self._last_frame = frame.data
-        return frame
+        """Expose one guide frame, absorbing a transient camera fault (A1;
+        final-branch-review I2): on DeviceError (incl. the A3 imageready
+        timeout) retry up to _EXPOSE_RETRIES times with _EXPOSE_BACKOFF_S
+        backoff. asyncio.CancelledError (a stop mid-exposure) is NOT retried —
+        it propagates immediately. Exhausted retries raise DeviceError, which
+        the guide loop counts as one lost frame and the calibration path
+        surfaces as a clean calibration abort."""
+        last_err: DeviceError | None = None
+        for attempt in range(_EXPOSE_RETRIES + 1):
+            try:
+                frame = await self.cam.expose(
+                    self._exposure_s, self._gain, self._offset,
+                    binning=self._binning)
+                self._last_frame = frame.data
+                return frame
+            except DeviceError as e:
+                last_err = e
+                if attempt < _EXPOSE_RETRIES:
+                    bus.log("warning",
+                            f"native guider: guide exposure failed ({e}); "
+                            f"retry {attempt + 1}/{_EXPOSE_RETRIES}", "guide")
+                    await asyncio.sleep(_EXPOSE_BACKOFF_S[attempt])
+        raise DeviceError(
+            f"native guider: guide exposure failed after {_EXPOSE_RETRIES} "
+            f"retries: {last_err}")
 
     async def _read_guide_rates(self) -> tuple[float, float] | None:
         with contextlib.suppress(Exception):

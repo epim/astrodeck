@@ -17,6 +17,7 @@ import numpy as np
 from .base import (
     Camera,
     CameraFrame,
+    DeviceError,
     FilterWheel,
     Focuser,
     PierSide,
@@ -516,6 +517,10 @@ class SimGuideCamera(Camera):
         self.bayer_pattern = None
         self._abort = asyncio.Event()
         self.full_well = 65535
+        # A1 (final-branch-review I2) fault-injection knob: the next N expose
+        # calls raise DeviceError, driving the native guider's retry envelope
+        # and honest-death budget in tests. 0 = no injected faults.
+        self.guide_expose_fail_next_n = 0
         # anchor the guide star's base center now, at construction — there is
         # only ever one SimGuideCamera per rig, so this is the rig's single
         # source of truth for where "zero guide error" points.
@@ -537,6 +542,9 @@ class SimGuideCamera(Camera):
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
                      light: bool = True, save: bool = False,
                      target: str = "") -> CameraFrame:
+        if self.guide_expose_fail_next_n > 0:
+            self.guide_expose_fail_next_n -= 1
+            raise DeviceError("sim guide camera: injected exposure fault")
         self._abort.clear()
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
