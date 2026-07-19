@@ -67,3 +67,47 @@ async def test_camera_expose_frame_roundtrips(host_port):
     finally:
         await cam.disconnect()
         await conn.close()
+
+
+# --------------------------------------------------------------------------
+# COM-T4 gates: Focuser + FilterWheel through the real ASCOM Simulator drivers.
+# Each is independently skip-guarded on ITS OWN simulator (not the module-level
+# telescope+camera pytestmark above) so a box missing one type still runs the
+# others.
+# --------------------------------------------------------------------------
+_FOC = "ASCOM.Simulator.Focuser"
+_FW = "ASCOM.Simulator.FilterWheel"
+
+
+@pytest.mark.skipif(not _sim_present("focuser", _FOC),
+                    reason="ASCOM Simulator Focuser not registered")
+@pytest.mark.asyncio
+async def test_focuser_move_through_comhost(host_port):
+    from astrodeck.devices.alpaca import AlpacaFocuser
+    conn = AlpacaConnection("127.0.0.1", host_port)
+    foc = AlpacaFocuser(conn, _dev_num("focuser", _FOC), "Sim Focuser")
+    try:
+        await foc.connect()
+        start = await foc.get_position()
+        await foc.move_to(min(start + 500, foc.max_position))
+        assert await foc.get_position() != start
+    finally:
+        await foc.disconnect()
+        await conn.close()
+
+
+@pytest.mark.skipif(not _sim_present("filterwheel", _FW),
+                    reason="ASCOM Simulator FilterWheel not registered")
+@pytest.mark.asyncio
+async def test_filterwheel_change_through_comhost(host_port):
+    from astrodeck.devices.alpaca import AlpacaFilterWheel
+    conn = AlpacaConnection("127.0.0.1", host_port)
+    fw = AlpacaFilterWheel(conn, _dev_num("filterwheel", _FW), "Sim Wheel")
+    try:
+        await fw.connect()
+        assert len(fw.filter_names) > 0
+        await fw.set_position(1)
+        assert await fw.get_position() == 1
+    finally:
+        await fw.disconnect()
+        await conn.close()
