@@ -17,7 +17,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      # -n auto overrides the repo addopts' -n 12 (tuned for the multi-core dev
+      # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
+      # enough to consistently trip wall-clock perf gates (test_render_perf_768).
+      - run: pytest -q -n auto
 
   relay:
     runs-on: ubuntu-latest
