@@ -235,3 +235,4 @@ def serve(port: int = 0, portfile: "str | None" = None, *,
 from . import handlers_telescope as _ht  # noqa: E402,F401
 from . import handlers_camera as _hc  # noqa: E402,F401
 from . import handlers_misc as _hm  # noqa: E402,F401
+from . import handlers_aux as _ha  # noqa: E402,F401
