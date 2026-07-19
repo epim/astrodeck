@@ -316,8 +316,12 @@ pub struct GuideEngine {
 
     recent: VecDeque<(f64, f64, f64)>,
     last_snr: f64,
-    /// Timestamp of the last accepted frame that advanced the GP gear clock
-    /// (finding M6); `None` at a session boundary. Feeds `gp_clock_dt`.
+    /// Timestamp of the last frame that advanced the GP gear clock (finding
+    /// M6): every accepted frame AND every dead-reckoned lost-star frame
+    /// (`deduce_move` — upstream sets `last_time_ = now` on dark points too,
+    /// `HandleDarkGuiding` -> `SetTimestamp`,
+    /// gaussian_process_guider.cpp:109-114 -> :87-95; dossier §6.8.3).
+    /// `None` at a session boundary. Feeds `gp_clock_dt`.
     last_gp_ts: Option<f64>,
 
     /// Tracked secondary guide stars (dossier §2.6/§4; P3-T1). Empty in
@@ -721,7 +725,7 @@ impl GuideEngine {
             // (Action::Idle, the prior behavior); only PPEC (dossier §6.8.3)
             // predicts through the gap, keeping periodic error corrected
             // during short dropouts.
-            return self.deduce_move();
+            return self.deduce_move(now);
         }
         let s = star.expect("found implies a star");
         // `mut`: dossier §4's RefineOffset may replace both (step 5 below),
@@ -919,10 +923,16 @@ impl GuideEngine {
     /// missing > 20 s — dossier §13, guider.cpp:1108-1114). While the
     /// window is open this monitor OWNS the LockLost failure path (reason
     /// classification: a settling LockLost is always settle_timeout). A
-    /// dropped frame can never be Done (in-range requires locked), and no
-    /// correction is possible (dead-reckoning `deduce_result` is 0), so any
-    /// non-failure outcome is the Settle wait signal. An in-flight recenter
-    /// does NOT step — upstream schedules no move on dropped frames.
+    /// dropped frame can never be Done (in-range requires locked). On a
+    /// lost-STAR frame (`dead_reckon == true`) the axis algorithms
+    /// dead-reckon (A2; P4-T1 ruling C — upstream `deduceResult`,
+    /// gaussian_process_guider.cpp:372-406, dossier §3.3/§6.8.3): PPEC emits
+    /// a real predicted correction; every reactive algorithm deduces 0.0, so
+    /// the non-failure outcome degrades to the Settle wait signal (the prior
+    /// behavior). A mass-REJECT frame (`dead_reckon == false`) never deduces
+    /// — the measurement was rejected, not missing. An in-flight recenter
+    /// does NOT step on any dropped frame — upstream schedules no recenter
+    /// move there.
     fn settle_monitor_dropped_frame(
         &mut self,
         now: f64,
@@ -951,7 +961,7 @@ impl GuideEngine {
                 // (prior behavior). A mass-REJECT frame (dead_reckon == false)
                 // does not deduce: the measurement was rejected, not missing.
                 if dead_reckon {
-                    let mv = self.deduce_move();
+                    let mv = self.deduce_move(now);
                     if !matches!(mv, Action::Idle) {
                         return mv;
                     }
@@ -1102,7 +1112,17 @@ impl GuideEngine {
     /// (the frozen [`GuideAlgorithm::deduce_result`] signature carries no
     /// `dt`; exposures are near-constant, matching upstream's `GetTimeStep()`
     /// which returns the current exposure).
-    fn deduce_move(&mut self) -> Action {
+    fn deduce_move(&mut self, now: f64) -> Action {
+        // A2/M6 fix round (review Important #2): a dead-reckoned frame ticks
+        // the GP gear-clock reference too. Upstream sets `last_time_ = now`
+        // on EVERY handled frame, dark points included (`HandleDarkGuiding`
+        // -> `SetTimestamp`, gaussian_process_guider.cpp:109-114 -> :87-95,
+        // called from `deduceResult` at :374; dossier §6.8.3): the GP's wall
+        // advances one `last_time_step` per deduced frame, so if `last_gp_ts`
+        // stayed at the last ACCEPTED frame, the recovery frame's
+        // `gp_clock_dt` would re-span the whole gap and double-count it
+        // (~1 exposure fast per lost frame).
+        self.last_gp_ts = Some(now);
         let xd = self.ra_algo.deduce_result();
         let yd = self.dec_algo.deduce_result();
         if xd == 0.0 && yd == 0.0 {
@@ -1824,5 +1844,150 @@ mod tests {
         assert_eq!(gp_clock_dt(Some(100.0), 160.0, 5.0), 5.0);
         // At exactly 10x it is still accepted (boundary).
         assert_eq!(gp_clock_dt(Some(100.0), 150.0, 5.0), 50.0);
+    }
+
+    /// A minimal valid [`Cal`] for the A2 dither/clock tests: RA rate
+    /// 0.015 px/ms (the measured sim-rig calibration magnitude), orthogonal
+    /// axes, no dec compensation (unknown-declination sentinel).
+    fn test_cal() -> Cal {
+        Cal {
+            x_rate: 0.015,
+            y_rate: 0.015,
+            x_angle: 0.0,
+            y_angle: PI / 2.0,
+            y_angle_error: 0.0,
+            declination: UNKNOWN_DECLINATION,
+            pier_side: PierSide::Unknown,
+            ra_parity: Parity::Unknown,
+            dec_parity: Parity::Unknown,
+            rotator_angle: 0.0,
+            binning: 1,
+            is_valid: true,
+        }
+    }
+
+    /// The primary star measured exactly at the (100, 100) lock position.
+    fn found_star() -> MeasuredStar {
+        MeasuredStar {
+            x: 100.0,
+            y: 100.0,
+            snr: 20.0,
+            mass: 1000.0,
+            hfd: 3.0,
+            found: true,
+        }
+    }
+
+    /// A2 fix round (review Important #1): PIN the dither path's gear-rate
+    /// conversion. The rate handed to `dither_notify` is px per SECOND of
+    /// worm motion, `1000 * cal.x_rate` (`cal.x_rate` is px/MILLISECOND,
+    /// calibration.rs `x_rate = dist/total_ms`; upstream `GetRAGuideRate` is
+    /// `1000. * mount->xRate() / guide_speed` with the guide-speed unknown
+    /// fallback 1.0, guide_algorithm_gaussian_process.cpp:1116-1136, handed
+    /// to GuidingDithered at :1141; dossier §6.8.6), so the gear-time offset
+    /// GuidingDithered applies (`dither_offset += amt/rate`,
+    /// gaussian_process_guider.cpp:427-434) is `amt / (1000 * x_rate)`
+    /// seconds. A 1000 -> 1 mutation of the conversion must fail this test
+    /// (the review's mutation check showed no prior test exercised it: the
+    /// GP unit test receives `rate` directly, and the Python third arm
+    /// converges either way).
+    #[test]
+    fn dither_gear_rate_is_px_per_second_of_worm_motion() {
+        use std::sync::{Arc, Mutex};
+
+        struct RateProbe {
+            seen: Arc<Mutex<Option<(f64, f64)>>>,
+        }
+        impl GuideAlgorithm for RateProbe {
+            fn result(&mut self, _input: f64) -> f64 {
+                0.0
+            }
+            fn reset(&mut self) {}
+            fn min_move(&self) -> f64 {
+                0.0
+            }
+            fn dither_notify(&mut self, ra_amt_px: f64, ra_rate: f64) -> bool {
+                *self.seen.lock().unwrap() = Some((ra_amt_px, ra_rate));
+                true
+            }
+        }
+
+        let mut e = GuideEngine::new(EngineConfig::default());
+        let seen = Arc::new(Mutex::new(None));
+        e.ra_algo = Box::new(RateProbe {
+            seen: Arc::clone(&seen),
+        });
+        e.cal = Some(test_cal()); // x_rate = 0.015 px/ms
+        e.lock = Some((100.0, 100.0));
+
+        e.dither(3.0, 0.0);
+
+        let (amt, rate) = seen
+            .lock()
+            .unwrap()
+            .expect("dither must notify the RA algorithm");
+        assert_eq!(amt, 3.0, "amt is the RA dither magnitude (px)");
+        // 0.015 px/ms -> 15 px/s of worm motion (speed-multiple fallback 1.0).
+        assert!(
+            (rate - 15.0).abs() < 1e-12,
+            "gear rate must be px/SECOND (1000 * x_rate = 15.0): got {rate}"
+        );
+        // The gear-time offset GuidingDithered applies is amt/rate = 0.2 s —
+        // NOT the ~200 s a raw px/ms rate would produce.
+        assert!(
+            (amt / rate - 0.2).abs() < 1e-12,
+            "gear-time offset must be amt / (1000 * x_rate) = 0.2 s, got {}",
+            amt / rate
+        );
+    }
+
+    /// A2/M6 fix round (review Important #2): dead-reckoned (lost-star)
+    /// frames advance the GP gear-clock reference too. Upstream updates
+    /// `last_time_` on EVERY frame the guider handles — dark points included
+    /// (`HandleDarkGuiding` -> `SetTimestamp` sets `last_time_ = now`,
+    /// gaussian_process_guider.cpp:109-114 -> :87-95, called from
+    /// `deduceResult` at :374; dossier §6.8.3) — so the recovery frame's
+    /// delta spans ONE frame interval, not the whole gap. The GP already
+    /// advanced its wall during the deduced frames (each `deduce_result`
+    /// consumed one `last_time_step`); re-spanning the gap from the last
+    /// ACCEPTED frame would double-count it (~1 exposure fast per lost
+    /// frame).
+    #[test]
+    fn gp_clock_ticks_on_dead_reckoned_frames_no_double_count() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        e.set_calibration(test_cal());
+        e.begin_guiding();
+        let meta = |t: f64| FrameMeta {
+            timestamp_s: t,
+            exposure_s: 5.0,
+        };
+
+        // t=95: lock-establishing frame — not an accepted guide frame, so it
+        // does not tick the GP clock.
+        e.ingest(&meta(95.0), &[found_star()]);
+        assert_eq!(e.last_gp_ts, None, "lock frame must not tick the GP clock");
+
+        // t=100: first accepted frame ticks the clock.
+        e.ingest(&meta(100.0), &[found_star()]);
+        assert_eq!(e.last_gp_ts, Some(100.0));
+
+        // t=105..115: the star is lost; each frame dead-reckons
+        // (deduce_move) and must tick the clock reference (upstream: the
+        // dark point sets last_time_ = now).
+        for t in [105.0, 110.0, 115.0] {
+            e.ingest(&meta(t), &[]);
+            assert_eq!(
+                e.last_gp_ts,
+                Some(t),
+                "dead-reckoned frame at t={t} must tick the GP clock"
+            );
+        }
+
+        // The recovery frame's delta is ONE frame interval, not the whole
+        // 20 s gap (which the >10x-exposure guard would not even catch here,
+        // since 20 <= 10 * 5).
+        assert_eq!(gp_clock_dt(e.last_gp_ts, 120.0, 5.0), 5.0);
+        e.ingest(&meta(120.0), &[found_star()]);
+        assert_eq!(e.last_gp_ts, Some(120.0));
     }
 }
