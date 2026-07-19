@@ -58,22 +58,51 @@ def _strip_site(site: dict) -> None:
         site.pop(k, None)
 
 
+def _scrub_site_node(container: dict) -> None:
+    """Make ``container['site']`` SAFE for a non-holder IN PLACE, FAIL-CLOSED on
+    an unexpected shape.
+
+    A plain-``dict`` site has the four precise keys key-stripped (the normal
+    path, spec §2). A site of ANY OTHER shape -- a model, a list, a scalar, some
+    future nesting we cannot key-strip -- is REMOVED WHOLESALE. We never leave a
+    ``site`` node we could not positively strip, because a coordinate hidden in
+    an unexpected shape MUST fail CLOSED (absent) and never fail OPEN (leak):
+    the payload/serializer shape has grown before and will again, and the
+    security posture (this is the ONLY site-precision enforcement seam) demands
+    that drift default to stripping, not leaking. No-op when ``site`` is absent."""
+    if "site" not in container:
+        return
+    if isinstance(container.get("site"), dict):
+        _strip_site(container["site"])
+    else:
+        container.pop("site", None)  # unexpected shape -> fail CLOSED
+
+
 def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     """Strip precise site keys in ``payload`` unless ``principal`` holds
     ``view.site_precise``. Handles the top-level ``site`` block AND the
     duplicate copy inside an embedded ``config`` block (summary/hello frame).
-    Mutates + returns ``payload`` (which is always a fresh per-call dict)."""
+    Mutates + returns ``payload`` (which is always a fresh per-call dict).
+
+    FAIL-CLOSED on shape drift (whole-branch security review): an unexpected
+    ``site`` shape is stripped WHOLESALE (see ``_scrub_site_node``), and the
+    whole routine is wrapped so redaction can NEVER raise out and 500 a surface
+    -- on any unforeseen error it removes the site node(s) and returns a safe
+    (coordinate-free) payload rather than propagate."""
     if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
         return payload  # holder: full precision, untouched
-    if isinstance(payload, dict):
-        site = payload.get("site")
-        if isinstance(site, dict):
-            _strip_site(site)
+    if not isinstance(payload, dict):
+        return payload
+    try:
+        _scrub_site_node(payload)
         cfg = payload.get("config")
         if isinstance(cfg, dict):
-            cfg_site = cfg.get("site")
-            if isinstance(cfg_site, dict):
-                _strip_site(cfg_site)
+            _scrub_site_node(cfg)
+    except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
+        payload.pop("site", None)
+        cfg = payload.get("config")
+        if isinstance(cfg, dict):
+            cfg.pop("site", None)
     return payload
 
 
@@ -111,25 +140,50 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     data = ev_json.get("data")
     if not isinstance(data, dict):
         return ev_json
-    new_data: dict | None = None
-    site = data.get("site")
-    if isinstance(site, dict) and any(k in site for k in _SITE_STRIP_KEYS):
-        new_data = dict(data)
-        new_site = dict(site)
-        _strip_site(new_site)
-        new_data["site"] = new_site
-    cfg = data.get("config")
-    if isinstance(cfg, dict) and isinstance(cfg.get("site"), dict):
-        base = new_data if new_data is not None else dict(data)
-        new_cfg = dict(cfg)
-        new_cfg_site = dict(cfg["site"])
-        _strip_site(new_cfg_site)
-        new_cfg["site"] = new_cfg_site
-        base["config"] = new_cfg
-        new_data = base
-    if new_data is None:
-        return ev_json  # nothing site-bearing in this event
-    return {**ev_json, "data": new_data}
+    try:
+        new_data: dict | None = None
+        if "site" in data:
+            site = data.get("site")
+            if isinstance(site, dict):
+                if any(k in site for k in _SITE_STRIP_KEYS):
+                    new_data = dict(data)
+                    new_site = dict(site)
+                    _strip_site(new_site)
+                    new_data["site"] = new_site
+            else:
+                # unexpected shape -> fail CLOSED: drop the whole site node
+                # (a coordinate we cannot key-strip must never leak).
+                new_data = dict(data)
+                new_data.pop("site", None)
+        cfg = data.get("config")
+        if isinstance(cfg, dict) and "site" in cfg:
+            base = new_data if new_data is not None else dict(data)
+            new_cfg = dict(cfg)
+            cfg_site = cfg.get("site")
+            if isinstance(cfg_site, dict):
+                new_cfg_site = dict(cfg_site)
+                _strip_site(new_cfg_site)
+                new_cfg["site"] = new_cfg_site
+            else:
+                new_cfg.pop("site", None)  # unexpected shape -> fail CLOSED
+            base["config"] = new_cfg
+            new_data = base
+        if new_data is None:
+            return ev_json  # nothing site-bearing in this event
+        return {**ev_json, "data": new_data}
+    except Exception:  # noqa: BLE001 - never crash the ws lane: fail CLOSED
+        # Rebuild data with every site-bearing node removed (absent, never
+        # leaked) and forward it, so a shape we did not anticipate degrades to a
+        # coordinate-free event rather than propagating an exception that would
+        # tear down the whole /ws telemetry stream.
+        safe = dict(data)
+        safe.pop("site", None)
+        cfg = safe.get("config")
+        if isinstance(cfg, dict):
+            cfg = dict(cfg)
+            cfg.pop("site", None)
+            safe["config"] = cfg
+        return {**ev_json, "data": safe}
 
 
 # ------------------------------------------------------ driver-row redaction
@@ -195,5 +249,6 @@ __all__ = [
     "_redact_drivers_for",
     "_redact_session_for",
     "_strip_site",
+    "_scrub_site_node",
     "_SITE_STRIP_KEYS",
 ]

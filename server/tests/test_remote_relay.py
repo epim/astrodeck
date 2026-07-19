@@ -1113,3 +1113,211 @@ def test_tunneled_ws_downgrade_midstream_operator_to_viewer_drops_weather(
         assert any(p["type"] == "status" for p in payloads)  # loop alive after drop
 
     asyncio.run(_scenario())
+
+
+# ================================================= tunnel resilience (banner bug)
+# Regression battery for the live "TELEMETRY CATCHING UP / Waiting for fresh
+# telemetry" banner on the REMOTE UI. Root cause: the status/preview/config
+# payload shape GREW past the per-frame ceiling (DEFAULT_MAX_PAYLOAD = 64 KiB);
+# a single oversize /ws event made encode_frame raise ProtocolError, which the
+# broad except in _run_ws caught by closing the WHOLE ws stream (WS_CLOSE 1011).
+# All subsequent status frames were then starved and the relay's redial just hit
+# the same oversize frame again -> a repeating exception that never delivered
+# telemetry. The fix ISOLATES a per-event encode failure: the oversize event is
+# dropped (throttled warning) and the stream stays alive. (The on-LAN /ws never
+# hit this: send_json has no per-frame ceiling. REST never hit it either: it
+# CHUNKS its response body, so a grown /api/status reassembles intact.)
+
+
+def test_tunneled_ws_oversize_event_does_not_kill_stream(tmp_path, monkeypatch):
+    """A single /ws event whose JSON exceeds the 64 KiB per-frame ceiling is
+    DROPPED, not fatal: the ws stream stays open and the NEXT (normal) status
+    frame is still delivered. Pre-fix, encode_frame's ProtocolError closed the
+    stream (WS_CLOSE 1011) and the later status frame never arrived."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
+
+    async def _scenario():
+        channel = FakeChannel()
+        client = _make_relay_client(app, channel)
+        channel.push_frame(FrameType.WS_OPEN, 4,
+                           {"path": "/ws", "query": "", "ws_id": 4})
+        task = asyncio.create_task(client._serve_once(client._config()))
+        # wait for the hello so we know the ws has subscribed to the bus
+        await _wait_for_frame(channel, lambda f: f.type == FrameType.WS_DATA)
+        from astrodeck.events import bus
+        # oversize event: its JSON is well over DEFAULT_MAX_PAYLOAD (64 KiB)
+        assert len(json.dumps(["x" * 100] * 1000)) > DEFAULT_MAX_PAYLOAD
+        bus.publish("status", marker="OVERSIZE", blob=["x" * 100] * 1000)
+        await asyncio.sleep(0.03)
+        # a NORMAL small status event AFTER the oversize one
+        bus.publish("status", marker="AFTER")
+        await _wait_for_frame(
+            channel,
+            lambda f: f.type == FrameType.WS_DATA
+            and json.loads(f.payload).get("data", {}).get("marker") == "AFTER")
+        channel.finish()
+        await asyncio.wait_for(task, timeout=5.0)
+
+        frames = channel.sent_frames()
+        assert not any(f.type == FrameType.WS_CLOSE for f in frames), \
+            "oversize event must NOT close the ws telemetry stream"
+        markers = [json.loads(f.payload).get("data", {}).get("marker")
+                   for f in frames if f.type == FrameType.WS_DATA]
+        assert "OVERSIZE" not in markers, "the oversize event must be dropped"
+        assert "AFTER" in markers, "telemetry must survive the oversize event"
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_ws_forwards_connected_rig_status(tmp_path, monkeypatch):
+    """The tunneled /ws forwards the CURRENT (grown) status event shape from a
+    connected sim rig: the real poll_status() push (providers/optics/mount/...)
+    reaches the browser intact, and the hello carries the summary shape. Pins
+    that a normal-scale modern payload rides the tunnel (the banner is the
+    OVERSIZE case above, not the everyday one)."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
+    from astrodeck.hub import hub
+
+    async def _scenario():
+        await hub.connect_sim()
+        try:
+            channel = FakeChannel()
+            client = _make_relay_client(app, channel)
+            channel.push_frame(FrameType.WS_OPEN, 7,
+                               {"path": "/ws", "query": "", "ws_id": 7})
+            task = asyncio.create_task(client._serve_once(client._config()))
+            await _wait_for_frame(channel, lambda f: f.type == FrameType.WS_DATA)
+            from astrodeck.events import bus
+            bus.publish("status", **(await hub.poll_status()))
+            await _wait_for_frame(
+                channel,
+                lambda f: f.type == FrameType.WS_DATA
+                and json.loads(f.payload).get("type") == "status")
+            channel.finish()
+            await asyncio.wait_for(task, timeout=5.0)
+
+            payloads = await _ws_data_payloads(channel)
+            assert payloads[0]["type"] == "hello"
+            assert "config" in payloads[0]["data"]  # summary shape
+            status = [p for p in payloads if p["type"] == "status"]
+            assert status, "the connected-rig status push must reach the browser"
+            data = status[-1]["data"]
+            assert data.get("mode") == "sim"
+            assert "connected" in data and "providers" in data  # grown shape
+        finally:
+            await hub.disconnect_all()
+
+    asyncio.run(_scenario())
+
+
+def test_tunneled_status_rest_connected_rig(tmp_path, monkeypatch):
+    """Authenticated tunneled GET /api/status with a CONNECTED sim rig returns
+    200 and the full (grown) status body reassembles intact -- the REST lane
+    chunks its response body, so even a large status never 500s over the tunnel.
+    (Complements the ws test: the banner is the ws lane, not this one.)"""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    set_active_provider(_FixedPrincipalProvider(principal_for_role("admin")))
+    from astrodeck.hub import hub
+
+    async def _scenario():
+        await hub.connect_sim()
+        try:
+            channel = FakeChannel()
+            client = _make_relay_client(app, channel)
+            channel.push_frame(FrameType.REQ_OPEN, 6,
+                               {"method": "GET", "path": "/api/status",
+                                "query": "", "has_body": False})
+            frames = await _drain_request(client, channel, stream_id=6)
+            heads = [f for f in frames if f.type == FrameType.RESP_HEAD]
+            assert heads and heads[0].header["status"] == 200, \
+                f"tunneled /api/status must be 200, got {heads and heads[0].header}"
+            body = b"".join(f.payload for f in frames
+                            if f.type == FrameType.RESP_DATA)
+            doc = json.loads(body)
+            assert doc.get("mode") == "sim"
+            assert "connected" in doc and "providers" in doc  # grown shape intact
+        finally:
+            await hub.disconnect_all()
+
+    asyncio.run(_scenario())
+
+
+# ---------------------------------------------------- redaction shape-tolerance
+# The site-precision seam must FAIL CLOSED on shape drift: an unexpected `site`
+# node (a future model, a list, anything not a plain dict we can key-strip) is
+# removed WHOLESALE rather than left in place to leak, and redaction never raises
+# out to 500/kill a surface. Pre-fix the isinstance(site, dict) guard silently
+# LEFT a non-dict site in place (fail OPEN).
+
+class _SiteModelStub:
+    """Stand-in for a future non-dict `site` node carrying coordinates (e.g. a
+    pydantic model), to prove redaction fails CLOSED on an unexpected shape."""
+    latitude = _PRECISE_LAT
+    longitude = _PRECISE_LON
+    name = _PRECISE_NAME
+    elevation_m = _PRECISE_ELEV
+
+
+def test_redact_site_for_failcloses_on_nondict_site():
+    viewer = principal_for_role("viewer")
+    payload = {"mode": "sim", "site": _SiteModelStub(),
+               "config": {"site": _SiteModelStub(), "x": 1}}
+    out = redact_module._redact_site_for(payload, viewer)
+    assert "site" not in out, "a non-dict top-level site must be stripped WHOLESALE"
+    assert "site" not in out["config"], "a non-dict config.site must be stripped"
+    # a holder is untouched (full precision)
+    admin = principal_for_role("admin")
+    full = {"site": {"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON,
+                     "name": _PRECISE_NAME, "elevation_m": _PRECISE_ELEV,
+                     "is_default": False}}
+    assert redact_module._redact_site_for(full, admin)["site"]["latitude"] \
+        == _PRECISE_LAT
+
+
+def test_redact_ws_event_failcloses_on_nondict_site():
+    viewer = principal_for_role("viewer")
+    ev = {"type": "status",
+          "data": {"mode": "sim", "site": _SiteModelStub(),
+                   "config": {"site": _SiteModelStub()}},
+          "ts": 0}
+    out = redact_module._redact_ws_event(ev, viewer)
+    assert out is not None
+    assert "site" not in out["data"], "non-dict data.site must be dropped (closed)"
+    assert "site" not in out["data"]["config"]
+    # the SHARED bus event object is never mutated (copy-on-write)
+    assert isinstance(ev["data"]["site"], _SiteModelStub)
+
+
+def test_redact_ws_event_normal_dict_site_still_stripped():
+    """No regression on the normal (dict) shape: the four precise keys are
+    removed for a viewer while is_default/horizon_min_deg stay, and the shared
+    bus event is not mutated."""
+    viewer = principal_for_role("viewer")
+    ev = {"type": "status",
+          "data": {"site": {"latitude": _PRECISE_LAT, "longitude": _PRECISE_LON,
+                            "name": _PRECISE_NAME, "elevation_m": _PRECISE_ELEV,
+                            "is_default": False, "horizon_min_deg": 15.0}},
+          "ts": 0}
+    out = redact_module._redact_ws_event(ev, viewer)
+    s = out["data"]["site"]
+    assert all(k not in s for k in _STRIP_KEYS)
+    assert s["is_default"] is False and s["horizon_min_deg"] == 15.0
+    assert "latitude" in ev["data"]["site"]  # shared object untouched
+
+
+def test_redact_ws_event_holder_and_weird_shapes_never_raise():
+    """A holder sees the event verbatim; odd/degenerate shapes never raise (the
+    seam must never 500/crash a surface)."""
+    admin = principal_for_role("admin")
+    ev = {"type": "status", "data": {"site": _SiteModelStub()}, "ts": 0}
+    assert redact_module._redact_ws_event(ev, admin) is ev  # holder: verbatim
+    viewer = principal_for_role("viewer")
+    for weird in ({"type": "status", "data": None, "ts": 0},
+                  {"type": "status", "data": {"site": 42}, "ts": 0},
+                  {"type": "status", "data": {"config": "not-a-dict"}, "ts": 0},
+                  {"type": "status", "data": {"site": ["x"], "config": {}}}):
+        out = redact_module._redact_ws_event(weird, viewer)  # must not raise
+        if isinstance(out, dict) and isinstance(out.get("data"), dict):
+            assert not isinstance(out["data"].get("site"), (list, int))
