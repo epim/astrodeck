@@ -40,9 +40,12 @@ below). Everything here lives on the **Guide** view.
 Calibration, once it succeeds, is **persisted per profile** and reused on the
 next start as long as it's still compatible (same pier side, same image
 scale/binning within tolerance, RA known at both stop and start) — so you
-don't re-walk a ~20+ second calibration dance every time you start guiding.
-**Clear Calibration** (in the Guide Algorithm panel, below) discards it
-explicitly.
+don't re-walk a ~20+ second calibration dance every time you start guiding. A
+trained **Predictive PEC** model is persisted alongside it (per profile) and
+restored on the same calibration-reuse path, subject to a stop/start downtime
+gate (see the Guide Algorithm panel, below). **Clear Calibration** (in the
+Guide Algorithm panel, below) discards both the calibration and the persisted
+PPEC model explicitly.
 
 All controls require `control.guide` (operator or admin); a viewer sees the
 graph and RMS numbers live but every button is disabled.
@@ -65,7 +68,14 @@ guiding start. **Predictive PEC** learns your mount's periodic error over a
 few worm cycles and blends in a feed-forward prediction once it has enough
 data — it converges faster and holds tighter than reactive Hysteresis on a
 mount with real periodic error, at the cost of a warm-up window before the
-prediction kicks in.
+prediction kicks in. A **dither** no longer throws that learning away: PPEC
+compensates for the gear-time gap the dither introduces and keeps its trained
+model (it does not reset), so the prediction recovers as soon as the star
+settles. The trained model is also **retained across a guiding stop/start**:
+if you stop and restart on the same calibration within a fraction of a worm
+period, PPEC restores its learned model instead of warming up from zero (a
+longer gap starts fresh). PPEC stays **opt-in** — you pick it as the RA
+algorithm; Hysteresis remains the default.
 
 **Clear Calibration** here discards the persisted calibration (see Control,
 above) — do this after a real backlash/optics change, or if a fresh

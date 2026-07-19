@@ -154,32 +154,34 @@ phase gates run as real pytest files in that job (`test_native_guider_e2e.py`,
 These are the program's honest gaps — read before trusting native guiding in
 a scenario near one of these edges:
 
-- **PPEC dither-compensation wiring.** The engine currently **resets** the
-  learned GP model on every dither instead of compensating for the gear-time
-  gap the way upstream PHD2 does (`GuidingDithered`, dossier §6.8.6) — at real
-  guiding cadence with dithering enabled, this can hold PPEC in its reactive
-  Hysteresis-blend fallback indefinitely instead of ever reaching the trained
-  prediction. This is a **named prerequisite before PPEC becomes a sim/real
-  default** (it currently requires an explicit RA-algorithm pick). Bundled
-  with the same follow-up: **settle-window dead-reckoning ownership** (which
-  layer advances the smoothed-distance estimate during a settle dwell isn't
-  fully settled) and the **wall-clock vs. exposure-synthesized engine clock**
-  question (the P4 gate deliberately drives the GP on a synthesized
-  per-frame clock, not `timestamp_s` wall-clock time, to keep the gate
-  deterministic — a real-cadence period-compression subtlety needs resolving
-  before that assumption generalizes to on-sky use).
-- **Cross-session GP model retention (dossier §6.8.6) is not wired.** Upstream
-  PHD2 retains a trained PPEC model across a guiding stop/start (subject to
-  pier-side/worm-offset compatibility checks) instead of retraining from
-  scratch; AstroDeck's engine does not persist the GP model today, so every
-  guiding session (re)learns periodic error from zero.
-- **Real-rig `image_scale_arcsec` needs an `Optics.guide_focal_length_mm`
-  config field.** This is an **arcsec-badge/reporting units-only** gap —
-  guiding itself corrects in pixels and is unaffected — but the RMS numbers
-  shown in arcsec on a real (non-sim) rig are mis-scaled until this field
-  exists; documented at the construction site
-  (`devices/backends/native_backend.py::native_guider()`) rather than silently
-  hardcoded.
+- **PPEC dither-compensation wiring — closed in sub-project A (parity wave).**
+  The engine no longer resets the learned GP model on a dither: it compensates
+  the gear-time gap the way upstream PHD2 does (`GuidingDithered` via the
+  engine's `dither_notify`, dossier §6.8.6) and keeps the trained model, so
+  PPEC recovers its feed-forward prediction after a dither instead of falling
+  back to the reactive Hysteresis blend. The bundled follow-ups closed with it:
+  settle-window lost-star frames now **dead-reckon** (`deduceResult`, dossier
+  §6.8.3) rather than stalling the smoothed-distance estimate, and the GP gear
+  clock reads **guarded real per-frame timestamp deltas** (finding M6) with the
+  synthesized-clock path retained only as the deterministic test harness. The
+  one remaining PPEC gap is a **default-on** decision: PPEC stays **opt-in**
+  (an explicit RA-algorithm pick) until there is on-sky evidence to justify
+  making it the sim/real default — that is a separate call, not a wiring gap.
+- **Cross-session GP model retention (dossier §6.8.6) — closed in sub-project
+  A.** The trained GP model now persists to `<profile>-gp.json` on a clean
+  guiding stop and restores on the next start on the calibration-reuse path
+  (same profile + same calibration), applying the upstream `GuidingStarted`
+  retain-or-reset gate: a stop/start whose downtime is within 40% of one worm
+  period (`GpParams::retain_max_pct_period`) restores the whole window
+  (re-phased by the downtime); a longer gap starts fresh. The learned *period*
+  itself is not yet persisted (a ledgered follow-up — the restored window
+  re-feeds the FFT period estimation), so a session re-learns the period but no
+  longer the model from zero.
+- **Real-rig `image_scale_arcsec` — closed in sub-project A.** An
+  `Optics.guide_focal_length_mm` config field now feeds a real
+  `image_scale_arcsec`, so the arcsec RMS numbers reported on a real (non-sim)
+  rig are correctly scaled rather than hardcoded at the
+  `devices/backends/native_backend.py::native_guider()` construction site.
 - **Sim pier-flip modeling + a hub-driven meridian-flip e2e test are required
   before trusting an on-sky meridian flip.** The P2 calibration-flip gate
   proves the *contract* (the guider's `flip_calibration` method is called
