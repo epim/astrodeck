@@ -143,6 +143,18 @@ export function buildRigSpec(assignments: AssignmentMap): RigSpec {
       roles[role] = { backend: "sim", role, ...(a.name ? { extra } : {}) };
       continue;
     }
+    if (a.driverId === "ascom-local") {
+      // Implicit backend (like sim): the server-owned COM host resolves the
+      // endpoint, so no driver_id / host / port is sent — just the picked
+      // device addressing. The server opens AscomLocalBackend and injects the
+      // loopback port.
+      const spec: ConnSpec = { backend: "ascom-local", role };
+      if (a.devType) spec.dev_type = a.devType;
+      if (a.devNum !== undefined) spec.dev_num = a.devNum;
+      if (a.name) spec.extra = extra;
+      roles[role] = spec;
+      continue;
+    }
     const spec: ConnSpec = {
       backend: DRIVER_TYPE_TO_BACKEND[a.driverId.split("-")[0]] ?? "native",
       role,

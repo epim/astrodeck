@@ -191,6 +191,28 @@ def _implicit_rows() -> list[dict]:
     rows.append({"id": "astap", "type": "astap", "label": "ASTAP",
                  "enabled": True, "implicit": True,
                  "status": status, "offers": {"devices": [], "tasks": tasks}})
+
+    # ascom-local (COM-T6): the bundled COM host is a built-in on Windows, like
+    # the Simulator/native/ASTAP rows above — always available, no add step. Its
+    # offers are the registry-enumerated COM drivers (each carrying dev_type +
+    # dev_num so the Equipment dropdowns can assign one with no host/port/ProgID).
+    # Windows-only: off Windows COM is unavailable, so the row is absent and the
+    # UI degrades to native/Alpaca/NINA (spec §3.3).
+    import sys
+    if sys.platform == "win32":
+        from .devices import ascom_registry
+        try:
+            devices = ascom_registry.enumerate_offers()
+            status = {"reachable": True, "error": None,
+                      "detail": f"{len({d['dev_type'] for d in devices})} type(s)",
+                      "probed_at": now}
+        except Exception:  # never 500 describe_all
+            devices, status = [], {"reachable": False, "detail": None,
+                                   "probed_at": now,
+                                   "error": "ASCOM registry read failed"}
+        rows.append({"id": "ascom-local", "type": "ascom-local",
+                     "label": "ASCOM (local)", "enabled": True, "implicit": True,
+                     "status": status, "offers": {"devices": devices, "tasks": []}})
     return rows
 
 

@@ -32,13 +32,17 @@ def test_describe_all_merges_configured_and_implicit(store, monkeypatch):
     out = _run(drv.describe_all())
     assert out["roles"] == list(drv.ROLES)
     ids = [d["id"] for d in out["drivers"]]
-    assert ids[-3:] == ["sim", "astrodeck", "astap"]        # implicit rows appended
+    # Implicit rows are appended, in vocabulary order (sim/astrodeck/astap, plus
+    # the Windows-only ascom-local — COM-T6). Compare against the source constant
+    # so the assertion is platform-correct on both Linux CI and Windows.
+    from astrodeck.config import IMPLICIT_DRIVER_IDS
+    assert ids[-len(IMPLICIT_DRIVER_IDS):] == list(IMPLICIT_DRIVER_IDS)
     nina = out["drivers"][0]
     assert nina["implicit"] is False and nina["host"] == "h1"
     assert nina["status"]["reachable"] is True
     assert nina["status"]["detail"] == "API 2.2.2.0"
     assert nina["offers"]["devices"] == [{"role": "camera", "name": "cam"}]
-    sim = out["drivers"][-3]
+    sim = next(d for d in out["drivers"] if d["id"] == "sim")
     assert sim["status"]["reachable"] is True               # sim is always on
     assert {"role": "camera", "name": "Simulated camera"} in sim["offers"]["devices"]
 
