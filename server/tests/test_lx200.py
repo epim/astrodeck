@@ -30,6 +30,12 @@ def test_smge_uses_w_positive_longitude():
     assert s == "SMGE+40*00:00&+100*30:30"
 
 
+def test_lon_field_is_three_digit_ddd():
+    # B review I2: |lon| < 100° must still emit the LX200 DDD field width.
+    assert lx200.format_lon_wpos(-87.0) == "+087*00:00"   # 87°W
+    assert lx200.format_lon_wpos(15.0) == "-015*00:00"    # 15°E -> negative W
+
+
 def test_utc_init_cmds_shape():
     t = datetime(2026, 7, 19, 22, 14, 58, tzinfo=timezone.utc)
     assert lx200.utc_init_cmds(t) == ["SG+00:00", "SH0", "SC07/19/26", "SL22:14:58"]

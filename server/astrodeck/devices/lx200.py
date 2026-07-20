@@ -67,11 +67,15 @@ def format_dec(deg: float) -> str:
 
 
 def format_lon_wpos(lon_east_deg: float) -> str:
-    """East-positive longitude -> the mount's W-positive ``sDDD*MM:SS``."""
+    """East-positive longitude -> the mount's W-positive ``sDDD*MM:SS``.
+
+    Degrees are 3-digit (``DDD``) per the LX200 longitude field and the captured
+    example (``+100*…``) — a 2-digit form for |lon|<100° is unverified against
+    the AM5 parser and might fail site-init (B review I2)."""
     w = -lon_east_deg
     sign = "-" if w < 0 else "+"
     d, m, s = _sex(w)
-    return f"{sign}{d:02d}*{m:02d}:{s:02d}"
+    return f"{sign}{d:03d}*{m:02d}:{s:02d}"
 
 
 def smge(lat_deg: float, lon_east_deg: float) -> str:

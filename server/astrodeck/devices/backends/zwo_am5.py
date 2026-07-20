@@ -120,8 +120,15 @@ class ZwoAm5Telescope(Telescope):
     # -------------------------------------------------------------- state
 
     async def get_position(self) -> tuple[float, float]:
-        ra = lx200.parse_ra(await self._get("GR"))
-        dec = lx200.parse_dec(await self._get("GD"))
+        raw_ra = await self._get("GR")
+        raw_dec = await self._get("GD")
+        try:
+            ra = lx200.parse_ra(raw_ra)
+            dec = lx200.parse_dec(raw_dec)
+        except ValueError as exc:   # mount garbage -> the driver's error type
+            raise DeviceError(
+                f"{self.name}: unparseable position reply "
+                f"(RA={raw_ra!r} Dec={raw_dec!r})") from exc
         self._last_pos = (ra, dec)
         return ra, dec
 
@@ -185,7 +192,6 @@ class ZwoAm5Telescope(Telescope):
             stable = 0
             while True:
                 if asyncio.get_running_loop().time() > deadline:
-                    await self._link.request("Q", reply="none")
                     raise DeviceError(
                         f"{self.name}: slew failed to settle within "
                         f"{SLEW_TIMEOUT_S:.0f}s — halted (:Q#)")
@@ -197,8 +203,14 @@ class ZwoAm5Telescope(Telescope):
                     if stable >= 2:
                         return
                 prev = (ra, dec)
-        except asyncio.CancelledError:
-            await self._link.request("Q", reply="none")
+        except BaseException:
+            # ANY abnormal settle exit — cancel, timeout, link/parse failure —
+            # halts the mount before propagating (B review M3). :Q# is
+            # write-only (cannot hang) and harmless if the goto already ended.
+            try:
+                await self._link.request("Q", reply="none")
+            except Exception:  # noqa: BLE001 - halt is best-effort on teardown
+                pass
             raise
         finally:
             self._slewing = False

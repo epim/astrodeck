@@ -337,6 +337,24 @@ def test_add_driver_serial(tmp_path, monkeypatch):
     assert ok.port == 4321
 
 
+def test_driver_id_resolution_carries_serial_addressing(tmp_path, monkeypatch):
+    """B review I1: a serial driver REFERENCED BY ID must resolve with its
+    transport/port_path intact — resolve_driver_ids used to drop them."""
+    from astrodeck import drivers as drv
+    from astrodeck.config import config_store
+    from astrodeck.devices.backend import ConnSpec, RigSpec
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
+    d = config_store.add_driver("zwo-am5", transport="serial", port_path="COM9")
+    spec = RigSpec(primary="none", roles={
+        "telescope": ConnSpec(backend="", role="telescope", driver_id=d.id)})
+    resolved, role_map, prefailed = drv.resolve_driver_ids(spec)
+    assert prefailed == []
+    cs = resolved.roles["telescope"]
+    assert cs.transport == "serial" and cs.port_path == "COM9"
+    assert cs.backend == "zwo-am5" or cs.backend == d.type   # registry-mapped
+
+
 def test_api_creates_serial_driver(registered, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from astrodeck.config import config_store
