@@ -30,6 +30,7 @@ comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
 # would use — dogfooding the driver framework's discovery.
 zwo_am5 = "astrodeck.devices.backends.zwo_am5:register_all"
 zwo_usb = "astrodeck.devices.backends.zwo_usb:register_all"
+wanderer_snowflake = "astrodeck.devices.backends.wanderer_snowflake:register_all"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
