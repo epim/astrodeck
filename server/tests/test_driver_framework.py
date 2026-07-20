@@ -129,3 +129,34 @@ def test_driver_type_map_extends_with_plugin():
 def test_config_driver_type_is_open_str():
     from astrodeck.config import DriverType
     assert DriverType is str
+
+
+# --- Task 5: DriverEntry + ProfileDevice serial addressing ---
+def test_driverentry_serial_and_network_validation():
+    import pytest
+    from astrodeck.config import DriverEntry
+    ser = DriverEntry(id="zwo-am5-ab12", type="zwo-am5", transport="serial",
+                      port_path="COM3")
+    assert ser.transport == "serial" and ser.port_path == "COM3"
+    net = DriverEntry(id="nina-ab12", type="nina", host="localhost", port=1888)
+    assert net.transport == "network"
+    with pytest.raises(ValueError):
+        DriverEntry(id="x", type="zwo-am5", transport="serial")         # no port_path
+    with pytest.raises(ValueError):
+        DriverEntry(id="y", type="nina", transport="network", host="")  # no host
+
+
+def test_driverentry_legacy_loads_as_network():
+    from astrodeck.config import DriverEntry
+    e = DriverEntry(id="nina-cd34", type="nina", host="h", port=1888)
+    assert e.transport == "network" and e.port_path == ""
+
+
+def test_profiledevice_serial_carries_into_rigspec():
+    from astrodeck.profiles import Profile, ProfileDevice
+    p = Profile(name="serial rig", primary_backend="zwo-am5", devices=[
+        ProfileDevice(role="telescope", backend="zwo-am5",
+                      transport="serial", port_path="COM3")])
+    rig = p.to_rigspec()
+    cs = rig.resolve("telescope")
+    assert cs.transport == "serial" and cs.port_path == "COM3"
