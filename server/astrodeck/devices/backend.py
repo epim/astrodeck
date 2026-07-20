@@ -63,6 +63,10 @@ class ConnSpec:
     #: (drivers.resolve_driver_ids); raw addressing above stays authoritative
     #: when it is None — additive back-compat (spec §3.3).
     driver_id: str | None = None
+    #: transport discriminator: "network" (host/port) | "serial" (port_path).
+    #: Defaults keep every existing spec/profile a network spec (back-compat).
+    transport: str = "network"
+    port_path: str | None = None    # serial device path, e.g. "COM3" / "/dev/ttyACM0"
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +79,8 @@ class ConnSpec:
             "dev_num": self.dev_num,
             "role": self.role,
             "driver_id": self.driver_id,
+            "transport": self.transport,
+            "port_path": self.port_path,
             "extra": dict(self.extra),
         }
 
@@ -89,6 +95,8 @@ class ConnSpec:
             dev_num=d.get("dev_num"),
             role=d.get("role"),
             driver_id=d.get("driver_id"),
+            transport=d.get("transport", "network"),
+            port_path=d.get("port_path"),
             extra=dict(d.get("extra") or {}),
         )
 
