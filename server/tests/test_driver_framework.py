@@ -101,3 +101,31 @@ def test_connspec_serial_roundtrip_and_legacy():
     # legacy dict (no transport/port_path) -> network defaults
     legacy = ConnSpec.from_dict({"backend": "native", "host": "h", "port": 11111})
     assert legacy.transport == "network" and legacy.port_path is None
+
+
+# --- Task 4: registry-derived driver types ---
+def test_registry_derived_driver_type_map_matches_today():
+    from astrodeck import drivers
+    assert drivers.driver_type_to_backend() == {
+        "nina": "nina", "alpaca": "native", "phd2": "phd2"}
+    assert drivers.configurable_driver_types() == {"nina", "alpaca", "phd2"}
+
+
+def test_driver_type_map_extends_with_plugin():
+    from astrodeck import drivers
+
+    class _B:
+        name = "demo-be"; label = "Demo"; roles = ("telescope",)
+        discoverable = False; hostless = True; driver_type = "demo"; hardware = True
+        async def open(self, conn): ...
+        async def discover(self): return []
+    register(_B())
+    try:
+        assert drivers.driver_type_to_backend()["demo"] == "demo-be"
+    finally:
+        BACKENDS.pop("demo-be", None)
+
+
+def test_config_driver_type_is_open_str():
+    from astrodeck.config import DriverType
+    assert DriverType is str

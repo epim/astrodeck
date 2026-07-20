@@ -233,9 +233,19 @@ async def _probe_configured(entry: DriverEntry, force: bool) -> dict:
     if not force and hit is not None and (time.monotonic() - hit[0]) < PROBE_TTL_S:
         res = hit[1]
     else:
-        res = await _PROBES[entry.type](entry.host, entry.port)
-        res["probed_at"] = time.time()
-        _CACHE[entry.id] = (time.monotonic(), res)
+        probe = _PROBES.get(entry.type)
+        if probe is None:
+            # A driver type with no network probe (e.g. a serial driver) is not
+            # unreachable -- it simply isn't network-probed here. Report neutrally
+            # rather than KeyError into describe_all's error row.
+            res = {"reachable": False, "error": None,
+                   "detail": f"no network probe for driver type {entry.type!r}",
+                   "offers": {"devices": [], "tasks": []},
+                   "probed_at": time.time()}
+        else:
+            res = await probe(entry.host, entry.port)
+            res["probed_at"] = time.time()
+            _CACHE[entry.id] = (time.monotonic(), res)
     row["status"] = {"reachable": res["reachable"], "error": res["error"],
                      "detail": res.get("detail"),
                      "probed_at": res["probed_at"]}
@@ -281,11 +291,21 @@ async def describe_all(force: bool = False) -> dict:
 
 # ------------------------------------------------------- driver_id resolution
 
-#: Driver type -> backend registry name. The Alpaca lane's registry name is
-#: "native" (devices/backends/native_backend.py); nina/phd2 match their type.
-_DRIVER_TYPE_TO_BACKEND: dict[str, str] = {
-    "nina": "nina", "alpaca": "native", "phd2": "phd2",
-}
+def driver_type_to_backend() -> dict[str, str]:
+    """Config-facing driver ``type`` -> backend registry ``name``, derived from
+    the registry (each backend that provides a configurable driver type declares
+    it via ``Backend.driver_type``). Built-ins reproduce the historical map
+    ``{"nina":"nina","alpaca":"native","phd2":"phd2"}``; a plugin backend that
+    sets ``driver_type`` extends it with no core edit."""
+    from .devices import backends as _b  # noqa: F401 - ensure registration
+    from .devices.backend import BACKENDS
+    return {getattr(b, "driver_type", ""): b.name
+            for b in BACKENDS.values() if getattr(b, "driver_type", "")}
+
+
+def configurable_driver_types() -> set[str]:
+    """The set of user-configurable driver ``type`` values (registry-derived)."""
+    return set(driver_type_to_backend())
 
 
 def resolve_driver_ids(spec):
@@ -322,7 +342,7 @@ def resolve_driver_ids(spec):
             continue
         role_to_driver[role] = did
         roles[role] = ConnSpec(
-            backend=_DRIVER_TYPE_TO_BACKEND[d.type],
+            backend=driver_type_to_backend().get(d.type, d.type),
             host=d.host,
             port=d.port,
             dev_type=conn.dev_type,

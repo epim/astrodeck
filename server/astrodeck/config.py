@@ -363,7 +363,11 @@ IMPLICIT_DRIVER_IDS: tuple[str, ...] = (
     if sys.platform == "win32"
     else ("sim", "astrodeck", "astap"))
 
-DriverType = Literal["nina", "alpaca", "phd2"]
+# Open string: the configurable-driver vocabulary is registry-derived
+# (drivers.configurable_driver_types()) and validated at the API layer. Kept as a
+# named alias so existing imports/annotations keep working. config.py stays
+# import-light (it must NOT import the registry), so validation lives one layer up.
+DriverType = str
 
 #: Default port per configurable driver type (NINA Advanced API / Alpaca / PHD2).
 DRIVER_DEFAULT_PORTS: dict[str, int] = {"nina": 1888, "alpaca": 11111, "phd2": 4400}

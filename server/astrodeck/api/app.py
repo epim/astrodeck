@@ -1205,6 +1205,9 @@ def create_app() -> FastAPI:
     async def add_driver(
             body: DriverCreateBody,
             principal: Principal = Depends(require(CAP_CONFIG_BACKEND))):
+        from .. import drivers as drivers_mod
+        if body.type not in drivers_mod.configurable_driver_types():
+            raise HTTPException(422, f"unknown driver type: {body.type!r}")
         try:
             entry = await asyncio.to_thread(
                 config_store.add_driver, body.type, body.host, body.port,
