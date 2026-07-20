@@ -253,15 +253,33 @@ async def test_sync_sets_target_then_cm(fixed_env):
 
 
 async def test_move_axis_rate_map_and_stop(fixed_env):
+    # Calibrated table (hardware 2026-07-20): R-indices are sidereal-multiple
+    # presets; 0.5 deg/s lands on R7 (~60x sid = 0.25 deg/s nearest preset
+    # class), fast slews on R8.
     fl, tel = await _connected_tel(_connect_script())
-    await tel.move_axis("ra", 0.5)           # 0.5 deg/s -> R3, positive ra -> Me
-    assert fl.sent == ["R3", "Me"]
+    await tel.move_axis("ra", 0.5)           # -> R7 band, positive ra -> Me
+    assert fl.sent == ["R7", "Me"]
     fl.sent.clear()
     await tel.move_axis("ra", 0.0)           # stop both directions of the axis
     assert fl.sent == ["Qe", "Qw"]
     fl.sent.clear()
-    await tel.move_axis("dec", -20.0)        # fast negative dec -> R9 + Ms
-    assert fl.sent == ["R9", "Ms"]
+    await tel.move_axis("dec", -20.0)        # fast negative dec -> R8 + Ms
+    assert fl.sent == ["R8", "Ms"]
+    fl.sent.clear()
+    await tel.move_axis("dec", 0.008)        # ~2x sidereal -> R3
+    assert fl.sent == ["R3", "Mn"]
+
+
+async def test_park_fire_and_forget_polls_gps(fixed_env, monkeypatch):
+    """VERIFIED ON HARDWARE: :hP# gives NO ack; the mount reports parked via
+    :Gps# ~1s later. park() sends fire-and-forget and polls."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.01)
+    fl = FakeLink(_connect_script(Gps=["0", "0", "2"]))  # unparked -> parked
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    await tel.park()
+    assert "hP" in fl.sent
+    assert (await tel.is_parked()) is True
 
 
 async def test_stop_sends_halt_first_and_only(fixed_env):
