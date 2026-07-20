@@ -141,7 +141,8 @@ def _pick_guider(resolved: dict[str, ConnSpec],
 
 
 def _pick_solver(camera_conn: ConnSpec | None, camera_dev: object | None,
-                 sessions: dict[EndpointKey, BackendSession]) -> object | None:
+                 sessions: dict[EndpointKey, BackendSession],
+                 real_motion: bool = False) -> object | None:
     """Return the active solver for the camera that produced the frame.
 
     Precedence has ONE owner: return the CAMERA role's session
@@ -158,13 +159,18 @@ def _pick_solver(camera_conn: ConnSpec | None, camera_dev: object | None,
         return None
     native = session.native_solver()
     if native is not None:
+        # A session-provided solver (the sim session's guarded SimSolver) must
+        # ALSO see the rig's real-motion truth, or a mixed rig (real serial
+        # mount + sim camera) would fake-solve through this path (A-minor 2).
+        if real_motion and hasattr(native, "real_motion"):
+            native.real_motion = True
         return native
     # Fallback: the single owner of ASTAP-vs-guarded-sim precedence. Deferred
     # import keeps this module cycle-free. ``mode`` from the camera session name.
     from ..solve import get_solver
 
     mode = _solver_mode(session.name)
-    return get_solver(None, mode=mode)
+    return get_solver(None, mode=mode, real_motion=real_motion)
 
 
 def _solver_mode(session_name: str | None) -> str | None:
@@ -263,8 +269,15 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
                 pass
 
     # solver source: the camera-role session's native solver (or the get_solver
-    # fallback -- the single owner of ASTAP-vs-guarded-sim precedence).
-    solver = _pick_solver(resolved.get("camera"), rig.get("camera"), sessions)
+    # fallback -- the single owner of ASTAP-vs-guarded-sim precedence). The
+    # device-flag real-motion truth rides along so a SimSolver fallback can
+    # refuse to fake-solve ANY rig with real motion hardware (A-minor 2) --
+    # including native serial mounts the session-name mode never knew.
+    real_motion = any(
+        bool(getattr(rig.get(r), "hardware", False))
+        for r in ("telescope", "focuser", "rotator"))
+    solver = _pick_solver(resolved.get("camera"), rig.get("camera"), sessions,
+                          real_motion=real_motion)
 
     return ConnectResult(rig=rig, sessions=sessions, guider=guider,
                          guide_camera=guide_camera, solver=solver,
