@@ -304,3 +304,77 @@ async def test_caa_reverse_roundtrip():
     assert await r.get_reverse() is False
     await r.set_reverse(True)
     assert await r.get_reverse() is True
+
+
+# ------------------------------------------- backend + framework integration
+
+from astrodeck.devices import backends as _backends  # noqa: E402,F401
+from astrodeck.devices import zwo_sdk as zsdk  # noqa: E402
+from astrodeck.devices.backend import BACKENDS  # noqa: E402
+
+
+@pytest.fixture
+def registered():
+    prior = BACKENDS.get("zwo-usb")
+    zu.register_all()
+    try:
+        yield BACKENDS["zwo-usb"]
+    finally:
+        if prior is not None:
+            BACKENDS["zwo-usb"] = prior
+        else:
+            BACKENDS.pop("zwo-usb", None)
+
+
+def test_zwo_usb_manifest(registered):
+    from astrodeck.devices.backend import list_backends
+    row = next(r for r in list_backends() if r["name"] == "zwo-usb")
+    assert row["transport"] == "local" and row["hardware"] is True
+    assert row["driver_type"] == "zwo-usb"
+    assert row["roles"] == ("rotator", "focuser")
+
+
+async def test_no_device_attached_is_honest(registered, monkeypatch):
+    monkeypatch.setattr(zsdk, "make_eaf", lambda: FakeEafSdk(count=0))
+    s = await registered.open(None)
+    with pytest.raises(DeviceError, match="no EAF attached"):
+        await s.get_device("focuser", None)
+
+
+async def test_connect_profile_e2e_both_roles(registered, monkeypatch):
+    """rotator+focuser on zwo-usb through the orchestrator: ONE session
+    (hostless coalescing), both devices connected, hardware=True stamped."""
+    from astrodeck.devices.orchestrator import connect_profile
+    from astrodeck.profiles import Profile, ProfileDevice
+    monkeypatch.setattr(zsdk, "make_eaf", lambda: FakeEafSdk())
+    monkeypatch.setattr(zsdk, "make_caa", lambda: FakeCaaSdk())
+    p = Profile(name="accessories", primary_backend="none", devices=[
+        ProfileDevice(role="rotator", backend="zwo-usb", transport="local"),
+        ProfileDevice(role="focuser", backend="zwo-usb", transport="local")])
+    res = await connect_profile(p.to_rigspec())
+    assert len(res.sessions) == 1                      # hostless: one session
+    rot, foc = res.rig.get("rotator"), res.rig.get("focuser")
+    assert rot is not None and rot.connected and rot.hardware is True
+    assert foc is not None and foc.connected and foc.hardware is True
+    for s in res.sessions.values():
+        await s.close()
+
+
+def test_entry_point_discovery_loads_zwo_usb(monkeypatch):
+    import astrodeck.devices.backends._discovery as disc
+
+    class _EP:
+        name = "zwo_usb"
+        dist = type("D", (), {"name": "astrodeck"})()
+        def load(self):
+            return zu.register_all
+    monkeypatch.setattr(disc.md, "entry_points", lambda group=None: [_EP()])
+    prior = BACKENDS.pop("zwo-usb", None)
+    try:
+        disc.discover_plugin_backends(app_version="99.0")
+        assert "zwo-usb" in BACKENDS
+    finally:
+        if prior is not None:
+            BACKENDS["zwo-usb"] = prior
+        else:
+            BACKENDS.pop("zwo-usb", None)
