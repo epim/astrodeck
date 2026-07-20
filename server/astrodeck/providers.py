@@ -58,10 +58,6 @@ except ImportError:  # pragma: no cover
 # The capabilities the resolver answers for.
 Capability = Literal["autofocus", "polar_align", "solve", "guide"]
 
-# Device ``backend`` attribute values that mean REAL hardware. Sim devices leave
-# the Device default ("" — devices/base.py:82); only nina.py / alpaca.py set one.
-_REAL_BACKENDS = ("nina", "alpaca")
-
 # Friendly UI labels for a device's backend name. Anything unmapped is upcased
 # so a new backend still renders a sane badge rather than a bare slug.
 _BACKEND_LABELS: dict[str, str] = {
@@ -154,7 +150,7 @@ def _rig_has_real_motion(hub: object) -> bool:
     what makes a faked plate solve dangerous (review finding 6)."""
     for role in ("telescope", "focuser", "rotator"):
         dev = _connected(hub, role)
-        if dev is not None and getattr(dev, "backend", "") in _REAL_BACKENDS:
+        if dev is not None and getattr(dev, "hardware", False):
             return True
     return False
 
@@ -353,7 +349,7 @@ def _resolve_guide(hub: object, override: str) -> ProviderChoice:
     native_ok = bool(NATIVE_AVAILABLE and gcam is not None and tel is not None)
     # A sim rig owns non-real ('' / sim) devices; a native/Alpaca rig owns real
     # hardware. Both run the NativeGuider engine — ``kind`` is only the UI badge.
-    real_rig = gcam is not None and getattr(gcam, "backend", "") in _REAL_BACKENDS
+    real_rig = gcam is not None and getattr(gcam, "hardware", False)
 
     # (0) HONESTY (fix round C1): when a guider is actually WIRED, the badge
     # reports what is REALLY serving this rig — never the requested override —
@@ -372,7 +368,7 @@ def _resolve_guide(hub: object, override: str) -> ProviderChoice:
         # sim-vs-real badge: the native engine runs over EITHER; the badge keys
         # off whether the guide (or, for an OAG, the imaging) camera is real.
         cam2 = gcam if gcam is not None else _connected(hub, "camera")
-        is_real = cam2 is not None and getattr(cam2, "backend", "") in _REAL_BACKENDS
+        is_real = cam2 is not None and getattr(cam2, "hardware", False)
         if is_real:
             return ProviderChoice("astrodeck", "AstroDeck native",
                                   "the native guider is running (guide camera + mount)")

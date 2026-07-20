@@ -31,3 +31,61 @@ def test_builtin_driver_types_reproduce_todays_map():
     assert m["native"]["driver_type"] == "alpaca"
     assert m["phd2"]["driver_type"] == "phd2"
     assert m["sim"]["driver_type"] == ""
+
+
+# --- Task 2: device-borne hardware safety flag ---
+import astrodeck.providers as providers
+from astrodeck.devices.backend import ConnSpec, RigSpec, register  # noqa: E402
+from astrodeck.devices.base import Telescope  # noqa: E402
+from astrodeck.devices.orchestrator import connect_profile  # noqa: E402
+
+
+class _FakeTelescope(Telescope):
+    async def connect(self): ...
+    async def disconnect(self): ...
+    async def get_position(self): return (0.0, 0.0)
+    async def slew(self, ra, dec): ...
+    async def sync(self, ra, dec): ...
+    async def set_tracking(self, on): ...
+    async def get_tracking(self): return False
+    async def park(self): ...
+    async def unpark(self): ...
+    async def is_parked(self): return True
+    async def move_axis(self, axis, rate): ...
+    async def is_slewing(self): return False
+
+
+def test_device_hardware_defaults_false():
+    assert _FakeTelescope("t").hardware is False
+
+
+def test_providers_has_no_real_backends_tuple():
+    assert not hasattr(providers, "_REAL_BACKENDS")
+
+
+async def test_orchestrator_stamps_hardware_from_backend():
+    # sim rig: camera device is stamped False
+    res = await connect_profile(RigSpec("sim"))
+    assert res.rig["camera"].hardware is False
+
+    class _Session:
+        name = "fakehw"
+        async def get_device(self, role, conn): return _FakeTelescope("scope")
+        def native_guider(self): return None
+        def guide_camera(self): return None
+        def native_solver(self): return None
+        async def health(self): return None
+        async def close(self): ...
+
+    class _Backend:
+        name = "fakehw"; label = "Fake HW"; roles = ("telescope",)
+        discoverable = False; hostless = True; hardware = True
+        async def open(self, conn): return _Session()
+        async def discover(self): return []
+
+    register(_Backend())
+    try:
+        res2 = await connect_profile(RigSpec("fakehw"))
+        assert res2.rig["telescope"].hardware is True
+    finally:
+        BACKENDS.pop("fakehw", None)

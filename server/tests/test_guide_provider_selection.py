@@ -31,6 +31,7 @@ class FakeDev:
 
     def __init__(self, *, backend: str = "", connected: bool = True):
         self.backend = backend
+        self.hardware = backend in ("nina", "alpaca")   # mirror old _REAL_BACKENDS
         self.connected = connected
 
 

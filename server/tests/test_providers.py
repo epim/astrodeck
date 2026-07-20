@@ -32,6 +32,9 @@ class FakeDev:
     def __init__(self, *, backend: str = "sim", connected: bool = True,
                  supports_native_autofocus: bool = False):
         self.backend = backend
+        # Mirror the old _REAL_BACKENDS semantics now that providers reads a
+        # device-borne hardware flag (driver-framework Task 2).
+        self.hardware = backend in ("nina", "alpaca")
         self.connected = connected
         self.supports_native_autofocus = supports_native_autofocus
 
