@@ -175,8 +175,11 @@ async def test_slew_cancel_sends_stop(fixed_env, monkeypatch):
     monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
     s = _connect_script()
     s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
-    s["GR"] = ["10:00:00", "10:30:00"]      # never converges (alternates drift)
-    s["GD"] = ["+10*00:00", "+20*00:00"]
+    # never converges: alternate FOREVER via callables (a list would repeat its
+    # last element and read as settled — the FakeLink semantics)
+    n = {"ra": 0, "dec": 0}
+    s["GR"] = lambda cmd: ["10:00:00", "10:30:00"][n.__setitem__("ra", n["ra"] + 1) or n["ra"] % 2]
+    s["GD"] = lambda cmd: ["+10*00:00", "+20*00:00"][n.__setitem__("dec", n["dec"] + 1) or n["dec"] % 2]
     fl, tel = await _connected_tel(s)
     task = asyncio.create_task(tel.slew(11.0, 45.0))
     await asyncio.sleep(0.05)
@@ -191,10 +194,9 @@ async def test_slew_timeout_halts_and_raises(fixed_env, monkeypatch):
     monkeypatch.setattr(am5, "SLEW_TIMEOUT_S", 0.05)
     s = _connect_script()
     s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
-    s["GR"] = ["10:00:00", "10:30:00", "10:00:00", "10:30:00",
-               "10:00:00", "10:30:00", "10:00:00", "10:30:00"]
-    s["GD"] = ["+10*00:00", "+20*00:00", "+10*00:00", "+20*00:00",
-               "+10*00:00", "+20*00:00", "+10*00:00", "+20*00:00"]
+    m = {"ra": 0, "dec": 0}
+    s["GR"] = lambda cmd: ["10:00:00", "10:30:00"][m.__setitem__("ra", m["ra"] + 1) or m["ra"] % 2]
+    s["GD"] = lambda cmd: ["+10*00:00", "+20*00:00"][m.__setitem__("dec", m["dec"] + 1) or m["dec"] % 2]
     fl, tel = await _connected_tel(s)
     with pytest.raises(DeviceError, match="timeout|settle"):
         await tel.slew(11.0, 45.0)
@@ -244,3 +246,85 @@ async def test_pulse_guide_format(fixed_env):
     await tel.pulse_guide("north", 500)
     assert fl.sent == ["Mgn0500"]
     assert type(tel).can_pulse_guide is False     # stays off until at-scope validation
+
+
+# ------------------------------------------------- backend + framework integration
+
+from astrodeck.devices import backends as _backends  # noqa: E402,F401  (registration)
+from astrodeck.devices.backend import BACKENDS  # noqa: E402
+import astrodeck.devices.backends._discovery as disc  # noqa: E402
+
+
+@pytest.fixture
+def registered(fixed_env):
+    prior = BACKENDS.get("zwo-am5")         # entry-point discovery may have
+    am5.register_all()                      # already registered it — restore,
+    try:                                    # never leave the worker without it
+        yield BACKENDS["zwo-am5"]
+    finally:
+        if prior is not None:
+            BACKENDS["zwo-am5"] = prior
+        else:
+            BACKENDS.pop("zwo-am5", None)
+
+
+def test_register_all_manifest(registered):
+    from astrodeck.devices.backend import list_backends
+    row = next(r for r in list_backends() if r["name"] == "zwo-am5")
+    assert row["transport"] == "serial"
+    assert row["hardware"] is True
+    assert row["driver_type"] == "zwo-am5"
+    assert row["roles"] == ("telescope",)
+    from astrodeck import __version__
+    assert row["version"] == __version__
+
+
+def test_entry_point_discovery_loads_zwo_am5(monkeypatch, fixed_env):
+    class _EP:
+        name = "zwo_am5"
+        dist = type("D", (), {"name": "astrodeck"})()
+        def load(self):
+            return am5.register_all
+    monkeypatch.setattr(disc.md, "entry_points", lambda group=None: [_EP()])
+    prior = BACKENDS.pop("zwo-am5", None)   # force a clean discovery run
+    try:
+        disc.discover_plugin_backends(app_version="99.0")
+        assert "zwo-am5" in BACKENDS
+        assert any(r["name"] == "zwo-am5" and r["status"] == "loaded"
+                   for r in disc.plugin_load_report())
+    finally:
+        if prior is not None:
+            BACKENDS["zwo-am5"] = prior
+        else:
+            BACKENDS.pop("zwo-am5", None)
+
+
+async def test_connect_profile_end_to_end_serial_rig(registered, monkeypatch):
+    """A profile serial row connects through the orchestrator against a FakeLink,
+    and the A-framework safety stamp holds (device.hardware is True)."""
+    from astrodeck.devices.orchestrator import connect_profile
+    from astrodeck.profiles import Profile, ProfileDevice
+
+    monkeypatch.setattr(am5, "_make_link", lambda port: FakeLink(_connect_script()))
+    p = Profile(name="serial rig", primary_backend="none", devices=[
+        ProfileDevice(role="telescope", backend="zwo-am5",
+                      transport="serial", port_path="COM9")])
+    res = await connect_profile(p.to_rigspec())
+    tel = res.rig.get("telescope")
+    assert tel is not None and tel.connected
+    assert tel.hardware is True
+    assert tel.firmware == "1.8.8"
+    for s in res.sessions.values():
+        await s.close()
+
+
+async def test_discover_filters_vid_pid(registered, monkeypatch):
+    class _Port:
+        def __init__(self, device, vid, pid):
+            self.device, self.vid, self.pid = device, vid, pid
+    fake_ports = [_Port("COM3", 0x03C3, 0x4001), _Port("COM8", 0x1A86, 0x7523)]
+    from serial.tools import list_ports
+    monkeypatch.setattr(list_ports, "comports", lambda: fake_ports)
+    found = await registered.discover()
+    assert found == [{"role": "telescope", "name": "ZWO AM5 (USB)",
+                      "port_path": "COM3", "verified": True}]
