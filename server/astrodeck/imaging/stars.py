@@ -145,12 +145,20 @@ def star_marks(stars: list[Star], *, full_well: int | None = None,
     return marks
 
 
+def measure_stars(stars: list[Star], *, full_well: int | None = None,
+                  min_stars: int = 3) -> tuple[float | None, int, list[dict]]:
+    """Derive ``(median_hfr, star_count, star_marks)`` from an already-detected
+    star list — so a caller that also needs the raw ``Star`` objects (e.g. cloud
+    detection, which inspects per-star peaks) runs ``detect_stars`` exactly once
+    and feeds every consumer from that one pass."""
+    hfr, count = _median_hfr_from(stars, min_stars)
+    return hfr, count, star_marks(stars, full_well=full_well)
+
+
 def measure_frame(data: np.ndarray, *, full_well: int | None = None,
                   min_stars: int = 3) -> tuple[float | None, int, list[dict]]:
     """One detection pass feeding both the focus metric and the overlay.
 
     Returns ``(median_hfr, star_count, star_marks)`` so the capture hot path
     never detects twice (spec §6 / §4.6)."""
-    stars = detect_stars(data)
-    hfr, count = _median_hfr_from(stars, min_stars)
-    return hfr, count, star_marks(stars, full_well=full_well)
+    return measure_stars(detect_stars(data), full_well=full_well, min_stars=min_stars)
