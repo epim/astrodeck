@@ -227,3 +227,30 @@ def test_discovery_collision_guard(monkeypatch):
     assert BACKENDS["sim"] is original_sim                # built-in preserved
     assert any(r["status"] == "failed" and "built-in" in (r["detail"] or "")
                for r in disc.plugin_load_report())
+
+
+# --- Task 7: plugin-report API ---
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)   # force fresh load from tmp
+    import astrodeck.drivers as drv
+    drv.invalidate()
+    from astrodeck.api import app as app_module
+    app = app_module.create_app()
+    with TestClient(app) as c:
+        yield c
+
+
+def test_backends_plugins_endpoint(client):
+    r = client.get("/api/backends/plugins")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body, list)
+    for row in body:
+        assert {"name", "dist", "version", "status", "detail"} <= set(row)
