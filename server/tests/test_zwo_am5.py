@@ -358,6 +358,44 @@ def test_api_creates_serial_driver(registered, tmp_path, monkeypatch):
         assert r2.status_code == 200 and r2.json()["driver"]["port"] == 1888
 
 
+# --------------------------------------------- solver defense (A-minor 2)
+
+async def test_simsolver_refuses_serial_mount_rig(registered, monkeypatch, tmp_path):
+    """zwo-am5 mount + sim camera, no ASTAP: the SimSolver fallback must REFUSE
+    to fake a plate solve (the mode denylist never knew this session name — the
+    device hardware flag is the truth that gates it now)."""
+    from astrodeck.devices.orchestrator import connect_profile
+    from astrodeck.profiles import Profile, ProfileDevice
+    import astrodeck.solve as solve_mod
+
+    monkeypatch.setattr(am5, "_make_link", lambda port: FakeLink(_connect_script()))
+    monkeypatch.setattr(solve_mod, "find_astap", lambda: None)
+    p = Profile(name="mixed", primary_backend="none", devices=[
+        ProfileDevice(role="telescope", backend="zwo-am5",
+                      transport="serial", port_path="COM9"),
+        ProfileDevice(role="camera", backend="sim")])
+    res = await connect_profile(p.to_rigspec())
+    assert res.rig["telescope"].hardware is True
+    assert res.solver is not None
+    out = await res.solver.solve(tmp_path / "frame.fits", ra_hint=10.0, dec_hint=40.0)
+    assert out.success is False and "refusing" in out.message
+    for s in res.sessions.values():
+        await s.close()
+
+
+async def test_simsolver_pure_sim_rig_still_solves(monkeypatch, tmp_path):
+    from astrodeck.devices.orchestrator import connect_profile
+    from astrodeck.profiles import Profile
+    import astrodeck.solve as solve_mod
+
+    monkeypatch.setattr(solve_mod, "find_astap", lambda: None)
+    res = await connect_profile(Profile(name="sim").to_rigspec())
+    out = await res.solver.solve(tmp_path / "frame.fits", ra_hint=10.0, dec_hint=40.0)
+    assert out.success is True
+    for s in res.sessions.values():
+        await s.close()
+
+
 async def test_discover_filters_vid_pid(registered, monkeypatch):
     class _Port:
         def __init__(self, device, vid, pid):
