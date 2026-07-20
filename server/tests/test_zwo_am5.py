@@ -144,3 +144,103 @@ async def test_parked_refusal_maps_to_honest_error(fixed_env):
     await tel.connect()
     with pytest.raises(DeviceError, match="parked"):
         await tel.set_tracking(True)
+
+
+# ---------------------------------------------------------- telescope: motion
+
+async def _connected_tel(script):
+    fl = FakeLink(script)
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    fl.sent.clear()                    # motion assertions start clean
+    return fl, tel
+
+
+async def test_slew_happy_path_settles(fixed_env, monkeypatch):
+    monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
+    target_ra, target_dec = 11.0, 45.0
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"
+    s["Sd+45*00:00"] = "1"
+    s["MS"] = "0"
+    # approach then converge: two consecutive stable polls end the settle
+    s["GR"] = ["10:30:00", "10:59:00", "11:00:00", "11:00:00", "11:00:00"]
+    s["GD"] = ["+60*00:00", "+46*00:00", "+45*00:00", "+45*00:00", "+45*00:00"]
+    fl, tel = await _connected_tel(s)
+    await tel.slew(target_ra, target_dec)
+    assert fl.sent[:3] == ["Sr11:00:00", "Sd+45*00:00", "MS"]
+
+
+async def test_slew_cancel_sends_stop(fixed_env, monkeypatch):
+    monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
+    s["GR"] = ["10:00:00", "10:30:00"]      # never converges (alternates drift)
+    s["GD"] = ["+10*00:00", "+20*00:00"]
+    fl, tel = await _connected_tel(s)
+    task = asyncio.create_task(tel.slew(11.0, 45.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "Q" in fl.sent                    # halt on cancel
+
+
+async def test_slew_timeout_halts_and_raises(fixed_env, monkeypatch):
+    monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
+    monkeypatch.setattr(am5, "SLEW_TIMEOUT_S", 0.05)
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
+    s["GR"] = ["10:00:00", "10:30:00", "10:00:00", "10:30:00",
+               "10:00:00", "10:30:00", "10:00:00", "10:30:00"]
+    s["GD"] = ["+10*00:00", "+20*00:00", "+10*00:00", "+20*00:00",
+               "+10*00:00", "+20*00:00", "+10*00:00", "+20*00:00"]
+    fl, tel = await _connected_tel(s)
+    with pytest.raises(DeviceError, match="timeout|settle"):
+        await tel.slew(11.0, 45.0)
+    assert "Q" in fl.sent
+
+
+async def test_slew_while_parked_is_honest(fixed_env):
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"
+    s["MS"] = "e14"
+    fl, tel = await _connected_tel(s)
+    with pytest.raises(DeviceError, match="parked"):
+        await tel.slew(11.0, 45.0)
+
+
+async def test_sync_sets_target_then_cm(fixed_env):
+    s = _connect_script()
+    s["Sr10:00:00"] = "1"; s["Sd+40*00:00"] = "1"; s["CM"] = "Synced"
+    fl, tel = await _connected_tel(s)
+    await tel.sync(10.0, 40.0)
+    assert fl.sent == ["Sr10:00:00", "Sd+40*00:00", "CM"]
+
+
+async def test_move_axis_rate_map_and_stop(fixed_env):
+    fl, tel = await _connected_tel(_connect_script())
+    await tel.move_axis("ra", 0.5)           # 0.5 deg/s -> R3, positive ra -> Me
+    assert fl.sent == ["R3", "Me"]
+    fl.sent.clear()
+    await tel.move_axis("ra", 0.0)           # stop both directions of the axis
+    assert fl.sent == ["Qe", "Qw"]
+    fl.sent.clear()
+    await tel.move_axis("dec", -20.0)        # fast negative dec -> R9 + Ms
+    assert fl.sent == ["R9", "Ms"]
+
+
+async def test_stop_sends_halt_first_and_only(fixed_env):
+    # Emergency-stop semantics: :Q# goes out FIRST, nothing before it. Whether
+    # :Q# disturbs tracking on this firmware is an at-scope runbook item; until
+    # verified, stop() does not send follow-up commands.
+    fl, tel = await _connected_tel(_connect_script())
+    await tel.stop()
+    assert fl.sent == ["Q"]
+
+
+async def test_pulse_guide_format(fixed_env):
+    fl, tel = await _connected_tel(_connect_script())
+    await tel.pulse_guide("north", 500)
+    assert fl.sent == ["Mgn0500"]
+    assert type(tel).can_pulse_guide is False     # stays off until at-scope validation

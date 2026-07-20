@@ -155,23 +155,89 @@ class ZwoAm5Telescope(Telescope):
         return (v, v)
 
     # ------------------------------------------------------------- motion
-    # Implemented in B-Task 4; present as honest stubs so the ABC is complete.
 
     async def set_tracking(self, on: bool) -> None:
         await self._cmd_ack("Te" if on else "Td",
                             "tracking on" if on else "tracking off")
 
+    async def _set_target(self, ra_hours: float, dec_deg: float) -> None:
+        await self._cmd_ack(f"Sr{lx200.format_ra(ra_hours)}", "set target RA")
+        await self._cmd_ack(f"Sd{lx200.format_dec(dec_deg)}", "set target Dec")
+
     async def slew(self, ra_hours: float, dec_deg: float) -> None:
-        raise DeviceError(f"{self.name}: slew not implemented yet (B-Task 4)")
+        """Goto and wait until settled. AM5 moves are fire-and-forget, so the
+        ONLY completion signal is polling: settled when the coordinate delta
+        stays under SETTLE_DEG across two consecutive polls. Cancel-safe: a
+        CancelledError (or timeout) halts the mount with :Q# first."""
+        await self._set_target(ra_hours, dec_deg)
+        reply = await self._link.request("MS", reply="ack")
+        if reply == lx200.REFUSED:
+            raise DeviceError(
+                f"{self.name}: goto refused — mount is parked; unpark first "
+                "(AM5 e14)")
+        # LX200 :MS# convention: '0' = slew accepted; anything else = refused.
+        if reply != "0":
+            raise DeviceError(f"{self.name}: goto rejected (reply {reply!r})")
+        self._slewing = True
+        try:
+            deadline = asyncio.get_running_loop().time() + SLEW_TIMEOUT_S
+            prev: tuple[float, float] | None = None
+            stable = 0
+            while True:
+                if asyncio.get_running_loop().time() > deadline:
+                    await self._link.request("Q", reply="none")
+                    raise DeviceError(
+                        f"{self.name}: slew failed to settle within "
+                        f"{SLEW_TIMEOUT_S:.0f}s — halted (:Q#)")
+                await asyncio.sleep(SETTLE_POLL_S)
+                ra, dec = await self.get_position()
+                if prev is not None:
+                    d_deg = max(abs(ra - prev[0]) * 15.0, abs(dec - prev[1]))
+                    stable = stable + 1 if d_deg < SETTLE_DEG else 0
+                    if stable >= 2:
+                        return
+                prev = (ra, dec)
+        except asyncio.CancelledError:
+            await self._link.request("Q", reply="none")
+            raise
+        finally:
+            self._slewing = False
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
-        raise DeviceError(f"{self.name}: sync not implemented yet (B-Task 4)")
+        await self._set_target(ra_hours, dec_deg)
+        try:
+            reply = await self._link.request("CM", reply="hash")
+        except LinkError as exc:
+            raise DeviceError(f"{self.name}: sync failed: {exc}") from exc
+        if reply == lx200.REFUSED:
+            raise DeviceError(
+                f"{self.name}: sync refused — mount is parked; unpark first "
+                "(AM5 e14)")
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
-        raise DeviceError(f"{self.name}: move_axis not implemented yet (B-Task 4)")
+        if axis not in ("ra", "dec"):
+            raise DeviceError(f"{self.name}: unknown axis {axis!r}")
+        if rate_deg_s == 0.0:
+            # stop both directions of this axis (fire-and-forget)
+            for d in ("e", "w") if axis == "ra" else ("n", "s"):
+                await self._link.request(f"Q{d}", reply="none")
+            return
+        for bound, rate_cmd in _RATE_TABLE:
+            if abs(rate_deg_s) <= bound:
+                break
+        await self._link.request(rate_cmd, reply="none")
+        await self._link.request(_MOVE_CMD[(axis, rate_deg_s > 0)], reply="none")
+
+    async def pulse_guide(self, direction: str, ms: int) -> None:
+        d = direction.lower()[0]
+        if d not in "nsew":
+            raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
+        await self._link.request(f"Mg{d}{int(ms):04d}", reply="none")
 
     async def is_slewing(self) -> bool:
-        return False
+        return bool(getattr(self, "_slewing", False))
 
     async def stop(self) -> None:
+        """Emergency halt: :Q# goes out FIRST, no preamble. Whether :Q# also
+        disturbs tracking on this firmware is an at-scope runbook item."""
         await self._link.request("Q", reply="none")
