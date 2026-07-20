@@ -118,3 +118,104 @@ class EafFocuser(Focuser):
             return float(await self._call(self._sdk.get_temp, what="get temp"))
         except DeviceError:
             return None
+
+
+class CaaRotator(Rotator):
+    """ZWO CAA as an AstroDeck Rotator — MECHANICAL-space only.
+
+    The SDK's own sync (``CAACurDegree``) is NEVER called: with the SDK's
+    logical angle never offset, ``CAAGetDegree`` remains mechanical truth and
+    the base class's client-side sync layer does the sky mapping (the same
+    "never call a driver's own Sync" rule every rotator backend follows)."""
+
+    backend = "zwo-usb"
+    hardware = True
+    can_reverse = True
+
+    def __init__(self, sdk, dev_id: int, name: str = "ZWO CAA"):
+        super().__init__(name)
+        self._sdk = sdk
+        self._id = dev_id
+        self._lock = asyncio.Lock()
+        self.firmware = ""
+        self.model = ""
+
+    async def _call(self, fn, *args, what: str):
+        async with self._lock:
+            try:
+                return await asyncio.to_thread(fn, self._id, *args)
+            except ZwoSdkError as exc:
+                raise _sdk_guard(exc, self.name, what) from exc
+
+    async def connect(self) -> None:
+        async with self._lock:
+            try:
+                await asyncio.to_thread(self._sdk.open, self._id)
+                self.model = await asyncio.to_thread(self._sdk.get_type, self._id)
+                self.firmware = await asyncio.to_thread(
+                    self._sdk.firmware, self._id)
+            except ZwoSdkError as exc:
+                raise _sdk_guard(exc, self.name, "connect") from exc
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        try:
+            await self._call(self._sdk.stop, what="halt-on-disconnect")
+        except DeviceError:
+            pass
+        try:
+            async with self._lock:
+                await asyncio.to_thread(self._sdk.close, self._id)
+        except ZwoSdkError:
+            pass
+        self.connected = False
+
+    def describe(self) -> dict:
+        d = super().describe()
+        d["firmware"] = self.firmware
+        d["model"] = self.model
+        return d
+
+    async def get_mechanical_position(self) -> float:
+        return float(await self._call(self._sdk.get_degree, what="get degree"))
+
+    async def move_mechanical(self, mech_deg: float) -> None:
+        await self._call(self._sdk.move_to_mechanical, float(mech_deg),
+                         what="CAAMoveToMechanical")
+        deadline = asyncio.get_running_loop().time() + self.MOVE_TIMEOUT_S
+        try:
+            while True:
+                if asyncio.get_running_loop().time() > deadline:
+                    raise DeviceError(
+                        f"{self.name}: rotation failed to settle within "
+                        f"{self.MOVE_TIMEOUT_S:.0f}s — halted")
+                await asyncio.sleep(POLL_S)
+                moving, hand = await self._call(
+                    self._sdk.is_moving, what="poll move")
+                if hand:
+                    # SDK contract: hand-controller motion cannot be aborted by
+                    # CAAStop — surface it rather than spin until timeout.
+                    raise DeviceError(
+                        f"{self.name}: the hand controller is moving the "
+                        "rotator — release it and retry")
+                if not moving:
+                    return
+        except BaseException:
+            try:
+                await self._call(self._sdk.stop, what="halt")
+            except Exception:  # noqa: BLE001 - halt is best-effort on teardown
+                pass
+            raise
+
+    async def halt(self) -> None:
+        await self._call(self._sdk.stop, what="halt")
+
+    async def is_moving(self) -> bool:
+        moving, _hand = await self._call(self._sdk.is_moving, what="poll move")
+        return bool(moving)
+
+    async def get_reverse(self) -> bool:
+        return bool(await self._call(self._sdk.get_reverse, what="get reverse"))
+
+    async def set_reverse(self, value: bool) -> None:
+        await self._call(self._sdk.set_reverse, bool(value), what="set reverse")

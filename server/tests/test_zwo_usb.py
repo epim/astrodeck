@@ -173,3 +173,134 @@ async def test_eaf_temp_none_on_error():
     f = zu.EafFocuser(sdk, 10)
     await f.connect()
     assert await f.get_temperature() is None
+
+
+# ---------------------------------------------------------------- CaaRotator
+
+class FakeCaaSdk:
+    """Scripted CAA SDK double, mirroring FakeEafSdk. ``CAACurDegree`` is
+    deliberately present so the contract test can prove we never call it."""
+
+    #: SDK error codes (CAA_API.h enum order): STALL=12 per the header family.
+    STALL = 12
+
+    def __init__(self, *, count=1, degree=290.77, moving_seq=None, temp=9.0,
+                 reverse=False, type_="CAA-M54", firmware_="1.2.0",
+                 hand_control=False, raise_on=None):
+        self._count = count
+        self.degree = degree
+        self.moving_seq = list(moving_seq or [])
+        self.temp = temp
+        self.reverse = reverse
+        self._type, self._fw = type_, firmware_
+        self.hand = hand_control
+        self.raise_on = dict(raise_on or {})
+        self.calls: list[str] = []
+
+    def _log(self, m):
+        self.calls.append(m)
+        if m in self.raise_on:
+            raise self.raise_on[m]
+
+    def count(self):
+        self._log("count"); return self._count
+    def get_id(self, i):
+        self._log("get_id"); return 20 + i
+    def open(self, d):
+        self._log("open")
+    def close(self, d):
+        self._log("close")
+    def get_property(self, d):
+        self._log("get_property"); return "CAA", 360
+    def move_to_mechanical(self, d, deg):
+        self._log("move_to_mechanical"); self.target = deg
+    def stop(self, d):
+        self._log("stop"); self.moving_seq = []
+    def is_moving(self, d):
+        self._log("is_moving")
+        if self.moving_seq:
+            m = self.moving_seq.pop(0)
+            if not m:
+                self.degree = getattr(self, "target", self.degree)
+            return m, self.hand
+        self.degree = getattr(self, "target", self.degree)
+        return False, self.hand
+    def get_degree(self, d):
+        self._log("get_degree"); return self.degree
+    def get_temp(self, d):
+        self._log("get_temp"); return self.temp
+    def get_reverse(self, d):
+        self._log("get_reverse"); return self.reverse
+    def set_reverse(self, d, v):
+        self._log("set_reverse"); self.reverse = v
+    def get_type(self, d):
+        self._log("get_type"); return self._type
+    def firmware(self, d):
+        self._log("firmware"); return self._fw
+    def cur_degree(self, d, v):                      # the FORBIDDEN sync
+        self._log("CAACurDegree")
+
+
+async def test_caa_connect_and_mechanical_reads():
+    sdk = FakeCaaSdk()
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    assert r.connected and r.can_reverse is True
+    assert r.describe()["firmware"] == "1.2.0"
+    assert abs(await r.get_mechanical_position() - 290.77) < 1e-6
+
+
+async def test_caa_move_and_sky_sync_never_touch_sdk_sync():
+    """The base Rotator owns sync client-side; the SDK's CAACurDegree must
+    NEVER be called — through connect, mechanical move, sync(), and a sky
+    move_to() through the offset."""
+    sdk = FakeCaaSdk(moving_seq=[True, False])
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    await r.move_mechanical(300.0)
+    assert abs(await r.get_mechanical_position() - 300.0) < 1e-6
+    await r.sync(10.0)                       # declare mech 300 == sky 10
+    assert abs(await r.get_position() - 10.0) < 1e-6
+    sdk.moving_seq = [True, False]
+    await r.move_to(20.0)                    # sky 20 -> mech 310 via offset
+    assert abs(await r.get_mechanical_position() - 310.0) < 1e-6
+    assert "CAACurDegree" not in sdk.calls   # the contract
+
+
+async def test_caa_cancel_mid_move_halts():
+    sdk = FakeCaaSdk(moving_seq=[True] * 10_000)
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    task = asyncio.create_task(r.move_mechanical(10.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "stop" in sdk.calls
+
+
+async def test_caa_stall_surfaces_named():
+    sdk = FakeCaaSdk(raise_on={"move_to_mechanical":
+                               ZwoSdkError(FakeCaaSdk.STALL, "CAAMoveToMechanical")})
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    with pytest.raises(DeviceError, match="CAAMoveToMechanical"):
+        await r.move_mechanical(10.0)
+
+
+async def test_caa_hand_control_reported():
+    sdk = FakeCaaSdk(moving_seq=[True] * 10_000, hand_control=True)
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    with pytest.raises(DeviceError, match="hand controller"):
+        await r.move_mechanical(10.0)
+    assert "stop" in sdk.calls
+
+
+async def test_caa_reverse_roundtrip():
+    sdk = FakeCaaSdk()
+    r = zu.CaaRotator(sdk, 20)
+    await r.connect()
+    assert await r.get_reverse() is False
+    await r.set_reverse(True)
+    assert await r.get_reverse() is True
