@@ -219,3 +219,117 @@ class CaaRotator(Rotator):
 
     async def set_reverse(self, value: bool) -> None:
         await self._call(self._sdk.set_reverse, bool(value), what="set reverse")
+
+
+# ------------------------------------------------------------------ session
+
+class ZwoUsbSession:
+    """One session for ALL zwo-usb roles (the backend is hostless, so the
+    orchestrator coalesces rotator+focuser here). SDK handles built lazily via
+    the ``zwo_sdk.make_*`` seams so tests can inject fakes."""
+
+    name = "zwo-usb"
+
+    def __init__(self):
+        self._devices: dict[str, object] = {}
+
+    def _first_unit(self, sdk, kind: str) -> int:
+        n = sdk.count()
+        if n < 1:
+            raise DeviceError(f"no {kind} attached (SDK enumerated 0 units)")
+        return sdk.get_id(0)
+
+    async def get_device(self, role: str, conn):
+        if role in self._devices:
+            return self._devices[role]
+        name = (getattr(conn, "extra", None) or {}).get("name") or None
+        try:
+            if role == "focuser":
+                sdk = zwo_sdk.make_eaf()
+                dev = EafFocuser(sdk, await asyncio.to_thread(
+                    self._first_unit, sdk, "EAF"), name=name or "ZWO EAF")
+            elif role == "rotator":
+                sdk = zwo_sdk.make_caa()
+                dev = CaaRotator(sdk, await asyncio.to_thread(
+                    self._first_unit, sdk, "CAA"), name=name or "ZWO CAA")
+            else:
+                raise DeviceError(
+                    f"zwo-usb fills only rotator/focuser (asked {role!r})")
+        except ZwoSdkError as exc:
+            raise DeviceError(f"zwo-usb {role}: SDK unavailable — {exc}") from exc
+        dev.role = role
+        await dev.connect()
+        self._devices[role] = dev
+        return dev
+
+    def native_guider(self):
+        return None
+
+    def guide_camera(self):
+        return None
+
+    def native_solver(self):
+        return None
+
+    async def health(self) -> dict | None:
+        if not self._devices:
+            return None
+        return {"devices": sorted(self._devices)}
+
+    async def close(self) -> None:
+        devices, self._devices = dict(self._devices), {}
+        for dev in devices.values():
+            try:
+                await dev.disconnect()      # halts, then closes the SDK handle
+            except Exception:  # noqa: BLE001 - teardown is best-effort
+                pass
+
+
+# ------------------------------------------------------------------ backend
+
+class ZwoUsbBackend:
+    """ZWO USB accessories (CAA rotator + EAF focuser) over the bundled SDK."""
+
+    name = "zwo-usb"
+    label = "ZWO USB accessories"
+    roles = ("rotator", "focuser")
+    discoverable = True
+    hostless = True                 # one session for every role (one SDK context)
+    version = "0"                   # set to the app version in register_all()
+    author = ""
+    min_app_version = "0"
+    transport = "local"
+    hardware = True
+    driver_type = "zwo-usb"
+
+    async def open(self, conn) -> ZwoUsbSession:
+        return ZwoUsbSession()
+
+    async def discover(self) -> list[dict]:
+        """Enumerate attached CAA/EAF units via the SDK (guarded; [] on any
+        failure — absent DLLs must not break discovery)."""
+        found: list[dict] = []
+        try:
+            eaf = zwo_sdk.make_eaf()
+            for i in range(await asyncio.to_thread(eaf.count)):
+                found.append({"role": "focuser", "name": "ZWO EAF (USB)",
+                              "verified": True})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            caa = zwo_sdk.make_caa()
+            for i in range(await asyncio.to_thread(caa.count)):
+                found.append({"role": "rotator", "name": "ZWO CAA (USB)",
+                              "verified": True})
+        except Exception:  # noqa: BLE001
+            pass
+        return found
+
+
+def register_all() -> None:
+    """Entry-point target: [project.entry-points."astrodeck.backends"]."""
+    from ..backend import register
+    b = ZwoUsbBackend()
+    from ... import __version__
+    b.version = __version__
+    register(b)

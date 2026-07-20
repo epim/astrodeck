@@ -26,9 +26,10 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
 comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
 
 [project.entry-points."astrodeck.backends"]
-# The AM5 native serial driver registers through the SAME entry-point path an
-# external plugin would use — dogfooding the driver framework's discovery.
+# Native drivers register through the SAME entry-point path an external plugin
+# would use — dogfooding the driver framework's discovery.
 zwo_am5 = "astrodeck.devices.backends.zwo_am5:register_all"
+zwo_usb = "astrodeck.devices.backends.zwo_usb:register_all"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
