@@ -386,11 +386,14 @@ class DriverEntry(BaseModel):
 
     @model_validator(mode="after")
     def _check_transport(self) -> "DriverEntry":
-        """Per-transport addressing: serial needs a port_path; network needs a
+        """Per-transport addressing: serial needs a port_path; local (SDK-
+        enumerated USB, e.g. ZWO CAA/EAF) needs NO addressing; network needs a
         host + a real port. Defaults keep every existing (network) driver valid."""
         if self.transport == "serial":
             if not self.port_path:
                 raise ValueError("serial driver requires port_path")
+        elif self.transport == "local":
+            pass  # identity comes from SDK enumeration — nothing to address
         else:  # network
             if not self.host:
                 raise ValueError(f"{self.transport} driver requires host")
@@ -802,6 +805,11 @@ class ConfigStore:
                 id=new_id, type=driver_type, transport="serial",
                 port_path=port_path,
                 label=(label or "").strip() or f"{driver_type.upper()} @ {port_path}",
+                extra=dict(extra or {}))
+        elif transport == "local":
+            entry = DriverEntry(
+                id=new_id, type=driver_type, transport="local",
+                label=(label or "").strip() or f"{driver_type.upper()} (USB)",
                 extra=dict(extra or {}))
         else:
             host = (host or "").strip()

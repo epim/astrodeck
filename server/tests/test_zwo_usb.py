@@ -27,3 +27,20 @@ def test_vendored_dlls_export_api():
     for basename, (_alts, exports) in zwo_sdk._DLL_SPECS.items():
         dll = zwo_sdk._loads_with_exports(zwo_sdk._VENDOR_DIR / basename, exports)
         assert dll is not None, f"{basename} failed load/export verification"
+
+
+# ------------------------------------------------------- transport="local"
+
+def test_driverentry_local_needs_no_addressing():
+    from astrodeck.config import DriverEntry
+    e = DriverEntry(id="zwo-usb-ab12", type="zwo-usb", transport="local")
+    assert e.transport == "local" and e.host == "" and e.port_path == ""
+
+
+def test_add_driver_local(tmp_path, monkeypatch):
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
+    e = config_store.add_driver("zwo-usb", transport="local")
+    assert e.id.startswith("zwo-usb-") and e.transport == "local"
+    assert e.label == "ZWO-USB (USB)"
