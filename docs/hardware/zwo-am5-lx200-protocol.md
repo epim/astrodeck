@@ -151,6 +151,32 @@ Connect COM3 (8N1, baud irrelevant — USB-CDC), then:
 | Stop axis | `:Qn#` `:Qs#` `:Qe#` `:Qw#` | none |
 | Park status | `:Gps#` | `2#` = parked |
 
+### Native-driver at-scope validation results (2026-07-20, fw 1.8.8)
+
+Verified live via `devices/backends/zwo_am5.py` over COM3 (no ZWO software):
+
+- **Park `:hP#` WORKS and is fire-and-forget** (motion class — an ack-read times
+  out); `:Gps#` flips to `2#` ~1 s later. **`:Spu#` on an already-unparked mount
+  replies `0`** (nothing to cancel) — treat park/unpark as idempotent state ops.
+- **Tracking `:Te#`/`:Td#` verified** (ack `1`; `:GAT#` follows).
+- **`:R<n>#` indices are sidereal-multiple presets, measured:** R1≈0.3×,
+  R3≈1.9×, R5≈7.8×, R7≈60× sidereal; R8≈1.44°/s (R8/R9 measurements
+  acceleration-ramp-limited over 0.3 s). A requested 0.25°/s mapped to R7
+  measured 0.250°/s over 1 s — the driver's calibrated table is accurate.
+- **`:GdG#` encodes the guide RATE as sidereal-fraction ×100 in the degrees
+  field**: `+90*00:00#` = 0.90× sidereal (NOT 90°).
+- **`:CM#` sync accepted** (sync-to-self round-trip clean). UTC-init scheme
+  validated: `:GS#` sidereal matched computed LST within minutes.
+- **Pulse guide `:Mg{n,s,e,w}<ms>#` parses but produces NO motion** on this
+  firmware over serial (tried 5–10 s pulses, upper+lowercase directions,
+  tracking on, GR-monitored: 0.0″). `:GFR1#`/`:GFD1#` are NOT live encoders
+  (constant `22438`). Guiding fallback: timed `:R1#` (0.3× sidereal) moves —
+  the classic pulse-guide-as-timed-MoveAxis emulation. Definitive wire answer:
+  capture ZWO's own driver pulse-guiding (PHD2 via ASCOM) in a follow-up.
+- Coordinate note: dec-axis nudges at dec≈+90 cross the pole (RA flips 12 h) —
+  cosmetic, but distance-based settle logic must use angular separation, not
+  raw coordinate deltas, near the pole.
+
 Other ZWO-specific gets seen: `:GMA#` → BT/MAC address (`48ca4357cab1#`), `:GP08#` → `0#`,
 `:GAT#` → `0#` (at-target flag), `:GFR1#`/`:GFD1#` → `22438#` (axis encoder counts).
 
