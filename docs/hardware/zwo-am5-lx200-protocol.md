@@ -136,7 +136,15 @@ Connect COM3 (8N1, baud irrelevant — USB-CDC), then:
 
 | Phase | Commands | Response |
 |---|---|---|
-| Init/site/time | `:SG+HH:MM#` (UTC offset) `:SH0#` (DST flag) `:SC MM/DD/YY#` (date) `:SL HH:MM:SS#` (time) `:SMGE+lat&+lon#` (geo, combined) | each `1` |
+| Init/site/time | `:SGsHH:MM#` (UTC offset) `:SH0#` (DST flag) `:SCMM/DD/YY#` (date) `:SLHH:MM:SS#` (time) `:SMGE{sDD*MM:SS}&{sDDD*MM:SS}#` (geo combined, **longitude W-positive**) | each `1` |
+
+> Format note (2026-07-20, re-extracted from the captured session): the init
+> commands take **no space** after the verb (`:SC07/19/26#`, `:SL22:14:58#`),
+> and `:SMGE` longitude is W-positive (AstroDeck stores East-positive — negate).
+> The native driver (`server/astrodeck/devices/backends/zwo_am5.py` + codec
+> `devices/lx200.py`) inits with the **UTC scheme**: `:SG+00:00#` + `:SH0#` +
+> UTC date/time, so mount "local" time == UTC and sidereal stays correct with no
+> DST bookkeeping. At-scope check: `:GS#` ≈ expected LST after init.
 | **Unpark** | **`:Spu#`** ("Cancel Park") | **`1`** — clears the park bit; `:GU#` → `nNGM…` |
 | Set rate | `:R0#`..`:R9#` (rate index; driver used `:R5#`/`:R6#`) | none (fire-and-forget) |
 | Move axis | `:Mn#` `:Ms#` `:Me#` `:Mw#` | none |
