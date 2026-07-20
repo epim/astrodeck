@@ -15,6 +15,8 @@ the device factory a single, monkeypatchable seam for tests.
 """
 from __future__ import annotations
 
+from astrodeck import __version__ as _app_version
+
 from .. import alpaca
 from ..backend import Backend, BackendSession, ConnSpec, register
 
@@ -207,6 +209,19 @@ class NativeBackend:
              "rotator", "guide_camera")
     discoverable = True
     hostless = False                # Alpaca is a network endpoint (host:port)
+    version = _app_version
+    # These three equal the ``Backend`` Protocol's own declared defaults, but
+    # are set explicitly (not left implicit) so this backend stays a real
+    # ``isinstance(..., Backend)`` per the runtime_checkable Protocol: default
+    # VALUES declared in a Protocol class body only apply to classes that
+    # *inherit* the Protocol; these backends duck-type it structurally instead
+    # (same reason ``hostless`` above must be assigned explicitly, not relied
+    # on as a Protocol default).
+    author = ""
+    min_app_version = "0"
+    transport = "network"
+    hardware = True
+    driver_type = "alpaca"     # preserves _DRIVER_TYPE_TO_BACKEND["alpaca"] = "native"
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Open a session bound to ``conn.host`` (per-role port/dev_num come from

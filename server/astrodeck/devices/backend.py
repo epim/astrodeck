@@ -158,6 +158,16 @@ class Backend(Protocol):
     #: ``Phd2Backend`` (one shared SimRig / one local PHD2 socket); default False.
     hostless: bool = False
 
+    #: --- driver manifest (additive; all defaulted so existing backends satisfy
+    #: the Protocol unchanged). ``name`` remains the STABLE identity embedded in
+    #: saved profiles/config and MUST NOT change across versions.
+    version: str = "0"            # driver semver; built-ins report the app version
+    author: str = ""             # "" for first-party
+    min_app_version: str = "0"   # discovered externals older-than-app are skipped
+    transport: str = "network"   # "network" | "serial"  ("loopback" reserved)
+    hardware: bool = False       # real hardware? -> the device-borne safety flag
+    driver_type: str = ""        # config-facing configurable-driver type ("" = none)
+
     async def open(self, conn: "ConnSpec") -> BackendSession:
         """Open a live session for this backend (wraps the existing factory)."""
         ...
@@ -192,13 +202,20 @@ def get_backend(name: str) -> Backend:
 
 def list_backends() -> list[dict]:
     """A JSON-able summary of every registered backend (for the UI / API):
-    ``[{name, label, roles, discoverable}, ...]``, ordered by name."""
+    ``[{name, label, roles, discoverable, version, author, min_app_version,
+    transport, hardware, driver_type}, ...]``, ordered by name."""
     return [
         {
             "name": b.name,
             "label": b.label,
             "roles": tuple(b.roles),
             "discoverable": bool(b.discoverable),
+            "version": str(getattr(b, "version", "0")),
+            "author": str(getattr(b, "author", "")),
+            "min_app_version": str(getattr(b, "min_app_version", "0")),
+            "transport": str(getattr(b, "transport", "network")),
+            "hardware": bool(getattr(b, "hardware", False)),
+            "driver_type": str(getattr(b, "driver_type", "")),
         }
         for b in sorted(BACKENDS.values(), key=lambda b: b.name)
     ]
