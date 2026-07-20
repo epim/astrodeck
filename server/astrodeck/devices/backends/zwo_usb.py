@@ -92,6 +92,7 @@ class EafFocuser(Focuser):
         await self._call(self._sdk.move, position, what="EAFMove")
         deadline = asyncio.get_running_loop().time() + EAF_MOVE_TIMEOUT_S
         try:
+            settled = 0
             while True:
                 if asyncio.get_running_loop().time() > deadline:
                     raise DeviceError(
@@ -100,7 +101,11 @@ class EafFocuser(Focuser):
                 await asyncio.sleep(POLL_S)
                 moving, _hand = await self._call(
                     self._sdk.is_moving, what="poll move")
-                if not moving:
+                # two consecutive not-moving polls (review C-minor 4): a single
+                # poll right after the fire-and-forget move could read
+                # not-moving before the motor engages.
+                settled = settled + 1 if not moving else 0
+                if settled >= 2:
                     return
         except BaseException:
             # halt on ANY abnormal exit (cancel/timeout/SDK failure)
@@ -184,6 +189,7 @@ class CaaRotator(Rotator):
                          what="CAAMoveToMechanical")
         deadline = asyncio.get_running_loop().time() + self.MOVE_TIMEOUT_S
         try:
+            settled = 0
             while True:
                 if asyncio.get_running_loop().time() > deadline:
                     raise DeviceError(
@@ -198,7 +204,9 @@ class CaaRotator(Rotator):
                     raise DeviceError(
                         f"{self.name}: the hand controller is moving the "
                         "rotator — release it and retry")
-                if not moving:
+                # two consecutive not-moving polls (review C-minor 4).
+                settled = settled + 1 if not moving else 0
+                if settled >= 2:
                     return
         except BaseException:
             try:

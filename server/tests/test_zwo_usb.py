@@ -15,12 +15,14 @@ def test_sdk_error_carries_code_and_fn():
     assert "CAAMoveToMechanical" in str(e) and "7" in str(e)
 
 
+import sys  # noqa: E402
+
 _VENDORED = [p for p in (zwo_sdk._VENDOR_DIR / n for n in zwo_sdk._DLL_SPECS)
              if p.is_file()]
 
 
-@pytest.mark.skipif(len(_VENDORED) < 2,
-                    reason="vendored ZWO DLLs absent (CI without binaries)")
+@pytest.mark.skipif(sys.platform != "win32" or len(_VENDORED) < 2,
+                    reason="win-x64 vendored DLLs only (Linux .so deferred)")
 def test_vendored_dlls_export_api():
     """Filenames lie; exports don't. The vendored DLLs must carry the full API
     (the ASIStudio CAA_SRC.dll rejection story — see vendor/zwo/README.md)."""

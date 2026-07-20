@@ -19,19 +19,33 @@ from pathlib import Path
 
 _VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor" / "zwo"
 
-#: canonical basename -> (known alternative install paths, verifying exports)
+#: canonical basename -> (known alternative install paths, verifying exports).
+#: The verify list covers EVERY symbol the bindings call (review C-minor 3), so
+#: a partial DLL is rejected at load, not at connect.
 _DLL_SPECS: dict[str, tuple[list[str], list[str]]] = {
     "EAF_focuser.dll": (
         [r"C:\Program Files\ASIStudio\EAF_focuser.dll"],
-        ["EAFGetNum", "EAFOpen", "EAFMove", "EAFGetPosition", "EAFStop",
-         "EAFIsMoving", "EAFGetProperty", "EAFGetTemp"],
+        ["EAFGetNum", "EAFGetID", "EAFOpen", "EAFClose", "EAFGetProperty",
+         "EAFMove", "EAFStop", "EAFIsMoving", "EAFGetPosition", "EAFGetTemp",
+         "EAFGetFirmwareVersion"],
     ),
     "CAARotator.dll": (
         [r"C:\Program Files (x86)\Common Files\ASCOM\ZWO\CAA_ASCOM_x64.dll",
          r"C:\Program Files\ASIStudio\CAA_SRC.dll"],
-        ["CAAGetNum", "CAAOpen", "CAAMoveToMechanical", "CAAGetDegree",
-         "CAAStop", "CAAIsMoving", "CAAGetProperty", "CAAGetReverse"],
+        ["CAAGetNum", "CAAGetID", "CAAOpen", "CAAClose", "CAAGetProperty",
+         "CAAMoveToMechanical", "CAAGetDegree", "CAAStop", "CAAIsMoving",
+         "CAAGetTemp", "CAAGetReverse", "CAASetReverse", "CAAGetType",
+         "CAAGetFirmwareVersion"],
     ),
+}
+
+#: Named error codes (CAA_API.h / EAF_focuser.h enum order) so a cable-wrap
+#: stall reads "STALL", not "code 12" (review C-minor 2). Shared enum family.
+ERROR_NAMES: dict[int, str] = {
+    0: "SUCCESS", 1: "INVALID_INDEX", 2: "INVALID_ID", 3: "INVALID_VALUE",
+    4: "REMOVED", 5: "MOVING", 6: "ERROR_STATE", 7: "GENERAL_ERROR",
+    8: "NOT_SUPPORTED", 9: "CLOSED", 10: "OUT_RANGE", 11: "OVER_LIMIT",
+    12: "STALL", 13: "TIMEOUT", 14: "INVALID_LENGTH",
 }
 
 
@@ -39,9 +53,11 @@ class ZwoSdkError(Exception):
     """A non-zero ``*_ERROR_CODE`` from an SDK call (or a load failure)."""
 
     def __init__(self, code: int, fn: str):
-        super().__init__(f"ZWO SDK {fn} failed (code {code})")
+        name = ERROR_NAMES.get(code, "?")
+        super().__init__(f"ZWO SDK {fn} failed ({name}, code {code})")
         self.code = code
         self.fn = fn
+        self.code_name = name
 
 
 class _Info(ctypes.Structure):
@@ -58,9 +74,14 @@ class _Type16(ctypes.Structure):
 
 
 def _loads_with_exports(path: Path, exports: list[str]):
-    """Return the loaded DLL when it loads AND exports everything, else None."""
+    """Return the loaded DLL when it loads AND exports everything, else None.
+
+    ``CDLL``, not ``WinDLL``: the headers are plain ``__cdecl`` (identical to
+    stdcall on x64 anyway), and CDLL exists on every platform — a Linux host
+    simply fails the load with OSError and degrades to None instead of
+    AttributeError-ing on a missing WinDLL (review C-critical)."""
     try:
-        dll = ctypes.WinDLL(str(path))
+        dll = ctypes.CDLL(str(path))
     except OSError:
         return None
     if all(hasattr(dll, e) for e in exports):
@@ -90,6 +111,38 @@ def _check(code: int, fn: str) -> None:
         raise ZwoSdkError(code, fn)
 
 
+_I, _PI = ctypes.c_int, ctypes.POINTER(ctypes.c_int)
+_PF, _PB = ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_bool)
+_PU = ctypes.POINTER(ctypes.c_ubyte)
+
+#: fn name -> argtypes. restype stays c_int (every bound fn returns an error
+#: code or a count). Declared per spec §1 (review C-minor 1): defensive against
+#: a future raw-scalar miscall silently crossing the ABI.
+_SIGNATURES: dict[str, list] = {
+    "EAFGetNum": [], "EAFGetID": [_I, _PI], "EAFOpen": [_I], "EAFClose": [_I],
+    "EAFGetProperty": [_I, ctypes.POINTER(_Info)], "EAFMove": [_I, _I],
+    "EAFStop": [_I], "EAFIsMoving": [_I, _PB, _PB],
+    "EAFGetPosition": [_I, _PI], "EAFGetTemp": [_I, _PF],
+    "EAFGetFirmwareVersion": [_I, _PU, _PU, _PU],
+    "CAAGetNum": [], "CAAGetID": [_I, _PI], "CAAOpen": [_I], "CAAClose": [_I],
+    "CAAGetProperty": [_I, ctypes.POINTER(_Info)],
+    "CAAMoveToMechanical": [_I, ctypes.c_float], "CAAGetDegree": [_I, _PF],
+    "CAAStop": [_I], "CAAIsMoving": [_I, _PB, _PB], "CAAGetTemp": [_I, _PF],
+    "CAAGetReverse": [_I, _PB], "CAASetReverse": [_I, ctypes.c_bool],
+    "CAAGetType": [_I, ctypes.POINTER(_Type16)],
+    "CAAGetFirmwareVersion": [_I, _PU, _PU, _PU],
+}
+
+
+def _declare(dll) -> None:
+    """Stamp argtypes/restype on every bound export the DLL carries."""
+    for fn_name, argtypes in _SIGNATURES.items():
+        fn = getattr(dll, fn_name, None)
+        if fn is not None:
+            fn.argtypes = argtypes
+            fn.restype = ctypes.c_int
+
+
 class EafSdk:
     """Typed wrapper over the EAF C API (one process-wide DLL handle)."""
 
@@ -97,6 +150,7 @@ class EafSdk:
         self._d = _find_dll("EAF_focuser.dll")
         if self._d is None:
             raise ZwoSdkError(-1, "EAF_focuser.dll load (not found/invalid)")
+        _declare(self._d)
 
     def count(self) -> int:
         return int(self._d.EAFGetNum())
@@ -156,6 +210,7 @@ class CaaSdk:
         self._d = _find_dll("CAARotator.dll")
         if self._d is None:
             raise ZwoSdkError(-1, "CAARotator.dll load (not found/invalid)")
+        _declare(self._d)
 
     def count(self) -> int:
         return int(self._d.CAAGetNum())
