@@ -99,20 +99,33 @@ transfer; e.g. `:Sr10:37:16#` = 12 B in a single transfer, ack on bulk-IN):
 | `:Te#` / `:Td#` | Enable / disable tracking | see note below |
 | `:hR#` | Unpark | see note below |
 
-**Motion is gated when the mount is not fully powered.** In the capture session the
-mount answered every info query and accepted set-target (`1`) and rate-sets, but **every
-command that would move an axis or change motion state returned `e14#` and nothing moved**
-(`:MS#` to a verified-valid target, `:Te#`/`:TQ#`, `:Mg*#`, `:Ms#`, `:hR#` — all `e14#`;
-Dec stayed pinned at `+90*00:00`, `:GU#` never left `nGM000000005#`). `e14#` is an
-OnStepX-style "command refused in current state" reply.
+**The LX200 serial port is telemetry + config only — it cannot command motion.**
+With the mount confirmed **fully powered**, it answered every info query and accepted
+set-target (`1`) and rate-sets, but **every command that moves an axis or changes motion
+state was refused with `e14#`**: `:MS#` (goto to a verified-valid target), `:Te#`/`:TQ#`
+(tracking), `:Mg*#` (pulse guide), `:Ms#` (move), and the entire home/park set
+`:hR#`/`:hU#`/`:hN#`/`:hF#`/`:hW#`/`:hS#`/`:hP#`/`:I#`/`:PO#`/`:MP#`. Notably even `:hP#`
+(**park**) is refused — so this is not a clearable "parked" state; the whole motion
+command class is disabled on this interface. Dec stayed pinned at `+90*00:00` and `:GU#`
+never left `nGM000000005#` through all of it. `e14#` is a ZWO "command refused in current
+state" reply.
 
-Interpretation: the mount's **MCU + absolute encoders were alive on USB/standby power**
-(reads work; the encoder reports the pole) but the **motor/motion subsystem was
-unavailable** — i.e. the mount was not fully powered on. This is consistent with ZWO's
-own ASCOM driver (`ASCOM.ASIMount.Telescope`) reporting `Connected=False` at the same
-time. **Capturing a successful slew/track/guide sequence (and the success-path response
-codes) requires the mount powered on with motor power present.** The command syntax
-above is already confirmed; only the execution/success responses remain to capture.
+Evidence that motion lives on a **different channel**:
+- During a `ASCOM.ASIMount.Telescope` connect attempt, **COM3 received zero LX200 bytes**
+  — ZWO's own ASCOM driver does **not** use the LX200 serial port; it drives the mount
+  over ZWO's **native USB SDK** (a separate interface of the `03C3:4001` composite device)
+  or WiFi. The ASCOM driver also reported `Connected=False`/`Server execution failed`
+  headlessly.
+- Killing a stray SDK server process did not change the `e14#` behavior.
+
+**Conclusion:** on the AM5N, **motion enable/unpark/track/slew/guide is owned by ZWO's
+native SDK/app channel, not by the LX200 serial port.** The LX200 port is a compatibility
+read/config surface. A native driver that must *move* the mount therefore has to either
+(a) speak ZWO's native USB SDK protocol (binary; would need a separate capture on the
+SDK interface while ZWO's app/ASIAIR drives a slew), or (b) rely on the mount being put
+"live" by the SDK/app first — after which whether LX200 motion becomes accepted is still
+unverified. **Capturing the motion path requires ZWO's app/SDK to drive the mount while
+USB is captured** (see below).
 
 ### `:GU#` extended status word
 
