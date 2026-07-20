@@ -776,30 +776,47 @@ class ConfigStore:
 
     # -- backend drivers mutation (equipment-drivers spec §3.1) -----------------
 
-    def add_driver(self, driver_type: str, host: str, port: int | None = None,
-                   label: str = "", extra: dict | None = None) -> DriverEntry:
+    def add_driver(self, driver_type: str, host: str = "", port: int | None = None,
+                   label: str = "", extra: dict | None = None, *,
+                   transport: str = "network", port_path: str = "") -> DriverEntry:
         """Create a configured driver with a server-minted, never-reused id.
 
         The id is "<type>-<4 hex>" (collision-checked against existing entries)
-        so profiles can reference drivers stably. Port defaults per type; a
-        blank label defaults to "<TYPE> @ <host>". Raises ``ValueError`` (→ 422
-        at the API) on an unknown type or blank host."""
-        if driver_type not in DRIVER_DEFAULT_PORTS:
-            raise ValueError(f"unknown driver type: {driver_type!r}")
-        host = (host or "").strip()
-        if not host:
-            raise ValueError("driver host must not be empty")
+        so profiles can reference drivers stably. Network drivers require a
+        host; port defaults per known type (``DRIVER_DEFAULT_PORTS``), and an
+        unknown-to-the-map type (a plugin's network driver_type — vocabulary is
+        registry-validated at the API layer) requires an EXPLICIT port. Serial
+        drivers require ``port_path`` instead; no host/port. Raises
+        ``ValueError`` (→ 422 at the API) on a bad combination."""
         cfg = self.cfg()
         existing = {d.id for d in cfg.drivers}
         while True:
             new_id = f"{driver_type}-{secrets.token_hex(2)}"
             if new_id not in existing:
                 break
-        entry = DriverEntry(
-            id=new_id, type=driver_type, host=host,
-            port=port if port is not None else DRIVER_DEFAULT_PORTS[driver_type],
-            label=(label or "").strip() or f"{driver_type.upper()} @ {host}",
-            extra=dict(extra or {}))
+        if transport == "serial":
+            port_path = (port_path or "").strip()
+            if not port_path:
+                raise ValueError("serial driver requires port_path")
+            entry = DriverEntry(
+                id=new_id, type=driver_type, transport="serial",
+                port_path=port_path,
+                label=(label or "").strip() or f"{driver_type.upper()} @ {port_path}",
+                extra=dict(extra or {}))
+        else:
+            host = (host or "").strip()
+            if not host:
+                raise ValueError("driver host must not be empty")
+            if port is None:
+                port = DRIVER_DEFAULT_PORTS.get(driver_type)
+                if port is None:
+                    raise ValueError(
+                        f"driver type {driver_type!r} has no default port — "
+                        "specify one explicitly")
+            entry = DriverEntry(
+                id=new_id, type=driver_type, host=host, port=port,
+                label=(label or "").strip() or f"{driver_type.upper()} @ {host}",
+                extra=dict(extra or {}))
         cfg.drivers.append(entry)
         self.bump_and_save()
         return entry

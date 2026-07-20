@@ -318,6 +318,46 @@ async def test_connect_profile_end_to_end_serial_rig(registered, monkeypatch):
         await s.close()
 
 
+# ------------------------------------------------- serial driver creation (A-minor 1)
+
+def test_add_driver_serial(tmp_path, monkeypatch):
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
+    e = config_store.add_driver("zwo-am5", transport="serial", port_path="COM9")
+    assert e.id.startswith("zwo-am5-")
+    assert e.transport == "serial" and e.port_path == "COM9"
+    assert e.label == "ZWO-AM5 @ COM9"
+    with pytest.raises(ValueError, match="port_path"):
+        config_store.add_driver("zwo-am5", transport="serial")
+    # unknown network type without explicit port is rejected; with one, allowed
+    with pytest.raises(ValueError, match="default port"):
+        config_store.add_driver("demo-net", host="h")
+    ok = config_store.add_driver("demo-net", host="h", port=4321)
+    assert ok.port == 4321
+
+
+def test_api_creates_serial_driver(registered, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from astrodeck.config import config_store
+    monkeypatch.setattr(config_store, "_path", tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_store, "_cfg", None)
+    import astrodeck.drivers as drv
+    drv.invalidate()
+    from astrodeck.api import app as app_module
+    with TestClient(app_module.create_app()) as c:
+        r = c.post("/api/config/drivers",
+                   json={"type": "zwo-am5", "transport": "serial",
+                         "port_path": "COM9"})
+        assert r.status_code == 200
+        assert r.json()["driver"]["port_path"] == "COM9"
+        assert c.post("/api/config/drivers",
+                      json={"type": "asiair", "host": "h"}).status_code == 422
+        # legacy network create unchanged
+        r2 = c.post("/api/config/drivers", json={"type": "nina", "host": "h"})
+        assert r2.status_code == 200 and r2.json()["driver"]["port"] == 1888
+
+
 async def test_discover_filters_vid_pid(registered, monkeypatch):
     class _Port:
         def __init__(self, device, vid, pid):
