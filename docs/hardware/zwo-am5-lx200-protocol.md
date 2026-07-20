@@ -110,29 +110,49 @@ command class is disabled on this interface. Dec stayed pinned at `+90*00:00` an
 never left `nGM000000005#` through all of it. `e14#` is a ZWO "command refused in current
 state" reply.
 
-Everything tried to clear the state failed with `e14#`: DTR/RTS asserted in every
-combination; a stray ASIMount server process killed; config re-written. `:GU#` never
-budged.
+The reason: **the mount was PARKED, and the unpark command is ZWO-specific — `:Spu#`, not
+the LX200/OnStep `:hR#`/`:hU#`/`:hP#` I had tried.** This was confirmed by capturing ZWO's
+own ASIMount ASCOM driver driving the mount over COM3 (its trace log at
+`Documents\ASCOM\ASIMount\Logs\ASCOM.ASIMount.*.txt` records every serial command). The
+driver's log literally annotates the unlock:
 
-**What the mount exposes over USB (definitive):** the `03C3:4001` composite device has
-**exactly one child interface — `MI_00`, the CDC serial (COM3)**
-(`DEVPKEY_Device_Children` lists only `MI_00`; compatible-IDs show a plain composite with
-no vendor class). **There is no second USB control channel.** So over USB the mount offers
-*only* the LX200 serial port, and that port is telemetry+config in this state.
+```
+--> :Spu#
+<-- 1
+Cancel Park success 1
+--> :GU#
+<-- nNGM000000000#     (was nGM000000005# — park bit cleared)
+```
 
-**Where ZWO's software actually drives motion:** the ZWO `ASCOM.ASIMount.Telescope` driver
-ships `LibBle.dll` + `InTheHand.Net.Personal.dll` — it talks to the AM5N over **Bluetooth
-LE**, not USB. During a connect attempt it sent **zero bytes to COM3** and never
-connected (the box has a BT radio but the mount is not paired). ZWO's other control path
-is WiFi (ASIAIR). Neither uses the USB serial port for motion.
+**Motion works over USB/COM3 once unparked** — this is a solved, viable native path. ZWO's
+driver used exactly the LX200 CDC serial port (not Bluetooth) for this session. (The
+ASIMount driver *can* also use Bluetooth — it ships `LibBle.dll` — which is why an
+unconfigured/headless connect attempt earlier used BLE and touched COM3 zero times; but
+configured for the COM port, it drives the mount entirely over USB serial.)
 
-**Conclusion:** on the AM5N, **USB motion is gated by the mount's control mode.** In its
-current mode the USB LX200 port is a read/config surface only; motion authority sits with
-Bluetooth/WiFi. Enabling USB (PC) motion is a **mount-side mode/state change** (park state
-and/or control-source selection, set via the ZWO app or the mount itself) — it cannot be
-forced from the LX200 command set (every unpark/home/park/track/goto/guide command is
-refused). Once the mount is in USB/PC-control mode and unparked, whether the LX200 motion
-commands (already confirmed *parsed*) execute is the open question to verify.
+### The AM5N control recipe (captured from ZWO's driver, over USB/COM3)
+
+Connect COM3 (8N1, baud irrelevant — USB-CDC), then:
+
+| Phase | Commands | Response |
+|---|---|---|
+| Init/site/time | `:SG+HH:MM#` (UTC offset) `:SH0#` (DST flag) `:SC MM/DD/YY#` (date) `:SL HH:MM:SS#` (time) `:SMGE+lat&+lon#` (geo, combined) | each `1` |
+| **Unpark** | **`:Spu#`** ("Cancel Park") | **`1`** — clears the park bit; `:GU#` → `nNGM…` |
+| Set rate | `:R0#`..`:R9#` (rate index; driver used `:R5#`/`:R6#`) | none (fire-and-forget) |
+| Move axis | `:Mn#` `:Ms#` `:Me#` `:Mw#` | none |
+| Stop axis | `:Qn#` `:Qs#` `:Qe#` `:Qw#` | none |
+| Park status | `:Gps#` | `2#` = parked |
+
+Other ZWO-specific gets seen: `:GMA#` → BT/MAC address (`48ca4357cab1#`), `:GP08#` → `0#`,
+`:GAT#` → `0#` (at-target flag), `:GFR1#`/`:GFD1#` → `22438#` (axis encoder counts).
+
+**Conclusion:** the AM5N is **fully drivable by a native USB/LX200 driver.** Every motion
+command I earlier saw refused with `e14#` was refused solely because the mount was parked;
+sending **`:Spu#`** first clears the park and motion executes (moves are fire-and-forget,
+no ack). Standard LX200 goto (`:Sr#`/`:Sd#`/`:MS#`), pulse-guide (`:Mg*#`), and tracking
+should likewise work post-unpark — capture/verify those in a follow-up (the driver session
+logged here exercised only manual `:M<dir>#`/`:Q<dir>#` nudges). A native driver needs no
+ZWO software: connect COM3, run the init+`:Spu#` recipe, then LX200 motion.
 
 ### `:GU#` extended status word
 
@@ -152,20 +172,20 @@ against live states (tracking on/off, slewing, parked) before relying on it.
    `/dev/ttyACMn` (Linux/macOS — same CDC device, no driver needed), 8N1, any baud.
 3. **State poll:** prefer `:GU#` for a single-call status; fall back to individual
    `:GR#`/`:GD#`/`:Gm#`/`:GT#` for fields `:GU#` doesn't expose.
-4. **Motion / control commands** (slew `:MS#`/`:Mn#`…, pulse-guide `:Mgn####`, tracking
-   `:Te#`/`:Td#`, rate `:R*#`, set-target `:Sr#`/`:Sd#`) use the same single-transfer
-   LX200 framing and are **confirmed parsed** by the firmware. Set-target and rate-sets
-   execute (`1`); the actual axis-motion commands return `e14#` in the mount's current
-   control mode (see "Write path & motion"). **Getting USB motion requires putting the
-   mount in USB/PC-control mode first** (a mount-side setting) — it cannot be forced from
-   LX200. Once there, verify the success responses and `:GU#` slewing transitions before
-   relying on the write path. Avoid site/time SET (`:St#`/`:Sg#`/`:SL#`/`:SC#`) and sync
-   (`:CM#`) unless intended — they mutate stored config/alignment.
-5. **The read/telemetry path is fully usable today and independent of ZWO's stack.**
-   Direct LX200 over the CDC port gives pointing, coordinates, site/time, pier side, and
-   `:GU#` status with no ZWO software. The motion path is the only piece gated by mount
-   mode. Note ZWO's own ASCOM driver uses **Bluetooth**, so it is not a USB reference for
-   the motion protocol.
+4. **Motion works over USB after unparking with `:Spu#`.** The mount powers up **parked**,
+   and while parked it refuses every motion command with `e14#`. The unpark is the
+   ZWO-specific `:Spu#` (not LX200 `:hR#`/`:hU#`/`:hP#`). After `:Spu#` → `1`, manual moves
+   (`:R<n>#` + `:M<dir>#`/`:Q<dir>#`) execute fire-and-forget and the mount physically
+   moves (verified end-to-end via ZWO's driver over COM3 + captured imagery). Do the init
+   (`:SG#`/`:SH0#`/`:SC#`/`:SL#`/`:SMGE#`) then `:Spu#` then motion. Goto (`:Sr#`/`:Sd#`/
+   `:MS#`), pulse-guide (`:Mg*#`), and tracking should work post-unpark — verify in a
+   follow-up. Match `:SMGE#`/`:SG#`/`:SH0#` to correct current values (they set stored
+   config).
+5. **Both read AND write paths are usable over USB with no ZWO software.** Direct LX200 over
+   the CDC port gives full telemetry (pointing, coords, site/time, pier, `:GU#`), and the
+   init+`:Spu#`+motion recipe drives the mount. The AM5N is a fully viable native-driver
+   target over a single USB cable. (ZWO's ASIMount driver *can* alternatively use Bluetooth,
+   but it drove this mount entirely over the COM port when configured for it.)
 
 ## Reproducing the capture
 
