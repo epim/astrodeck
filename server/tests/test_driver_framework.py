@@ -106,9 +106,15 @@ def test_connspec_serial_roundtrip_and_legacy():
 # --- Task 4: registry-derived driver types ---
 def test_registry_derived_driver_type_map_matches_today():
     from astrodeck import drivers
-    assert drivers.driver_type_to_backend() == {
+    m = drivers.driver_type_to_backend()
+    # The three historical built-ins map byte-identically…
+    assert {k: m[k] for k in ("nina", "alpaca", "phd2")} == {
         "nina": "nina", "alpaca": "native", "phd2": "phd2"}
-    assert drivers.configurable_driver_types() == {"nina", "alpaca", "phd2"}
+    # …and the registry-derived vocabulary now ALSO carries the first
+    # entry-point citizen (sub-project B) when its dist metadata is installed.
+    assert {"nina", "alpaca", "phd2"} <= drivers.configurable_driver_types()
+    if "zwo-am5" in m:                      # editable install with entry point
+        assert m["zwo-am5"] == "zwo-am5"
 
 
 def test_driver_type_map_extends_with_plugin():

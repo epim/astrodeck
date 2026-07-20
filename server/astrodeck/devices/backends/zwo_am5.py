@@ -241,3 +241,98 @@ class ZwoAm5Telescope(Telescope):
         """Emergency halt: :Q# goes out FIRST, no preamble. Whether :Q# also
         disturbs tracking on this firmware is an at-scope runbook item."""
         await self._link.request("Q", reply="none")
+
+
+# ------------------------------------------------------------------ session
+
+class ZwoAm5Session:
+    """One live serial connection to one AM5. Fills only the telescope role."""
+
+    name = "zwo-am5"
+
+    def __init__(self, port_path: str):
+        self._port_path = port_path
+        self._tel: ZwoAm5Telescope | None = None
+
+    async def get_device(self, role: str, conn) -> ZwoAm5Telescope:
+        if role != "telescope":
+            raise DeviceError(f"zwo-am5 backend fills only 'telescope' (asked {role!r})")
+        if self._tel is None:
+            name = (getattr(conn, "extra", None) or {}).get("name") or "ZWO AM5"
+            tel = ZwoAm5Telescope(_make_link(self._port_path), name=name)
+            tel.role = role
+            await tel.connect()
+            self._tel = tel
+        return self._tel
+
+    def native_guider(self):
+        return None
+
+    def guide_camera(self):
+        return None
+
+    def native_solver(self):
+        return None
+
+    async def health(self) -> dict | None:
+        if self._tel is None or not self._tel.connected:
+            return None
+        return {"port": self._port_path, "firmware": self._tel.firmware}
+
+    async def close(self) -> None:
+        tel, self._tel = self._tel, None
+        if tel is not None:
+            await tel.disconnect()      # sends :Q# then closes the link
+
+
+# ------------------------------------------------------------------ backend
+
+def _app_version() -> str:
+    from ... import __version__
+    return __version__
+
+
+class ZwoAm5Backend:
+    """The AM5 native serial backend — first real citizen of the entry-point
+    driver framework (spec 2026-07-20, sub-project B)."""
+
+    name = "zwo-am5"
+    label = "ZWO AM5 (native serial)"
+    roles = ("telescope",)
+    discoverable = True
+    hostless = False
+    version = "0"                # set to the app version in register_all()
+    author = ""
+    min_app_version = "0"
+    transport = "serial"
+    hardware = True
+    driver_type = "zwo-am5"
+
+    async def open(self, conn) -> ZwoAm5Session:
+        port = getattr(conn, "port_path", None)
+        if not port:
+            raise DeviceError(
+                "zwo-am5 backend needs a serial port_path (e.g. COM3)")
+        return ZwoAm5Session(port)
+
+    async def discover(self) -> list[dict]:
+        """Enumerate serial ports; AM5s match VID:PID 03C3:4001."""
+        try:
+            from serial.tools import list_ports
+            ports = await asyncio.to_thread(list_ports.comports)
+        except Exception:  # noqa: BLE001 - discovery must never raise
+            return []
+        found = []
+        for p in ports:
+            if getattr(p, "vid", None) == 0x03C3 and getattr(p, "pid", None) == 0x4001:
+                found.append({"role": "telescope", "name": "ZWO AM5 (USB)",
+                              "port_path": p.device, "verified": True})
+        return found
+
+
+def register_all() -> None:
+    """Entry-point target: [project.entry-points."astrodeck.backends"]."""
+    from ..backend import register
+    b = ZwoAm5Backend()
+    b.version = _app_version()
+    register(b)
