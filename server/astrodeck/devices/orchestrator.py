@@ -210,6 +210,7 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
                 continue
             sessions[key] = session
             opened.append(session)
+            backend_hw = bool(getattr(get_backend(backend_name), "hardware", False))
             for role, conn in role_conns:
                 # The guider is NOT a get_device() role: it is sourced from the
                 # session's native_guider() after assembly (step below). A
@@ -223,6 +224,10 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
                         role, ok=False, error=str(exc), attempted=True)
                     continue
                 if device is not None:
+                    try:
+                        device.hardware = backend_hw
+                    except Exception:  # noqa: BLE001 - stamping must never break connect
+                        pass
                     rig[role] = device
                 results[role] = RoleResult(
                     role, ok=device is not None, attempted=True,
@@ -248,6 +253,14 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
     # (sim only), via the contracted Protocol accessor -- NOT a SimSession-only
     # property. None for nina/native/phd2.
     guide_camera = _pick_guide_camera(resolved.get("camera"), sessions)
+    if guide_camera is not None:
+        cam_conn = resolved.get("camera")
+        if cam_conn is not None:
+            try:
+                guide_camera.hardware = bool(
+                    getattr(get_backend(cam_conn.backend), "hardware", False))
+            except Exception:  # noqa: BLE001
+                pass
 
     # solver source: the camera-role session's native solver (or the get_solver
     # fallback -- the single owner of ASTAP-vs-guarded-sim precedence).

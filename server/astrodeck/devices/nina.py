@@ -181,6 +181,7 @@ class _NinaDevice:
 
     info_path: str = ""
     backend = "nina"
+    hardware = True
 
     def __init__(self, client: NinaClient, name: str):
         self.client = client

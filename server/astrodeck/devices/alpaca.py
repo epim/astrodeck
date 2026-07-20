@@ -264,6 +264,7 @@ class _AlpacaDevice:
 
     dev_type: str
     backend = "alpaca"
+    hardware = True
 
     def __init__(self, conn: AlpacaConnection, dev_num: int, name: str):
         self.conn = conn

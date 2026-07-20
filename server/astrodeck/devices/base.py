@@ -80,6 +80,10 @@ class Device(ABC):
     dev_num: int = 0
     role: str = ""
     backend: str = ""
+    #: real hardware? Read by providers to gate fake/sim plate-solves. Default
+    #: False (safe); real device classes set True and the orchestrator stamps the
+    #: authoritative value from the backend manifest at connect time.
+    hardware: bool = False
 
     def __init__(self, name: str):
         self.name = name
