@@ -596,8 +596,12 @@ export default function AtlasView(): JSX.Element {
             would force each field onto its own full-width row (they read as huge
             stacked boxes) — let them pack tightly instead. */}
         <div className="hidden lg:block flex-1" />
+        {/* optics fields — compact 2-col grid on phone (was 5 full-width stacked
+            boxes eating the screen); `sm:contents` dissolves the wrapper so the
+            header's own flex flow is unchanged on wider screens. */}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-2 w-full sm:contents">
         {/* inline focal-length field — self-contained optics (spec §6 C1-B1) */}
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 items-start">
           <span className="label">Focal length</span>
           <span className="inline-flex items-stretch">
             <input
@@ -625,7 +629,7 @@ export default function AtlasView(): JSX.Element {
         {/* pixel-size + sensor fields — 0/empty commits "use camera" (§3.2). The
             "from camera" chip + placeholder appear when a connected camera fills
             the field the config leaves blank. */}
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 items-start">
           <span className="label inline-flex items-center gap-1">
             Pixel size
             {pxFromCam && (
@@ -656,7 +660,7 @@ export default function AtlasView(): JSX.Element {
             </span>
           </span>
         </label>
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 items-start">
           <span className="label inline-flex items-center gap-1">
             Sensor W
             {wFromCam && (
@@ -687,7 +691,7 @@ export default function AtlasView(): JSX.Element {
             </span>
           </span>
         </label>
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 items-start">
           <span className="label inline-flex items-center gap-1">
             Sensor H
             {hFromCam && (
@@ -721,7 +725,7 @@ export default function AtlasView(): JSX.Element {
         {/* A4 (P2-T3 review F2): optional guide-scope focal length, independent
             of the main imaging-train focal length above. Feeds the native
             guider's image_scale_arcsec (server-side); no live FOV effect here. */}
-        <label className="flex flex-col gap-1">
+        <label className="flex flex-col gap-1 items-start">
           <span className="label inline-flex items-center gap-1">Guide scope FL</span>
           <span className="inline-flex items-stretch">
             <input
@@ -761,6 +765,7 @@ export default function AtlasView(): JSX.Element {
           <Icon name="refresh" size={14} />
           <span className="ml-1">Calibrate from last solve</span>
         </button>
+        </div>
       </header>
 
       {/* default-site nudge (ties to the hardcoded-SF P0; alt still computes) */}
