@@ -349,6 +349,11 @@ def resolve_driver_ids(spec):
             dev_num=conn.dev_num,
             role=conn.role or role,
             driver_id=did,
+            # Serial addressing rides the configured driver too (B review I1):
+            # dropping these turned a by-id serial driver back into a network
+            # spec and broke ZwoAm5Backend.open on the live connect path.
+            transport=d.transport,
+            port_path=(d.port_path or None),
             extra={**(d.extra or {}), **(conn.extra or {})},
         )
     return RigSpec(primary=spec.primary, roles=roles), role_to_driver, prefailed
