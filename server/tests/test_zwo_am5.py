@@ -119,11 +119,43 @@ async def test_parked_state_and_unpark(fixed_env):
     tel = am5.ZwoAm5Telescope(fl)
     await tel.connect()
     assert await tel.is_parked() is True          # Gps -> "2"
-    fl.script["Gps"] = "0"
     fl.script["Spu"] = "1"
-    await tel.unpark()
+    await tel.unpark()                             # parked -> sends :Spu#
     assert "Spu" in fl.sent
+    fl.script["Gps"] = "0"
     assert await tel.is_parked() is False
+
+
+async def test_unpark_is_idempotent_when_already_unparked(fixed_env):
+    """At-scope finding: :Spu# replies '0' when there is no park to cancel —
+    unpark() must check state first and no-op, not raise."""
+    fl = FakeLink(_connect_script(Gps="0"))       # already unparked
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    await tel.unpark()                             # must not raise
+    assert "Spu" not in fl.sent
+
+
+async def test_park_is_idempotent_when_already_parked(fixed_env):
+    fl = FakeLink(_connect_script())               # Gps -> "2" (parked)
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    await tel.park()                               # must not raise / not send
+    assert "hP" not in fl.sent
+
+
+async def test_guide_rates_sidereal_fraction_decode(fixed_env):
+    """At-scope finding: :GdG# '+90*00:00' means 0.90x sidereal (x100 in the
+    degrees field), not 90 degrees."""
+    fl = FakeLink(_connect_script())
+    fl.script["GdG"] = "+90*00:00"
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    v = await tel.guide_rates()
+    assert v is not None
+    assert abs(v[0] - 0.9 * 0.004178074) < 1e-9
+    fl.script["GdG"] = "+150*00:00"               # 1.5x sidereal -> out of range
+    assert await tel.guide_rates() is None
 
 
 async def test_position_and_tracking_reads(fixed_env):
