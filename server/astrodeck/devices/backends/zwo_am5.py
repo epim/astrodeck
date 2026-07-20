@@ -27,10 +27,17 @@ SLEW_TIMEOUT_S = 120.0
 SETTLE_DEG = 0.05
 #: Poll cadence during a slew.
 SETTLE_POLL_S = 0.5
+#: Poll cadence while waiting for a park to complete.
+PARK_POLL_S = 1.0
 
 #: |rate deg/s| upper bound -> LX200 rate index command.
-_RATE_TABLE = ((0.25, "R1"), (1.0, "R3"), (4.0, "R5"), (16.0, "R7"),
-               (float("inf"), "R9"))
+#: CALIBRATED ON HARDWARE 2026-07-20 (dec-axis nudges): the AM5 R-indices are
+#: sidereal-multiple presets, roughly R1=0.3x, R3=1.9x, R5=7.8x, R7=60x,
+#: R8~344x (1.44 deg/s; R8/R9 measurements were acceleration-ramp-limited).
+#: Bounds sit between adjacent measured rates so a request maps to the nearest
+#: preset at or above it.
+_RATE_TABLE = ((0.004, "R1"), (0.02, "R3"), (0.1, "R5"), (0.7, "R7"),
+               (float("inf"), "R8"))
 #: (axis, positive?) -> move command; stop is Q + same letter.
 _MOVE_CMD = {("ra", True): "Me", ("ra", False): "Mw",
              ("dec", True): "Mn", ("dec", False): "Ms"}
@@ -144,11 +151,22 @@ class ZwoAm5Telescope(Telescope):
         await self._cmd_ack("Spu", "unpark")
 
     async def park(self) -> None:
-        # Idempotent, mirroring unpark. :hP# is the standard LX200 park;
-        # at-scope verification pending for the unparked->parked transition.
+        # Idempotent, mirroring unpark. VERIFIED ON HARDWARE 2026-07-20: :hP#
+        # is in the AM5's fire-and-forget motion class (NO ack; an ack-read
+        # times out) and the mount reports parked (:Gps# '2') ~1s later.
+        # Send-and-poll, with a wall-clock bound.
         if await self.is_parked():
             return
-        await self._cmd_ack("hP", "park")
+        await self._link.request("hP", reply="none")
+        deadline = asyncio.get_running_loop().time() + 60.0
+        while True:
+            if asyncio.get_running_loop().time() > deadline:
+                raise DeviceError(
+                    f"{self.name}: park did not complete within 60s "
+                    "(mount still reports unparked)")
+            await asyncio.sleep(PARK_POLL_S)
+            if await self.is_parked():
+                return
 
     async def get_tracking(self) -> bool:
         return (await self._get("GAT")).startswith("1")
