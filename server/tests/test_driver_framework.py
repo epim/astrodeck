@@ -89,3 +89,15 @@ async def test_orchestrator_stamps_hardware_from_backend():
         assert res2.rig["telescope"].hardware is True
     finally:
         BACKENDS.pop("fakehw", None)
+
+
+# --- Task 3: ConnSpec serial addressing ---
+def test_connspec_serial_roundtrip_and_legacy():
+    s = ConnSpec(backend="zwo-am5", transport="serial", port_path="COM3",
+                 role="telescope")
+    d = s.to_dict()
+    assert d["transport"] == "serial" and d["port_path"] == "COM3"
+    assert ConnSpec.from_dict(d).port_path == "COM3"
+    # legacy dict (no transport/port_path) -> network defaults
+    legacy = ConnSpec.from_dict({"backend": "native", "host": "h", "port": 11111})
+    assert legacy.transport == "network" and legacy.port_path is None
