@@ -82,9 +82,29 @@ DTR off to avoid resetting the device); the wheel **streams unprompted at ~1 Hz*
 WSFW508A20260124A1.00ALXXXXXXXA0A0A0A0A0A0A0A0A0A<CR><LF>
 ```
 
-Field decode (apparent, `A`-separated): model `WSFW508` · firmware date `20260124` ·
-version `1.00` · serial `LXXXXXXX` · 9-slot status vector `0…0`. Command set from
-INDI source below.
+Field decode (CONFIRMED against the INDI `wanderer_snowflake` parser + live
+hardware): model `WSFW508` (8-slot; `WSFW368` also accepted) · firmware date
+`20260124` (= the driver's minimum) · **current slot** `1.00` (NOT a version) ·
+**8 per-slot filter-name letters** `LXXXXXXX` (slot 1 = `L`uminance, `X` = unset;
+NOT a serial) · fields 5–12 reserved (`0`, unknown) · field 13 = device ID (0–10,
+multi-wheel).
+
+**Command set (offset-encoded ASCII decimal + `\r` terminator — note `\r`, unlike
+the rotator's `\n`):**
+
+| Action | Wire | Status |
+|---|---|---|
+| Goto slot N (1–8) | `2000+N` (`2003` = slot 3) | **HARDWARE-VERIFIED 2026-07-20** |
+| Auto-calibrate | `1500002` (INDI sends at connect; same number = rotator "set zero"!) | source-confirmed |
+| Zero-detect / home to slot 1 | `1002` | source-confirmed |
+| Set device ID | `1900000+id` | source-confirmed |
+| Set slot i name to letter c (B–Z only; 'A' = delimiter) | `(160+i)*10000 + (c-'A'+1)` | source-confirmed |
+
+**Move-complete detection (HARDWARE-VERIFIED):** no ack; the ~2 Hz stream **pauses
+for the duration of the physical move** (~5.2 s observed for 1→3, ~3.9 s for 3→1)
+and resumes with the new slot in field 3. So: stream-silence >1.5 s ⇒ moving;
+resume-with-target ⇒ settled. (INDI instead polls field 3 == target, ≤40 s — both
+work.) No slot-count query exists; count is model-derived (8).
 
 ## Wanderer Rotator: protocol from source (device not on bus today)
 
@@ -110,12 +130,24 @@ Transport: USB CDC serial, **19200** baud (8N1 by INDI default — framing infer
 
 | Purpose | Command sent | Write terminator |
 |---|---|---|
-| Handshake / status burst | `1500001` | none |
+| Handshake / status burst | `1500001` | none (INDI) / `\n` (INDIGO) |
 | Set current position as mechanical zero | `1500002` | `\n` |
 | Set backlash (0–3°, 0.1° step) | `str(int(deg*10 + 1600000))` (0.5° → `1600005`) | `\n` |
 | Reverse ON / OFF | `1700001` / `1700000` | `\n` |
-| **Move (RELATIVE)** | `str(int(delta_deg * steps_per_degree + 1000000))` | none |
-| Abort | `Stop` (literal) | none |
+| **Move, normal speed (RELATIVE, signed)** | `str(round(delta_deg * steps_per_degree))` (± allowed) | `\n` |
+| **Move, fast speed (RELATIVE, offset)** | `str(int(delta_deg * steps_per_degree + 1000000))` (always positive; fw subtracts 1e6) | none |
+| Abort | `stop` (vendor doc, lowercase; INDI sends `Stop` — both seen) | none |
+
+Vendor protocol PDFs exist (found in the INDIGO repo, `indigo_drivers/rotator_wa/`):
+"Serial protocol for WandererRotator Lite V2/Mini …-20240226" — archived in the
+session scratchpad. Protocol valid only for firmware ≥ 20240226. Additional
+source-confirmed behaviors: **the rotator resets on port open** (INDIGO sleeps 2 s
+post-open — our DTR-off technique avoids the reset entirely); Lite V2 / Mini V2
+refuse moves under 11 V and emit `NP` (low-voltage state, surface distinctly);
+move-completion feedback frame is `<angle_rotated>A<new_mech_angle*1000>A` pushed
+once, silent while moving. Known third-party pitfall: INDIGO's prefix-match on
+`WandererRotatorLite` mis-assigns Lite V1 (1155 steps/°) the V2 constant (1199) —
+use exact string equality.
 
 - Handshake reply burst (each `'A'`-terminated): model name → firmware version →
   current angle ×1000 → backlash → reverse flag. The model name is **string-equality
@@ -143,10 +175,19 @@ pattern); CAA driver does not (one-shot scan) — do better. Temperature-compens
 focusing is client-side in INDI (steps-per-°C over plain `EAFMove`) — matches our
 existing autofocus provider layer, not the SDK.
 
-### Wanderer Snowflake filter wheel (protocol pass pending)
+### Wanderer Snowflake filter wheel — SOLVED + HARDWARE-VERIFIED
 
-Empirical banner + transport captured above; INDI driver exists (product-line
-confirmed). Command table to be appended from the follow-up source read.
+Full decode + command table in the wheel section above. Source: INDI core
+`drivers/filter_wheel/wanderer_snowflake.{cpp,h}` (co-copyright WandererAstro
+2026 — authoritative; no 3rd-party/INDIGO driver exists). Live verification
+2026-07-20 on the rig: goto 1→3→1 with stream-pause-as-motion-signal confirmed.
+
+### CAA/EAF PID note
+
+No public source documents the CAA/EAF PIDs (even INDIGO reads them at runtime via
+`CAAGetProductIDs`). Ours are **empirically pinned from the astrotown bus**:
+CAA `03C3:1F20`, EAF `03C3:1F10` (inventory table). Confirm at runtime with
+`CAACheck(vid, pid)` when the driver lands.
 
 ## Native driver targets (summary)
 
