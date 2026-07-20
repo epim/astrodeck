@@ -13,6 +13,11 @@ from . import nina_backend  # noqa: F401  (import for self-registration side eff
 from . import native_backend  # noqa: F401  (import for self-registration side effect)
 from . import phd2_backend  # noqa: F401  (import for self-registration side effect)
 from . import ascom_local  # noqa: F401  (Windows-only self-registration side effect)
+from ._discovery import discover_plugin_backends, plugin_load_report  # noqa: F401
+
+# Discover third-party backends AFTER the built-ins are registered, so the
+# collision guard can protect built-in names. Guarded internally -- never fatal.
+discover_plugin_backends()
 
 __all__ = ["sim_backend", "nina_backend", "native_backend", "phd2_backend",
-           "ascom_local"]
+           "ascom_local", "discover_plugin_backends", "plugin_load_report"]

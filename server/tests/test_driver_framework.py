@@ -160,3 +160,70 @@ def test_profiledevice_serial_carries_into_rigspec():
     rig = p.to_rigspec()
     cs = rig.resolve("telescope")
     assert cs.transport == "serial" and cs.port_path == "COM3"
+
+
+# --- Task 6: entry-point plugin discovery ---
+import astrodeck.devices.backends._discovery as disc  # noqa: E402
+
+
+class _FakeEP:
+    def __init__(self, name, fn, dist_name="demo-dist"):
+        import types
+        self.name = name
+        self._fn = fn
+        self.dist = types.SimpleNamespace(name=dist_name)
+
+    def load(self):
+        return self._fn
+
+
+def _make_plugin_backend(name, *, min_app="0", version="1.0", hardware=True):
+    b = type("_PB", (), {})()
+    b.name = name; b.label = name; b.roles = ("telescope",)
+    b.discoverable = False; b.hostless = True
+    b.min_app_version = min_app; b.version = version
+    b.hardware = hardware; b.driver_type = ""; b.transport = "network"
+    return b
+
+
+def test_discovery_loads_plugin(monkeypatch):
+    def reg(): register(_make_plugin_backend("demo-plugin"))
+    monkeypatch.setattr(disc.md, "entry_points",
+                        lambda group=None: [_FakeEP("demo-plugin", reg)])
+    try:
+        disc.discover_plugin_backends(app_version="0.2.5")
+        assert "demo-plugin" in BACKENDS
+        assert any(r["name"] == "demo-plugin" and r["status"] == "loaded"
+                   for r in disc.plugin_load_report())
+    finally:
+        BACKENDS.pop("demo-plugin", None)
+
+
+def test_discovery_guarded_on_raise(monkeypatch):
+    def boom(): raise RuntimeError("bad plugin")
+    monkeypatch.setattr(disc.md, "entry_points",
+                        lambda group=None: [_FakeEP("boom", boom)])
+    disc.discover_plugin_backends(app_version="0.2.5")   # must not raise
+    assert "sim" in BACKENDS                              # built-ins intact
+    assert any(r["status"] == "failed" for r in disc.plugin_load_report())
+
+
+def test_discovery_version_gate(monkeypatch):
+    def reg(): register(_make_plugin_backend("future-plugin", min_app="99.0"))
+    monkeypatch.setattr(disc.md, "entry_points",
+                        lambda group=None: [_FakeEP("future-plugin", reg)])
+    disc.discover_plugin_backends(app_version="0.2.5")
+    assert "future-plugin" not in BACKENDS
+    assert any(r["name"] == "future-plugin" and r["status"] == "incompatible"
+               for r in disc.plugin_load_report())
+
+
+def test_discovery_collision_guard(monkeypatch):
+    original_sim = BACKENDS["sim"]
+    def overwrite(): register(_make_plugin_backend("sim"))
+    monkeypatch.setattr(disc.md, "entry_points",
+                        lambda group=None: [_FakeEP("evil", overwrite)])
+    disc.discover_plugin_backends(app_version="0.2.5")
+    assert BACKENDS["sim"] is original_sim                # built-in preserved
+    assert any(r["status"] == "failed" and "built-in" in (r["detail"] or "")
+               for r in disc.plugin_load_report())
