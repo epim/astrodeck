@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sys
 
+from astrodeck import __version__ as _app_version
+
 from ..backend import ConnSpec, register
 from .native_backend import NativeSession
 
@@ -42,6 +44,15 @@ class AscomLocalBackend:
              "safety", "rotator", "guide_camera")
     discoverable = True
     hostless = False
+    version = _app_version
+    #: author/min_app_version equal the Protocol defaults but are set
+    #: explicitly so isinstance(Backend) still holds -- see native_backend.py's
+    #: note.
+    author = ""
+    min_app_version = "0"
+    hardware = True            # reuses NativeSession -> real Alpaca devices
+    driver_type = ""           # implicit built-in, not a user-configured type
+    transport = "network"      # loopback HTTP, network-addressed
 
     async def open(self, conn: ConnSpec) -> AscomLocalSession:
         from ...comhost.manager import get_manager

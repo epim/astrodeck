@@ -52,6 +52,15 @@ class DummyBackend:
     roles = ("camera", "telescope")
     discoverable = False
     hostless = False                 # required Backend Protocol member (W1.1)
+    # Driver-manifest fields (Task 1): also required explicitly for
+    # isinstance(Backend) -- a Protocol's class-body default only applies to
+    # classes that *inherit* it; DummyBackend duck-types Backend structurally.
+    version = "0"
+    author = ""
+    min_app_version = "0"
+    transport = "network"
+    hardware = False
+    driver_type = ""
 
     async def open(self, conn):
         return DummySession()
@@ -108,7 +117,9 @@ def test_list_backends_shape_and_ordering():
     listed = list_backends()
     assert [b["name"] for b in listed] == ["aaa", "dummy"]   # sorted by name
     entry = next(b for b in listed if b["name"] == "dummy")
-    assert set(entry) == {"name", "label", "roles", "discoverable"}
+    assert set(entry) == {"name", "label", "roles", "discoverable", "version",
+                           "author", "min_app_version", "transport", "hardware",
+                           "driver_type"}
     assert entry["label"] == "Dummy Backend"
     assert entry["roles"] == ("camera", "telescope")
     assert entry["discoverable"] is False
