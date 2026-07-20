@@ -80,6 +80,40 @@ separator in Dec/Alt/Az/latitude.
 
 Not supported (no response): `:pS#`, `:D#`, `:V#`, bare `CR`.
 
+### Write path & motion (partially captured)
+
+The set and motion command **formats are all confirmed parsed** by the firmware —
+their USB framing is identical to reads (each command, however long, is one bulk-OUT
+transfer; e.g. `:Sr10:37:16#` = 12 B in a single transfer, ack on bulk-IN):
+
+| Command | Meaning | Observed result |
+|---|---|---|
+| `:Sr HH:MM:SS#` | Set target RA | **`1`** (success) — works |
+| `:Sd sDD*MM:SS#` | Set target Dec | **`1`** (success) — works |
+| `:Gr#` / `:Gd#` | Read back target | echoes the set target exactly |
+| `:RG#` `:RC#` `:RM#` `:RS#` | Select guide/center/move/slew rate | accepted, **no ack** (fire-and-forget) |
+| `:Q#` | Stop / halt | accepted, no ack |
+| `:MS#` | GoTo target | see note below |
+| `:Mgn/s/e/w<ms>#` | Pulse guide N/S/E/W | see note below |
+| `:Mn/s/e/w#` … `:Q#` | Manual move / stop | see note below |
+| `:Te#` / `:Td#` | Enable / disable tracking | see note below |
+| `:hR#` | Unpark | see note below |
+
+**Motion is gated when the mount is not fully powered.** In the capture session the
+mount answered every info query and accepted set-target (`1`) and rate-sets, but **every
+command that would move an axis or change motion state returned `e14#` and nothing moved**
+(`:MS#` to a verified-valid target, `:Te#`/`:TQ#`, `:Mg*#`, `:Ms#`, `:hR#` — all `e14#`;
+Dec stayed pinned at `+90*00:00`, `:GU#` never left `nGM000000005#`). `e14#` is an
+OnStepX-style "command refused in current state" reply.
+
+Interpretation: the mount's **MCU + absolute encoders were alive on USB/standby power**
+(reads work; the encoder reports the pole) but the **motor/motion subsystem was
+unavailable** — i.e. the mount was not fully powered on. This is consistent with ZWO's
+own ASCOM driver (`ASCOM.ASIMount.Telescope`) reporting `Connected=False` at the same
+time. **Capturing a successful slew/track/guide sequence (and the success-path response
+codes) requires the mount powered on with motor power present.** The command syntax
+above is already confirmed; only the execution/success responses remain to capture.
+
 ### `:GU#` extended status word
 
 `:GU#` → e.g. `nGM000000005#`. This is an **OnStep/OnStepX-style composite status
@@ -98,11 +132,14 @@ against live states (tracking on/off, slewing, parked) before relying on it.
    `/dev/ttyACMn` (Linux/macOS — same CDC device, no driver needed), 8N1, any baud.
 3. **State poll:** prefer `:GU#` for a single-call status; fall back to individual
    `:GR#`/`:GD#`/`:Gm#`/`:GT#` for fields `:GU#` doesn't expose.
-4. **Motion / control commands** (slew `:MS#`/`:Mn#`…, sync `:CM#`, park, rate set,
-   pulse-guide `:Mgn####`, site/time set `:St#`/`:Sg#`/`:SL#`…) follow the same LX200
-   framing but were **not** exercised here (read-only capture — no motion). Capture
-   those live from a known-good client (or issue them directly) when building the
-   write path, and verify each against the mount before trusting it.
+4. **Motion / control commands** (slew `:MS#`/`:Mn#`…, pulse-guide `:Mgn####`, tracking
+   `:Te#`/`:Td#`, rate `:R*#`, set-target `:Sr#`/`:Sd#`) use the same single-transfer
+   LX200 framing and are **confirmed parsed** by the firmware. Set-target and rate-sets
+   were exercised successfully; the actual axis-motion commands returned `e14#` because
+   the mount was not fully powered (see "Write path & motion" above). Capture the
+   **success**-path responses and any slewing-status `:GU#` transitions live once the
+   mount's motors are powered. Avoid site/time SET (`:St#`/`:Sg#`/`:SL#`/`:SC#`) and
+   sync (`:CM#`) unless intended — they mutate the mount's stored config/alignment.
 5. **ZWO's own ASCOM driver is bypassable.** During capture, `ASCOM.ASIMount.Telescope`
    (v6.5.24) reported `Connected=False` and returned zeroed coordinates, yet direct
    LX200 over the CDC port worked perfectly — confirming the native path is both viable
