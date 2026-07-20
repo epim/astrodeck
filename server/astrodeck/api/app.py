@@ -638,8 +638,10 @@ class JtiBody(BaseModel):
 class DriverCreateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: str
-    host: str
+    host: str = ""                # network transport (empty for serial)
     port: int | None = None
+    transport: str = "network"    # "network" | "serial"
+    port_path: str = ""           # serial transport, e.g. "COM3"
     label: str = ""
     extra: dict = {}
 
@@ -1220,8 +1222,9 @@ def create_app() -> FastAPI:
             raise HTTPException(422, f"unknown driver type: {body.type!r}")
         try:
             entry = await asyncio.to_thread(
-                config_store.add_driver, body.type, body.host, body.port,
-                body.label, body.extra)
+                lambda: config_store.add_driver(
+                    body.type, body.host, body.port, body.label, body.extra,
+                    transport=body.transport, port_path=body.port_path))
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(config_store.cfg()))
