@@ -36,9 +36,11 @@ from .events import bus
 from .guide import Guider, PHD2Guider
 from .imaging import (
     auto_levels,
+    cloud_score,
     compute_histogram,
+    detect_stars,
     display_histogram,
-    measure_frame,
+    measure_stars,
     save_fits,
     stretch_with,
     to_jpeg,
@@ -1512,9 +1514,10 @@ class Hub:
             # display-domain histogram (handles have travel) + the true linear one
             stretched = await asyncio.to_thread(stretch_with, data, black, mid, white)
             hist_display = await asyncio.to_thread(display_histogram, stretched)
-            # one detection pass → HFR + count + overlay marks (no double detect)
-            hfr, count, marks = await asyncio.to_thread(
-                measure_frame, data, full_well=info["full_well"])
+            # one detection pass → HFR + count + overlay marks + cloud verdict
+            # (cloud detection inspects per-star peaks, so it shares this pass)
+            stars = await asyncio.to_thread(detect_stars, data)
+            hfr, count, marks = measure_stars(stars, full_well=info["full_well"])
             info.update({
                 "histogram": hist_display,
                 "histogram_linear": await asyncio.to_thread(compute_histogram, data),
@@ -1525,6 +1528,14 @@ class Hub:
                                 "white": round(white, 4)},
                 "star_list": marks,
             })
+            # Image-derived cloud verdict, reusing the star count from the single
+            # detection pass above (no second detect). Linear frames only — the
+            # contrast metric needs unstretched pixels. Complements the
+            # forecast-based cloud cover in weather.py with what the camera sees.
+            if data_is_linear:
+                cloud = await asyncio.to_thread(
+                    cloud_score, data, stars=stars)
+                info["cloud"] = cloud.to_dict()
             # backend-measured HFR/stars (e.g. native) win; else our detection.
             if hfr is not None:
                 info.setdefault("hfr", round(float(hfr), 2))
