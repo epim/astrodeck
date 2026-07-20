@@ -61,6 +61,8 @@ class ProfileDevice(BaseModel):
     # (old rows) → the raw host/port above stays authoritative. Saved by the
     # Equipment surface; resolved by drivers.resolve_driver_ids at connect.
     driver_id: str = ""
+    transport: str = "network"   # "network" | "serial"
+    port_path: str = ""          # serial device path, e.g. "COM3" / "/dev/ttyACM0"
     # Stage B: carries ``ConnSpec.extra`` (backend-specific options, e.g. a PHD2
     # pixel scale). Additive + JSON-able only — a non-serializable runtime
     # injection (the NINA ``build_rig`` callable) is NEVER persisted here; see
@@ -164,6 +166,8 @@ class Profile(BaseModel):
                 dev_num=d.dev_num,
                 role=d.role,
                 driver_id=d.driver_id or None,
+                transport=d.transport,
+                port_path=(d.port_path or None),
                 extra=extra,
             )
         # Legacy nina_host-only profile (no per-device rows): the rig IS NINA, so
