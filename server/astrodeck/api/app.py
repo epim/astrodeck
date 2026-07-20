@@ -1171,6 +1171,16 @@ def create_app() -> FastAPI:
         from ..devices.backend import list_backends
         return list_backends()
 
+    @app.get("/api/backends/plugins",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def backend_plugins():
+        """Discovery outcomes for third-party backend plugins: ``[{name, dist,
+        version, status, detail}, ...]`` where status is loaded/failed/
+        incompatible. Imports the backends package so discovery has run."""
+        from ..devices import backends as _b  # noqa: F401 - discovery side-effect
+        return _b.plugin_load_report()
+
     # -------------------------------------------- backend drivers (spec 2026-07-08)
     # GLOBAL driver config + the merged availability surface. Read = view.status
     # (same as discovery); write = config.backend (same as every connect write).
