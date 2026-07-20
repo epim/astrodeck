@@ -24,6 +24,8 @@ module (to populate the registry) does not drag in the guide/event stack.
 """
 from __future__ import annotations
 
+from astrodeck import __version__ as _app_version
+
 from ..backend import BackendSession, ConnSpec, register
 
 #: PHD2's default event-socket endpoint when a ConnSpec leaves host/port unset.
@@ -129,6 +131,14 @@ class Phd2Backend:
     #: stray-addressed phd2-local guider override still resolves to its session
     #: under ``("phd2", None, None)`` (W1.3).
     hostless = True
+    version = _app_version
+    #: Explicit (equal to Protocol defaults) so isinstance(Backend) still holds
+    #: -- see native_backend.py's note.
+    author = ""
+    min_app_version = "0"
+    transport = "network"
+    hardware = False
+    driver_type = "phd2"
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Connect a ``PHD2Guider`` and return a session over it.

@@ -16,6 +16,8 @@ guide stack just to populate the registry.
 """
 from __future__ import annotations
 
+from astrodeck import __version__ as _app_version
+
 from ..backend import ROLES, BackendSession, ConnSpec, register
 
 #: Sim-tuned FAST calibration engine-config (P2-T3 default flip). The sim's
@@ -177,6 +179,14 @@ class SimBackend:
     #: every sim role into the single key ``("sim", None, None)`` regardless of
     #: stray host/port on an override (W1.3).
     hostless = True
+    version = _app_version
+    #: These three equal the Protocol defaults but are set explicitly so this
+    #: class stays isinstance(Backend) -- see native_backend.py's note.
+    author = ""
+    min_app_version = "0"
+    transport = "network"
+    hardware = False
+    driver_type = ""
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Build one coherent sim rig and return a session over it.

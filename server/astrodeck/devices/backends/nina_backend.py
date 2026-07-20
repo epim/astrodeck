@@ -20,6 +20,8 @@ this backend at import time does not drag in httpx / numpy / PIL.
 """
 from __future__ import annotations
 
+from astrodeck import __version__ as _app_version
+
 from ..backend import BackendSession, ConnSpec, register
 
 
@@ -137,6 +139,14 @@ class NinaBackend:
     roles = ("camera", "telescope", "focuser", "filterwheel", "switch", "guider", "rotator")
     discoverable = True
     hostless = False                # NINA is a network endpoint (host:port)
+    version = _app_version
+    #: Explicit (equal to Protocol defaults) so isinstance(Backend) still holds
+    #: -- see native_backend.py's note.
+    author = ""
+    min_app_version = "0"
+    transport = "network"
+    hardware = True
+    driver_type = "nina"
 
     async def open(self, conn: ConnSpec) -> BackendSession:
         """Probe NINA at ``conn.host``/``conn.port`` and return a session.
