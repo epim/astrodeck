@@ -136,11 +136,18 @@ class ZwoAm5Telescope(Telescope):
         return (await self._get("Gps")).startswith("2")
 
     async def unpark(self) -> None:
+        # Idempotent (at-scope finding 2026-07-20): :Spu# on an ALREADY-unparked
+        # mount replies '0', which is not a failure — there is simply no park to
+        # cancel. Check state first; only a parked mount gets the command.
+        if not await self.is_parked():
+            return
         await self._cmd_ack("Spu", "unpark")
 
     async def park(self) -> None:
-        # NOTE: :hP# is the standard LX200 park; unverified on the AM5N while
-        # unparked (the capture only saw it refused while already parked).
+        # Idempotent, mirroring unpark. :hP# is the standard LX200 park;
+        # at-scope verification pending for the unparked->parked transition.
+        if await self.is_parked():
+            return
         await self._cmd_ack("hP", "park")
 
     async def get_tracking(self) -> bool:
@@ -154,11 +161,22 @@ class ZwoAm5Telescope(Telescope):
             return PierSide.WEST
         return PierSide.UNKNOWN
 
+    #: sidereal rate in deg/s (15.041"/s) — the unit :GdG# is a fraction of.
+    _SIDEREAL_DEG_S = 0.004178074
+
     async def guide_rates(self) -> tuple[float, float] | None:
+        """AM5 :GdG# encodes the guide RATE as a sidereal fraction x100 in the
+        degrees field (at-scope finding 2026-07-20: '+90*00:00' = 0.90x
+        sidereal, NOT 90 degrees). Convert to deg/s; None when the reply
+        doesn't fit that encoding."""
         try:
-            v = lx200.parse_dec(await self._get("GdG"))
+            raw = lx200.parse_dec(await self._get("GdG"))
         except (DeviceError, ValueError):
             return None
+        frac = raw / 100.0
+        if not (0.0 < frac <= 1.0):
+            return None
+        v = frac * self._SIDEREAL_DEG_S
         return (v, v)
 
     # ------------------------------------------------------------- motion
