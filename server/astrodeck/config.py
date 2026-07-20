@@ -376,11 +376,27 @@ DRIVER_DEFAULT_PORTS: dict[str, int] = {"nina": 1888, "alpaca": 11111, "phd2": 4
 class DriverEntry(BaseModel):
     id: str                                  # server-minted "<type>-<4hex>", immutable
     type: DriverType
-    host: str
-    port: int = Field(ge=1, le=65535)
+    transport: str = "network"               # "network" | "serial"
+    host: str = ""                           # network transport
+    port: int = Field(default=0, ge=0, le=65535)
+    port_path: str = ""                      # serial transport, e.g. "COM3"
     enabled: bool = True
     label: str = ""
     extra: dict = Field(default_factory=dict)  # driver-typed options (e.g. phd2 managed)
+
+    @model_validator(mode="after")
+    def _check_transport(self) -> "DriverEntry":
+        """Per-transport addressing: serial needs a port_path; network needs a
+        host + a real port. Defaults keep every existing (network) driver valid."""
+        if self.transport == "serial":
+            if not self.port_path:
+                raise ValueError("serial driver requires port_path")
+        else:  # network
+            if not self.host:
+                raise ValueError(f"{self.transport} driver requires host")
+            if not (1 <= self.port <= 65535):
+                raise ValueError(f"{self.transport} driver requires port 1..65535")
+        return self
 
 
 class AppConfig(BaseModel):
