@@ -1,0 +1,6 @@
+# Vendored SDK binaries must never be treated as text (autocrlf would corrupt
+# them on checkout/clone, breaking ctypes loading at deploy time).
+*.dll binary
+*.so binary
+*.dylib binary
+*.lib binary
