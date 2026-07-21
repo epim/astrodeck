@@ -27,6 +27,7 @@ from .base import (
     Switch,
     SwitchPort,
     Telescope,
+    TRACKING_RATES,
 )
 
 
@@ -652,12 +653,17 @@ class SimTelescope(Telescope):
     #: capability gating in the sim rig).
     can_pulse_guide = True
 
+    #: the sim mount always accepts a lunar/solar drive rate (multi-rate mount
+    #: tracking, 2026-07-21) -- no capability gating needed in the sim rig.
+    can_set_tracking_rate = True
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig
         self._slewing = False
         self._move_rates = {"ra": 0.0, "dec": 0.0}
         self._move_task: asyncio.Task | None = None
+        self._tracking_rate = "sidereal"
 
     async def connect(self) -> None:
         await asyncio.sleep(0.1)
@@ -725,6 +731,14 @@ class SimTelescope(Telescope):
 
     async def get_tracking(self) -> bool:
         return self.rig.tracking
+
+    async def set_tracking_rate(self, rate: str) -> None:
+        if rate not in TRACKING_RATES:
+            raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
+        self._tracking_rate = rate
+
+    async def get_tracking_rate(self) -> str:
+        return self._tracking_rate
 
     async def park(self) -> None:
         await self.slew(0.0, 89.5)

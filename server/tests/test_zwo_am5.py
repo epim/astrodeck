@@ -175,6 +175,40 @@ async def test_parked_refusal_maps_to_honest_error(fixed_env):
         await tel.set_tracking(True)
 
 
+# --------------------------------------------------------- telescope: tracking rate
+
+async def test_tracking_rate_sends_lx200_command_per_rate(fixed_env):
+    """Each rate name maps to its classic LX200 select command, sent
+    fire-and-forget (reply="none" -- see set_tracking_rate's docstring for why
+    an ack is NOT assumed for :TQ#/:TL#/:TS#)."""
+    fl, tel = await _connected_tel(_connect_script())
+    assert tel.can_set_tracking_rate is True
+    await tel.set_tracking_rate("sidereal")
+    assert fl.sent == ["TQ"]
+    fl.sent.clear()
+    await tel.set_tracking_rate("lunar")
+    assert fl.sent == ["TL"]
+    fl.sent.clear()
+    await tel.set_tracking_rate("solar")
+    assert fl.sent == ["TS"]
+
+
+async def test_get_tracking_rate_returns_cached_last_set(fixed_env):
+    fl, tel = await _connected_tel(_connect_script())
+    assert await tel.get_tracking_rate() == "sidereal"       # init default
+    await tel.set_tracking_rate("lunar")
+    assert await tel.get_tracking_rate() == "lunar"           # cache, not a re-read
+    assert fl.sent == ["TL"]                                  # no read-back command sent
+
+
+async def test_tracking_rate_rejects_unknown_and_sends_nothing(fixed_env):
+    fl, tel = await _connected_tel(_connect_script())
+    with pytest.raises(DeviceError):
+        await tel.set_tracking_rate("king")
+    assert fl.sent == []                                       # nothing sent
+    assert await tel.get_tracking_rate() == "sidereal"          # cache untouched
+
+
 # ---------------------------------------------------------- telescope: motion
 
 async def _connected_tel(script):

@@ -146,6 +146,13 @@ class Camera(Device):
         raise DeviceError(f"{self.name} has no dew heater")
 
 
+#: The one source of truth for the tracking-rate vocabulary (multi-rate mount
+#: tracking, 2026-07-21). The wire/API/UI all use these lowercase names --
+#: import this tuple everywhere rather than re-hardcoding the list. ASCOM's
+#: "King" rate is out of scope (YAGNI).
+TRACKING_RATES: tuple[str, ...] = ("sidereal", "lunar", "solar")
+
+
 class Telescope(Device):
     kind = "telescope"
 
@@ -161,6 +168,13 @@ class Telescope(Device):
     #: spec §4 says a pulse-guide-incapable mount must refuse to start with
     #: an actionable error rather than silently issuing pulses that go nowhere.
     can_pulse_guide: bool = False
+
+    #: capability flag (multi-rate mount tracking, 2026-07-21) -- set True only
+    #: by backends that have confirmed the mount accepts a lunar/solar drive
+    #: rate (AM5N, Alpaca, sim). Gates whether the UI even offers the rate
+    #: selector; default False keeps unsupported mounts (incl. NINA) unaffected
+    #: and the rate control hidden.
+    can_set_tracking_rate: bool = False
 
     @abstractmethod
     async def get_position(self) -> tuple[float, float]:
@@ -197,6 +211,20 @@ class Telescope(Device):
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
         raise DeviceError(f"{self.name} cannot pulse guide")
+
+    async def set_tracking_rate(self, rate: str) -> None:
+        """Set the drive rate (sidereal/lunar/solar) -- NOT an ephemeris
+        follow; the mount just spins its motors at a different constant rate.
+        Default raises (mirrors ``pulse_guide``); backends that opt in via
+        ``can_set_tracking_rate`` override this and validate ``rate`` against
+        ``TRACKING_RATES``."""
+        raise DeviceError(f"{self.name} cannot set tracking rate")
+
+    async def get_tracking_rate(self) -> str:
+        """The currently-set drive rate name. Default ``"sidereal"`` -- every
+        mount starts there and backends that don't support switching never
+        leave it."""
+        return "sidereal"
 
     async def guide_rates(self) -> tuple[float, float] | None:
         """(ra_deg_per_s, dec_deg_per_s) at 1x guide speed, or None when the
