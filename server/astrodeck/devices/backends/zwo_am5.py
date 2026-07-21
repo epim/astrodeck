@@ -15,7 +15,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from .. import lx200
-from ..base import DeviceError, PierSide, Telescope
+from ..base import DeviceError, PierSide, Telescope, TRACKING_RATES
 from ..serial_link import LinkError, SerialLink
 
 #: Seam for tests: the link factory used by ZwoAm5Session.
@@ -41,6 +41,9 @@ _RATE_TABLE = ((0.004, "R1"), (0.02, "R3"), (0.1, "R5"), (0.7, "R7"),
 #: (axis, positive?) -> move command; stop is Q + same letter.
 _MOVE_CMD = {("ra", True): "Me", ("ra", False): "Mw",
              ("dec", True): "Mn", ("dec", False): "Ms"}
+
+#: rate name (TRACKING_RATES) -> classic LX200 drive-rate select command.
+_TRACKING_RATE_CMD = {"sidereal": "TQ", "lunar": "TL", "solar": "TS"}
 
 #: Pulse-guide emulation (fw 1.8.8, all verified at scope 2026-07-20):
 #: - The LX200 :Mg*# pulse commands PARSE but are INERT over serial.
@@ -80,12 +83,17 @@ class ZwoAm5Telescope(Telescope):
     backend = "zwo-am5"
     hardware = True
     can_pulse_guide = True    # EMULATED: timed R1 moves (native :Mg*# is inert)
+    can_set_tracking_rate = True
 
     def __init__(self, link, name: str = "ZWO AM5"):
         super().__init__(name)
         self._link = link
         self.firmware = ""
         self._last_pos: tuple[float, float] | None = None
+        #: cache of the last-set drive rate -- the AM5's rate read-back is
+        #: unreliable (no verified LX200 query for it), so get_tracking_rate
+        #: returns this rather than round-tripping the mount.
+        self._tracking_rate = "sidereal"
 
     # ------------------------------------------------------------ helpers
 
@@ -214,6 +222,24 @@ class ZwoAm5Telescope(Telescope):
     async def set_tracking(self, on: bool) -> None:
         await self._cmd_ack("Te" if on else "Td",
                             "tracking on" if on else "tracking off")
+
+    async def set_tracking_rate(self, rate: str) -> None:
+        """Select the drive rate via the classic LX200 ``:TQ#``/``:TL#``/
+        ``:TS#`` commands. Unlike ``:Te#``/``:Td#`` (verified ACK ``1`` at
+        scope 2026-07-20, see docs/hardware/zwo-am5-lx200-protocol.md), these
+        rate-select commands are NOT in the captured wire truth -- classic
+        LX200 firmwares reply to them with nothing at all, and the AM5's other
+        rate-index commands (``:R0#``..``:R9#``) are confirmed fire-and-forget.
+        So this sends fire-and-forget (``reply="none"``) rather than assuming
+        an ack; whether the AM5N actually ACKs ``:TL#``/``:TS#`` is an
+        at-scope validation item (plan Task 7)."""
+        if rate not in TRACKING_RATES:
+            raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
+        await self._link.request(_TRACKING_RATE_CMD[rate], reply="none")
+        self._tracking_rate = rate
+
+    async def get_tracking_rate(self) -> str:
+        return self._tracking_rate
 
     async def _set_target(self, ra_hours: float, dec_deg: float) -> None:
         await self._cmd_ack(f"Sr{lx200.format_ra(ra_hours)}", "set target RA")

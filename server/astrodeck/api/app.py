@@ -60,7 +60,7 @@ from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
 from ..devices import alpaca as alpaca_backend
-from ..devices.base import DeviceError
+from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
@@ -2632,6 +2632,21 @@ def create_app() -> FastAPI:
             tel = hub.require("telescope")
             await tel.set_tracking(on)
             return {"tracking": on}
+        except DeviceError as e:
+            raise _err(e)
+
+    @app.post("/api/mount/tracking_rate", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.set_tracking_rate"})
+    async def tracking_rate(rate: str):
+        # Validate against the one vocabulary source BEFORE touching the device
+        # (plan Task 4 / design doc): an unknown rate is a client error (422),
+        # not a device failure.
+        if rate not in TRACKING_RATES:
+            raise HTTPException(422, f"unknown tracking rate {rate!r}")
+        try:
+            tel = hub.require("telescope")
+            await tel.set_tracking_rate(rate)
+            return {"tracking_rate": rate}
         except DeviceError as e:
             raise _err(e)
 

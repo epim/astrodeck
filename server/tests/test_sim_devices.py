@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from astrodeck.devices.base import DeviceError
 from astrodeck.devices.sim import build_sim_rig
 
 
@@ -52,6 +53,22 @@ async def test_park_blocks_slew(rig):
         await tel.slew(5.0, 0.0)
     await tel.unpark()
     await tel.slew(5.0, 0.0)
+
+
+async def test_tracking_rate_round_trips(rig):
+    tel = rig["telescope"]
+    assert tel.can_set_tracking_rate is True
+    assert await tel.get_tracking_rate() == "sidereal"
+    await tel.set_tracking_rate("solar")
+    assert await tel.get_tracking_rate() == "solar"
+
+
+async def test_tracking_rate_rejects_unknown(rig):
+    tel = rig["telescope"]
+    with pytest.raises(DeviceError):
+        await tel.set_tracking_rate("king")
+    # rejected rate must not clobber the previously-set one
+    assert await tel.get_tracking_rate() == "sidereal"
 
 
 async def test_focuser_moves_and_halts(rig):
