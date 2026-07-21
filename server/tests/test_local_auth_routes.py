@@ -38,14 +38,17 @@ def _clean_provider():
 
 
 def _make_app(tmp_path, monkeypatch, *, methods=None, first_run=True,
-              token=None):
+              token=None, admin_token=""):
     """Build an isolated app: temp config store + temp user store, with the
     requested auth methods configured. The provider is rebuilt from the config
-    at create_app() time."""
+    at create_app() time. ``admin_token`` seeds the RBAC break-glass token
+    (AuthConfig.admin_token) -- distinct from ``token`` (the coarse
+    ASTRODECK_TOKEN env gate)."""
     temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
     # Seed the auth config (methods drive local/google enablement).
     auth = AuthConfig(methods=list(methods or []),
-                      local_enabled_first_run=first_run)
+                      local_enabled_first_run=first_run,
+                      admin_token=admin_token)
     temp_store.cfg().auth = auth
 
     import astrodeck.config as config_mod
@@ -194,6 +197,65 @@ def test_first_run_404_when_flag_off(tmp_path, monkeypatch):
         r = c.post("/auth/setup/local",
                    json={"username": "root", "password": "pw"})
         assert r.status_code == 404
+
+
+# ------------------------------------------------------- break-glass token login
+
+def test_token_login_mints_admin_session(tmp_path, monkeypatch):
+    """POST /auth/token with the configured break-glass token exchanges it for a
+    normal admin ad_session cookie (astrotown-representative: a method is enabled
+    so the active MultiAuthProvider reads the minted cookie on the next request)."""
+    app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
+                               admin_token="tok-secret-123")
+    with TestClient(app) as c:
+        r = c.post("/auth/token", json={"token": "tok-secret-123"})
+        assert r.status_code == 200, r.text
+        assert r.json()["role"] == "admin"
+        assert SESSION_COOKIE in r.cookies or SESSION_COOKIE in c.cookies
+        # the minted cookie authenticates a subsequent call as admin
+        me = c.get("/auth/me")
+        assert me.status_code == 200 and me.json()["role"] == "admin"
+
+
+def test_token_login_wrong_token_is_generic_401(tmp_path, monkeypatch):
+    app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
+                               admin_token="tok-secret-123")
+    with TestClient(app) as c:
+        r = c.post("/auth/token", json={"token": "WRONG"})
+        assert r.status_code == 401
+        assert SESSION_COOKIE not in r.cookies
+
+
+def test_token_login_blank_token_401(tmp_path, monkeypatch):
+    app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"],
+                               admin_token="tok-secret-123")
+    with TestClient(app) as c:
+        assert c.post("/auth/token", json={"token": ""}).status_code == 401
+        assert c.post("/auth/token", json={"token": "   "}).status_code == 401
+
+
+def test_token_login_404_when_no_admin_token_configured(tmp_path, monkeypatch):
+    """No break-glass token set -> the route is inert (404), so a deployment that
+    never configured one exposes nothing."""
+    app, _users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    with TestClient(app) as c:
+        r = c.post("/auth/token", json={"token": "anything"})
+        assert r.status_code == 404
+
+
+def test_methods_reports_admin_token_configured(tmp_path, monkeypatch):
+    """The open /api/auth/methods signal tells the UI whether to show the token
+    field -- a boolean only, never the token itself."""
+    app_off, _u, _ = _make_app(tmp_path, monkeypatch, methods=[])
+    with TestClient(app_off) as c:
+        assert c.get("/api/auth/methods").json()["admin_token_configured"] is False
+    app_on, _u2, _ = _make_app(tmp_path / "b", monkeypatch, methods=[],
+                               admin_token="tok-secret-123")
+    with TestClient(app_on) as c:
+        m = c.get("/api/auth/methods").json()
+        assert m["admin_token_configured"] is True
+        # the token value is never disclosed anywhere in the signal
+        assert "tok-secret-123" not in c.get("/api/auth/methods").text
 
 
 # --------------------------------------------------- W3 remote interlock (relay)
