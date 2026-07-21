@@ -8,13 +8,16 @@ is the imaging camera. Absent hardware/DLLs degrade to a clear DeviceError
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from ..base import DeviceError
 from ..cameras import player_one
+from ..cameras.adapter import CAMERA_BUSY_HINT
 from ..cameras.engine import NativeCamera
 from ..cameras.player_one_sdk import PlayerOneSdkError, make_player_one
 
 _CAMERA_ROLES = ("camera", "guide_camera")
+_log = logging.getLogger("astrodeck.cameras")
 
 
 class PlayerOneSession:
@@ -40,8 +43,14 @@ class PlayerOneSession:
                                index=index, name=name)
             dev.role = role
             await dev.connect()
-        except PlayerOneSdkError as exc:
-            raise DeviceError(f"player-one {role}: SDK unavailable — {exc}") from exc
+        except (PlayerOneSdkError, DeviceError) as exc:
+            # A held camera enumerates as 0 units -> get_properties INVALID_INDEX,
+            # indistinguishable from "absent". Surface the actionable hint.
+            _log.warning("player-one %s could not connect: %s. %s",
+                         role, exc, CAMERA_BUSY_HINT)
+            raise DeviceError(
+                f"player-one {role}: camera unavailable ({exc}). {CAMERA_BUSY_HINT}"
+            ) from exc
         self._devices[role] = dev
         return dev
 

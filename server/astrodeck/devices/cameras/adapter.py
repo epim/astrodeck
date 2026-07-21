@@ -10,6 +10,17 @@ from typing import Mapping
 
 from ..base import DeviceError
 
+#: Appended to camera-unavailable errors + logged. USB cameras allow exactly one
+#: owner, so the usual cause of "attached but not found/openable" is another app
+#: holding the device. Seen at-scope 2026-07-21: the ASCOM Remote/Alpaca server
+#: had grabbed both cameras, so native enumeration returned 0 until it was killed.
+CAMERA_BUSY_HINT = (
+    "If a camera is attached but not found, another application may be holding "
+    "it -- USB cameras allow only ONE connection at a time. Common culprits: "
+    "ASCOM Remote / Alpaca device server, NINA, SharpCap, or the vendor's own "
+    "app (ASIStudio, Player One). Close it and retry."
+)
+
 
 @dataclass(frozen=True)
 class ROI:

@@ -21,6 +21,9 @@ class FakePoaSdk:
 
     def open(self, cid): self.calls.append("open")
     def close(self, cid): self.calls.append("close")
+    def config_range(self, cid, config):
+        from astrodeck.devices.cameras.player_one_sdk import POA_GAIN, POA_OFFSET
+        return {POA_GAIN: (0, 600), POA_OFFSET: (0, 1000)}.get(config, (0, 0))
     def sensor_modes(self, cid): return ["Normal", "LowNoise"]
     def set_sensor_mode(self, cid, m): self.calls.append(f"mode:{m}"); self._mode = m
     def get_egain(self, cid): return 0.25
@@ -37,12 +40,14 @@ class FakePoaSdk:
 def test_poa_capabilities_expose_lrn_and_hcg():
     from astrodeck.devices.cameras.player_one import PlayerOneAdapter
     a = PlayerOneAdapter(sdk=FakePoaSdk(8, 6))
+    a.open(0)   # ranges + sensor modes (LRN) + egain are read AFTER open
     caps = a.capabilities()
     assert caps.read_modes == ("Normal", "LowNoise")
     assert caps.hcg_threshold_gain == 125
     assert caps.has_cooler and caps.has_dew_heater
     assert abs(caps.extra["egain"] - 0.25) < 1e-9
     assert caps.bin_modes == (1, 2, 3, 4)
+    assert caps.gain_range == (0, 600)   # from config_range, post-open
 
 
 async def test_poa_lrn_applied_via_engine():

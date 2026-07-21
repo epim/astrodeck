@@ -59,6 +59,29 @@ a plausible duty cycle. Ramp back to ambient before disconnect.
 - Native-guider first light through the ASI220MM + the native AM5N mount (cross-ref
   `native-guider-first-light-readiness` memory; supervised).
 
+## At-scope findings (2026-07-21, during the 0.2.7/0.2.8 deploy)
+
+Live validation on astrotown with both cameras attached, and the fixes they drove:
+
+- **Another app can hold the camera** (USB = one owner). The **ASCOM Remote / Alpaca
+  device server** had grabbed both cameras, so native enumeration returned `count=0`
+  and `get_property` gave `INVALID_INDEX` — indistinguishable from "camera absent".
+  Fix: the camera backends now log a WARNING and raise a DeviceError carrying
+  `CAMERA_BUSY_HINT` (naming ASCOM Remote/NINA/SharpCap/vendor apps) so this is
+  self-diagnosing next time. **To free the cameras: kill the ASCOM Remote/Alpaca
+  server (and any vendor app).**
+- **`count()` must precede `get_property`** — the SDK's camera list is empty until
+  `ASIGetNumOfConnectedCameras` / `POAGetCameraCount` is called; otherwise
+  `INVALID_INDEX`. Adapters now call `count()` in `open()`.
+- **Gain/offset ranges + sensor modes require an OPEN camera.** Pre-open they read 0
+  / empty. Adapters now read them *after* `open()` (control caps / config attributes
+  / sensor-mode API). Verified ranges: ASI220MM gain `(0,600)`, Poseidon gain `(0,550)`.
+- **LRN confirmed via the sensor-mode API**: the Poseidon-M PRO reports
+  `sensor_modes = ['Normal', 'Low Noise']` (post-open) — exactly the read_modes model.
+  **HCG confirmed at gain 125** via `POAGetGainsAndOffsets` (`pHCGain=125`).
+- **Struct layouts verified on real hardware**: ASI220MM 1920x1080/4um/12-bit;
+  Poseidon 6252x4176/3.76um/16-bit/cooled.
+
 ## Phase 5 — Deploy 0.2.7
 
 Only after Phases 0–4 pass: bump `astrodeck/__init__.py` + `pyproject.toml` to 0.2.7; build

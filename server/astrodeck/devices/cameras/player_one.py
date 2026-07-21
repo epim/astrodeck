@@ -31,28 +31,27 @@ class PlayerOneAdapter(CameraAdapter):
         self._index = index
         self._cam_id = 0
         self._prop: PoaProperty | None = None
+        self._gain_max = 0
+        self._offset_max = 0
         self._modes: tuple[str, ...] = ()
         self._egain = 0.0
         self._nbytes = 0
 
-    def _props(self) -> PoaProperty:
+    def _basic(self) -> PoaProperty:
+        # count() first: enumerate before get_properties(index) (at-scope lesson).
+        self._sdk.count()
         if self._prop is None:
             self._prop = self._sdk.get_properties(self._index)
             self._cam_id = self._prop.camera_id
-            self._modes = tuple(self._sdk.sensor_modes(self._cam_id))
-            try:
-                self._egain = float(self._sdk.get_egain(self._cam_id))
-            except Exception:  # noqa: BLE001 - egain optional
-                self._egain = 0.0
         return self._prop
 
     def capabilities(self) -> CameraCapabilities:
-        p = self._props()
+        p = self._basic()
         return CameraCapabilities(
             sensor_width=p.width, sensor_height=p.height,
             pixel_size_um=p.pixel_size_um, bit_depth=p.bit_depth,
-            bayer_pattern=p.bayer, gain_range=(0, p.max_gain),
-            offset_range=(0, p.max_offset), bin_modes=tuple(range(1, p.max_bin + 1)),
+            bayer_pattern=p.bayer, gain_range=(0, self._gain_max),
+            offset_range=(0, self._offset_max), bin_modes=tuple(range(1, p.max_bin + 1)),
             roi_supported=True, has_cooler=p.is_cooled, has_dew_heater=True,
             max_adu=65535, read_modes=self._modes,
             hcg_threshold_gain=HCG_THRESHOLD_GAIN,
@@ -60,8 +59,17 @@ class PlayerOneAdapter(CameraAdapter):
 
     def open(self, index: int) -> None:
         self._index = index
-        p = self._props()
+        p = self._basic()
         self._sdk.open(p.camera_id)
+        # ranges + sensor modes (LRN: 'Normal'/'Low Noise') + egain all require
+        # the camera OPEN (verified at-scope 2026-07-21).
+        self._gain_max = self._sdk.config_range(self._cam_id, POA_GAIN)[1]
+        self._offset_max = self._sdk.config_range(self._cam_id, POA_OFFSET)[1]
+        self._modes = tuple(self._sdk.sensor_modes(self._cam_id))
+        try:
+            self._egain = float(self._sdk.get_egain(self._cam_id))
+        except Exception:  # noqa: BLE001 - egain optional
+            self._egain = 0.0
 
     def close(self) -> None:
         if self._prop is not None:

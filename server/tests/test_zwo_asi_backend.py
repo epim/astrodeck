@@ -29,6 +29,31 @@ async def test_session_builds_guide_camera(monkeypatch):
     await sess.close()
 
 
+async def test_held_camera_surfaces_busy_hint(monkeypatch):
+    # A camera held by another app enumerates as 0 units -> get_property
+    # INVALID_INDEX. The backend must surface the actionable "another app may be
+    # holding it" hint (user request 2026-07-21).
+    from astrodeck.devices.cameras import zwo_asi
+    from astrodeck.devices.base import DeviceError
+    from astrodeck.devices.cameras.zwo_asi_sdk import AsiSdkError
+
+    class HeldSdk:
+        def count(self): return 0
+        def get_property(self, i): raise AsiSdkError(1, "ASIGetCameraProperty")
+        def open(self, cid): pass
+        def close(self, cid): pass
+
+    monkeypatch.setattr(zwo_asi, "make_asi", lambda: HeldSdk())
+    sess = zab.ZwoAsiSession()
+
+    class Conn:
+        extra = {}
+    with pytest.raises(DeviceError) as ei:
+        await sess.get_device("guide_camera", Conn())
+    assert "ASCOM Remote" in str(ei.value)          # the diagnostic hint
+    assert "connection at a time" in str(ei.value)
+
+
 async def test_session_rejects_non_camera_role():
     from test_zwo_asi_adapter import FakeAsiSdk
     from astrodeck.devices.cameras import zwo_asi

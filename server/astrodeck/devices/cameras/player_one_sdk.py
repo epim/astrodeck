@@ -242,8 +242,9 @@ class PlayerOneSdk:
                "POAGetCameraProperties")
         is_color = bool(p.isColorCamera)
         bins = tuple(b for b in p.bins if b) or (1,)
-        _, gmax = self._range(p.cameraID, POA_GAIN)
-        _, omax = self._range(p.cameraID, POA_OFFSET)
+        # gain/offset ranges (config attributes) need an OPEN camera (verified
+        # at-scope: 0 pre-open). The adapter reads them via config_range() after
+        # open; 0 here means "not known yet".
         return PoaProperty(
             camera_id=int(p.cameraID),
             name=p.cameraModelName.decode("ascii", "replace"),
@@ -251,9 +252,10 @@ class PlayerOneSdk:
             pixel_size_um=float(p.pixelSize), is_color=is_color,
             bayer=_BAYER.get(p.bayerPattern) if is_color else None,
             bit_depth=int(p.bitDepth), is_cooled=bool(p.isHasCooler),
-            max_bin=max(bins), max_gain=int(gmax), max_offset=int(omax))
+            max_bin=max(bins), max_gain=0, max_offset=0)
 
-    def _range(self, cam_id: int, config: int) -> tuple[int, int]:
+    def config_range(self, cam_id: int, config: int) -> tuple[int, int]:
+        """Min/max for a config — REQUIRES the camera to be open first."""
         attr = POAConfigAttributes()
         if self._d.POAGetConfigAttributesByConfigID(
                 cam_id, config, ctypes.byref(attr)) != 0:

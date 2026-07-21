@@ -215,18 +215,20 @@ class AsiSdk:
         bins = tuple(b for b in info.SupportedBins if b)
         is_color = bool(info.IsColorCam)
         bayer = _BAYER.get(info.BayerPattern) if is_color else None
-        gmin, gmax = self._control_range(info.CameraID, ASI_GAIN)
-        omin, omax = self._control_range(info.CameraID, ASI_OFFSET)
+        # gain/offset ranges live in the CONTROL CAPS, which require an OPEN
+        # camera (verified at-scope: pre-open they read 0). The adapter reads
+        # them via control_range() after open; 0 here means "not known yet".
         return AsiProperty(
             name=info.Name.decode("ascii", "replace"),
             width=int(info.MaxWidth), height=int(info.MaxHeight),
             pixel_size_um=float(info.PixelSize), is_color=is_color, bayer=bayer,
             bit_depth=int(info.BitDepth), bin_modes=bins or (1,),
-            max_gain=int(gmax), max_offset=int(omax),
+            max_gain=0, max_offset=0,
             has_cooler=bool(info.IsCoolerCam), camera_id=int(info.CameraID),
             egain=float(info.ElecPerADU))
 
-    def _control_range(self, cam_id: int, ctrl: int) -> tuple[int, int]:
+    def control_range(self, cam_id: int, ctrl: int) -> tuple[int, int]:
+        """Min/max for a control — REQUIRES the camera to be open first."""
         n = ctypes.c_int()
         if self._d.ASIGetNumOfControls(cam_id, ctypes.byref(n)) != 0:
             return (0, 0)
