@@ -10,10 +10,15 @@ from astrodeck.devices.base import CameraFrame, DeviceError
 from astrodeck.devices.cameras.engine import NativeCamera
 
 from test_camera_engine import FakeAdapter
+from test_zwo_asi_adapter import FakeAsiSdk
+from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter
 
 # Start with the reference fake so the suite is never empty; real adapters
-# extend this list in their own test modules.
-CONTRACT_ADAPTERS = [("reference-fake", lambda: FakeAdapter(w=8, h=6))]
+# extend this list from their own test modules' fakes.
+CONTRACT_ADAPTERS = [
+    ("reference-fake", lambda: FakeAdapter(w=8, h=6)),
+    ("zwo-asi-fake", lambda: AsiCameraAdapter(sdk=FakeAsiSdk(8, 6))),
+]
 
 
 @pytest.fixture(params=CONTRACT_ADAPTERS, ids=lambda p: p[0])

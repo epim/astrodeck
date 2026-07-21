@@ -3,6 +3,19 @@ from astrodeck.devices.cameras.adapter import CameraAdapter
 from astrodeck.devices.cameras import registry
 
 
+@pytest.fixture(autouse=True)
+def _snapshot_registry():
+    """Save/restore the global registry so clear_registry() in these tests never
+    wipes an import-time registration (e.g. zwo-asi) that a re-import won't
+    restore (the module is already cached)."""
+    saved = dict(registry._REGISTRY)
+    try:
+        yield
+    finally:
+        registry._REGISTRY.clear()
+        registry._REGISTRY.update(saved)
+
+
 class _A(CameraAdapter):
     def capabilities(self): raise NotImplementedError
     def open(self, i): pass
