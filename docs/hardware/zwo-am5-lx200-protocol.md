@@ -170,9 +170,17 @@ Verified live via `devices/backends/zwo_am5.py` over COM3 (no ZWO software):
 - **Pulse guide `:Mg{n,s,e,w}<ms>#` parses but produces NO motion** on this
   firmware over serial (tried 5–10 s pulses, upper+lowercase directions,
   tracking on, GR-monitored: 0.0″). `:GFR1#`/`:GFD1#` are NOT live encoders
-  (constant `22438`). Guiding fallback: timed `:R1#` (0.3× sidereal) moves —
-  the classic pulse-guide-as-timed-MoveAxis emulation. Definitive wire answer:
-  capture ZWO's own driver pulse-guiding (PHD2 via ASCOM) in a follow-up.
+  (constant `22438`).
+- **Working pulse EMULATION (hardware-calibrated, in the native driver):**
+  `:M<dir>#` during tracking does NOT cleanly superimpose (Me@R1 read +1.5×
+  sid, Mw@R1 read +0.5× — both eastward), so per-direction strategies:
+  **east** = suspend tracking (`:Td#`…`:Te#`) → drifts east at EXACTLY 1.0×
+  sidereal (+150″/10 s measured); **west** = `:R2#`+`:Mw#` → EXACTLY −1.0×
+  sidereal (−150″/10 s); **north/south** = `:R1#`+`:Mn/:Ms#` → ±0.5× sidereal
+  (±75″/10 s). Symmetric ±1× RA / ±0.5× dec — guider-ready. First real goto
+  also verified in these sessions: `:Sr/:Sd/:MS#` + settle-poll landed dec
+  +40° targets with 0.000° residual, and `:hP#` park slews home from
+  anywhere (verified from dec +40).
 - Coordinate note: dec-axis nudges at dec≈+90 cross the pole (RA flips 12 h) —
   cosmetic, but distance-based settle logic must use angular separation, not
   raw coordinate deltas, near the pole.
