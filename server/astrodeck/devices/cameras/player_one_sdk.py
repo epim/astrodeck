@@ -19,6 +19,7 @@ LRN (Low Read Noise) is selected via the SDK's SENSOR MODE API
 from __future__ import annotations
 
 import ctypes
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 import os
@@ -232,6 +233,10 @@ class PlayerOneSdk:
         if self._d is None:
             raise PlayerOneSdkError(-1, "PlayerOneCamera.dll load (not found/invalid)")
         _declare(self._d)
+        # POASetConfig/POAGetConfig select their value argtype per-call on the
+        # SHARED fn object; this lock serializes that mutate+call so concurrent
+        # config reads/writes can't corrupt each other's argtypes (review 1).
+        self._cfg_lock = threading.Lock()
 
     def count(self) -> int:
         return int(self._d.POAGetCameraCount())
@@ -264,7 +269,16 @@ class PlayerOneSdk:
 
     def open(self, cam_id: int) -> None:
         _check(self._d.POAOpenCamera(cam_id), "POAOpenCamera")
-        _check(self._d.POAInitCamera(cam_id), "POAInitCamera")
+        try:
+            _check(self._d.POAInitCamera(cam_id), "POAInitCamera")
+        except PlayerOneSdkError:
+            # init failed AFTER open took the exclusive USB handle -> close it, or
+            # we leak a handle that later masquerades as "held by another app".
+            try:
+                self._d.POACloseCamera(cam_id)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
     def close(self, cam_id: int) -> None:
         _check(self._d.POACloseCamera(cam_id), "POACloseCamera")
@@ -272,33 +286,36 @@ class PlayerOneSdk:
     # POASetConfig/POAGetConfig: value is c_int (or c_double for temp/egain),
     # passed per-call, matching the vendor binding.
     def _set(self, cam_id: int, config: int, value, is_auto=False) -> None:
-        fn = self._d.POASetConfig
-        fn.restype = ctypes.c_int
-        if config in _FLOAT_CONFIGS:
-            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int]
-            _check(fn(cam_id, config, ctypes.c_double(float(value)), int(is_auto)),
-                   "POASetConfig")
-        else:
-            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-            _check(fn(cam_id, config, int(value), int(is_auto)), "POASetConfig")
+        with self._cfg_lock:
+            fn = self._d.POASetConfig
+            fn.restype = ctypes.c_int
+            if config in _FLOAT_CONFIGS:
+                fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int]
+                _check(fn(cam_id, config, ctypes.c_double(float(value)), int(is_auto)),
+                       "POASetConfig")
+            else:
+                fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+                # round, don't truncate: target temp -9.7 -> -10, not -9 (review 5).
+                _check(fn(cam_id, config, int(round(value)), int(is_auto)), "POASetConfig")
 
     def _get(self, cam_id: int, config: int) -> float:
-        fn = self._d.POAGetConfig
-        fn.restype = ctypes.c_int
-        auto = ctypes.c_int()
-        if config in _FLOAT_CONFIGS:
-            fn.argtypes = [ctypes.c_int, ctypes.c_int,
-                           ctypes.POINTER(ctypes.c_double), _PI]
-            val = ctypes.c_double()
-            _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
-                   "POAGetConfig")
-        else:
-            fn.argtypes = [ctypes.c_int, ctypes.c_int,
-                           ctypes.POINTER(ctypes.c_long), _PI]
-            val = ctypes.c_long()
-            _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
-                   "POAGetConfig")
-        return float(val.value)
+        with self._cfg_lock:
+            fn = self._d.POAGetConfig
+            fn.restype = ctypes.c_int
+            auto = ctypes.c_int()
+            if config in _FLOAT_CONFIGS:
+                fn.argtypes = [ctypes.c_int, ctypes.c_int,
+                               ctypes.POINTER(ctypes.c_double), _PI]
+                val = ctypes.c_double()
+                _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
+                       "POAGetConfig")
+            else:
+                fn.argtypes = [ctypes.c_int, ctypes.c_int,
+                               ctypes.POINTER(ctypes.c_long), _PI]
+                val = ctypes.c_long()
+                _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
+                       "POAGetConfig")
+            return float(val.value)
 
     def set_config(self, cam_id: int, config: int, value, is_auto=False) -> None:
         self._set(cam_id, config, value, is_auto=is_auto)

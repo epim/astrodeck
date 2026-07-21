@@ -131,3 +131,21 @@ async def test_dew_heater_delegates():
     await cam.connect()
     await cam.set_dew_heater(75)
     assert "dew:75" in ca.calls
+
+
+async def test_low_bit_depth_still_decodes_raw16():
+    # A sensor reporting <=8-bit ADC still arrives as RAW16 (adapters always
+    # download RAW16), so the engine must decode uint16, not uint8 (review #2).
+    class EightBit(FakeAdapter):
+        def capabilities(self):
+            c = super().capabilities()
+            return CameraCapabilities(**{**c.__dict__, "bit_depth": 8})
+
+    fa = EightBit(w=4, h=3)
+    cam = NativeCamera(fa)
+    await cam.connect()
+    f = await cam.expose(0.01, gain=0, offset=0)
+    assert f.data.dtype == np.uint16 and f.data.shape == (3, 4)
+    # read_frame returns a <u2 ramp 0..11 -> decoded values must match, not be
+    # the byte-misaligned garbage a uint8 read would produce.
+    assert f.data[0, 0] == 0 and f.data[0, 1] == 1 and f.data[2, 3] == 11
