@@ -256,11 +256,15 @@ class PlayerOneSdk:
                                     ctypes.byref(auto)), "POAGetConfig")
         return float(v.floatValue) if is_float else float(v.intValue)
 
+    #: configs whose union member is the double (temp in deg C, e-/ADU).
+    _FLOAT_CONFIGS = frozenset({POA_TEMPERATURE, POA_EGAIN})
+
     def set_config(self, cam_id: int, config: int, value, is_auto=False) -> None:
-        self._set(cam_id, config, value, is_auto=is_auto)
+        self._set(cam_id, config, value, is_float=config in self._FLOAT_CONFIGS,
+                  is_bool=config == POA_COOLER, is_auto=is_auto)
 
     def get_config(self, cam_id: int, config: int) -> float:
-        return self._get(cam_id, config)
+        return self._get(cam_id, config, is_float=config in self._FLOAT_CONFIGS)
 
     def get_egain(self, cam_id: int) -> float:
         return self._get(cam_id, POA_EGAIN, is_float=True)

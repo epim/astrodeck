@@ -11,13 +11,16 @@ from astrodeck.devices.cameras.engine import NativeCamera
 
 from test_camera_engine import FakeAdapter
 from test_zwo_asi_adapter import FakeAsiSdk
+from test_player_one_adapter import FakePoaSdk
 from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter
+from astrodeck.devices.cameras.player_one import PlayerOneAdapter
 
 # Start with the reference fake so the suite is never empty; real adapters
 # extend this list from their own test modules' fakes.
 CONTRACT_ADAPTERS = [
     ("reference-fake", lambda: FakeAdapter(w=8, h=6)),
     ("zwo-asi-fake", lambda: AsiCameraAdapter(sdk=FakeAsiSdk(8, 6))),
+    ("player-one-fake", lambda: PlayerOneAdapter(sdk=FakePoaSdk(8, 6))),
 ]
 
 
