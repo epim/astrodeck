@@ -32,6 +32,10 @@ export interface MountStatus {
   tracking: boolean;
   parked: boolean;
   slewing: boolean;
+  // Multi-rate tracking (2026-07-21): the active drive rate + whether this mount
+  // supports changing it. Absent/false on backends that don't (control hidden).
+  tracking_rate?: "sidereal" | "lunar" | "solar";
+  can_set_tracking_rate?: boolean;
 }
 
 export interface RigStatus {

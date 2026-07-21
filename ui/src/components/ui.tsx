@@ -11,6 +11,10 @@ import {
 } from "../lib/tooltipMachine";
 import { placeTooltip, type Placement } from "../lib/tooltipPlace";
 
+// Re-export the segmented tri-state control (mount tracking-rate spec, Task 5) so
+// it joins the rest of the UI primitives at `../components/ui`.
+export { SegmentedControl, type SegmentedControlProps } from "./ui/SegmentedControl";
+
 export function Panel({ title, right, children, className = "" }: {
   title?: string; right?: ReactNode; children: ReactNode; className?: string;
 }) {

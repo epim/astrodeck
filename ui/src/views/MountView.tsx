@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
-import { Panel, Stat, Toggle, IconButton } from "../components/ui";
+import { Panel, Stat, Toggle, IconButton, SegmentedControl } from "../components/ui";
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
 import { useCanControlMount } from "../lib/caps";
@@ -14,6 +14,12 @@ function AltGlyph({ alt }: { alt: number }) {
   if (alt < 20) return <span className="text-warn" aria-label="low on the horizon" title="low on the horizon">↓</span>;
   return null;
 }
+
+const TRACKING_RATE_OPTIONS: { value: "sidereal" | "lunar" | "solar"; label: string }[] = [
+  { value: "sidereal", label: "Sidereal" },
+  { value: "lunar", label: "Lunar" },
+  { value: "solar", label: "Solar" },
+];
 
 export default function MountView() {
   const status = useStatus();
@@ -108,15 +114,32 @@ export default function MountView() {
               value={m ? (m.parked ? "PARKED" : m.slewing ? "SLEWING" : m.tracking ? "TRACKING" : "IDLE") : "—"}
               tone={m?.parked ? undefined : m?.slewing ? "warn" : m?.tracking ? "good" : undefined} />
           </div>
-          <div className="flex items-center gap-3 mt-4 border-t border-line pt-3">
-            <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
-              onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Sidereal tracking" />
-            <span className="text-xs text-dim">sidereal tracking</span>
-            <div className="flex-1" />
-            {m?.parked ? (
-              <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
-            ) : (
-              <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
+          <div className="mt-4 border-t border-line pt-3 flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
+                onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Tracking" />
+              <span className="text-xs text-dim">tracking</span>
+              <div className="flex-1" />
+              {m?.parked ? (
+                <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
+              ) : (
+                <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
+              )}
+            </div>
+            {/* Tracking rate (2026-07-21): only mounts that support it advertise
+                can_set_tracking_rate; disabled for viewers like every motion control. */}
+            {m?.can_set_tracking_rate && (
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-dim shrink-0">rate</span>
+                <div className="flex-1" />
+                <SegmentedControl<"sidereal" | "lunar" | "solar">
+                  options={TRACKING_RATE_OPTIONS}
+                  value={m?.tracking_rate}
+                  disabled={!canMount || !m}
+                  ariaLabel="Tracking rate"
+                  onChange={(v) => act(() => api.post(`/api/mount/tracking_rate?rate=${v}`))}
+                />
+              </div>
             )}
           </div>
         </Panel>
