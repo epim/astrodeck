@@ -142,6 +142,15 @@ export const localLogin = (
     password,
   });
 
+/** POST /auth/token {token} → exchange the break-glass admin token for the
+ *  ad_session cookie (a normal admin session). The token is sent in the body
+ *  (never a URL) and NOT persisted client-side. 200 {role,email} on success;
+ *  generic 401 on a bad token; 404 when no admin token is configured. */
+export const tokenLogin = (
+  token: string,
+): Promise<{ role: PrincipalRole; email: string | null }> =>
+  api.post<{ role: PrincipalRole; email: string | null }>("/auth/token", { token });
+
 /** POST /auth/setup/local {username,password,email?} → FIRST-RUN create the first
  *  admin (and log in). 409 once any user exists (auto-closed); 404 when local is
  *  off / the first-run flag is off; 422 too-long password; 400 blank/dup. */

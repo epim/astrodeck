@@ -44,6 +44,7 @@ reports ``methods == []`` -- "no login screen").
 """
 from __future__ import annotations
 
+import hmac
 import secrets
 from typing import Any
 
@@ -98,6 +99,11 @@ def _google_configured(auth_cfg: Any) -> bool:
                 and (getattr(auth_cfg, "google_redirect_uri", "") or "").strip())
 
 
+def _admin_token(auth_cfg: Any) -> str:
+    """The configured break-glass admin token (stripped), or '' when unset."""
+    return (getattr(auth_cfg, "admin_token", "") or "").strip()
+
+
 def _session_ttl(auth_cfg: Any) -> int:
     ttl = int(getattr(auth_cfg, "session_ttl_s", 28800) or 28800)
     return ttl if ttl > 0 else 28800
@@ -146,6 +152,10 @@ def _mint_session_response(body: dict, *, role: str, email: str | None,
 class LocalLogin(BaseModel):
     username: str
     password: str
+
+
+class TokenLogin(BaseModel):
+    token: str
 
 
 class SetupLocal(BaseModel):
@@ -249,6 +259,34 @@ async def setup_local_admin(body: SetupLocal, request: Request):
         ttl_s=_session_ttl(auth_cfg))
 
 
+# --------------------------------------------------------------- POST /auth/token
+
+@router.post("/auth/token")
+async def token_login(body: TokenLogin, request: Request):
+    """Break-glass access-token login: exchange the configured ``admin_token``
+    for a normal admin ``ad_session`` cookie (the SAME cookie google/local login
+    mint). This is the SECURE realization of the shared token -- the raw token is
+    swapped for a session and NEVER persisted client-side nor placed on a URL, so
+    it can't leak into the WS ``?token=`` access log. On success the caller
+    becomes a full admin session, so RBAC, the role badge, logout and 401
+    recovery all behave exactly like any other signed-in admin.
+
+    404 when no ``admin_token`` is configured (route inert). Generic 401 on a
+    bad/blank token (constant-time compare; no oracle). The token rides the POST
+    body (never a query string), so it is not access-logged."""
+    auth_cfg = _auth_cfg()
+    configured = _admin_token(auth_cfg)
+    if not configured:
+        raise HTTPException(status_code=404, detail="token auth not enabled")
+    supplied = (body.token or "").strip()
+    if not supplied or not hmac.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="invalid access token")
+    return _mint_session_response(
+        {"role": "admin", "email": None},
+        role="admin", email=None, request=request,
+        ttl_s=_session_ttl(auth_cfg))
+
+
 # --------------------------------------------------------- GET /api/auth/methods
 
 @router.get("/api/auth/methods")
@@ -270,6 +308,9 @@ async def auth_methods():
         "methods": methods,
         "google_configured": _google_configured(auth_cfg),
         "first_run": first_run,
+        # The UI shows the break-glass access-token field only when one is set.
+        # A boolean only -- the token itself is never disclosed.
+        "admin_token_configured": bool(_admin_token(auth_cfg)),
     }
 
 
