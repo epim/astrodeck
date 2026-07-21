@@ -29,9 +29,7 @@ def test_asi_sdk_construction_is_clean():
 
 
 @pytest.mark.skipif(
-    sys.platform != "win32"
-    or not (Path(z.__file__).resolve().parent.parent / "vendor" / "zwo"
-            / "ASICamera2.dll").is_file(),
+    sys.platform != "win32" or not (z._VENDOR_DIR / "ASICamera2.dll").is_file(),
     reason="requires win32 + vendored ASICamera2.dll")
 def test_real_dll_loads_and_exports():
     sdk = z.AsiSdk()          # raises if DLL absent/incomplete

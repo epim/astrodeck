@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import os
 
-_VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor" / "zwo"
+_VENDOR_DIR = Path(__file__).resolve().parent.parent.parent / "vendor" / "zwo"
 
 # ASI_CONTROL_TYPE ids used by the adapter (ASICamera2.h enum order).
 ASI_GAIN = 0

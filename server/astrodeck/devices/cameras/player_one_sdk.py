@@ -1,22 +1,20 @@
 """ctypes bindings for the Player One Camera SDK (Poseidon-M Pro imaging camera).
 
-!!! UNVERIFIED CTYPES INTERNALS — complete against the real ``PlayerOneCamera.h``
-(Camera SDK V3.10.1, Windows) on a box that has the SDK. The Player One SDK is
-NOT installed on the dev box, so unlike the ASI bindings these export names,
-struct field layouts, enum integer values, and the POAConfigValue union COULD
-NOT be load-verified here. The method INTERFACE below is stable (the adapter and
-its tests depend only on it); the C-binding details are what need the on-box
-pass. The module imports + declares WITHOUT loading a DLL (load happens in
-PlayerOneSdk.__init__), so it is importable + unit-testable DLL-less.
+VERIFIED against the official Player One binding (python/pyPOACamera.py) and
+header (include/PlayerOneCamera.h) from Camera SDK V3.10.1 (Windows), which is
+bundled in ``vendor/playerone/`` under the SDK's MIT-style license (LICENSE
+there; verdict docs/hardware/player-one-sdk-licensing.md). Enum values, struct
+layouts, the sensor-mode API, and the POASetConfig/POAGetConfig calling
+convention (value passed per-call as c_int or c_double — NOT a union struct)
+all mirror the vendor binding.
 
 Loader search order: ``ASTRODECK_PLAYERONE_SDK_DIR`` env → vendored
-``astrodeck/vendor/playerone/`` → known installs. Bundling of the DLL is gated
-on the licensing verdict (docs/hardware/player-one-sdk-licensing.md).
+``astrodeck/vendor/playerone/`` → known installs. The module imports + declares
+WITHOUT loading a DLL (load happens in PlayerOneSdk.__init__), so it stays
+importable + unit-testable on a box with no SDK.
 
-LRN (Low Read Noise) sampling mode is exposed through the SDK's SENSOR MODE API
-(POAGetSensorModeCount / POAGetSensorModeInfo / POASetSensorMode) — verify these
-exist and their exact names/signatures against the header (older SDKs may expose
-it differently).
+LRN (Low Read Noise) is selected via the SDK's SENSOR MODE API
+(POAGetSensorModeCount / POAGetSensorModeInfo / POASetSensorMode).
 """
 from __future__ import annotations
 
@@ -25,22 +23,23 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
-_VENDOR_DIR = Path(__file__).resolve().parent.parent / "vendor" / "playerone"
+_VENDOR_DIR = Path(__file__).resolve().parent.parent.parent / "vendor" / "playerone"
 
-# --- POAConfig ids (VERIFY exact enum order against PlayerOneCamera.h) --------
-POA_EXPOSURE = 0          # microseconds
+# --- POAConfig ids (verified vs pyPOACamera.py) ------------------------------
+POA_EXPOSURE = 0          # microseconds (int)
 POA_GAIN = 1
-POA_HARDWARE_BIN = 2
-POA_TEMPERATURE = 3       # read-only sensor temp (deg C, float)
+POA_TEMPERATURE = 3       # sensor temp, deg C (double, read-only)
 POA_OFFSET = 7
-POA_EGAIN = 15           # e-/ADU (read-only, float)
-POA_COOLER_POWER = 16     # read-only
-POA_TARGET_TEMP = 17
+POA_EGAIN = 15           # e-/ADU (double, read-only)
+POA_COOLER_POWER = 16     # 0..100 (int, read-only)
+POA_TARGET_TEMP = 17      # deg C (int)
 POA_COOLER = 18           # on/off (bool)
-POA_HEATER_POWER = 20     # dew heater (0..100)
+POA_HEATER_POWER = 20     # dew heater 0..100 (int)
 # POAImgFormat
 POA_RAW8 = 0
-POA_RAW16 = 1             # (VERIFY: some headers order RAW8, RGB24, RAW16, MONO8)
+POA_RAW16 = 1
+# configs whose value member is the double, not the int
+_FLOAT_CONFIGS = frozenset({POA_TEMPERATURE, POA_EGAIN})
 
 ERROR_NAMES: dict[int, str] = {
     0: "OK", 1: "INVALID_INDEX", 2: "INVALID_ID", 3: "INVALID_CONFIG",
@@ -50,12 +49,15 @@ ERROR_NAMES: dict[int, str] = {
     15: "ACCESS_DENIED", 16: "OPERATION_FAILED", 17: "MEMORY_FAILED",
 }
 
+#: exports the bindings CALL — the load gate verifies every one is present.
 _EXPORTS = [
     "POAGetCameraCount", "POAGetCameraProperties", "POAOpenCamera",
     "POAInitCamera", "POACloseCamera", "POASetConfig", "POAGetConfig",
-    "POASetImageSize", "POASetImageBin", "POASetImageFormat", "POAStartExposure",
-    "POAStopExposure", "POAImageReady", "POAGetImageData",
-    "POAGetSensorModeCount", "POAGetSensorModeInfo", "POASetSensorMode",
+    "POAGetConfigsCount", "POAGetConfigAttributesByConfigID",
+    "POASetImageSize", "POASetImageBin", "POASetImageFormat",
+    "POASetImageStartPos", "POAStartExposure", "POAStopExposure",
+    "POAImageReady", "POAGetImageData", "POAGetSensorModeCount",
+    "POAGetSensorModeInfo", "POASetSensorMode",
 ]
 
 _DLL_SPECS: dict[str, tuple[list[str], list[str]]] = {
@@ -79,14 +81,14 @@ class PlayerOneSdkError(Exception):
 
 
 class POAConfigValue(ctypes.Union):
-    """union { long intValue; double floatValue; int boolValue; }"""
+    """union { long intValue; double floatValue; int boolValue; } — used only to
+    reinterpret the config-attribute min/max bytes (as the vendor binding does)."""
     _fields_ = [("intValue", ctypes.c_long), ("floatValue", ctypes.c_double),
                 ("boolValue", ctypes.c_int)]
 
 
 class POACameraProperties(ctypes.Structure):
-    """VERIFY the FULL layout against PlayerOneCamera.h — a partial/misordered
-    struct misreads every field. Best-effort layout for V3.10.x below."""
+    """Verified vs pyPOACamera.py POACameraProperties."""
     _fields_ = [
         ("cameraModelName", ctypes.c_char * 256),
         ("userCustomID", ctypes.c_char * 16),
@@ -111,13 +113,29 @@ class POACameraProperties(ctypes.Structure):
     ]
 
 
+class POAConfigAttributes(ctypes.Structure):
+    """Verified vs pyPOACamera.py POAConfigAttributes. min/max/default are stored
+    as the union's bytes but declared double here — reinterpret via POAConfigValue."""
+    _fields_ = [
+        ("isSupportAuto", ctypes.c_int),
+        ("isWritable", ctypes.c_int),
+        ("isReadable", ctypes.c_int),
+        ("configID", ctypes.c_int),
+        ("valueType", ctypes.c_int),
+        ("maxValue", ctypes.c_double),
+        ("minValue", ctypes.c_double),
+        ("defaultValue", ctypes.c_double),
+        ("szConfName", ctypes.c_char * 64),
+        ("szDescription", ctypes.c_char * 128),
+        ("reserved", ctypes.c_char * 64),
+    ]
+
+
 class POASensorModeInfo(ctypes.Structure):
-    """VERIFY against header — name + description strings for a sensor mode."""
-    _fields_ = [("name", ctypes.c_char * 64),
-                ("desc", ctypes.c_char * 128)]
+    _fields_ = [("name", ctypes.c_char * 64), ("desc", ctypes.c_char * 128)]
 
 
-_BAYER = {0: "RG", 1: "BG", 2: "GR", 3: "GB"}
+_BAYER = {0: "RG", 1: "BG", 2: "GR", 3: "GB"}  # POABayerPattern; -1 = mono
 
 
 @dataclass
@@ -139,16 +157,18 @@ class PoaProperty:
 _I, _PI = ctypes.c_int, ctypes.POINTER(ctypes.c_int)
 _PU = ctypes.POINTER(ctypes.c_ubyte)
 
-#: fn -> argtypes; every bound fn returns c_int (POAErrors) except
-#: POAGetCameraCount (returns the count as c_int).
+#: fn -> argtypes, restype c_int (POAErrors) / count. POASetConfig + POAGetConfig
+#: are declared PER-CALL (the value is c_int or c_double by value/pointer, not a
+#: union struct — matching the vendor binding), so they are absent here.
 _SIGNATURES: dict[str, list] = {
     "POAGetCameraCount": [],
     "POAGetCameraProperties": [_I, ctypes.POINTER(POACameraProperties)],
     "POAOpenCamera": [_I], "POAInitCamera": [_I], "POACloseCamera": [_I],
-    "POASetConfig": [_I, _I, POAConfigValue, _I],
-    "POAGetConfig": [_I, _I, ctypes.POINTER(POAConfigValue), _PI],
+    "POAGetConfigsCount": [_I, _PI],
+    "POAGetConfigAttributesByConfigID":
+        [_I, _I, ctypes.POINTER(POAConfigAttributes)],
     "POASetImageSize": [_I, _I, _I], "POASetImageBin": [_I, _I],
-    "POASetImageFormat": [_I, _I],
+    "POASetImageFormat": [_I, _I], "POASetImageStartPos": [_I, _I, _I],
     "POAStartExposure": [_I, _I], "POAStopExposure": [_I],
     "POAImageReady": [_I, _PI],
     "POAGetImageData": [_I, _PU, ctypes.c_long, _I],
@@ -197,6 +217,13 @@ def _declare(dll) -> None:
             fn.restype = ctypes.c_int
 
 
+def _attr_int(dval: float) -> int:
+    """Reinterpret a config-attribute double's bytes as the int the SDK stored."""
+    u = POAConfigValue()
+    u.floatValue = dval
+    return int(u.intValue)
+
+
 class PlayerOneSdk:
     """Typed wrapper over the Player One C API (one process-wide DLL handle)."""
 
@@ -215,8 +242,8 @@ class PlayerOneSdk:
                "POAGetCameraProperties")
         is_color = bool(p.isColorCamera)
         bins = tuple(b for b in p.bins if b) or (1,)
-        gmin, gmax = self._range(p.cameraID, POA_GAIN)
-        omin, omax = self._range(p.cameraID, POA_OFFSET)
+        _, gmax = self._range(p.cameraID, POA_GAIN)
+        _, omax = self._range(p.cameraID, POA_OFFSET)
         return PoaProperty(
             camera_id=int(p.cameraID),
             name=p.cameraModelName.decode("ascii", "replace"),
@@ -227,9 +254,11 @@ class PlayerOneSdk:
             max_bin=max(bins), max_gain=int(gmax), max_offset=int(omax))
 
     def _range(self, cam_id: int, config: int) -> tuple[int, int]:
-        # POAGetConfigValueRange exists in the header; kept simple here — the
-        # adapter only needs the max. VERIFY the range API when wiring on-box.
-        return (0, 0)
+        attr = POAConfigAttributes()
+        if self._d.POAGetConfigAttributesByConfigID(
+                cam_id, config, ctypes.byref(attr)) != 0:
+            return (0, 0)
+        return (_attr_int(attr.minValue), _attr_int(attr.maxValue))
 
     def open(self, cam_id: int) -> None:
         _check(self._d.POAOpenCamera(cam_id), "POAOpenCamera")
@@ -238,40 +267,50 @@ class PlayerOneSdk:
     def close(self, cam_id: int) -> None:
         _check(self._d.POACloseCamera(cam_id), "POACloseCamera")
 
-    def _set(self, cam_id: int, config: int, value, is_float=False, is_bool=False,
-             is_auto=False) -> None:
-        v = POAConfigValue()
-        if is_bool:
-            v.boolValue = int(bool(value))
-        elif is_float:
-            v.floatValue = float(value)
+    # POASetConfig/POAGetConfig: value is c_int (or c_double for temp/egain),
+    # passed per-call, matching the vendor binding.
+    def _set(self, cam_id: int, config: int, value, is_auto=False) -> None:
+        fn = self._d.POASetConfig
+        fn.restype = ctypes.c_int
+        if config in _FLOAT_CONFIGS:
+            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int]
+            _check(fn(cam_id, config, ctypes.c_double(float(value)), int(is_auto)),
+                   "POASetConfig")
         else:
-            v.intValue = int(value)
-        _check(self._d.POASetConfig(cam_id, config, v, int(is_auto)), "POASetConfig")
+            fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            _check(fn(cam_id, config, int(value), int(is_auto)), "POASetConfig")
 
-    def _get(self, cam_id: int, config: int, is_float=False) -> float:
-        v = POAConfigValue()
+    def _get(self, cam_id: int, config: int) -> float:
+        fn = self._d.POAGetConfig
+        fn.restype = ctypes.c_int
         auto = ctypes.c_int()
-        _check(self._d.POAGetConfig(cam_id, config, ctypes.byref(v),
-                                    ctypes.byref(auto)), "POAGetConfig")
-        return float(v.floatValue) if is_float else float(v.intValue)
-
-    #: configs whose union member is the double (temp in deg C, e-/ADU).
-    _FLOAT_CONFIGS = frozenset({POA_TEMPERATURE, POA_EGAIN})
+        if config in _FLOAT_CONFIGS:
+            fn.argtypes = [ctypes.c_int, ctypes.c_int,
+                           ctypes.POINTER(ctypes.c_double), _PI]
+            val = ctypes.c_double()
+            _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
+                   "POAGetConfig")
+        else:
+            fn.argtypes = [ctypes.c_int, ctypes.c_int,
+                           ctypes.POINTER(ctypes.c_long), _PI]
+            val = ctypes.c_long()
+            _check(fn(cam_id, config, ctypes.byref(val), ctypes.byref(auto)),
+                   "POAGetConfig")
+        return float(val.value)
 
     def set_config(self, cam_id: int, config: int, value, is_auto=False) -> None:
-        self._set(cam_id, config, value, is_float=config in self._FLOAT_CONFIGS,
-                  is_bool=config == POA_COOLER, is_auto=is_auto)
+        self._set(cam_id, config, value, is_auto=is_auto)
 
     def get_config(self, cam_id: int, config: int) -> float:
-        return self._get(cam_id, config, is_float=config in self._FLOAT_CONFIGS)
+        return self._get(cam_id, config)
 
     def get_egain(self, cam_id: int) -> float:
-        return self._get(cam_id, POA_EGAIN, is_float=True)
+        return self._get(cam_id, POA_EGAIN)
 
     def set_image_format(self, cam_id: int, w: int, h: int, bin: int, fmt: int) -> None:
         _check(self._d.POASetImageBin(cam_id, bin), "POASetImageBin")
         _check(self._d.POASetImageSize(cam_id, w, h), "POASetImageSize")
+        _check(self._d.POASetImageStartPos(cam_id, 0, 0), "POASetImageStartPos")
         _check(self._d.POASetImageFormat(cam_id, fmt), "POASetImageFormat")
 
     def start_exposure(self, cam_id: int, is_single: bool = True) -> None:
@@ -306,8 +345,7 @@ class PlayerOneSdk:
     def set_sensor_mode(self, cam_id: int, name_or_index) -> None:
         idx = name_or_index
         if isinstance(name_or_index, str):
-            modes = self.sensor_modes(cam_id)
-            idx = modes.index(name_or_index)
+            idx = self.sensor_modes(cam_id).index(name_or_index)
         _check(self._d.POASetSensorMode(cam_id, int(idx)), "POASetSensorMode")
 
 

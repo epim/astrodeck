@@ -10,6 +10,7 @@ way — as does NINA). See
 |---|---|---|---|---|
 | `EAF_focuser.dll` | EAF (focuser) C API | **1.8.1** (ZWO's current) | ASIStudio 1.20 install | ctypes load + full export check, 2026-07-20 |
 | `CAARotator.dll` | CAA (rotator) C API | **1.5.6** | ZWO ASCOM Driver 6.5.35 (`CAA_ASCOM_x64.dll` — despite the name it exports the complete CAA SDK incl. `CAAMoveToMechanical`) | same |
+| `ASICamera2.dll` | ASICamera2 (camera) C API | **1.41.0.0** | ASIStudio install (`ASIGetSDKVersion`) | ctypes load + full 15-export check, 2026-07-20 (dev box; live `get_property` at scope pending) |
 
 Notes:
 - `ASIStudio\CAA_SRC.dll` was REJECTED: it lacks `CAAMoveToMechanical` (pre-
