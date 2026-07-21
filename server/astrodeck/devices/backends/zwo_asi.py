@@ -8,13 +8,16 @@ degrade to a clear DeviceError (get_device) or an empty discover(), never a cras
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from ..base import DeviceError
 from ..cameras import zwo_asi
+from ..cameras.adapter import CAMERA_BUSY_HINT
 from ..cameras.engine import NativeCamera
 from ..cameras.zwo_asi_sdk import AsiSdkError, make_asi
 
 _CAMERA_ROLES = ("camera", "guide_camera")
+_log = logging.getLogger("astrodeck.cameras")
 
 
 class ZwoAsiSession:
@@ -39,8 +42,14 @@ class ZwoAsiSession:
                                name=name)
             dev.role = role
             await dev.connect()
-        except AsiSdkError as exc:
-            raise DeviceError(f"zwo-asi {role}: SDK unavailable — {exc}") from exc
+        except (AsiSdkError, DeviceError) as exc:
+            # A held camera enumerates as 0 units -> get_property INVALID_INDEX,
+            # indistinguishable from "absent". Surface the actionable hint.
+            _log.warning("zwo-asi %s could not connect: %s. %s",
+                         role, exc, CAMERA_BUSY_HINT)
+            raise DeviceError(
+                f"zwo-asi {role}: camera unavailable ({exc}). {CAMERA_BUSY_HINT}"
+            ) from exc
         self._devices[role] = dev
         return dev
 

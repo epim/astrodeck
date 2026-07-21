@@ -21,29 +21,37 @@ class AsiCameraAdapter(CameraAdapter):
         self._index = index
         self._cam_id = 0
         self._prop: AsiProperty | None = None
+        self._gain_max = 0
+        self._offset_max = 0
         self._nbytes = 0
 
-    def _props(self) -> AsiProperty:
+    def _basic(self) -> AsiProperty:
+        # count() first: the SDK's camera list must be enumerated before
+        # get_property(index), or it returns INVALID_INDEX (at-scope lesson).
+        self._sdk.count()
         if self._prop is None:
             self._prop = self._sdk.get_property(self._index)
             self._cam_id = self._prop.camera_id
         return self._prop
 
     def capabilities(self) -> CameraCapabilities:
-        p = self._props()
+        p = self._basic()
         return CameraCapabilities(
             sensor_width=p.width, sensor_height=p.height,
             pixel_size_um=p.pixel_size_um, bit_depth=p.bit_depth,
-            bayer_pattern=p.bayer, gain_range=(0, p.max_gain),
-            offset_range=(0, p.max_offset), bin_modes=tuple(p.bin_modes),
+            bayer_pattern=p.bayer, gain_range=(0, self._gain_max),
+            offset_range=(0, self._offset_max), bin_modes=tuple(p.bin_modes),
             roi_supported=True, has_cooler=p.has_cooler, has_dew_heater=False,
             max_adu=65535, read_modes=(), hcg_threshold_gain=None,
             extra={"egain": p.egain} if p.egain else {})
 
     def open(self, index: int) -> None:
         self._index = index
-        p = self._props()
+        p = self._basic()
         self._sdk.open(p.camera_id)
+        # gain/offset ranges live in the control caps -> only valid once OPEN.
+        self._gain_max = self._sdk.control_range(self._cam_id, ASI_GAIN)[1]
+        self._offset_max = self._sdk.control_range(self._cam_id, ASI_OFFSET)[1]
 
     def close(self) -> None:
         if self._prop is not None:
