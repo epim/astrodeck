@@ -2214,6 +2214,8 @@ class Hub:
                     "tracking": await tel.get_tracking(),
                     "parked": await tel.is_parked(),
                     "slewing": await tel.is_slewing(),
+                    "tracking_rate": await tel.get_tracking_rate(),
+                    "can_set_tracking_rate": tel.can_set_tracking_rate,
                 }
             except Exception:
                 pass

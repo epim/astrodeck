@@ -31,6 +31,7 @@ from .base import (
     Switch,
     SwitchPort,
     Telescope,
+    TRACKING_RATES,
 )
 
 DISCOVERY_PORT = 32227
@@ -483,6 +484,11 @@ class AlpacaCamera(_AlpacaDevice, Camera):
 
 _PULSE_DIRS = {"north": 0, "south": 1, "east": 2, "west": 3}
 
+#: name (TRACKING_RATES) <-> ASCOM DriveRates enum (Sidereal=0/Lunar=1/Solar=2;
+#: King=3 is out of scope -- YAGNI).
+_TRACKING_RATE_ENUM = {"sidereal": 0, "lunar": 1, "solar": 2}
+_TRACKING_RATE_NAME = {v: k for k, v in _TRACKING_RATE_ENUM.items()}
+
 
 class AlpacaTelescope(_AlpacaDevice, Telescope):
     dev_type = "telescope"
@@ -506,6 +512,19 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
         # any transport error) leaves the flag at its False default.
         try:
             self.can_pulse_guide = bool(await self._get("canpulseguide"))
+        except Exception:
+            pass
+        # Probe TrackingRates ONCE at connect (multi-rate mount tracking,
+        # 2026-07-21) -- same rationale as the two probes above. A mount that
+        # only advertises Sidereal (or doesn't support the property at all)
+        # leaves the flag at its False default and the UI's rate control
+        # stays hidden; only a driver reporting BOTH lunar(1) and solar(2)
+        # gets the capability.
+        try:
+            rates = await self._get("trackingrates")
+            offered = {int(v) for v in (rates or [])}
+            if {1, 2} <= offered:
+                self.can_set_tracking_rate = True
         except Exception:
             pass
 
@@ -536,6 +555,15 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
 
     async def get_tracking(self) -> bool:
         return await self._get("tracking")
+
+    async def set_tracking_rate(self, rate: str) -> None:
+        if rate not in TRACKING_RATES:
+            raise DeviceError(f"{self.name}: unknown tracking rate {rate!r}")
+        await self._put("trackingrate", TrackingRate=_TRACKING_RATE_ENUM[rate])
+
+    async def get_tracking_rate(self) -> str:
+        value = await self._get("trackingrate")
+        return _TRACKING_RATE_NAME.get(int(value), "sidereal")
 
     async def park(self) -> None:
         await self._put("park")
