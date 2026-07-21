@@ -52,3 +52,18 @@ markers = [
 
 [tool.setuptools.packages.find]
 include = ["astrodeck*"]
+
+# Vendored SDK binaries + their licenses must ship INSIDE the installed package
+# (a non-editable `pip install` otherwise drops them, and the drivers silently
+# fall back to a system SDK install — defeating the zero-vendor-software goal).
+# The loader reads them relative to the installed __file__ (devices/*_sdk.py:
+# _VENDOR_DIR), so they must land in site-packages/astrodeck/vendor/.
+[tool.setuptools.package-data]
+astrodeck = [
+    "vendor/zwo/*.dll",
+    "vendor/zwo/*.txt",
+    "vendor/zwo/*.md",
+    "vendor/playerone/*.dll",
+    "vendor/playerone/LICENSE",
+    "vendor/playerone/*.md",
+]
