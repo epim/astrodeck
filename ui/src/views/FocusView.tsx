@@ -89,6 +89,13 @@ export default function FocusView() {
   };
   const moveTo = (p: number) => act(() => api.post("/api/focuser/move", { position: Math.round(p) }));
 
+  // "Go to position" only checked non-empty string; non-numeric input (e.g.
+  // "abc") produced NaN -> JSON.stringify serializes NaN to null, sending a
+  // null position to the server. Guard on numeric validity too, matching
+  // Capture's exposure guard (lib/exposure.ts).
+  const absTargetNum = Number(absTarget);
+  const absTargetInvalid = absTarget.trim() === "" || !Number.isFinite(absTargetNum);
+
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
@@ -184,8 +191,8 @@ export default function FocusView() {
               <input className="field" placeholder={String(pos)} value={absTarget} disabled={!canFocus}
                 onChange={(e) => setAbsTarget(e.target.value)} />
             </Field>
-            <button className="btn tap min-h-[44px]" disabled={!canFocus || !foc || !absTarget || running}
-              onClick={() => moveTo(Number(absTarget))}>Go</button>
+            <button className="btn tap min-h-[44px]" disabled={!canFocus || !foc || absTargetInvalid || running}
+              onClick={() => moveTo(absTargetNum)}>Go</button>
             {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
                 (they can't have a focuser move in flight to halt). */}
             <button className="btn btn-danger tap min-h-[44px]" disabled={!canFocus}

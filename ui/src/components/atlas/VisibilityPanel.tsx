@@ -55,9 +55,23 @@ export const VisibilityPanel = memo(function VisibilityPanel({
 }: VisibilityPanelProps) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
-  // a stable "now" for the NOW line; refreshed each load (no per-second tick —
-  // the curve is a tonight-scale plot where a 1px/min NOW drift is invisible).
+  // a stable "now" for the NOW line; refreshed each load AND on a modest
+  // ~60s interval (below) so a chart left open for hours doesn't drift the
+  // NOW marker away from real time (no per-second tick — a 1px/min drift
+  // is invisible, but multi-hour staleness isn't).
   const nowRef = useRef(Date.now() / 1000);
+  const [, bumpNow] = useState(0);
+
+  // Advance NOW on a timer without re-fetching the ephemeris — only nowRef
+  // (and the render this bump forces) changes; the fetch effect below is
+  // keyed on target/limit/reloadKey, not on this tick.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      nowRef.current = Date.now() / 1000;
+      bumpNow((n) => n + 1);
+    }, 60_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Rounded fetch key (wave-1 §2): sub-arcminute drift must not refire the
   // server-side astropy ephemeris. 0.001 h ≈ 54″ RA; 0.01° = 36″ dec — both far

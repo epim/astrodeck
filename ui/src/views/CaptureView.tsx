@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { useStore, useStatus, usePolar, useLivePreviewId, useSequence } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
@@ -80,9 +80,12 @@ export default function CaptureView() {
     try {
       await fn();
     } catch (e) {
-      // A backend 409 (e.g. polar alignment running) or any failure surfaces as a
-      // toast; also unwind the local "in flight" state so the bar doesn't hang.
-      setPhase("idle");
+      // A 409 means the capture lock is already held (a raced double-tap on
+      // Single, a running sequence, polar alignment, ...) — some capture may
+      // genuinely be in flight and its progress state must not be stomped,
+      // so only unwind to idle for OTHER failures. Always surface the toast.
+      const status = e instanceof ApiError ? e.status : undefined;
+      if (status !== 409) setPhase("idle");
       showToast("error", (e as Error).message);
     }
   };
@@ -232,7 +235,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${phase === "exposing" || phase === "downloading" ? "btn-accent border-accent" : "btn-accent"}`}
               aria-pressed={inFlight && !looping}
-              disabled={!canCapture || looping || captureBlocked || exposureInvalid}
+              disabled={!canCapture || looping || captureBlocked || exposureInvalid || inFlight}
               onClick={onSingle}>
               {inFlight && !looping
                 ? (phase === "downloading" ? "Reading…" : "Exposing…")
@@ -374,9 +377,9 @@ export default function CaptureView() {
               <button
                 className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
                 aria-pressed={!!cooler?.on}
-                disabled={!canCapture || !!cooler?.on}
+                disabled={!canCapture}
                 onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: Number(coolerTarget) }))}>
-                {cooler?.on ? "Cooling" : "Cool"}
+                {cooler?.on ? "Set" : "Cool"}
               </button>
               <button
                 className="btn tap min-h-[44px]"
