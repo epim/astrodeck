@@ -30,6 +30,10 @@ export default function GuideView() {
   const showToast = useStore((s) => s.showToast);
   const canGuide = useCanControlGuide(); // viewer => graph visible, controls read-only
   const [ditherPx, setDitherPx] = useState("3");
+  // Number(ditherPx) || 3 coerced a deliberately-entered "0" to 3 (0 is
+  // falsy). Parse explicitly so 0 is honored; only fall back to the 3px
+  // default for genuinely invalid (blank/non-numeric) input.
+  const ditherNum = Number(ditherPx);
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;
 
@@ -97,7 +101,7 @@ export default function GuideView() {
                   onChange={(e) => setDitherPx(e.target.value)} />
               </label>
               <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
-                onClick={() => act(() => api.post("/api/guide/dither", { pixels: Number(ditherPx) || 3 }))}>
+                onClick={() => act(() => api.post("/api/guide/dither", { pixels: Number.isFinite(ditherNum) ? ditherNum : 3 }))}>
                 Dither
               </button>
             </div>

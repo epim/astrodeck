@@ -343,7 +343,8 @@ function DriverRow({
         <div className="min-w-0">
           <span className="text-sm text-ink">{d.label}</span>{" "}
           <span className="mono text-[10px] text-dim">
-            {DRIVER_TYPE_LABEL[d.type] ?? d.type} · {d.host}:{d.port}
+            {DRIVER_TYPE_LABEL[d.type] ?? d.type}
+            {d.host != null && d.port != null ? ` · ${d.host}:${d.port}` : " · endpoint hidden"}
           </span>
         </div>
         <div className="flex-1" />

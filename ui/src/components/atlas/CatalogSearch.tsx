@@ -10,7 +10,7 @@
 // planet — those aren't in the catalog, see catalogHint.ts — general
 // otherwise). Previously an empty result set rendered nothing at all.
 
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../api";
 import type { CatalogEntry } from "../../types";
 import { catalogScopeHint } from "../../lib/catalogHint";
@@ -25,6 +25,15 @@ export function CatalogSearch({
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
   const [searching, setSearching] = useState(false);
+  // Dismissed by outside-click/Escape without clearing the query, so the
+  // dropdown stays gone until the user edits the query again or picks a
+  // result (which clears search directly). Mirrors ui.tsx's Tooltip.
+  const [dismissed, setDismissed] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setDismissed(false);
+  }, [search]);
 
   useEffect(() => {
     if (!search.trim()) { setResults([]); setSearching(false); return; }
@@ -49,10 +58,32 @@ export function CatalogSearch({
     setResults([]);
   };
 
-  const showDropdown = search.trim().length > 0;
+  const showDropdown = search.trim().length > 0 && !dismissed;
+
+  // Outside-pointerdown + Escape dismissal (ui.tsx Tooltip precedent) so the
+  // dropdown doesn't float over the page forever once the user has looked
+  // away without picking a result.
+  useEffect(() => {
+    if (!showDropdown) return;
+    const onDoc = (e: Event) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setDismissed(true);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDismissed(true); };
+    document.addEventListener("pointerdown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [showDropdown]);
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}
+      onBlur={(e) => {
+        // Keyboard tab-away: relatedTarget is null for a non-focusable target
+        // (e.g. the canvas) or another element outside this container.
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDismissed(true);
+      }}>
       <input
         className="field btn-touch !w-56"
         placeholder={placeholder}

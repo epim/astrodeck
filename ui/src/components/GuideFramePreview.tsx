@@ -65,10 +65,13 @@ export default function GuideFramePreview({ className = "", compact = false, ret
     return () => window.clearInterval(id);
   }, [open]);
 
-  // Once unavailable, a later successful onLoad flips us back to "image" — so a
-  // guider coming online mid-session recovers without a manual toggle.
+  // Bidirectional: a later successful onLoad flips us back to "image" (a
+  // guider coming online mid-session recovers without a manual toggle), and
+  // an onError ALWAYS falls back to "unavailable" — even from "image" — so a
+  // guide camera that disconnects mid-session doesn't leave a permanently
+  // broken <img> latched on screen (Lane B: never show a broken/empty stage).
   const onImgLoad = () => setState("image");
-  const onImgError = () => setState((s) => (s === "image" ? "image" : "unavailable"));
+  const onImgError = () => setState("unavailable");
 
   // Keep the last good <img> mounted across the cache-bust swap so the box doesn't
   // blank between frames — we only show the placeholder until the FIRST load.
@@ -135,8 +138,10 @@ export default function GuideFramePreview({ className = "", compact = false, ret
                 </span>
               )}
 
-              {/* unavailable note (404 / no frame) — only when we never had one */}
-              {state === "unavailable" && !everLoaded.current && (
+              {/* unavailable note (404 / no frame, or a disconnect after an
+                  earlier good frame) — shown whenever the current frame
+                  request failed, so an error never just leaves a blank box. */}
+              {state === "unavailable" && (
                 <UnavailableInner note={ninaNote(status?.guider?.name)} />
               )}
             </div>
