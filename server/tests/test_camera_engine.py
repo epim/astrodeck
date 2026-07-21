@@ -133,6 +133,17 @@ async def test_dew_heater_delegates():
     assert "dew:75" in ca.calls
 
 
+async def test_connect_is_idempotent():
+    # the hub's _apply_connect_result re-connects a device the orchestrator
+    # already connected; a second open() would error, so connect() must no-op.
+    fa = FakeAdapter(w=4, h=3)
+    cam = NativeCamera(fa)
+    await cam.connect()
+    await cam.connect()          # second connect = no-op
+    assert fa.calls.count("open0") == 1
+    assert cam.connected is True
+
+
 async def test_low_bit_depth_still_decodes_raw16():
     # A sensor reporting <=8-bit ADC still arrives as RAW16 (adapters always
     # download RAW16), so the engine must decode uint16, not uint8 (review #2).

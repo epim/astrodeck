@@ -111,6 +111,8 @@ class ZwoAm5Telescope(Telescope):
     # ---------------------------------------------------------- lifecycle
 
     async def connect(self) -> None:
+        if self.connected:            # idempotent: hub re-connects (double-open would fail)
+            return
         await self._link.open()
         try:
             ident = await self._get("GVP")

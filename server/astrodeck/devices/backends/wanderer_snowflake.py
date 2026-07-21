@@ -147,6 +147,8 @@ class SnowflakeWheel(FilterWheel):
         self.model = ""
 
     async def connect(self) -> None:
+        if self.connected:            # idempotent: hub re-connects (double-open would fail)
+            return
         await self._link.open()
         try:
             first = await self._link.wait_banner(

@@ -39,6 +39,11 @@ class NativeCamera(Camera):
             return await asyncio.to_thread(fn, *a)
 
     async def connect(self) -> None:
+        # Idempotent: the orchestrator connects via get_device AND the hub's
+        # _apply_connect_result re-connects (its documented contract). A second
+        # SDK open() would error, so no-op when already connected.
+        if self.connected:
+            return
         await asyncio.to_thread(self._a.open, self._index)
         caps = self._a.capabilities()
         self._caps = caps
@@ -49,8 +54,10 @@ class NativeCamera(Camera):
         self.can_cool = caps.has_cooler
         self.has_dew_heater = caps.has_dew_heater
         self.bayer_pattern = caps.bayer_pattern
+        self.connected = True
 
     async def disconnect(self) -> None:
+        self.connected = False
         try:
             await asyncio.to_thread(self._a.close)
         except Exception:  # noqa: BLE001 - teardown is best-effort
