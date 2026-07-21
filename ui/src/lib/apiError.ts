@@ -19,6 +19,29 @@
 // (app.py:1427-1429), which the UI needs as the authoritative overwrite
 // target (client-side name re-matching can disagree with the server's
 // casefold()).
+//
+// A THIRD shape: a plain (un-pre-validated) FastAPI/pydantic `Field(...)`
+// constraint violation — e.g. `exposure_s: float = Field(gt=0, le=3600)` with
+// no matching client-side guard — serializes as FastAPI's default 422 body,
+// `{"detail": [{"type": "...", "loc": [...], "msg": "...", ...}, ...]}`. An
+// array also satisfies `typeof detail === "object"` in JS, so without an
+// explicit check it fell into the nested-custom-shape branch, found no
+// `.detail`, and stringified the whole raw array into the toast message.
+// Surface the first item's `msg` (+ the field name from `loc`) instead.
+function messageFromValidationErrors(items: unknown[]): string {
+  const first = items[0];
+  if (first && typeof first === "object") {
+    const f = first as Record<string, unknown>;
+    const msg = typeof f.msg === "string" ? f.msg : undefined;
+    const loc = Array.isArray(f.loc) ? f.loc : undefined;
+    // loc is typically ["body", "targets", 0, "steps", 0, "exposure_s"] —
+    // the last non-index segment is the most useful field name to show.
+    const field = loc ? [...loc].reverse().find((p) => typeof p === "string") : undefined;
+    if (msg) return field ? `${field}: ${msg}` : msg;
+  }
+  return "Invalid request";
+}
+
 export function parseApiError(
   status: number,
   body: unknown,
@@ -27,6 +50,11 @@ export function parseApiError(
   if (body && typeof body === "object") {
     const j = body as Record<string, unknown>;
     const detail = j.detail;
+    if (Array.isArray(detail)) {
+      // plain pydantic 422 validation-error array — never the custom
+      // {detail, code} shape, and never JSON.stringify'd raw into the UI.
+      return { message: messageFromValidationErrors(detail) };
+    }
     if (detail && typeof detail === "object") {
       // nested: HTTPException(status, detail={"detail": "...", "code": "..."})
       const d = detail as Record<string, unknown>;

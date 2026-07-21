@@ -282,16 +282,43 @@ export default function EquipmentView(): JSX.Element {
     })();
 
   // ---------------------------------------------------------------- render
-  if (loadErr) {
+  // A first-load failure (no data yet) has nothing to fall back to, so it's
+  // the one case that blanks the whole view (with a retry). Every later
+  // reload is a BACKGROUND refresh (re-run after every connect/probe/toggle
+  // for cache honesty) — a transient failure there must not discard the
+  // already-loaded Devices/Tasks/Rotator/Profiles tree; it surfaces as a
+  // dismissable inline banner instead (mirrors ProfileList's in-place error).
+  if (loadErr && !data) {
     return (
       <Panel title="Equipment">
-        <EmptyState icon="alert" title="Couldn't load drivers" hint={loadErr} />
+        <EmptyState
+          icon="alert"
+          title="Couldn't load drivers"
+          hint={loadErr}
+          action={
+            <button type="button" className="btn btn-accent !py-1.5" onClick={() => void reloadDrivers()}>
+              Retry
+            </button>
+          }
+        />
       </Panel>
     );
   }
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_minmax(260px,340px)]">
+      {/* Background-refresh failure (data already loaded): a non-destructive
+          inline banner + retry, spanning both columns — never the full-panel
+          blank the first-load EmptyState above uses. */}
+      {loadErr && data && (
+        <div className="lg:col-span-2 flex items-center gap-2 border border-bad/50 bg-bad/5 px-3 py-2">
+          <Icon name="alert" size={14} className="text-bad shrink-0" />
+          <span className="text-sm text-ink flex-1">Couldn't refresh drivers: {loadErr}</span>
+          <button type="button" className="btn !py-1 !px-2 text-[11px]" onClick={() => void reloadDrivers()}>
+            Retry
+          </button>
+        </div>
+      )}
       <div className="flex flex-col gap-4 min-w-0">
         <Panel
           title="Devices"

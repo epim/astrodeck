@@ -43,7 +43,14 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
   const inflight = useRef(new Map<string, AbortController>());
   const dirty = useRef(true);
   const firstDrawn = useRef(false);
-  const everDrew = useRef(false);
+  // Whether the LAST drawn frame produced zero tiles (a truly black canvas) — the
+  // signal that gates the all-failing banner. Unlike the old `everDrew` one-shot
+  // latch, this tracks the CURRENT view, so a pan into unfetched sky AFTER an
+  // earlier successful draw still surfaces the degraded banner.
+  const viewBlank = useRef(false);
+  // Edge guard: fire onAllFailing once per blank+failing episode, not once per
+  // failed fetch; cleared when content returns (draw loop) or the survey changes.
+  const reportedFailing = useRef(false);
   const consecFail = useRef(0);
   // False after unmount: a fetch that outraces its abort (e.g. past the body
   // read when cleanup runs) can neither repopulate caches nor fire callbacks.
@@ -91,7 +98,8 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
   // A survey (slug) change resets first-tile / failure bookkeeping.
   useEffect(() => {
     firstDrawn.current = false;
-    everDrew.current = false;
+    viewBlank.current = false;
+    reportedFailing.current = false;
     consecFail.current = 0;
     if (wakeTimer.current !== null) { window.clearTimeout(wakeTimer.current); wakeTimer.current = null; }
   }, [slug]);
@@ -130,7 +138,14 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
         // failed key is negative-cached); without this, concurrency (6) would
         // cap the consecutive-failure count below the 8-failure threshold.
         dirty.current = true;
-        if (consecFail.current >= 8 && !everDrew.current) onAllFailing();
+        // Surface the degraded banner when the CURRENT view is a black canvas and
+        // fetches keep failing — even if we drew content earlier (a pan into
+        // unfetched / interrupted / offline sky). Edge-guarded so it fires once
+        // per episode; cleared when content returns below.
+        if (consecFail.current >= 8 && viewBlank.current && !reportedFailing.current) {
+          reportedFailing.current = true;
+          onAllFailing();
+        }
       } finally {
         inflight.current.delete(key);
       }
@@ -218,8 +233,17 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
       for (const { order: o, npix: n } of plan) enqueue(o, n);
 
       if (draws.length > 0) {
-        everDrew.current = true;
-        if (!firstDrawn.current) { firstDrawn.current = true; onFirstTile(); }
+        // Content is on screen. Signal onFirstTile on the FIRST ever draw AND on
+        // any recovery from a previously-blank view, so the consumer clears the
+        // degraded banner when a pan returns to fetchable sky.
+        if (!firstDrawn.current || viewBlank.current) {
+          firstDrawn.current = true;
+          onFirstTile();
+        }
+        viewBlank.current = false;
+        reportedFailing.current = false;
+      } else {
+        viewBlank.current = true;
       }
     };
     raf = requestAnimationFrame(loop);
