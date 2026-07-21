@@ -255,11 +255,16 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
             "guider", ok=guider is not None, attempted=True,
             error=None if guider is not None else "no guider")
 
-    # guide camera: the camera-role session's dedicated guide-camera pseudo-device
-    # (sim only), via the contracted Protocol accessor -- NOT a SimSession-only
-    # property. None for nina/native/phd2.
-    guide_camera = _pick_guide_camera(resolved.get("camera"), sessions)
-    if guide_camera is not None:
+    # guide camera: EITHER its own guide_camera-role device (filled by the main
+    # loop from a SEPARATE backend/endpoint -- native two-vendor rigs: e.g. a ZWO
+    # ASI guide cam alongside a Player One imaging cam) OR, as a fallback, the
+    # camera-role session's guide_camera() accessor (sim/NINA, one session owns
+    # both cameras). None for nina/native/phd2 without a guide camera.
+    guide_camera = _pick_guide_camera(resolved.get("camera"), sessions, rig)
+    # A rig-sourced guide camera is already hardware-stamped by the main loop with
+    # its OWN backend's flag; only the accessor-sourced one (sim/NINA) needs
+    # stamping from the camera backend.
+    if guide_camera is not None and rig.get("guide_camera") is None:
         cam_conn = resolved.get("camera")
         if cam_conn is not None:
             try:
@@ -285,10 +290,23 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
 
 
 def _pick_guide_camera(camera_conn: ConnSpec | None,
-                       sessions: dict[EndpointKey, BackendSession]) -> object | None:
-    """Return the camera-role session's ``guide_camera()`` (the contracted
-    Protocol accessor), located via the SAME normalized grouping key. None when
-    there is no camera session or the backend exposes no guide camera."""
+                       sessions: dict[EndpointKey, BackendSession],
+                       rig: dict[str, object]) -> object | None:
+    """The guide camera, from EITHER source:
+
+    1. its own ``guide_camera`` role, filled by the main ``get_device`` loop from
+       a SEPARATE backend/endpoint (native two-vendor rigs: e.g. a ZWO ASI guide
+       camera alongside a Player One imaging camera) -- already hardware-stamped
+       by the loop; OR
+    2. the camera-role session's ``guide_camera()`` accessor (sim/NINA, where one
+       session owns both cameras and ``guide_camera`` is a non-ROLES extra).
+
+    Prefer (1); fall back to (2). For native single-endpoint rigs (camera +
+    guide_camera on one session) the two sources are the SAME object, so the
+    preference is a no-op there."""
+    dev = rig.get("guide_camera")
+    if dev is not None:
+        return dev
     if camera_conn is None:
         return None
     session = sessions.get(_normalize(camera_conn))
