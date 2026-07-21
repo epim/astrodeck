@@ -42,6 +42,25 @@ _RATE_TABLE = ((0.004, "R1"), (0.02, "R3"), (0.1, "R5"), (0.7, "R7"),
 _MOVE_CMD = {("ra", True): "Me", ("ra", False): "Mw",
              ("dec", True): "Mn", ("dec", False): "Ms"}
 
+#: Pulse-guide emulation (fw 1.8.8, all verified at scope 2026-07-20):
+#: - The LX200 :Mg*# pulse commands PARSE but are INERT over serial.
+#: - :M<dir># during tracking REPLACES the tracking drive (does not
+#:   superimpose): Me at R1(~0.5x) reads +1.5x sid on GR; Mw reads +0.5x —
+#:   both eastward! So each direction gets its own strategy:
+#:   east  = suspend tracking (:Td# ... :Te#): drifts east at EXACTLY 1x sid;
+#:   west  = R2 + Mw: measured EXACTLY -1x sid during tracking;
+#:   north/south = R1 + Mn/Ms: +/-0.5x sid (dec has no tracking to fight).
+#: Sky sign of N/S depends on pier side — guider calibration owns that, as
+#: with every ASCOM mount.
+_PULSE_DEC_RATE_CMD = "R1"
+_PULSE_WEST_RATE_CMD = "R2"
+#: measured pulse rates, deg/s (10s GR/GD deltas, 2026-07-20): ra = 1.0x
+#: sidereal BOTH directions (+150/-150 arcsec per 10s), dec = 0.5x.
+_PULSE_RA_RATE_DEG_S = 0.004178
+_PULSE_DEC_RATE_DEG_S = 0.002089
+_PULSE_MOVE = {"n": "Mn", "s": "Ms", "e": "Me", "w": "Mw"}
+_PULSE_STOP = {"n": "Qn", "s": "Qs", "e": "Qe", "w": "Qw"}
+
 
 def _utcnow() -> datetime:
     """Injectable clock (tests monkeypatch this)."""
@@ -60,7 +79,7 @@ class ZwoAm5Telescope(Telescope):
 
     backend = "zwo-am5"
     hardware = True
-    can_pulse_guide = False   # implemented below; flipped only after at-scope validation
+    can_pulse_guide = True    # EMULATED: timed R1 moves (native :Mg*# is inert)
 
     def __init__(self, link, name: str = "ZWO AM5"):
         super().__init__(name)
@@ -183,19 +202,10 @@ class ZwoAm5Telescope(Telescope):
     _SIDEREAL_DEG_S = 0.004178074
 
     async def guide_rates(self) -> tuple[float, float] | None:
-        """AM5 :GdG# encodes the guide RATE as a sidereal fraction x100 in the
-        degrees field (at-scope finding 2026-07-20: '+90*00:00' = 0.90x
-        sidereal, NOT 90 degrees). Convert to deg/s; None when the reply
-        doesn't fit that encoding."""
-        try:
-            raw = lx200.parse_dec(await self._get("GdG"))
-        except (DeviceError, ValueError):
-            return None
-        frac = raw / 100.0
-        if not (0.0 < frac <= 1.0):
-            return None
-        v = frac * self._SIDEREAL_DEG_S
-        return (v, v)
+        """The rates our emulated pulses ACTUALLY deliver (hardware-measured):
+        ra ~1x sidereal (tracking-suspend east / R3-west), dec ~0.5x (R1).
+        (The mount's :GdG# setting governs only the inert :Mg*# path.)"""
+        return (_PULSE_RA_RATE_DEG_S, _PULSE_DEC_RATE_DEG_S)
 
     # ------------------------------------------------------------- motion
 
@@ -277,10 +287,29 @@ class ZwoAm5Telescope(Telescope):
         await self._link.request(_MOVE_CMD[(axis, rate_deg_s > 0)], reply="none")
 
     async def pulse_guide(self, direction: str, ms: int) -> None:
+        """EMULATED pulse guide (native :Mg*# is inert; :M<dir># during
+        tracking REPLACES the drive — see the module notes). Strategies:
+        east = tracking-suspend (exact 1x sidereal drift); west = R3+Mw
+        (~0.9x net west); n/s = R1 moves. Every path restores state in a
+        ``finally`` so cancellation can't leave the mount drifting."""
         d = direction.lower()[0]
         if d not in "nsew":
             raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
-        await self._link.request(f"Mg{d}{int(ms):04d}", reply="none")
+        secs = int(ms) / 1000.0
+        if d == "e" and await self.get_tracking():
+            await self._cmd_ack("Td", "pulse east (suspend tracking)")
+            try:
+                await asyncio.sleep(secs)
+            finally:
+                await self._cmd_ack("Te", "pulse east (resume tracking)")
+            return
+        rate_cmd = _PULSE_WEST_RATE_CMD if d == "w" else _PULSE_DEC_RATE_CMD
+        await self._link.request(rate_cmd, reply="none")
+        await self._link.request(_PULSE_MOVE[d], reply="none")
+        try:
+            await asyncio.sleep(secs)
+        finally:
+            await self._link.request(_PULSE_STOP[d], reply="none")
 
     async def is_slewing(self) -> bool:
         return bool(getattr(self, "_slewing", False))
