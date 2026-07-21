@@ -60,6 +60,18 @@ async def test_poa_lrn_applied_via_engine():
     assert a._sdk.calls.index("mode:LowNoise") < a._sdk.calls.index("start")
 
 
+async def test_poa_exposure_clamped_no_overflow():
+    # 1e5 s -> 1e11 us must clamp to the 32-bit max, not OverflowError at the
+    # POASetConfig c_int boundary (review #3).
+    from astrodeck.devices.cameras.player_one import PlayerOneAdapter, _MAX_EXPOSURE_US
+    from astrodeck.devices.cameras.player_one_sdk import POA_EXPOSURE
+    fa = FakePoaSdk(8, 6)
+    cam = NativeCamera(PlayerOneAdapter(sdk=fa))
+    await cam.connect()
+    await cam.expose(100000, gain=0, offset=0)
+    assert f"cfg:{POA_EXPOSURE}={_MAX_EXPOSURE_US}" in fa.calls
+
+
 async def test_poa_cooling_via_engine():
     from astrodeck.devices.cameras.player_one import PlayerOneAdapter
     a = PlayerOneAdapter(sdk=FakePoaSdk(8, 6))

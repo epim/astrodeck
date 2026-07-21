@@ -24,6 +24,11 @@ __all__ = ["PlayerOneAdapter", "PoaProperty"]
 #: gain at/above which the IMX571 conversion gain lowers read noise (HCG).
 HCG_THRESHOLD_GAIN = 125
 
+#: POASetConfig's non-float value is a 32-bit c_int; clamp exposure microseconds
+#: so a very long exposure can't OverflowError at the ctypes boundary (the SDK
+#: caps at 2_000_000_000 us / 2000 s of its own accord). 2**31-1 us ~= 2147 s.
+_MAX_EXPOSURE_US = 2_147_483_647
+
 
 class PlayerOneAdapter(CameraAdapter):
     def __init__(self, sdk=None, index: int = 0):
@@ -77,7 +82,8 @@ class PlayerOneAdapter(CameraAdapter):
 
     def start_exposure(self, *, seconds: float, gain: int, offset: int,
                        roi: ROI, light: bool) -> None:
-        self._sdk.set_config(self._cam_id, POA_EXPOSURE, int(round(seconds * 1e6)))
+        us = min(int(round(seconds * 1e6)), _MAX_EXPOSURE_US)
+        self._sdk.set_config(self._cam_id, POA_EXPOSURE, us)
         self._sdk.set_config(self._cam_id, POA_GAIN, int(gain))
         self._sdk.set_config(self._cam_id, POA_OFFSET, int(offset))
         w, h = roi.w // roi.bin, roi.h // roi.bin

@@ -14,6 +14,11 @@ from .zwo_asi_sdk import (
 
 __all__ = ["AsiCameraAdapter", "AsiProperty"]
 
+#: ASISetControlValue's value is a 32-bit c_long; clamp exposure microseconds so a
+#: very long exposure can't OverflowError at the ctypes boundary (the SDK then
+#: applies its own per-camera max). 2**31-1 us ~= 2147 s.
+_MAX_EXPOSURE_US = 2_147_483_647
+
 
 class AsiCameraAdapter(CameraAdapter):
     def __init__(self, sdk=None, index: int = 0):
@@ -59,7 +64,8 @@ class AsiCameraAdapter(CameraAdapter):
 
     def start_exposure(self, *, seconds: float, gain: int, offset: int,
                        roi: ROI, light: bool) -> None:
-        self._sdk.set_control(self._cam_id, ASI_EXPOSURE, int(round(seconds * 1e6)))
+        us = min(int(round(seconds * 1e6)), _MAX_EXPOSURE_US)
+        self._sdk.set_control(self._cam_id, ASI_EXPOSURE, us)
         self._sdk.set_control(self._cam_id, ASI_GAIN, int(gain))
         self._sdk.set_control(self._cam_id, ASI_OFFSET, int(offset))
         w, h = roi.w // roi.bin, roi.h // roi.bin

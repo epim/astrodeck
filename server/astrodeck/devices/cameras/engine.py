@@ -1,7 +1,14 @@
 """NativeCamera: the vendor-blind engine that turns a CameraAdapter into a
 Camera. Owns the exposure lifecycle (generalized from alpaca.py:expose), buffer
-assembly, cooling, ROI/binning, and cancellation — written once for every
-brand. Every adapter hook runs under asyncio.to_thread + a per-device lock."""
+assembly, cooling, ROI/binning, and cancellation — written once for every brand.
+
+Concurrency: adapter hooks run on the threadpool via ``asyncio.to_thread``. The
+CONFIG/write hooks (``start_exposure``, ``set_read_mode``, ``set_cooler``,
+``set_target_temp``, ``set_dew_heater``) are additionally serialized under a
+per-device lock via ``_run``. ``abort`` and the exposure-poll reads
+(``image_ready``, ``read_frame``) run WITHOUT the lock on purpose, so a cancel
+can interrupt a blocked ``read_frame``; the Player One SDK binding is internally
+thread-safe for its per-call argtype selection (player_one_sdk.PlayerOneSdk)."""
 from __future__ import annotations
 
 import asyncio
@@ -86,11 +93,14 @@ class NativeCamera(Camera):
 
     @staticmethod
     def _shape(raw: bytes, roi: ROI, caps) -> np.ndarray:
-        """Raw little-endian sensor bytes -> 2-D uint16 [height, width]. 8-bit
-        readout is promoted to uint16 so the frame dtype is uniform."""
+        """Raw sensor bytes -> 2-D uint16 [height, width]. The adapters ALWAYS
+        download RAW16 (little-endian, w*h*2 bytes) regardless of the sensor's ADC
+        depth — a <=8-bit sensor still arrives in a 16-bit container — so we always
+        decode as little-endian uint16 (``.astype`` normalizes byte order to native
+        uint16). If a future adapter downloads RAW8 it must signal the format so
+        this decode can match; today none do (both request RAW16)."""
         w, h = roi.w // roi.bin, roi.h // roi.bin
-        dt = np.uint8 if caps.bit_depth <= 8 else "<u2"
-        arr = np.frombuffer(raw, dtype=dt, count=w * h)
+        arr = np.frombuffer(raw, dtype="<u2", count=w * h)
         return arr.reshape((h, w)).astype(np.uint16)
 
     async def abort_exposure(self) -> None:
