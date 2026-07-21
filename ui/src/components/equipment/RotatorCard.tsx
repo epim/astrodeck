@@ -10,11 +10,12 @@ import type { RotatorConfig } from "../../types";
 import { api, ApiError } from "../../api";
 import { setRotatorConfig } from "../../api/backends";
 import { useConfig, useStatus, useStore } from "../../store";
-import { accessPhrase, useCanConfigBackend } from "../../lib/caps";
+import { accessPhrase, useCanConfigBackend, useCanControlCapture } from "../../lib/caps";
 import { adjustedPa, mod360 } from "../../lib/rotation";
 import { allowedSweepDeg, arcPath, polarXY } from "../../lib/rotatorDial";
 import { Panel, InfoDot } from "../ui";
 import { Icon } from "../icons";
+import ReadOnlyBadge from "../ReadOnlyBadge";
 
 // Pure dial geometry lives in lib/rotatorDial (window-free so the assert-file
 // tests can import it under tsx); re-export here so the helpers stay part of
@@ -33,6 +34,10 @@ export default function RotatorCard(): JSX.Element | null {
   const status = useStatus();
   const config = useConfig();
   const canConfig = useCanConfigBackend();
+  // The four motion routes (move/halt/reverse/rotate-to-pa) all require
+  // control.capture server-side (server/astrodeck/api/app.py:2716-2775), NOT
+  // config.backend — a distinct gate from the ROM config controls below.
+  const canMove = useCanControlCapture();
   const rot = status?.rotator;
 
   const seed: RotatorConfig = { ...DEFAULT_ROTATOR_CFG, ...(config?.rotator ?? {}) };
@@ -91,8 +96,13 @@ export default function RotatorCard(): JSX.Element | null {
   return (
     <Panel
       title={`Rotator · ${rot.name}`}
-      right={<InfoDot label="About the rotator"
-        content="Angles are sky position angle (PA); the mechanical readout is the raw device angle. The shaded arc is the allowed range of motion — set its start by rotating to a cable-safe position and pressing 'Set to current position'. Moves are refused during exposures." />}
+      right={
+        <div className="flex items-center gap-2">
+          {!canMove && <ReadOnlyBadge reason={`Read-only — moving the rotator needs ${accessPhrase("control.capture")}.`} />}
+          <InfoDot label="About the rotator"
+            content="Angles are sky position angle (PA); the mechanical readout is the raw device angle. The shaded arc is the allowed range of motion — set its start by rotating to a cable-safe position and pressing 'Set to current position'. Moves are refused during exposures." />
+        </div>
+      }
     >
       <div className="flex flex-wrap items-start gap-4">
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}
@@ -136,13 +146,15 @@ export default function RotatorCard(): JSX.Element | null {
                    value={angle} placeholder="PA °"
                    onChange={(e) => setAngle(e.target.value)}
                    aria-label="Target position angle, degrees" />
-            <button className="btn min-h-9" disabled={busy || !angleOk}
+            <button className="btn min-h-9" disabled={busy || !angleOk || !canMove}
                     onClick={() => hint && void move(hint.target)}>Go</button>
-            <button className="btn min-h-9" disabled={busy}
+            <button className="btn min-h-9" disabled={busy || !canMove}
                     onClick={() => void move(rot.sky_deg - 1)}>−1°</button>
-            <button className="btn min-h-9" disabled={busy}
+            <button className="btn min-h-9" disabled={busy || !canMove}
                     onClick={() => void move(rot.sky_deg + 1)}>+1°</button>
-            <button className="btn btn-danger min-h-9"
+            {/* Halt is urgent -> stays 1-tap even while `busy` (CaptureView Stop /
+                SlewPad Stop precedent) but is still capability-gated for viewers. */}
+            <button className="btn btn-danger min-h-9" disabled={!canMove}
                     onClick={() => void run(() => api.post("/api/rotator/halt"))}>
               Halt
             </button>
@@ -154,20 +166,26 @@ export default function RotatorCard(): JSX.Element | null {
             </p>
           )}
           <div className="flex items-center gap-2 flex-wrap">
-            <button className="btn btn-accent min-h-9" disabled={busy}
+            <button className="btn btn-accent min-h-9" disabled={busy || !canMove}
                     onClick={() => void run(() => api.post("/api/rotator/rotate-to-pa",
                       { target_pa_deg: angleOk ? mod360(parsedAngle) : rot.sky_deg }))}>
               Rotate to PA (plate solve)
             </button>
             {rot.can_reverse && (
               <label className="flex items-center gap-1.5 text-[11px] text-dim">
-                <input type="checkbox" checked={rot.reverse} disabled={busy}
+                <input type="checkbox" checked={rot.reverse} disabled={busy || !canMove}
                        onChange={(e) => void run(() => api.post("/api/rotator/reverse",
                          { reverse: e.target.checked }))} />
                 reverse
               </label>
             )}
           </div>
+          {!canMove && (
+            <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
+              <Icon name="lock" size={11} />
+              Read-only — moving the rotator needs {accessPhrase("control.capture")}.
+            </p>
+          )}
 
           <div className="border border-line bg-bg/60 px-3 py-2.5 flex flex-col gap-2">
             <span className="label">Range of motion</span>

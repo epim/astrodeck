@@ -11,6 +11,7 @@ import type {
   SiteInfo,
   Target,
 } from "../types";
+import { isExposureValueInvalid } from "./exposure";
 
 /** In-place fix callbacks the readiness rows can invoke without leaving the view. */
 export interface PreflightActions {
@@ -177,6 +178,28 @@ export function buildPreflight(
         });
     }
   }
+
+  // --- exposure --- (F-P0.1 follow-up: a 0/negative/absurd per-step exposure
+  // sailed through the step editor with zero validation — unlike CaptureView's
+  // manual field — and only 422'd at Run, surfacing as a raw error blob
+  // (apiError.ts). Block Run here instead, before the request is even built;
+  // reuses CaptureView's own bounds (isExposureValueInvalid/EXPOSURE_MAX_S)
+  // so the two surfaces can never silently disagree on what's valid.
+  const badExposureSteps = plan.targets.flatMap((t) =>
+    t.steps
+      .filter((s) => isExposureValueInvalid(s.exposure_s))
+      .map((s) => `${t.name}${s.filter ? ` (${s.filter})` : ""}: ${s.exposure_s}s`),
+  );
+  if (badExposureSteps.length > 0)
+    push("exposure", "Exposure", "blocked", {
+      detail: {
+        value:
+          badExposureSteps.length === 1
+            ? badExposureSteps[0]
+            : `${badExposureSteps.length} steps out of range`,
+      },
+    });
+  else push("exposure", "Exposure", "ok");
 
   // --- disk ---
   const disk = status?.disk;

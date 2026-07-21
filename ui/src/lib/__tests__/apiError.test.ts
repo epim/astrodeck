@@ -166,6 +166,53 @@ test("string detail and absent body yield no id", () => {
   assert(parseApiError(500, undefined, "ISE").id === undefined, "absent body");
 });
 
+// (f) plain FastAPI/pydantic 422 validation-error array — Array.isArray is
+// also `typeof === "object"`, so this must NOT fall into the nested-custom-
+// shape branch and get JSON.stringify'd whole into the toast message.
+test("pydantic validation-error array yields a readable message, not raw JSON", () => {
+  // exact shape server/astrodeck/sequence/models.py's
+  // `exposure_s: float = Field(gt=0, le=3600)` produces on a 0/negative step.
+  const payload = {
+    detail: [
+      {
+        type: "greater_than",
+        loc: ["body", "targets", 0, "steps", 0, "exposure_s"],
+        msg: "Input should be greater than 0",
+        input: 0,
+        ctx: { gt: 0 },
+      },
+    ],
+  };
+  const { message, code } = parseApiError(422, payload);
+  assert(!message.startsWith("["), `message must not be raw JSON: ${message}`);
+  assert(message.includes("Input should be greater than 0"), `message: ${message}`);
+  assert(message.includes("exposure_s"), `message should name the field: ${message}`);
+  assert(code === undefined, `code: ${code}`);
+});
+
+test("pydantic validation-error array with multiple items surfaces the first", () => {
+  const payload = {
+    detail: [
+      { type: "missing", loc: ["body", "name"], msg: "Field required" },
+      { type: "greater_than", loc: ["body", "count"], msg: "Input should be greater than 0" },
+    ],
+  };
+  const { message } = parseApiError(422, payload);
+  assert(message.includes("Field required"), `message: ${message}`);
+  assert(message.includes("name"), `message: ${message}`);
+});
+
+test("empty validation-error array falls back to a generic message, not a crash", () => {
+  const { message } = parseApiError(422, { detail: [] });
+  assert(typeof message === "string" && message.length > 0, `message: ${message}`);
+});
+
+test("validation-error array with a non-object item falls back gracefully", () => {
+  const { message } = parseApiError(422, { detail: ["oops"] });
+  assert(typeof message === "string" && message.length > 0, `message: ${message}`);
+  assert(!message.startsWith("["), `message must not be raw JSON: ${message}`);
+});
+
 console.log(`apiError.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
   failures.forEach((f) => console.error(f));

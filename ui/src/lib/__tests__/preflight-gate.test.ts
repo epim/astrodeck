@@ -119,6 +119,85 @@ test("gate: can't-cool but plan wants cooling (blocked) ⇒ Run disabled", () =>
   assert(runDisabledByVerdict(items), "can't-cool plan cannot start");
 });
 
+// --- exposure validation (F-P0.1 follow-up): a 0/negative/absurd per-step
+// exposure had zero client-side validation and only 422'd server-side at Run
+// (server/astrodeck/sequence/models.py's `exposure_s: float = Field(gt=0,
+// le=3600)`), which then dumped a raw pydantic error array into the toast
+// (apiError.ts's HIGH finding). buildPreflight must catch it first.
+function stepWithExposure(exposure_s: number): Target["steps"][number] {
+  return { filter: null, exposure_s, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light" };
+}
+
+test("gate: zero-exposure step (blocked) ⇒ Run disabled", () => {
+  const items = buildPreflight(
+    st({ ...camOk, mode: "alpaca" }),
+    plan({ targets: [lightTarget("M31", [stepWithExposure(0)])] }),
+    SITE_REAL,
+    {},
+  );
+  assert(items.some((i) => i.id === "exposure" && i.status === "blocked"), "exposure blocked present");
+  assert(runDisabledByVerdict(items), "zero-exposure plan cannot start");
+});
+
+test("gate: negative-exposure step (blocked) ⇒ Run disabled", () => {
+  const items = buildPreflight(
+    st({ ...camOk, mode: "alpaca" }),
+    plan({ targets: [lightTarget("M31", [stepWithExposure(-5)])] }),
+    SITE_REAL,
+    {},
+  );
+  assert(items.some((i) => i.id === "exposure" && i.status === "blocked"), "exposure blocked present");
+  assert(runDisabledByVerdict(items), "negative-exposure plan cannot start");
+});
+
+test("gate: exposure past the 3600s ceiling (blocked) ⇒ Run disabled", () => {
+  const items = buildPreflight(
+    st({ ...camOk, mode: "alpaca" }),
+    plan({ targets: [lightTarget("M31", [stepWithExposure(999999)])] }),
+    SITE_REAL,
+    {},
+  );
+  assert(items.some((i) => i.id === "exposure" && i.status === "blocked"), "exposure blocked present");
+  assert(runDisabledByVerdict(items), "absurd-exposure plan cannot start");
+});
+
+test("gate: a bad step on ANY target blocks Run, not just the first target", () => {
+  const items = buildPreflight(
+    st({ ...camOk, mode: "alpaca" }),
+    plan({
+      targets: [
+        lightTarget("M31", [stepWithExposure(120)]),
+        lightTarget("M42", [stepWithExposure(0)]),
+      ],
+    }),
+    SITE_REAL,
+    {},
+  );
+  assert(items.some((i) => i.id === "exposure" && i.status === "blocked"), "exposure blocked present");
+  assert(runDisabledByVerdict(items), "second target's bad step still blocks Run");
+});
+
+test("gate: valid exposure steps ⇒ exposure check is 'ok' (not blocked, no false lock-out)", () => {
+  const items = buildPreflight(
+    st({
+      mode: "alpaca",
+      connected: {
+        camera: { name: "c", kind: "camera", connected: true },
+        telescope: { name: "t", kind: "telescope", connected: true },
+      },
+      mount: { parked: false } as RigStatus["mount"],
+      disk: { free_gb: 500, low: false, critical: false },
+    } as Partial<RigStatus>),
+    plan({ targets: [lightTarget("M31", [stepWithExposure(120)])] }),
+    SITE_REAL,
+    { M31: { alt: 50, az: 90, verdict: "ok", horizon_min_deg: 15, site_is_default: false } },
+  );
+  const exposure = items.find((i) => i.id === "exposure");
+  eq(exposure?.status, "ok", "valid exposure is ok");
+  eq(preflightVerdict(items), "ok", "fully-ready plan with valid exposure verdicts ok");
+  assert(!runDisabledByVerdict(items), "valid-exposure plan is not blocked");
+});
+
 // --- fail-OPEN guard: the gate must NOT block a ready plan, only a blocked one.
 test("gate: fully-ready plan ⇒ verdict NOT blocked ⇒ Run enabled (no false lock-out)", () => {
   const items = buildPreflight(

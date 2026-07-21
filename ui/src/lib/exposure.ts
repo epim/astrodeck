@@ -11,7 +11,14 @@
 
 export const EXPOSURE_MAX_S = 3600;
 
+// The numeric half of the check, shared with callers that already hold a
+// parsed number (e.g. a Sequence plan step's `exposure_s`, or preflight.ts's
+// buildPreflight()) rather than a raw text-field string — see
+// isExposureInvalid below for the string/text-field variant.
+export function isExposureValueInvalid(n: number): boolean {
+  return !Number.isFinite(n) || n <= 0 || n > EXPOSURE_MAX_S;
+}
+
 export function isExposureInvalid(raw: string): boolean {
-  const n = Number(raw);
-  return raw.trim() === "" || !Number.isFinite(n) || n <= 0 || n > EXPOSURE_MAX_S;
+  return raw.trim() === "" || isExposureValueInvalid(Number(raw));
 }
