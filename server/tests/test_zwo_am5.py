@@ -144,18 +144,15 @@ async def test_park_is_idempotent_when_already_parked(fixed_env):
     assert "hP" not in fl.sent
 
 
-async def test_guide_rates_sidereal_fraction_decode(fixed_env):
-    """At-scope finding: :GdG# '+90*00:00' means 0.90x sidereal (x100 in the
-    degrees field), not 90 degrees."""
+async def test_guide_rates_report_emulated_pulse_rate(fixed_env):
+    """guide_rates reports what pulses ACTUALLY deliver — the R1 preset — not
+    the mount's :GdG# setting (which governs only the inert :Mg*# path)."""
     fl = FakeLink(_connect_script())
-    fl.script["GdG"] = "+90*00:00"
     tel = am5.ZwoAm5Telescope(fl)
     await tel.connect()
     v = await tel.guide_rates()
-    assert v is not None
-    assert abs(v[0] - 0.9 * 0.004178074) < 1e-9
-    fl.script["GdG"] = "+150*00:00"               # 1.5x sidereal -> out of range
-    assert await tel.guide_rates() is None
+    assert v == (am5._PULSE_RA_RATE_DEG_S, am5._PULSE_DEC_RATE_DEG_S)
+    assert "GdG" not in fl.sent
 
 
 async def test_position_and_tracking_reads(fixed_env):
@@ -291,11 +288,39 @@ async def test_stop_sends_halt_first_and_only(fixed_env):
     assert fl.sent == ["Q"]
 
 
-async def test_pulse_guide_format(fixed_env):
+async def test_pulse_guide_direction_strategies(fixed_env):
+    """Native :Mg*# is inert; :M<dir># REPLACES tracking (at-scope 2026-07-20)
+    — so east suspends tracking, west drives R3+Mw, n/s use R1 moves."""
     fl, tel = await _connected_tel(_connect_script())
-    await tel.pulse_guide("north", 500)
-    assert fl.sent == ["Mgn0500"]
-    assert type(tel).can_pulse_guide is False     # stays off until at-scope validation
+    await tel.pulse_guide("north", 50)
+    assert fl.sent == ["R1", "Mn", "Qn"]
+    fl.sent.clear()
+    await tel.pulse_guide("west", 50)
+    assert fl.sent == ["R2", "Mw", "Qw"]
+    fl.sent.clear()
+    fl.script["GAT"] = "1"                        # tracking on
+    fl.script["Td"] = "1"
+    fl.script["Te"] = "1"
+    await tel.pulse_guide("east", 50)
+    assert fl.sent == ["GAT", "Td", "Te"]         # exact-1x-sidereal drift
+    fl.sent.clear()
+    fl.script["GAT"] = "0"                        # tracking off -> move fallback
+    await tel.pulse_guide("east", 50)
+    assert fl.sent == ["GAT", "R1", "Me", "Qe"]
+    assert type(tel).can_pulse_guide is True
+
+
+async def test_pulse_guide_cancel_restores_state(fixed_env):
+    fl, tel = await _connected_tel(_connect_script())
+    fl.script["GAT"] = "1"
+    fl.script["Td"] = "1"
+    fl.script["Te"] = "1"
+    task = asyncio.create_task(tel.pulse_guide("east", 5000))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert fl.sent == ["GAT", "Td", "Te"]         # finally resumed tracking
 
 
 # ------------------------------------------------- backend + framework integration
