@@ -128,10 +128,25 @@ export default function DriversPanel(): JSX.Element {
       if (ok) void run(() => deleteDriver(d.id), "driver deleted");
     })();
 
-  if (loadErr) {
+  // A first-load failure (no data yet) has nothing to fall back to, so it's
+  // the one case that blanks the panel (with a retry). `reload()` also runs
+  // after every toggle/probe/add/delete (the shared `run()` helper) — a
+  // transient failure THERE must not discard the already-loaded configured/
+  // built-in driver lists and add-driver form; that surfaces as an inline
+  // banner below instead (mirrors ProfileList's in-place error).
+  if (loadErr && !data) {
     return (
       <Panel title="Backend Drivers">
-        <EmptyState icon="alert" title="Couldn't load drivers" hint={loadErr} />
+        <EmptyState
+          icon="alert"
+          title="Couldn't load drivers"
+          hint={loadErr}
+          action={
+            <button type="button" className="btn btn-accent !py-1.5" onClick={() => void reload()}>
+              Retry
+            </button>
+          }
+        />
       </Panel>
     );
   }
@@ -150,6 +165,18 @@ export default function DriversPanel(): JSX.Element {
       }
     >
       <div className="flex flex-col gap-2.5">
+        {/* Background-refresh failure (data already loaded): a non-destructive
+            inline banner + retry — never the full-panel blank the first-load
+            EmptyState above uses. */}
+        {loadErr && data && (
+          <div className="flex items-center gap-2 border border-bad/50 bg-bad/5 px-3 py-2">
+            <Icon name="alert" size={14} className="text-bad shrink-0" />
+            <span className="text-sm text-ink flex-1">Couldn't refresh drivers: {loadErr}</span>
+            <button type="button" className="btn !py-1 !px-2 text-[11px]" onClick={() => void reload()}>
+              Retry
+            </button>
+          </div>
+        )}
         {/* ------------------------------------------------ configured drivers */}
         {configured.length === 0 && (
           <p className="text-xs text-dim">

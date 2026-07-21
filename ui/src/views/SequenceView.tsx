@@ -17,6 +17,7 @@ import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { fmtTime } from "../lib/visibility";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
+import { EXPOSURE_MAX_S, isExposureValueInvalid } from "../lib/exposure";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
@@ -641,14 +642,22 @@ export default function SequenceView() {
                   </div>
                 </div>
                 <div className="mt-2 flex flex-col gap-1.5">
-                  {t.steps.map((s, si) => (
+                  {t.steps.map((s, si) => {
+                    // 0/negative/absurd exposure sailed through with zero validation
+                    // and only 422'd at Run (CaptureView's manual field has had this
+                    // guard since CAP-02-gemini/R3-CAP-02; the step editor didn't).
+                    // Same bounds as CaptureView, via the shared lib/exposure.ts helper.
+                    const stepExposureInvalid = isExposureValueInvalid(s.exposure_s);
+                    return (
                     <div key={si} className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 items-center">
                       <select className="field !py-1" value={s.filter ?? ""}
                         onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
                         <option value="">no filter</option>
                         {filters.map((f) => <option key={f} value={f}>{f}</option>)}
                       </select>
-                      <input className="field !py-1" title="exposure seconds" value={s.exposure_s}
+                      <input className={`field !py-1 ${stepExposureInvalid ? "border-bad" : ""}`}
+                        title={stepExposureInvalid ? `Exposure must be 0–${EXPOSURE_MAX_S}s` : "exposure seconds"}
+                        aria-invalid={stepExposureInvalid} value={s.exposure_s}
                         onChange={(e) => patchStep(ti, si, { exposure_s: num(e.target.value, s.exposure_s) })} />
                       <input className="field !py-1" title="gain" value={s.gain}
                         onChange={(e) => patchStep(ti, si, { gain: num(e.target.value, s.gain) })} />
@@ -678,10 +687,16 @@ export default function SequenceView() {
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                   <div className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 label !text-[9px]">
                     <span>filter</span><span>exp s</span><span>gain</span><span>bin</span><span>count</span><span />
                   </div>
+                  {t.steps.some((s) => isExposureValueInvalid(s.exposure_s)) && (
+                    <p className="text-[11px] text-bad">
+                      Exposure must be 0–{EXPOSURE_MAX_S}s — fix the highlighted step(s) before running.
+                    </p>
+                  )}
                 </div>
                 {/* Per-target autorun schedule (wave-3 §1,6) — collapsed below the
                     steps grid; tolerates a legacy target with no schedule via the
