@@ -216,6 +216,52 @@ def _implicit_rows() -> list[dict]:
     return rows
 
 
+# ----------------------------------------------------- native hardware probe
+
+def _is_native_hardware_type(driver_type: str) -> bool:
+    """True iff ``driver_type`` maps to a registered ``hardware=True`` backend
+    (zwo-am5 / zwo-usb / wanderer-snowflake / zwo-asi / player-one). These have no
+    network probe but DO have a non-invasive ``discover()`` — see ``_probe_native``."""
+    from .devices.backend import BACKENDS
+    name = driver_type_to_backend().get(driver_type)
+    b = BACKENDS.get(name) if name else None
+    return bool(b and getattr(b, "hardware", False))
+
+
+async def _probe_native(entry: DriverEntry) -> dict:
+    """Probe a native serial/local hardware driver by running the backend's OWN
+    ``discover()`` (enumeration-only, never opens the device — safe while it is
+    connected). Reachable when the configured device is present; offers the
+    backend's roles so the driver becomes eligible in the Equipment dropdowns.
+    NEVER raises (a probe must not 500 describe_all)."""
+    from .devices.backend import BACKENDS
+    backend = BACKENDS.get(driver_type_to_backend().get(entry.type, ""))
+    if backend is None:
+        return _down(f"no backend for driver type {entry.type!r}")
+    try:
+        found = await backend.discover()
+    except Exception as e:  # noqa: BLE001 — a probe must never raise
+        return _down(str(e)[:200] or "discovery failed")
+    found = found if isinstance(found, list) else []
+    transport = (entry.transport or getattr(backend, "transport", "") or "").strip()
+    label = getattr(backend, "label", None) or entry.label or entry.type
+    if transport == "serial":
+        ports = {str(d.get("port_path") or "") for d in found if isinstance(d, dict)}
+        present = bool(entry.port_path) and entry.port_path in ports
+        detail = entry.port_path if present else None
+        where = f" on {entry.port_path}" if entry.port_path else ""
+    else:  # local / USB — present iff at least one unit enumerated
+        present = len(found) > 0
+        first = found[0] if found else {}
+        detail = (first.get("name") if isinstance(first, dict) else None)
+        where = ""
+    if not present:
+        return _down(f"no {label}{where} detected")
+    roles = getattr(backend, "roles", ()) or ()
+    devices = [{"role": r, "name": label} for r in roles]
+    return _ok(devices, [], detail=detail)
+
+
 # --------------------------------------------------------------- describe_all
 
 async def _probe_configured(entry: DriverEntry, force: bool) -> dict:
@@ -234,18 +280,26 @@ async def _probe_configured(entry: DriverEntry, force: bool) -> dict:
         res = hit[1]
     else:
         probe = _PROBES.get(entry.type)
-        if probe is None:
-            # A driver type with no network probe (e.g. a serial driver) is not
-            # unreachable -- it simply isn't network-probed here. Report neutrally
-            # rather than KeyError into describe_all's error row.
-            res = {"reachable": False, "error": None,
-                   "detail": f"no network probe for driver type {entry.type!r}",
-                   "offers": {"devices": [], "tasks": []},
-                   "probed_at": time.time()}
-        else:
+        if probe is not None:
             res = await probe(entry.host, entry.port)
             res["probed_at"] = time.time()
             _CACHE[entry.id] = (time.monotonic(), res)
+        elif _is_native_hardware_type(entry.type):
+            # A native serial/local hardware driver: probe by running the
+            # backend's own (non-invasive) discover() so a configured device
+            # reads reachable + offers its roles (else it would sit unreachable
+            # forever and never appear in the Equipment dropdowns). Cached like
+            # the network probes -- discover() loads a vendor DLL / lists ports.
+            res = await _probe_native(entry)
+            res["probed_at"] = time.time()
+            _CACHE[entry.id] = (time.monotonic(), res)
+        else:
+            # A genuinely unknown / non-hardware driver type with no probe: report
+            # neutrally rather than KeyError into describe_all's error row.
+            res = {"reachable": False, "error": None,
+                   "detail": f"no probe for driver type {entry.type!r}",
+                   "offers": {"devices": [], "tasks": []},
+                   "probed_at": time.time()}
     row["status"] = {"reachable": res["reachable"], "error": res["error"],
                      "detail": res.get("detail"),
                      "probed_at": res["probed_at"]}
