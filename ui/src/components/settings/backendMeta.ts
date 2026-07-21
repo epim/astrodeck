@@ -25,7 +25,11 @@ export const ROLE_LABEL: Record<string, string> = {
   guide_camera: "Guide camera",
   telescope: "Mount",
   focuser: "Focuser",
-  guider: "Guider",
+  // "Guiding" (not "Guider") — distinct from "Guide camera" in the Devices
+  // list; the roles are genuinely different (guiding *algorithm*, e.g. PHD2/
+  // native, vs the physical *camera* it reads from). Label-only change, no
+  // structural merge (native-hardware-onramp spec 2026-07-21 task 4).
+  guider: "Guiding",
   filterwheel: "Filter wheel",
   switch: "Power / switch",
   safety: "Safety monitor",
@@ -129,4 +133,17 @@ export interface DiscoveredNina {
   url: string;
   nina_version: string | null;
   devices: Record<string, string>;
+}
+
+// The discovered-device shape every native USB/serial hardware backend
+// returns from GET /api/discover/{name} (zwo-am5, wanderer-snowflake,
+// zwo-usb, zwo-asi, player-one) — mirrors each backend's own discover() list
+// entries (e.g. ZwoAm5Backend.discover(), ZwoUsbBackend.discover()). Serial
+// backends carry `port_path` (e.g. "COM3"); local/SDK-enumerated (USB)
+// backends carry none — presence alone is the addressing.
+export interface DiscoveredHardware {
+  role: string;
+  name: string;
+  port_path?: string;
+  verified?: boolean;
 }
