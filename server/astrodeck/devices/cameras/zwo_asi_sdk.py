@@ -241,7 +241,16 @@ class AsiSdk:
 
     def open(self, cam_id: int) -> None:
         _check(self._d.ASIOpenCamera(cam_id), "ASIOpenCamera")
-        _check(self._d.ASIInitCamera(cam_id), "ASIInitCamera")
+        try:
+            _check(self._d.ASIInitCamera(cam_id), "ASIInitCamera")
+        except AsiSdkError:
+            # init failed AFTER open took the exclusive USB handle -> close it, or
+            # we leak a handle that later masquerades as "held by another app".
+            try:
+                self._d.ASICloseCamera(cam_id)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
 
     def close(self, cam_id: int) -> None:
         _check(self._d.ASICloseCamera(cam_id), "ASICloseCamera")

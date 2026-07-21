@@ -1,7 +1,54 @@
 import sys
+import threading
 from pathlib import Path
 import pytest
 from astrodeck.devices.cameras import player_one_sdk as p
+
+
+class _FakeFn:
+    """A ctypes-fn stand-in: callable, with settable restype/argtypes."""
+    def __init__(self, impl):
+        self._impl = impl
+        self.restype = None
+        self.argtypes = None
+
+    def __call__(self, *a):
+        return self._impl(*a)
+
+
+class _FakeDll:
+    def __init__(self, init_rc=0):
+        self.calls = []
+
+        def _set(cam, cfg, val, auto): self.calls.append(("set", cfg, val)); return 0
+        def _open(cam): self.calls.append(("open", cam)); return 0
+        def _init(cam): self.calls.append(("init", cam)); return init_rc
+        def _close(cam): self.calls.append(("close", cam)); return 0
+
+        self.POASetConfig = _FakeFn(_set)
+        self.POAOpenCamera = _FakeFn(_open)
+        self.POAInitCamera = _FakeFn(_init)
+        self.POACloseCamera = _FakeFn(_close)
+
+
+def _sdk_with(dll):
+    s = object.__new__(p.PlayerOneSdk)   # bypass DLL loading
+    s._d = dll
+    s._cfg_lock = threading.Lock()
+    return s
+
+
+def test_set_target_temp_rounds_not_truncates():
+    dll = _FakeDll()
+    _sdk_with(dll).set_config(0, p.POA_TARGET_TEMP, -9.7)
+    assert ("set", p.POA_TARGET_TEMP, -10) in dll.calls   # -10, not truncated -9
+
+
+def test_open_closes_camera_on_init_failure():
+    dll = _FakeDll(init_rc=5)             # POAInitCamera fails after open succeeds
+    with pytest.raises(p.PlayerOneSdkError):
+        _sdk_with(dll).open(0)
+    assert [c[0] for c in dll.calls] == ["open", "init", "close"]
 
 
 def test_signatures_declared():

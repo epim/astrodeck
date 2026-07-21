@@ -52,6 +52,18 @@ async def test_asi_adapter_exposes_via_engine():
     assert any("ctrl:1=500000" in c for c in a._sdk.calls)
 
 
+async def test_asi_exposure_clamped_no_overflow():
+    # a huge exposure (1e5 s -> 1e11 us) must clamp to the 32-bit max, not
+    # OverflowError at the ctypes c_long boundary (review #3).
+    from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter, _MAX_EXPOSURE_US
+    from astrodeck.devices.cameras.zwo_asi_sdk import ASI_EXPOSURE
+    fa = FakeAsiSdk(8, 6)
+    cam = NativeCamera(AsiCameraAdapter(sdk=fa))
+    await cam.connect()
+    await cam.expose(100000, gain=0, offset=0)
+    assert f"ctrl:{ASI_EXPOSURE}={_MAX_EXPOSURE_US}" in fa.calls
+
+
 async def test_asi_registered_in_registry():
     import astrodeck.devices.cameras.zwo_asi  # noqa: F401 (import registers)
     from astrodeck.devices.cameras import registry
