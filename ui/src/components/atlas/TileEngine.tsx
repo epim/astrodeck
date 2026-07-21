@@ -124,15 +124,21 @@ export function TileEngine(props: TileEngineProps): JSX.Element {
         if ((e as Error).name === "AbortError") return;
         if (!live.current) return;
         negcache.current.mark(key, performance.now());
-        // Arm the shared wake timer so the loop retries after this entry
-        // (and any others marked before it fires) expires from negcache,
-        // even with no further user interaction.
-        if (wakeTimer.current === null) {
-          wakeTimer.current = window.setTimeout(() => {
-            wakeTimer.current = null;
-            dirty.current = true;
-          }, NEG_TTL_MS + 250);
-        }
+        // (Re-)arm the shared wake timer so the loop retries once every
+        // negcache entry has expired, even with no further user
+        // interaction. Staggered failures (some fetches fail fast, others
+        // slow) can be marked well after the first one, so a timer fixed to
+        // the FIRST failure's deadline can fire before a LATER entry has
+        // actually expired, leaving those tiles permanently blocked with the
+        // loop idle. Clearing + rescheduling on every failure keeps the
+        // deadline pinned to (latest failure's mark time + NEG_TTL_MS +
+        // slack) instead — since marks only move forward in time, that
+        // always covers every earlier entry too.
+        if (wakeTimer.current !== null) window.clearTimeout(wakeTimer.current);
+        wakeTimer.current = window.setTimeout(() => {
+          wakeTimer.current = null;
+          dirty.current = true;
+        }, NEG_TTL_MS + 250);
         consecFail.current += 1;
         // Re-dirty so the next frame enqueues the next-priority tiles (the
         // failed key is negative-cached); without this, concurrency (6) would

@@ -9,6 +9,7 @@ import type { ConnSpec } from "../../types";
 
 export const ALL_ROLES = [
   "camera",
+  "guide_camera",
   "telescope",
   "focuser",
   "guider",
@@ -21,6 +22,7 @@ export type Role = (typeof ALL_ROLES)[number];
 
 export const ROLE_LABEL: Record<string, string> = {
   camera: "Camera",
+  guide_camera: "Guide camera",
   telescope: "Mount",
   focuser: "Focuser",
   guider: "Guider",

@@ -476,7 +476,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         role="application"
         aria-label="Sky framing canvas. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom."
         tabIndex={0}
-        className="astro-surface relative aspect-square w-full max-w-[720px] mx-auto select-none touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] max-w-[720px] mx-auto select-none touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}

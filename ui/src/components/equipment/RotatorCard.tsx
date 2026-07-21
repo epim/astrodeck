@@ -30,6 +30,11 @@ export const DEFAULT_ROTATOR_CFG: RotatorConfig = {
 
 const RANGE_OPTIONS = ["full", "half", "quarter"] as const;
 
+// Number("") is 0 (finite), which would silently read a blank field as a real
+// 0° — route every raw-text->number conversion through this instead (SitePanel
+// toNum precedent) so a blank field parses to NaN and is rejected at submit.
+const toNum = (raw: string): number => (raw.trim() === "" ? NaN : Number(raw));
+
 export default function RotatorCard(): JSX.Element | null {
   const status = useStatus();
   const config = useConfig();
@@ -42,12 +47,22 @@ export default function RotatorCard(): JSX.Element | null {
 
   const seed: RotatorConfig = { ...DEFAULT_ROTATOR_CFG, ...(config?.rotator ?? {}) };
   const [draft, setDraft] = useState<RotatorConfig>(seed);
+  // Raw-string drafts for the ROM start/tolerance inputs (SitePanel.tsx
+  // pattern): a controlled input driven from a re-parsed number wipes a
+  // trailing "." or a lone leading "-" on every keystroke, since re-parsing
+  // "1." back to the number 1 forces the input back to "1" before the user
+  // can type the next digit. Keep the field's own text verbatim and only
+  // parse/clamp at submit (onBlur / the buttons below).
+  const [startText, setStartText] = useState<string>(String(seed.range_start_deg));
+  const [toleranceText, setToleranceText] = useState<string>(String(seed.tolerance_deg));
   const [angle, setAngle] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setDraft(seed);
+    setStartText(String(seed.range_start_deg));
+    setToleranceText(String(seed.tolerance_deg));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed.range_type, seed.range_start_deg, seed.tolerance_deg]);
 
@@ -206,31 +221,37 @@ export default function RotatorCard(): JSX.Element | null {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] text-dim w-20 shrink-0">Start</span>
               <input className="field !py-1 w-20 mono" inputMode="decimal"
-                     value={String(draft.range_start_deg)}
+                     value={startText}
                      disabled={!canConfig || busy || draft.range_type === "full"}
                      aria-label="Range start, mechanical degrees"
-                     onChange={(e) => {
-                       const v = Number(e.target.value);
-                       if (Number.isFinite(v)) setDraft({ ...draft, range_start_deg: v });
-                     }}
-                     onBlur={() => void persist({ range_start_deg: mod360(draft.range_start_deg) })} />
+                     onChange={(e) => setStartText(e.target.value)}
+                     onBlur={() => {
+                       const v = toNum(startText);
+                       if (Number.isFinite(v)) void persist({ range_start_deg: mod360(v) });
+                       else setStartText(String(draft.range_start_deg));
+                     }} />
               <button className="btn min-h-9"
                       disabled={!canConfig || busy || draft.range_type === "full"}
-                      onClick={() => void persist({ range_start_deg: mod360(rot.mech_deg) })}>
+                      onClick={() => {
+                        const v = mod360(rot.mech_deg);
+                        setStartText(String(v));
+                        void persist({ range_start_deg: v });
+                      }}>
                 Set to current position
               </button>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[11px] text-dim w-20 shrink-0">Tolerance</span>
               <input className="field !py-1 w-16 mono" inputMode="decimal"
-                     value={String(draft.tolerance_deg)}
+                     value={toleranceText}
                      disabled={!canConfig || busy}
                      aria-label="Rotate tolerance, degrees"
-                     onChange={(e) => {
-                       const v = Number(e.target.value);
-                       if (Number.isFinite(v)) setDraft({ ...draft, tolerance_deg: v });
-                     }}
-                     onBlur={() => void persist({ tolerance_deg: draft.tolerance_deg })} />
+                     onChange={(e) => setToleranceText(e.target.value)}
+                     onBlur={() => {
+                       const v = toNum(toleranceText);
+                       if (Number.isFinite(v)) void persist({ tolerance_deg: v });
+                       else setToleranceText(String(draft.tolerance_deg));
+                     }} />
               <span className="text-[11px] text-faint">° (mod-180)</span>
             </div>
           </div>

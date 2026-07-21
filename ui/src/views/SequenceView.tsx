@@ -557,7 +557,7 @@ export default function SequenceView() {
           <div className="flex flex-col gap-4">
             {(() => {
               const renderTarget = (t: Target, ti: number) => (
-              <div key={ti} className="border border-line bg-bg/50 p-3">
+              <div key={t.id ?? ti} className="border border-line bg-bg/50 p-3">
                 <div className="flex items-center gap-3 flex-wrap">
                   <span className="font-display font-semibold text-accent tracking-wider">{t.name}</span>
                   <span className="mono text-[11px] text-dim">
@@ -649,7 +649,7 @@ export default function SequenceView() {
                     // Same bounds as CaptureView, via the shared lib/exposure.ts helper.
                     const stepExposureInvalid = isExposureValueInvalid(s.exposure_s);
                     return (
-                    <div key={si} className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 items-center">
+                    <div key={s.id ?? si} className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 items-center">
                       <select className="field !py-1" value={s.filter ?? ""}
                         onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
                         <option value="">no filter</option>
