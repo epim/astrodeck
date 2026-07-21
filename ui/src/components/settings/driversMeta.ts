@@ -11,6 +11,13 @@ export const DRIVER_TYPE_LABEL: Record<string, string> = {
   astrodeck: "AstroDeck native",
   astap: "ASTAP",
   "ascom-local": "ASCOM (local)",
+  // Native USB/serial hardware driver_types (native-hardware-onramp spec
+  // 2026-07-21) — mirrors each backend's own `.label` (drivers.py registry).
+  "zwo-am5": "ZWO AM5 (native serial)",
+  "wanderer-snowflake": "Wanderer Snowflake FW",
+  "zwo-usb": "ZWO USB accessories",
+  "zwo-asi": "ZWO ASI camera",
+  "player-one": "Player One camera",
 };
 
 export const DRIVER_DEFAULT_PORT: Record<string, number> = {

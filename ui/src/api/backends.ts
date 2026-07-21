@@ -258,11 +258,21 @@ export const probeDriver = (id: string): Promise<DriversResponse> =>
   api.post<DriversResponse>(`/api/drivers/${encodeURIComponent(id)}/probe`);
 
 /** POST /api/config/drivers → create (server mints the id; port defaults per
- *  type). 422 unknown type / blank host. config.backend-gated. */
+ *  type). 422 unknown type / blank host. config.backend-gated.
+ *
+ *  `type` is any server-registry driver_type (widened from the old
+ *  nina|alpaca|phd2 union — native-hardware on-ramp 2026-07-21, spec
+ *  2026-07-21-native-hardware-onramp.md task 2), so the 5 native hardware
+ *  driver_types (zwo-am5, wanderer-snowflake, zwo-usb, zwo-asi, player-one)
+ *  can be added too. `transport`/`port_path` address serial/local drivers
+ *  (mirrors DriverCreateBody: `host`/`port` stay network-only and are simply
+ *  omitted for serial/local — the server model defaults them to ""/0). */
 export const addDriver = (body: {
-  type: "nina" | "alpaca" | "phd2";
-  host: string;
+  type: string;
+  host?: string;
   port?: number;
+  transport?: "network" | "serial" | "local";
+  port_path?: string;
   label?: string;
   extra?: Record<string, unknown>;
 }): Promise<{ driver: DriverEntry }> =>
