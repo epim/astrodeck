@@ -15,7 +15,7 @@
 
 import { useState, type FormEvent, type JSX } from "react";
 import { useStore, useAuthMethods } from "../store";
-import { localLogin, setupLocalAdmin } from "../api/backends";
+import { localLogin, setupLocalAdmin, tokenLogin } from "../api/backends";
 import { ApiError } from "../api";
 import { u } from "../lib/base";
 import { reconnectWs } from "../ws";
@@ -38,6 +38,7 @@ export default function Login(): JSX.Element {
   const enabled = methods?.methods ?? [];
   const localOn = enabled.includes("local");
   const googleOn = enabled.includes("google") && !!methods?.google_configured;
+  const tokenOn = !!methods?.admin_token_configured;
   const firstRun = !!methods?.first_run;
 
   return (
@@ -61,19 +62,15 @@ export default function Login(): JSX.Element {
         ) : (
           <>
             {localOn && <LocalForm onDone={refreshSession} />}
-            {localOn && googleOn && (
-              <div className="flex items-center gap-3 text-[10px] text-faint uppercase tracking-[0.18em]">
-                <span className="flex-1 h-px bg-line2" />
-                or
-                <span className="flex-1 h-px bg-line2" />
-              </div>
-            )}
+            {localOn && googleOn && <OrDivider />}
             {googleOn && <GoogleButton />}
-            {!localOn && !googleOn && (
+            {tokenOn && (localOn || googleOn) && <OrDivider />}
+            {tokenOn && <TokenForm onDone={refreshSession} />}
+            {!localOn && !googleOn && !tokenOn && (
               <div className="panel p-4 text-center">
                 <p className="text-xs text-dim">
-                  No sign-in method is available. Ask an administrator, or use the
-                  break-glass admin token.
+                  No sign-in method is available. Ask an administrator to enable a
+                  login method or configure a break-glass access token.
                 </p>
               </div>
             )}
@@ -267,6 +264,85 @@ function FirstRunForm({ onDone }: { onDone: () => Promise<void> }): JSX.Element 
       >
         <Icon name="shield" size={15} />
         {busy ? "Creating…" : "Create administrator & sign in"}
+      </button>
+    </form>
+  );
+}
+
+// ------------------------------------------------------------------- "or" divider
+function OrDivider(): JSX.Element {
+  return (
+    <div className="flex items-center gap-3 text-[10px] text-faint uppercase tracking-[0.18em]">
+      <span className="flex-1 h-px bg-line2" />
+      or
+      <span className="flex-1 h-px bg-line2" />
+    </div>
+  );
+}
+
+// --------------------------------------------------------------- break-glass token
+// Exchanges the break-glass access token for a normal admin session (POST
+// /auth/token sets the ad_session cookie). The token is sent in the request body
+// and never persisted client-side — after this the browser is a normal admin
+// session (cookie-borne), so nothing here touches localStorage or a URL.
+function TokenForm({ onDone }: { onDone: () => Promise<void> }): JSX.Element {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      await tokenLogin(token.trim());
+      await onDone(); // dissolves the gate (principal now resolves as admin)
+    } catch (e) {
+      const msg =
+        e instanceof ApiError
+          ? e.status === 401
+            ? "Invalid access token."
+            : e.status === 404
+              ? "Access-token sign-in isn't available."
+              : e.message
+          : "Sign-in failed.";
+      setErr(msg);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="panel p-4 flex flex-col gap-3">
+      <label className="flex flex-col gap-1">
+        <span className="label">Access token</span>
+        <input
+          className="field"
+          type="password"
+          autoComplete="off"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          placeholder="Paste your access token"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={busy}
+          required
+        />
+      </label>
+      {err && (
+        <p className="text-xs text-bad inline-flex items-center gap-1.5">
+          <Icon name="alert" size={13} className="shrink-0" />
+          {err}
+        </p>
+      )}
+      <button
+        type="submit"
+        className="btn min-h-[44px] inline-flex items-center justify-center gap-2"
+        disabled={busy || !token.trim()}
+      >
+        <Icon name="lock" size={15} />
+        {busy ? "Signing in…" : "Sign in with token"}
       </button>
     </form>
   );

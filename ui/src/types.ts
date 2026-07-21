@@ -1162,6 +1162,9 @@ export interface AuthMethods {
   methods: string[]; // subset of {"local","google"}
   google_configured: boolean;
   first_run: boolean;
+  // A break-glass admin token is configured → the login screen offers the
+  // "access token" field. Optional so older payloads/test doubles omit it.
+  admin_token_configured?: boolean;
 }
 
 // A local user record as returned by the admin user-management routes
