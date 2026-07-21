@@ -50,6 +50,8 @@ class EafFocuser(Focuser):
                 raise _sdk_guard(exc, self.name, what) from exc
 
     async def connect(self) -> None:
+        if self.connected:            # idempotent: hub re-connects (double-open would fail)
+            return
         async with self._lock:
             try:
                 await asyncio.to_thread(self._sdk.open, self._id)
@@ -153,6 +155,8 @@ class CaaRotator(Rotator):
                 raise _sdk_guard(exc, self.name, what) from exc
 
     async def connect(self) -> None:
+        if self.connected:            # idempotent: hub re-connects (double-open would fail)
+            return
         async with self._lock:
             try:
                 await asyncio.to_thread(self._sdk.open, self._id)
