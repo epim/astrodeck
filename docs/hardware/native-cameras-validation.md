@@ -19,18 +19,17 @@ Expect a sane `AsiProperty` (name 'ZWO ASI220MM', plausible width/height/pixel s
 bit_depth, gain/offset ranges). Garbage fields => fix `ASI_CAMERA_INFO`/`ASI_CONTROL_CAPS`
 against the shipped `ASICamera2.h`.
 
-**Player One (`cameras/player_one_sdk.py`):** UNVERIFIED — do the full on-box pass first.
-1. Resolve the **licensing verdict** (docs/hardware/player-one-sdk-licensing.md) — read the
-   license inside Camera SDK V3.10.1. Bundle into `vendor/playerone/` only if permitted;
-   else pick a fallback (env `ASTRODECK_PLAYERONE_SDK_DIR` / first-run download).
-2. Against `PlayerOneCamera.h` V3.10.1, verify: the 17 export names in `_EXPORTS`; the
-   `POAConfig` enum integer values (POA_EXPOSURE/GAIN/OFFSET/TARGET_TEMP/COOLER/
-   COOLER_POWER/TEMPERATURE/HEATER_POWER/EGAIN); `POAImgFormat` RAW16 value; the
-   `POAConfigValue` union; the full `POACameraProperties` + `POASensorModeInfo` layouts;
-   and that the **sensor-mode API** (`POAGetSensorModeCount`/`POAGetSensorModeInfo`/
-   `POASetSensorMode`) exists and is how LRN is selected.
-3. Live read: `PlayerOneSdk().get_properties(0)` and `.sensor_modes(id)` return sane values
-   (modes should include the Normal + Low-Noise pair).
+**Player One (`cameras/player_one_sdk.py`):** license PERMITS (bundled — see
+player-one-sdk-licensing.md); bindings ALREADY verified against the SDK's own
+`python/pyPOACamera.py` + `include/PlayerOneCamera.h` V3.10.1 (enum values, struct layouts,
+sensor-mode/LRN API, POASetConfig/POAGetConfig per-call convention); the vendored DLL loads
+with all 20 exports resolving on the dev box (`count()=0`). Remaining at-scope step — a live
+read with the Poseidon attached:
+```
+python -c "from astrodeck.devices.cameras.player_one_sdk import PlayerOneSdk; s=PlayerOneSdk(); print(s.get_properties(0)); print(s.sensor_modes(0))"
+```
+Expect a sane `PoaProperty` ('Poseidon-M Pro', ~6252x4176, 3.76um, 16-bit, cooled, plausible
+gain/offset max) and `sensor_modes` including the Normal + Low-Noise (LRN) pair.
 
 ## Phase 1 — Enumerate + connect (no vendor software running)
 
