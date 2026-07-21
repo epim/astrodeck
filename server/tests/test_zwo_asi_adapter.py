@@ -22,6 +22,9 @@ class FakeAsiSdk:
 
     def open(self, cam_id): self.calls.append("open")
     def close(self, cam_id): self.calls.append("close")
+    def control_range(self, cam_id, ctrl):
+        from astrodeck.devices.cameras.zwo_asi_sdk import ASI_GAIN, ASI_OFFSET
+        return {ASI_GAIN: (0, 300), ASI_OFFSET: (0, 255)}.get(ctrl, (0, 0))
     def set_control(self, cam_id, ctrl, value, auto=False):
         self.calls.append(f"ctrl:{ctrl}={value}")
     def get_control(self, cam_id, ctrl): return 200  # temp 0.1C
@@ -42,6 +45,7 @@ async def test_asi_adapter_exposes_via_engine():
     await cam.connect()
     assert cam.sensor_width == 8 and cam.bayer_pattern is None
     assert cam.can_cool is False
+    assert cam.max_gain == 300          # gain range read AFTER open (control caps)
     f = await cam.expose(0.5, gain=120, offset=10)
     assert isinstance(f, CameraFrame) and f.data.shape == (6, 8)
     # exposure seconds -> microseconds control
