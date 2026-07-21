@@ -1032,6 +1032,14 @@ export interface BackendInfo {
   label: string;         // human name for the UI
   roles: string[];       // subset of ROLES this backend can fill
   discoverable: boolean; // true => discover() does real network work
+  // Native-hardware on-ramp (2026-07-21): USB/serial backends (zwo-am5,
+  // wanderer-snowflake, zwo-usb, zwo-asi, player-one) carry these so the
+  // client can offer them in "Scan for USB/serial hardware" without a
+  // per-backend switch statement. Optional — network backends (sim/nina/
+  // native/phd2) omit `driver_type` (falsy => not a configurable driver_type).
+  hardware?: boolean;    // real hardware (device-borne safety flag), not a network service
+  driver_type?: string;  // the `type` to pass to addDriver() when configuring this backend
+  transport?: string;    // "network" | "serial" | "local"
 }
 
 // One per-role connection override in a RigSpec (mirrors server ConnSpecBody /

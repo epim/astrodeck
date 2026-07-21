@@ -9,11 +9,12 @@
 // probeDriver(id) forces a refresh. Writes are config.backend-gated — without
 // the cap the panel renders read-only (same Gated pattern as the rest of Settings).
 import { useEffect, useState, type JSX } from "react";
-import type { DriverInfo, DriversResponse } from "../../types";
+import type { BackendInfo, DriverInfo, DriversResponse } from "../../types";
 import {
   addDriver,
   deleteDriver,
   discoverBackend,
+  listBackends,
   listDrivers,
   probeDriver,
   updateDriver,
@@ -24,13 +25,27 @@ import { accessPhrase, useCanConfigBackend } from "../../lib/caps";
 import { confirmDialog } from "../ConfirmDialog";
 import { EmptyState, Field, InfoDot, Led, Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
-import type { DiscoveredAlpaca, DiscoveredNina } from "./backendMeta";
+import type { DiscoveredAlpaca, DiscoveredHardware, DiscoveredNina } from "./backendMeta";
 import {
   DRIVER_DEFAULT_PORT,
   DRIVER_TYPE_LABEL,
   offersSummary,
   validateDriverForm,
 } from "./driversMeta";
+
+// One physical device found by the hardware scan, GROUPED by (driver_type,
+// port_path) — a local/USB backend's discover() emits one entry PER ROLE it
+// can fill (e.g. zwo-usb: one for "focuser", one for "rotator" when both an
+// EAF and CAA are attached), but a single configured driver of that type
+// already offers every role the backend declares (drivers.py _probe_native),
+// so grouping avoids creating N redundant driver rows for one physical unit.
+type HwFound = {
+  driver_type: string;
+  transport: "network" | "serial" | "local";
+  name: string;
+  port_path?: string;
+  roles: string[];
+};
 
 type AddForm = { type: "nina" | "alpaca" | "phd2"; host: string; port: string; label: string };
 const emptyForm = (): AddForm => ({ type: "nina", host: "", port: "", label: "" });
@@ -47,6 +62,9 @@ export default function DriversPanel(): JSX.Element {
   // discovery substate for the add form (nina/alpaca only)
   const [scanning, setScanning] = useState(false);
   const [found, setFound] = useState<DiscoveredNina[] | DiscoveredAlpaca[] | null>(null);
+  // discovery substate for "Scan for USB / serial hardware" (native backends)
+  const [hwScanning, setHwScanning] = useState(false);
+  const [hwFound, setHwFound] = useState<HwFound[] | null>(null);
 
   const reload = async () => {
     try {
@@ -112,6 +130,99 @@ export default function DriversPanel(): JSX.Element {
     }
   };
 
+  // "Scan for USB / serial hardware" — a generic pass over EVERY registered
+  // hardware backend (zwo-am5, wanderer-snowflake, zwo-usb, zwo-asi,
+  // player-one today; a future plugin backend needs zero client changes as
+  // long as it sets `hardware`+`discoverable`+`driver_type` in the registry).
+  // One backend's discover() failing (missing DLL, no serial lib, ...) must
+  // not blank the whole scan, so each call is caught independently.
+  const scanHardware = async () => {
+    setHwScanning(true);
+    setHwFound(null);
+    try {
+      const backends: BackendInfo[] = await listBackends();
+      const hw = backends.filter((b) => b.hardware && b.discoverable && b.driver_type);
+      const perBackend = await Promise.all(
+        hw.map(async (b) => {
+          try {
+            const entries = (await discoverBackend(b.name)) as DiscoveredHardware[];
+            return { b, entries: Array.isArray(entries) ? entries : [] };
+          } catch {
+            return { b, entries: [] as DiscoveredHardware[] };
+          }
+        }),
+      );
+      // Group by (driver_type, port_path): a local/USB backend's discover()
+      // emits one entry per role it fills, but they're the SAME physical unit
+      // and one configured driver already offers every role.
+      const grouped = new Map<string, HwFound>();
+      for (const { b, entries } of perBackend) {
+        for (const e of entries) {
+          const key = `${b.driver_type}::${e.port_path ?? ""}`;
+          const row = grouped.get(key);
+          if (row) {
+            if (!row.roles.includes(e.role)) row.roles.push(e.role);
+          } else {
+            grouped.set(key, {
+              driver_type: b.driver_type as string,
+              transport: (b.transport as "network" | "serial" | "local") ?? "local",
+              name: e.name,
+              port_path: e.port_path,
+              roles: [e.role],
+            });
+          }
+        }
+      }
+      setHwFound(Array.from(grouped.values()));
+    } catch (e) {
+      showToast("error", e instanceof Error ? e.message : "hardware scan failed");
+      setHwFound([]);
+    } finally {
+      setHwScanning(false);
+    }
+  };
+
+  // Already configured iff a NON-implicit driver of the same type exists.
+  // Caveat: the read side (`GET /api/drivers`) does not currently echo
+  // transport/port_path for configured rows (drivers.py `_probe_configured`
+  // only carries host/port), so a second physical unit of the same
+  // driver_type on a different port can't be distinguished here and is
+  // conservatively treated as "already configured" too (hidden rather than
+  // risking a duplicate driver row) — same class of gap as the plan's
+  // documented "no per-unit index" limitation.
+  const hwAlreadyConfigured = (f: HwFound): boolean =>
+    (data?.drivers ?? []).some((d) => !d.implicit && d.type === f.driver_type);
+
+  const addHw = (f: HwFound) =>
+    void run(
+      () =>
+        addDriver({
+          type: f.driver_type,
+          transport: f.transport,
+          port_path: f.port_path,
+          label: f.name,
+        }),
+      `${f.name} added`,
+    );
+
+  const addAllHw = () => {
+    const toAdd = (hwFound ?? []).filter((f) => !hwAlreadyConfigured(f));
+    if (toAdd.length === 0) return;
+    void run(async () => {
+      // Sequential, not Promise.all: each add mints a server-side id off the
+      // current config file — concurrent POSTs racing that read-modify-write
+      // is the kind of thing worth just not risking.
+      for (const f of toAdd) {
+        await addDriver({
+          type: f.driver_type,
+          transport: f.transport,
+          port_path: f.port_path,
+          label: f.name,
+        });
+      }
+    }, `${toAdd.length} driver(s) added`);
+  };
+
   const pick = (host: string, port: number) => {
     setForm((f) => ({ ...f, host, port: String(port) }));
     setFound(null);
@@ -160,7 +271,7 @@ export default function DriversPanel(): JSX.Element {
       right={
         <InfoDot
           label="About backend drivers"
-          content="Declare how AstroDeck reaches your equipment backends — a NINA instance, Alpaca servers, PHD2 — once, globally. Each driver is probed for what it currently offers; per-device assignment happens on the Equipment surface."
+          content="Declare how AstroDeck reaches your equipment backends — a NINA instance, Alpaca servers, PHD2, or hardware plugged directly into this machine (ZWO, Player One, Wanderer…) — once, globally. Each driver is probed for what it currently offers; per-device assignment happens on the Equipment surface."
         />
       }
     >
@@ -181,8 +292,9 @@ export default function DriversPanel(): JSX.Element {
         {configured.length === 0 && (
           <p className="text-xs text-dim">
             No drivers configured yet — add your NINA instance, Alpaca servers or
-            PHD2 below. The built-ins (Simulator, native engine, ASTAP) are always
-            available.
+            PHD2 below, or scan for USB/serial hardware (ZWO, Player One, Wanderer…)
+            plugged into this machine. The built-ins (Simulator, native engine,
+            ASTAP) are always available.
           </p>
         )}
         {configured.map((d) => (
@@ -288,6 +400,85 @@ export default function DriversPanel(): JSX.Element {
           </div>
         )}
 
+        {/* ------------------------------------------ USB / serial hardware scan */}
+        {canConfig && (
+          <div className="border border-line bg-bg/60 px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <div className="label">Scan for USB / serial hardware</div>
+                <p className="text-[11px] text-dim mt-0.5">
+                  Finds ZWO (AM5, ASI, EAF/CAA), Player One and Wanderer Snowflake
+                  hardware plugged into this machine — no host/port to type in.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn !py-1.5 shrink-0"
+                disabled={hwScanning}
+                onClick={() => void scanHardware()}
+              >
+                {hwScanning ? "Scanning…" : "⟳ Scan for USB/serial hardware"}
+              </button>
+            </div>
+            {hwFound !== null && (
+              <div className="mt-2 flex flex-col gap-1">
+                {hwFound.length === 0 && (
+                  <p className="text-[10px] text-dim inline-flex items-center gap-1.5">
+                    <Icon name="alert" size={11} />
+                    No USB/serial hardware detected — check cables/power.
+                  </p>
+                )}
+                {hwFound.map((f) => {
+                  const already = hwAlreadyConfigured(f);
+                  return (
+                    <div
+                      key={`${f.driver_type}::${f.port_path ?? ""}`}
+                      className="flex items-center gap-2 border border-line bg-bg px-2.5 py-1.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm text-ink">{f.name}</span>{" "}
+                        <span className="mono text-[10px] text-dim">
+                          {DRIVER_TYPE_LABEL[f.driver_type] ?? f.driver_type}
+                          {f.port_path ? ` · ${f.port_path}` : ""}
+                        </span>
+                        <span className="text-[10px] text-dim ml-1">
+                          ({f.roles.join(", ")})
+                        </span>
+                      </div>
+                      {already ? (
+                        <span className="text-[10px] text-dim shrink-0 inline-flex items-center gap-1">
+                          <Icon name="check" size={11} />
+                          already configured
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn !py-1 !px-2 text-[10px] shrink-0"
+                          disabled={busy}
+                          onClick={() => addHw(f)}
+                        >
+                          <Icon name="plus" size={11} className="inline -mt-0.5 mr-1" />
+                          Add
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {hwFound.some((f) => !hwAlreadyConfigured(f)) && (
+                  <button
+                    type="button"
+                    className="btn btn-accent !py-1.5 self-start mt-1"
+                    disabled={busy}
+                    onClick={addAllHw}
+                  >
+                    Add all
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* --------------------------------------------------------- built-ins */}
         <div className="label mt-1">Built-in</div>
         {implicit.map((d) => (
@@ -344,7 +535,12 @@ function DriverRow({
           <span className="text-sm text-ink">{d.label}</span>{" "}
           <span className="mono text-[10px] text-dim">
             {DRIVER_TYPE_LABEL[d.type] ?? d.type}
-            {d.host != null && d.port != null ? ` · ${d.host}:${d.port}` : " · endpoint hidden"}
+            {/* host truthy => real network endpoint; host===null/undefined =>
+                RBAC-redacted (viewer without config.backend, see redact.py
+                _redact_drivers_for) => "endpoint hidden"; host==="" => a
+                native serial/local hardware driver, which has no network
+                endpoint at all (not hidden, just not applicable) => blank. */}
+            {d.host ? ` · ${d.host}:${d.port}` : d.host == null ? " · endpoint hidden" : ""}
           </span>
         </div>
         <div className="flex-1" />
