@@ -149,6 +149,90 @@ def test_get_drivers_full_for_config_backend_holder(tmp_path, monkeypatch):
     assert nina["host"] == "astrotown.lan" and nina["port"] == 1888
 
 
+def test_get_drivers_redacts_port_path_for_viewer(tmp_path, monkeypatch):
+    """A viewer (view.status only, NOT config.backend) reading a NATIVE
+    (serial) driver's row must not see port_path -- the serial analog of
+    host/port (B follow-up B). transport/index are non-sensitive and survive."""
+    from astrodeck.devices import backend as backend_mod
+
+    class _FakeSerialHw:
+        name = "fake-serial-api"
+        label = "Fake AM"
+        roles = ("telescope",)
+        discoverable = True
+        hostless = False
+        hardware = True
+        transport = "serial"
+        driver_type = "fake-serial-api"
+
+        async def discover(self):
+            return [{"role": "telescope", "name": "Fake AM", "port_path": "COM9"}]
+
+        async def open(self, conn):
+            raise NotImplementedError
+
+    store, app = _rbac_app(tmp_path, monkeypatch, principal_for_role("viewer"))
+    backend_mod.register(_FakeSerialHw())
+    try:
+        store.add_driver("fake-serial-api", transport="serial", port_path="COM9",
+                         extra={"index": 0})
+        with TestClient(app) as c:
+            r = c.get("/api/drivers")
+        assert r.status_code == 200
+        row = next(d for d in r.json()["drivers"] if d["type"] == "fake-serial-api")
+        assert "port_path" not in row and "host" not in row and "extra" not in row
+        assert row["transport"] == "serial"    # non-sensitive, retained
+        assert row["index"] == 0               # non-sensitive, retained
+    finally:
+        backend_mod.BACKENDS.pop("fake-serial-api", None)
+
+
+def test_get_drivers_full_port_path_for_config_backend_holder(tmp_path, monkeypatch):
+    """A principal holding config.backend sees port_path verbatim, same as
+    host/port -- unchanged behavior for a caller who could WRITE it anyway."""
+    from astrodeck.devices import backend as backend_mod
+
+    class _FakeSerialHw:
+        name = "fake-serial-api2"
+        label = "Fake AM"
+        roles = ("telescope",)
+        discoverable = True
+        hostless = False
+        hardware = True
+        transport = "serial"
+        driver_type = "fake-serial-api2"
+
+        async def discover(self):
+            return [{"role": "telescope", "name": "Fake AM", "port_path": "COM9"}]
+
+        async def open(self, conn):
+            raise NotImplementedError
+
+    store, app = _rbac_app(tmp_path, monkeypatch, principal_for_role("admin"))
+    backend_mod.register(_FakeSerialHw())
+    try:
+        store.add_driver("fake-serial-api2", transport="serial", port_path="COM9")
+        with TestClient(app) as c:
+            r = c.get("/api/drivers")
+        row = next(d for d in r.json()["drivers"] if d["type"] == "fake-serial-api2")
+        assert row["port_path"] == "COM9" and row["transport"] == "serial"
+    finally:
+        backend_mod.BACKENDS.pop("fake-serial-api2", None)
+
+
+def test_patch_driver_port_path_via_api(client):
+    """B follow-up C: PATCH can fix a moved COM port without delete+recreate."""
+    r = client.post("/api/config/drivers",
+                    json={"type": "phd2", "transport": "serial", "port_path": "COM3"})
+    assert r.status_code == 200
+    d = r.json()["driver"]
+    assert d["transport"] == "serial" and d["port_path"] == "COM3"
+
+    r = client.patch(f"/api/config/drivers/{d['id']}", json={"port_path": "COM7"})
+    assert r.status_code == 200
+    assert r.json()["driver"]["port_path"] == "COM7"
+
+
 def test_get_drivers_default_test_app_is_admin_baseline(client, monkeypatch):
     """No provider installed (the shared ``client`` fixture) -> the open
     default every other CRUD test in this file already relies on: full

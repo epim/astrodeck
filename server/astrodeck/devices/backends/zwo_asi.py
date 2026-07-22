@@ -101,9 +101,9 @@ class ZwoAsiBackend:
         found: list[dict] = []
         try:
             sdk = make_asi()
-            for _ in range(await asyncio.to_thread(sdk.count)):
+            for i in range(await asyncio.to_thread(sdk.count)):
                 found.append({"role": "guide_camera", "name": "ZWO ASI (USB)",
-                              "verified": True})
+                              "verified": True, "index": i})
         except Exception:  # noqa: BLE001
             pass
         return found
