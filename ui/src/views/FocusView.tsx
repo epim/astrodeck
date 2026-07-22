@@ -65,11 +65,19 @@ export default function FocusView() {
   const [absTarget, setAbsTarget] = useState("");
   const [afExposure, setAfExposure] = useState("2");
   const [afStep, setAfStep] = useState("350");
+  // UX-25: per-filter / per-binning autofocus. "" filter = leave the wheel where
+  // it is. Binning options track the camera's reported ceiling (UX-27 shape).
+  const [afFilter, setAfFilter] = useState("");
+  const [afBin, setAfBin] = useState("2");
 
   const plan = usePlan();
   const foc = status?.focuser;
   const pos = foc?.position ?? 0;
   const running = focus?.state === "running";
+  // UX-25: filter/binning for the autofocus sweep.
+  const filterNames = status?.filterwheel?.names ?? [];
+  const afMaxBin = Math.min(8, Math.max(1, status?.camera?.max_bin ?? 4));
+  const afBinOptions = Array.from({ length: afMaxBin }, (_, i) => i + 1);
 
   // The additive `fit` (method/R²/curve/trendlines) rides on the raw `focus`
   // event; types.ts FocusEvent stays untouched, so read it via a cast — same
@@ -216,11 +224,28 @@ export default function FocusView() {
             <Field label="Step size" hint={HELP.stepSize}>
               <input className="field" value={afStep} disabled={!canFocus} onChange={(e) => setAfStep(e.target.value)} />
             </Field>
+            {filterNames.length > 0 && (
+              <Field label="Filter">
+                <select className="field" value={afFilter} disabled={!canFocus}
+                  onChange={(e) => setAfFilter(e.target.value)}>
+                  <option value="">current</option>
+                  {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
+                </select>
+              </Field>
+            )}
+            <Field label="Binning">
+              <select className="field" value={afBin} disabled={!canFocus}
+                onChange={(e) => setAfBin(e.target.value)}>
+                {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
+              </select>
+            </Field>
           </div>
           <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!canFocus || !foc || running}
             onClick={() => act(() => api.post("/api/focuser/autofocus", {
               exposure_s: Number(afExposure) || 2,
               step: Number(afStep) || 350,
+              binning: Number(afBin) || 2,
+              ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
             }))}>
             {running ? "Running…" : "◎ Run Autofocus"}
           </button>
