@@ -53,6 +53,7 @@ export interface RigStatus {
     width: number;
     height: number;
     max_gain: number;
+    max_bin?: number; // UX-27: bin ceiling; UI offers 1..max_bin (default 4)
     cooler?: CoolerInfo; // monitor (Batch-2) — null/absent when no cooler
   };
   guider?: GuideStats & { name: string };
@@ -129,6 +130,12 @@ export interface GuideStats {
   rms_total: number;
   snr: number;
   recent: { t: number; ra: number; dec: number }[];
+  // UX-15: whether rms_* / recent are true ARCSEC (guide-scope focal length
+  // known) or guide-camera PIXELS (no FL → the native guider's 1:1 fallback).
+  // Optional — absent on an older server payload, treated as arcsec (the prior
+  // label) unless the server explicitly says false.
+  is_arcsec?: boolean;
+  image_scale?: number;
 }
 
 // SHARED lane (additive). Lightweight descriptor for the collapsible guide-cam

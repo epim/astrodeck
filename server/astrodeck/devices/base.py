@@ -117,6 +117,10 @@ class Camera(Device):
     sensor_height: int = 0
     pixel_size_um: float = 0.0
     max_gain: int = 600
+    #: Largest supported symmetric bin factor (ASCOM MaxBinX). The UI offers
+    #: bins 1..max_bin instead of a hardcoded list (UX-27). Default 4 matches the
+    #: prior hardcoded ceiling, so a backend that doesn't probe it is unchanged.
+    max_bin: int = 4
     can_cool: bool = False
     has_dew_heater: bool = False
     bayer_pattern: str | None = None
