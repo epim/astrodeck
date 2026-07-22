@@ -178,6 +178,54 @@ export function hasRealMotion(assignments: AssignmentMap, drivers: DriverInfo[])
   });
 }
 
+// ---------------------------------------------------- hardware auto-assign
+// "▶ Detect hardware rig" (EquipmentView Rig Actions, native-hardware
+// follow-up 2026-07-21): map each role to a SENSIBLE native driver from the
+// (post-scan) driver list. Single-purpose native backends map straight to
+// their one role; the two camera-capable backends (player-one, zwo-asi) BOTH
+// offer both camera roles once configured (drivers.py _probe_native declares
+// `roles = ("camera","guide_camera")` on each), so the split here is by
+// INTENT (driver type) rather than by offers: player-one is the dedicated
+// imaging camera, zwo-asi the dedicated guide camera. Pure — no fetch, no
+// state; the caller (EquipmentView) is responsible for adding newly-scanned
+// drivers first and re-fetching `drivers` before calling this.
+const HARDWARE_SINGLE_ROLE: Record<string, string> = {
+  telescope: "zwo-am5",
+  focuser: "zwo-usb",
+  rotator: "zwo-usb",
+  filterwheel: "wanderer-snowflake",
+};
+
+function pickAssignment(role: string, d: DriverInfo): Assignment {
+  const first = deviceChoices(role, d)[0];
+  return { driverId: d.id, devType: first?.dev_type, devNum: first?.dev_num, name: first?.name };
+}
+
+export function hardwareAssignments(drivers: DriverInfo[], roles: string[]): AssignmentMap {
+  const byType = (t: string): DriverInfo | undefined =>
+    drivers.find((d) => d.type === t && d.enabled && d.status.reachable);
+  const map: AssignmentMap = {};
+  for (const role of roles) {
+    if (role === "camera") {
+      // player-one first (dedicated imaging camera); else any eligible driver
+      // (which may legitimately be zwo-asi, NINA, Alpaca, ...).
+      const d = byType("player-one") ?? eligibleDrivers("camera", drivers)[0];
+      if (d) map[role] = pickAssignment(role, d);
+      continue;
+    }
+    if (role === "guide_camera") {
+      // zwo-asi only — no generic fallback (spec: "else leave unassigned").
+      const d = byType("zwo-asi");
+      if (d) map[role] = pickAssignment(role, d);
+      continue;
+    }
+    const want = HARDWARE_SINGLE_ROLE[role];
+    const d = want ? byType(want) : undefined;
+    if (d) map[role] = pickAssignment(role, d);
+  }
+  return map;
+}
+
 // ------------------------------------------------------------- persistence
 // Pre-profile stickiness across reloads. Profiles are the durable store; this
 // is just "don't lose my dropdowns on F5". Any parse error degrades to {}.

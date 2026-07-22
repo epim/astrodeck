@@ -5,6 +5,7 @@ import {
   deviceChoices,
   eligibleDrivers,
   eligibleTaskDrivers,
+  hardwareAssignments,
   hasRealMotion,
   simAssignments,
   slotState,
@@ -191,6 +192,86 @@ test("simAssignments degrades to a bare sim id when the driver row is missing", 
   const map = simAssignments(["camera"], []);
   eq(map.camera?.driverId, "sim");
   eq(map.camera?.name, undefined);
+});
+
+// ------------------------------------------ hardwareAssignments (▶ Detect hardware rig)
+const zwoAm5 = drv({
+  id: "zwo-am5-aa11", type: "zwo-am5", label: "ZWO AM5",
+  offers: { devices: [{ role: "telescope", name: "ZWO AM5 (native serial)" }], tasks: [] },
+});
+const zwoUsb = drv({
+  id: "zwo-usb-bb22", type: "zwo-usb", label: "ZWO USB accessories",
+  offers: {
+    devices: [
+      { role: "rotator", name: "ZWO USB accessories" },
+      { role: "focuser", name: "ZWO USB accessories" },
+    ],
+    tasks: [],
+  },
+});
+const wanderer = drv({
+  id: "wanderer-snowflake-cc33", type: "wanderer-snowflake", label: "Wanderer Snowflake FW",
+  offers: { devices: [{ role: "filterwheel", name: "Wanderer Snowflake FW" }], tasks: [] },
+});
+// player-one/zwo-asi both offer BOTH camera roles once configured (mirrors
+// server drivers.py _probe_native: roles = ("camera","guide_camera") on
+// each backend) — the heuristic tells them apart by driver TYPE, not offers.
+const playerOne = drv({
+  id: "player-one-dd44", type: "player-one", label: "Player One camera",
+  offers: {
+    devices: [
+      { role: "camera", name: "Player One camera" },
+      { role: "guide_camera", name: "Player One camera" },
+    ],
+    tasks: [],
+  },
+});
+const zwoAsi = drv({
+  id: "zwo-asi-ee55", type: "zwo-asi", label: "ZWO ASI camera",
+  offers: {
+    devices: [
+      { role: "camera", name: "ZWO ASI camera" },
+      { role: "guide_camera", name: "ZWO ASI camera" },
+    ],
+    tasks: [],
+  },
+});
+
+test("hardwareAssignments maps single-role native backends to their role, camera to player-one, guide_camera to zwo-asi", () => {
+  const drivers = [zwoAm5, zwoUsb, wanderer, playerOne, zwoAsi];
+  const roles = [
+    "camera", "guide_camera", "telescope", "focuser", "rotator",
+    "filterwheel", "switch", "safety", "guider",
+  ];
+  const map = hardwareAssignments(drivers, roles);
+  eq(map.telescope?.driverId, "zwo-am5-aa11");
+  eq(map.focuser?.driverId, "zwo-usb-bb22");
+  eq(map.rotator?.driverId, "zwo-usb-bb22");
+  eq(map.filterwheel?.driverId, "wanderer-snowflake-cc33");
+  eq(map.camera?.driverId, "player-one-dd44");
+  eq(map.guide_camera?.driverId, "zwo-asi-ee55");
+  // roles with no matching native backend stay unassigned, not defaulted
+  eq(map.switch ?? null, null);
+  eq(map.safety ?? null, null);
+  eq(map.guider ?? null, null);
+});
+
+test("hardwareAssignments falls back to any eligible driver for camera when player-one is absent", () => {
+  const map = hardwareAssignments([zwoAsi], ["camera"]);
+  eq(map.camera?.driverId, "zwo-asi-ee55");
+});
+
+test("hardwareAssignments leaves guide_camera unassigned without a zwo-asi backend (no generic fallback)", () => {
+  const map = hardwareAssignments([playerOne], ["camera", "guide_camera"]);
+  eq(map.camera?.driverId, "player-one-dd44");
+  eq(map.guide_camera ?? null, null);
+});
+
+test("hardwareAssignments skips a single-role backend that is unreachable or disabled", () => {
+  const down = { ...zwoAm5, status: { ...zwoAm5.status, reachable: false } };
+  eq(hardwareAssignments([down], ["telescope"]).telescope ?? null, null);
+  const off = { ...zwoAm5, enabled: false };
+  eq(hardwareAssignments([off], ["telescope"]).telescope ?? null, null);
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);
