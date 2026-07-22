@@ -21,6 +21,10 @@ import httpx
 from ..hub import CAPTURE_DIR
 
 PACK_ROOT = CAPTURE_DIR / "_survey_pack"
+# The release bundles a baseline pack (DSS2-color order-3) INSIDE the package so a
+# naive/self-updated box has sky imagery on first boot (UX-07). Seeded from here
+# into the PERSISTENT PACK_ROOT only if absent. Absent in dev / an unbundled build.
+BUNDLED_PACK_ROOT = Path(__file__).resolve().parent / "_bundled_pack"
 PACK_SLUGS: dict[str, str] = {"CDS/P/DSS2/color": "dss2color"}
 DEFAULT_SLUG = "dss2color"
 DEFAULT_ORDER = 4
@@ -157,6 +161,46 @@ def pack_present(survey_id: str) -> Path | None:
         return None
     p = pack_dir(slug)
     return p if read_manifest(p) is not None else None
+
+
+def bundled_pack_dir(slug: str = DEFAULT_SLUG) -> Path:
+    return BUNDLED_PACK_ROOT / slug
+
+
+def seed_bundled_pack(slug: str = DEFAULT_SLUG, log=None) -> bool:
+    """First-boot seed (UX-07): if the persistent pack is absent AND the release
+    bundled a baseline pack, copy it into ``CAPTURE_DIR/_survey_pack/<slug>`` —
+    ONLY IF ABSENT, so a self-update never wipes it and a user who fetched a deeper
+    order keeps theirs. Returns True iff it seeded. Best-effort: a copy error leaves
+    the (still-absent) pack untouched and re-seeds next boot.
+
+    ``pack.json`` is copied LAST, mirroring ``fetch_pack``: ``pack_present`` gates on
+    the manifest, so a crash mid-copy leaves the pack reading absent and the next
+    boot retries rather than presenting a half-copied pack as complete."""
+    dest = pack_dir(slug)
+    if read_manifest(dest) is not None:
+        return False                        # a valid pack is already present
+    src = bundled_pack_dir(slug)
+    if read_manifest(src) is None:
+        return False                        # no baseline bundled in this build
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        for item in sorted(src.iterdir()):
+            if item.name == "pack.json":
+                continue                    # manifest last (see docstring)
+            target = dest / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
+        shutil.copy2(src / "pack.json", dest / "pack.json")
+    except OSError as exc:
+        if log:
+            log(f"survey pack seed failed ({exc}); will retry next boot")
+        return False
+    if log:
+        log(f"seeded bundled survey pack '{slug}' -> {dest}")
+    return True
 
 
 def preflight_disk(pack: Path, remaining_tiles: int) -> tuple[int, int]:
