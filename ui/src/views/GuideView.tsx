@@ -47,7 +47,9 @@ export default function GuideView() {
   // (px vs ″) instead of stamping "arcsec" on raw pixels. Absent flag ⇒ arcsec
   // (older payload / the prior default) — only an explicit false means px.
   const isArcsec = stats?.is_arcsec !== false;
-  const unit = isArcsec ? '"' : "px";
+  // UX-35: the true prime glyph (″), not an ASCII quote, to match arcsec/arcmin
+  // typography elsewhere in the app.
+  const unit = isArcsec ? "″" : "px";
   const unitWord = isArcsec ? "arcsec" : "px";
 
   // UX-16: in-flight guard on the multi-second guide actions (start / recalibrate)
