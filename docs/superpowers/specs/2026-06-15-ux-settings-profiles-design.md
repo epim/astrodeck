@@ -98,7 +98,7 @@ ARCSEC_PER_RAD = 206.265            # 206265 arcsec/rad / 1000 (µm↔mm) — th
 
 ```python
 class Site(BaseModel):
-    name: str = "My Backyard"
+    name: str = "My Observatory"
     latitude: float  = Field(0.0, ge=-90,  le=90)     # +N (stored signed)
     longitude: float = Field(0.0, ge=-180, le=180)    # +E (East-positive; matches coords.lst_hours)
     elevation_m: float = Field(0.0, ge=-430, le=9000) # forwarded to mount; ignored by altaz

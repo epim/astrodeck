@@ -1773,7 +1773,7 @@ Steps:
       // carry is_default + horizon_min_deg through from config (server flips
       // is_default off and preserves the stored horizon when the body omits it).
       ...(config?.site ?? { is_default: true, horizon_min_deg: 15 }),
-      name: name.trim() || "My Backyard",
+      name: name.trim() || "My Observatory",
       latitude: toSigned(Number(latMag), latHemi),
       longitude: toSigned(Number(lonMag), lonHemi),
       elevation_m: Number(elev),
@@ -1872,7 +1872,7 @@ Steps:
               value={name}
               disabled={!canEdit}
               onChange={(e) => setName(e.target.value)}
-              placeholder="My Backyard"
+              placeholder="My Observatory"
             />
           </Field>
 
@@ -2169,7 +2169,7 @@ Steps:
 
     const buildSite = (): Site => ({
       ...(config?.site ?? { is_default: true, horizon_min_deg: 15 }),
-      name: name.trim() || "My Backyard",
+      name: name.trim() || "My Observatory",
       latitude: toSigned(Number(latMag), latHemi),
       longitude: toSigned(Number(lonMag), lonHemi),
       elevation_m: Number(elev),
@@ -2369,7 +2369,7 @@ Steps:
               value={name}
               disabled={!canEdit}
               onChange={(e) => setName(e.target.value)}
-              placeholder="My Backyard"
+              placeholder="My Observatory"
             />
           </Field>
 

@@ -24,7 +24,7 @@ save moves it.
 
 Below that, the panel has:
 
-- **Site name** — e.g. `My Backyard` (the default).
+- **Site name** — e.g. `My Observatory` (the default).
 - **Latitude** — a magnitude field (0–90) plus an **N / S** selector.
 - **Longitude** — a magnitude field (0–180) plus an **E / W** selector.
 - **Elevation (m)** — metres above sea level (forwarded to the mount; ignored by
