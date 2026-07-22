@@ -78,12 +78,15 @@ export default function SlewPad() {
   // best-effort .catch() on the panic/stop posts (never toasts at the viewer).
   const canMount = useCanControlMount();
 
-  const [rateIdx, setRateIdx] = useState(1); // local UI state (transient, not global)
+  // UX-01: default to the tap-only GUIDE rate so the first thing a user does — a
+  // tap — produces a visible discrete nudge. At a continuous rate a tap is a brief
+  // start/stop below the visible-motion threshold, so the pad "feels dead".
+  const [rateIdx, setRateIdx] = useState(0); // local UI state (transient, not global)
   const [slewState, setSlewState] = useState<SlewState>({
     mode: "idle",
     axis: null,
     dir: null,
-    rate: SLEW_RATES[1],
+    rate: SLEW_RATES[0],
   });
 
   // F-A4 (multi-touch / S2): the controller is a single-axis model — a second
@@ -403,11 +406,15 @@ export default function SlewPad() {
           <p role="alert" aria-live="assertive" className="sr-only">
             {assertiveMsg}
           </p>
-          {holdDisabledForRate && !below && (
+          {/* UX-01: guidance shown at EVERY rate (was gated to hold-disabled rates,
+              so the default continuous rate showed no hint at all). */}
+          {!below && (
             <p className="text-center text-[12px] text-[color:var(--text-dim2,var(--text-dim))] mt-0.5">
               {isNina
                 ? "NINA: arrows do fine nudges; use catalog GOTO for big moves"
-                : "tap to nudge (hold disabled at this rate)"}
+                : holdDisabledForRate
+                  ? "tap to nudge (hold disabled at this rate)"
+                  : "hold to slew · tap for a short nudge"}
             </p>
           )}
 
