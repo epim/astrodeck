@@ -12,22 +12,43 @@ from pathlib import Path
 
 from .base import PlateSolver, SolveResult
 
+# The command-line build is named `astap_cli` (ASTAP docs: it "can be renamed
+# to astap"), so search both names on every OS. ASTAP_PATH overrides all of this.
 _CANDIDATES = [
+    # Windows
     r"C:\Program Files\astap\astap.exe",
+    r"C:\Program Files\astap\astap_cli.exe",
     r"C:\Program Files (x86)\astap\astap.exe",
+    r"C:\Program Files (x86)\astap\astap_cli.exe",
+    # Linux
     "/usr/bin/astap",
+    "/usr/bin/astap_cli",
     "/usr/local/bin/astap",
+    "/usr/local/bin/astap_cli",
     "/opt/astap/astap",
+    "/opt/astap/astap_cli",
+    # macOS (has no standard bin path — ASTAP_PATH is the reliable route)
+    "/Applications/ASTAP.app/Contents/MacOS/astap",
+    "/opt/homebrew/bin/astap",
+    "/opt/homebrew/bin/astap_cli",
 ]
+
+
+def _bundled_candidates() -> list[Path]:
+    # A future release may vendor astap_cli next to the package (docs: bundle
+    # ASTAP + D05 star DB). Checked FIRST so a bundled binary wins over a system
+    # install; names cover the CLI and the renamed-to-astap form, per OS.
+    root = Path(__file__).resolve().parents[1] / "vendor" / "astap"
+    return [root / n for n in ("astap.exe", "astap_cli.exe", "astap", "astap_cli")]
 
 
 def find_astap() -> str | None:
     env = os.environ.get("ASTAP_PATH")
     if env and Path(env).exists():
         return env
-    for c in _CANDIDATES:
+    for c in (*_bundled_candidates(), *_CANDIDATES):
         if Path(c).exists():
-            return c
+            return str(c)
     return None
 
 

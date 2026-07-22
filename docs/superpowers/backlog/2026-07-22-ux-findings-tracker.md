@@ -180,6 +180,16 @@ stats) > Capture/Focus > Power > Settings.
 
 ---
 
+## Fix progress
+- **Phase A — SHIPPED** (`fecfec3`, `a07cca2`; tsc -b clean, backend 1523 passed, SegmentedControl 10/10):
+  UX-01, UX-06, UX-07, UX-08, UX-09, UX-11, UX-12, UX-13, UX-16, UX-17, UX-18, UX-19. ✅
+- **Phase B — mostly SHIPPED** (`d339730` + astap/polar commit): UX-14, UX-26, UX-31, UX-04 (code:
+  sim-warning gate + astap_cli/macOS/bundled discovery). **Remaining:** UX-15 (guide RMS px-vs-arcsec,
+  backend+UI), UX-27 (camera max_bin capability, backend+UI).
+- **Phases C / D** — pending (see `docs/superpowers/plans/2026-07-22-ux-fix-plan.md`).
+- **Release-eng (separate):** bundle the ASTAP binary + D05 star DB (astap.py `-d` wiring + vendor/) and
+  the order-3 survey pack into `build_release.py` + first-boot seed — build tasks, not code fixes.
+
 ## Review results — 2026-07-21 (multi-lens workflow: 57 agents, 47 raised → 35 confirmed / 12 refuted)
 
 The thorough review ran (9 lenses → adversarial refute → synthesis). Full results + the phased fix

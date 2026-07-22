@@ -1,5 +1,5 @@
 import { api } from "../api";
-import { useStore, usePolar } from "../store";
+import { useStore, usePolar, useProviders } from "../store";
 import { PolarReticle, knobHint, polarTier, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Panel, Led } from "../components/ui";
@@ -25,6 +25,8 @@ export default function PolarView() {
   const polar = usePolar() as NativePolar;
   const showToast = useStore((s) => s.showToast);
   const canMount = useCanControlMount(); // polar alignment slews the mount
+  // UX-04: warn when the resolved polar provider is the SIMULATOR (fabricated az/alt).
+  const isSimProvider = useProviders()?.polar_align?.kind === "sim";
   const running = polar.state === "running" || polar.state === "paused";
 
   const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
@@ -202,6 +204,12 @@ export default function PolarView() {
               live error here as you turn the mount's altitude / azimuth bolts. The engine in
               use is shown in the header.
             </p>
+            {isSimProvider && (
+              <p className="text-xs text-warn mb-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2">
+                Simulator provider — alignment values are fabricated, not measured from your sky.
+                Bundle or install a plate solver (ASTAP) for a real polar alignment.
+              </p>
+            )}
             <div className="flex flex-col gap-2">
               <button className="btn btn-accent" disabled={!canMount || running || busy}
                 onClick={() => act(() => api.post("/api/polar/start"))}>
