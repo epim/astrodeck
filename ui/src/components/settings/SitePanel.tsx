@@ -177,7 +177,7 @@ export default function SitePanel(): JSX.Element {
     // carry is_default + horizon_min_deg through from config (server flips
     // is_default off and preserves the stored horizon when the body omits it).
     ...(config?.site ?? { is_default: true, horizon_min_deg: 15 }),
-    name: name.trim() || "[SITE-LABEL]",
+    name: name.trim() || "My Observatory",
     latitude: toSigned(toNum(latMag), latHemi),
     longitude: toSigned(toNum(lonMag), lonHemi),
     elevation_m: toNum(elev),
@@ -381,7 +381,7 @@ export default function SitePanel(): JSX.Element {
   // principals lacking view.site_precise — gate every placeholder, not just
   // the coordinates, so the "Hidden" affordance is consistent.
   const coordPlaceholder = canSeePrecise ? "0.000000" : "Hidden";
-  const namePlaceholder = canSeePrecise ? "[SITE-LABEL]" : "Hidden";
+  const namePlaceholder = canSeePrecise ? "My Observatory" : "Hidden";
   const elevPlaceholder = canSeePrecise ? "0" : "Hidden";
   const dirty = baseline ? !locationEquals(draft(), baseline) : false;
   // R3-SITE-02: the "Loaded into form — not active yet" banner + promoted

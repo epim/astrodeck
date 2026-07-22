@@ -54,7 +54,7 @@ DEFAULT_HORIZON_MIN_DEG = 15.0
 # ------------------------------------------------------------------------ models
 
 class Site(BaseModel):
-    name: str = "[SITE-LABEL]"
+    name: str = "My Observatory"
     latitude: float = Field(0.0, ge=-90, le=90)      # +N (stored signed)
     longitude: float = Field(0.0, ge=-180, le=180)   # +E (East-positive)
     elevation_m: float = Field(0.0, ge=-430, le=9000)  # forwarded to mount; ignored by altaz
