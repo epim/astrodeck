@@ -291,6 +291,7 @@ class Hub:
             await dev.connect()
             self.devices[role] = dev
             self._last_connect[role] = {"backend": "sim"}
+        self._seed_filter_config()  # UX-05: user slot names over hardware letters
         await guide_cam.connect()
         self.devices["guide_camera"] = guide_cam
         # native guider from the assembled rig (the SimGuider), connected here.
@@ -610,6 +611,7 @@ class Hub:
             # the device's own backend label so a native reconnect still works.
             self._last_connect[role] = meta.get(
                 role, {"backend": getattr(dev, "backend", primary)})
+        self._seed_filter_config()  # UX-05: user slot names over hardware letters
         # dedicated guide camera (sim only; None for nina/native/phd2).
         if result.guide_camera is not None:
             await result.guide_camera.connect()
@@ -1396,19 +1398,22 @@ class Hub:
         # expose() and the frame already carries its saved_path.
         local_save_path: Path | None = None
         if save and frame.rendered_bytes is None:
-            local_save_path = self._capture_path(target or "untargeted", frame_type)
-            ra = dec = None
-            tel = self.devices.get("telescope")
-            if tel and tel.connected:
-                try:
-                    ra, dec = await tel.get_position()
-                except Exception:
-                    pass
+            # Resolve the active filter BEFORE building the path so the filename
+            # can carry a NINA-style filter token (UX-05), in addition to the FITS
+            # FILTER header below.
             fw = self.devices.get("filterwheel")
             filt = ""
             if fw and fw.connected:
                 try:
                     filt = fw.filter_names[await fw.get_position()]
+                except Exception:
+                    pass
+            local_save_path = self._capture_path(target or "untargeted", frame_type, filt)
+            ra = dec = None
+            tel = self.devices.get("telescope")
+            if tel and tel.connected:
+                try:
+                    ra, dec = await tel.get_position()
                 except Exception:
                     pass
             # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
@@ -1608,11 +1613,72 @@ class Hub:
                 e.lossless = None
                 e.linear = None
 
-    def _capture_path(self, target: str, frame_type: str) -> Path:
+    def _seed_filter_config(self) -> None:
+        """Overlay the active profile's saved filter slot names + focuser offsets
+        onto the just-connected filter wheel, keeping the hardware-derived value
+        as the per-slot fallback (UX-05). Best-effort: an absent/corrupt store or
+        no filter wheel leaves the hardware names untouched. Generic — runs on
+        every connect path, not just Wanderer."""
+        fw = self.devices.get("filterwheel")
+        if fw is None or not getattr(fw, "connected", False):
+            return
+        try:
+            from .config import config_store, load_filter_config
+            saved = load_filter_config(config_store.cfg().active_profile_id)
+        except Exception:  # pragma: no cover - defensive
+            return
+        names = saved.get("names") or []
+        offsets = saved.get("offsets") or []
+        if fw.filter_names:
+            new_names = list(fw.filter_names)
+            for i in range(len(new_names)):
+                if i < len(names) and str(names[i]).strip():
+                    new_names[i] = str(names[i]).strip()
+            fw.filter_names = new_names
+        if offsets and fw.filter_names:
+            cur = list(fw.filter_offsets) if fw.filter_offsets else [0] * len(fw.filter_names)
+            for i in range(len(cur)):
+                if i < len(offsets):
+                    try:
+                        cur[i] = int(offsets[i])
+                    except (TypeError, ValueError):
+                        pass
+            fw.filter_offsets = cur
+
+    async def set_filter_names(self, names: list[str],
+                               offsets: list[int] | None = None) -> dict:
+        """Apply + persist user filter slot names (and optional focuser offsets)
+        for the active profile (UX-05). Blank names keep the hardware fallback for
+        that slot. Returns the resulting names/offsets."""
+        fw = self.require("filterwheel")
+        base = list(fw.filter_names) if fw.filter_names else [""] * len(names)
+        for i in range(len(base)):
+            if i < len(names) and str(names[i]).strip():
+                base[i] = str(names[i]).strip()
+        fw.filter_names = base
+        if offsets:
+            cur = list(fw.filter_offsets) if fw.filter_offsets else [0] * len(base)
+            for i in range(len(cur)):
+                if i < len(offsets):
+                    try:
+                        cur[i] = int(offsets[i])
+                    except (TypeError, ValueError):
+                        pass
+            fw.filter_offsets = cur
+        from .config import config_store, save_filter_config
+        save_filter_config(config_store.cfg().active_profile_id,
+                           fw.filter_names, fw.filter_offsets)
+        return {"names": fw.filter_names, "offsets": fw.filter_offsets}
+
+    def _capture_path(self, target: str, frame_type: str, filter_name: str = "") -> Path:
         safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in target).strip() or "untargeted"
         stamp = time.strftime("%Y-%m-%d_%H%M%S")
         self._frame_counter = getattr(self, "_frame_counter", 0) + 1
-        return CAPTURE_DIR / safe / f"{frame_type}_{safe}_{stamp}_{self._frame_counter:04d}.fits"
+        # NINA-style filter token in the filename when a filter is active (UX-05):
+        # <FrameType>_<Target>_<Filter>_<stamp>_<NNNN>.fits. Sanitized the same way.
+        ftok = "".join(c if c.isalnum() or c in "-_" else "_" for c in (filter_name or "")).strip("_")
+        parts = [frame_type, safe] + ([ftok] if ftok else []) + [stamp, f"{self._frame_counter:04d}"]
+        return CAPTURE_DIR / safe / ("_".join(parts) + ".fits")
 
     async def start_loop(self, exposure_s: float, gain: int, offset: int,
                          binning: int = 1) -> None:
@@ -2255,6 +2321,7 @@ class Hub:
                 out["filterwheel"] = {
                     "position": await fw.get_position(),
                     "names": fw.filter_names,
+                    "offsets": fw.filter_offsets,
                 }
             except Exception:
                 pass
