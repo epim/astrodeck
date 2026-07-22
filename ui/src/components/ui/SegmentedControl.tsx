@@ -92,7 +92,7 @@ export function SegmentedControl<T extends string>({
       role="radiogroup"
       aria-label={ariaLabel}
       aria-disabled={disabled || undefined}
-      className={`relative inline-grid grid-flow-col auto-cols-fr items-stretch
+      className={`relative inline-grid grid-flow-col auto-cols-fr items-stretch min-w-0 max-w-full
         border border-line2 bg-raise p-0.5 select-none
         ${disabled ? "opacity-40" : ""}`}
     >
@@ -126,7 +126,7 @@ export function SegmentedControl<T extends string>({
               // keep focus visually on the pressed segment without scrolling
               if (!disabled) (e.currentTarget as HTMLElement).focus?.();
             }}
-            className={`relative z-10 min-h-[44px] px-3 inline-flex items-center justify-center
+            className={`relative z-10 min-h-[44px] min-w-0 px-3 inline-flex items-center justify-center overflow-hidden
               text-xs font-semibold uppercase tracking-wider whitespace-nowrap
               transition-colors duration-150
               focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent

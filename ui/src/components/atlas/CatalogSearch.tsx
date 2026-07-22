@@ -80,9 +80,15 @@ export function CatalogSearch({
   return (
     <div className="relative" ref={rootRef}
       onBlur={(e) => {
-        // Keyboard tab-away: relatedTarget is null for a non-focusable target
-        // (e.g. the canvas) or another element outside this container.
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDismissed(true);
+        // Only dismiss when focus genuinely moved to an element OUTSIDE this
+        // widget. A null relatedTarget is focus going nowhere focusable — an
+        // Android soft-keyboard hide, or a tap on the non-focusable canvas —
+        // which is NOT a real focus-out, so we keep the dropdown (otherwise the
+        // first query's results land into a latched-dismissed state; UX-06).
+        // Genuine dismissal still comes from outside pointerdown / Escape (the
+        // effect above) and picking a result (which clears the query).
+        const to = e.relatedTarget as Node | null;
+        if (to && !e.currentTarget.contains(to)) setDismissed(true);
       }}>
       <input
         className="field btn-touch !w-56"

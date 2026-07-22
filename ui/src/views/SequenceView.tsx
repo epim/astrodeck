@@ -518,7 +518,7 @@ export default function SequenceView() {
         <span id="seq-targets" className="block scroll-mt-4" aria-hidden="true" />
         <Panel title="Targets"
           right={
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
               {/* Reorder the plan by tonight's transit times; mosaic groups stay
                   atomic server-side, so this only reshuffles the flat array.
                   Disabled while running or with <2 targets (nothing to order). */}
@@ -530,8 +530,8 @@ export default function SequenceView() {
               >
                 {ordering ? "Ordering…" : "Order by tonight"}
               </button>
-              <div className="relative">
-                <input className="field !w-56" placeholder="+ add target — search catalog"
+              <div className="relative w-56 max-w-full min-w-0">
+                <input className="field" placeholder="+ add target — search catalog"
                   value={search} onChange={(e) => setSearch(e.target.value)} />
                 {results.length > 0 && (
                 <div className="absolute right-0 top-full mt-1 w-72 panel z-10 max-h-60 overflow-y-auto">

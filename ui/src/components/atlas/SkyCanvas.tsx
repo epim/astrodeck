@@ -545,10 +545,21 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           aria-hidden
         />
 
-        {/* first-ever tile-engine skeleton — until the first texture draws */}
-        {useTileEngine && !tileDrew && (
+        {/* first-ever tile-engine skeleton — until the first texture draws.
+            UX-07: gated on !surveyDegraded so a no-source / persistent-404 survey no
+            longer shows "LOADING…" forever; the honest empty-state below takes over. */}
+        {useTileEngine && !tileDrew && !surveyDegraded && (
           <div className="absolute inset-0 grid place-items-center text-dim text-xs" aria-hidden>
             <span className="animate-pulse">LOADING {survey.split("/").pop()}…</span>
+          </div>
+        )}
+        {/* UX-07: honest empty-state when the survey has no reachable source. */}
+        {useTileEngine && !tileDrew && surveyDegraded && (
+          <div className="absolute inset-0 grid place-items-center px-6 text-center text-dim text-xs">
+            <span>
+              {degradedText ??
+                "No sky survey available — download the offline pack or enable online fetch in Settings."}
+            </span>
           </div>
         )}
 

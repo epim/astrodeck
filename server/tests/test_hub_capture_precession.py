@@ -21,7 +21,7 @@ import pytest
 import astrodeck.hub as hub_module
 from astrodeck.config import ConfigStore
 from astrodeck.devices.base import DeviceError
-from astrodeck.devices.sim import build_sim_rig
+from astrodeck.devices.sim import SimTelescope, build_sim_rig
 from astrodeck.focus import run_autofocus
 from astrodeck.hub import Hub, precess_j2000_to_jnow, precess_jnow_to_j2000
 
@@ -103,6 +103,66 @@ async def test_mount_frame_converts_only_for_alpaca_devices():
     h3 = Hub()
     h3.mode = "alpaca"
     assert await h3.to_mount_frame(_FakeAlpacaTel(equ=2), 16.6949, 36.4603) == (16.6949, 36.4603)
+
+
+# -------------------------------------------- UX-13: status publishes J2000 RA/Dec
+
+class _StatusAlpacaTel(SimTelescope):
+    """A connected sim mount dressed as a real Alpaca device: carries the
+    ``backend='alpaca'`` marker and the ``_get`` EquatorialSystem seam so the
+    hub's JNOW gate fires, and reports a FIXED FICTIONAL position. Subclasses
+    SimTelescope only to inherit the tracking/parked/slewing/rate methods
+    ``poll_status``'s mount block awaits."""
+
+    def __init__(self, ra_hours: float, dec_deg: float, *, equ: int):
+        from astrodeck.devices.sim import SimRig
+        super().__init__(SimRig())
+        self.backend = "alpaca"
+        self._equ = equ
+        self._ra, self._dec = ra_hours, dec_deg
+        self.connected = True
+
+    async def _get(self, method, **params):
+        if method == "equatorialsystem":
+            return self._equ
+        raise KeyError(method)
+
+    async def get_position(self) -> tuple[float, float]:
+        return self._ra, self._dec
+
+
+async def test_poll_status_publishes_j2000_from_jnow_mount():
+    """UX-13: the hub status builder must run the mount's reported position back
+    through ``from_mount_frame`` so a real Alpaca (JNOW) mount publishes canonical
+    J2000 RA/Dec — Atlas survey tiles, the FOV overlay and Send-to-Plan all
+    consume ``mount.ra_hours``/``dec_deg`` as J2000. FICTIONAL coords only."""
+    ra_jnow, dec_jnow = 7.7777, 22.2222        # FICTIONAL JNOW report
+
+    # (1) Alpaca topocentric (JNOW, equ==1): published coords are precessed to J2000.
+    h = Hub()
+    h.devices["telescope"] = _StatusAlpacaTel(ra_jnow, dec_jnow, equ=1)
+    m = (await h.poll_status())["mount"]
+    exp_ra, exp_dec = precess_jnow_to_j2000(ra_jnow, dec_jnow)
+    assert m["ra_hours"] == pytest.approx(exp_ra, abs=1e-3)
+    assert m["dec_deg"] == pytest.approx(exp_dec, abs=1e-3)
+    # …and it genuinely moved off the raw JNOW report (from_mount_frame applied).
+    assert _sep_arcmin(ra_jnow, dec_jnow, m["ra_hours"], m["dec_deg"]) > 5.0
+
+    # (2) An Alpaca mount that reports J2000 (equ==2) is left untouched (no-op).
+    h2 = Hub()
+    h2.devices["telescope"] = _StatusAlpacaTel(ra_jnow, dec_jnow, equ=2)
+    m2 = (await h2.poll_status())["mount"]
+    assert m2["ra_hours"] == ra_jnow and m2["dec_deg"] == dec_jnow
+
+    # (3) A native/sim mount (backend "") is likewise unchanged.
+    from astrodeck.devices.sim import SimRig
+    h3 = Hub()
+    tel = SimTelescope(SimRig())
+    await tel.connect()
+    tel.rig.ra_hours, tel.rig.dec_deg = ra_jnow, dec_jnow
+    h3.devices["telescope"] = tel
+    m3 = (await h3.poll_status())["mount"]
+    assert m3["ra_hours"] == ra_jnow and m3["dec_deg"] == dec_jnow
 
 
 # ----------------------------------------------------------- autofocus recovery

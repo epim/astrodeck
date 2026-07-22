@@ -21,9 +21,9 @@ export function Panel({ title, right, children, className = "" }: {
   return (
     <section className={`panel p-4 ${className}`}>
       {(title || right) && (
-        <header className="flex items-center justify-between mb-3">
-          {title && <h2 className="panel-title">{title}</h2>}
-          {right}
+        <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mb-3">
+          {title && <h2 className="panel-title min-w-0">{title}</h2>}
+          {right && <div className="min-w-0 shrink">{right}</div>}
         </header>
       )}
       {children}

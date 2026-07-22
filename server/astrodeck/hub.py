@@ -2206,10 +2206,17 @@ class Hub:
             try:
                 ra, dec = await tel.get_position()
                 from .catalog import altaz, format_dec, format_ra
+                # alt/az (and the meridian hour-angle below) are of-date quantities,
+                # so they stay on the raw apparent (JNOW) position the mount reports.
                 alt, az = altaz(ra, dec, self.site["latitude"], self.site["longitude"])
+                # The RA/Dec PUBLISHED in status are canonical J2000: Atlas survey
+                # tiles, the FOV overlay and Send-to-Plan all consume them as J2000.
+                # A real Alpaca mount reports JNOW, so bring it back here (UX-13);
+                # a no-op for sim / NINA / J2000-reporting mounts.
+                ra_j2000, dec_j2000 = await self.from_mount_frame(tel, ra, dec)
                 out["mount"] = {
-                    "ra_hours": ra, "dec_deg": dec,
-                    "ra_str": format_ra(ra), "dec_str": format_dec(dec),
+                    "ra_hours": ra_j2000, "dec_deg": dec_j2000,
+                    "ra_str": format_ra(ra_j2000), "dec_str": format_dec(dec_j2000),
                     "alt": round(alt, 1), "az": round(az, 1),
                     "tracking": await tel.get_tracking(),
                     "parked": await tel.is_parked(),
