@@ -251,6 +251,15 @@ async def _lifespan(app: "FastAPI"):
             _us.start_poller()
     except Exception as e:  # noqa: BLE001 - degrade, never crash boot
         bus.log("error", f"update service init failed: {e}", "update")
+    # First-boot survey-pack seed (UX-07): copy the release's bundled baseline pack
+    # into the persistent captures dir if absent, so a naive/self-updated box has
+    # sky imagery immediately instead of a black Atlas. Cheap sync file copy; a
+    # no-op in dev / unbundled builds. Never crashes boot.
+    try:
+        from ..catalog import survey_pack
+        survey_pack.seed_bundled_pack(log=lambda m: bus.log("info", m, "survey"))
+    except Exception as e:  # noqa: BLE001 - degrade, never crash boot
+        bus.log("error", f"survey pack seed failed: {e}", "survey")
     # Boot auto-connect the active profile (no-op on first run / no active
     # profile), as a BACKGROUND task rather than awaited inline: a native profile
     # pointing at a powered-off host would otherwise serially burn a 30s httpx
