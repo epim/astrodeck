@@ -87,7 +87,15 @@ export default function FocusView() {
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
   };
-  const moveTo = (p: number) => act(() => api.post("/api/focuser/move", { position: Math.round(p) }));
+  // UX-29: clamp both the relative nudge buttons and Go-to into [0, max] instead
+  // of relying on a silent server clamp — a negative or past-max target is a
+  // user error we can catch before the round-trip.
+  const focMax = typeof foc?.max === "number" && foc.max > 0 ? foc.max : null;
+  const clampPos = (p: number) => {
+    const r = Math.max(0, Math.round(p));
+    return focMax != null ? Math.min(focMax, r) : r;
+  };
+  const moveTo = (p: number) => act(() => api.post("/api/focuser/move", { position: clampPos(p) }));
 
   // "Go to position" only checked non-empty string; non-numeric input (e.g.
   // "abc") produced NaN -> JSON.stringify serializes NaN to null, sending a

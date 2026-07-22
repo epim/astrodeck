@@ -24,6 +24,17 @@ import { HELP } from "../help";
 // indeterminate) — that would lie about transfer time we can't measure client-side.
 type CapturePhase = "idle" | "exposing" | "downloading";
 
+// UX-30: a failed single-frame readout never produces a new live-preview id, so
+// the "downloading…" bar would spin forever. Bound the download phase with a
+// watchdog — generous enough for a slow USB2 full-frame readout, short enough
+// that a genuine stall surfaces instead of hanging.
+const DOWNLOAD_WATCHDOG_MS = 60_000;
+
+// UX-28: a cooler set-point outside this range (or blank/non-numeric) is almost
+// certainly a typo; block it rather than POST a NaN that serializes to null.
+const COOLER_MIN_C = -60;
+const COOLER_MAX_C = 40;
+
 export default function CaptureView() {
   const status = useStatus();
   const polar = usePolar();
@@ -55,6 +66,13 @@ export default function CaptureView() {
   const maxBin = Math.min(8, Math.max(1, cam?.max_bin ?? 4));
   const binOptions = Array.from({ length: maxBin }, (_, i) => i + 1);
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
+  // UX-28: only send a finite, in-range set-point. Number("") is 0 and
+  // Number("x") is NaN (→ null over JSON); guard both so "Cool" never posts
+  // target_c:null with on:true.
+  const coolerTargetNum = Number(coolerTarget);
+  const coolerTargetInvalid =
+    coolerTarget.trim() === "" || !Number.isFinite(coolerTargetNum) ||
+    coolerTargetNum < COOLER_MIN_C || coolerTargetNum > COOLER_MAX_C;
   const looping = !!status?.looping;
   const polarBusy = polar.state === "running" || polar.state === "paused";
   // A sequence (incl. PAUSED — it still holds the camera between frames, not
@@ -145,6 +163,19 @@ export default function CaptureView() {
     else setPhase("idle");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveId]);
+
+  // UX-30: watchdog the download phase so a dropped/failed readout can't leave
+  // the striped bar spinning forever. Cleared automatically when the frame lands
+  // (phase leaves "downloading") or the component unmounts.
+  useEffect(() => {
+    if (phase !== "downloading") return;
+    const t = window.setTimeout(() => {
+      setPhase("idle");
+      showToast("error", "Frame readout timed out — no image arrived. The camera may have dropped the frame.");
+    }, DOWNLOAD_WATCHDOG_MS);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // When looping flips OFF (Stop, or sequence end), drop any cycling bar to idle.
   useEffect(() => {
@@ -375,14 +406,16 @@ export default function CaptureView() {
                 <Stat label="target" value={cooler.target_c.toFixed(1)} unit="°C" />
               )}
               <Field label="Target °C" hint={HELP.coolTo}>
-                <input className="field !w-20" value={coolerTarget} disabled={!canCapture}
+                <input className={`field !w-20 ${coolerTargetInvalid ? "border-bad" : ""}`}
+                  value={coolerTarget} disabled={!canCapture}
+                  aria-invalid={coolerTargetInvalid}
                   onChange={(e) => setCoolerTarget(e.target.value)} />
               </Field>
               <button
                 className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
                 aria-pressed={!!cooler?.on}
-                disabled={!canCapture}
-                onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: Number(coolerTarget) }))}>
+                disabled={!canCapture || coolerTargetInvalid}
+                onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum }))}>
                 {cooler?.on ? "Set" : "Cool"}
               </button>
               <button
