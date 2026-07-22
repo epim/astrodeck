@@ -34,6 +34,10 @@ export default function PlanLibraryPanel() {
   const showToast = useStore((s) => s.showToast);
   const canWrite = useCanControlCapture();
   const [rows, setRows] = useState<PlanRow[]>([]);
+  // A failed load must read as an ERROR, not "No saved plans yet" (UX-18):
+  // track it so the list body can distinguish a swallowed fetch failure from a
+  // genuinely empty library (mirrors EquipmentView's loadErr idiom).
+  const [loadErr, setLoadErr] = useState<string | null>(null);
   const [listOpen, setListOpen] = useState(true);
   // Inline "Save as…" name prompt (SitePanel "Save as preset…" idiom — the modal
   // has no text input). null = closed.
@@ -54,8 +58,11 @@ export default function PlanLibraryPanel() {
   const refresh = useCallback(async () => {
     try {
       setRows(await api.get<PlanRow[]>("/api/plans"));
-    } catch {
-      /* list is non-critical; panel just shows empty */
+      setLoadErr(null);
+    } catch (e) {
+      // client fetch failures bypass the log→toast path, so surface it here:
+      // an empty list on error would masquerade as "No saved plans yet" (UX-18).
+      setLoadErr(e instanceof Error ? e.message : "couldn't load saved plans");
     }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
@@ -303,7 +310,25 @@ export default function PlanLibraryPanel() {
           </button>
 
           {listOpen && (
-            rows.length === 0 ? (
+            // A swallowed load failure leaves rows empty — show a DISTINCT error
+            // + retry (EquipmentView loadErr idiom) instead of the empty state,
+            // but only when there's nothing to fall back to; a stale list stays
+            // put on a background refresh failure (UX-18).
+            loadErr && rows.length === 0 ? (
+              <div className="mt-1.5 flex items-center gap-2 border border-bad/50 bg-bad/5 px-2 py-1.5">
+                <Icon name="alert" size={12} className="text-bad shrink-0" />
+                <span className="text-[11px] text-ink flex-1">
+                  Couldn't load saved plans: {loadErr}
+                </span>
+                <button
+                  type="button"
+                  className="btn !py-1 !px-2 !text-[11px]"
+                  onClick={() => void refresh()}
+                >
+                  Retry
+                </button>
+              </div>
+            ) : rows.length === 0 ? (
               <p className="text-[11px] text-dim mt-1">No saved plans yet.</p>
             ) : (
               <div className="mt-1.5 flex flex-col gap-1.5 max-h-72 overflow-y-auto">

@@ -7,6 +7,7 @@ import ProviderBadge from "../components/ProviderBadge";
 import { useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { PolarState } from "../types";
+import { useState } from "react";
 
 /* Fields the native TPPA engine (server/astrodeck/polar/native.py) adds to the
    canonical `polar` payload beyond PolarState. The store forwards the whole
@@ -61,8 +62,14 @@ export default function PolarView() {
     : src === "native" ? "AstroDeck native"
     : src === "sim" ? "simulator" : null;
 
+  // UX-16: local in-flight guard so a slow POST round-trip disables the trigger
+  // buttons immediately (no dead-feeling double-fire before the server publishes state).
+  const [busy, setBusy] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -151,11 +158,14 @@ export default function PolarView() {
                 <Led state={verdict.led} label={verdict.text} />
                 <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
               </div>
-            ) : (
+            ) : measuring || running ? (
               <div className="flex items-center gap-2 mt-2">
                 <Led state="busy" label="measuring" />
                 <span className="text-sm text-dim">{measuring ? "Measuring axis…" : "Waiting for solve…"}</span>
               </div>
+            ) : (
+              /* UX-19: idle — no busy LED / "Waiting for solve…" before Start is pressed. */
+              <p className="text-sm text-faint mt-2">Not started — press Start Alignment to measure.</p>
             )}
 
             {/* Which way to turn each bolt — arrow + magnitude + word, from the
@@ -193,19 +203,19 @@ export default function PolarView() {
               use is shown in the header.
             </p>
             <div className="flex flex-col gap-2">
-              <button className="btn btn-accent" disabled={!canMount || running}
+              <button className="btn btn-accent" disabled={!canMount || running || busy}
                 onClick={() => act(() => api.post("/api/polar/start"))}>
                 ⊕ Start Alignment
               </button>
               <div className="grid grid-cols-2 gap-2">
                 {polar.state === "paused" ? (
-                  <button className="btn" disabled={!canMount || !running}
+                  <button className="btn" disabled={!canMount || !running || busy}
                     onClick={() => act(() => api.post("/api/polar/resume"))}>Resume</button>
                 ) : (
-                  <button className="btn" disabled={!canMount || !running}
+                  <button className="btn" disabled={!canMount || !running || busy}
                     onClick={() => act(() => api.post("/api/polar/pause"))}>Pause</button>
                 )}
-                <button className="btn btn-danger" disabled={!canMount || !running}
+                <button className="btn btn-danger" disabled={!canMount || !running || busy}
                   onClick={() => act(() => api.post("/api/polar/stop"))}>Stop</button>
               </div>
             </div>

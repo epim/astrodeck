@@ -117,6 +117,7 @@ export default function SequenceView() {
   const [ordering, setOrdering] = useState(false);
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
+  const [searchErr, setSearchErr] = useState<string | null>(null);
   // In-flight guard for the quick-add visibility check (wave-3 §4): blocks a
   // second addTarget() while the first's /api/visibility fetch (or its confirm
   // dialog) is still pending, so a double-tap on a search result can't double-add.
@@ -149,10 +150,13 @@ export default function SequenceView() {
   useEffect(() => () => { if (undoTimer.current != null) clearTimeout(undoTimer.current); }, []);
 
   useEffect(() => {
-    if (!search) { setResults([]); return; }
+    if (!search) { setResults([]); setSearchErr(null); return; }
     const t = setTimeout(async () => {
-      try { setResults((await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6)); }
-      catch { /* ignore */ }
+      // UX-18: surface a fetch failure instead of swallowing it into "no results".
+      try {
+        setResults((await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6));
+        setSearchErr(null);
+      } catch (e) { setResults([]); setSearchErr(e instanceof Error ? e.message : "search unavailable"); }
     }, 250);
     return () => clearTimeout(t);
   }, [search]);
@@ -546,6 +550,11 @@ export default function SequenceView() {
                   ))}
                 </div>
               )}
+                {searchErr && results.length === 0 && (
+                  <div className="absolute right-0 top-full mt-1 w-72 panel z-10 px-3 py-2 text-xs text-bad">
+                    Search failed: {searchErr}
+                  </div>
+                )}
               </div>
             </div>
           }>
