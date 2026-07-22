@@ -56,6 +56,14 @@ class Guider(ABC):
     @abstractmethod
     def stats(self) -> GuideStats: ...
 
+    def calibration_report(self) -> dict | None:
+        """A structured calibration report for the UI (UX-23): pass/fail plus the
+        geometry that reveals a bad/flipped calibration (orthogonality error,
+        declination, pier side) and any human-readable advisories. Vendor-neutral
+        default: None — a guider that owns its calibration opaquely (PHD2/NINA
+        surface it their own way) exposes none, and the UI simply omits the panel."""
+        return None
+
     async def is_active(self) -> bool:
         """Whether the guider is really guiding right now (queries the backend
         where possible, rather than a local flag) — used to detect a lost star."""
