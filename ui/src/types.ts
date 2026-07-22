@@ -123,6 +123,18 @@ export interface DiskInfo {
   critical: boolean;
 }
 
+// UX-23: guider calibration report — pass/fail + the geometry that exposes a
+// bad/flipped calibration, plus the engine's human-readable advisories.
+export interface CalibrationReport {
+  is_valid: boolean;
+  ortho_error_deg: number;
+  declination_deg: number | null;
+  pier_side: string | null;
+  binning: number;
+  advisories: string[];
+  source: string;
+}
+
 export interface GuideStats {
   guiding: boolean;
   rms_ra: number;

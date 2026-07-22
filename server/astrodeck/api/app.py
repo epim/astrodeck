@@ -2950,6 +2950,17 @@ def create_app() -> FastAPI:
                 400, "this guider does not manage a clearable calibration")
         return {"cleared": bool(clear())}
 
+    @app.get("/api/guide/calibration",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def guide_calibration_report():
+        """The active guider's calibration report (UX-23): pass/fail + geometry
+        + advisories, or ``{"report": null}`` when none is available (no guider,
+        no calibration yet, or a guider that exposes none)."""
+        g = hub.guider
+        report = g.calibration_report() if g is not None else None
+        return {"report": report}
+
     @app.get("/api/guide/settings",
              dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
     @declare(CAP_CONTROL_GUIDE)

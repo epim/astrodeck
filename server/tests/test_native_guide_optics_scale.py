@@ -96,3 +96,50 @@ def test_stats_reports_pixels_when_scale_unknown():
     assert st.image_scale == 0.0
     # raw engine pixels pass through unchanged (scale 1.0)
     assert st.rms_total == pytest.approx(0.64, abs=0.01)
+
+
+# --- UX-23: calibration report -------------------------------------------
+
+class _CalEngine:
+    def __init__(self, cal, advisories=()):
+        self._cal = cal
+        self._adv = list(advisories)
+
+    def dump_calibration(self):
+        return self._cal
+
+    def calibration_advisories(self):
+        return self._adv
+
+
+def _guider_with_cal(cal, advisories=()):
+    from astrodeck.guide.native import NativeGuider
+    g = NativeGuider(_FakeCam(), _FakeTel(), config={})
+    g._engine = _CalEngine(cal, advisories)
+    return g
+
+
+def test_calibration_report_normalizes_geometry():
+    import math
+    cal = {"is_valid": True, "y_angle_error": math.radians(3.0),
+           "declination": math.radians(41.0), "pier_side": "east", "binning": 1}
+    rep = _guider_with_cal(cal, ["RA rate looks low"]).calibration_report()
+    assert rep["is_valid"] is True
+    assert rep["ortho_error_deg"] == pytest.approx(3.0, abs=0.01)  # radians → degrees
+    assert rep["declination_deg"] == pytest.approx(41.0, abs=0.1)
+    assert rep["pier_side"] == "east"
+    assert rep["advisories"] == ["RA rate looks low"]
+    assert rep["source"] == "native"
+
+
+def test_calibration_report_hides_unknown_declination():
+    # 997.0 rad is the UNKNOWN_DECLINATION sentinel — never shown as a real dec.
+    cal = {"is_valid": True, "y_angle_error": 0.0, "declination": 997.0,
+           "pier_side": "unknown", "binning": 2}
+    assert _guider_with_cal(cal).calibration_report()["declination_deg"] is None
+
+
+def test_calibration_report_none_without_engine():
+    from astrodeck.guide.native import NativeGuider
+    g = NativeGuider(_FakeCam(), _FakeTel(), config={})
+    assert g.calibration_report() is None
