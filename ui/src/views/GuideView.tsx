@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
+import type { CalibrationReport } from "../types";
 import { api, ApiError } from "../api";
 import { setProvidersConfig } from "../api/backends";
 import {
   useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
 } from "../store";
 import { GuideGraph, GuideScatter } from "../components/graphs";
-import { Panel, Stat } from "../components/ui";
+import { Panel, Stat, Led } from "../components/ui";
 import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
@@ -55,6 +56,19 @@ export default function GuideView() {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
     finally { setActing(false); }
   };
+
+  // UX-23: fetch the guider's calibration report so a bad/flipped calibration is
+  // visible before it runs the mount away from the star. Refetch when guiding
+  // (re)starts — a fresh calibration completes on start / Force Recalibrate.
+  const [calReport, setCalReport] = useState<CalibrationReport | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!connected) { setCalReport(null); return; }
+    api.get<{ report: CalibrationReport | null }>("/api/guide/calibration")
+      .then((r) => { if (!cancelled) setCalReport(r.report); })
+      .catch(() => { if (!cancelled) setCalReport(null); });
+    return () => { cancelled = true; };
+  }, [connected, stats?.guiding]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
@@ -129,6 +143,49 @@ export default function GuideView() {
             </div>
           </div>
         </Panel>
+
+        {calReport && (
+          <Panel title="Calibration">
+            {(() => {
+              // Orthogonality > ~10° means the RA/Dec axes aren't square — a
+              // classic sign of a poor or wrong-declination calibration.
+              const bad = !calReport.is_valid;
+              const warn = calReport.is_valid && calReport.ortho_error_deg > 10;
+              return (
+                <div className="flex items-center gap-2 mb-3">
+                  <Led state={bad ? "bad" : warn ? "warn" : "on"}
+                    label={bad ? "not calibrated" : warn ? "check calibration" : "calibrated"} />
+                  <span className={`text-sm font-medium ${bad ? "text-bad" : warn ? "text-warn" : "text-good"}`}>
+                    {bad ? "No valid calibration" : warn ? "Non-orthogonal — verify" : "Good calibration"}
+                  </span>
+                </div>
+              );
+            })()}
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+              <div className="flex justify-between"><span className="label">orthogonality</span>
+                <span className="mono tabular-nums">{calReport.ortho_error_deg.toFixed(1)}°</span></div>
+              <div className="flex justify-between"><span className="label">binning</span>
+                <span className="mono tabular-nums">{calReport.binning}×</span></div>
+              {calReport.declination_deg != null && (
+                <div className="flex justify-between"><span className="label">dec</span>
+                  <span className="mono tabular-nums">{calReport.declination_deg.toFixed(0)}°</span></div>
+              )}
+              {calReport.pier_side && calReport.pier_side !== "unknown" && (
+                <div className="flex justify-between"><span className="label">pier</span>
+                  <span className="mono">{calReport.pier_side}</span></div>
+              )}
+            </div>
+            {calReport.advisories.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-1 border-t border-line pt-2">
+                {calReport.advisories.map((a, i) => (
+                  <li key={i} className="text-[11px] text-warn flex items-start gap-1.5">
+                    <span aria-hidden>⚠</span><span>{a}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Panel>
+        )}
 
         <GuideProviderPanel onToast={showToast} />
 

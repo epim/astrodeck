@@ -757,6 +757,37 @@ class NativeGuider(Guider):
             image_scale=round(self._image_scale, 3) if arcsec else 0.0,
         )
 
+    def calibration_report(self) -> dict | None:
+        """Surface the engine's calibration geometry + advisories (UX-23) so a
+        bad/flipped calibration is visible BEFORE it runs the mount away from the
+        star. ``y_angle_error`` is the orthogonality deviation (radians →
+        degrees); ``declination`` is radians (997.0 = unknown sentinel). Rates
+        (px/ms) and raw axis angles are intentionally omitted rather than
+        mislabeled. None when there is no engine / calibration."""
+        if self._engine is None:
+            return None
+        try:
+            cal = self._engine.dump_calibration()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        if not cal:
+            return None
+        try:
+            advisories = [str(m) for m in (self._engine.calibration_advisories() or [])]
+        except Exception:  # pragma: no cover - defensive
+            advisories = []
+        dec_rad = float(cal.get("declination", _UNKNOWN_DECLINATION))
+        dec_deg = math.degrees(dec_rad)
+        return {
+            "is_valid": bool(cal.get("is_valid")),
+            "ortho_error_deg": round(abs(math.degrees(float(cal.get("y_angle_error", 0.0)))), 2),
+            "declination_deg": round(dec_deg, 1) if abs(dec_deg) <= 90.5 else None,
+            "pier_side": cal.get("pier_side"),
+            "binning": int(cal.get("binning", 1)),
+            "advisories": advisories,
+            "source": "native",
+        }
+
     # ------------------------------------------------------------ persistence
 
     def _persist_calibration(self) -> None:
