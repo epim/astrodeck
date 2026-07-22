@@ -235,6 +235,31 @@ async def test_capture_paths_do_not_interleave(monkeypatch, tmp_path):
         await h.disconnect_all()
 
 
+async def test_capture_frame_type_controls_shutter(monkeypatch, tmp_path):
+    """UX-22: Dark AND Bias are shutter-closed (light=False); Light and Flat
+    expose the sensor (light=True). The step editor now scripts all four, so the
+    shutter must follow frame_type."""
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        cam = h.devices["camera"]
+        real_expose = cam.expose
+        seen: dict[str, object] = {}
+
+        async def spy_expose(*a, **k):
+            seen["light"] = k.get("light")
+            return await real_expose(*a, **k)
+
+        cam.expose = spy_expose
+        for ft, expect_light in [("Light", True), ("Flat", True),
+                                 ("Dark", False), ("Bias", False)]:
+            await h.capture(0.01, 100, 30, 1, frame_type=ft)
+            assert seen["light"] is expect_light, f"{ft} -> light={seen['light']}"
+    finally:
+        await h.disconnect_all()
+
+
 # ------------------------------------------------------------- session leak
 
 class _CountingSession:

@@ -1384,8 +1384,10 @@ class Hub:
         # camera imageready flag at once (cross-downloaded frames / mis-stamped
         # metadata / InvalidOperation).
         async with self.exposure_guard(f"capture {frame_type.lower()}"):
+            # Dark AND Bias are shutter-closed (no light); Light/Flat expose the
+            # sensor. (UX-22 made Bias user-selectable, so honor its shutter.)
             frame = await cam.expose(exposure_s, gain, offset, binning,
-                                     light=(frame_type.upper() != "DARK"),
+                                     light=(frame_type.upper() not in ("DARK", "BIAS")),
                                      save=save, target=target)
         self.last_frame = frame
         # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
