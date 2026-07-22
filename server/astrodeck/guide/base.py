@@ -11,7 +11,16 @@ class GuideStats:
     rms_dec: float = 0.0
     rms_total: float = 0.0
     snr: float = 0.0
-    recent: list[dict] = field(default_factory=list)  # [{t, ra, dec}] arcsec
+    recent: list[dict] = field(default_factory=list)  # [{t, ra, dec}] — unit per is_arcsec
+    #: Whether ``rms_*`` / ``recent`` are in true ARCSEC (an image scale is
+    #: known) or in guide-camera PIXELS. The native guider falls back to a 1:1
+    #: scale when no guide-scope focal length is configured, so its raw errors
+    #: are pixels — reporting them as arcsec is a lie. The UI switches its unit
+    #: label (″ vs px) on this flag. (UX-15)
+    is_arcsec: bool = False
+    #: The arcsec/pixel image scale used to convert the engine's pixel errors,
+    #: or 0.0 when unknown (see ``is_arcsec``). Purely informational for the UI.
+    image_scale: float = 0.0
 
 
 class Guider(ABC):

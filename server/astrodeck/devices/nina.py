@@ -234,6 +234,9 @@ class NinaCamera(_NinaDevice, Camera):
         self.sensor_height = int(pick(info, "YSize", "CameraYSize", default=0) or 0)
         self.pixel_size_um = float(pick(info, "PixelSize", default=0) or 0)
         self.max_gain = int(pick(info, "GainMax", "MaxGain", default=0) or 0)
+        # UX-27: NINA exposes the bin ceiling (BinX/MaxBinX vary by version);
+        # keep the base default (4) when absent.
+        self.max_bin = int(pick(info, "MaxBinX", "BinX", "BinningX", default=0) or 0) or 4
         self.can_cool = bool(pick(info, "CanSetTemperature", "HasCooler",
                                   "CanCool", default=False))
         self.has_dew_heater = bool(pick(info, "HasDewHeater", default=False))

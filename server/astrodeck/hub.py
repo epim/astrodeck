@@ -2280,6 +2280,7 @@ class Hub:
                     "has_dew_heater": getattr(cam, "has_dew_heater", False),
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
+                    "max_bin": getattr(cam, "max_bin", 4),
                 }
                 # Monitor cooler readout — driven by the per-backend get_cooler()
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The

@@ -79,6 +79,8 @@ class SimGuider(Guider):
             rms_ra=round(rms_ra, 2), rms_dec=round(rms_dec, 2),
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=22.0, recent=recent[-120:],
+            # The believable-stream values represent arcsec (UX-15).
+            is_arcsec=True,
         )
 
     async def guide_frame(self) -> bytes | None:

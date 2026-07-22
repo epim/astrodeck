@@ -50,6 +50,10 @@ export default function CaptureView() {
   const tickRef = useRef<number | null>(null);
 
   const cam = status?.camera;
+  // UX-27: offer bins 1..max_bin from the camera's reported ceiling instead of a
+  // hardcoded [1,2,4]. Clamp to a sane 1–8 in case a backend reports garbage.
+  const maxBin = Math.min(8, Math.max(1, cam?.max_bin ?? 4));
+  const binOptions = Array.from({ length: maxBin }, (_, i) => i + 1);
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
   const looping = !!status?.looping;
   const polarBusy = polar.state === "running" || polar.state === "paused";
@@ -212,7 +216,7 @@ export default function CaptureView() {
             </Field>
             <Field label="Binning" hint={HELP.binning}>
               <select className="field" value={binning} disabled={!canCapture} onChange={(e) => setBinning(e.target.value)}>
-                {[1, 2, 4].map((b) => <option key={b} value={b}>{b}×{b}</option>)}
+                {binOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
               </select>
             </Field>
           </div>

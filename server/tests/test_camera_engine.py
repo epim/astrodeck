@@ -74,6 +74,7 @@ async def test_connect_maps_capabilities_to_camera_fields():
     assert cam.pixel_size_um == 3.76
     assert cam.can_cool is False
     assert cam.max_gain == 600
+    assert cam.max_bin == 2  # UX-27: max(bin_modes=(1, 2))
 
 
 async def test_expose_returns_shaped_linear_frame():

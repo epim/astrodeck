@@ -51,6 +51,8 @@ class NativeCamera(Camera):
         self.sensor_height = caps.sensor_height
         self.pixel_size_um = caps.pixel_size_um
         self.max_gain = caps.gain_range[1]
+        if caps.bin_modes:
+            self.max_bin = max(caps.bin_modes)  # UX-27: real supported ceiling
         self.can_cool = caps.has_cooler
         self.has_dew_heater = caps.has_dew_heater
         self.bayer_pattern = caps.bayer_pattern

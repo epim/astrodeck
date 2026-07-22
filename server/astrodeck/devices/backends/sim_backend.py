@@ -126,7 +126,9 @@ class SimSession:
                 scale = float(getattr(rig, "guide_scale_arcsec_px", 1.0) or 1.0)
                 self._guider = NativeGuider(
                     gcam, tel,
-                    config={"image_scale_arcsec": scale,
+                    # The sim DECLARES its guide-cam plate scale, so its RMS is
+                    # genuine arcsec (image_scale_known) — UX-15.
+                    config={"image_scale_arcsec": scale, "image_scale_known": True,
                             **_SIM_CAL_CONFIG, **guide_algo_config()},
                     profile_id="sim")
             else:
