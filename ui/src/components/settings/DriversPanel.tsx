@@ -288,7 +288,7 @@ export default function DriversPanel(): JSX.Element {
               </button>
               {form.type !== "phd2" && (
                 <button type="button" className="btn !py-1.5" disabled={scanning} onClick={() => void scan()}>
-                  {scanning ? "Scanning…" : "⟳ Scan network"}
+                  {scanning ? "Scanning…" : <><Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />Scan network</>}
                 </button>
               )}
             </div>
@@ -349,7 +349,7 @@ export default function DriversPanel(): JSX.Element {
                 disabled={hwScanning}
                 onClick={() => void scanHardware()}
               >
-                {hwScanning ? "Scanning…" : "⟳ Scan for USB/serial hardware"}
+                {hwScanning ? "Scanning…" : <><Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />Scan for USB/serial hardware</>}
               </button>
             </div>
             {hwFound !== null && (

@@ -6,6 +6,7 @@ import {
   useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
 } from "../store";
 import { GuideGraph, GuideScatter } from "../components/graphs";
+import { Icon } from "../components/icons";
 import { Panel, Stat, Led } from "../components/ui";
 import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
@@ -123,7 +124,7 @@ export default function GuideView() {
           <div className="flex flex-col gap-2">
             <button className="btn btn-accent" disabled={!canGuide || !connected || stats?.guiding || acting}
               onClick={() => act(() => api.post("/api/guide/start"))}>
-              ❖ Start Guiding
+              <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />Start Guiding
             </button>
             <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
               onClick={() => act(() => api.post("/api/guide/stop"))}>
