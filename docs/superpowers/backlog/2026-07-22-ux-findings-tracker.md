@@ -11,17 +11,17 @@ Severity: P0 (broken core) · P1 (broken on a primary surface) · P2 (missing/ro
 
 | ID | Title | Cat | Sev | Status |
 |----|-------|-----|-----|--------|
-| UX-01 | Manual slew feels dead (tap does nothing) | BUG | P1 | open |
+| UX-01 | Manual slew feels dead (tap does nothing) | BUG | P2 | confirmed |
 | UX-02 | Native guider not selectable in Equipment | DECISION | P2 | open |
 | UX-03 | Autofocus + Polar-align should default to native | DECISION | P2 | open |
 | UX-04 | Plate-solve default / bundle ASTAP vs build native solver | DECISION | P2 | open |
 | UX-05 | Filter-wheel slot-name assignment (gear → modal → FITS) | FEATURE | P2 | open |
 | UX-06 | Atlas search: first query shows no suggestions | BUG (regression) | P1 | open |
 | UX-07 | Atlas shows no sky survey (black + "LOADING…") | DECISION+POLISH | P1 | open |
-| UX-08 | Tracking-rate pill overflows (Solar clipped) on mobile | RESPONSIVE | P1 | open |
+| UX-08 | Tracking-rate pill overflows (Solar clipped) on mobile | RESPONSIVE | P2 | confirmed |
 | UX-09 | Atlas optics inputs oversized; "FROM CAMERA" overlaps labels | RESPONSIVE | P2 | open |
 | UX-10 | Pixel size renders raw float `3.7599999904632` | POLISH | P3 | open |
-| UX-11 | Plan (Sequence) view horizontal overflow | RESPONSIVE | P1 | open |
+| UX-11 | Plan (Sequence) view horizontal overflow | RESPONSIVE | P2 | confirmed |
 | UX-12 | App-wide mobile horizontal overflow (systemic) | RESPONSIVE | P1 | open |
 
 ---
@@ -179,6 +179,47 @@ stats) > Capture/Focus > Power > Settings.
 **Files:** `ui/src/App.tsx:425`; `ui/src/components/ui.tsx:24`; per-view.
 
 ---
+
+## Review results — 2026-07-21 (multi-lens workflow: 57 agents, 47 raised → 35 confirmed / 12 refuted)
+
+The thorough review ran (9 lenses → adversarial refute → synthesis). Full results + the phased fix
+order: **`docs/superpowers/plans/2026-07-22-ux-fix-plan.md`**. It confirmed 8 of the 12 seeds
+(revising UX-01/08/11 P1→P2 on magnitude), **refuted UX-02 as a defect** (the guide-provider panel
+works and defaults to native — retained only as your requested Equipment placement), sharpened UX-04
+(no-ASTAP silently runs the *simulator* with no warning), and surfaced **25 new findings**:
+
+| ID | View | Sev | Summary | file:line |
+|----|------|-----|---------|-----------|
+| UX-13 | Atlas/Mount | **P1** | JNow mount coords consumed as J2000 (no `from_mount_frame()`) → survey/overlay/send-to-plan mis-center ~20′ | `hub.py:2210`, `store.ts:784` |
+| UX-14 | Mount/Atlas | P2 | No epoch label — JNow "Pointing" beside J2000 catalog reads as ~20′ error | `MountView.tsx:108` |
+| UX-15 | Guide | P2 | Guide RMS labeled "arcsec" but is **pixels** when guide-scope FL unset (real-rig default) | `GuideView.tsx:57` |
+| UX-16 | Mount/Guide/Polar | P2 | No pending state on slow async actions (Solve&Sync, Recalibrate, Start) → read dead, double-fire | `MountView.tsx:155` |
+| UX-17 | Power | P2 | Dew-heater slider POSTs per drag-tick → snap-back + POST storm (no local draft) | `PowerView.tsx:83` |
+| UX-18 | Sequence/Power/Atlas | P2 | Async list-fetch errors swallowed into empty state, no toast | `PlanLibraryPanel.tsx:57` |
+| UX-19 | Polar | P2 | Idle "Total error" panel shows busy LED + "Waiting for solve…" before Start | `PolarView.tsx:157` |
+| UX-20 | Mount/Settings/Equip | P2 | 4 hand-rolled radiogroups: no arrow-key nav / roving tabindex (a11y) | `Segmented.tsx:24` |
+| UX-21 | Guide/Equip/Rotator | P2 | `.btn` buttons collapsed below 44px touch min (two below 24px AA) | `GuideView.tsx:321` |
+| UX-22 | Sequence | P2 | No frame-type control → Dark/Bias/Flat unscriptable; calibration writes `IMAGETYP=Light` | `SequenceView.tsx:652` |
+| UX-23 | Guide | P3 | Calibration report never surfaced — bad/flipped calibration invisible until runaway | `GuideView.tsx:90` |
+| UX-24 | Guide/Sequence | P3 | Dither settle pixels/time/timeout hardcoded, no UI | `GuideView.tsx:97` |
+| UX-25 | Focus | P3 | Autofocus has no filter/binning → per-filter AF impossible (needed for UX-05 offsets) | `FocusView.tsx:204` |
+| UX-26 | Equipment | P3 | "Detect rig" auto-assign is a hardcoded vendor allowlist; non-listed drivers left unassigned | `equipment.ts:192` |
+| UX-27 | Capture | P3 | Binning hardcoded `[1,2,4]`; no camera `max_bin` capability to discover from | `CaptureView.tsx:215` |
+| UX-28 | Capture | P3 | Cooler target has no `isFinite` guard → bad entry sends `target_c:null, on:true` | `CaptureView.tsx:381` |
+| UX-29 | Focus | P3 | Relative steps / Go-to not clamped to `[0, max]` (relies on silent server clamp) | `FocusView.tsx:194` |
+| UX-30 | Capture | P3 | Single-frame readout failure leaves "downloading…" bar spinning forever | `CaptureView.tsx:143` |
+| UX-31 | Equipment | P3 | First-run: primary "Connect Rig (0)" disabled; real bootstraps de-emphasized, no empty-state | `EquipmentView.tsx:405` |
+| UX-32 | ProviderBadge | P3 | `.prov-na` 11px text in `--text-faint` (sub-4.5:1 contrast) | `index.css:429` |
+| UX-33 | App shell | P3 | No skip-to-content; 11-button nav precedes `<main>` in tab order | `App.tsx:383` |
+| UX-34 | App-wide | P3 | Inline unicode dingbats as icons (size/baseline mismatch, night-palette risk) | `SequenceView.tsx:63` |
+| UX-35 | Guide/Header | P3 | Guide RMS prints ASCII `"` for arcsec vs `″` elsewhere | `GuideView.tsx:57` |
+| UX-36 | Mount/SlewPad | P3 | 7 refs to undefined `--text-dim2` token (silently aliases `text-dim`) | `SlewPad.tsx:314` |
+| UX-37 | Mount | P3 | "tracking"/"rate" use ad-hoc labels vs the `.label` class | `MountView.tsx:121` |
+
+**Second-round gaps** (not yet reviewed in depth): Settings + Monitor + Preview views as first-class
+subjects; a capability-discovery sweep across all device panels (rotator/cooler/FW ranges); relay
+reconnection/error-recovery states; and an optional running-UI capture pass to pin exact
+responsive/contrast/touch magnitudes before/after.
 
 ## Product decisions — RESOLVED 2026-07-21
 - **Plate solver (UX-04):** **Bundle ASTAP** (`astap_cli`, MPL-2.0 → redistributable) + the
