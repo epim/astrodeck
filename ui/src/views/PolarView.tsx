@@ -2,6 +2,7 @@ import { api } from "../api";
 import { useStore, usePolar, useProviders } from "../store";
 import { PolarReticle, knobHint, polarTier, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
+import { Icon } from "../components/icons";
 import { Panel, Led } from "../components/ui";
 import ProviderBadge from "../components/ProviderBadge";
 import { useCanControlMount } from "../lib/caps";
@@ -213,7 +214,7 @@ export default function PolarView() {
             <div className="flex flex-col gap-2">
               <button className="btn btn-accent" disabled={!canMount || running || busy}
                 onClick={() => act(() => api.post("/api/polar/start"))}>
-                ⊕ Start Alignment
+                <Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Start Alignment
               </button>
               <div className="grid grid-cols-2 gap-2">
                 {polar.state === "paused" ? (

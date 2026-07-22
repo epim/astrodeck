@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { Icon } from "../components/icons";
 import {
   useStore,
   useStatus,
@@ -247,7 +248,7 @@ export default function FocusView() {
               binning: Number(afBin) || 2,
               ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
             }))}>
-            {running ? "Running…" : "◎ Run Autofocus"}
+            {running ? "Running…" : <><Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus</>}
           </button>
           <p className="text-[11px] text-dim mt-3 leading-relaxed">
             Sweeps 4 steps each side of current position, measures star HFR,

@@ -4,6 +4,7 @@ import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle, IconButton, SegmentedControl } from "../components/ui";
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
+import { Icon } from "../components/icons";
 import { useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { CatalogEntry, PreflightAlt } from "../types";
@@ -159,7 +160,7 @@ export default function MountView() {
           <SlewPad />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
             <button className="btn tap min-h-[44px]" disabled={!canMount || busy} onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
-              {busy ? "Solving…" : <>✛ Solve &amp; Sync</>}
+              {busy ? "Solving…" : <><Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Solve &amp; Sync</>}
             </button>
           </div>
           <p className="text-[12px] text-dim text-center mt-2">
@@ -201,7 +202,7 @@ export default function MountView() {
                   <td className="text-right">
                     <div className="inline-flex items-center gap-1.5 justify-end">
                       {/* Frame this object in the Atlas (telescope/frame glyph, NOT
-                          the Align ⊕ — spec §6 / C3-A10). Works offline; no mount
+                          the Align icon — spec §6 / C3-A10). Works offline; no mount
                           needed, so it is never disabled. */}
                       <IconButton
                         icon="frame"
