@@ -32,8 +32,14 @@ export default function MountView() {
 
   const m = status?.mount;
 
+  // UX-16: in-flight guard — disables mutating controls during the POST round-trip
+  // so a slow action (esp. Solve & Sync) can't be double-fired and doesn't read dead.
+  const [busy, setBusy] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
+    if (busy) return;
+    setBusy(true);
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    finally { setBusy(false); }
   };
 
   useEffect(() => {
@@ -152,8 +158,8 @@ export default function MountView() {
               visible read-only affordance. */}
           <SlewPad />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
-            <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
-              ✛ Solve &amp; Sync
+            <button className="btn tap min-h-[44px]" disabled={!canMount || busy} onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
+              {busy ? "Solving…" : <>✛ Solve &amp; Sync</>}
             </button>
           </div>
           <p className="text-[12px] text-[color:var(--text-dim2,var(--text-dim))] text-center mt-2">
