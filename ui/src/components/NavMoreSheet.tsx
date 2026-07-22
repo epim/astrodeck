@@ -49,6 +49,19 @@ const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [
   { id: "off", label: "Off" },
 ];
 
+// Tab-reachable controls inside `panel`. A roving radiogroup (UX-20) marks its
+// inactive options tabIndex=-1; those still match the button/[tabindex] selectors,
+// so the focus trap must drop them (keep el.tabIndex >= 0). Otherwise firstEl/
+// lastEl land on an unreachable element and forward-Tab escapes the modal.
+function tabbablesIn(panel: HTMLElement | null): HTMLElement[] {
+  if (!panel) return [];
+  return Array.from(
+    panel.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), a[href], input, select, textarea, [tabindex]",
+    ),
+  ).filter((el) => el.tabIndex >= 0);
+}
+
 function OverflowRow({ id, label, icon, onPick }: {
   id: ViewName; label: string; icon: IconName; onPick: (v: ViewName) => void;
 }) {
@@ -96,12 +109,8 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
   useEffect(() => {
     if (!open) return;
     openerRef.current = (document.activeElement as HTMLElement) ?? null;
-    // initial focus: the first focusable control inside the sheet panel.
-    const panel = panelRef.current;
-    const first = panel?.querySelector<HTMLElement>(
-      'button:not([disabled]), a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    first?.focus();
+    // initial focus: the first tab-reachable control inside the sheet panel.
+    tabbablesIn(panelRef.current)[0]?.focus();
     return () => {
       openerRef.current?.focus?.();
     };
@@ -115,11 +124,7 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
         return;
       }
       if (e.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusables = panel.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
+      const focusables = tabbablesIn(panelRef.current);
       if (focusables.length === 0) return;
       const firstEl = focusables[0];
       const lastEl = focusables[focusables.length - 1];

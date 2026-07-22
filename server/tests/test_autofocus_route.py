@@ -47,12 +47,26 @@ def _wait(predicate, c, tries=300) -> bool:
 def test_autofocus_route_moves_filter_and_threads_binning(client, monkeypatch):
     assert client.post("/api/connect/sim").status_code == 200
 
+    # Reach the exact filter wheel the route uses (the global hub singleton) so we
+    # can pin the MOVE-then-SWEEP ordering, not merely "the wheel ended at 4".
+    import astrodeck.hub as hub_mod
+    fw = hub_mod.hub.devices["filterwheel"]
+
+    order: list = []
     seen: dict = {}
 
+    orig_set = fw.set_position
+
+    async def spy_set_position(pos):
+        order.append(("move", pos))
+        return await orig_set(pos)
+
     async def fake_run_autofocus(cam, foc, **kw):
+        order.append(("af", kw.get("binning")))
         seen.update(kw)
         return None
 
+    monkeypatch.setattr(fw, "set_position", spy_set_position)
     monkeypatch.setattr(app_module, "run_autofocus", fake_run_autofocus)
 
     # sim wheel is L R G B Ha OIII SII → slot 4 = Ha.
@@ -60,13 +74,12 @@ def test_autofocus_route_moves_filter_and_threads_binning(client, monkeypatch):
     assert r.status_code == 200, r.text
     assert r.json().get("started") == "autofocus"
 
-    def wheel_at_4() -> bool:
-        fw = client.get("/api/status").json().get("filterwheel")
-        return bool(fw and fw.get("position") == 4)
-
-    # _af moves the wheel BEFORE calling run_autofocus, so once the wheel shows
-    # slot 4 the binning must already have been threaded through.
-    assert _wait(wheel_at_4, client), "autofocus did not move the wheel to the requested slot"
+    # Pin the invariant per-filter AF exists to guarantee: the wheel is moved to
+    # the requested slot BEFORE the sweep exposes through it, with binning threaded.
+    # A move-after-sweep regression would flip this order and fail here — the old
+    # "wheel eventually at 4" assertion could not catch it.
+    assert _wait(lambda: len(order) >= 2, client), "autofocus task did not run to completion"
+    assert order == [("move", 4), ("af", 3)]
     assert seen.get("binning") == 3
 
 

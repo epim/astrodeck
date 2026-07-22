@@ -63,3 +63,22 @@ async def test_seed_filter_config_on_connect(tmp_path, monkeypatch):
         assert fw.filter_offsets[0] == 3
     finally:
         await h.disconnect_all()
+
+
+async def test_seed_filter_config_on_apply_connect_result(tmp_path, monkeypatch):
+    """The SECOND seed call site. connect_sim seeds inline; NINA/native/apply_profile
+    connects route through Hub._apply_connect_result instead, which has its own
+    _seed_filter_config() call. connect_rigspec exercises that path, so a regression
+    dropping the seed there is caught (connect_sim's inline seed would otherwise keep
+    the suite green)."""
+    monkeypatch.setattr(configmod, "FILTER_CONFIG_FILE", tmp_path / "filter_names.json")
+    configmod.save_filter_config(None, ["ViaApply"], [9])
+    from astrodeck.devices.backend import RigSpec
+    h = Hub()
+    await h.connect_rigspec(RigSpec(primary="sim"))
+    try:
+        fw = h.devices["filterwheel"]
+        assert fw.filter_names[0] == "ViaApply"
+        assert fw.filter_offsets[0] == 9
+    finally:
+        await h.disconnect_all()

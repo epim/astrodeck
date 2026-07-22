@@ -234,9 +234,11 @@ class NinaCamera(_NinaDevice, Camera):
         self.sensor_height = int(pick(info, "YSize", "CameraYSize", default=0) or 0)
         self.pixel_size_um = float(pick(info, "PixelSize", default=0) or 0)
         self.max_gain = int(pick(info, "GainMax", "MaxGain", default=0) or 0)
-        # UX-27: NINA exposes the bin ceiling (BinX/MaxBinX vary by version);
-        # keep the base default (4) when absent.
-        self.max_bin = int(pick(info, "MaxBinX", "BinX", "BinningX", default=0) or 0) or 4
+        # UX-27: NINA's bin CEILING. Only genuine max fields — BinX/BinningX are
+        # the CURRENT bin (default 1) and would falsely floor the ceiling to 1,
+        # hiding higher bins the camera supports. Keep the base default (4) when no
+        # max is reported (mirrors alpaca's maxbinx-only probe).
+        self.max_bin = int(pick(info, "MaxBinX", "MaxBin", default=0) or 0) or 4
         self.can_cool = bool(pick(info, "CanSetTemperature", "HasCooler",
                                   "CanCool", default=False))
         self.has_dew_heater = bool(pick(info, "HasDewHeater", default=False))
@@ -641,6 +643,7 @@ class NinaGuider(Guider):
         self.connected = False
         self._guiding = False
         self._pixel_scale = 1.0
+        self._pixel_scale_known = False
         self._recent: list[dict] = []
         self._poll_task: asyncio.Task | None = None
 
@@ -648,7 +651,17 @@ class NinaGuider(Guider):
         info = await self.client.get("/equipment/guider/info")
         self.connected = bool(pick(info, "Connected", default=False))
         self.name = pick(info, "Name", default="NINA Guider")
-        self._pixel_scale = float(pick(info, "PixelScale", default=1.0) or 1.0)
+        # PixelScale (arcsec/px) "varies by version". When NINA reports it,
+        # _poll_graph scales raw px distances into arcsec, so stats() is honestly
+        # arcsec (UX-15). When absent, the multiply is identity 1.0 → values stay
+        # in px, so we must NOT claim arcsec.
+        raw_scale = pick(info, "PixelScale", default=None)
+        try:
+            scale = float(raw_scale) if raw_scale is not None else 0.0
+        except (TypeError, ValueError):
+            scale = 0.0
+        self._pixel_scale_known = scale > 0
+        self._pixel_scale = scale if scale > 0 else 1.0
 
     async def disconnect(self) -> None:
         self.connected = False
@@ -811,7 +824,13 @@ class NinaGuider(Guider):
             guiding=self._guiding,
             rms_ra=round(rms_ra, 2), rms_dec=round(rms_dec, 2),
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
-            snr=0.0, recent=recent[-120:])
+            snr=0.0, recent=recent[-120:],
+            # UX-15: label px vs arcsec honestly — arcsec only when NINA actually
+            # reported a PixelScale (mirrors native's image_scale_known gate); the
+            # UI's `is_arcsec !== false` fallback can't save us since we publish the
+            # field explicitly via stats().__dict__.
+            is_arcsec=self._pixel_scale_known,
+            image_scale=round(self._pixel_scale, 3) if self._pixel_scale_known else 0.0)
 
     async def guide_frame(self) -> bytes | None:
         """Guide-star thumbnail. NINA itself doesn't serve a raw star image over
