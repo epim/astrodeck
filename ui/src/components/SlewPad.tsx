@@ -314,12 +314,12 @@ export default function SlewPad() {
     >
       {/* parked / no-mount states */}
       {noMount ? (
-        <p className="text-sm text-[color:var(--text-dim2,var(--text-dim))] text-center py-6">
+        <p className="text-sm text-dim text-center py-6">
           connect a mount to slew
         </p>
       ) : parked ? (
         <div className="flex flex-col items-center gap-3 py-6">
-          <p className="text-sm text-[color:var(--text-dim2,var(--text-dim))] text-center">
+          <p className="text-sm text-dim text-center">
             mount is parked — unpark to slew
           </p>
           <button
@@ -409,7 +409,7 @@ export default function SlewPad() {
           {/* UX-01: guidance shown at EVERY rate (was gated to hold-disabled rates,
               so the default continuous rate showed no hint at all). */}
           {!below && (
-            <p className="text-center text-[12px] text-[color:var(--text-dim2,var(--text-dim))] mt-0.5">
+            <p className="text-center text-[12px] text-dim mt-0.5">
               {isNina
                 ? "NINA: arrows do fine nudges; use catalog GOTO for big moves"
                 : holdDisabledForRate
@@ -453,7 +453,7 @@ export default function SlewPad() {
                 onChange={(v) => setTouch({ reverseRa: v })}
                 label="Reverse RA direction"
               />
-              <span className="text-[color:var(--text-dim2,var(--text-dim))]">reverse RA</span>
+              <span className="text-dim">reverse RA</span>
             </label>
             <label className="flex items-center gap-2 text-xs">
               <Toggle
@@ -461,10 +461,10 @@ export default function SlewPad() {
                 onChange={(v) => setTouch({ reverseDec: v })}
                 label="Reverse Dec direction"
               />
-              <span className="text-[color:var(--text-dim2,var(--text-dim))]">reverse Dec</span>
+              <span className="text-dim">reverse Dec</span>
             </label>
           </div>
-          <p className="text-center text-[12px] text-[color:var(--text-dim2,var(--text-dim))] mt-1.5 max-w-[260px] mx-auto">
+          <p className="text-center text-[12px] text-dim mt-1.5 max-w-[260px] mx-auto">
             moves wrong way? toggle reverse — direction depends on pier side &amp; image
             orientation
           </p>
