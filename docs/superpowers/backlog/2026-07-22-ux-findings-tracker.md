@@ -183,10 +183,16 @@ stats) > Capture/Focus > Power > Settings.
 ## Fix progress
 - **Phase A — SHIPPED** (`fecfec3`, `a07cca2`; tsc -b clean, backend 1523 passed, SegmentedControl 10/10):
   UX-01, UX-06, UX-07, UX-08, UX-09, UX-11, UX-12, UX-13, UX-16, UX-17, UX-18, UX-19. ✅
-- **Phase B — mostly SHIPPED** (`d339730` + astap/polar commit): UX-14, UX-26, UX-31, UX-04 (code:
-  sim-warning gate + astap_cli/macOS/bundled discovery). **Remaining:** UX-15 (guide RMS px-vs-arcsec,
-  backend+UI), UX-27 (camera max_bin capability, backend+UI).
-- **Phases C / D** — pending (see `docs/superpowers/plans/2026-07-22-ux-fix-plan.md`).
+- **Phase B — SHIPPED** (`d339730`, `7d8348e`, `95433b1`): UX-14, UX-26, UX-31, UX-04, UX-15
+  (guide RMS is_arcsec/image_scale + px-vs-arcsec unit label), UX-27 (camera max_bin capability). ✅
+- **Phase C — SHIPPED** (`f897a18`, `c5cf96b`, `7e40827`, `8698a89`, `2b73578`, `914c995`):
+  UX-28/29/30 (cooler/focuser guards + download watchdog), UX-22 (frame-type select + Bias shutter),
+  UX-05 (filter slot names/offsets: per-profile store + POST route + FITS filename token + modal),
+  UX-25 (per-filter/binning autofocus), UX-23 (calibration report + panel), UX-24 (dither settle). ✅
+- **Phase D — SHIPPED** (`4d1de9f`, `72ce93a`): UX-21 (.btn coarse min-h), UX-32 (.prov-na contrast),
+  UX-33 (skip-link), UX-35 (″ glyph), UX-36 (--text-dim2 refs), UX-37 (MountView .label), UX-10
+  (fmtMicron), UX-34 (status dingbats → Icon), UX-20 (shared radiogroup keyboard model, 4 groups). ✅
+- **ALL 30 UX findings shipped** across A→D — every commit tsc -b clean + test-gated. NOT pushed.
 - **Release-eng (separate):** bundle the ASTAP binary + D05 star DB (astap.py `-d` wiring + vendor/) and
   the order-3 survey pack into `build_release.py` + first-boot seed — build tasks, not code fixes.
 
