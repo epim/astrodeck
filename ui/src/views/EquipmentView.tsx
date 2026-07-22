@@ -401,10 +401,18 @@ export default function EquipmentView(): JSX.Element {
         <RotatorCard />
 
         <Panel title="Rig Actions">
+          {/* UX-31: naive first-run — promote the real bootstraps instead of a
+              greyed-out primary "Connect Rig (0)". */}
+          {assignedCount === 0 && (
+            <p className="text-xs text-dim mb-3 leading-relaxed">
+              No equipment yet — <span className="text-ink">Detect hardware rig</span> to auto-assign your
+              connected gear, or start the <span className="text-ink">Simulator rig</span> to explore.
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
-              className="btn btn-accent min-h-11"
+              className={`btn min-h-11 ${assignedCount > 0 ? "btn-accent" : ""}`}
               disabled={busy || !canConfig || assignedCount === 0}
               onClick={() => void doConnect()}
             >
@@ -414,7 +422,7 @@ export default function EquipmentView(): JSX.Element {
             <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doSimRig}>
               ▶ Simulator rig
             </button>
-            <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
+            <button type="button" className={`btn ${assignedCount === 0 ? "btn-accent" : ""}`} disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
               ▶ Detect hardware rig
             </button>
             <button type="button" className="btn btn-danger" disabled={busy || !canConfig} onClick={doDisconnect}>
