@@ -96,7 +96,8 @@ class UpdateService:
         cfg = self._cfg()
         try:
             rel = await github.latest_release(
-                cfg.repo, channel=cfg.channel, current=update_state.current)
+                cfg.repo, channel=cfg.channel, current=update_state.current,
+                token=(cfg.github_token or "").strip() or None)
         except Exception as e:  # noqa: BLE001 - network/parse; never crash the poller
             update_state.set_phase("idle", error=f"check failed: {e}")
             bus.publish("update", **update_state.snapshot())
@@ -139,23 +140,33 @@ class UpdateService:
             assert self._root is not None
             layout = InstallLayout(self._root)
             try:
+                token = (cfg.github_token or "").strip() or None
                 rel = await github.latest_release(
-                    cfg.repo, channel=cfg.channel, current=update_state.current)
+                    cfg.repo, channel=cfg.channel, current=update_state.current,
+                    token=token)
                 if rel is None:
                     raise UpdateError("update no longer available")
                 if not (_SAFE_VERSION.match(rel.version) and ".." not in rel.version):
                     raise UpdateError(f"unsafe version string: {rel.version!r}")
 
+                # PRIVATE repo: a token is set -> fetch each asset via its API url
+                # with an octet-stream Accept (the browser_download_url can't be
+                # token-authed). PUBLIC repo: no token -> the browser urls as before.
+                octet = "application/octet-stream" if token else None
+                art_url = (rel.artifact_api_url or rel.artifact_url) if token else rel.artifact_url
+                sha_url = ((rel.sha256_api_url or rel.sha256_url) if token else rel.sha256_url)
+                sig_url = ((rel.sig_api_url or rel.sig_url) if token else rel.sig_url)
+
                 workdir = layout.state / "download"
                 artifact = workdir / f"astrodeck-{rel.version}.tar.gz"
                 self._publish("downloading", progress=0.0)
                 await download.download(
-                    rel.artifact_url, artifact,
+                    art_url, artifact, token=token, accept=octet,
                     on_progress=lambda p: self._publish("downloading", progress=p))
-                sha_text = (await download.fetch_text(rel.sha256_url)
-                            if rel.sha256_url else None)
-                sig_text = (await download.fetch_text(rel.sig_url)
-                            if rel.sig_url else None)
+                sha_text = (await download.fetch_text(sha_url, token=token, accept=octet)
+                            if sha_url else None)
+                sig_text = (await download.fetch_text(sig_url, token=token, accept=octet)
+                            if sig_url else None)
 
                 # verify + stage are blocking (full-file hash, tar extract, rmtree);
                 # run them OFF the event loop so /healthz, the safety poller, the WS

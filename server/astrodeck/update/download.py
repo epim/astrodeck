@@ -12,20 +12,29 @@ import httpx
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024  # 512 MiB ceiling (a release bundle is small)
 
 
-def _headers(token: "str | None") -> dict:
-    return {"Authorization": f"Bearer {token}"} if token else {}
+def _headers(token: "str | None", accept: "str | None" = None) -> dict:
+    # A GitHub asset API url (private repos) needs ``Accept: application/octet-stream``
+    # to redirect to the download; the token authorizes the GitHub hop. httpx
+    # follow_redirects strips the Authorization header on the cross-host redirect
+    # to the signed storage URL, so the token never leaks to storage.
+    h: dict = {}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    if accept:
+        h["Accept"] = accept
+    return h
 
 
 async def fetch_text(url: str, *, token: "str | None" = None,
-                     timeout: float = 15.0) -> str:
+                     accept: "str | None" = None, timeout: float = 15.0) -> str:
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        r = await client.get(url, headers=_headers(token))
+        r = await client.get(url, headers=_headers(token, accept))
         r.raise_for_status()
         return r.text
 
 
 async def download(url: str, dest: Path, *, on_progress=None,
-                   token: "str | None" = None,
+                   token: "str | None" = None, accept: "str | None" = None,
                    max_bytes: int = DEFAULT_MAX_BYTES,
                    timeout: float = 120.0) -> Path:
     """Stream ``url`` to ``dest``. Raises ``ValueError`` past ``max_bytes``.
@@ -33,7 +42,7 @@ async def download(url: str, dest: Path, *, on_progress=None,
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            async with client.stream("GET", url, headers=_headers(token)) as r:
+            async with client.stream("GET", url, headers=_headers(token, accept)) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("Content-Length") or 0)
                 written = 0

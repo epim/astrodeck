@@ -63,6 +63,20 @@ def test_update_driver_patches_and_revalidates(store):
         store.update_driver(d.id, {"host": "  "})       # blank host
 
 
+def test_update_driver_patches_port_path_on_serial_driver(store):
+    """B follow-up C: a moved COM port can be fixed without delete+recreate."""
+    d = store.add_driver("zwo-am5", transport="serial", port_path="COM3")
+    u = store.update_driver(d.id, {"port_path": "COM7"})
+    assert u.port_path == "COM7" and u.transport == "serial"
+    # port_path is stored stripped on update — symmetric with add_driver
+    assert store.update_driver(d.id, {"port_path": "  COM9  "}).port_path == "COM9"
+    # the host-must-not-be-empty guard is network-only; a serial driver's
+    # host stays "" for every patch and must not be rejected on that account
+    assert store.update_driver(d.id, {"label": "renamed"}).host == ""
+    with pytest.raises(ValueError):
+        store.update_driver(d.id, {"port_path": ""})   # serial requires port_path
+
+
 def test_update_delete_unknown_id_raise_keyerror(store):
     with pytest.raises(KeyError):
         store.update_driver("nope", {"port": 1})

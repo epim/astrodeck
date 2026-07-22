@@ -104,3 +104,51 @@ def test_discover_raising_never_escapes(store, register):
     d = store.add_driver("fake-boom", transport="serial", port_path="COM3")
     row = _probe(d)  # must not raise
     assert row["status"]["reachable"] is False
+
+
+# ---------------------------------- B follow-up B: transport/port_path/index
+
+def test_probe_row_echoes_transport_and_port_path(store, register):
+    """The /api/drivers row (built in _probe_configured) carries the
+    configured driver's transport + port_path so the client can dedupe native
+    drivers by port/index and show the COM port."""
+    register(_FakeHw("fake-serial3", "serial", ("telescope",),
+                     [{"role": "telescope", "name": "Fake AM", "port_path": "COM9"}]))
+    d = store.add_driver("fake-serial3", transport="serial", port_path="COM9")
+    row = _probe(d)
+    assert row["transport"] == "serial"
+    assert row["port_path"] == "COM9"
+
+
+def test_probe_row_echoes_index_when_set(store, register):
+    """A per-unit index (e.g. a picked USB camera, B follow-up A) rides the
+    driver's ``extra`` and is echoed on the row for the client to dedupe on."""
+    register(_FakeHw("fake-usb3", "local", ("camera",),
+                     [{"role": "camera", "name": "Cam 1", "index": 1}]))
+    d = store.add_driver("fake-usb3", transport="local", extra={"index": 1})
+    row = _probe(d)
+    assert row["index"] == 1
+
+
+def test_probe_row_index_is_none_when_unset(store, register):
+    register(_FakeHw("fake-usb4", "local", ("camera",), [{"role": "camera", "name": "Cam"}]))
+    d = store.add_driver("fake-usb4", transport="local")
+    row = _probe(d)
+    assert row["index"] is None
+
+
+def test_patched_port_path_reprobes_against_new_port(store, register):
+    """B follow-up C: after patching a serial driver's port_path, the (cache-
+    invalidated) probe reflects reachability against the NEW port, not the
+    one it was created with."""
+    register(_FakeHw("fake-serial4", "serial", ("telescope",),
+                     [{"role": "telescope", "name": "Fake AM", "port_path": "COM7"}]))
+    d = store.add_driver("fake-serial4", transport="serial", port_path="COM3")
+    row = _probe(d)
+    assert row["status"]["reachable"] is False   # COM3 configured, device on COM7
+
+    updated = store.update_driver(d.id, {"port_path": "COM7"})
+    drv.invalidate(d.id)
+    row = _probe(updated)
+    assert row["status"]["reachable"] is True
+    assert row["port_path"] == "COM7"

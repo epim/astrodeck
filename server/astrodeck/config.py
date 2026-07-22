@@ -263,6 +263,11 @@ class UpdateConfig(BaseModel):
     channel: str = "stable"               # stable | prerelease
     repo: str = "epim/astrodeck"          # GitHub releases source (owner/repo)
     signing_pubkey: str = ""              # PUBLIC Ed25519 key (base64); REQUIRED to apply
+    # SECRET: a GitHub read token (contents:read) so a PRIVATE ``repo``'s releases
+    # can be listed + the artifact/.sha256/.sig assets downloaded (public repos
+    # need none). Scrubbed by ``redacted()`` -> the UI only ever sees a
+    # ``github_token_configured`` boolean. Empty on a public repo (today's default).
+    github_token: str = ""
     health_timeout_s: int = Field(60, ge=5, le=600)
     last_check_ts: float | None = None    # bookkeeping (set by the poller)
 
@@ -674,8 +679,9 @@ class ConfigStore:
     def set_update_config(self, update: "UpdateConfig") -> AppConfig:
         """Persist a new ``UpdateConfig`` (system.update-gated at the API layer).
 
-        Validates the channel; holds no secret (the signing key is public), so it
-        is written through this typed setter like the other config blocks."""
+        Validates the channel + signing_pubkey. The one secret is ``github_token``
+        (private-repo read); the API layer resolves a blank token to 'unchanged'
+        (like admin_token) and ``redacted()`` scrubs it from every broadcast."""
         if update.channel not in ("stable", "prerelease"):
             raise ValueError(f"unknown update channel: {update.channel!r}")
         # A non-empty signing key must be a valid 32-byte base64 Ed25519 public
@@ -830,25 +836,35 @@ class ConfigStore:
         return entry
 
     def update_driver(self, driver_id: str, patch: dict) -> DriverEntry:
-        """Patch host/port/enabled/label/extra on one driver (id/type immutable).
+        """Patch host/port/enabled/label/extra/port_path/transport on one driver
+        (id/type immutable).
 
         ``model_copy(update=...)`` does NOT re-validate in pydantic v2, so the
         patched entry is re-constructed through ``DriverEntry(**...)`` to run
-        the field validators (port range etc). Raises ``KeyError`` for an
-        unknown id (→ 404) and ``ValueError`` for a bad field/value (→ 422)."""
-        allowed = {"host", "port", "enabled", "label", "extra"}
+        the field validators (port range, per-transport addressing — serial
+        requires port_path, network requires host+port). Raises ``KeyError``
+        for an unknown id (→ 404) and ``ValueError`` for a bad field/value
+        (→ 422).
+
+        ``port_path``/``transport`` (B follow-up C) let a moved COM port be
+        fixed without delete+recreate — e.g. patching just ``port_path`` on a
+        serial driver."""
+        allowed = {"host", "port", "enabled", "label", "extra", "port_path",
+                   "transport"}
         unknown = set(patch) - allowed
         if unknown:
             raise ValueError(f"unknown driver fields: {sorted(unknown)}")
         # Normalize a COPY of the patch so create/update stay symmetric with
-        # add_driver: host is stored stripped, and a patched extra dict is
-        # copied so a caller-retained reference can't alias into the stored
-        # config. isinstance guards let a wrong-typed value fall through to the
-        # DriverEntry re-construction below (→ ValueError, → 422) instead of
-        # raising AttributeError here.
+        # add_driver: host/port_path are stored stripped, and a patched extra
+        # dict is copied so a caller-retained reference can't alias into the
+        # stored config. isinstance guards let a wrong-typed value fall through
+        # to the DriverEntry re-construction below (→ ValueError, → 422)
+        # instead of raising AttributeError here.
         patch = dict(patch)
         if isinstance(patch.get("host"), str):
             patch["host"] = patch["host"].strip()
+        if isinstance(patch.get("port_path"), str):
+            patch["port_path"] = patch["port_path"].strip()
         if isinstance(patch.get("extra"), dict):
             patch["extra"] = dict(patch["extra"])
         cfg = self.cfg()
@@ -856,7 +872,13 @@ class ConfigStore:
             if d.id != driver_id:
                 continue
             updated = DriverEntry(**d.model_copy(update=patch).model_dump())
-            if not updated.host.strip():
+            # The DriverEntry validator already requires host for a NETWORK
+            # transport (and port_path for serial) — this extra strip-check
+            # only catches a whitespace-only network host, which is truthy
+            # but semantically empty. Gated on transport=="network" so it
+            # doesn't reject every serial/local patch (their host is always
+            # "" by design).
+            if updated.transport == "network" and not updated.host.strip():
                 raise ValueError("driver host must not be empty")
             cfg.drivers[i] = updated
             self.bump_and_save()
@@ -1005,6 +1027,15 @@ def redacted(cfg: AppConfig) -> dict:
             auth.get("google_client_id") and gclient_secret)
         auth["session_signing_configured"] = bool(sess_priv)
         data["auth"] = auth
+    # Update block: the GitHub read token (private-repo releases) is the only
+    # secret here -- scrub it, surface a boolean so the UI can show "configured".
+    # signing_pubkey/repo/channel are public and pass through unchanged.
+    upd = data.get("update")
+    if isinstance(upd, dict):
+        gh_tok = upd.get("github_token") or ""
+        upd["github_token"] = ""
+        upd["github_token_configured"] = bool(gh_tok)
+        data["update"] = upd
     # W3 remote block: the ``device_token`` is a secret (it authenticates this home
     # to the relay). Blank it and surface a ``remote_token_configured`` boolean so
     # the UI can show 'configured' without the secret. ``relay_url`` / ``home_id``

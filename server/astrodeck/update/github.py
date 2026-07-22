@@ -22,10 +22,18 @@ class ReleaseInfo:
     version: str           # normalized, e.g. "0.2.0"
     tag: str               # the raw tag, e.g. "v0.2.0"
     notes_md: str          # the release body (markdown), shown in the UI dialog
-    artifact_url: str
+    artifact_url: str      # browser_download_url (public repos)
     sha256_url: "str | None"
     sig_url: "str | None"
     prerelease: bool
+    # asset API urls (``/repos/.../releases/assets/{id}``). For a PRIVATE repo the
+    # browser_download_url can't be fetched with a token; the asset API url + a
+    # ``Accept: application/octet-stream`` header + the token can. None when the
+    # release JSON omitted them. The service downloads from these when a
+    # github_token is configured, else from the browser urls above.
+    artifact_api_url: "str | None" = None
+    sha256_api_url: "str | None" = None
+    sig_api_url: "str | None" = None
 
 
 def _headers(token: "str | None") -> dict:
@@ -46,11 +54,16 @@ async def fetch_releases(repo: str, *, token: "str | None" = None,
     return data if isinstance(data, list) else []
 
 
-def _asset_url(assets: list, *, suffix: str) -> "str | None":
+def _find_asset(assets: list, *, suffix: str) -> "dict | None":
     for a in assets:
         if isinstance(a, dict) and str(a.get("name", "")).endswith(suffix):
-            return a.get("browser_download_url")
+            return a
     return None
+
+
+def _asset_url(assets: list, *, suffix: str) -> "str | None":
+    a = _find_asset(assets, suffix=suffix)
+    return a.get("browser_download_url") if a else None
 
 
 def pick_release(releases: list[dict], *, channel: str = "stable",
@@ -75,17 +88,22 @@ def pick_release(releases: list[dict], *, channel: str = "stable",
         return None
 
     assets = chosen.get("assets") or []
-    artifact = _asset_url(assets, suffix=".tar.gz")
-    if not artifact:
+    art = _find_asset(assets, suffix=".tar.gz")
+    if not art or not art.get("browser_download_url"):
         return None  # a release with no artifact is not installable
+    sha = _find_asset(assets, suffix=".sha256")
+    sig = _find_asset(assets, suffix=".sig")
     return ReleaseInfo(
         version=str(latest),
         tag=str(chosen.get("tag_name", "")),
         notes_md=chosen.get("body") or "",
-        artifact_url=artifact,
-        sha256_url=_asset_url(assets, suffix=".sha256"),
-        sig_url=_asset_url(assets, suffix=".sig"),
+        artifact_url=art.get("browser_download_url"),
+        sha256_url=sha.get("browser_download_url") if sha else None,
+        sig_url=sig.get("browser_download_url") if sig else None,
         prerelease=bool(chosen.get("prerelease")),
+        artifact_api_url=art.get("url"),
+        sha256_api_url=sha.get("url") if sha else None,
+        sig_api_url=sig.get("url") if sig else None,
     )
 
 
