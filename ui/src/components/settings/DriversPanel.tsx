@@ -9,15 +9,18 @@
 // probeDriver(id) forces a refresh. Writes are config.backend-gated — without
 // the cap the panel renders read-only (same Gated pattern as the rest of Settings).
 import { useEffect, useState, type JSX } from "react";
-import type { BackendInfo, DriverInfo, DriversResponse } from "../../types";
+import type { DriverInfo, DriversResponse } from "../../types";
 import {
   addDriver,
+  addDriverForHardware,
   deleteDriver,
   discoverBackend,
-  listBackends,
+  discoverHardware,
+  hwAlreadyConfigured,
   listDrivers,
   probeDriver,
   updateDriver,
+  type HwFound,
 } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
@@ -25,27 +28,13 @@ import { accessPhrase, useCanConfigBackend } from "../../lib/caps";
 import { confirmDialog } from "../ConfirmDialog";
 import { EmptyState, Field, InfoDot, Led, Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
-import type { DiscoveredAlpaca, DiscoveredHardware, DiscoveredNina } from "./backendMeta";
+import type { DiscoveredAlpaca, DiscoveredNina } from "./backendMeta";
 import {
   DRIVER_DEFAULT_PORT,
   DRIVER_TYPE_LABEL,
   offersSummary,
   validateDriverForm,
 } from "./driversMeta";
-
-// One physical device found by the hardware scan, GROUPED by (driver_type,
-// port_path) — a local/USB backend's discover() emits one entry PER ROLE it
-// can fill (e.g. zwo-usb: one for "focuser", one for "rotator" when both an
-// EAF and CAA are attached), but a single configured driver of that type
-// already offers every role the backend declares (drivers.py _probe_native),
-// so grouping avoids creating N redundant driver rows for one physical unit.
-type HwFound = {
-  driver_type: string;
-  transport: "network" | "serial" | "local";
-  name: string;
-  port_path?: string;
-  roles: string[];
-};
 
 type AddForm = { type: "nina" | "alpaca" | "phd2"; host: string; port: string; label: string };
 const emptyForm = (): AddForm => ({ type: "nina", host: "", port: "", label: "" });
@@ -134,46 +123,13 @@ export default function DriversPanel(): JSX.Element {
   // hardware backend (zwo-am5, wanderer-snowflake, zwo-usb, zwo-asi,
   // player-one today; a future plugin backend needs zero client changes as
   // long as it sets `hardware`+`discoverable`+`driver_type` in the registry).
-  // One backend's discover() failing (missing DLL, no serial lib, ...) must
-  // not blank the whole scan, so each call is caught independently.
+  // discoverHardware() (api/backends.ts) is the ONE shared implementation of
+  // this scan+group logic — EquipmentView's "Detect hardware rig" uses it too.
   const scanHardware = async () => {
     setHwScanning(true);
     setHwFound(null);
     try {
-      const backends: BackendInfo[] = await listBackends();
-      const hw = backends.filter((b) => b.hardware && b.discoverable && b.driver_type);
-      const perBackend = await Promise.all(
-        hw.map(async (b) => {
-          try {
-            const entries = (await discoverBackend(b.name)) as DiscoveredHardware[];
-            return { b, entries: Array.isArray(entries) ? entries : [] };
-          } catch {
-            return { b, entries: [] as DiscoveredHardware[] };
-          }
-        }),
-      );
-      // Group by (driver_type, port_path): a local/USB backend's discover()
-      // emits one entry per role it fills, but they're the SAME physical unit
-      // and one configured driver already offers every role.
-      const grouped = new Map<string, HwFound>();
-      for (const { b, entries } of perBackend) {
-        for (const e of entries) {
-          const key = `${b.driver_type}::${e.port_path ?? ""}`;
-          const row = grouped.get(key);
-          if (row) {
-            if (!row.roles.includes(e.role)) row.roles.push(e.role);
-          } else {
-            grouped.set(key, {
-              driver_type: b.driver_type as string,
-              transport: (b.transport as "network" | "serial" | "local") ?? "local",
-              name: e.name,
-              port_path: e.port_path,
-              roles: [e.role],
-            });
-          }
-        }
-      }
-      setHwFound(Array.from(grouped.values()));
+      setHwFound(await discoverHardware());
     } catch (e) {
       showToast("error", e instanceof Error ? e.message : "hardware scan failed");
       setHwFound([]);
@@ -182,43 +138,18 @@ export default function DriversPanel(): JSX.Element {
     }
   };
 
-  // Already configured iff a NON-implicit driver of the same type exists.
-  // Caveat: the read side (`GET /api/drivers`) does not currently echo
-  // transport/port_path for configured rows (drivers.py `_probe_configured`
-  // only carries host/port), so a second physical unit of the same
-  // driver_type on a different port can't be distinguished here and is
-  // conservatively treated as "already configured" too (hidden rather than
-  // risking a duplicate driver row) — same class of gap as the plan's
-  // documented "no per-unit index" limitation.
-  const hwAlreadyConfigured = (f: HwFound): boolean =>
-    (data?.drivers ?? []).some((d) => !d.implicit && d.type === f.driver_type);
-
   const addHw = (f: HwFound) =>
-    void run(
-      () =>
-        addDriver({
-          type: f.driver_type,
-          transport: f.transport,
-          port_path: f.port_path,
-          label: f.name,
-        }),
-      `${f.name} added`,
-    );
+    void run(() => addDriverForHardware(f), `${f.name} added`);
 
   const addAllHw = () => {
-    const toAdd = (hwFound ?? []).filter((f) => !hwAlreadyConfigured(f));
+    const toAdd = (hwFound ?? []).filter((f) => !hwAlreadyConfigured(f, data?.drivers ?? []));
     if (toAdd.length === 0) return;
     void run(async () => {
       // Sequential, not Promise.all: each add mints a server-side id off the
       // current config file — concurrent POSTs racing that read-modify-write
       // is the kind of thing worth just not risking.
       for (const f of toAdd) {
-        await addDriver({
-          type: f.driver_type,
-          transport: f.transport,
-          port_path: f.port_path,
-          label: f.name,
-        });
+        await addDriverForHardware(f);
       }
     }, `${toAdd.length} driver(s) added`);
   };
@@ -306,6 +237,7 @@ export default function DriversPanel(): JSX.Element {
             onToggle={(en) => void run(() => updateDriver(d.id, { enabled: en }))}
             onProbe={() => void run(() => probeDriver(d.id))}
             onDelete={() => remove(d)}
+            onEditPort={(portPath) => void run(() => updateDriver(d.id, { port_path: portPath }), "port updated")}
           />
         ))}
 
@@ -429,17 +361,17 @@ export default function DriversPanel(): JSX.Element {
                   </p>
                 )}
                 {hwFound.map((f) => {
-                  const already = hwAlreadyConfigured(f);
+                  const already = hwAlreadyConfigured(f, data?.drivers ?? []);
                   return (
                     <div
-                      key={`${f.driver_type}::${f.port_path ?? ""}`}
+                      key={`${f.driver_type}::${f.port_path ?? ""}::${f.index ?? ""}`}
                       className="flex items-center gap-2 border border-line bg-bg px-2.5 py-1.5"
                     >
                       <div className="min-w-0 flex-1">
                         <span className="text-sm text-ink">{f.name}</span>{" "}
                         <span className="mono text-[10px] text-dim">
                           {DRIVER_TYPE_LABEL[f.driver_type] ?? f.driver_type}
-                          {f.port_path ? ` · ${f.port_path}` : ""}
+                          {f.port_path ? ` · ${f.port_path}` : f.index !== undefined ? ` · #${f.index}` : ""}
                         </span>
                         <span className="text-[10px] text-dim ml-1">
                           ({f.roles.join(", ")})
@@ -464,7 +396,7 @@ export default function DriversPanel(): JSX.Element {
                     </div>
                   );
                 })}
-                {hwFound.some((f) => !hwAlreadyConfigured(f)) && (
+                {hwFound.some((f) => !hwAlreadyConfigured(f, data?.drivers ?? [])) && (
                   <button
                     type="button"
                     className="btn btn-accent !py-1.5 self-start mt-1"
@@ -518,6 +450,7 @@ function DriverRow({
   onToggle,
   onProbe,
   onDelete,
+  onEditPort,
 }: {
   d: DriverInfo;
   busy: boolean;
@@ -525,8 +458,15 @@ function DriverRow({
   onToggle: (enabled: boolean) => void;
   onProbe: () => void;
   onDelete: () => void;
+  onEditPort: (portPath: string) => void;
 }): JSX.Element {
   const led = !d.enabled ? "off" : d.status.reachable ? "on" : "bad";
+  // A native serial driver (zwo-am5, wanderer-snowflake): host==="" (no
+  // network endpoint) + transport==="serial" — the only kind whose addressing
+  // (COM port) can move and is worth an inline edit control.
+  const isSerialNative = d.host === "" && d.transport === "serial";
+  const [editingPort, setEditingPort] = useState(false);
+  const [portDraft, setPortDraft] = useState(d.port_path ?? "");
   return (
     <div className="border border-line bg-bg/60 px-3 py-2.5">
       <div className="flex items-center gap-3 flex-wrap">
@@ -539,11 +479,33 @@ function DriverRow({
                 RBAC-redacted (viewer without config.backend, see redact.py
                 _redact_drivers_for) => "endpoint hidden"; host==="" => a
                 native serial/local hardware driver, which has no network
-                endpoint at all (not hidden, just not applicable) => blank. */}
-            {d.host ? ` · ${d.host}:${d.port}` : d.host == null ? " · endpoint hidden" : ""}
+                endpoint — show its COM port (serial) or SDK unit index (USB
+                camera) instead of leaving it blank. */}
+            {d.host
+              ? ` · ${d.host}:${d.port}`
+              : d.host == null
+                ? " · endpoint hidden"
+                : d.port_path
+                  ? ` · ${d.port_path}`
+                  : d.index !== undefined
+                    ? ` · #${d.index}`
+                    : ""}
           </span>
         </div>
         <div className="flex-1" />
+        {canConfig && isSerialNative && !editingPort && (
+          <button
+            type="button"
+            className="btn !py-1 !px-2 text-[10px]"
+            disabled={busy}
+            onClick={() => {
+              setPortDraft(d.port_path ?? "");
+              setEditingPort(true);
+            }}
+          >
+            Edit port
+          </button>
+        )}
         <Toggle checked={d.enabled} disabled={!canConfig || busy} onChange={onToggle} label={`${d.label} enabled`} showState />
         <button type="button" className="btn !py-1 !px-2 text-[10px]" disabled={busy} onClick={onProbe}>
           <Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />
@@ -555,6 +517,36 @@ function DriverRow({
           </button>
         )}
       </div>
+      {canConfig && isSerialNative && editingPort && (
+        <div className="mt-1.5 pl-[1.6rem] flex items-center gap-1.5">
+          <input
+            className="field !py-1 w-[100px] text-[11px]"
+            value={portDraft}
+            placeholder="COM3"
+            onChange={(e) => setPortDraft(e.target.value)}
+            aria-label={`${d.label} port`}
+          />
+          <button
+            type="button"
+            className="btn !py-1 !px-2 text-[10px]"
+            disabled={busy || !portDraft.trim()}
+            onClick={() => {
+              onEditPort(portDraft.trim());
+              setEditingPort(false);
+            }}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            className="btn !py-1 !px-2 text-[10px]"
+            disabled={busy}
+            onClick={() => setEditingPort(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
       <p className="mt-1.5 pl-[1.6rem] text-[11px] leading-snug truncate">
         {!d.enabled ? (
           <span className="text-faint">disabled</span>

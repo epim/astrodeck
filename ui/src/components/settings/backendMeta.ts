@@ -140,10 +140,13 @@ export interface DiscoveredNina {
 // zwo-usb, zwo-asi, player-one) — mirrors each backend's own discover() list
 // entries (e.g. ZwoAm5Backend.discover(), ZwoUsbBackend.discover()). Serial
 // backends carry `port_path` (e.g. "COM3"); local/SDK-enumerated (USB)
-// backends carry none — presence alone is the addressing.
+// backends carry none — presence alone is the addressing. Camera backends
+// (zwo-asi, player-one) instead carry a 0-based `index` per enumerated unit
+// (follow-up 2026-07-21), letting two identical USB cameras be told apart.
 export interface DiscoveredHardware {
   role: string;
   name: string;
   port_path?: string;
+  index?: number;
   verified?: boolean;
 }
