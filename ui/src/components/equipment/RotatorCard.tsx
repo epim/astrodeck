@@ -15,6 +15,7 @@ import { adjustedPa, mod360 } from "../../lib/rotation";
 import { allowedSweepDeg, arcPath, polarXY } from "../../lib/rotatorDial";
 import { Panel, InfoDot } from "../ui";
 import { Icon } from "../icons";
+import { handleRadioKeyDown, rovingTabIndex } from "../../lib/radiogroup";
 import ReadOnlyBadge from "../ReadOnlyBadge";
 
 // Pure dial geometry lives in lib/rotatorDial (window-free so the assert-file
@@ -205,18 +206,28 @@ export default function RotatorCard(): JSX.Element | null {
           <div className="border border-line bg-bg/60 px-3 py-2.5 flex flex-col gap-2">
             <span className="label">Range of motion</span>
             <div className="flex items-center gap-1.5" role="radiogroup"
-                 aria-label="Mechanical range">
-              {RANGE_OPTIONS.map((rt) => (
+                 aria-label="Mechanical range" aria-disabled={(!canConfig || busy) || undefined}>
+              {RANGE_OPTIONS.map((rt, i) => {
+                const rangeDisabled = !canConfig || busy;
+                const activeIndex = RANGE_OPTIONS.indexOf(draft.range_type);
+                const select = (idx: number) => {
+                  if (!rangeDisabled) void persist({ range_type: RANGE_OPTIONS[idx] });
+                };
+                return (
                 <button key={rt}
                         role="radio"
                         className={`btn min-h-9 uppercase text-[10px] tracking-wider ${
                           draft.range_type === rt ? "btn-accent" : ""}`}
-                        disabled={!canConfig || busy}
+                        disabled={rangeDisabled}
                         aria-checked={draft.range_type === rt}
-                        onClick={() => void persist({ range_type: rt })}>
+                        // UX-20: roving tabindex + shared arrow-key model
+                        tabIndex={rovingTabIndex(i, activeIndex)}
+                        onClick={() => select(i)}
+                        onKeyDown={(e) => { if (!rangeDisabled) handleRadioKeyDown(e, i, RANGE_OPTIONS.length, select); }}>
                   {rt}
                 </button>
-              ))}
+                );
+              })}
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[11px] text-dim w-20 shrink-0">Start</span>

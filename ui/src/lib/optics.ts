@@ -10,6 +10,12 @@ export function scale(fl: number, px: number, bin = 1): number {
   return fl > 0 ? (ARCSEC_PER_RAD * px * bin) / fl : 0;
 }
 
+/** Format a pixel size in micrometres for display (UX-10): up to 2 decimals,
+ *  trailing zeros trimmed (3.7599 → "3.76", 2.40 → "2.4", 9 → "9"); "" for ≤0. */
+export function fmtMicron(um: number): string {
+  return um > 0 ? String(Number(um.toFixed(2))) : "";
+}
+
 /** Field of view in degrees. Always computed at bin 1 (bin-independent, ASTAP-correct). */
 export function fov(
   fl: number,

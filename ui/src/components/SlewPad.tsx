@@ -41,6 +41,7 @@ import {
 } from "../lib/slewController";
 import { haptics } from "../lib/haptics";
 import { useTouchSettings, useSetTouch, useLocked } from "../lib/touchStore";
+import { handleRadioKeyDown, rovingTabIndex } from "../lib/radiogroup";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 
 const axisLabelText: Record<string, string> = {
@@ -364,7 +365,10 @@ export default function SlewPad() {
                   key={r.id}
                   role="radio"
                   aria-checked={i === rateIdx}
+                  // UX-20: roving tabindex + shared arrow-key model
+                  tabIndex={rovingTabIndex(i, rateIdx)}
                   onClick={() => setRateIdx(i)} /* NO haptic on rate change (R26) */
+                  onKeyDown={(e) => handleRadioKeyDown(e, i, SLEW_RATES.length, setRateIdx)}
                   className={`tap min-h-[44px] btn !py-1 !px-1 !text-[11px] inline-flex items-center justify-center gap-1
                     ${i === rateIdx ? "!border-accent !text-accent bg-accent/10" : ""}`}
                 >
