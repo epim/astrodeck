@@ -771,7 +771,9 @@ class NinaGuider(Guider):
                 except Exception:
                     pass
 
-    async def dither(self, pixels: float = 3.0) -> None:
+    async def dither(self, pixels: float = 3.0, settle=None) -> None:
+        # NINA runs its own dither+settle (the plugin exposes no settle knobs on
+        # this endpoint), so settle overrides are accepted but not forwarded (UX-24).
         await self.client.get("/equipment/guider/dither", timeout=180.0)
         await asyncio.sleep(2.0)  # NINA performs its own settle
 

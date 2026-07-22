@@ -350,11 +350,13 @@ class PHD2Guider(Guider):
                     "on a fresh calibration after the flip", "guide")
             return False
 
-    async def dither(self, pixels: float = 3.0) -> None:
+    async def dither(self, pixels: float = 3.0, settle=None) -> None:
+        # UX-24: merge caller settle overrides over the PHD2 defaults.
+        s = {**SETTLE, **(settle or {})}
         self._settle_done.clear()
         self._settle_error = None
-        await self._rpc("dither", [pixels, False, SETTLE])
-        await asyncio.wait_for(self._settle_done.wait(), timeout=SETTLE["timeout"] + 30)
+        await self._rpc("dither", [pixels, False, s])
+        await asyncio.wait_for(self._settle_done.wait(), timeout=s["timeout"] + 30)
         if self._settle_error:
             raise RuntimeError(f"dither settle failed: {self._settle_error}")
 
