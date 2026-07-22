@@ -37,8 +37,15 @@ export default function GuideView() {
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;
 
+  // UX-16: in-flight guard on the multi-second guide actions (start / recalibrate)
+  // so they can't be double-fired in the POST round-trip. Covers only the request
+  // round-trip, so Stop stays usable while calibration/guiding runs server-side.
+  const [acting, setActing] = useState(false);
   const act = async (fn: () => Promise<unknown>) => {
+    if (acting) return;
+    setActing(true);
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+    finally { setActing(false); }
   };
 
   return (
@@ -79,7 +86,7 @@ export default function GuideView() {
             </p>
           )}
           <div className="flex flex-col gap-2">
-            <button className="btn btn-accent" disabled={!canGuide || !connected || stats?.guiding}
+            <button className="btn btn-accent" disabled={!canGuide || !connected || stats?.guiding || acting}
               onClick={() => act(() => api.post("/api/guide/start"))}>
               ❖ Start Guiding
             </button>
@@ -87,7 +94,7 @@ export default function GuideView() {
               onClick={() => act(() => api.post("/api/guide/stop"))}>
               Stop
             </button>
-            <button className="btn" disabled={!canGuide || !connected}
+            <button className="btn" disabled={!canGuide || !connected || acting}
               onClick={() => act(async () => {
                 await api.post("/api/guide/calibrate");
                 showToast("info", "Recalibrating — a fresh calibration is running");
