@@ -487,7 +487,7 @@ function DriverRow({
                 ? " · endpoint hidden"
                 : d.port_path
                   ? ` · ${d.port_path}`
-                  : d.index !== undefined
+                  : d.index != null
                     ? ` · #${d.index}`
                     : ""}
           </span>
