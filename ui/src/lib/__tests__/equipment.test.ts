@@ -267,6 +267,13 @@ test("hardwareAssignments leaves guide_camera unassigned without a zwo-asi backe
   eq(map.guide_camera ?? null, null);
 });
 
+test("hardwareAssignments never seeds the implicit simulator camera (Detect hardware rig)", () => {
+  // only the implicit sim driver offers camera -> the camera slot is left
+  // UNASSIGNED rather than silently seeding the simulator during a hardware
+  // detect (regression: the old `eligibleDrivers[0]` fallback picked sim).
+  eq(hardwareAssignments([sim], ["camera"]).camera ?? null, null);
+});
+
 test("hardwareAssignments skips a single-role backend that is unreachable or disabled", () => {
   const down = { ...zwoAm5, status: { ...zwoAm5.status, reachable: false } };
   eq(hardwareAssignments([down], ["telescope"]).telescope ?? null, null);

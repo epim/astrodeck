@@ -2,7 +2,7 @@
 (2026-07-21). A PRIVATE releases source needs a token; the browser_download_url
 can't be token-authed, so the service downloads via each asset's API url +
 ``Accept: application/octet-stream``. The token is a secret -> scrubbed everywhere."""
-from astrodeck.config import AppConfig, UpdateConfig, redacted
+from astrodeck.config import AppConfig, DriverEntry, UpdateConfig, redacted
 from astrodeck.update import github
 
 
@@ -59,3 +59,28 @@ def test_redacted_scrubs_github_token():
 def test_redacted_github_token_not_configured():
     r = redacted(AppConfig())
     assert r["update"]["github_token_configured"] is False
+
+
+def test_redacted_scrubs_driver_addressing():
+    """The config surface (GET /api/config + the 'config' WS broadcast) is only
+    view.status-gated, so redacted() must strip driver host/port/port_path/extra
+    -- else a viewer reads a LAN host / serial COM port straight off the config
+    (the same leak _redact_drivers_for closes on /api/drivers)."""
+    cfg = AppConfig()
+    cfg.drivers = [
+        DriverEntry(id="zwo-am5-1", type="zwo-am5", transport="serial",
+                    port_path="COM3", label="AM5"),
+        DriverEntry(id="nina-1", type="nina", host="astrotown.lan", port=1888,
+                    label="NINA", extra={"secretish": "x"}),
+    ]
+    r = redacted(cfg)
+    for d in r["drivers"]:
+        assert d["host"] == "" and d["port"] is None
+        assert d["port_path"] == "" and d["extra"] == {}
+    # non-secret identity fields still pass through
+    assert {d["id"] for d in r["drivers"]} == {"zwo-am5-1", "nina-1"}
+    assert {d["type"] for d in r["drivers"]} == {"zwo-am5", "nina"}
+    # no addressing anywhere in the serialized redacted config
+    import json
+    blob = json.dumps(r)
+    assert "COM3" not in blob and "astrotown.lan" not in blob

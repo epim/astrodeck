@@ -1036,6 +1036,20 @@ def redacted(cfg: AppConfig) -> dict:
         upd["github_token"] = ""
         upd["github_token_configured"] = bool(gh_tok)
         data["update"] = upd
+    # Drivers: scrub each configured driver's ADDRESSING (host/port/port_path/
+    # extra) from the config surface. GET /api/config and the 'config' WS
+    # broadcast are only view.status-gated, so without this a viewer could read a
+    # driver's LAN host/DDNS or serial COM port straight off the config -- the
+    # exact leak _redact_drivers_for closes on GET /api/drivers (this makes that
+    # invariant hold system-wide, not just on the one surface). id/type/label/
+    # enabled (non-secret) pass through; the source cfg is a model_dump copy, so
+    # connect / resolve_driver_ids keep the real addressing.
+    for d in data.get("drivers", []):
+        if isinstance(d, dict):
+            d["host"] = ""
+            d["port"] = None
+            d["port_path"] = ""
+            d["extra"] = {}
     # W3 remote block: the ``device_token`` is a secret (it authenticates this home
     # to the relay). Blank it and surface a ``remote_token_configured`` boolean so
     # the UI can show 'configured' without the secret. ``relay_url`` / ``home_id``
