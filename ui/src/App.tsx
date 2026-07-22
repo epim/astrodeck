@@ -422,7 +422,7 @@ export default function App() {
 
           {/* ----------------------------------------------- main content */}
           <main
-            className={`flex-1 overflow-y-auto p-4 pb-20 sm:pb-4 ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
+            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 sm:pb-4 ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
             key={view}
           >
             <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">
