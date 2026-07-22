@@ -18,6 +18,7 @@ import type {
   KeyboardEvent as RKeyboardEvent,
   PointerEvent as RPointerEvent,
 } from "react";
+import { handleRadioKeyDown, radioNextIndex } from "../../lib/radiogroup";
 
 export interface SegmentedControlProps<T extends string> {
   options: { value: T; label: string }[];
@@ -27,35 +28,9 @@ export interface SegmentedControlProps<T extends string> {
   ariaLabel: string;
 }
 
-/** Pure keyboard-navigation map: the target index for a navigation key, or `null`
- *  for any non-navigation key (Enter/Space/typing). Arrows wrap; Home/End clamp. */
-export function segmentedNextIndex(key: string, current: number, count: number): number | null {
-  switch (key) {
-    case "ArrowRight":
-    case "ArrowDown":
-      return (current + 1) % count;
-    case "ArrowLeft":
-    case "ArrowUp":
-      return (current - 1 + count) % count;
-    case "Home":
-      return 0;
-    case "End":
-      return count - 1;
-    default:
-      return null;
-  }
-}
-
-// Move DOM focus to the radio at `idx`. Guarded end-to-end so a synthetic event
-// (no real DOM, as in the unit tests) is a harmless no-op.
-function focusRadioAt(
-  e: RKeyboardEvent<HTMLButtonElement> | { currentTarget?: { closest?: (s: string) => Element | null } },
-  idx: number,
-): void {
-  const group = e.currentTarget?.closest?.("[role=radiogroup]");
-  const radios = group?.querySelectorAll?.("[role=radio]");
-  (radios?.[idx] as HTMLElement | undefined)?.focus?.();
-}
+/** Pure keyboard-navigation map (UX-20): re-exported from the shared radiogroup
+ *  model so the existing test import keeps working. Arrows wrap; Home/End clamp. */
+export const segmentedNextIndex = radioNextIndex;
 
 export function SegmentedControl<T extends string>({
   options,
@@ -74,17 +49,7 @@ export function SegmentedControl<T extends string>({
 
   const onKeyDown = (e: RKeyboardEvent<HTMLButtonElement>, i: number) => {
     if (disabled) return;
-    const next = segmentedNextIndex(e.key, i, n);
-    if (next !== null) {
-      e.preventDefault();
-      select(next);
-      focusRadioAt(e, next); // move focus to follow selection
-      return;
-    }
-    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
-      e.preventDefault();
-      select(i);
-    }
+    handleRadioKeyDown(e, i, n, select); // shared roving-focus + select model
   };
 
   return (

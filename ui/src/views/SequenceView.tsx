@@ -57,14 +57,14 @@ function ScheduleChip({ schedule }: { schedule: NonNullable<SequenceState["sched
   if (schedule.state === "waiting") {
     return (
       <span className="text-[11px] text-dim inline-flex items-center gap-1">
-        ⏱ Waiting — {schedule.reason} · starts {fmtTime(schedule.start_ts)}
+        <Icon name="clock" size={13} /> Waiting — {schedule.reason} · starts {fmtTime(schedule.start_ts)}
       </span>
     );
   }
   if (schedule.state === "window_closed" || schedule.state === "never_rises") {
     return (
       <span className="text-[11px] text-warn inline-flex items-center gap-1">
-        ⚠ {schedule.reason}
+        <Icon name="alert" size={13} /> {schedule.reason}
       </span>
     );
   }

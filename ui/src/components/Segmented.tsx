@@ -2,6 +2,8 @@
 // Selection is shown by filled background + bold label (shape/weight), never
 // hue-only, so it survives the all-red night palette. 44px-tall on touch.
 
+import { handleRadioKeyDown, rovingTabIndex } from "../lib/radiogroup";
+
 export interface SegmentedOption<T extends string> {
   value: T;
   label: string;
@@ -20,13 +22,16 @@ export function Segmented<T extends string>({
   ariaLabel?: string;
   disabled?: boolean;
 }) {
+  const activeIndex = options.findIndex((o) => o.value === value);
+  const select = (i: number) => { if (!disabled) onChange(options[i].value); };
   return (
     <div
       role="radiogroup"
       aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
       className="inline-flex border border-line2 overflow-hidden"
     >
-      {options.map((opt) => {
+      {options.map((opt, i) => {
         const selected = opt.value === value;
         return (
           <button
@@ -35,7 +40,10 @@ export function Segmented<T extends string>({
             role="radio"
             aria-checked={selected}
             disabled={disabled}
-            onClick={() => !disabled && onChange(opt.value)}
+            // UX-20: roving tabindex + shared arrow-key/Home/End model
+            tabIndex={rovingTabIndex(i, activeIndex)}
+            onClick={() => select(i)}
+            onKeyDown={(e) => { if (!disabled) handleRadioKeyDown(e, i, options.length, select); }}
             className={`min-h-11 sm:min-h-0 px-3 py-1.5 text-xs uppercase tracking-wider
               transition-colors border-r border-line2 last:border-r-0
               ${selected ? "bg-accent2/40 text-accent font-bold" : "bg-raise text-dim font-medium"}
