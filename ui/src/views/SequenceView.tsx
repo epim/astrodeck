@@ -27,6 +27,10 @@ const DEFAULT_STEP: ExposureStep = {
   filter: null, exposure_s: 120, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light",
 };
 
+// UX-22: frame types the step editor can script (backend IMAGETYP + shutter
+// wiring already honor these — hub.capture / imaging/fitsio.py).
+const FRAME_TYPES = ["Light", "Dark", "Flat", "Bias"] as const;
+
 /** State-tone badge with a shape glyph + word so it reads in night mode. */
 function SeqStateBadge({ state }: { state: string }) {
   const map: Record<string, { icon: IconName; cls: string; word: string }> = {
@@ -658,7 +662,12 @@ export default function SequenceView() {
                     // Same bounds as CaptureView, via the shared lib/exposure.ts helper.
                     const stepExposureInvalid = isExposureValueInvalid(s.exposure_s);
                     return (
-                    <div key={s.id ?? si} className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 items-center">
+                    <div key={s.id ?? si} className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 items-center">
+                      <select className="field !py-1" title="frame type"
+                        value={s.frame_type ?? "Light"}
+                        onChange={(e) => patchStep(ti, si, { frame_type: e.target.value })}>
+                        {FRAME_TYPES.map((ft) => <option key={ft} value={ft}>{ft}</option>)}
+                      </select>
                       <select className="field !py-1" value={s.filter ?? ""}
                         onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
                         <option value="">no filter</option>
@@ -698,8 +707,8 @@ export default function SequenceView() {
                     </div>
                     );
                   })}
-                  <div className="grid grid-cols-[90px_70px_60px_50px_60px_auto] gap-2 label !text-[9px]">
-                    <span>filter</span><span>exp s</span><span>gain</span><span>bin</span><span>count</span><span />
+                  <div className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 label !text-[9px]">
+                    <span>type</span><span>filter</span><span>exp s</span><span>gain</span><span>bin</span><span>count</span><span />
                   </div>
                   {t.steps.some((s) => isExposureValueInvalid(s.exposure_s)) && (
                     <p className="text-[11px] text-bad">
