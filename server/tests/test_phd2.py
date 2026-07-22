@@ -319,3 +319,30 @@ async def test_flip_calibration_warns_on_rpc_error(phd2):
 async def test_can_flip_calibration_flag():
     g = PHD2Guider()
     assert g.can_flip_calibration is True
+
+
+async def test_dither_merges_settle_overrides():
+    """UX-24: caller settle overrides merge over the PHD2 defaults; unset fields
+    keep the default."""
+    from astrodeck.guide.phd2 import SETTLE
+    g = PHD2Guider()
+    calls: list = []
+
+    async def fake_rpc(method, params, timeout=None):
+        calls.append((method, list(params)))
+        g._settle_done.set()   # unblock the settle wait immediately
+        return {}
+
+    g._rpc = fake_rpc
+    await g.dither(2.5, {"pixels": 0.5, "timeout": 30})
+    assert calls[0][0] == "dither"
+    sent = calls[0][1][2]                   # [pixels, ra_only, SETTLE]
+    assert sent["pixels"] == 0.5            # overridden
+    assert sent["timeout"] == 30            # overridden
+    assert sent["time"] == SETTLE["time"]   # default preserved
+
+    # no override → exactly the defaults
+    calls.clear()
+    g._settle_done.clear()
+    await g.dither(1.0)
+    assert calls[0][1][2] == SETTLE

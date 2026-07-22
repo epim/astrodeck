@@ -45,7 +45,8 @@ class SimGuider(Guider):
             self._task = None
         bus.publish("guide", **self.stats().__dict__)
 
-    async def dither(self, pixels: float = 3.0) -> None:
+    async def dither(self, pixels: float = 3.0, settle=None) -> None:
+        # settle criteria are moot for the synthetic stream (UX-24).
         self.dither_count += 1
         # kick then settle
         for decay in (1.0, 0.55, 0.25, 0.1):

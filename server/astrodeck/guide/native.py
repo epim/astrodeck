@@ -662,16 +662,25 @@ class NativeGuider(Guider):
 
     # ------------------------------------------------------------------ dither
 
-    async def dither(self, pixels: float = 3.0) -> None:
+    async def dither(self, pixels: float = 3.0, settle=None) -> None:
         """Dither by ``pixels`` and wait for settle (dossier §11/§12): shifts
         the lock, resets the axis algorithms, and runs a real fast-recenter +
         settle-dwell in the engine (the guide loop dispatches the
         fast-recenter pulses like any other correction). Mirrors
         ``PHD2Guider``'s settle-wait shape (``guide/phd2.py:353-359``): wait
-        for the settle handshake or ``_SETTLE_TIMEOUT_S``, whichever comes
-        first."""
+        for the settle handshake or the timeout, whichever comes first.
+
+        UX-24: the engine self-manages the settle pixels/time criteria, so a
+        caller-supplied ``settle`` only overrides the WAIT timeout here (the one
+        knob honored Python-side); pixels/time are ignored for the native path."""
         if self._engine is None or not self._active:
             raise DeviceError("native guider: cannot dither when not guiding")
+        timeout_s = _SETTLE_TIMEOUT_S
+        if settle and settle.get("timeout"):
+            try:
+                timeout_s = max(1.0, float(settle["timeout"]))
+            except (TypeError, ValueError):
+                timeout_s = _SETTLE_TIMEOUT_S
         ang = random.uniform(0.0, 2 * math.pi)
         dx = pixels * math.cos(ang)
         dy = pixels * math.sin(ang)
@@ -683,7 +692,7 @@ class NativeGuider(Guider):
         self._engine.dither(dx, dy)
         try:
             await asyncio.wait_for(self._settle_done.wait(),
-                                   timeout=_SETTLE_TIMEOUT_S)
+                                   timeout=timeout_s)
         except asyncio.TimeoutError:
             raise DeviceError("native guider: dither settle timed out") from None
         if self._settle_error:

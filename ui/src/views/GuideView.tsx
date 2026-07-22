@@ -31,6 +31,10 @@ export default function GuideView() {
   const showToast = useStore((s) => s.showToast);
   const canGuide = useCanControlGuide(); // viewer => graph visible, controls read-only
   const [ditherPx, setDitherPx] = useState("3");
+  // UX-24: optional dither settle overrides (blank = the guider's default).
+  const [settlePixels, setSettlePixels] = useState("");
+  const [settleTime, setSettleTime] = useState("");
+  const [settleTimeout, setSettleTimeout] = useState("");
   // Number(ditherPx) || 3 coerced a deliberately-entered "0" to 3 (0 is
   // falsy). Parse explicitly so 0 is honored; only fall back to the 3px
   // default for genuinely invalid (blank/non-numeric) input.
@@ -137,9 +141,42 @@ export default function GuideView() {
                   onChange={(e) => setDitherPx(e.target.value)} />
               </label>
               <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
-                onClick={() => act(() => api.post("/api/guide/dither", { pixels: Number.isFinite(ditherNum) ? ditherNum : 3 }))}>
+                onClick={() => act(() => {
+                  // UX-24: send only the settle fields the user set; blanks keep
+                  // the guider's default. (Bridge honors all; native → timeout.)
+                  const opt = (v: string) => {
+                    const n = Number(v);
+                    return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+                  };
+                  return api.post("/api/guide/dither", {
+                    pixels: Number.isFinite(ditherNum) ? ditherNum : 3,
+                    settle_pixels: opt(settlePixels),
+                    settle_time_s: opt(settleTime),
+                    settle_timeout_s: opt(settleTimeout),
+                  });
+                })}>
                 Dither
               </button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 mt-1">
+              <label className="flex flex-col gap-1">
+                <span className="label !text-[9px]">settle px</span>
+                <input className="field !py-1" placeholder="1.5" value={settlePixels}
+                  disabled={!canGuide} inputMode="decimal"
+                  onChange={(e) => setSettlePixels(e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="label !text-[9px]">settle s</span>
+                <input className="field !py-1" placeholder="8" value={settleTime}
+                  disabled={!canGuide} inputMode="decimal"
+                  onChange={(e) => setSettleTime(e.target.value)} />
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="label !text-[9px]">timeout s</span>
+                <input className="field !py-1" placeholder="60" value={settleTimeout}
+                  disabled={!canGuide} inputMode="decimal"
+                  onChange={(e) => setSettleTimeout(e.target.value)} />
+              </label>
             </div>
           </div>
         </Panel>

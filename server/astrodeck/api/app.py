@@ -536,6 +536,10 @@ class RigSpecBody(BaseModel):
 
 class DitherBody(BaseModel):
     pixels: float = 3.0
+    # UX-24: optional settle overrides (None = the guider's defaults).
+    settle_pixels: float | None = None
+    settle_time_s: float | None = None
+    settle_timeout_s: float | None = None
 
 
 class SiteSaveBody(BaseModel):
@@ -2891,7 +2895,14 @@ def create_app() -> FastAPI:
     async def guide_dither(body: DitherBody):
         if not hub.guider or not hub.guider.connected:
             raise HTTPException(409, "no guider connected")
-        return _spawn("dither", hub.guider.dither(body.pixels))
+        # UX-24: assemble a settle override from any provided fields (omit the
+        # rest so each guider keeps its own default for those).
+        settle = {k: v for k, v in (
+            ("pixels", body.settle_pixels),
+            ("time", body.settle_time_s),
+            ("timeout", body.settle_timeout_s),
+        ) if v is not None} or None
+        return _spawn("dither", hub.guider.dither(body.pixels, settle))
 
     @app.get("/api/guide/frame.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
