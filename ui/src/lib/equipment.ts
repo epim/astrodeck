@@ -207,9 +207,13 @@ export function hardwareAssignments(drivers: DriverInfo[], roles: string[]): Ass
   const map: AssignmentMap = {};
   for (const role of roles) {
     if (role === "camera") {
-      // player-one first (dedicated imaging camera); else any eligible driver
-      // (which may legitimately be zwo-asi, NINA, Alpaca, ...).
-      const d = byType("player-one") ?? eligibleDrivers("camera", drivers)[0];
+      // player-one first (dedicated imaging camera); else any eligible
+      // NON-IMPLICIT driver (zwo-asi / NINA / Alpaca). Exclude the built-ins:
+      // a "Detect hardware rig" action must never silently seed the SIMULATOR
+      // camera (implicit sim is always enabled+reachable+offers every role), so
+      // with no real camera driver the slot is left unassigned -- symmetric with
+      // guide_camera below.
+      const d = byType("player-one") ?? eligibleDrivers("camera", drivers).find((c) => !c.implicit);
       if (d) map[role] = pickAssignment(role, d);
       continue;
     }
