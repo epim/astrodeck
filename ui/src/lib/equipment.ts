@@ -204,6 +204,11 @@ function pickAssignment(role: string, d: DriverInfo): Assignment {
 export function hardwareAssignments(drivers: DriverInfo[], roles: string[]): AssignmentMap {
   const byType = (t: string): DriverInfo | undefined =>
     drivers.find((d) => d.type === t && d.enabled && d.status.reachable);
+  // UX-26: offers-based fallback — the first REAL (non-implicit) driver that
+  // offers this role; excludes the sim built-in (a hardware-detect must never
+  // seed the simulator, symmetric with the camera rule below).
+  const byOffer = (role: string): DriverInfo | undefined =>
+    eligibleDrivers(role, drivers).find((c) => !c.implicit);
   const map: AssignmentMap = {};
   for (const role of roles) {
     if (role === "camera") {
@@ -223,8 +228,12 @@ export function hardwareAssignments(drivers: DriverInfo[], roles: string[]): Ass
       if (d) map[role] = pickAssignment(role, d);
       continue;
     }
+    // UX-26: prefer the intended vendor driver; else ANY real driver that offers
+    // this role, so a detected non-allowlisted mount/focuser/rotator/filterwheel
+    // is auto-assigned instead of silently left unassigned. (camera/guide_camera
+    // keep their intent-based split above — both cameras offer both roles.)
     const want = HARDWARE_SINGLE_ROLE[role];
-    const d = want ? byType(want) : undefined;
+    const d = (want ? byType(want) : undefined) ?? byOffer(role);
     if (d) map[role] = pickAssignment(role, d);
   }
   return map;

@@ -111,8 +111,8 @@ export default function MountView() {
       <div className="flex flex-col gap-4">
         <Panel title="Pointing" right={!canMount && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-            <Stat label="RA" value={m?.ra_str ?? "—"} />
-            <Stat label="Dec" value={m?.dec_str ?? "—"} />
+            <Stat label="RA (J2000)" value={m?.ra_str ?? "—"} />
+            <Stat label="Dec (J2000)" value={m?.dec_str ?? "—"} />
             <Stat label="Altitude" value={m ? `${m.alt}°` : "—"}
               tone={m && m.alt < 20 ? "warn" : undefined} />
             <Stat label="Azimuth" value={m ? `${m.az}°` : "—"} />
