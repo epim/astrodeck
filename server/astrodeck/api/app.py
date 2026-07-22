@@ -474,6 +474,8 @@ class AutofocusBody(BaseModel):
     gain: int = 120
     step: int = 350
     steps_each_side: int = 4
+    binning: int = 2
+    filter: int | None = None  # UX-25: slot to move to before the sweep (per-filter AF)
 
 
 class FilterBody(BaseModel):
@@ -2723,10 +2725,21 @@ def create_app() -> FastAPI:
             foc = hub.require("focuser")
         except DeviceError as e:
             raise _err(e)
-        return _spawn("autofocus", run_autofocus(
-            cam, foc, exposure_s=body.exposure_s, gain=body.gain,
-            step=body.step, steps_each_side=body.steps_each_side,
-            expose_guard=hub.exposure_guard, hub=hub))
+
+        async def _af():
+            # UX-25: per-filter autofocus — move to the requested slot before the
+            # sweep so each filter can be focused (and its offset measured). No
+            # camera exposure here, so no capture guard is needed for the move.
+            if body.filter is not None:
+                fw = hub.devices.get("filterwheel")
+                if fw is not None and fw.connected:
+                    await fw.set_position(body.filter)
+            return await run_autofocus(
+                cam, foc, exposure_s=body.exposure_s, gain=body.gain,
+                step=body.step, steps_each_side=body.steps_each_side,
+                binning=body.binning, expose_guard=hub.exposure_guard, hub=hub)
+
+        return _spawn("autofocus", _af())
 
     @app.post("/api/focuser/halt", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
