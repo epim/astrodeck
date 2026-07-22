@@ -261,6 +261,8 @@ export default function App() {
           starfield (day + night) is on .dim-content per 2B index.css, so it dims
           WITH the UI — no body/#root starfield here. */}
       <div className="dim-content h-full flex flex-col">
+        {/* UX-33: first focusable element — lets keyboard users skip the nav. */}
+        <a href="#main-content" className="skip-link">Skip to content</a>
         {/* ---------------------------------------------- top status strip */}
         <header className="relative z-20 flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
           <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
@@ -422,7 +424,9 @@ export default function App() {
 
           {/* ----------------------------------------------- main content */}
           <main
-            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 sm:pb-4 ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
+            id="main-content"
+            tabIndex={-1}
+            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 sm:pb-4 outline-none ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
             key={view}
           >
             <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">

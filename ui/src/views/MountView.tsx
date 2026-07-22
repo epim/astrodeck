@@ -124,7 +124,7 @@ export default function MountView() {
             <div className="flex items-center gap-3">
               <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
                 onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Tracking" />
-              <span className="text-xs text-dim">tracking</span>
+              <span className="label">tracking</span>
               <div className="flex-1" />
               {m?.parked ? (
                 <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
@@ -136,7 +136,7 @@ export default function MountView() {
                 can_set_tracking_rate; disabled for viewers like every motion control. */}
             {m?.can_set_tracking_rate && (
               <div className="flex items-center gap-3">
-                <span className="text-xs text-dim shrink-0">rate</span>
+                <span className="label shrink-0">rate</span>
                 <div className="flex-1" />
                 <SegmentedControl<"sidereal" | "lunar" | "solar">
                   options={TRACKING_RATE_OPTIONS}
@@ -162,7 +162,7 @@ export default function MountView() {
               {busy ? "Solving…" : <>✛ Solve &amp; Sync</>}
             </button>
           </div>
-          <p className="text-[12px] text-[color:var(--text-dim2,var(--text-dim))] text-center mt-2">
+          <p className="text-[12px] text-dim text-center mt-2">
             plate-solves current frame, syncs mount model
           </p>
         </Panel>

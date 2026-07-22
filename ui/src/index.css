@@ -263,6 +263,28 @@ textarea:focus:not(:focus-visible), [tabindex]:focus:not(:focus-visible) { outli
 }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+/* UX-33: skip-to-content link — off-screen until focused, so a keyboard user
+   can jump past the 11-item nav straight to <main>. */
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -64px;
+  z-index: 100;
+  background: var(--bg-raise);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  transition: top 0.15s ease;
+}
+.skip-link:focus { top: 8px; outline: none; }
+/* UX-21: guarantee the 44px touch-target minimum on coarse (touch) pointers,
+   so compact .btn variants (e.g. tight text buttons) can't collapse below the
+   AA target size on a phone/tablet. */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; }
+}
 
 .btn-accent {
   border-color: var(--accent-dim);
@@ -426,7 +448,7 @@ select.field { appearance: none; }
   background: var(--accent-fill);
 }
 .prov-ext { border-color: var(--line-bright); color: var(--text-dim); background: var(--bg-raise); }
-.prov-na  { border-color: var(--line-bright); color: var(--text-faint); background: var(--bg-raise); }
+.prov-na  { border-color: var(--line-bright); color: var(--text-dim); background: var(--bg-raise); }
 .prov .dot {
   width: 6px; height: 6px; border-radius: 999px; flex: none;
   background: currentColor; box-shadow: 0 0 6px currentColor;
