@@ -578,8 +578,16 @@ export interface ProvidersConfig {
 // Mirrors server/astrodeck/drivers.py describe_all() + config.py DriverEntry
 // (equipment-drivers spec 2026-07-08 §3.1/§3.2). DriverEntry is the CONFIG
 // (write) side; DriverInfo is the READ side (probe status + offers) the
-// Equipment/Settings surfaces render from.
-export type DriverType = "nina" | "alpaca" | "phd2" | "sim" | "astrodeck" | "astap";
+// Equipment/Settings surfaces render from. The listed literals are the known
+// built-ins + the native-hardware-onramp driver_types (2026-07-21: zwo-am5,
+// wanderer-snowflake, zwo-usb, zwo-asi, player-one) + the implicit
+// "ascom-local" row; `(string & {})` keeps it OPEN (mirrors ProfileDevice's
+// free-string `backend`) since the registry lets a plugin backend declare a
+// new driver_type with zero core/client edits (drivers.py driver_type_to_backend).
+export type DriverType =
+  | "nina" | "alpaca" | "phd2" | "sim" | "astrodeck" | "astap" | "ascom-local"
+  | "zwo-am5" | "wanderer-snowflake" | "zwo-usb" | "zwo-asi" | "player-one"
+  | (string & {});
 
 export interface DriverEntry {
   id: string;            // server-minted "<type>-<4hex>", immutable
@@ -613,6 +621,15 @@ export interface DriverInfo {
   implicit: boolean;     // sim/astrodeck/astap = detected built-ins, not stored
   host?: string;
   port?: number;
+  // --- native hardware on-ramp follow-ups (2026-07-21): per-unit addressing
+  //     echoed on configured rows so the client can tell two identical units
+  //     of the same driver_type apart. `transport` is "network"|"serial"|
+  //     "local"; `port_path` (serial, e.g. "COM3") is REDACTED (absent) for
+  //     callers without config.backend, mirroring `host`; `index` is the
+  //     0-based SDK-enumerated unit (zwo-asi/player-one cameras only). ---
+  transport?: string;
+  port_path?: string;
+  index?: number;
   status: DriverStatus;
   offers: { devices: DriverDeviceOffer[]; tasks: string[] };
 }

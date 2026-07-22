@@ -14,6 +14,7 @@ import type {
   BackendInfo,
   ConnectRigResult,
   DriverEntry,
+  DriverInfo,
   DriversResponse,
   PackStatus,
   Principal,
@@ -29,6 +30,7 @@ import type {
   UpdateStatus,
   User,
 } from "../types";
+import type { DiscoveredHardware } from "../components/settings/backendMeta";
 
 // ----------------------------------------------------------------- backends
 /** GET /api/backends → every registered backend, ordered by name. */
@@ -278,11 +280,17 @@ export const addDriver = (body: {
 }): Promise<{ driver: DriverEntry }> =>
   api.post<{ driver: DriverEntry }>("/api/config/drivers", body);
 
-/** PATCH /api/config/drivers/{id} → patch host/port/enabled/label/extra
- *  (id/type immutable). 404 unknown, 422 invalid. */
+/** PATCH /api/config/drivers/{id} → patch host/port/enabled/label/extra/
+ *  port_path/transport (id/type immutable). `port_path` lets a moved COM
+ *  port be fixed in place (server config.py update_driver "B follow-up C")
+ *  without delete+recreate — the DriversPanel "Edit port" control uses this.
+ *  404 unknown, 422 invalid. */
 export const updateDriver = (
   id: string,
-  patch: Partial<Pick<DriverEntry, "host" | "port" | "enabled" | "label" | "extra">>,
+  patch: Partial<Pick<DriverEntry, "host" | "port" | "enabled" | "label" | "extra">> & {
+    port_path?: string;
+    transport?: string;
+  },
 ): Promise<{ driver: DriverEntry }> =>
   api.patch<{ driver: DriverEntry }>(
     `/api/config/drivers/${encodeURIComponent(id)}`, patch);
@@ -290,6 +298,96 @@ export const updateDriver = (
 /** DELETE /api/config/drivers/{id} → {deleted:id}. 404 unknown. */
 export const deleteDriver = (id: string): Promise<{ deleted: string }> =>
   api.del<{ deleted: string }>(`/api/config/drivers/${encodeURIComponent(id)}`);
+
+// -------------------------------------------------- native hardware scanning
+// One physical device found by a hardware backend's discover(), GROUPED by
+// (driver_type, port_path, index) — a local/USB backend's discover() emits
+// one entry PER ROLE it can fill (e.g. zwo-usb: one for "focuser", one for
+// "rotator" when both an EAF and CAA are attached), but a single configured
+// driver of that type already offers every role the backend declares
+// (drivers.py _probe_native), so grouping avoids creating N redundant driver
+// rows for one physical unit. `index` (zwo-asi/player-one cameras only) tells
+// two identical USB cameras apart.
+export type HwFound = {
+  driver_type: string;
+  transport: "network" | "serial" | "local";
+  name: string;
+  port_path?: string;
+  index?: number;
+  roles: string[];
+};
+
+/** Scan EVERY registered hardware backend (zwo-am5, wanderer-snowflake,
+ *  zwo-usb, zwo-asi, player-one today; a future plugin backend needs zero
+ *  client changes as long as it sets `hardware`+`discoverable`+`driver_type`
+ *  in the registry) and group the results into one row per physical unit.
+ *  ONE implementation shared by DriversPanel's "Scan for USB/serial
+ *  hardware" and EquipmentView's "Detect hardware rig" (native-hardware
+ *  follow-ups 2026-07-21). One backend's discover() failing (missing DLL, no
+ *  serial lib, ...) must not blank the whole scan, so each call is caught
+ *  independently. */
+export async function discoverHardware(): Promise<HwFound[]> {
+  const backends: BackendInfo[] = await listBackends();
+  const hw = backends.filter((b) => b.hardware && b.discoverable && b.driver_type);
+  const perBackend = await Promise.all(
+    hw.map(async (b) => {
+      try {
+        const entries = (await discoverBackend(b.name)) as DiscoveredHardware[];
+        return { b, entries: Array.isArray(entries) ? entries : [] };
+      } catch {
+        return { b, entries: [] as DiscoveredHardware[] };
+      }
+    }),
+  );
+  const grouped = new Map<string, HwFound>();
+  for (const { b, entries } of perBackend) {
+    for (const e of entries) {
+      const key = `${b.driver_type}::${e.port_path ?? ""}::${e.index ?? ""}`;
+      const row = grouped.get(key);
+      if (row) {
+        if (!row.roles.includes(e.role)) row.roles.push(e.role);
+      } else {
+        grouped.set(key, {
+          driver_type: b.driver_type as string,
+          transport: (b.transport as "network" | "serial" | "local") ?? "local",
+          name: e.name,
+          port_path: e.port_path,
+          index: e.index,
+          roles: [e.role],
+        });
+      }
+    }
+  }
+  return Array.from(grouped.values());
+}
+
+/** Already configured iff a non-implicit driver of the same type — and, when
+ *  distinguishable, the same UNIT — exists. Serial units are told apart by
+ *  `port_path`; USB cameras (zwo-asi/player-one) by `index`; anything else
+ *  (e.g. zwo-usb, one row per accessory bus) falls back to type-only (a
+ *  second physical unit can't be told apart and is conservatively treated as
+ *  already configured — same gap the plan documents for that case). */
+export function hwAlreadyConfigured(f: HwFound, drivers: DriverInfo[]): boolean {
+  return drivers.some((d) => {
+    if (d.implicit || d.type !== f.driver_type) return false;
+    if (f.transport === "serial") return (d.port_path ?? "") === (f.port_path ?? "");
+    if (f.index !== undefined) return d.index === f.index;
+    return true;
+  });
+}
+
+/** POST /api/config/drivers for one scanned hardware unit — the ONE place
+ *  that turns a discovered device into an addDriver() call (the index rides
+ *  as `extra.index` for USB cameras), shared by DriversPanel's per-row Add
+ *  and EquipmentView's "Detect hardware rig". */
+export const addDriverForHardware = (f: HwFound): Promise<{ driver: DriverEntry }> =>
+  addDriver({
+    type: f.driver_type,
+    transport: f.transport,
+    port_path: f.port_path,
+    label: f.name,
+    ...(f.index !== undefined ? { extra: { index: f.index } } : {}),
+  });
 
 // -------------------------------------------------- offline survey pack (spec 2026-07-13)
 /** POST /api/config/survey → config payload. config.site_optics. */

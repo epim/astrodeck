@@ -20,8 +20,11 @@ import type {
 import { api, ApiError } from "../api";
 import {
   activateProfile,
+  addDriverForHardware,
   connectRig,
+  discoverHardware,
   getProfile,
+  hwAlreadyConfigured,
   listDrivers,
   listProfiles,
   saveProfile,
@@ -33,6 +36,7 @@ import {
   buildRigSpec,
   deviceChoices,
   eligibleDrivers,
+  hardwareAssignments,
   hasRealMotion,
   loadAssignments,
   saveAssignments,
@@ -190,6 +194,42 @@ export default function EquipmentView(): JSX.Element {
     saveAssignments(map);
     void connectAssignments(map);
   };
+
+  // "▶ Detect hardware rig" (native-hardware follow-up 2026-07-21): scan every
+  // hardware backend (the SAME discoverHardware() helper DriversPanel's "Scan
+  // for USB/serial hardware" uses), add whatever isn't already configured,
+  // then auto-fill the AssignmentMap with the hardwareAssignments() heuristic
+  // — mirrors doSimRig in every way except it does NOT connect; the user
+  // reviews the picks and presses Connect Rig themselves.
+  const doDetectHardware = () =>
+    void (async () => {
+      setBusy(true);
+      try {
+        const found = await discoverHardware();
+        const toAdd = found.filter((f) => !hwAlreadyConfigured(f, drivers));
+        for (const f of toAdd) {
+          // Sequential (see DriversPanel.addAllHw): each add mints a
+          // server-side id off the current config file.
+          await addDriverForHardware(f);
+        }
+        const fresh = await listDrivers();
+        setData(fresh);
+        const map = hardwareAssignments(fresh.drivers, fresh.roles);
+        setAssignments(map);
+        saveAssignments(map);
+        const assignedRoles = Object.values(map).filter(Boolean).length;
+        showToast(
+          "success",
+          `Detected ${found.length} device(s)` +
+            (toAdd.length ? `, added ${toAdd.length} driver(s)` : "") +
+            ` — ${assignedRoles} role(s) assigned, review and Connect Rig`,
+        );
+      } catch (e) {
+        showToast("error", e instanceof Error ? e.message : "hardware detection failed");
+      } finally {
+        setBusy(false);
+      }
+    })();
 
   // ------------------------------------------------------------- profiles
   const doSaveProfile = () =>
@@ -373,6 +413,9 @@ export default function EquipmentView(): JSX.Element {
             </button>
             <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doSimRig}>
               ▶ Simulator rig
+            </button>
+            <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
+              ▶ Detect hardware rig
             </button>
             <button type="button" className="btn btn-danger" disabled={busy || !canConfig} onClick={doDisconnect}>
               Disconnect
