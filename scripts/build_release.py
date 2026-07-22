@@ -1,17 +1,30 @@
 #!/usr/bin/env python3
-"""Assemble a release bundle: server source + ui/dist + manifest -> ``.tar.gz``.
+"""Assemble a release bundle: server source + ui/dist + optional vendored assets
++ manifest -> ``.tar.gz``.
 
-    python scripts/build_release.py --version 0.2.0 --out dist
+    python scripts/build_release.py --version 0.2.0 --out dist \
+        --astap-dir release-assets/astap \
+        --survey-pack release-assets/dss2color
 
 Layout inside the tarball (single top dir ``astrodeck-<version>/``):
 
-    server/astrodeck/...     the package (enough to `pip install ./server`)
+    server/astrodeck/...                            the package
+    server/astrodeck/vendor/astap/                  bundled ASTAP binary + D05 DB
+    server/astrodeck/catalog/_bundled_pack/dss2color/  baseline survey pack
     server/pyproject.toml
-    ui/dist/...              the prebuilt SPA (CI builds it first)
-    manifest.json           {name, version, built_at, contents}
+    ui/dist/...                                     the prebuilt SPA
+    manifest.json                                   {name, version, built_at, contents}
 
-The UI dist is OPTIONAL locally (a warning is printed) so the bundler can be
-smoke-tested without a node build; CI always builds the UI before calling this.
+The UI dist and BOTH vendored asset trees are OPTIONAL (a warning is printed and
+that asset is omitted) so the bundler can be smoke-tested without a node build or
+the ~150 MB of binaries; CI populates them before calling this.
+
+Producing the assets (separate, network-heavy — not this script's job):
+  * ASTAP: download the per-OS ``astap_cli`` from github.com/han-k59/astap plus the
+    D05 star DB (``*.290``) into one dir; rename ``astap_cli``->``astap`` if desired.
+  * Survey pack (order-3 baseline, ~45 MB):
+      python -m astrodeck.catalog.survey_pack fetch --order 3 --dest release-assets/dss2color
+
 Prints the tarball path on success.
 """
 from __future__ import annotations
@@ -28,8 +41,68 @@ _IGNORE = shutil.ignore_patterns(
     ".pytest_cache", ".mypy_cache", ".ruff_cache", "config",
 )
 
+# MPL-2.0 lets us redistribute the astap_cli binary inside the release as long as
+# we ship this notice (license text + source link) and the Gaia DB credit.
+_ASTAP_NOTICE = """\
+ASTAP command-line plate solver (astap_cli) — bundled with AstroDeck.
 
-def build(version: str, repo_root: Path, out_dir: Path) -> Path:
+ASTAP is licensed under the Mozilla Public License 2.0 (MPL-2.0).
+Full license: https://www.mozilla.org/MPL/2.0/
+Source:       https://github.com/han-k59/astap
+
+The bundled star database is derived from ESA/Gaia data:
+    "This work has made use of data from the European Space Agency (ESA)
+     mission Gaia, processed by the Gaia Data Processing and Analysis
+     Consortium (DPAC)."  Credit: ESA/Gaia/DPAC.
+
+MPL-2.0 is file-scoped copyleft covering ASTAP's own source only; it does not
+affect AstroDeck's license.
+"""
+
+
+def _stage_astap(astap_dir: Path, pkg_root: Path) -> list[str]:
+    """Copy the vendored ASTAP binary + star DB into the staged package at
+    ``astrodeck/vendor/astap/`` (where ``solve/astap.py`` discovers both the binary
+    and, via ``-d``, the ``.290`` DB). Writes the MPL/Gaia NOTICE. Warns loudly (no
+    silent gap) when the binary or DB is missing. Returns manifest content labels."""
+    dest = pkg_root / "vendor" / "astap"
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in sorted(astap_dir.iterdir()):
+        if item.is_dir():
+            shutil.copytree(item, dest / item.name, ignore=_IGNORE, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest / item.name)
+    (dest / "NOTICE.txt").write_text(_ASTAP_NOTICE, encoding="utf-8")
+    has_bin = any((dest / n).exists()
+                  for n in ("astap", "astap.exe", "astap_cli", "astap_cli.exe"))
+    has_db = any(dest.glob("*.290")) or any(dest.glob("*.1476"))
+    if not has_bin:
+        print(f"WARNING: {astap_dir} has no astap binary -- the box will fall back "
+              "to a system ASTAP install (or have no solver)")
+    if not has_db:
+        print(f"WARNING: {astap_dir} has no star DB (*.290/*.1476) -- ASTAP will "
+              "rely on its own DB location")
+    return ["server/astrodeck/vendor/astap"]
+
+
+def _stage_survey_pack(pack_dir: Path, pkg_root: Path, slug: str = "dss2color") -> list[str]:
+    """Copy a baseline HiPS pack into the staged package at
+    ``astrodeck/catalog/_bundled_pack/<slug>/`` (read by
+    ``survey_pack.seed_bundled_pack`` on first boot). Requires a ``pack.json`` — the
+    seed gates on the manifest, so a pack without it would never be recognized."""
+    if not (pack_dir / "pack.json").is_file():
+        print(f"WARNING: {pack_dir} has no pack.json -- NOT bundling a baseline survey "
+              "pack (a fresh box boots to the 'no survey source' Atlas CTA)")
+        return []
+    dest = pkg_root / "catalog" / "_bundled_pack" / slug
+    dest.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(pack_dir, dest, ignore=_IGNORE, dirs_exist_ok=True)
+    return [f"server/astrodeck/catalog/_bundled_pack/{slug}"]
+
+
+def build(version: str, repo_root: Path, out_dir: Path,
+          astap_dir: Path | None = None,
+          survey_pack_dir: Path | None = None) -> Path:
     repo_root = Path(repo_root).resolve()
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -41,8 +114,11 @@ def build(version: str, repo_root: Path, out_dir: Path) -> Path:
 
     # server: the package + pyproject (enough for `pip install ./server`).
     srv = repo_root / "server"
-    shutil.copytree(srv / "astrodeck", staging / "server" / "astrodeck", ignore=_IGNORE)
+    pkg_root = staging / "server" / "astrodeck"
+    shutil.copytree(srv / "astrodeck", pkg_root, ignore=_IGNORE)
     shutil.copy2(srv / "pyproject.toml", staging / "server" / "pyproject.toml")
+
+    contents = ["server", "ui/dist"]
 
     # ui/dist: prebuilt SPA (optional locally).
     ui_dist = repo_root / "ui" / "dist"
@@ -52,11 +128,24 @@ def build(version: str, repo_root: Path, out_dir: Path) -> Path:
         print(f"WARNING: {ui_dist} missing -- bundling WITHOUT the UI "
               "(CI must build it first)")
 
+    # vendored ASTAP binary + D05 star DB (UX-04). Optional; warn + omit if absent.
+    if astap_dir is not None and Path(astap_dir).is_dir():
+        contents += _stage_astap(Path(astap_dir), pkg_root)
+    elif astap_dir is not None:
+        print(f"WARNING: --astap-dir {astap_dir} not found -- bundling WITHOUT ASTAP")
+
+    # baseline survey pack for first-boot seeding (UX-07). Optional; warn + omit.
+    if survey_pack_dir is not None and Path(survey_pack_dir).is_dir():
+        contents += _stage_survey_pack(Path(survey_pack_dir), pkg_root)
+    elif survey_pack_dir is not None:
+        print(f"WARNING: --survey-pack {survey_pack_dir} not found -- bundling "
+              "WITHOUT a baseline survey pack")
+
     manifest = {
         "name": "astrodeck",
         "version": version,
         "built_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "contents": ["server", "ui/dist"],
+        "contents": contents,
     }
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
@@ -71,13 +160,20 @@ def build(version: str, repo_root: Path, out_dir: Path) -> Path:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", required=True)
     ap.add_argument("--out", default="dist")
     ap.add_argument("--repo-root",
                     default=str(Path(__file__).resolve().parents[1]))
+    ap.add_argument("--astap-dir", default=None,
+                    help="dir with the astap_cli binary + D05 star DB to vendor")
+    ap.add_argument("--survey-pack", default=None, dest="survey_pack",
+                    help="dir with a baseline HiPS pack (must contain pack.json)")
     args = ap.parse_args()
-    build(args.version, Path(args.repo_root), Path(args.out))
+    build(args.version, Path(args.repo_root), Path(args.out),
+          astap_dir=Path(args.astap_dir) if args.astap_dir else None,
+          survey_pack_dir=Path(args.survey_pack) if args.survey_pack else None)
     return 0
 
 
