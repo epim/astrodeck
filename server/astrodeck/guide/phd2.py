@@ -372,6 +372,9 @@ class PHD2Guider(Guider):
             rms_ra=round(rms_ra, 2), rms_dec=round(rms_dec, 2),
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=self._snr, recent=recent[-120:],
+            # PHD2 multiplies its raw px errors by pixel_scale (see _handle_event),
+            # so this stream is always arcsec (UX-15).
+            is_arcsec=True, image_scale=round(self.pixel_scale, 3),
         )
 
     async def guide_frame(self) -> bytes | None:

@@ -48,3 +48,51 @@ def test_guide_scale_falls_back_to_default_when_unset(monkeypatch):
     guider = sess.native_guider()
     assert guider is not None
     assert guider._image_scale == 1.0  # the documented default when no guide FL
+
+
+# --- UX-15: is_arcsec / image_scale on the published GuideStats -------------
+
+def test_backend_flags_scale_known_only_when_focal_length_set(monkeypatch):
+    """The native backend marks the scale KNOWN only when a real guide-scope
+    focal length feeds a genuine arcsec/px value (UX-15)."""
+    known = _session_with_optics(monkeypatch, guide_fl=200.0).native_guider()
+    assert known._image_scale_known is True
+    # A fresh session with no guide FL: the 1:1 fallback is NOT arcsec.
+    unset = _session_with_optics(monkeypatch, guide_fl=None).native_guider()
+    assert unset._image_scale_known is False
+
+
+class _FakeEngine:
+    """Minimal engine stub returning pixel-space errors, like the Rust engine."""
+    def stats(self):
+        return {"guiding": True, "rms_ra": 0.5, "rms_dec": 0.4,
+                "rms_total": 0.64, "snr": 30.0, "recent": [(1.0, 0.5, -0.4)]}
+
+
+def _guider_with_engine(**cfg):
+    from astrodeck.guide.native import NativeGuider
+    g = NativeGuider(_FakeCam(), _FakeTel(), config=cfg)
+    g._engine = _FakeEngine()
+    g._active = True
+    g._lost = False
+    return g
+
+
+def test_stats_reports_arcsec_when_scale_known():
+    g = _guider_with_engine(image_scale_arcsec=2.0, image_scale_known=True)
+    st = g.stats()
+    assert st.is_arcsec is True
+    assert st.image_scale == pytest.approx(2.0)
+    # engine pixels are scaled to arcsec by 2.0
+    assert st.rms_total == pytest.approx(0.64 * 2.0, abs=0.01)
+    assert st.recent[0]["ra"] == pytest.approx(0.5 * 2.0, abs=0.001)
+
+
+def test_stats_reports_pixels_when_scale_unknown():
+    # image_scale_known defaults False → the 1:1 fallback stays PIXELS.
+    g = _guider_with_engine(image_scale_arcsec=1.0)
+    st = g.stats()
+    assert st.is_arcsec is False
+    assert st.image_scale == 0.0
+    # raw engine pixels pass through unchanged (scale 1.0)
+    assert st.rms_total == pytest.approx(0.64, abs=0.01)

@@ -37,6 +37,14 @@ export default function GuideView() {
   const stats = guide ?? status?.guider ?? null;
   const connected = !!status?.guider || !!guide;
 
+  // UX-15: when no guide-scope focal length is configured the native guider
+  // reports RMS in guide-camera PIXELS, not arcsec. Label the unit honestly
+  // (px vs ″) instead of stamping "arcsec" on raw pixels. Absent flag ⇒ arcsec
+  // (older payload / the prior default) — only an explicit false means px.
+  const isArcsec = stats?.is_arcsec !== false;
+  const unit = isArcsec ? '"' : "px";
+  const unitWord = isArcsec ? "arcsec" : "px";
+
   // UX-16: in-flight guard on the multi-second guide actions (start / recalibrate)
   // so they can't be double-fired in the POST round-trip. Covers only the request
   // round-trip, so Stop stays usable while calibration/guiding runs server-side.
@@ -50,7 +58,7 @@ export default function GuideView() {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
-      <Panel title="Guide Error · arcsec"
+      <Panel title={`Guide Error · ${unitWord}`}
         right={
           <span className="flex items-center gap-2">
             <ProviderBadge cap="guide" />
@@ -61,12 +69,19 @@ export default function GuideView() {
         }>
         <GuideGraph samples={stats?.recent ?? []} />
         <div className="grid grid-cols-4 gap-3 mt-4 border-t border-line pt-3">
-          <Stat label='RMS RA' value={stats ? stats.rms_ra.toFixed(2) : "—"} unit='"' />
-          <Stat label='RMS Dec' value={stats ? stats.rms_dec.toFixed(2) : "—"} unit='"' />
-          <Stat label='RMS Total' value={stats ? stats.rms_total.toFixed(2) : "—"} unit='"'
+          <Stat label='RMS RA' value={stats ? stats.rms_ra.toFixed(2) : "—"} unit={unit} />
+          <Stat label='RMS Dec' value={stats ? stats.rms_dec.toFixed(2) : "—"} unit={unit} />
+          <Stat label='RMS Total' value={stats ? stats.rms_total.toFixed(2) : "—"} unit={unit}
             tone={stats && stats.rms_total > 0 ? (stats.rms_total < 1 ? "good" : stats.rms_total < 2 ? "warn" : "bad") : undefined} />
           <Stat label="SNR" value={stats ? stats.snr.toFixed(0) : "—"} />
         </div>
+        {stats && !isArcsec && (
+          /* UX-15: raw pixels, not arcsec — tell the user why and how to fix it. */
+          <p className="text-[11px] text-dim mt-2 leading-snug">
+            RMS is in guide-camera pixels. Set the guide scope's focal length in
+            Optics to report arcsec.
+          </p>
+        )}
       </Panel>
 
       <div className="flex flex-col gap-4">

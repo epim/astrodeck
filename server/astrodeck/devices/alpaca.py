@@ -335,6 +335,14 @@ class AlpacaCamera(_AlpacaDevice, Camera):
             self.max_gain = await self._get("gainmax")
         except DeviceError:
             self.max_gain = 0
+        # ASCOM MaxBinX → the UI's bin ceiling (UX-27). Keep the base default
+        # (4) if the driver doesn't report it or reports a nonsense <1.
+        try:
+            mb = int(await self._get("maxbinx"))
+            if mb >= 1:
+                self.max_bin = mb
+        except (DeviceError, TypeError, ValueError):
+            pass
         try:
             self.can_cool = await self._get("cansetccdtemperature")
         except DeviceError:

@@ -181,6 +181,12 @@ class NativeGuider(Guider):
         self._offset = int(cfg.get("offset", _DEFAULT_OFFSET))
         self._binning = int(cfg.get("binning", 1))
         self._image_scale = float(cfg.get("image_scale_arcsec", 1.0))
+        # Whether that scale is a REAL arcsec/px value (guide-scope focal length
+        # + pixel size known, or the sim's declared plate scale) vs the 1:1
+        # fallback the native backend uses when the guide-scope focal length is
+        # unset. Drives GuideStats.is_arcsec so the UI never labels raw pixels as
+        # arcsec (UX-15). Callers that know their scale is real set it True.
+        self._image_scale_known = bool(cfg.get("image_scale_known", False))
         # Mount-specific meridian-flip constant (PHD2's CalFlipRequiresDecFlip);
         # default False matches the common GEM. Used by BOTH the guiding-start
         # host contract and the meridian-flip ABC method.
@@ -732,6 +738,10 @@ class NativeGuider(Guider):
         except Exception:  # pragma: no cover - defensive
             return self._last_stats
         scale = self._image_scale if self._image_scale > 0 else 1.0
+        # is_arcsec only when we have a genuine scale to convert BY; otherwise
+        # scale==1.0 leaves the engine's raw pixels unchanged and calling them
+        # arcsec would mislead (UX-15).
+        arcsec = self._image_scale_known and self._image_scale > 0
         recent = [{"t": round(float(t), 3), "ra": round(float(ra) * scale, 3),
                    "dec": round(float(dec) * scale, 3)}
                   for t, ra, dec in s.get("recent", [])]
@@ -743,6 +753,8 @@ class NativeGuider(Guider):
             rms_total=round(float(s.get("rms_total", 0.0)) * scale, 2),
             snr=round(float(s.get("snr", 0.0)), 1),
             recent=recent[-120:],
+            is_arcsec=arcsec,
+            image_scale=round(self._image_scale, 3) if arcsec else 0.0,
         )
 
     # ------------------------------------------------------------ persistence

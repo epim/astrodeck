@@ -141,6 +141,7 @@ class NativeSession:
         # measures px/ms empirically) when either input is missing. The guide
         # loop runs at bin 1, so binning = 1 here.
         image_scale = 1.0
+        image_scale_known = False
         try:
             from ...config import config_store
             guide_fl = config_store.cfg().optics.guide_focal_length_mm
@@ -148,11 +149,14 @@ class NativeSession:
             binning = 1
             if guide_fl and guide_fl > 0 and px and px > 0:
                 image_scale = 206.265 * float(px) / float(guide_fl) * binning
+                image_scale_known = True  # real arcsec/px → RMS reported in arcsec
         except Exception:  # pragma: no cover - defensive; scale stays 1.0
             image_scale = 1.0
+            image_scale_known = False
         self._guider = NativeGuider(
             gcam, tel,
             config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
+                    "image_scale_known": image_scale_known,
                     **guide_algo_config()},
             profile_id=None)
         return self._guider
