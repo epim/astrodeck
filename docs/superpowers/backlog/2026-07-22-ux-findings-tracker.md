@@ -49,11 +49,17 @@ task-provider**, not a device — selected on the **Guide view's "Guide Provider
 and it only appears once a `guide_camera` role is assigned + connected (Auto already
 prefers native when no NINA). So the mechanism exists + is discovered; the failure is
 **cross-panel discoverability** + overlapping terminology.
-**Options:** (a) add a pointer from the Equipment "Guiding" row to the Guide provider panel
-when native isn't yet available; (b) **surface the guide-provider override in Equipment's
-Tasks panel** alongside autofocus/polar/solve so all 4 live in one place (recommended);
-(c) docs/tooltip only.
-**Files:** `native_backend.py:199-209`; `providers.py:317-408`; `ui/src/views/GuideView.tsx:129-264`; `ui/src/views/EquipmentView.tsx:605-617`.
+**"isn't it already?"** — Equipment *does* render a "Guiding" row (`RoleSlot`,
+`EquipmentView.tsx:381,519,605`) with a driver `<select>` fed by `eligibleDrivers("guider")`
+— but that select only lists driver-*devices* (PHD2/NINA); the native guider is not a device,
+so it never appears there today. So no, our native guider is not currently selectable in
+Equipment.
+**Decision → make the native guider selectable in the Equipment panel.** Surface the
+guide-provider choice (incl. "AstroDeck native") in Equipment — either as an option in the
+Guiding row or in Equipment's Tasks panel alongside autofocus/polar/solve so all four
+providers live in one place. Requires a `guide_camera` role assigned+connected for native to
+be eligible; show that as the gating hint when it isn't.
+**Files:** `native_backend.py:199-209`; `providers.py:317-408`; `ui/src/views/GuideView.tsx:129-264`; `ui/src/views/EquipmentView.tsx:381,519,605-617`; `ui/src/components/equipment/TasksPanel.tsx`.
 
 ### UX-03 — Autofocus + Polar-align default to native · DECISION · P2
 **Precedence is already native-first.** Autofocus: `_resolve_autofocus` prefers native
@@ -66,18 +72,29 @@ gate. **So polar-align's native default is gated entirely on UX-04.**
 **Fix:** resolve ASTAP (UX-04) → polar auto-resolves native, no precedence change needed.
 **Files:** `providers.py:171-246`; `devices/nina.py:448`; `ui/src/components/equipment/TasksPanel.tsx:133`.
 
-### UX-04 — Plate-solve default / native solver · DECISION · P2
-**Fact-check:** ASTAP is **NOT bundled** — `find_astap()` searches external install
-locations (like NINA). There is **no native solver** — `SimSolver` refuses real rigs,
-every `native_solver()` returns None, no `astro-solve` crate exists (only a design
-dossier). Precedence already puts ASTAP first *when found*; the "if astap is native"
-premise is false today.
-**Options:** (a) make ASTAP the solve default **if bundled** (needs b); (b) **bundle ASTAP**
-— license-gated (ASTAP is closed-source freeware by Han Kleijn; verify redistribution
-terms out-of-repo; ship `astap.exe` + star DB per-platform) — this is the near-term unblock
-for UX-03's polar default; (c) **build a native Rust plate-solver** (`astro-solve`, quad/
-index matching) — substantial, a real differentiator that fully removes the external dep.
-**Files:** `solve/astap.py:15-31`; `solve/simsolver.py`; `providers.py:249-273`; `native/crates/` (no solve crate); `docs/native-parity/algorithms/nina-platesolving.md`.
+### UX-04 — Plate-solve default: BUNDLE ASTAP · DECISION **RESOLVED** · P2
+**Fact-check (corrected):** ASTAP is **NOT** closed freeware — both the GUI `astap` and the
+command-line `astap_cli` are one codebase under **MPL-2.0** (Mozilla Public License 2.0),
+source-available. MPL is *weak, file-scoped* copyleft: we **may redistribute the binary**
+inside our release (even under AstroDeck's own license) as long as we ship the MPL-2.0 text
++ a source link (`github.com/han-k59/astap`) and keep notices — it does **not** infect
+AstroDeck's code (the GPLv3 worry was wrong). Star DBs are Gaia-derived → redistributable
+with an **"ESA/Gaia/DPAC"** credit. (Skip HyperLEDA — non-commercial, and unused for solving.)
+**Availability:** official `astap_cli` builds exist for **every** supported OS — Windows x64,
+Linux x64, macOS Intel + Apple Silicon (all <1.5 MB), plus ARM variants. **No OS gap.**
+Currently ASTAP is **not bundled** (`find_astap()` only searches external install paths) and
+**no native solver exists** (SimSolver refuses real rigs; `native_solver()`=None; no crate).
+**Decision → bundle ASTAP + a star DB in the release** (unblocks UX-03 polar native default).
+**Footprint:** per-OS binary 0.3–1.4 MB + one shared star DB — **D05 ~102 MB** (covers 0.6°–6°
+FOV, the typical astro case) as the default, or D50 ~850 MB for max FOV robustness.
+**Two code touch-ups the bundle needs:** (1) `find_astap()` looks for `astap`/`astap.exe` and
+has **no macOS path** → rename the bundled `astap_cli`→`astap` or set `ASTAP_PATH` at launch;
+(2) `astap.py` passes no `-d <db_dir>` → colocate the DB with the binary or add `-d`.
+CLI flags astap.py already uses (`-f -z -r -fov -ra -spd`, `.ini`/`PLTSOLVD`+WCS parse) **match**
+the `astap_cli` contract exactly. Native Rust solver = optional future work, **not** a blocker.
+**Supported-OS basis:** CI matrix = ubuntu-latest + windows-latest (Win x64 + Linux x64);
+`requires-python>=3.11`; macOS = soft install target; ARM = out of scope.
+**Files:** `solve/astap.py` (`find_astap` + `AstapSolver.solve`); `providers.py:249-273`; `scripts/build_release.py` (bundle wiring); `native/crates/` (no solve crate).
 
 ### UX-05 — Filter-wheel slot-name assignment · FEATURE · P2
 Gear icon on the filter-wheel box → modal to name each slot (for FITS headers +
@@ -88,7 +105,8 @@ reconnect. **Build:** (a) a per-profile config store for user slot names (seed
 `filter_names` from it at connect, hardware letters as fallback — apply generically in
 `hub`, not just Wanderer); (b) `POST /api/filterwheel/names` (cap-gated); (c) UI gear
 (reuse the `settings` icon) on the Filter Wheel panel/box → modal, one input per slot;
-(d) FITS wiring **already done**. Consider filter-name-in-filename too (NINA parity).
+(d) FITS wiring **already done**. **Decision: also match NINA's filter-name-in-filename**
+convention (filter token in the saved-image filename), in addition to the FITS `FILTER` header.
 **Files:** `base.py:339`; `wanderer_snowflake.py:168`; `hub.py:1405,2243`; `imaging/fitsio.py:35`; `api/app.py:2805`; `ui/src/views/CaptureView.tsx:326`; `ui/src/components/icons.tsx:40`; `guide/native.py:769` (per-profile config-store precedent).
 
 ### UX-06 — Atlas search: first query shows nothing · BUG (regression) · P1
@@ -101,15 +119,28 @@ first query's results arrive but `showDropdown` stays false.
 `relatedTarget === null` (keyboard-close, not a real tab-away).
 **Files:** `ui/src/components/atlas/CatalogSearch.tsx:31,34,61,82`.
 
-### UX-07 — Atlas shows no sky survey · DECISION+POLISH · P1
-Black canvas + perpetual "LOADING color…". **Root cause:** first-run config gap —
-`SurveyConfig.online_fetch` defaults **off** and no offline pack is pre-seeded, so every
-`/api/survey/tile` 404s deterministically → black canvas. A real "no survey source —
-download the pack / enable online fetch" banner exists but renders tiny/subordinate below
-the canvas; the giant "LOADING…" reads as "still working" (misleading).
-**Decisions:** (a) survey-source default — ship `online_fetch` ON, a first-run prompt, or
-a pre-seeded minimal pack; (b) fix the empty/loading state to a clear "no survey source" CTA.
-**Files:** `config.py:334`; `catalog/tiles.py:95-127`; `ui/src/components/atlas/SkyCanvas.tsx:525,549`; `ui/src/views/AtlasView.tsx:173-178,400`; `catalog/survey_pack.py`.
+### UX-07 — Atlas shows no sky survey · DECISION **RESOLVED** + POLISH · P1
+Black canvas + perpetual "LOADING color…". **Root cause (corrected — it's a deploy DATA
+gap, not a code regression):** the offline-survey *code* still ships, but the *data* does
+not. The ~212 MB order-4 DSS2-color HiPS pack lives under **git-ignored**
+`captures/_survey_pack/dss2color/` (`.gitignore`), and `scripts/build_release.py` bundles
+**only** `server/` + `ui/dist` (manifest hardcodes `["server","ui/dist"]`) — no pack, no
+first-boot seed step. So a naive/self-updated box boots with the code, an **empty pack dir**,
+and `SurveyConfig.online_fetch=False` (`config.py:334`) → `tiles.py:110-113` returns a
+deterministic 404 for **every** tile → TileEngine draws nothing → black. `pack_present()`
+gates on `pack.json`, which is written only after a *clean* fetch (`survey_pack.py:247-256`),
+so a partial pack still reads absent. The dev box shows imagery only because its pack was
+fetched locally once, outside the release path. The giant "LOADING…" is a dishonest state.
+**Decision → bundle a baseline pack + seed on first boot, keep offline-first.** Ship
+**DSS2-color order-3 (~45 MB)** as the always-present floor inside the release tarball
+(incl. its `pack.json`); on first boot, seed it into the **persistent**
+`CAPTURE_DIR/_survey_pack/dss2color` **only if absent** (so self-update won't wipe it and a
+user who fetched a deeper order keeps it). Keep `online_fetch=False` (offline-first is
+correct for field rigs) and keep the in-app "Download full pack" upgrade
+(`POST /api/survey/pack/fetch`, order-4/5). Plus: fix the empty/loading state → honest
+"no survey source" CTA. **Footprint:** order-3 color ~45 MB (~51″/px) · order-4 color
+~212 MB (~26″/px, current dev default) · order-5 ~0.7–0.9 GB; grayscale ≈ half of color.
+**Files:** `scripts/build_release.py:26-60` (bundle + seed); `catalog/survey_pack.py:23-26,145-159,247-256`; `catalog/tiles.py:95-127`; `config.py:330-334`; `ui/src/components/atlas/TileEngine.tsx:116-148`; `ui/src/views/AtlasView.tsx`.
 
 ### UX-08 — Tracking-rate pill overflows on mobile · RESPONSIVE · P1
 Solar clipped off the right edge. **Root:** `SegmentedControl` has no `min-w-0`/shrink and
@@ -149,8 +180,14 @@ stats) > Capture/Focus > Power > Settings.
 
 ---
 
-## Open product decisions (need the user)
-- **Survey source default (UX-07):** ship online-fetch ON / first-run prompt / pre-seed a pack?
-- **Plate solver (UX-04):** bundle ASTAP (license permitting) vs build a native Rust solver vs both (bundle now, native later)?
-- **Guider selection model (UX-02):** relocate the guide-provider override into Equipment Tasks, or just add a discoverability pointer?
-- **Filter-name-in-filename (UX-05):** match NINA's filter-in-filename convention as well as the FITS header?
+## Product decisions — RESOLVED 2026-07-21
+- **Plate solver (UX-04):** **Bundle ASTAP** (`astap_cli`, MPL-2.0 → redistributable) + the
+  **D05 star DB (~102 MB)** in the release; available on all supported OSs. Two `astap.py`
+  touch-ups (name/`ASTAP_PATH` + `-d` DB path). Native Rust solver = future work, not a blocker.
+- **Survey source (UX-07):** **Bundle a DSS2-color order-3 pack (~45 MB)** as the baseline,
+  **seed on first boot** into persistent captures if absent; **keep `online_fetch=False`**
+  (offline-first); keep the in-app full-pack upgrade fetcher.
+- **Guider selection (UX-02):** **Make the native guider selectable in the Equipment panel**
+  (surface the guide-provider choice there; gate native on a connected `guide_camera`).
+- **Filter-name-in-filename (UX-05):** **Yes — match NINA** (filter token in the filename, plus
+  the existing FITS `FILTER` header).
