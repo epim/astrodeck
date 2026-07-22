@@ -7,6 +7,8 @@ import { Field, Led, Panel, Stat, Toggle } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
 import { isExposureInvalid } from "../lib/exposure";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
+import { Icon } from "../components/icons";
+import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import { HELP } from "../help";
 
 // ---------------------------------------------------------------- capture phase
@@ -51,6 +53,7 @@ export default function CaptureView() {
   const [target, setTarget] = useState("");
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
+  const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
 
   // --- capture feedback state ---
   const [phase, setPhase] = useState<CapturePhase>("idle");
@@ -360,10 +363,23 @@ export default function CaptureView() {
 
         {/* ------------------------------------------------------- filter */}
         {status?.filterwheel && (
-          <Panel title="Filter Wheel" right={!canCapture && <ReadOnlyBadge />}>
+          <Panel title="Filter Wheel"
+            right={
+              <span className="flex items-center gap-2">
+                {!canCapture && <ReadOnlyBadge />}
+                {canCapture && (
+                  <button className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center text-dim hover:text-accent"
+                    aria-label="Edit filter slot names"
+                    title="Edit filter slot names"
+                    onClick={() => setFilterEditOpen(true)}>
+                    <Icon name="settings" size={18} />
+                  </button>
+                )}
+              </span>
+            }>
             <div className="flex flex-wrap gap-2">
               {status.filterwheel.names.map((name, i) => (
-                <button key={name}
+                <button key={`${i}-${name}`}
                   disabled={!canCapture}
                   className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}
                   onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
@@ -372,6 +388,18 @@ export default function CaptureView() {
               ))}
             </div>
           </Panel>
+        )}
+        {status?.filterwheel && (
+          <FilterNamesModal
+            open={filterEditOpen}
+            onClose={() => setFilterEditOpen(false)}
+            names={status.filterwheel.names}
+            offsets={status.filterwheel.offsets ?? []}
+            onSave={async (names, offsets) => {
+              await api.post("/api/filterwheel/names", { names, offsets });
+              showToast("success", "Filter names saved");
+            }}
+          />
         )}
 
         {/* ------------------------------------------------------- cooler */}

@@ -480,6 +480,11 @@ class FilterBody(BaseModel):
     position: int
 
 
+class FilterNamesBody(BaseModel):
+    names: list[str]
+    offsets: list[int] = []
+
+
 class SwitchBody(BaseModel):
     port_id: int
     value: float
@@ -2810,6 +2815,20 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
         return _spawn("filterwheel", fw.set_position(body.position))
+
+    @app.post("/api/filterwheel/names", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def set_filter_names(body: FilterNamesBody):
+        """Assign user filter slot names (+ optional per-filter focuser offsets),
+        persisted per profile so they outlive a reconnect (UX-05)."""
+        try:
+            hub.require("filterwheel")
+        except DeviceError as e:
+            raise _err(e)
+        try:
+            return await hub.set_filter_names(body.names, body.offsets)
+        except DeviceError as e:
+            raise _err(e)
 
     # --------------------------------------------------------------- switch
 

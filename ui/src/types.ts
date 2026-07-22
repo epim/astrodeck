@@ -44,7 +44,7 @@ export interface RigStatus {
   mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
-  filterwheel?: { position: number; names: string[] };
+  filterwheel?: { position: number; names: string[]; offsets?: number[] };
   rotator?: RotatorStatus;
   camera?: {
     temperature: number | null;

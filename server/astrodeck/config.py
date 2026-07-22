@@ -27,7 +27,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, Field, model_validator
 
 from .events import bus
-from .persist import ensure_dir, read_json, write_json_atomic
+from .persist import ensure_dir, read_json, read_json_or, write_json_atomic
 
 # --------------------------------------------------------------------- locations
 
@@ -435,6 +435,38 @@ class AppConfig(BaseModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+
+
+# ------------------------------------------------------- filter slot-name store
+# User-assigned filter-wheel slot names + per-filter focuser offsets, persisted
+# per profile so they survive reconnect (hardware wheels re-derive their letters
+# every connect). Keyed by active profile id; a single small JSON file (UX-05).
+FILTER_CONFIG_FILE = CONFIG_DIR / "filter_names.json"
+_FILTER_DEFAULT_KEY = "__default__"
+
+
+def load_filter_config(profile_id: str | None) -> dict:
+    """The saved ``{"names": [...], "offsets": [...]}`` for a profile, or ``{}``
+    when nothing has been saved (or the store is missing/corrupt)."""
+    data = read_json_or(FILTER_CONFIG_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    entry = data.get(profile_id or _FILTER_DEFAULT_KEY)
+    return entry if isinstance(entry, dict) else {}
+
+
+def save_filter_config(profile_id: str | None, names: list[str],
+                       offsets: list[int]) -> None:
+    """Persist filter slot names + offsets for a profile (best-effort merge into
+    the shared store; other profiles' entries are preserved)."""
+    data = read_json_or(FILTER_CONFIG_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    data[profile_id or _FILTER_DEFAULT_KEY] = {
+        "names": [str(n) for n in names],
+        "offsets": [int(o) for o in offsets],
+    }
+    write_json_atomic(FILTER_CONFIG_FILE, data)
 
 
 # --------------------------------------------------------------------- pure math
