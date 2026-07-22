@@ -192,9 +192,57 @@ stats) > Capture/Focus > Power > Settings.
 - **Phase D — SHIPPED** (`4d1de9f`, `72ce93a`): UX-21 (.btn coarse min-h), UX-32 (.prov-na contrast),
   UX-33 (skip-link), UX-35 (″ glyph), UX-36 (--text-dim2 refs), UX-37 (MountView .label), UX-10
   (fmtMicron), UX-34 (status dingbats → Icon), UX-20 (shared radiogroup keyboard model, 4 groups). ✅
-- **ALL 30 UX findings shipped** across A→D — every commit tsc -b clean + test-gated. NOT pushed.
-- **Release-eng (separate):** bundle the ASTAP binary + D05 star DB (astap.py `-d` wiring + vendor/) and
-  the order-3 survey pack into `build_release.py` + first-boot seed — build tasks, not code fixes.
+- **ALL 30 UX findings shipped** across A→D — every commit tsc -b clean + test-gated.
+- **Merged to main + PUSHED 2026-07-22.** `origin/main` @ `df87ef4`. See **Post-review completion**
+  below for the whole-branch review fixes, release-eng bundling (UX-04/UX-07), and the UX-34 remainder.
+
+## Post-review completion — SHIPPED + PUSHED 2026-07-22 (`origin/main` @ `df87ef4`)
+
+After A→D, an independent adversarial whole-branch review plus the two remaining release-eng
+items plus the deferred dingbat sweep all landed on `main`. Verification across all three:
+full backend suite **1556 passed / 8 skipped**, `tsc -b` clean, SegmentedControl 10/10.
+
+### Whole-branch review — `b0adee9` (7 dimensions, 12 agents, refute-by-default verify)
+5 confirmed findings, all fixed — all on the **NINA bridge path**, which the
+native/sim/Alpaca/PHD2 fixes had already covered (the bridge drew less scrutiny):
+- `NinaGuider.stats()` omitted `is_arcsec` → a NINA rig with a known PixelScale showed genuine
+  arcsec RMS labeled "px" (the inverse of UX-15). Now sets `is_arcsec`/`image_scale`, gated on a
+  reported PixelScale (mirrors native's `image_scale_known`).
+- NINA `max_bin` fell back to the CURRENT bin field `BinX` (default 1), collapsing the UI bin
+  ceiling to 1 when `MaxBinX` was absent. Now probes `MaxBinX`/`MaxBin` only (matches alpaca).
+- `NavMoreSheet` focus trap collected roving `tabIndex=-1` options → forward-Tab escaped the
+  aria-modal dialog in the default state. New `tabbablesIn()` filters non-tabbable elements.
+- +6 tests (`test_nina_optics_bin.py`, filter-seed via `_apply_connect_result`, autofocus
+  move-before-sweep ordering). Privacy/secrets scan of the whole branch: **CLEAN**.
+
+### Release-eng UX-04 + UX-07 — `0b07005`
+- **ASTAP (UX-04):** `solve/astap.py` now passes `-d <db_dir>`. `_VENDOR_ASTAP =
+  astrodeck/vendor/astap` (module const, monkeypatchable); `_bundled_db_dir()` returns it only
+  when it holds `*.290`/`*.1476` DB files; `ASTAP_DATA` env overrides. Arg assembly extracted to
+  `_solve_args()` (unit-testable). Binary discovery already covered `astap`/`astap_cli` per OS
+  (closes the macOS gap once a mac binary is bundled).
+- **Survey pack (UX-07):** `catalog/survey_pack.py` `seed_bundled_pack()` — first boot copies the
+  bundled baseline from `BUNDLED_PACK_ROOT = astrodeck/catalog/_bundled_pack/<slug>` into
+  persistent `CAPTURE_DIR/_survey_pack/<slug>` **only if absent** (self-update never wipes it; a
+  user's deeper fetched order is kept). `pack.json` copied LAST (`pack_present` gates on it, so a
+  crash mid-copy re-seeds next boot). Called best-effort in `api/app.py` boot lifespan. The honest
+  "no survey source" Atlas CTA was already shipped (SkyCanvas, `!tileDrew && surveyDegraded`).
+- **build_release.py:** `--astap-dir` → `astrodeck/vendor/astap/` (+ MPL-2.0/ESA-Gaia `NOTICE.txt`);
+  `--survey-pack` (must contain `pack.json`) → `astrodeck/catalog/_bundled_pack/<slug>/`. Both
+  optional — warn-and-omit like `ui/dist`. Manifest `contents` records what shipped.
+- **Assets are external — NOT in the repo** (per-OS `astap_cli`, ~102 MB D05 DB, ~45 MB order-3
+  pack). Produce them for a real release, then bundle:
+  1. download `astap_cli` + the D05 DB into one dir (github.com/han-k59/astap, MPL-2.0);
+  2. `python -m astrodeck.catalog.survey_pack fetch --order 3 --dest <packdir>`;
+  3. `python scripts/build_release.py --version X --astap-dir <astapdir> --survey-pack <packdir>`.
+- +12 tests (`test_astap_bundle.py`, `test_survey_pack_seed.py`, `test_build_release.py`).
+
+### UX-34 remainder — `df87ef4`
+7 action-button dingbats → `<Icon>`: ❖→`guide` (GuideView), ⊕→`align` (PolarView), ◎→`focus`
+(FocusView), ✛→`align` (MountView), ▸→`play` (PreflightModal), ⟳→`refresh` (DriversPanel ×2).
+Idiom: `<Icon name=… size=… className="inline -mt-0.5 mr-1" />`. **Left alone (deliberate):**
+semantic status shapes chosen "not colour alone" (`●▲■`, `✓△✕◌⊘`), disclosure carets (`▾▸`),
+direction arrows, and typography (`−°″×·`, inline `⚠` in text banners).
 
 ## Review results — 2026-07-21 (multi-lens workflow: 57 agents, 47 raised → 35 confirmed / 12 refuted)
 
@@ -227,7 +275,7 @@ works and defaults to native — retained only as your requested Equipment place
 | UX-31 | Equipment | P3 | First-run: primary "Connect Rig (0)" disabled; real bootstraps de-emphasized, no empty-state | `EquipmentView.tsx:405` |
 | UX-32 | ProviderBadge | P3 | `.prov-na` 11px text in `--text-faint` (sub-4.5:1 contrast) | `index.css:429` |
 | UX-33 | App shell | P3 | No skip-to-content; 11-button nav precedes `<main>` in tab order | `App.tsx:383` |
-| UX-34 | App-wide | P3 | Inline unicode dingbats as icons (size/baseline mismatch, night-palette risk) | `SequenceView.tsx:63` |
+| UX-34 | App-wide | P3 | Inline unicode dingbats as icons (size/baseline mismatch, night-palette risk) — **SHIPPED** status `72ce93a`, action buttons `df87ef4` | `SequenceView.tsx:63` |
 | UX-35 | Guide/Header | P3 | Guide RMS prints ASCII `"` for arcsec vs `″` elsewhere | `GuideView.tsx:57` |
 | UX-36 | Mount/SlewPad | P3 | 7 refs to undefined `--text-dim2` token (silently aliases `text-dim`) | `SlewPad.tsx:314` |
 | UX-37 | Mount | P3 | "tracking"/"rate" use ad-hoc labels vs the `.label` class | `MountView.tsx:121` |
@@ -241,9 +289,11 @@ responsive/contrast/touch magnitudes before/after.
 - **Plate solver (UX-04):** **Bundle ASTAP** (`astap_cli`, MPL-2.0 → redistributable) + the
   **D05 star DB (~102 MB)** in the release; available on all supported OSs. Two `astap.py`
   touch-ups (name/`ASTAP_PATH` + `-d` DB path). Native Rust solver = future work, not a blocker.
+  — **IMPLEMENTED `0b07005`** (astap `-d` wiring + `build_release.py --astap-dir`); assets external.
 - **Survey source (UX-07):** **Bundle a DSS2-color order-3 pack (~45 MB)** as the baseline,
   **seed on first boot** into persistent captures if absent; **keep `online_fetch=False`**
   (offline-first); keep the in-app full-pack upgrade fetcher.
+  — **IMPLEMENTED `0b07005`** (`seed_bundled_pack` + `build_release.py --survey-pack`); pack external.
 - **Guider selection (UX-02):** **Make the native guider selectable in the Equipment panel**
   (surface the guide-provider choice there; gate native on a connected `guide_camera`).
 - **Filter-name-in-filename (UX-05):** **Yes — match NINA** (filter token in the filename, plus
