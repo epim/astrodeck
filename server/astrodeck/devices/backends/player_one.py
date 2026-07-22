@@ -102,9 +102,9 @@ class PlayerOneBackend:
         found: list[dict] = []
         try:
             sdk = make_player_one()
-            for _ in range(await asyncio.to_thread(sdk.count)):
+            for i in range(await asyncio.to_thread(sdk.count)):
                 found.append({"role": "camera", "name": "Player One (USB)",
-                              "verified": True})
+                              "verified": True, "index": i})
         except Exception:  # noqa: BLE001
             pass
         return found

@@ -188,11 +188,15 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
 
 # ------------------------------------------------------ driver-row redaction
 def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
-    """Scrub ``host``/``port``/``extra`` from every driver row in a ``GET
-    /api/drivers`` payload unless ``principal`` holds ``config.backend`` (the
-    same cap that can WRITE a driver's endpoint). Without this, a
-    CAP_VIEW_STATUS-only (viewer) caller could read every configured driver's
-    LAN host/port/DDNS straight off a read-only status surface.
+    """Scrub ``host``/``port``/``port_path``/``extra`` from every driver row in
+    a ``GET /api/drivers`` payload unless ``principal`` holds
+    ``config.backend`` (the same cap that can WRITE a driver's endpoint).
+    Without this, a CAP_VIEW_STATUS-only (viewer) caller could read every
+    configured driver's LAN host/port/DDNS -- or a native driver's serial
+    COM port -- straight off a read-only status surface. ``port_path`` is
+    addressing (the serial analog of host/port), so it's stripped alongside
+    them; ``transport``/``index`` are NOT addressing (a transport kind or a
+    per-unit ordinal reveals nothing reachable) and are left in.
 
     ``status``/``offers`` and the top-level ``roles`` list are untouched — the
     redaction is purely endpoint-identity, not availability.
@@ -215,6 +219,7 @@ def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
         row = dict(row)
         row.pop("host", None)
         row.pop("port", None)
+        row.pop("port_path", None)
         row.pop("extra", None)
         scrubbed.append(row)
     return {**payload, "drivers": scrubbed}

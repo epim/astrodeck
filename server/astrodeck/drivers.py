@@ -267,7 +267,14 @@ async def _probe_native(entry: DriverEntry) -> dict:
 async def _probe_configured(entry: DriverEntry, force: bool) -> dict:
     row: dict = {"id": entry.id, "type": entry.type, "label": entry.label,
                  "enabled": entry.enabled, "implicit": False,
-                 "host": entry.host, "port": entry.port}
+                 "host": entry.host, "port": entry.port,
+                 # Native-driver addressing (B follow-up B): lets the client
+                 # dedupe native drivers by port/index and show the COM port
+                 # in the Equipment UI. transport/index are non-sensitive;
+                 # port_path is addressing and gets stripped alongside host/
+                 # port for a caller lacking config.backend (see redact.py).
+                 "transport": entry.transport, "port_path": entry.port_path,
+                 "index": (entry.extra or {}).get("index")}
     if not entry.enabled:
         # Disabled is a USER state, not a network state — short-circuit, never
         # probe, and report it verbatim so the UI can badge "disabled".

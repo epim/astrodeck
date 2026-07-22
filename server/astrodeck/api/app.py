@@ -653,6 +653,9 @@ class DriverPatchBody(BaseModel):
     enabled: bool | None = None
     label: str | None = None
     extra: dict | None = None
+    # B follow-up C: a moved COM port can be fixed without delete+recreate.
+    port_path: str | None = None
+    transport: str | None = None
 
 
 class PackFetchBody(BaseModel):
@@ -885,12 +888,20 @@ def create_app() -> FastAPI:
               dependencies=[Depends(require(CAP_SYSTEM_UPDATE))])
     @declare(CAP_SYSTEM_UPDATE)
     async def update_set_config(body: UpdateConfig):
+        # A blank github_token means "unchanged" (the UI only ever sees the
+        # redacted block, so it echoes back empty) -- restore the stored secret
+        # rather than wiping it. Mirrors the admin_token / device_token pattern.
+        if not (body.github_token or "").strip():
+            body = body.model_copy(
+                update={"github_token": config_store.cfg().update.github_token})
         try:
             cfg = config_store.set_update_config(body)
         except ValueError as e:
             raise HTTPException(400, str(e))
         bus.publish("config", config=redacted(cfg))
-        return cfg
+        # redacted() so the github_token (and any other secret) is never returned
+        # in the HTTP response body either (only a *_configured boolean).
+        return redacted(cfg)
 
     # ---------------------------------------------------- capability providers
     # Global per-capability routing override (native parity — Settings → Connect
