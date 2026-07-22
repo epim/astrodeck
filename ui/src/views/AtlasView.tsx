@@ -36,7 +36,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import type { CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, Target, VisibilityNight } from "../types";
 import { getPackStatus } from "../api/backends";
-import { ARCSEC_PER_RAD } from "../lib/optics";
+import { ARCSEC_PER_RAD, fmtMicron } from "../lib/optics";
 import {
   fovFromOptics,
   plausibilityHint,
@@ -643,7 +643,7 @@ export default function AtlasView(): JSX.Element {
               min={0}
               step={0.01}
               value={pixelDraft}
-              placeholder={pxFromCam ? String(liveOptics?.pixel_size_um ?? "") : undefined}
+              placeholder={pxFromCam ? fmtMicron(liveOptics?.pixel_size_um ?? 0) : undefined}
               disabled={!optics}
               onChange={(e) => setPixelDraft(e.target.value)}
               onBlur={commitPixel}

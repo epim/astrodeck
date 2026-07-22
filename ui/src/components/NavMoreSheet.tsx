@@ -19,6 +19,7 @@ import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
 import { Toggle } from "./ui";
 import { haptics } from "../lib/haptics";
+import { handleRadioKeyDown, rovingTabIndex } from "../lib/radiogroup";
 import {
   useLockAvailable,
   useTouchSettings,
@@ -264,19 +265,26 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
             <Icon name="capture" size={24} />
             <span className="font-display tracking-wide text-sm flex-1 text-left">Touch size</span>
             <div className="inline-flex gap-1" role="radiogroup" aria-label="Touch target size">
-              {SIZING.map((s) => (
+              {SIZING.map((s, i) => {
+                const activeIndex = SIZING.findIndex((o) => o.id === touch.touchSizing);
+                const select = (idx: number) => setTouch({ touchSizing: SIZING[idx].id });
+                return (
                 <button
                   key={s.id}
                   role="radio"
                   aria-checked={touch.touchSizing === s.id}
-                  onClick={() => setTouch({ touchSizing: s.id })}
+                  // UX-20: roving tabindex + shared arrow-key model
+                  tabIndex={rovingTabIndex(i, activeIndex)}
+                  onClick={() => select(i)}
+                  onKeyDown={(e) => handleRadioKeyDown(e, i, SIZING.length, select)}
                   className={`btn !py-1 !px-2 !text-[11px] min-h-[44px] ${
                     touch.touchSizing === s.id ? "!border-accent !text-accent bg-accent/10" : ""
                   }`}
                 >
                   {s.label}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
