@@ -143,3 +143,26 @@ def test_calibration_report_none_without_engine():
     from astrodeck.guide.native import NativeGuider
     g = NativeGuider(_FakeCam(), _FakeTel(), config={})
     assert g.calibration_report() is None
+
+
+# --- UX-24: native dither honors a settle-timeout override -----------------
+
+async def test_native_dither_honors_settle_timeout_override():
+    """A caller settle timeout replaces the (much longer) default wait, so a
+    non-settling dither fails fast instead of hanging _SETTLE_TIMEOUT_S."""
+    import asyncio
+    import pytest as _pytest
+    from astrodeck.guide.native import NativeGuider
+    from astrodeck.devices.base import DeviceError
+
+    class _NoSettleEngine:
+        def dither(self, dx, dy):  # never signals settle
+            pass
+
+    g = NativeGuider(_FakeCam(), _FakeTel(), config={})
+    g._engine = _NoSettleEngine()
+    g._active = True
+    # 0.4s override must fire well within this 5s guard; if it were ignored the
+    # default timeout would blow past 5s and this raises TimeoutError instead.
+    with _pytest.raises(DeviceError):
+        await asyncio.wait_for(g.dither(3.0, {"timeout": 0.4}), timeout=5.0)

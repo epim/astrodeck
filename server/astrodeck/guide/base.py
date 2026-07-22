@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import TypedDict
+
+
+class SettleParams(TypedDict, total=False):
+    """Dither settle criteria (UX-24). ``pixels``: the star must stay within this
+    many px; ``time``: for at least this many seconds; ``timeout``: give up
+    waiting after this many seconds. All optional — a missing key keeps the
+    guider's default."""
+    pixels: float
+    time: float
+    timeout: float
 
 
 @dataclass
@@ -50,8 +61,15 @@ class Guider(ABC):
     async def stop_guiding(self) -> None: ...
 
     @abstractmethod
-    async def dither(self, pixels: float = 3.0) -> None:
-        """Dither and wait for settle."""
+    async def dither(self, pixels: float = 3.0,
+                     settle: "SettleParams | None" = None) -> None:
+        """Dither by ``pixels`` and wait for settle.
+
+        ``settle`` (UX-24) optionally overrides the settle criteria — how still
+        the star must be (``pixels`` within ``time`` seconds) and how long to
+        wait (``timeout``). None keeps each guider's defaults. The bridge
+        (PHD2/NINA) honors all three; the native engine self-manages the
+        pixels/time criteria and honors the timeout."""
 
     @abstractmethod
     def stats(self) -> GuideStats: ...
