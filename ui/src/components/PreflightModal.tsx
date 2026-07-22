@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import type { CheckItem } from "../types";
+import { Icon } from "./icons";
 import type { SequencePlan } from "../types";
 import type { PreflightActions } from "../lib/preflight";
 import { preflightVerdict } from "../lib/preflight";
@@ -157,7 +158,7 @@ export function PreflightModal({
               disabled={hasBlocker}
               onClick={() => onProceed(force)}
             >
-              ▸ Run Sequence
+              <Icon name="play" size={14} className="inline -mt-0.5 mr-1" />Run Sequence
             </button>
           </div>
         </footer>
