@@ -21,11 +21,17 @@
 
 import { useEffect, useState, type JSX } from "react";
 import type { SafetyConfig } from "../../types";
-import { setSafetyConfig } from "../../api/backends";
+import {
+  setSafetyConfig,
+  getDomeState,
+  closeDome,
+  type DomeState,
+} from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { accessPhrase, useCan } from "../../lib/caps";
 import { confirmDialog } from "../ConfirmDialog";
+import { domeStatusLabel } from "../../lib/dome";
 import { Panel, Field, Toggle } from "../ui";
 import { Icon } from "../icons";
 
@@ -55,6 +61,33 @@ export default function SafetyPanel(): JSX.Element {
     setErr(null);
     setSavedAt(null);
   }, [seedAvoidance, seedCone]);
+
+  // --- observatory roof / dome (PRO-4) ----------------------------------------
+  // The two auto-close flags live in the SAME safety block (persisted via the
+  // full-block echo below); the live shutter status comes from GET /api/dome/state.
+  const [dome, setDome] = useState<DomeState | null>(null);
+  const seedCloseOnUnsafe = safety?.close_dome_on_unsafe ?? false;
+  const seedCloseWhenDone = safety?.close_dome_when_done ?? false;
+  const [closeOnUnsafe, setCloseOnUnsafe] = useState(false);
+  const [closeWhenDone, setCloseWhenDone] = useState(false);
+  const [roofBusy, setRoofBusy] = useState(false);
+  useEffect(() => {
+    setCloseOnUnsafe(seedCloseOnUnsafe);
+    setCloseWhenDone(seedCloseWhenDone);
+  }, [seedCloseOnUnsafe, seedCloseWhenDone]);
+  useEffect(() => {
+    let live = true;
+    getDomeState()
+      .then((d) => {
+        if (live) setDome(d);
+      })
+      .catch(() => {
+        /* no dome / offline — the honest-disabled note covers it */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   if (!safety) {
     return (
@@ -101,6 +134,63 @@ export default function SafetyPanel(): JSX.Element {
       setErr(msg);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Roof auto-close flags: echo the FULL current safety block with the one flag
+  // changed (same wholesale-replace contract as the solar persist). No confirm —
+  // enabling protective auto-close is always the safe direction.
+  const domeConnected = !!dome?.connected;
+  const shutter = dome?.shutter ?? "unknown";
+
+  const persistDomeFlag = async (patch: Partial<SafetyConfig>) => {
+    if (busy) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      const body: SafetyConfig = { ...safety, ...patch };
+      await setSafetyConfig(body);
+      await useStore.getState().loadConfig();
+      setSavedAt(Date.now());
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? e.message || "Could not save." : "Could not save.";
+      setErr(msg);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onToggleCloseOnUnsafe = async (on: boolean) => {
+    setCloseOnUnsafe(on);
+    await persistDomeFlag({ close_dome_on_unsafe: on });
+  };
+  const onToggleCloseWhenDone = async (on: boolean) => {
+    setCloseWhenDone(on);
+    await persistDomeFlag({ close_dome_when_done: on });
+  };
+
+  // Manual close: fence + park + close via the tested ordering guard on the
+  // server. Toast the outcome (the shutter status line reflects progress).
+  const onCloseRoofNow = async () => {
+    if (roofBusy || !domeConnected) return;
+    setRoofBusy(true);
+    try {
+      await closeDome();
+      useStore.getState().enqueueToast({
+        level: "info",
+        title: "Closing the roof — parking the mount first.",
+      });
+      // refresh the shutter status shortly after the close is commanded.
+      setTimeout(() => {
+        getDomeState().then(setDome).catch(() => {});
+      }, 1500);
+    } catch (e) {
+      const msg =
+        e instanceof ApiError ? e.message || "Could not close the roof." : "Could not close the roof.";
+      useStore.getState().enqueueToast({ level: "error", title: msg });
+    } finally {
+      setRoofBusy(false);
     }
   };
 
@@ -264,6 +354,95 @@ export default function SafetyPanel(): JSX.Element {
           </span>
         </div>
       )}
+
+      {/* ---------------------------------------- observatory roof / dome (PRO-4) */}
+      <div className="pt-4 border-t border-line mt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm text-ink inline-flex items-center gap-2">
+            <Icon name="shield" size={14} className="text-dim" />
+            Observatory roof
+          </div>
+          <span className="mono text-[9px] tracking-[0.16em] uppercase px-1.5 py-0.5 border text-dim border-line2">
+            {domeStatusLabel(shutter)}
+          </span>
+        </div>
+        <p className="text-[11px] text-dim leading-relaxed max-w-xl mt-1">
+          Auto-close a motorized roll-off roof over the parked gear on an unsafe
+          condition or at end-of-night. The mount is always parked clear first —
+          if it can’t be confirmed parked, the roof is left open (a wet scope
+          beats a crushed one).
+        </p>
+
+        {/* honest-disabled (§11.8) when no dome is connected: dim + lock +
+            aria-disabled + title — NOT the native disabled attribute. */}
+        <div
+          aria-disabled={!domeConnected}
+          title={domeConnected ? undefined : "Connect a dome/roof device first"}
+          className={
+            domeConnected ? "mt-3" : "mt-3 opacity-50 pointer-events-none select-none"
+          }
+        >
+          <div className="flex items-start justify-between gap-3 py-2">
+            <div className="min-w-0">
+              <div className="text-sm text-ink">Close roof on unsafe</div>
+              <p className="text-[11px] text-dim max-w-md">
+                A rain/cloud trip parks the mount and closes the roof instead of
+                pausing under an open sky.
+              </p>
+            </div>
+            <Toggle
+              checked={closeOnUnsafe}
+              onChange={onToggleCloseOnUnsafe}
+              disabled={busy}
+              label="Close roof on unsafe"
+              showState
+            />
+          </div>
+
+          <div className="flex items-start justify-between gap-3 py-2 border-t border-line">
+            <div className="min-w-0">
+              <div className="text-sm text-ink">Close roof at end-of-night</div>
+              <p className="text-[11px] text-dim max-w-md">
+                Close the roof when a sequence finishes (requires park-on-finish).
+              </p>
+            </div>
+            <Toggle
+              checked={closeWhenDone}
+              onChange={onToggleCloseWhenDone}
+              disabled={busy}
+              label="Close roof at end-of-night"
+              showState
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 pt-3 border-t border-line">
+            <span className="text-[11px] text-dim">
+              Park the mount, then close the roof now.
+            </span>
+            <button
+              type="button"
+              className="btn min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
+              onClick={onCloseRoofNow}
+              aria-disabled={roofBusy || !domeConnected}
+              disabled={roofBusy}
+            >
+              <Icon name="lock" size={15} />
+              {roofBusy ? "Closing…" : "Close roof now"}
+            </button>
+          </div>
+        </div>
+
+        {!domeConnected && (
+          <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs mt-3">
+            <Icon name="lock" size={14} className="text-dim shrink-0" />
+            <span className="text-dim">
+              No dome/roof device is connected. Connect one to enable auto-close
+              and the manual close. The settings above still save for when a roof
+              is added.
+            </span>
+          </div>
+        )}
+      </div>
 
       {err && (
         <p className="text-xs text-bad inline-flex items-center gap-1.5 mt-3">
