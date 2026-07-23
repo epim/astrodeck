@@ -758,6 +758,10 @@ export interface Schedule {
   start_offset_min: number;             // ± minutes relative to dusk/dawn
   start_time: string | null;            // "HH:MM" when start_mode === "time"
   min_altitude_deg: number;             // per-target START gate (target-alt). 0 = none
+  // --- pro visibility constraints (PRO-14; additive, 0 = off) ---
+  min_moon_sep_deg: number;             // ≥ this from the Moon while it's up (0 = off)
+  max_moon_illum_pct: number;           // skip while Moon > this % illuminated (0 = off)
+  max_hour_angle_h: number;             // image within ±this h of the meridian (0 = off)
   stop_mode: "none" | "dawn" | "time";
   stop_offset_min: number;
   stop_time: string | null;

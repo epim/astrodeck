@@ -129,6 +129,51 @@ export default function SchedulePanel({ schedule, disabled, onChange }: {
             />
           </div>
 
+          {/* -------------------------------------------- hour-angle window */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Stepper
+              label="max HA"
+              value={s.max_hour_angle_h}
+              onChange={(v) => onChange({ max_hour_angle_h: v })}
+              min={0} max={12} step={0.5} unit="h" disabled={disabled}
+              format={(v) => (v === 0 ? "no limit" : `±${v}h`)}
+            />
+            <InfoDot
+              label="About the hour-angle window"
+              content="Image only within ±this many hours of the meridian (0 = no limit). Before the target rises into the window it waits; once past the west limit it's skipped for the night."
+            />
+          </div>
+
+          {/* ---------------------------------------- moon separation gate */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Stepper
+              label="moon sep"
+              value={s.min_moon_sep_deg}
+              onChange={(v) => onChange({ min_moon_sep_deg: v })}
+              min={0} max={180} step={5} unit="°" disabled={disabled}
+              format={(v) => (v === 0 ? "off" : `≥ ${v}°`)}
+            />
+            <InfoDot
+              label="About the moon-separation gate"
+              content="This target waits while it is closer than this to the Moon AND the Moon is above the horizon (0 = off). A Moon below the horizon imposes no gate."
+            />
+          </div>
+
+          {/* --------------------------------------- moon illumination gate */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <Stepper
+              label="moon max"
+              value={s.max_moon_illum_pct}
+              onChange={(v) => onChange({ max_moon_illum_pct: v })}
+              min={0} max={100} step={5} unit="%" disabled={disabled}
+              format={(v) => (v === 0 ? "off" : `≤ ${v}%`)}
+            />
+            <InfoDot
+              label="About the moon-brightness gate"
+              content="This target waits while the Moon is up AND more than this percent illuminated (0 = off) — it resumes once the Moon sets or after this bright Moon's night."
+            />
+          </div>
+
           {/* -------------------------------------------------------- stop */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="label w-16 shrink-0">stop</span>

@@ -32,6 +32,10 @@ class Schedule(BaseModel):
     start_offset_min: int = 0          # ± minutes relative to dusk/dawn
     start_time: str | None = None      # "HH:MM" when start_mode == "time"
     min_altitude_deg: float = 0.0      # per-target START gate (target-alt). 0 = none
+    # --- pro visibility constraints (PRO-14; additive, 0 = off => back-compat) ---
+    min_moon_sep_deg: float = Field(0.0, ge=0, le=180)    # ≥ this from the Moon while up
+    max_moon_illum_pct: float = Field(0.0, ge=0, le=100)  # skip while Moon > this % lit
+    max_hour_angle_h: float = Field(0.0, ge=0, le=12)     # image within ±this h of meridian
     stop_mode: str = "none"            # none | dawn | time
     stop_offset_min: int = 0
     stop_time: str | None = None
