@@ -10,15 +10,22 @@
 
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
-import { listReports, getReport } from "../api/reports";
+import { listReports, getReport, getBundlePreview } from "../api/reports";
 import { useStore, useLastReportId } from "../store";
 import { Panel, EmptyState, Stat } from "../components/ui";
 import { Icon } from "../components/icons";
 import { TrendLine } from "../components/graphs";
 import { fmtDuration } from "../lib/eta";
 import { endReasonMeta } from "../lib/reportChart";
+import { masterChips, bundleDisabledReason } from "../lib/bundleView";
 import { BASE } from "../lib/base";
-import type { FilterBreakdown, SessionReport, SessionReportSummary } from "../types";
+import type {
+  BundleGroupSummary,
+  BundlePreview,
+  FilterBreakdown,
+  SessionReport,
+  SessionReportSummary,
+} from "../types";
 
 /** `<filter> · <frames> frames · <integration> · HFR <median>` + optional
  *  `<rejected> rejected` — mirrors SequenceView's finished-panel language and
@@ -31,6 +38,36 @@ function FilterRow({ f }: { f: FilterBreakdown }) {
         {f.frames} frames · {fmtDuration(f.integration_s)} · HFR{" "}
         {f.hfr_median != null ? f.hfr_median.toFixed(2) : "—"}
         {f.rejected > 0 && <span className="text-warn"> · {f.rejected} rejected</span>}
+      </span>
+    </div>
+  );
+}
+
+/** One group line in the stacking-bundle panel:
+ *  `M42 · Ha · 300s · g100 · 42 lights · Dark ✓ · Flat ✓ · Bias —`. Master
+ *  status uses Icon + kind (never color-only): check when matched, x when not. */
+function BundleGroupRow({ g }: { g: BundleGroupSummary }) {
+  const parts = [g.target, g.filter ?? "NoFilter", `${g.exposure_s}s`];
+  if (g.gain != null) parts.push(`g${g.gain}`);
+  if (g.binning != null) parts.push(`bin${g.binning}`);
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs py-1.5 border-b border-line/40 last:border-0">
+      <span className="mono text-ink shrink-0">{parts.join(" · ")}</span>
+      <span className="text-dim">
+        {g.light_count} lights
+        {g.accepted_count !== g.light_count && ` (${g.accepted_count} accepted)`}
+      </span>
+      <span className="ml-auto flex items-center gap-2.5">
+        {masterChips(g.masters).map((c) => (
+          <span
+            key={c.kind}
+            className={`inline-flex items-center gap-0.5 ${c.ok ? "text-good" : "text-dim"}`}
+            title={c.ok ? `${c.kind} master matched` : `no ${c.kind} master`}
+          >
+            <Icon name={c.ok ? "check" : "x"} size={11} />
+            <span className="capitalize">{c.kind}</span>
+          </span>
+        ))}
       </span>
     </div>
   );
@@ -57,6 +94,7 @@ export default function ReportView() {
   const [list, setList] = useState<SessionReportSummary[]>([]);
   const [sel, setSel] = useState<string | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
+  const [preview, setPreview] = useState<BundlePreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -83,15 +121,19 @@ export default function ReportView() {
   }, []);
 
   // Effect B (sel): load the full detail. Cancelled-flag guard against
-  // out-of-order responses (MonitorView.tsx cold-load pattern).
+  // out-of-order responses (MonitorView.tsx cold-load pattern). The stacking-
+  // bundle preview loads alongside, best-effort — a preview failure just leaves
+  // the panel's download honest-disabled, never blocks the report render.
   useEffect(() => {
     if (!sel) {
       setReport(null);
+      setPreview(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
     setErr(null);
+    setPreview(null);
     (async () => {
       try {
         const r = await getReport(sel);
@@ -104,6 +146,14 @@ export default function ReportView() {
         enqueueToast({ level: "error", title: "Couldn't load report" });
       } finally {
         if (!cancelled) setLoading(false);
+      }
+    })();
+    (async () => {
+      try {
+        const p = await getBundlePreview(sel);
+        if (!cancelled) setPreview(p);
+      } catch {
+        // best-effort: leave preview null (panel stays honest-disabled)
       }
     })();
     return () => {
@@ -241,6 +291,55 @@ export default function ReportView() {
               <TrendLine values={report.trends.temp.map((p) => p[1])} label="Sensor °C" unit="°C" decimals={1} />
               <TrendLine values={report.trends.rms.map((p) => p[1])} label="Guide RMS" unit="″" />
             </div>
+          </Panel>
+
+          {/* ------------------------------------------------- stacking bundle */}
+          <Panel title="Stacking bundle">
+            {(() => {
+              const reason = bundleDisabledReason(report.frames_captured, preview);
+              return (
+                <div className="flex flex-col gap-3">
+                  <p className="text-xs text-dim">
+                    Light subs grouped by target/filter/exposure with matched masters
+                    and a per-sub weighting manifest — one .zip you can materialize
+                    with the included build script (PixInsight / Siril / APP).
+                  </p>
+                  {preview && preview.groups.length > 0 && (
+                    <div className="overflow-x-auto">
+                      <div className="min-w-[420px]">
+                        {preview.groups.map((g, i) => (
+                          <BundleGroupRow key={`${g.dir}-${i}`} g={g} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {preview?.warnings.map((w, i) => (
+                    <p key={i} className="text-xs text-warn flex items-center gap-1.5">
+                      <Icon name="alert" size={12} /> {w}
+                    </p>
+                  ))}
+                  <div className="flex justify-end">
+                    {reason ? (
+                      <span
+                        aria-disabled="true"
+                        title={reason}
+                        className="btn inline-flex items-center gap-1.5 min-h-[44px] opacity-50 cursor-not-allowed"
+                      >
+                        <Icon name="lock" size={12} /> Download bundle.zip
+                      </span>
+                    ) : (
+                      <a
+                        href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip`}
+                        download
+                        className="btn inline-flex items-center gap-1.5 min-h-[44px]"
+                      >
+                        <Icon name="download" size={12} /> Download bundle.zip
+                      </a>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </Panel>
 
           {/* --------------------------------------------------------- csv link */}

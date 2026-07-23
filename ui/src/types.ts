@@ -961,6 +961,29 @@ export interface TargetBreakdown {
   by_filter: FilterBreakdown[];
 }
 
+// ----------------------------------------------------- PRO-10 stacking bundle
+// Slim per-group preview (GET /api/reports/{id}/bundle) — no per-light rows, so
+// a 2000-frame report stays a small JSON. The full manifest + weights CSV +
+// build scripts ship only inside the .zip download.
+export interface BundleGroupSummary {
+  dir: string;
+  target: string;
+  filter: string | null;
+  exposure_s: number;
+  gain: number | null;
+  binning: number | null;
+  light_count: number;
+  accepted_count: number;
+  masters: Record<string, boolean>; // {dark:true, flat:true, bias:false}
+}
+export interface BundlePreview {
+  report_id: string;
+  plan_name: string;
+  layout: string;
+  groups: BundleGroupSummary[];
+  warnings: string[];
+}
+
 // List-row summary (GET /api/reports) — header fields only, no per-frame payload.
 export interface SessionReportSummary {
   id: string;                           // "<plan>-<YYYYMMDD-HHMMSS>"
