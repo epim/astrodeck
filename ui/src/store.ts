@@ -265,6 +265,7 @@ function defaultOverlays(): OverlayToggles {
     clip: false,
     reticle: false,
     centerMark: true, // subtle framing aid on by default
+    tilt: false, // PRO-13 tilt/aberration heatmap
   };
 }
 

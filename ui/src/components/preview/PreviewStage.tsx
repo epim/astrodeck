@@ -28,6 +28,8 @@ import { Reticle } from "./Reticle";
 import { ScaleBar } from "./ScaleBar";
 import { StarOverlay } from "./StarOverlay";
 import { ClipMaskLayer } from "./ClipMaskLayer";
+import { TiltOverlay } from "./TiltOverlay";
+import { tiltSummary } from "../../lib/tilt";
 
 interface Props {
   preview: PreviewInfo | null;
@@ -238,6 +240,7 @@ export function PreviewStage(props: Props) {
     preview.stats.max >= preview.full_well;
 
   const starsAvailable = !!preview?.star_list && preview.star_list.length > 0;
+  const tiltAvailable = !!preview?.tilt;
 
   // NINA / pre-stretched path: Brightness/Contrast are display-only and MUST
   // visibly act on the rendered <img> (honesty rule #6 — no fake control). We
@@ -353,6 +356,9 @@ export function PreviewStage(props: Props) {
           style={{ overflow: "visible" }}
         >
           <ClipMaskLayer w={dispW} h={dispH} active={clipActive} />
+          {overlays.tilt && tiltAvailable && (
+            <TiltOverlay tilt={preview.tilt!} dispW={dispW} dispH={dispH} />
+          )}
           {overlays.stars && starsAvailable && (
             <g style={{ pointerEvents: "auto" }}>
               <StarOverlay
@@ -404,6 +410,24 @@ export function PreviewStage(props: Props) {
           {preview.pixel_scale_arcsec != null && ` · ${(selectedStar.hfr * preview.pixel_scale_arcsec).toFixed(2)}″`}
         </div>
       )}
+
+      {/* tilt/aberration classification chip (PRO-13) — bottom-left, mirroring
+          the selected-star readout; stacked above it when both are on (niche,
+          rarely simultaneous — Open Decision E). */}
+      {overlays.tilt && tiltAvailable && (() => {
+        const s = tiltSummary(preview.tilt!);
+        const tint = s.tone === "good" ? "!text-good" : s.tone === "warn" ? "!text-warn" : "!text-bad";
+        const pos = selectedStar ? "bottom-11" : "bottom-2";
+        return (
+          <div
+            className={`absolute ${pos} left-2 preview-chip flex items-center gap-1 ${tint}`}
+            aria-live="polite"
+            title={s.advice}
+          >
+            Field: {s.label}
+          </div>
+        );
+      })()}
 
       {/* decimation disclosure */}
       {overlays.stars && starsAvailable && decimated && decimated.shown < decimated.total && (
