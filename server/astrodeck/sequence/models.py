@@ -18,6 +18,9 @@ class ExposureStep(BaseModel):
     binning: int = 1
     count: int = Field(gt=0, le=10000)
     frame_type: str = "Light"          # Light | Dark | Bias | Flat
+    # --- PRO-5 flat auto-exposure (additive; 0/None = off => back-compat) ---
+    adu_target: int = Field(0, ge=0, le=65535)     # >0 + Flat ⇒ solve exposure to this ADU
+    panel_brightness: int | None = Field(None, ge=0)  # flat-panel level while shooting; None = don't touch
 
 
 class Schedule(BaseModel):

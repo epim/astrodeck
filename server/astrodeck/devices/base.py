@@ -419,3 +419,66 @@ class SafetyMonitor(Device):
             source=self.name,
             reason="" if safe else "unsafe condition reported",
         )
+
+
+class CoverState(enum.Enum):
+    """Motorized-cover state (PRO-5 / F-F). AstroDeck-style string states, like
+    ``PierSide`` — a flat panel without a cover reports ``NOT_PRESENT``."""
+
+    NOT_PRESENT = "not_present"
+    CLOSED = "closed"
+    MOVING = "moving"
+    OPEN = "open"
+    UNKNOWN = "unknown"
+    ERROR = "error"
+
+
+class CoverCalibrator(Device):
+    """Flat-field light panel (+ optional motorized cover) — the F-F role.
+
+    Vendor-neutral, modeled on ASCOM ICoverCalibratorV1 but with AstroDeck-style
+    string states. ``get_brightness``/``calibrator_on``/``calibrator_off`` are the
+    required core (a panel is at minimum an on/off light); ``get_calibrator_state``
+    defaults to a level-derived string, and every cover method degrades gracefully
+    for a panel with no cover (``has_cover=False`` → default raise / NOT_PRESENT),
+    exactly the ``Focuser.get_temperature`` / ``Rotator.set_reverse`` idiom."""
+
+    kind = "covercalibrator"
+
+    #: the panel reports its own peak level; an on/off-only panel = 1.
+    max_brightness: int = 1
+    #: not every flat panel has a motorized cover.
+    has_cover: bool = False
+
+    @abstractmethod
+    async def get_brightness(self) -> int: ...
+
+    @abstractmethod
+    async def calibrator_on(self, brightness: int) -> None:
+        """Turn the panel on at ``brightness`` (0..max_brightness)."""
+
+    @abstractmethod
+    async def calibrator_off(self) -> None:
+        """Turn the panel off."""
+
+    async def get_calibrator_state(self) -> str:
+        """One of "off" | "ready" | "not_present" | "unknown" | "error"."""
+        return "off"
+
+    async def get_cover_state(self) -> CoverState:
+        return CoverState.NOT_PRESENT
+
+    async def open_cover(self) -> None:
+        raise DeviceError(f"{self.name} has no cover")
+
+    async def close_cover(self) -> None:
+        raise DeviceError(f"{self.name} has no cover")
+
+    def describe(self) -> dict[str, Any]:
+        # static capabilities only (sync — no await); live state comes from the
+        # hub's ``calibrator_status`` accessor.
+        return {
+            **super().describe(),
+            "max_brightness": self.max_brightness,
+            "has_cover": self.has_cover,
+        }

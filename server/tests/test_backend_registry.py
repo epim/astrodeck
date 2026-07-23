@@ -132,7 +132,7 @@ def test_roles_constant_matches_device_roles():
     # Alpaca camera by dev_num).
     assert ROLES == ("camera", "telescope", "focuser", "guider",
                      "filterwheel", "switch", "safety", "rotator",
-                     "guide_camera")
+                     "covercalibrator", "guide_camera")
 
 
 def test_rigspec_resolve_default_uses_primary():
