@@ -190,6 +190,8 @@ pre-flight hook; `api/app.py` endpoints; new UI panel. **Open decision:** stack 
 in-app vs. only index + hand off to an external stacker (see §8).
 
 ### PRO-2 · Complete FITS headers for stacker interop — P0 · partial · effort M · impl **Sonnet** *(= F-B)*
+> **✅ SHIPPED** on branch `feat/fits-header-completeness` (2026-07-22, commits `43a08fe`→`1864d42`, 7 tasks, +21 tests, suite 1577/8). Spec + plan under `docs/superpowers/{specs,plans}/2026-07-22-fits-header-completeness*`. Also delivers foundation **F-B**. Follow-on minors: `format_ra_fits` seconds-rollover; `_sim_wcs` rotation sense; EGAIN auto-learn N/A.
+
 **Gap.** `imaging/fitsio.py:12-49` `save_fits()` writes only EXPTIME, GAIN, OFFSET,
 XBINNING/YBINNING, IMAGETYP, DATE-OBS, CCD-TEMP, BAYERPAT, OBJECT, FILTER, RA, DEC, TELESCOP,
 INSTRUME, SWCREATE. Missing the keywords WBPP/Siril/APP/DSS key on. Two live bugs: `SWCREATE`
