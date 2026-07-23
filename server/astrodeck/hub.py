@@ -931,6 +931,7 @@ class Hub:
             src = "none"
         return {
             "focal_length_mm": o.focal_length_mm,
+            "telescope_name": o.telescope_name,
             "pixel_size_um": px,
             "sensor_width_px": int(w),
             "sensor_height_px": int(h),
