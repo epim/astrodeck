@@ -122,3 +122,34 @@ def test_date_obs_parses_as_fits_time(tmp_path):
         date_obs = hdul[0].header["DATE-OBS"]
     t = Time(date_obs, format="fits")
     assert t.isot.startswith("2026-03-")
+
+
+def test_wcs_writeback_roundtrips(tmp_path):
+    from astrodeck.imaging.fitsio import write_wcs
+    from astrodeck.solve.base import WcsSolution
+    from astropy.wcs import WCS
+    path = save_fits(_frame(), tmp_path / "light.fits")   # 16x16 -> center 8.5
+    scale = 1.5 / 3600.0
+    wcs = WcsSolution(crval1=83.8221, crval2=-5.3911, crpix1=8.5, crpix2=8.5,
+                      cd11=-scale, cd12=0.0, cd21=0.0, cd22=scale)
+    write_wcs(path, wcs)
+    with fits.open(path) as hdul:
+        h = hdul[0].header
+        assert h["CTYPE1"] == "RA---TAN"
+        assert h["EQUINOX"] == 2000.0
+        w = WCS(h)
+        assert w.has_celestial
+        world = w.wcs_pix2world([[wcs.crpix1 - 1, wcs.crpix2 - 1]], 0)[0]
+        # Exercise the CD matrix OFF the reference pixel (at the reference, CD·0
+        # vanishes and a sign/transpose bug hides). +1px in X must move RA (not
+        # Dec) and decrease it (cd11 < 0); +1px in Y must move Dec north ~scale.
+        px = w.wcs_pix2world([[wcs.crpix1, wcs.crpix2 - 1]], 0)[0]      # +1 in X
+        py = w.wcs_pix2world([[wcs.crpix1 - 1, wcs.crpix2]], 0)[0]      # +1 in Y
+    assert world[0] == pytest.approx(83.8221, abs=1e-6)
+    assert world[1] == pytest.approx(-5.3911, abs=1e-6)
+    # +X: RA decreases (cd11 < 0), Dec ~unchanged (diagonal CD, no transpose)
+    assert px[0] < world[0]
+    assert px[1] == pytest.approx(world[1], abs=1e-5)
+    # +Y: Dec increases ~scale north (cd22 > 0), RA ~unchanged
+    assert py[1] == pytest.approx(world[1] + scale, abs=5e-5)
+    assert py[0] == pytest.approx(world[0], abs=1e-5)

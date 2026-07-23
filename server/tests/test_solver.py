@@ -72,3 +72,61 @@ def test_get_solver_prefers_astap_when_present(monkeypatch):
     monkeypatch.setattr(solve_pkg, "find_astap", lambda: r"C:\fake\astap.exe")
     s = get_solver(sim_rig=None, mode="nina")
     assert isinstance(s, AstapSolver)
+
+
+def test_wcs_from_astap_parse(tmp_path):
+    from astropy.io import fits as _fits
+    from astrodeck.solve.astap import _wcs_from_astap
+    hdr = _fits.Header()
+    hdr["CTYPE1"] = "RA---TAN"
+    hdr["CTYPE2"] = "DEC--TAN"
+    hdr["CRVAL1"] = 83.8221
+    hdr["CRVAL2"] = -5.3911
+    hdr["CRPIX1"] = 512.0
+    hdr["CRPIX2"] = 512.0
+    hdr["CD1_1"] = -0.0004305
+    hdr["CD1_2"] = 0.0
+    hdr["CD2_1"] = 0.0
+    hdr["CD2_2"] = 0.0004305
+    wcs_path = tmp_path / "solve.wcs"
+    hdr.totextfile(str(wcs_path))
+    sol = _wcs_from_astap(tmp_path / "solve.ini", wcs_path)   # .ini absent -> uses .wcs
+    assert sol is not None
+    assert sol.crval1 == pytest.approx(83.8221)
+    assert sol.crpix1 == pytest.approx(512.0)
+    assert sol.cd11 == pytest.approx(-0.0004305)
+    assert sol.cd22 == pytest.approx(0.0004305)
+
+
+def test_wcs_from_astap_none_when_scaleless(tmp_path):
+    # A headerlet with a reference point but NO CD*/CDELT* is bogus (astropy
+    # would default to 1 deg/px); _wcs_from_astap must return None, not a
+    # scale-less WcsSolution (spec §8: never write a bogus value).
+    from astropy.io import fits as _fits
+    from astrodeck.solve.astap import _wcs_from_astap
+    hdr = _fits.Header()
+    hdr["CTYPE1"] = "RA---TAN"
+    hdr["CTYPE2"] = "DEC--TAN"
+    hdr["CRVAL1"] = 83.8221
+    hdr["CRVAL2"] = -5.3911
+    hdr["CRPIX1"] = 512.0
+    hdr["CRPIX2"] = 512.0
+    wcs_path = tmp_path / "scaleless.wcs"
+    hdr.totextfile(str(wcs_path))
+    assert _wcs_from_astap(tmp_path / "scaleless.ini", wcs_path) is None
+
+
+async def test_simsolver_returns_wcs(tmp_path):
+    import numpy as np
+    from astrodeck.devices.base import CameraFrame
+    from astrodeck.imaging.fitsio import save_fits
+    frame = CameraFrame(data=np.zeros((32, 32), dtype=np.uint16), exposure_s=1.0,
+                        gain=100, offset=10, binning=1, bayer_pattern=None,
+                        temperature_c=-10.0, timestamp=1_772_775_791.0)
+    path = save_fits(frame, tmp_path / "sim.fits")
+    rig = _FakeRig()                                  # ra_hours=5.5, dec_deg=41.2
+    solver = SimSolver(sim_rig=rig, mode="sim")
+    res = await solver.solve(path)
+    assert res.success and res.wcs is not None
+    assert res.wcs.crval1 == pytest.approx(rig.ra_hours * 15.0)
+    assert res.wcs.crval2 == pytest.approx(rig.dec_deg)
