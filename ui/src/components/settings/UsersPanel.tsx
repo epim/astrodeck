@@ -134,6 +134,9 @@ function UserRow({
   onError: (m: string) => void;
 }): JSX.Element {
   const [busy, setBusy] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [pw, setPw] = useState("");
+  const pwTooLong = new TextEncoder().encode(pw).length > 72;
 
   const run = async (fn: () => Promise<unknown>, fallback: string) => {
     if (busy) return;
@@ -148,16 +151,45 @@ function UserRow({
     }
   };
 
-  const onRole = (role: PrincipalRole) =>
-    run(() => patchUser(user.id, { role }), "Could not change role.");
+  // UX-45: demoting/disabling YOUR OWN account silently drops your access (no
+  // last-admin 409 fires when another admin exists), so guard those two self
+  // actions with the same danger hold-confirm Delete already uses.
+  const onRole = async (role: PrincipalRole) => {
+    if (isSelf && user.role === "admin" && role !== "admin") {
+      const ok = await confirmDialog({
+        title: "Remove your own admin access?",
+        body: "Changing your own role away from admin drops your access to Users and Auth and makes this session read-only. Another admin (or the server CLI) would be needed to restore it.",
+        confirmLabel: "Change my role",
+        tone: "danger",
+        mode: "hold",
+      });
+      if (!ok) return;
+    }
+    await run(() => patchUser(user.id, { role }), "Could not change role.");
+  };
 
-  const onToggle = (enabled: boolean) =>
-    run(() => patchUser(user.id, { enabled }), "Could not change status.");
+  const onToggle = async (enabled: boolean) => {
+    if (isSelf && !enabled) {
+      const ok = await confirmDialog({
+        title: "Disable your own account?",
+        body: "This signs you out and removes your access. Another admin (or the server CLI) would be needed to re-enable you.",
+        confirmLabel: "Disable my account",
+        tone: "danger",
+        mode: "hold",
+      });
+      if (!ok) return;
+    }
+    await run(() => patchUser(user.id, { enabled }), "Could not change status.");
+  };
 
-  const onReset = async () => {
-    const pw = window.prompt(`New password for "${user.username}":`);
-    if (pw == null || pw === "") return;
+  // UX-39: themed inline reset — masked field + client-side 72-byte guard,
+  // replacing window.prompt (bright OS dialog that breaks night-mode/the dimmer
+  // and echoes the password in cleartext).
+  const submitReset = async () => {
+    if (busy || pw === "" || pwTooLong) return;
     await run(() => resetUserPassword(user.id, pw), "Could not reset password.");
+    setPw("");
+    setResetting(false);
   };
 
   const onDelete = async () => {
@@ -234,9 +266,10 @@ function UserRow({
       <button
         type="button"
         className="btn !py-1 !px-2 min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5 text-[10px]"
-        onClick={onReset}
+        onClick={() => setResetting((v) => !v)}
         disabled={busy}
         title="Reset password"
+        aria-expanded={resetting}
       >
         <Icon name="key" size={14} />
         <span className="hidden lg:inline">Reset</span>
@@ -253,6 +286,45 @@ function UserRow({
         <Icon name="trash" size={14} />
         <span className="hidden lg:inline">Delete</span>
       </button>
+
+      {/* UX-39: inline themed password reset (masked, dimmer-safe) */}
+      {resetting && (
+        <div className="basis-full flex flex-wrap items-end gap-2 border-t border-line pt-3 mt-1">
+          <label className="flex flex-col gap-1 flex-1 min-w-[180px]">
+            <span className="label">New password for {user.username}</span>
+            <input
+              className={`field ${pwTooLong ? "!border-bad" : ""}`}
+              type="password"
+              autoComplete="new-password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              disabled={busy}
+              autoFocus
+              aria-invalid={pwTooLong}
+            />
+          </label>
+          <button
+            type="button"
+            className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-1.5"
+            onClick={submitReset}
+            disabled={busy || pw === "" || pwTooLong}
+          >
+            <Icon name="check" size={14} />
+            {busy ? "Saving…" : "Set password"}
+          </button>
+          <button
+            type="button"
+            className="btn min-h-[44px] sm:min-h-0"
+            onClick={() => { setResetting(false); setPw(""); }}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+          {pwTooLong && (
+            <p className="basis-full text-xs text-bad">Password is too long (max 72 bytes).</p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
