@@ -1688,7 +1688,7 @@ class Hub:
         return CAPTURE_DIR / safe / ("_".join(parts) + ".fits")
 
     async def start_loop(self, exposure_s: float, gain: int, offset: int,
-                         binning: int = 1) -> None:
+                         binning: int = 1, frame_type: str = "Light") -> None:
         # AWAIT the previous loop's cancellation before spawning the replacement.
         # Without this, the old task's `except CancelledError: await abort_exposure`
         # could land AFTER the new loop's startexposure and abort the new loop's
@@ -1704,7 +1704,8 @@ class Hub:
         async def _loop() -> None:
             while True:
                 try:
-                    await self.capture(exposure_s, gain, offset, binning)
+                    await self.capture(exposure_s, gain, offset, binning,
+                                       frame_type=frame_type)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:  # keep looping through transient errors

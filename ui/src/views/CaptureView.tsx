@@ -1,11 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
-import { useStore, useStatus, usePolar, useLivePreviewId, useSequence } from "../store";
+import { useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
-import { Field, Led, Panel, Stat, Toggle } from "../components/ui";
+import { Field, Led, Panel, SegmentedControl, Stat, Toggle } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
 import { isExposureInvalid } from "../lib/exposure";
+import {
+  FRAME_TYPES,
+  FRAME_COACH,
+  darkPrefillFrom,
+  shouldOfferDarks,
+  formatLightSummary,
+  type FrameType,
+} from "../lib/calibration";
+import { confirmDialog } from "../components/ConfirmDialog";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { Icon } from "../components/icons";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
@@ -43,6 +52,8 @@ export default function CaptureView() {
   const sequence = useSequence();
   const liveId = useLivePreviewId();
   const showToast = useStore((s) => s.showToast);
+  const noteLightFrame = useStore((s) => s.noteLightFrame);
+  const lastLight = useLastLight();
   const canCapture = useCanControlCapture(); // viewer => preview visible, controls read-only
 
   const [exposure, setExposure] = useState("2");
@@ -54,6 +65,10 @@ export default function CaptureView() {
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
+  // Calibration quick-action (calibration-capture spec §1.3): which frame type
+  // Single/Loop will shoot. Manual capture defaults to Light (today's only
+  // behavior); the shutter follows this via body.frame_type -> hub.capture.
+  const [frameType, setFrameType] = useState<FrameType>("Light");
 
   // --- capture feedback state ---
   const [phase, setPhase] = useState<CapturePhase>("idle");
@@ -62,6 +77,13 @@ export default function CaptureView() {
   const expStartRef = useRef(0); // performance.now() when the frame's exposure began
   const expLenRef = useRef(1); // exposure_s of the in-flight frame
   const tickRef = useRef<number | null>(null);
+  // Mirrors `frameType` each render (same pattern as expLenRef) so the
+  // liveId-advance completion effect and onStop read it without a stale closure.
+  const frameTypeRef = useRef<FrameType>("Light");
+  frameTypeRef.current = frameType;
+  // Guards the end-of-session "take matching darks?" nudge to once per Light
+  // loop batch; reset when a fresh Light loop begins (see onLoop).
+  const offeredRef = useRef(false);
 
   const cam = status?.camera;
   // UX-27: offer bins 1..max_bin from the camera's reported ceiling instead of a
@@ -106,6 +128,7 @@ export default function CaptureView() {
     binning: Number(binning) || 1,
     save,
     target,
+    frame_type: frameType,
   };
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -169,6 +192,18 @@ export default function CaptureView() {
     // Only react if we were actually mid-capture (avoids resetting when a frame
     // arrives from an unrelated source while idle).
     if (phase === "idle") return;
+    // A Light frame just landed via OUR Single/Loop — bank it (calibration
+    // capture spec §1.3). Dark/Flat/Bias frames never feed the "last lights"
+    // snapshot the darks nudge / "Match last lights" prefill read from.
+    if (frameTypeRef.current === "Light") {
+      noteLightFrame({
+        exposureS,
+        gain: gainInvalid ? 0 : gainNum,
+        offset: Number(offset) || 0,
+        binning: Number(binning) || 1,
+        tempC: cam?.temperature ?? null,
+      });
+    }
     if (looping) beginExposure(exposureS);
     else setPhase("idle");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -211,6 +246,9 @@ export default function CaptureView() {
   };
   const onLoop = () => {
     if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
+    // A fresh Light loop starting is a new batch — clear the once-per-batch
+    // darks-nudge guard so onStop can offer again for THIS batch.
+    if (frameType === "Light") offeredRef.current = false;
     beginExposure(exposureS);
     act(() => api.post("/api/capture/loop", body));
   };
@@ -219,6 +257,31 @@ export default function CaptureView() {
     setStopPressed(true);
     window.setTimeout(() => setStopPressed(false), 220);
     setPhase("idle");
+    // End-of-session nudge (calibration-capture spec §1.3): stopping a Light
+    // loop with a bankable batch of lights offers to switch to Dark + prefill.
+    // Guarded to once per batch (offeredRef, reset in onLoop) — never nags
+    // after a Single, and never re-offers on a second Stop tap.
+    const wasLightLoop = looping && frameTypeRef.current === "Light";
+    if (wasLightLoop && shouldOfferDarks(lastLight) && !offeredRef.current) {
+      offeredRef.current = true;
+      void confirmDialog({
+        title: "Take matching darks?",
+        body: `You shot ${formatLightSummary(lastLight)} — shoot matching darks now?`,
+        confirmLabel: "Set up darks",
+        cancelLabel: "Not now",
+        confirmPrimary: true,
+      }).then((ok) => {
+        if (!ok) return;
+        const p = darkPrefillFrom(lastLight);
+        setFrameType("Dark");
+        setExposure(p.exposure);
+        setGain(p.gain);
+        setOffset(p.offset);
+        setBinning(p.binning);
+        if (p.coolerTarget) setCoolerTarget(p.coolerTarget);
+        showToast("info", "Darks set up — cap the scope, then press Single or Loop.");
+      });
+    }
     act(() => api.post("/api/capture/stop"));
   };
 
@@ -284,6 +347,48 @@ export default function CaptureView() {
               </Field>
             </div>
           )}
+
+          {/* ---- calibration quick-action (calibration-capture spec §1.3): frame-type
+               picker + coach text + "Match last lights" one-tap prefill. Single/Loop
+               follow `frameType` via body.frame_type -> hub.capture's shutter. ---- */}
+          <div className="mt-3">
+            <SegmentedControl<FrameType>
+              ariaLabel="frame type"
+              options={FRAME_TYPES.map((f) => ({ value: f, label: f }))}
+              value={frameType}
+              onChange={setFrameType}
+              disabled={!canCapture}
+            />
+            {frameType !== "Light" && (
+              <p className="text-[11px] text-dim mt-2 leading-snug">{FRAME_COACH[frameType]}</p>
+            )}
+            {(frameType === "Dark" || frameType === "Bias") && (
+              lastLight ? (
+                <button
+                  className="btn tap min-h-[44px] mt-2"
+                  onClick={() => {
+                    const p = darkPrefillFrom(lastLight);
+                    setFrameType(p.frameType);
+                    setExposure(p.exposure);
+                    setGain(p.gain);
+                    setOffset(p.offset);
+                    setBinning(p.binning);
+                    if (p.coolerTarget) setCoolerTarget(p.coolerTarget);
+                  }}>
+                  Match last lights
+                </button>
+              ) : (
+                // Honest-disabled idiom (§11.8): dim + lock glyph + aria-disabled +
+                // title, never native `disabled` — matches PreviewToolbar's Toggle.
+                <span
+                  className="btn tap min-h-[44px] mt-2 opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
+                  aria-disabled
+                  title="Shoot some lights first">
+                  <Icon name="lock" size={12} /> Match last lights
+                </span>
+              )
+            )}
+          </div>
 
           {/* ---- capture buttons. Single/Loop show an active state in flight and are
                BLOCKED during polar alignment; Stop flashes pressed + stays 1-tap. ---- */}

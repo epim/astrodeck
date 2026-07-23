@@ -260,6 +260,28 @@ async def test_capture_frame_type_controls_shutter(monkeypatch, tmp_path):
         await h.disconnect_all()
 
 
+async def test_start_loop_threads_frame_type(monkeypatch, tmp_path):
+    """A Loop of calibration frames must carry frame_type into each capture
+    (regression: the loop path used to drop it and always shoot Light)."""
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        calls: list[str | None] = []
+
+        async def spy_capture(*a, **k):
+            calls.append(k.get("frame_type"))
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(h, "capture", spy_capture)
+        await h.start_loop(0.01, 100, 30, 1, frame_type="Dark")
+        await asyncio.sleep(0.02)
+        h.stop_loop()
+        assert calls and all(ft == "Dark" for ft in calls)
+    finally:
+        await h.disconnect_all()
+
+
 # ------------------------------------------------------------- session leak
 
 class _CountingSession:
