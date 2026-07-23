@@ -130,3 +130,29 @@ async def test_simsolver_returns_wcs(tmp_path):
     assert res.success and res.wcs is not None
     assert res.wcs.crval1 == pytest.approx(rig.ra_hours * 15.0)
     assert res.wcs.crval2 == pytest.approx(rig.dec_deg)
+
+
+def test_sim_wcs_cd_matches_canonical_crota(tmp_path):
+    # The sim WCS CD matrix must follow the canonical CROTA convention (FITS WCS
+    # Paper II), verified against astropy's pixel_scale_matrix at several
+    # rotations. A prior sign mismatch on the off-diagonals turned the sky the
+    # wrong way for non-zero rotation (rot=0 was — and stays — unaffected).
+    import math  # noqa: F401 - kept for parity with the module under test
+    import numpy as np
+    from astropy.wcs import WCS
+    from astrodeck.solve.simsolver import _sim_wcs
+
+    scale_arcsec = 1.55
+    scale = scale_arcsec / 3600.0
+    for rot_deg in (0.0, 30.0, 90.0, 210.0):
+        sol = _sim_wcs(tmp_path / "absent.fits", 5.5, 41.2, rot_deg, scale_arcsec)
+        cd = np.array([[sol.cd11, sol.cd12], [sol.cd21, sol.cd22]])
+        w = WCS(naxis=2)
+        w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        w.wcs.cdelt = [-scale, scale]
+        w.wcs.crota = [0.0, rot_deg]
+        assert np.allclose(cd, w.pixel_scale_matrix, atol=1e-12), rot_deg
+    # rot=0 stays diagonal (RA flip only) — the common, previously-tested path.
+    z = _sim_wcs(tmp_path / "absent.fits", 5.5, 41.2, 0.0, scale_arcsec)
+    assert z.cd12 == 0.0 and z.cd21 == 0.0
+    assert z.cd11 == pytest.approx(-scale) and z.cd22 == pytest.approx(scale)

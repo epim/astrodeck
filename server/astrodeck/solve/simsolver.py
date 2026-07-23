@@ -38,11 +38,15 @@ def _sim_wcs(fits_path: Path, ra_hours: float, dec_deg: float,
         nx = ny = 1000                       # tolerate a not-yet-written path
     scale = scale_arcsec / 3600.0
     rot = math.radians(rot_deg)
+    # Canonical CD matrix from CDELT1=-scale (RA flip), CDELT2=+scale, CROTA2=rot
+    # (FITS WCS Paper II eq. 189; verified against astropy's pixel_scale_matrix).
+    # The off-diagonals carry the SAME sign as CD1_1's -scale, so a non-zero
+    # rotation turns the sky in the standard (CROTA) sense; rot=0 is unaffected.
     return WcsSolution(
         crval1=ra_hours * 15.0, crval2=dec_deg,
         crpix1=(nx + 1) / 2.0, crpix2=(ny + 1) / 2.0,
-        cd11=-scale * math.cos(rot), cd12=scale * math.sin(rot),
-        cd21=scale * math.sin(rot), cd22=scale * math.cos(rot))
+        cd11=-scale * math.cos(rot), cd12=-scale * math.sin(rot),
+        cd21=-scale * math.sin(rot), cd22=scale * math.cos(rot))
 
 
 class SimSolver(PlateSolver):
