@@ -27,6 +27,7 @@ import type {
   Toast,
   ToastLevel,
   TouchSettings,
+  TroubleshootTopic,
   UpdateStatus,
   ViewName,
   Viewport,
@@ -40,7 +41,8 @@ import { deriveNinaHealth } from "./lib/health";
 import { normalizeSafety } from "./lib/safety";
 import { normalizeWeather } from "./lib/weather";
 import { normalizeAutofocusResult, filterNameFromStatus, type AutofocusResult } from "./lib/autofocus";
-import { humanizeLog, humanizeSeqError } from "./lib/humanize";
+import { humanizeLog } from "./lib/humanize";
+import { diagnoseFailure } from "./lib/troubleshoot";
 import { tagGuideRms, type GuideRmsByKind } from "./lib/guideRms";
 import { notifyAndBeep, requestNotifyPermission } from "./lib/notify";
 import { haptics } from "./lib/haptics";
@@ -430,6 +432,10 @@ function applyBrightnessVars(v: number): void {
 interface AppState {
   // --- core view/session ---
   view: ViewName;
+  // NOV-9: the troubleshooting topic to scroll-into-view + highlight when
+  // HelpView mounts via a deep-link (a toast/inline "How to fix →"). Never
+  // persisted; null on a direct/manual visit to the Help view.
+  helpTopic: TroubleshootTopic | null;
   night: boolean;
   status: RigStatus | null;
   preview: PreviewInfo | null;
@@ -582,6 +588,12 @@ interface AppState {
 
   // --- actions: core ---
   setView: (v: ViewName) => void;
+  // NOV-9: navigate to the Help view, optionally deep-linking a topic
+  // (sets helpTopic; omit/undefined clears it — a plain "Help" nav row).
+  openHelp: (topic?: TroubleshootTopic) => void;
+  // One-shot clear of the deep-linked topic (HelpView calls this after the
+  // scroll+highlight beat so a later manual visit isn't stuck highlighting).
+  clearHelpTopic: () => void;
   toggleNight: () => void;
   handleEvent: (ev: { type: string; data: Record<string, unknown>; ts: number }) => void;
 
@@ -686,6 +698,7 @@ haptics.enabled = TOUCH_INIT.hapticsEnabled;
 export const useStore = create<AppState>((set, get) => ({
   // --- core ---
   view: "connect",
+  helpTopic: null,
   night: localStorage.getItem("astrodeck-night") === "1",
   status: null,
   preview: null,
@@ -777,6 +790,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   // --------------------------------------------------------------- core actions
   setView: (v) => set({ view: v }),
+
+  openHelp: (topic) => set({ view: "help", helpTopic: topic ?? null }),
+  clearHelpTopic: () => set({ helpTopic: null }),
 
   toggleNight: () => {
     const night = !get().night;
@@ -1369,15 +1385,22 @@ export const useStore = create<AppState>((set, get) => ({
         set({ sequence: seq, runBanner });
 
         if (seq.state === "error" && prevState !== "error") {
+          // NOV-9: the focal sequence-fatal toast now surfaces a plain cause +
+          // first fix (diagnoseFailure) instead of just a humanized sentence,
+          // and deep-links "How to fix →" into the matching Help topic when one
+          // exists — falling back to "View log" for a generic (topic-null) failure.
+          const diag = diagnoseFailure(seq.detail);
           get().enqueueToast({
             level: "error",
             kind: "sequence",
             ttl: 0,
-            title: "Sequence failed",
-            detail: humanizeSeqError(seq.detail),
-            action: { label: "View log", kind: "openLog" },
+            title: diag.title,
+            detail: `${diag.cause} ${diag.fix}`,
+            action: diag.topic
+              ? { label: "How to fix →", kind: "openHelp", topic: diag.topic }
+              : { label: "View log", kind: "openLog" },
           });
-          notifyAndBeep(get(), "Sequence failed", humanizeSeqError(seq.detail));
+          notifyAndBeep(get(), diag.title, diag.fix);
         } else if (seq.state === "complete" && prevState !== "complete") {
           notifyAndBeep(
             get(),
