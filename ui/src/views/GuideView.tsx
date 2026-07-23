@@ -15,6 +15,7 @@ import GuideFramePreview from "../components/GuideFramePreview";
 import { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
 import { compareRmsWindows } from "../lib/rmsCompare";
 import { selectGuideWindows } from "../lib/guideRms";
+import { guideNarration } from "../lib/guideNarration";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
@@ -53,6 +54,20 @@ export default function GuideView() {
   const unit = isArcsec ? "″" : "px";
   const unitWord = isArcsec ? "arcsec" : "px";
 
+  // NOV-7: plain-language narration — what the guider is doing right now +
+  // an honest words verdict on the RMS number. Computed once; the render
+  // below is a thin binding (design doc §1.6).
+  const narration = guideNarration({
+    connected,
+    phase: stats?.phase,
+    guiding: !!stats?.guiding,
+    rmsTotal: stats?.rms_total ?? 0,
+    isArcsec,
+    imageScale: stats?.image_scale ?? 0,
+    hasSamples: (stats?.recent?.length ?? 0) > 0,
+  });
+  const toneClass = { good: "text-good", warn: "text-warn", bad: "text-bad", neutral: "text-dim" }[narration.tone];
+
   // UX-16: in-flight guard on the multi-second guide actions (start / recalibrate)
   // so they can't be double-fired in the POST round-trip. Covers only the request
   // round-trip, so Stop stays usable while calibration/guiding runs server-side.
@@ -83,9 +98,9 @@ export default function GuideView() {
         right={
           <span className="flex items-center gap-2">
             <ProviderBadge cap="guide" />
-            {stats?.guiding && (
-              <span className="text-good text-[11px] tracking-widest uppercase">● guiding</span>
-            )}
+            <span className={`text-[11px] font-medium ${toneClass}`}>
+              {narration.phaseText}
+            </span>
           </span>
         }>
         <GuideGraph samples={stats?.recent ?? []} />
@@ -96,6 +111,9 @@ export default function GuideView() {
             tone={stats && stats.rms_total > 0 ? (stats.rms_total < 1 ? "good" : stats.rms_total < 2 ? "warn" : "bad") : undefined} />
           <Stat label="SNR" value={stats ? stats.snr.toFixed(0) : "—"} />
         </div>
+        {narration.verdict && (
+          <p className={`text-[11px] mt-2 leading-snug ${toneClass}`}>{narration.verdict}</p>
+        )}
         {stats && !isArcsec && (
           /* UX-15: raw pixels, not arcsec — tell the user why and how to fix it. */
           <p className="text-[11px] text-dim mt-2 leading-snug">

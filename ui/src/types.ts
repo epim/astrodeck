@@ -148,6 +148,12 @@ export interface GuideStats {
   // label) unless the server explicitly says false.
   is_arcsec?: boolean;
   image_scale?: number;
+  // NOV-7: plain-language narration phase ("idle" | "finding" |
+  // "calibrating" | "settling" | "guiding" | "lost"), or "" / absent when
+  // unknown (the PHD2/NINA bridge guider leaves it unset — the narration
+  // falls back to `guiding`). A bare string (not the GuidePhase union) so an
+  // older/legacy payload still type-checks.
+  phase?: string;
 }
 
 // SHARED lane (additive). Lightweight descriptor for the collapsible guide-cam
