@@ -200,6 +200,25 @@ export interface StarMark {
   theta?: number; // radians, Pass 2
 }
 
+// PRO-13 — sensor-tilt / corner-vs-center optical-aberration inspector.
+// Purely additive: a zone-map aggregation of the SAME per-star ecc/theta/hfr
+// PRO-7 already emits, plus a pattern classification. See docs/superpowers/
+// specs/2026-07-23-tilt-inspector-design.md.
+export interface TiltZone {
+  hfr: number | null; // median HFR of zone stars (px); null when too few stars
+  ecc: number | null; // mean elongation of trusted stars; null when none
+  theta: number | null; // mean major-axis angle (radians); null when none
+  n: number; // stars binned into this zone
+}
+export interface TiltInfo {
+  cols: number;
+  rows: number;
+  zones: TiltZone[]; // row-major, len === rows*cols
+  pattern: "uniform" | "tilt" | "coma" | "tracking";
+  severity: number; // 0..1-ish relative HFR spread
+  worst_zone: number | null; // index into zones, or null
+}
+
 // NOV-1 live-stacking readout — present only on raw/linear subs while Live View
 // is armed (server-side accumulator). Old clients ignore it.
 export interface LiveStackInfo {
@@ -236,6 +255,7 @@ export interface PreviewInfo {
   hfr?: number;
   stars?: number;
   star_list?: StarMark[];
+  tilt?: TiltInfo; // PRO-13: present only when enough zones are populated
   livestack?: LiveStackInfo; // NOV-1: present only while Live View is armed
   ts: number; // server epoch seconds (filmstrip age)
 }
@@ -262,6 +282,7 @@ export interface OverlayToggles {
   clip: boolean; // default false (only effective when linear+full_well)
   reticle: boolean; // default false (full reticle)
   centerMark: boolean; // default TRUE (subtle framing aid)
+  tilt: boolean; // default false — tilt/aberration heatmap (PRO-13)
 }
 
 export interface FocusPoint {
