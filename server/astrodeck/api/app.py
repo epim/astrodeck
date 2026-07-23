@@ -3274,6 +3274,50 @@ def create_app() -> FastAPI:
             r["az"] = round(az, 1)
         return results
 
+    @app.get("/api/catalog/tonight",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def catalog_tonight(date: str | None = None, alt_limit: float = 30.0):
+        """Rank the whole catalog by tonight's best-window visibility and tag each
+        object with a beginner difficulty rating (NOV-3). Mirrors post_order's
+        throttled fan-out of compute_night (visibility.py)."""
+        from ..catalog.objects import CATALOG, _TYPE_NAMES
+        from ..catalog.visibility import compute_night
+        from ..catalog.tonight import tonight_score, rank_picks
+        from ..catalog.difficulty import difficulty_for
+
+        sem = asyncio.Semaphore(8)
+
+        async def _night(o):
+            async with sem:
+                return await asyncio.to_thread(
+                    compute_night, o.ra_hours, o.dec_deg,
+                    date=date, step_min=20, alt_limit=alt_limit)
+
+        nights = await asyncio.gather(*[_night(o) for o in CATALOG])
+        picks: list[dict] = []
+        for o, night in zip(CATALOG, nights):
+            d = difficulty_for(o.id, o.mag, o.size_arcmin)
+            bw = night["best_window"]
+            picks.append({
+                "id": o.id, "name": o.name, "type": _TYPE_NAMES[o.type],
+                "ra_hours": o.ra_hours, "dec_deg": o.dec_deg,
+                "mag": o.mag, "size_arcmin": o.size_arcmin,
+                "difficulty": d["tier"],
+                "surface_brightness": d["surface_brightness"],
+                "difficulty_source": d["source"],
+                "max_alt": night["transit_alt"],
+                "transit_unix": night["transit_unix"],
+                "best_window": ({"start_unix": bw["start_unix"],
+                                 "end_unix": bw["end_unix"]} if bw else None),
+                "moon_sep_deg": night["moon"]["separation_deg"],
+                "never_rises_above_limit": night["never_rises_above_limit"],
+                "score": tonight_score(night),
+            })
+        out_date = nights[0]["date"] if nights else (date or "")
+        return {"date": out_date, "picks": rank_picks(picks),
+                "site_is_default": bool(hub.site.get("is_default", False))}
+
     @app.get("/api/logs", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def logs():

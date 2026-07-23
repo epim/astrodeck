@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .difficulty import difficulty_for
+
 
 @dataclass(frozen=True)
 class DSO:
@@ -102,11 +104,15 @@ def search_catalog(query: str, limit: int = 25) -> list[dict]:
     results = []
     for o in CATALOG:
         if not q or q in o.id.lower() or q in o.name.lower() or q in _TYPE_NAMES[o.type].lower():
+            d = difficulty_for(o.id, o.mag, o.size_arcmin)
             results.append({
                 "id": o.id, "name": o.name,
                 "type": _TYPE_NAMES[o.type],
                 "ra_hours": o.ra_hours, "dec_deg": o.dec_deg,
                 "mag": o.mag, "size_arcmin": o.size_arcmin,
+                "difficulty": d["tier"],
+                "surface_brightness": d["surface_brightness"],
+                "difficulty_source": d["source"],
             })
     results.sort(key=lambda r: r["mag"])
     return results[:limit]

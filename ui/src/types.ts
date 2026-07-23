@@ -353,6 +353,10 @@ export interface PolarState {
   source: "nina" | "sim" | null;
 }
 
+// NOV-3: server-derived beginner difficulty tag (catalog/difficulty.py). The
+// canonical union — lib/difficulty.ts re-exports it for display-helper callers.
+export type DifficultyTier = "easy" | "moderate" | "hard";
+
 export interface CatalogEntry {
   id: string;
   name: string;
@@ -363,6 +367,11 @@ export interface CatalogEntry {
   size_arcmin: number;
   alt: number;
   az: number;
+  // NOV-3 (additive): server-derived beginner difficulty. Optional so payloads
+  // that predate it (older /api/catalog, test doubles) still type-check.
+  difficulty?: DifficultyTier;
+  surface_brightness?: number;              // mag/arcmin^2
+  difficulty_source?: "heuristic" | "curated";
 }
 
 export interface SwitchPort {
@@ -974,6 +983,35 @@ export interface VisibilityTarget {
   max_alt: number;
   best_window: { start_unix: number; end_unix: number } | null;
   moon_sep_deg: number;
+}
+
+// ------------------------------------------------ tonight picker (NOV-3)
+// GET /api/catalog/tonight — the ranked "what can I image tonight?" list. Each
+// pick is a CatalogEntry-shaped object plus tonight's visibility summary and a
+// difficulty tag; ordered best-window-first by the server (score desc).
+export interface TonightPick {
+  id: string;
+  name: string;
+  type: string;
+  ra_hours: number;
+  dec_deg: number;
+  mag: number;
+  size_arcmin: number;
+  difficulty: DifficultyTier;
+  surface_brightness: number;
+  difficulty_source: "heuristic" | "curated";
+  max_alt: number;
+  transit_unix: number;
+  best_window: { start_unix: number; end_unix: number } | null;
+  moon_sep_deg: number;
+  never_rises_above_limit: boolean;
+  score: number;                            // server ranking key (visibility)
+}
+
+export interface TonightResponse {
+  date: string;
+  site_is_default: boolean;
+  picks: TonightPick[];
 }
 
 // ---------------------------------------------------- onboarding: site + checks
