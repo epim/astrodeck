@@ -92,9 +92,16 @@ export default function CaptureView() {
   const exposureNum = Number(exposure);
   const exposureInvalid = isExposureInvalid(exposure);
   const exposureS = exposureInvalid ? 1 : exposureNum;
+  // UX-43: enforce the gain ceiling the label already advertises (cam.max_gain),
+  // mirroring the exposure guard — a blank/out-of-range gain must block the
+  // capture, not silently POST 0 or an over-range value the driver rejects.
+  const gainNum = Number(gain);
+  const gainInvalid =
+    gain.trim() === "" || !Number.isFinite(gainNum) || gainNum < 0 ||
+    (!!cam?.max_gain && gainNum > cam.max_gain);
   const body = {
     exposure_s: exposureS,
-    gain: Number(gain) || 0,
+    gain: gainInvalid ? 0 : gainNum,
     offset: Number(offset) || 0,
     binning: Number(binning) || 1,
     save,
@@ -198,12 +205,12 @@ export default function CaptureView() {
   );
 
   const onSingle = () => {
-    if (captureBlocked || !canCapture || exposureInvalid) return;
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture", body));
   };
   const onLoop = () => {
-    if (captureBlocked || !canCapture || exposureInvalid) return;
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
     beginExposure(exposureS);
     act(() => api.post("/api/capture/loop", body));
   };
@@ -243,7 +250,18 @@ export default function CaptureView() {
               )}
             </Field>
             <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`}>
-              <input className="field" value={gain} disabled={!canCapture} onChange={(e) => setGain(e.target.value)} />
+              <input
+                className={`field ${gainInvalid ? "border-bad" : ""}`}
+                value={gain}
+                disabled={!canCapture}
+                aria-invalid={gainInvalid}
+                onChange={(e) => setGain(e.target.value)}
+              />
+              {gainInvalid && (
+                <p className="text-[11px] text-bad mt-1">
+                  Gain must be 0{cam?.max_gain ? `–${cam.max_gain}` : " or more"}
+                </p>
+              )}
             </Field>
             <Field label="Offset" hint={HELP.offset}>
               <input className="field" value={offset} disabled={!canCapture} onChange={(e) => setOffset(e.target.value)} />
@@ -273,7 +291,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${phase === "exposing" || phase === "downloading" ? "btn-accent border-accent" : "btn-accent"}`}
               aria-pressed={inFlight && !looping}
-              disabled={!canCapture || looping || captureBlocked || exposureInvalid || inFlight}
+              disabled={!canCapture || looping || captureBlocked || exposureInvalid || gainInvalid || inFlight}
               onClick={onSingle}>
               {inFlight && !looping
                 ? (phase === "downloading" ? "Reading…" : "Exposing…")
@@ -282,7 +300,7 @@ export default function CaptureView() {
             <button
               className={`btn tap-lg min-h-[56px] ${looping ? "btn-accent border-accent" : ""}`}
               aria-pressed={looping}
-              disabled={!canCapture || looping || captureBlocked || exposureInvalid}
+              disabled={!canCapture || looping || captureBlocked || exposureInvalid || gainInvalid}
               onClick={onLoop}>
               {looping ? "Looping…" : "Loop"}
             </button>
