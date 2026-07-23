@@ -158,3 +158,15 @@ def test_union_config_tolerates_extra_keys(tmp_path):
     assert cfg.version == 7
     assert cfg.site.name == "X"
     assert cfg.active_profile_id == "abc"
+
+
+def test_optics_telescope_name_defaults_empty_and_surfaces():
+    from astrodeck.config import Optics
+    from astrodeck.hub import Hub
+    # default is empty (honest: TELESCOP omitted when blank)
+    assert Optics().telescope_name == ""
+    # a set name round-trips through the model
+    assert Optics(telescope_name="Askar 71F").telescope_name == "Askar 71F"
+    # effective_optics() surfaces the key so Hub.capture can thread it
+    h = Hub()
+    assert "telescope_name" in h.effective_optics()
