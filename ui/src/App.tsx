@@ -17,6 +17,7 @@ import BottomNav from "./components/BottomNav";
 import TouchGuard from "./components/TouchGuard";
 import { confirmDialog, ConfirmHost } from "./components/ConfirmDialog";
 import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
+import FirstRunWizard from "./components/FirstRunWizard";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
 import { useShouldShowLogin, useAuthResolving } from "./lib/caps";
 import Login from "./views/Login";
@@ -470,6 +471,14 @@ export default function App() {
           request with focus-trap/Escape/restore. Mounted once near the root so any
           call site (MountView GOTO guard, etc.) can `await confirmDialog({...})`. */}
       <ConfirmHost />
+
+      {/* NOV-2: non-modal first-run setup guide. Self-manages visibility off
+          the store's `wizardOpen` slice (renders nothing when closed) and its
+          own auto-open effect — App only mounts it. Sits as a sibling of
+          .dim-content (like ConfirmHost above), so it's never brightness-
+          dimmed, and deliberately does NOT block pointer events over the
+          rest of the screen (see FirstRunWizard.tsx header comment). */}
+      <FirstRunWizard />
     </div>
   );
 }

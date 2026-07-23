@@ -34,6 +34,8 @@ import type {
   WsPhase,
 } from "./types";
 import { accumulateLight, type LightSnapshot } from "./lib/calibration";
+import { parseSeen, serializeSeen, withSeen, COACH_SEEN_KEY, WIZARD_SEEN_KEY, type SeenMap } from "./lib/coach";
+import type { WizardStepId } from "./lib/firstRunWizard";
 import { deriveNinaHealth } from "./lib/health";
 import { normalizeSafety } from "./lib/safety";
 import { normalizeWeather } from "./lib/weather";
@@ -504,6 +506,11 @@ interface AppState {
   site: SiteInfo | null;
   equipConnected: boolean; // sticky equipment flag, NOT wsConnected
 
+  // --- coach marks / first-run wizard (F-G + NOV-2) ---
+  coachSeen: SeenMap;                  // persisted astrodeck-coach-seen
+  wizardOpen: boolean;                 // session
+  wizardStepId: WizardStepId | null;   // session (manual override)
+
   // --- reliability transport + toasts (the ONE toast model) ---
   wsPhase: WsPhase;
   wsLastEvent: number;
@@ -604,6 +611,13 @@ interface AppState {
   setOpticsDirty: (b: boolean) => void;
   setSite: (s: SiteInfo) => void;
 
+  // --- actions: coach marks / first-run wizard ---
+  markSeen: (key: string) => void;
+  resetCoach: () => void;
+  openWizard: () => void;
+  closeWizard: () => void;
+  setWizardStep: (id: WizardStepId | null) => void;
+
   // --- actions: atlas / framing ---
   openFraming: (e?: CatalogEntry) => void; // view="atlas"; seed center+FOV from entry/optics
   setFraming: (patch: Partial<FramingSession>) => void;
@@ -703,6 +717,11 @@ export const useStore = create<AppState>((set, get) => ({
   // --- site ---
   site: null,
   equipConnected: false,
+
+  // --- coach marks / first-run wizard ---
+  coachSeen: parseSeen(localStorage.getItem(COACH_SEEN_KEY)),
+  wizardOpen: false,
+  wizardStepId: null,
 
   // --- reliability ---
   wsPhase: "connecting",
@@ -836,6 +855,25 @@ export const useStore = create<AppState>((set, get) => ({
   setSiteDirty: (b) => set({ siteDirty: b }),
   setOpticsDirty: (b) => set({ opticsDirty: b }),
   setSite: (s) => set({ site: s }),
+
+  // -------------------------------------------------- coach marks / wizard
+  markSeen: (key) => {
+    const next = withSeen(get().coachSeen, key);
+    if (next === get().coachSeen) return;
+    try { localStorage.setItem(COACH_SEEN_KEY, serializeSeen(next)); } catch { /* quota */ }
+    set({ coachSeen: next });
+  },
+  resetCoach: () => {
+    try { localStorage.removeItem(COACH_SEEN_KEY); } catch { /* ignore */ }
+    set({ coachSeen: {}, wizardOpen: false, wizardStepId: null });
+  },
+  openWizard: () => set({ wizardOpen: true, wizardStepId: null }),
+  closeWizard: () => {
+    const next = withSeen(get().coachSeen, WIZARD_SEEN_KEY);
+    try { localStorage.setItem(COACH_SEEN_KEY, serializeSeen(next)); } catch { /* quota */ }
+    set({ coachSeen: next, wizardOpen: false, wizardStepId: null });
+  },
+  setWizardStep: (id) => set({ wizardStepId: id }),
 
   // ----------------------------------------------------------- atlas / framing
   // Open the Atlas on `e` (or free-roam when no entry). Switches the view, seeds
@@ -1479,6 +1517,11 @@ export const useAtlasBannerPending = () => useStore((s) => s.atlasBannerPending)
 export const useSite = () => useStore((s) => s.site);
 export const useEquipConnected = () => useStore((s) => s.equipConnected);
 export const useConfirm = () => useStore((s) => s.confirm);
+
+// Coach marks / first-run wizard (F-G + NOV-2) narrow hooks.
+export const useHasSeen = (key: string) => useStore((s) => !!s.coachSeen[key]);
+export const useWizardOpen = () => useStore((s) => s.wizardOpen);
+export const useWizardStepId = () => useStore((s) => s.wizardStepId);
 
 // ============================================================================
 // Automation / safety narrow hooks (Batch-4b §2.2). Each subscribes to a single
