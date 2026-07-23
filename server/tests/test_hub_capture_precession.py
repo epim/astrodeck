@@ -393,3 +393,33 @@ async def test_capture_radec_written_as_j2000(monkeypatch, tmp_path):
         assert abs(hd["RA"] - ra_jnow * 15.0) > 0.05   # genuinely moved off JNOW
     finally:
         await h.disconnect_all()
+
+
+async def test_solve_saved_lights_stamps_wcs(monkeypatch, tmp_path):
+    """When solve_saved_lights is ON, a saved light is solved in place and gets a
+    celestial WCS a stacker can read without re-solving (supervisor ruling 4)."""
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module, "config_store", temp_store)
+    import astrodeck.config as config_mod
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    temp_store.cfg().solve_saved_lights = True
+    temp_store.bump_and_save()
+    # Force the sim solver (deterministic; independent of whether ASTAP is on box).
+    from astrodeck.solve import SimSolver
+    monkeypatch.setattr("astrodeck.providers.pick_solver",
+                        lambda hub: SimSolver(getattr(hub, "sim_rig", None), mode=None))
+
+    h = Hub()
+    await h.connect_sim()
+    try:
+        await h.capture(0.5, 100, 30, 1, save=True, target="M42")
+        saved = Path(h.last_frame.saved_path)
+        from astropy.wcs import WCS
+        with fits.open(saved) as hdul:
+            hd = hdul[0].header
+            assert hd["CTYPE1"] == "RA---TAN"
+            w = WCS(hd)
+        assert w.has_celestial
+    finally:
+        await h.disconnect_all()
