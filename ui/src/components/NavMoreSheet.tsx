@@ -41,6 +41,10 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
   { id: "settings", label: "Settings", icon: "settings" },
+  // Reports is NOT primary nav (App.tsx VIEWS comment) but needs to stay
+  // reachable on a phone even with the engine idle — ReportView's own picker
+  // browses all past reports from GET /api/reports (report viewer spec §1.4).
+  { id: "report", label: "Reports", icon: "download" },
 ];
 
 const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [

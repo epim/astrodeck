@@ -5,6 +5,7 @@
  *  Histogram collapsed to a single <path>, guide graphs React.memo'd (perf review). */
 import { memo, useMemo } from "react";
 import type { FocusPoint } from "../types";
+import { trendGeom } from "../lib/reportChart";
 
 export const Histogram = memo(function Histogram({ data }: { data: number[] }) {
   const w = 256, h = 64;
@@ -243,5 +244,43 @@ export const GuideScatter = memo(function GuideScatter({ samples }: { samples: {
           opacity={0.25 + (0.75 * i) / arr.length} />
       ))}
     </svg>
+  );
+});
+
+// ------------------------------------------------------------------ TrendLine
+// Night-safe time-series line consuming `trendGeom` (report viewer spec §3
+// Task 2). Reused by both the end-of-night report trends and the live
+// in-acquisition strip — one primitive, x by index (the backend already
+// downsamples each series to <=200 time-ordered points, so index-spacing
+// already tracks time closely; a true time axis is later polish).
+export const TrendLine = memo(function TrendLine({
+  values, label, unit = "", decimals = 2, w = 240, h = 56,
+}: { values: number[]; label: string; unit?: string; decimals?: number; w?: number; h?: number; }) {
+  const geom = useMemo(() => trendGeom(values, w, h), [values, w, h]);
+  const last = values.length ? values[values.length - 1] : null;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-baseline justify-between">
+        <span className="label !text-[9px]">{label}</span>
+        <span className="mono text-[10px] text-dim tabular-nums">
+          {last != null ? `${last.toFixed(decimals)}${unit}` : "—"}
+        </span>
+      </div>
+      {geom ? (
+        <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="w-full"
+          style={{ height: h }} role="img" aria-label={`${label} trend`}>
+          <path d={geom.d} fill="none" stroke="var(--accent)" strokeWidth={1.4}
+            vectorEffect="non-scaling-stroke" />
+        </svg>
+      ) : (
+        <div className="text-dim text-[10px] py-3 text-center">no data</div>
+      )}
+      {geom && (
+        <div className="flex justify-between mono text-[9px] text-dim/70 tabular-nums">
+          <span>{geom.yMin.toFixed(decimals)}{unit}</span>
+          <span>{geom.yMax.toFixed(decimals)}{unit}</span>
+        </div>
+      )}
+    </div>
   );
 });
