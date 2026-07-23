@@ -14,6 +14,8 @@ import {
   validateGuideSettings,
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
+  DEC_GUIDE_MODES,
+  isValidDecGuideMode,
   type GuideSettings,
 } from "../guideSettings";
 
@@ -139,6 +141,42 @@ test("validateGuideSettings accepts a valid non-default algorithm swap", () => {
   const out = validateGuideSettings(s);
   assert(out.ra.algorithm === "lowpass2", `ra.algorithm: ${out.ra.algorithm}`);
   assert(out.dec.algorithm === "z_filter", `dec.algorithm: ${out.dec.algorithm}`);
+});
+
+// (d) Dec guide DIRECTION (PRO-12 Tier 1) — distinct from the Dec algorithm.
+test("defaultGuideSettings seeds decGuideMode auto", () => {
+  const s = defaultGuideSettings();
+  assert(s.decGuideMode === "auto", `decGuideMode: ${s.decGuideMode}`);
+});
+
+test("DEC_GUIDE_MODES carries all four directions", () => {
+  const values = DEC_GUIDE_MODES.map((o) => o.value).sort();
+  assert(
+    JSON.stringify(values) === JSON.stringify(["auto", "north", "off", "south"]),
+    `DEC_GUIDE_MODES values: ${values.join(",")}`,
+  );
+});
+
+test("isValidDecGuideMode accepts the four literals and rejects junk", () => {
+  assert(isValidDecGuideMode("auto"), "auto should be valid");
+  assert(isValidDecGuideMode("north"), "north should be valid");
+  assert(isValidDecGuideMode("south"), "south should be valid");
+  assert(isValidDecGuideMode("off"), "off should be valid");
+  assert(!isValidDecGuideMode("bogus"), "bogus should be invalid");
+});
+
+test("validateGuideSettings coerces an unknown decGuideMode to auto", () => {
+  const s = defaultGuideSettings();
+  (s as { decGuideMode: string }).decGuideMode = "bogus";
+  const out = validateGuideSettings(s);
+  assert(out.decGuideMode === "auto", `decGuideMode: ${out.decGuideMode}`);
+});
+
+test("validateGuideSettings preserves a valid non-default decGuideMode", () => {
+  const s = defaultGuideSettings();
+  s.decGuideMode = "south";
+  const out = validateGuideSettings(s);
+  assert(out.decGuideMode === "south", `decGuideMode: ${out.decGuideMode}`);
 });
 
 console.log(`guideSettings.test.ts: ${passed} passed, ${failed} failed`);

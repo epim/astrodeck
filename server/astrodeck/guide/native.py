@@ -111,14 +111,17 @@ _UNKNOWN_DECLINATION = 997.0
 
 def guide_algo_config() -> dict:
     """The persisted per-axis guide-algorithm selection (``AppConfig.guide``)
-    as engine-config keys (``ra_algorithm`` / ``dec_algorithm``), for the backend
-    guider constructors (P2-T3). Defensive: any failure (no config store, an old
-    config without the block) yields ``{}`` so ``_build_engine_config`` falls
-    back to its dossier §15 defaults rather than raising during connect."""
+    as engine-config keys (``ra_algorithm`` / ``dec_algorithm`` /
+    ``dec_guide_mode`` / ``blc_pulse_ms``), for the backend guider constructors
+    (P2-T3; PRO-12 Tier 1 added the latter two). Defensive: any failure (no
+    config store, an old config without the block) yields ``{}`` so
+    ``_build_engine_config`` falls back to its dossier §15 defaults rather than
+    raising during connect."""
     try:
         from ..config import config_store
         g = config_store.cfg().guide
-        return {"ra_algorithm": g.ra_algorithm, "dec_algorithm": g.dec_algorithm}
+        return {"ra_algorithm": g.ra_algorithm, "dec_algorithm": g.dec_algorithm,
+                 "dec_guide_mode": g.dec_guide_mode, "blc_pulse_ms": g.blc_pulse_ms}
     except Exception:  # pragma: no cover - defensive
         return {}
 
