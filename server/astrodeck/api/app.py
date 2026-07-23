@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import hmac
 import io
+import json
 import os
 import shutil
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -77,6 +79,9 @@ from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
 from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
+from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
+                               build_bundle, bundle_summary, build_script,
+                               manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..sequence.session import migrate_legacy_resume, session_store
 from ..weather import NoNightError, weather_service
@@ -429,6 +434,18 @@ def _plan_exists(plan_id: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _get_master_library():
+    """Resolve the master calibration library for the stacking bundle. PRO-1's
+    real library (``hub.master_library``, a ``CalibrationLibrary``) is wrapped in
+    :class:`CalibrationLibraryAdapter` to satisfy the bundle's ``MasterLibrary``
+    Protocol (PRO-1 has no ``match(key)`` method); ``NullMasterLibrary`` stands in
+    until PRO-1 attaches one to the hub."""
+    lib = getattr(hub, "master_library", None)
+    if lib:
+        return CalibrationLibraryAdapter(lib)
+    return NullMasterLibrary()
 
 
 # ------------------------------------------------------------ request models
@@ -2070,6 +2087,39 @@ def create_app() -> FastAPI:
         # can never carry CR/LF/quotes from attacker-controlled input.
         fname = f"{_slug(report_id)}.frames.csv"
         return Response(buf.getvalue(), media_type="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="{fname}"'})
+
+    @app.get("/api/reports/{report_id}/bundle", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def report_bundle(report_id: str):
+        """Slim stacking-bundle preview (per-group counts + master-match status +
+        warnings) for the report viewer panel (PRO-10 §1.5). 404 if missing."""
+        report = await asyncio.to_thread(SessionReporter.load, report_id)
+        if report is None:
+            raise HTTPException(404, "report not found")
+        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save)
+        return bundle_summary(b)
+
+    @app.get("/api/reports/{report_id}/bundle.zip", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def report_bundle_zip(report_id: str):
+        """The stacking bundle as an in-memory ``.zip`` (manifest + weights CSV +
+        README + build.sh/.ps1 — NOT the FITS; §4 decision 1). Mirrors
+        ``report_frames_csv``: the sanitized slug (never the raw path param) forms
+        the download filename so the header can't carry CR/LF/quotes."""
+        report = await asyncio.to_thread(SessionReporter.load, report_id)
+        if report is None:
+            raise HTTPException(404, "report not found")
+        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("manifest.json", json.dumps(manifest_json(b), indent=2))
+            z.writestr("weights.csv", weights_csv(b))
+            z.writestr("README.txt", readme_text(b))
+            z.writestr("build.sh", build_script(b, "sh"))
+            z.writestr("build.ps1", build_script(b, "ps1"))
+        fname = f"{_slug(report_id)}.bundle.zip"
+        return Response(buf.getvalue(), media_type="application/zip", headers={
             "Content-Disposition": f'attachment; filename="{fname}"'})
 
     # ----------------------------------------------------------------- profiles
