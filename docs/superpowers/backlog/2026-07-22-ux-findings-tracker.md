@@ -244,6 +244,32 @@ Idiom: `<Icon name=… size=… className="inline -mt-0.5 mr-1" />`. **Left alon
 semantic status shapes chosen "not colour alone" (`●▲■`, `✓△✕◌⊘`), disclosure carets (`▾▸`),
 direction arrows, and typography (`−°″×·`, inline `⚠` in text banners).
 
+## Second-round review — 2026-07-22 (workflow: 5 dimensions, 20 agents, 15 raised → 12 confirmed / 3 refuted)
+
+The tracker's "second-round gaps" reviewed as first-class surfaces (Settings, Monitor, Preview +
+capability-discovery + relay recovery), adversarial refute-by-default verify. **12 confirmed, all
+NEW** (none overlap UX-01..37). **Not yet fixed.** Several are the same *classes* the first round
+fixed, now on the un-reviewed surfaces (capability-discovery like UX-27; honest-disabled; night-mode
+`window.prompt`; honest-state).
+
+| ID | Surface | Sev | Cat | Summary | file:line |
+|----|---------|-----|-----|---------|-----------|
+| UX-38 | Settings/Safety | **P2** | misleading | Sun-exclusion cone=0 leaves sun-avoidance **inert** (`hub._check_solar` returns on `cone<=0`) while the panel shows green "Armed" + "refuses to point within the cone" + "Saved". Drive Armed off `avoidance && cone>0`; route cone=0 through the disarm hold-confirm. | `SafetyPanel.tsx:199`, `hub.py:1041` |
+| UX-39 | Settings/Users | P2 | a11y | Admin password reset uses native `window.prompt` — the bright OS dialog the team removed elsewhere (breaks night-mode/dimmer), password in cleartext, no 72-byte guard. Use the themed masked input `AddUserForm` already has. | `UsersPanel.tsx:158` |
+| UX-40 | Monitor | P2 | misleading | Flagship "Night looks OK" verdict ignores `telemetryStale` — confident green OK while values are 20s+ frozen, contradicting the ConnectionBanner. Thread `telemetryStale` into `deriveHealthIssues`. | `MonitorView.tsx:271` |
+| UX-41 | Monitor | P2 | error-handling | Hold-to-Abort's `fetch` never checks `res.ok` and `act()` swallows rejections — a failed/timed-out abort is silent, and even success leaves the badge frozen on RUNNING, in the exact link-down case the control exists for. Client toast + local ack. | `MonitorView.tsx:253` |
+| UX-42 | Preview | P2 | correctness | "Lossless PNG" is an `<a href>` with no `download` attr and `/lossless.png` has no `Content-Disposition` → clicking navigates the browser off the SPA instead of saving. Add `download` and/or the attachment header. | `PreviewToolbar.tsx:188`, `app.py:2441` |
+| UX-43 | Capture | P2 | capability | Gain input prints `max ${cam.max_gain}` in its label but never enforces it — out-of-range/blank gains POST silently (`Number(gain)||0`). Same class as UX-27; mirror the exposure guard. | `CaptureView.tsx:246` |
+| UX-44 | Header/Relay | P2 | misleading | LINK LED maps every non-"up" phase to `bad` → red fast-blink **alarm** on every benign reconnect, while the ConnectionBanner shows calm amber "CONNECTING". Map connecting/reconnecting → warn. | `HealthLeds.tsx:70` |
+| UX-45 | Settings/Users | P3 | ux | Admin can self-disable/demote with one unconfirmed click (no `isSelf` guard) → silent self-lockout, while the safer Delete is hold-confirm. Confirm self-demotion. | `UsersPanel.tsx:225` |
+| UX-46 | Monitor | P3 | misleading | Stale guider still renders a confident green "good" RMS verdict + alive sparkline; staleness is only a small sub-line. Downgrade the verdict on `guideStale`. | `MonitorView.tsx:540` |
+| UX-47 | Monitor | P3 | a11y | Dew-heater shortcut is a ~16px `text-xs` button, below the 44px touch min the rest of the Monitor honors. | `MonitorView.tsx:592` |
+| UX-48 | Preview | P3 | misleading | Disabled "Stretched PNG" tooltip tells NINA users to "pause or zoom" — but NINA JPEG frames never get a lossless base, so it can never enable. Branch the copy on source. | `PreviewToolbar.tsx:182` |
+| UX-49 | Preview | P3 | misleading | Download button uses native `disabled` (greyed, no reason) when link-down — violates the file's own documented honest-disabled pattern (dim token + lock + title). | `PreviewToolbar.tsx:161` |
+
+**Refuted (3):** cooler setpoint `[-60,40]` (intentional, commented UX-28 rationale; no device field exists to drive it);
+relay HELLO_ACK "hot-loop" (the redial DOES back off to a 15s cap — the finding's mechanism was wrong); + one preview edge case.
+
 ## Review results — 2026-07-21 (multi-lens workflow: 57 agents, 47 raised → 35 confirmed / 12 refuted)
 
 The thorough review ran (9 lenses → adversarial refute → synthesis). Full results + the phased fix
