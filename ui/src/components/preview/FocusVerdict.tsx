@@ -6,31 +6,15 @@
 // (every warning carries an action — §12.6). NEVER color alone: word + arrow + text.
 import type { PreviewInfo } from "../../types";
 import { Icon } from "../icons";
+import { autofocusLevel, type AfLevel } from "../../lib/autofocus";
 
 // ============================================================ AUTOFOCUS VERDICT
 // The autofocus-RESULT verdict (implementation brief §3 / design-reference §02):
 // "Focus — excellent · HFR 1.82 px · 2.4″ · R² 0.997 · hyperbolic" — verdict word
-// first, raw numbers second (brief §0.1). Distinct from FocusVerdict above, which
+// first, raw numbers second (brief §0.1). Distinct from FocusVerdict below, which
 // judges the CURRENT live frame; this judges the completed sweep from the engine's
-// best HFR + fit R² + state. Pure mapping is exported for unit testing.
-export type AfLevel = "excellent" | "good" | "soft" | "failed" | "pending";
-
-export function autofocusLevel(args: {
-  state?: string;
-  hfr?: number | null;
-  r2?: number | null;
-  hfrGood: number;
-  hfrWarn: number;
-}): AfLevel {
-  const { state, hfr, r2, hfrGood, hfrWarn } = args;
-  if (state === "failed") return "failed";
-  if (state !== "done" || hfr == null) return "pending";
-  // excellent needs a tight HFR AND a confident fit (R²≥0.98); when the provider
-  // emits no R² (e.g. a backend/NINA result), judge on HFR alone.
-  if (hfr <= hfrGood && (r2 == null || r2 >= 0.98)) return "excellent";
-  if (hfr <= hfrWarn) return "good";
-  return "soft";
-}
+// best HFR + fit R² + state. `AfLevel`/`autofocusLevel` live in lib/autofocus.ts
+// (the one threshold source, reused by the plain-verdict mapping).
 
 const AF_CHIP: Record<AfLevel, { word: string; text: string; border: string; bg: string }> = {
   excellent: { word: "excellent", text: "text-accent", border: "border-accent2", bg: "bg-accent-fill" },

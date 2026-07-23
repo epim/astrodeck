@@ -150,3 +150,176 @@ export function afResultAgeLabel(tsMs: number, nowMs: number): string {
   if (hrs < 24) return `${hrs.toFixed(1)}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
+
+// ============================================================ AUTOFOCUS VERDICT
+// The autofocus-RESULT verdict (implementation brief §3 / design-reference §02):
+// "Focus — excellent · HFR 1.82 px · 2.4″ · R² 0.997 · hyperbolic" — verdict word
+// first, raw numbers second (brief §0.1). Distinct from FocusVerdict, which
+// judges the CURRENT live frame; this judges the completed sweep from the engine's
+// best HFR + fit R² + state. Pure mapping is exported for unit testing.
+export type AfLevel = "excellent" | "good" | "soft" | "failed" | "pending";
+
+export function autofocusLevel(args: {
+  state?: string;
+  hfr?: number | null;
+  r2?: number | null;
+  hfrGood: number;
+  hfrWarn: number;
+}): AfLevel {
+  const { state, hfr, r2, hfrGood, hfrWarn } = args;
+  if (state === "failed") return "failed";
+  if (state !== "done" || hfr == null) return "pending";
+  // excellent needs a tight HFR AND a confident fit (R²≥0.98); when the provider
+  // emits no R² (e.g. a backend/NINA result), judge on HFR alone.
+  if (hfr <= hfrGood && (r2 == null || r2 >= 0.98)) return "excellent";
+  if (hfr <= hfrWarn) return "good";
+  return "soft";
+}
+
+// ============================================================ ONE-TAP FOCUS
+// NOV-6: "Focus my scope" one-tap param derivation + plain verdict + hero-button
+// gating copy (design spec 2026-07-23-one-tap-focus-design.md §1.3). No physics
+// is invented: we derive only from the camera bin ceiling/max gain, the
+// focuser's travel range, and the current live frame's already-measured stars.
+
+// ---- (A) param derivation ----
+export const AF_EXPOSURE_MIN_S = 1;
+export const AF_EXPOSURE_MAX_S = 6;
+export const AF_EXPOSURE_FALLBACK_S = 2;
+export const AF_STAR_FLOOR = 5;
+export const AF_DEFAULT_STEP = 350;
+export const AF_STEPS_EACH_SIDE = 4;
+export const AF_STEP_MIN = 20;
+export const AF_STEP_MAX = 1500;
+export const AF_SPAN_TARGET_FRAC = 0.12;
+export const AF_SPAN_MIN_FRAC = 0.04;
+export const AF_SPAN_MAX_FRAC = 0.30;
+export const AF_DEFAULT_GAIN = 120;
+
+export interface DeriveAfInputs {
+  focuserMax: number | null; // foc.max when > 0, else null
+  maxBin: number | null; // status.camera?.max_bin
+  maxGain: number | null; // status.camera?.max_gain
+  liveExposureS: number | null; // shown?.exposure_s
+  liveGain: number | null; // shown?.gain
+  liveStars: number | null; // shown?.stars
+  liveHfr: number | null; // shown?.hfr
+}
+export interface DerivedAfParams {
+  exposure_s: number;
+  gain: number;
+  step: number;
+  steps_each_side: number;
+  binning: number;
+  basis: { exposure: string; step: string; binning: string };
+}
+
+const clampI = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(v)));
+const round1 = (v: number) => Math.round(v * 10) / 10;
+
+export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
+  // exposure — reuse the live frame only if it is already showing stars
+  const liveUsable =
+    inp.liveExposureS != null && Number.isFinite(inp.liveExposureS) &&
+    (inp.liveStars ?? 0) >= AF_STAR_FLOOR && inp.liveHfr != null;
+  const rawExp = liveUsable ? (inp.liveExposureS as number) : AF_EXPOSURE_FALLBACK_S;
+  const exposure_s = Math.min(AF_EXPOSURE_MAX_S, Math.max(AF_EXPOSURE_MIN_S, round1(rawExp)));
+  const exposure = liveUsable
+    ? `matched the live frame (${round1(rawExp)}s, ${inp.liveStars} stars)` +
+      (exposure_s !== round1(rawExp) ? `, clamped to ${exposure_s}s` : "")
+    : `default ${AF_EXPOSURE_FALLBACK_S}s (no measured stars in the live frame yet)`;
+
+  // binning — 2× sweet spot, respect a bin-1-only sensor
+  const cap = inp.maxBin != null && inp.maxBin >= 1 ? Math.floor(inp.maxBin) : 4;
+  const binning = Math.min(2, cap);
+  const binBasis = binning === 2
+    ? "2× — brighter stars, fast download"
+    : "1× (camera has no higher binning)";
+
+  // gain — reuse live gain else default, clamp to sensor ceiling
+  const rawGain = inp.liveGain != null && Number.isFinite(inp.liveGain)
+    ? inp.liveGain : AF_DEFAULT_GAIN;
+  const gain = inp.maxGain != null && inp.maxGain > 0
+    ? clampI(rawGain, 0, inp.maxGain) : Math.max(0, Math.round(rawGain));
+
+  // step — keep proven default; rescale only at focuser-range extremes
+  let step = AF_DEFAULT_STEP;
+  let stepBasis = `default ${AF_DEFAULT_STEP} steps`;
+  const fm = inp.focuserMax;
+  if (fm != null && fm > 0) {
+    const frac = (AF_DEFAULT_STEP * AF_STEPS_EACH_SIDE * 2) / fm;
+    if (frac > AF_SPAN_MAX_FRAC || frac < AF_SPAN_MIN_FRAC) {
+      step = clampI((fm * AF_SPAN_TARGET_FRAC) / (AF_STEPS_EACH_SIDE * 2), AF_STEP_MIN, AF_STEP_MAX);
+      stepBasis = `${step} steps — sized to sweep ~${Math.round(AF_SPAN_TARGET_FRAC * 100)}% of focuser travel`;
+    } else {
+      stepBasis = `default ${AF_DEFAULT_STEP} steps (~${Math.round(frac * 100)}% of travel)`;
+    }
+  }
+  return { exposure_s, gain, step, steps_each_side: AF_STEPS_EACH_SIDE, binning,
+           basis: { exposure, step: stepBasis, binning: binBasis } };
+}
+
+// ---- (B) plain verdict ----
+export type FocusTone = "good" | "warn" | "bad" | "neutral";
+export interface PlainVerdict {
+  level: AfLevel;
+  tone: FocusTone;
+  headline: string;
+  detail: string;
+}
+
+export function plainFocusVerdict(args: {
+  state?: string;
+  hfr?: number | null;
+  r2?: number | null;
+  hfrGood: number;
+  hfrWarn: number;
+}): PlainVerdict {
+  const level = autofocusLevel(args);
+  switch (level) {
+    case "excellent":
+      return { level, tone: "good", headline: "Sharp!", detail: "Stars are tight — you're focused." };
+    case "good":
+      return { level, tone: "good", headline: "Focused.", detail: "Stars look good — you're ready to shoot." };
+    case "soft":
+      return {
+        level, tone: "warn", headline: "Almost there.",
+        detail: "Stars are still a little soft — tap Focus my scope to try again.",
+      };
+    case "failed":
+      return {
+        level, tone: "bad", headline: "Couldn't focus.",
+        detail: "Not enough stars to lock onto — check the sky is clear and roughly focused, then try again.",
+      };
+    case "pending":
+    default:
+      return args.state === "running"
+        ? { level: "pending", tone: "neutral", headline: "Focusing…", detail: "Measuring your stars…" }
+        : { level: "pending", tone: "neutral", headline: "Not focused yet.", detail: "Tap Focus my scope to start." };
+  }
+}
+
+// ---- (C) hero-button gating copy ----
+export interface FocusButtonState {
+  disabled: boolean;
+  label: string;
+  reason: string | null;
+  locked: boolean;
+}
+
+export function focusButtonState(a: {
+  canFocus: boolean;
+  hasFocuser: boolean;
+  running: boolean;
+}): FocusButtonState {
+  if (!a.canFocus) {
+    return { disabled: true, label: "Focus my scope", reason: "Read-only — focusing needs operator access", locked: true };
+  }
+  if (!a.hasFocuser) {
+    return { disabled: true, label: "Focus my scope", reason: "Connect a focuser to enable one-tap focus", locked: false };
+  }
+  if (a.running) {
+    return { disabled: true, label: "Focusing…", reason: "Autofocus is running", locked: false };
+  }
+  return { disabled: false, label: "Focus my scope", reason: null, locked: false };
+}
