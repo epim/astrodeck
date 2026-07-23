@@ -47,6 +47,7 @@ from .imaging import (
     to_jpeg,
     to_png,
     to_thumb,
+    write_wcs,
 )
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
@@ -1540,6 +1541,26 @@ class Hub:
                 bus.log("info", "NINA saved the frame", "capture")
         elif local_save_path is not None:
             bus.log("info", f"saved {local_save_path.name}", "capture")
+
+        # Opt-in (default OFF): AFTER the preview has published (so the solve's
+        # 1-10 s never delays what the user sees), solve the saved light in place
+        # and stamp its WCS so downstream stackers need no re-solve. Guarded on
+        # local_save_path (a local save ran => ra/dec are bound). Best-effort — a
+        # solve failure/timeout must never fail the capture (spec §6.3/§9).
+        if local_save_path is not None and config_store.cfg().solve_saved_lights:
+            try:
+                from . import providers as _providers
+                solver = _providers.pick_solver(self)
+                fov_hint = self.effective_optics().get("fov_h_deg") or None
+                res = await solver.solve(local_save_path, ra_hint=ra,
+                                         dec_hint=dec, fov_deg_hint=fov_hint)
+                if res.success and res.wcs is not None:
+                    await asyncio.to_thread(write_wcs, local_save_path, res.wcs)
+                    bus.log("info", f"stamped WCS on {local_save_path.name}", "solve")
+            except Exception as e:  # noqa: BLE001 - never fail the capture
+                bus.log("warning",
+                        f"solve-saved-light failed ({e}); frame saved without WCS",
+                        "solve")
         return info
 
     def _preview_source(self) -> str:

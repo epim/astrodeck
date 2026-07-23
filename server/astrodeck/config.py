@@ -439,6 +439,9 @@ class AppConfig(BaseModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    # --- opt-in re-solve-free astrometry (PRO-2 F-B, supervisor ruling 4;
+    #     appended — old configs load fine) ---
+    solve_saved_lights: bool = False   # ON => solve each saved light in place, stamp WCS
 
 
 # ------------------------------------------------------- filter slot-name store
