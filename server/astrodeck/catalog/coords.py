@@ -52,12 +52,17 @@ def format_dec(deg: float) -> str:
 
 
 def format_ra_fits(hours: float) -> str:
-    """FITS OBJCTRA convention: space-separated 'HH MM SS.s' (J2000)."""
-    total = (hours % 24.0) * 3600.0            # seconds of time
-    h = int(total // 3600)
-    m = int((total % 3600) // 60)
-    s = total % 60.0
-    return f"{h:02d} {m:02d} {s:04.1f}"
+    """FITS OBJCTRA convention: space-separated 'HH MM SS.s' (J2000).
+
+    Rollover-safe (mirrors format_dec_fits): quantize to tenths of a second of
+    time BEFORE splitting, so a value like 05:35:59.97 carries into '05 36 00.0'
+    instead of emitting the invalid '05 35 60.0', and 23:59:59.97 wraps to
+    '00 00 00.0' rather than '24 00 00.0'."""
+    tenths = int(round((hours % 24.0) * 3600.0 * 10.0))   # tenths of a second of time
+    tenths %= 24 * 3600 * 10                               # 24h wrap after rounding
+    h, rem = divmod(tenths, 3600 * 10)
+    m, rem = divmod(rem, 60 * 10)
+    return f"{h:02d} {m:02d} {rem // 10:02d}.{rem % 10:01d}"
 
 
 def format_dec_fits(deg: float) -> str:
