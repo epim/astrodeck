@@ -109,6 +109,7 @@ export default function CaptureView() {
     coolerTarget.trim() === "" || !Number.isFinite(coolerTargetNum) ||
     coolerTargetNum < COOLER_MIN_C || coolerTargetNum > COOLER_MAX_C;
   const looping = !!status?.looping;
+  const liveStackOn = !!status?.live_stack_active; // NOV-1: server truth (survives reload)
   const polarBusy = polar.state === "running" || polar.state === "paused";
   // A sequence (incl. PAUSED — it still holds the camera between frames, not
   // released back to manual control) owns the camera end-to-end; manual
@@ -316,6 +317,15 @@ export default function CaptureView() {
     }
     act(() => api.post("/api/capture/stop"));
   };
+  // NOV-1 Live View: toggle arms the server-side stacker + starts the loop;
+  // toggling off disarms + stops. Reset clears the accumulator, keeps arming.
+  const onLiveView = () => {
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
+    if (liveStackOn) { act(() => api.post("/api/capture/livestack/stop")); return; }
+    beginExposure(exposureS);
+    act(() => api.post("/api/capture/livestack/start", { ...body, frame_type: "Light" }));
+  };
+  const onResetStack = () => { if (canCapture && liveStackOn) act(() => api.post("/api/capture/livestack/reset")); };
 
   const inFlight = phase !== "idle";
   const fillPct = phase === "exposing"
@@ -535,6 +545,28 @@ export default function CaptureView() {
               onClick={onStop}>
               Stop
             </button>
+          </div>
+
+          {/* ---- Live View (NOV-1): server-side running-mean EAA stack. The toggle
+               reflects server truth (status.live_stack_active), so a reload mid-stack
+               stays lit. Reset is honest-disabled (§11.8) until armed. ---- */}
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <button
+              className={`btn tap min-h-[44px] ${liveStackOn ? "btn-accent border-accent" : ""}`}
+              aria-pressed={liveStackOn}
+              disabled={!canCapture || captureBlocked || exposureInvalid || gainInvalid}
+              title="Stack subs into one continuously brightening image"
+              onClick={onLiveView}>
+              {liveStackOn ? "Live View · on" : "Live View"}
+            </button>
+            {liveStackOn ? (
+              <button className="btn tap min-h-[44px]" onClick={onResetStack}>Reset stack</button>
+            ) : (
+              <span className="btn tap min-h-[44px] opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
+                aria-disabled title="Start Live View to reset the stack">
+                <Icon name="lock" size={12} /> Reset stack
+              </span>
+            )}
           </div>
 
           {/* ---- per-frame progress (item 5a). Exposing → deterministic fill that

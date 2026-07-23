@@ -16,6 +16,10 @@ from .stars import (
 )
 from .clouds import CloudResult, cloud_score, frame_contrast
 from .fitsio import save_fits
+from .livestack import (
+    LiveStacker, StackOutcome, brightest_centroid, align_offset,
+    DEFAULT_REJECT_FRAC, DEFAULT_REANCHOR_AFTER,
+)
 
 __all__ = [
     "auto_stretch", "auto_levels", "compute_histogram", "display_histogram",
@@ -23,4 +27,6 @@ __all__ = [
     "to_thumb", "Star", "detect_stars", "frame_eccentricity", "measure_frame",
     "measure_stars", "median_hfr", "star_marks", "CloudResult", "cloud_score",
     "frame_contrast", "save_fits",
+    "LiveStacker", "StackOutcome", "brightest_centroid", "align_offset",
+    "DEFAULT_REJECT_FRAC", "DEFAULT_REANCHOR_AFTER",
 ]
