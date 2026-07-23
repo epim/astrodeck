@@ -15,10 +15,10 @@ import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
-import { fmtTime } from "../lib/visibility";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { EXPOSURE_MAX_S, isExposureValueInvalid } from "../lib/exposure";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
+import { formatScheduleStatus } from "../lib/scheduleStatus";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
 } from "../types";
@@ -54,21 +54,14 @@ function SeqStateBadge({ state }: { state: string }) {
  *  resolved start time), `window_closed`/`never_rises` are a warn-tone stop
  *  reason; `ready` renders nothing (no chip-worthy state to report). */
 function ScheduleChip({ schedule }: { schedule: NonNullable<SequenceState["schedule"]> }) {
-  if (schedule.state === "waiting") {
-    return (
-      <span className="text-[11px] text-dim inline-flex items-center gap-1">
-        <Icon name="clock" size={13} /> Waiting — {schedule.reason} · starts {fmtTime(schedule.start_ts)}
-      </span>
-    );
-  }
-  if (schedule.state === "window_closed" || schedule.state === "never_rises") {
-    return (
-      <span className="text-[11px] text-warn inline-flex items-center gap-1">
-        <Icon name="alert" size={13} /> {schedule.reason}
-      </span>
-    );
-  }
-  return null;
+  const status = formatScheduleStatus(schedule, undefined, Date.now() / 1000);
+  if (!status) return null;
+  const warn = status.tone === "warn";
+  return (
+    <span className={`text-[11px] inline-flex items-center gap-1 ${warn ? "text-warn" : "text-dim"}`}>
+      <Icon name={warn ? "alert" : "clock"} size={13} /> {status.text}
+    </span>
+  );
 }
 
 export default function SequenceView() {
