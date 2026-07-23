@@ -20,7 +20,18 @@ export type ViewName =
   | "settings"
   | "monitor"
   | "atlas"
-  | "report";
+  | "report"
+  | "help";
+
+// NOV-9: the failure→topic / browsable-guide anchor set shared by
+// lib/troubleshoot.ts (diagnoseFailure + TROUBLESHOOTING), Toast.action's
+// "openHelp" variant, and the store's helpTopic deep-link slot. Lives here
+// (not lib/) so Toast.action can reference it without an import cycle into
+// lib/ — mirrors why ViewName itself lives here.
+export type TroubleshootTopic =
+  | "black-frame" | "star-trails" | "elongated-stars" | "wont-solve"
+  | "camera-offline" | "guiding-lost" | "cooler-stuck" | "mount-move-failed"
+  | "autofocus-failed" | "nina-error";
 
 export interface MountStatus {
   ra_hours: number;
@@ -489,7 +500,10 @@ export interface Toast {
   createdAt: number;   // Date.now() — NEVER mutated on coalesce
   ttl: number;         // ms before auto-dismiss; 0 = sticky (sequence-fatal only)
   count: number;       // coalesce counter for identical generic toasts
-  action?: { label: string; kind: "openLog" };  // optional inline action
+  // optional inline action — NOV-9 adds the "openHelp" deep-link variant
+  action?:
+    | { label: string; kind: "openLog" }
+    | { label: string; kind: "openHelp"; topic: TroubleshootTopic };
   source?: string;     // originating log source (for dedupe / debugging)
 }
 

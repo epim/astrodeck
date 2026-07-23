@@ -32,6 +32,7 @@ import PowerView from "./views/PowerView";
 import MonitorView from "./views/MonitorView";
 import AtlasView from "./views/AtlasView";
 import ReportView from "./views/ReportView";
+import HelpView from "./views/HelpView";
 import SettingsView from "./components/settings/SettingsView";
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
@@ -71,6 +72,10 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   // link (SequenceView) + the mobile overflow sheet (NavMoreSheet), never from
   // primary nav.
   report: ReportView,
+  // "help" is likewise NOT a primary-nav entry (mirrors "report" above) —
+  // reached from NavMoreSheet, the log drawer footer, and error deep-links
+  // (store.openHelp), never from primary nav (NOV-9).
+  help: HelpView,
 };
 
 // Nav gating (onboarding §3b/§7b): equipment-dependent views show the

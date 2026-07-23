@@ -26,6 +26,7 @@ export default function LogDrawer() {
   const logs = useStore((s) => s.logs);
   const logOpen = useStore((s) => s.logOpen);
   const closeLog = useStore((s) => s.closeLog);
+  const openHelp = useStore((s) => s.openHelp);
 
   // Both dialog nodes (desktop docked column + mobile bottom sheet) are ALWAYS
   // mounted — Tailwind toggles them via `hidden lg:flex` / `lg:hidden`
@@ -126,6 +127,18 @@ export default function LogDrawer() {
     </header>
   );
 
+  // NOV-9: always-reachable link into the troubleshooting page, on every
+  // viewport — the reader doesn't have to already know a diagnosis exists.
+  const footer = (
+    <button
+      type="button"
+      onClick={() => { openHelp(); closeLog(); }}
+      className="mt-2 text-[11px] text-accent hover:underline self-start min-h-[44px] sm:min-h-0 inline-flex items-center gap-1 shrink-0"
+    >
+      <Icon name="info" size={12} /> Troubleshooting guide →
+    </button>
+  );
+
   return (
     <>
       {/* lg+ docked right column */}
@@ -139,6 +152,7 @@ export default function LogDrawer() {
       >
         {header}
         {rows}
+        {footer}
       </aside>
 
       {/* below lg: bottom sheet that coexists with the run panel.
@@ -160,6 +174,7 @@ export default function LogDrawer() {
         >
           {header}
           <div className="overflow-y-auto flex-1">{rows}</div>
+          {footer}
         </div>
       </div>
     </>

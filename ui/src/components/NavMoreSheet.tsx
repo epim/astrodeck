@@ -45,6 +45,8 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   // reachable on a phone even with the engine idle — ReportView's own picker
   // browses all past reports from GET /api/reports (report viewer spec §1.4).
   { id: "report", label: "Reports", icon: "download" },
+  // NOV-9: troubleshooting/glossary page — mirrors "report", never primary nav.
+  { id: "help", label: "Help", icon: "info" },
 ];
 
 const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [

@@ -35,6 +35,7 @@ const LEVEL_BORDER: Record<ToastLevel, string> = {
 function ToastCard({ t }: { t: Toast }) {
   const dismissToast = useStore((s) => s.dismissToast);
   const openLog = useStore((s) => s.openLog);
+  const openHelp = useStore((s) => s.openHelp);
 
   return (
     <div
@@ -75,7 +76,10 @@ function ToastCard({ t }: { t: Toast }) {
         <div className="flex flex-col gap-2 mt-2.5">
           <button
             type="button"
-            onClick={() => { if (t.action!.kind === "openLog") openLog(); }}
+            onClick={() => {
+              if (t.action!.kind === "openLog") openLog();
+              else if (t.action!.kind === "openHelp") openHelp(t.action!.topic);
+            }}
             className="btn !py-0 min-h-[44px] sm:min-h-0 sm:!py-1.5 w-full sm:w-auto"
           >
             {t.action.label}

@@ -342,7 +342,7 @@ export default function CaptureView() {
         {/* ------------------------------------------------- exposure ctl */}
         <Panel title="Exposure" right={!canCapture && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Exposure (s)">
+            <Field label="Exposure (s)" hint={HELP.exposure}>
               <input
                 className={`field ${exposureInvalid ? "border-bad" : ""}`}
                 value={exposure}
@@ -354,7 +354,7 @@ export default function CaptureView() {
                 <p className="text-[11px] text-bad mt-1">Exposure must be 0–3600s</p>
               )}
             </Field>
-            <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`}>
+            <Field label={`Gain${cam?.max_gain ? ` (max ${cam.max_gain})` : ""}`} hint={HELP.gain}>
               <input
                 className={`field ${gainInvalid ? "border-bad" : ""}`}
                 value={gain}
