@@ -131,8 +131,57 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         hdr["EQUINOX"] = (float(m.equinox), "Equinox of RA/Dec")
         hdr["RADESYS"] = (m.radesys, "Reference frame")
 
+    # --- WCS (from a plate-solve; save_fits handles the solve-then-save case,
+    #     write_wcs the post-hoc case; both funnel through _apply_wcs) ---
+    if m.wcs is not None:
+        _apply_wcs(hdr, m.wcs)
+
     hdr["SWCREATE"] = (f"AstroDeck {__version__}", "Creating software")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     hdu.writeto(path, overwrite=True)
+    return path
+
+
+def _apply_wcs(hdr, wcs) -> None:
+    """Merge a WcsSolution's cards into a header — shared by save_fits and
+    write_wcs so both emit an identical WCS block. A scale-less WCS (no CD*,
+    no CDELT*) is skipped whole: astropy would read it back as a silent
+    1 deg/pixel solution, and a bogus WCS is worse than none (spec §8)."""
+    if wcs.cd11 is None and wcs.cdelt1 is None:
+        return
+    hdr["CTYPE1"] = (wcs.ctype1, "WCS projection")
+    hdr["CTYPE2"] = (wcs.ctype2, "WCS projection")
+    hdr["CUNIT1"] = wcs.cunit
+    hdr["CUNIT2"] = wcs.cunit
+    hdr["CRVAL1"] = (float(wcs.crval1), "RA at reference (deg)")
+    hdr["CRVAL2"] = (float(wcs.crval2), "Dec at reference (deg)")
+    hdr["CRPIX1"] = (float(wcs.crpix1), "Reference pixel X")
+    hdr["CRPIX2"] = (float(wcs.crpix2), "Reference pixel Y")
+    if wcs.cd11 is not None:
+        hdr["CD1_1"] = float(wcs.cd11)
+        hdr["CD1_2"] = float(wcs.cd12) if wcs.cd12 is not None else 0.0
+        hdr["CD2_1"] = float(wcs.cd21) if wcs.cd21 is not None else 0.0
+        hdr["CD2_2"] = float(wcs.cd22) if wcs.cd22 is not None else 0.0
+    elif wcs.cdelt1 is not None:
+        hdr["CDELT1"] = float(wcs.cdelt1)
+        hdr["CDELT2"] = float(wcs.cdelt2) if wcs.cdelt2 is not None else float(wcs.cdelt1)
+        if wcs.crota2 is not None:
+            hdr["CROTA2"] = float(wcs.crota2)
+    hdr["EQUINOX"] = (float(wcs.equinox), "Equinox of WCS")
+    hdr["RADESYS"] = wcs.radesys
+
+
+def write_wcs(path: Path, wcs) -> Path:
+    """Merge a plate-solved WCS into an existing FITS in place. Non-fatal: a
+    missing/locked/corrupt file (or a None wcs) is swallowed and the path is
+    returned unchanged — WCS write-back must never break a save (spec §9)."""
+    if wcs is None:
+        return path
+    try:
+        with fits.open(path, mode="update") as hdul:
+            _apply_wcs(hdul[0].header, wcs)
+            hdul.flush()
+    except Exception:
+        pass
     return path
