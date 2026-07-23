@@ -36,6 +36,7 @@ import {
 } from "../store";
 import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
+import { formatScheduleStatus } from "../lib/scheduleStatus";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
@@ -213,6 +214,7 @@ export default function MonitorView() {
   const failed = state === "aborted" || state === "error";
   const ninaNative = state === "nina_native";
   const idle = state === "idle";
+  const waitStatus = formatScheduleStatus(seq.schedule, seq.live, now / 1000);
 
   // ----- abort/error one-shot vibration (resolves H / §7) -----
   const vibratedError = useRef(false);
@@ -347,6 +349,22 @@ export default function MonitorView() {
               </div>
             )}
           </div>
+
+          {waitStatus && (
+            <div
+              className={`mt-2 flex items-start gap-2 text-sm leading-snug ${
+                waitStatus.tone === "warn" ? "text-warn" : "text-ink"
+              }`}
+              aria-live="polite"
+            >
+              <Icon
+                name={waitStatus.tone === "warn" ? "alert" : "clock"}
+                size={16}
+                className={`shrink-0 mt-0.5 ${waitStatus.tone === "warn" ? "text-warn" : "text-accent"}`}
+              />
+              <span>{waitStatus.text}</span>
+            </div>
+          )}
 
           {/* controls row — only when run-related (idle/complete/nina show none).
               Rendered for EVERY role in the same position; non-control.mount
