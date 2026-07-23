@@ -32,6 +32,7 @@ import SkyAtlasPanel from "./SkyAtlasPanel";
 import NamingPanel from "./NamingPanel";
 import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
+import CalibrationLibraryPanel from "./CalibrationLibraryPanel";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
@@ -42,6 +43,7 @@ import UpdatePanel from "./UpdatePanel";
 type Tab =
   | "connect"
   | "profiles"
+  | "calibration"
   | "safety"
   | "alerts"
   | "updates"
@@ -67,6 +69,7 @@ export default function SettingsView(): JSX.Element {
   const TABS: { value: Tab; label: string }[] = [
     { value: "connect", label: "Connect" },
     { value: "profiles", label: "Profiles" },
+    { value: "calibration", label: "Calibration" },
     { value: "safety", label: "Safety" },
     ...(canAlerts ? ([{ value: "alerts", label: "Alerts" }] as { value: Tab; label: string }[]) : []),
     ...(canSystemUpdate
@@ -175,6 +178,9 @@ export default function SettingsView(): JSX.Element {
           </div>
         </div>
       )}
+
+      {/* -------------------------------------------------------- CALIBRATION */}
+      {activeTab === "calibration" && <CalibrationLibraryPanel />}
 
       {/* ----------------------------------------------------------- PROFILES */}
       {activeTab === "profiles" && (

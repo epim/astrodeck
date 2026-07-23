@@ -370,6 +370,18 @@ class NamingConfig(BaseModel):
     template: str = DEFAULT_TEMPLATE
 
 
+class CalibrationConfig(BaseModel):
+    """PRO-1 master-library matching + stacking tolerances (appended — old
+    configs load fine). ``exposure_tol_pct``/``temp_tol_c`` control how
+    aggressively masters are reused across nights; ``temp_bin_c`` quantizes the
+    stacking bucket; ``stack_sigma``/``max_stack_frames`` bound the reduction."""
+    exposure_tol_pct: float = Field(5.0, ge=0, le=100)
+    temp_tol_c: float = Field(2.0, ge=0, le=50)
+    temp_bin_c: float = Field(5.0, ge=0, le=50)
+    stack_sigma: float = Field(3.0, gt=0, le=10)
+    max_stack_frames: int = Field(100, ge=1, le=1000)
+
+
 class WeatherConfig(BaseModel):
     """Weather forecast + radar integration (sub-project C). enabled gates ALL
     weather upstream calls (Open-Meteo, Astrospheric, IEM tile proxy): False
@@ -473,6 +485,8 @@ class AppConfig(BaseModel):
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
     # --- file-naming template (PRO-11; appended — old configs load fine) ---
     naming: NamingConfig = Field(default_factory=NamingConfig)
+    # --- calibration master library (PRO-1; appended — old configs load fine) ---
+    calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
