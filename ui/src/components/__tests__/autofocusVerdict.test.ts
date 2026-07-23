@@ -5,7 +5,7 @@
 // compile under `tsc -b`).
 //
 // Run directly:  npx tsx src/components/__tests__/autofocusVerdict.test.ts
-import { autofocusLevel, type AfLevel } from "../preview/FocusVerdict";
+import { autofocusLevel, type AfLevel } from "../../lib/autofocus";
 
 // ------------------------------------------------------------ harness
 let passed = 0;
