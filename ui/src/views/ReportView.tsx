@@ -95,6 +95,7 @@ export default function ReportView() {
   const [sel, setSel] = useState<string | null>(null);
   const [report, setReport] = useState<SessionReport | null>(null);
   const [preview, setPreview] = useState<BundlePreview | null>(null);
+  const [weightAlt, setWeightAlt] = useState(false); // opt-in sin(alt) bundle weighting
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -318,6 +319,19 @@ export default function ReportView() {
                       <Icon name="alert" size={12} /> {w}
                     </p>
                   ))}
+                  {!reason && (
+                    <label
+                      className="flex items-center gap-2 self-end text-xs text-dim cursor-pointer"
+                      title="Fold a sin(altitude) transparency term into each sub's weight — higher subs (less airmass) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={weightAlt}
+                        onChange={(e) => setWeightAlt(e.target.checked)}
+                      />
+                      Weight subs by altitude
+                    </label>
+                  )}
                   <div className="flex justify-end">
                     {reason ? (
                       <span
@@ -329,7 +343,7 @@ export default function ReportView() {
                       </span>
                     ) : (
                       <a
-                        href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip`}
+                        href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip${weightAlt ? "?weight_altitude=1" : ""}`}
                         download
                         className="btn inline-flex items-center gap-1.5 min-h-[44px]"
                       >
