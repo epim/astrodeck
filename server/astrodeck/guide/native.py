@@ -121,7 +121,12 @@ def guide_algo_config() -> dict:
         from ..config import config_store
         g = config_store.cfg().guide
         return {"ra_algorithm": g.ra_algorithm, "dec_algorithm": g.dec_algorithm,
-                 "dec_guide_mode": g.dec_guide_mode, "blc_pulse_ms": g.blc_pulse_ms}
+                 "dec_guide_mode": g.dec_guide_mode, "blc_pulse_ms": g.blc_pulse_ms,
+                 # PRO-12 Tier 2 (T6): per-axis tunable overrides, exclude_none so
+                 # an unset param stays an engine default (never sent as null) —
+                 # an all-default GuideConfig emits empty sub-dicts here.
+                 "ra_params": g.ra_params.model_dump(exclude_none=True),
+                 "dec_params": g.dec_params.model_dump(exclude_none=True)}
     except Exception:  # pragma: no cover - defensive
         return {}
 
@@ -701,7 +706,12 @@ class NativeGuider(Guider):
         for k in ("calibration_distance", "calibration_duration_ms", "max_steps",
                   "assume_orthogonal", "max_ra_duration_ms", "max_dec_duration_ms",
                   "blc_pulse_ms", "search_region", "min_hfd", "max_hfd", "max_adu",
-                  "pedestal", "bits_per_pixel", "max_stars"):
+                  "pedestal", "bits_per_pixel", "max_stars",
+                  # PRO-12 Tier 2 (T6): per-axis algorithm-tunable sub-dicts.
+                  # Forwarding these to the CURRENT wheel is harmless — its
+                  # PyO3 parser ignores keys it doesn't know — until the wheel
+                  # is rebuilt against the T5 engine change.
+                  "ra_params", "dec_params"):
             if k in cfg:
                 engine_cfg[k] = cfg[k]
 
