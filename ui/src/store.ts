@@ -33,6 +33,7 @@ import type {
   WeatherState,
   WsPhase,
 } from "./types";
+import { accumulateLight, type LightSnapshot } from "./lib/calibration";
 import { deriveNinaHealth } from "./lib/health";
 import { normalizeSafety } from "./lib/safety";
 import { normalizeWeather } from "./lib/weather";
@@ -419,6 +420,13 @@ interface AppState {
   sequence: SequenceState;
   polar: PolarState;
   logs: LogLine[];
+  // Snapshot of the last-shot batch of Light frames (calibration-capture spec
+  // §1.3), accumulated by noteLightFrame each time a light frame lands. Drives
+  // the Capture view's "Match last lights" prefill + the end-of-session "take
+  // matching darks?" nudge. In-memory only (no persistence) — the nudge is a
+  // same-session convenience, not a cross-reload record. null until the first
+  // light frame of the session lands.
+  lastLight: LightSnapshot | null;
 
   // --- config / plan (settings + atlas, reconciled) ---
   config: AppConfig | null;
@@ -530,6 +538,12 @@ interface AppState {
   toggleNight: () => void;
   handleEvent: (ev: { type: string; data: Record<string, unknown>; ts: number }) => void;
 
+  // --- actions: calibration capture (calibration-capture spec §1.3) ---
+  // Called when a Light frame lands; delegates to lib/calibration's
+  // accumulateLight so batch-continuity-vs-reset lives in one tested place.
+  noteLightFrame: (snap: Omit<LightSnapshot, "count">) => void;
+  clearLastLight: () => void;
+
   // --- actions: config / plan / site ---
   loadConfig: () => Promise<void>;
   // GET /api/update/status → hydrate the `update` slice (boot + after a check).
@@ -625,6 +639,7 @@ export const useStore = create<AppState>((set, get) => ({
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
   logs: [],
+  lastLight: null,
 
   // --- config / plan ---
   config: null,
@@ -707,6 +722,10 @@ export const useStore = create<AppState>((set, get) => ({
     // the single writer of the dimmer vars — no MutationObserver round-trip).
     applyBrightnessVars(night ? get().brightNight : get().brightDay);
   },
+
+  // ------------------------------------------------------ calibration capture
+  noteLightFrame: (snap) => set((s) => ({ lastLight: accumulateLight(s.lastLight, snap) })),
+  clearLastLight: () => set({ lastLight: null }),
 
   // --------------------------------------------------------- config/plan/site
   loadConfig: async () => {
@@ -1350,6 +1369,7 @@ export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResul
 export const usePreview = () => useStore((s) => s.preview);
 export const usePolar = () => useStore((s) => s.polar);
 export const useLogs = () => useStore((s) => s.logs);
+export const useLastLight = () => useStore((s) => s.lastLight);
 
 export const useToasts = () => useStore((s) => s.toasts);
 export const useWsPhase = () => useStore((s) => s.wsPhase);

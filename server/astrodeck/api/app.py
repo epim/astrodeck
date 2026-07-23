@@ -2387,7 +2387,8 @@ def create_app() -> FastAPI:
         # start_loop awaits the previous loop's teardown before spawning the
         # replacement, so a rapid restart can't leave the old loop's cancel-abort
         # racing the new loop's first frame.
-        await hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning)
+        await hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning,
+                             frame_type=body.frame_type)
         return {"looping": True}
 
     @app.post("/api/capture/stop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
