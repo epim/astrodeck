@@ -750,7 +750,7 @@ export interface Schedule {
 // `token` is intentionally absent — the server blanks it; the client never holds it.
 export interface AlertSink {
   id: string;
-  kind: "ntfy" | "webhook" | "telegram";
+  kind: "ntfy" | "webhook" | "telegram" | "discord" | "slack" | "email";
   enabled: boolean;
   url: string;                          // ntfy topic url / webhook url
   chat_id?: string;                     // telegram chat id
@@ -758,6 +758,24 @@ export interface AlertSink {
   events: string[];                     // ["run_start","run_end","safety","error",...]
   verified: boolean;                    // true only after a successful round-trip test
   heartbeat_min: number;                // 0 = off; periodic progress ping cadence
+  token_configured?: boolean;   // derived server marker: is the secret set?
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_user?: string;
+  smtp_from?: string;
+  smtp_to?: string;
+  smtp_starttls?: boolean;
+}
+
+// write body: adds the write-only secret
+export interface AlertSinkInput extends AlertSink {
+  token?: string;   // telegram bot token | discord/slack webhook url | smtp password
+}
+
+export interface AlertHealth {
+  undelivered: number;
+  undelivered_by_sink: Record<string, number>;
+  deadman: { configured: boolean; healthy: boolean; last_ping_age_s: number | null };
 }
 
 export interface SafetyConfig {

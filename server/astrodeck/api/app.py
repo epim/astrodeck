@@ -1536,7 +1536,10 @@ def create_app() -> FastAPI:
                 sink = sink.model_copy(update={"token": old.token})
             if old is not None and (
                     old.url != sink.url or old.token != sink.token
-                    or old.chat_id != sink.chat_id or old.kind != sink.kind):
+                    or old.chat_id != sink.chat_id or old.kind != sink.kind
+                    or old.smtp_host != sink.smtp_host or old.smtp_port != sink.smtp_port
+                    or old.smtp_user != sink.smtp_user or old.smtp_from != sink.smtp_from
+                    or old.smtp_to != sink.smtp_to):
                 sink = sink.model_copy(update={"verified": False})
             out.append(sink)
         return out
@@ -1907,10 +1910,12 @@ def create_app() -> FastAPI:
     @app.get("/api/alerts", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_alerts():
-        """Configured alert sinks with the Telegram token blanked (never sent to
-        the client — the only secret kept at rest)."""
+        """Configured alert sinks with the token blanked (never sent to the
+        client — the only secret kept at rest). `token_configured` is a derived
+        marker so the UI can tell a configured secret from an empty one."""
         return [
-            s.model_copy(update={"token": ""}).model_dump()
+            {**s.model_copy(update={"token": ""}).model_dump(),
+             "token_configured": bool(s.token)}
             for s in config_store.cfg().alerts
         ]
 
@@ -1926,7 +1931,10 @@ def create_app() -> FastAPI:
         if idx is not None:
             old = alerts[idx]
             if (old.url != sink.url or old.token != sink.token
-                    or old.chat_id != sink.chat_id or old.kind != sink.kind):
+                    or old.chat_id != sink.chat_id or old.kind != sink.kind
+                    or old.smtp_host != sink.smtp_host or old.smtp_port != sink.smtp_port
+                    or old.smtp_user != sink.smtp_user or old.smtp_from != sink.smtp_from
+                    or old.smtp_to != sink.smtp_to):
                 sink = sink.model_copy(update={"verified": False})
             # an empty token on update means "unchanged" — never blank a stored
             # secret just because the redacted client echoed it back.
@@ -1937,7 +1945,8 @@ def create_app() -> FastAPI:
             alerts.append(sink)
         await asyncio.to_thread(config_store.set_alerts, alerts)
         bus.publish("config", config=redacted(config_store.cfg()))
-        return [s.model_copy(update={"token": ""}).model_dump()
+        return [{**s.model_copy(update={"token": ""}).model_dump(),
+                 "token_configured": bool(s.token)}
                 for s in config_store.cfg().alerts]
 
     @app.delete("/api/alerts/{sink_id}", dependencies=[Depends(require(CAP_CONFIG_ALERTS))])
@@ -1963,6 +1972,13 @@ def create_app() -> FastAPI:
                                 list(config_store.cfg().alerts))
         bus.publish("config", config=redacted(config_store.cfg()))
         return result
+
+    @app.get("/api/alerts/health", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def alerts_health():
+        """Dispatcher runtime health (queue depth + dead-man state) for the
+        Settings → Alerts panel. Pure read; never does I/O."""
+        return dispatcher.health()
 
     # ------------------------------------------------------------------- reports
 

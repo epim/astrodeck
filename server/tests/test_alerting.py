@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from astrodeck.alerting import AlertDispatcher, AlertEvent
-from astrodeck.config import AlertSink, AppConfig
+from astrodeck.config import AlertSink, AppConfig, redacted
 from astrodeck.events import EventBus
 
 
@@ -334,4 +334,103 @@ async def test_wallclock_pings_deadman_through_a_pause():
         alerting_mod._WALLCLOCK_TICK_S = orig_t
     assert len(hits) >= 3, f"wall-clock deadman did not keep pinging: {hits}"
     assert all(u == "https://hc-ping.com/abc" for u in hits)
+    await disp._client.aclose()
+
+
+# ------------------------------------------------------ SMTP fields + redaction
+
+def test_redacted_marks_token_configured_and_blanks_secret():
+    cfg = AppConfig(alerts=[
+        AlertSink(id="d", kind="discord", token="https://discord.com/api/webhooks/1/xyz"),
+        AlertSink(id="e", kind="email", smtp_host="smtp.x", smtp_from="a@x",
+                  smtp_to="b@x", token="pw"),
+        AlertSink(id="n", kind="ntfy", url="https://ntfy.sh/t"),
+    ])
+    out = redacted(cfg)
+    by = {s["id"]: s for s in out["alerts"]}
+    assert by["d"]["token"] == "" and by["d"]["token_configured"] is True
+    assert by["e"]["token"] == "" and by["e"]["token_configured"] is True
+    # non-secret SMTP fields stay visible
+    assert by["e"]["smtp_host"] == "smtp.x" and by["e"]["smtp_to"] == "b@x"
+    assert by["n"]["token_configured"] is False  # no secret set
+
+
+# ------------------------------------------------------ discord / slack / email
+
+async def test_discord_and_slack_post_to_token_webhook():
+    seen = []
+    def handler(req):
+        seen.append((str(req.url), req.read().decode()))
+        return httpx.Response(204)
+    cfg = AppConfig(alerts=[
+        AlertSink(id="d", kind="discord",
+                  token="https://discord.com/api/webhooks/1/xyz",
+                  events=["run_end"], min_level="warning"),
+        AlertSink(id="s", kind="slack",
+                  token="https://hooks.slack.com/services/T/B/xyz",
+                  events=["run_end"], min_level="warning"),
+    ])
+    disp, _bus = _dispatcher(cfg, handler)
+    await disp._dispatch(AlertEvent("run_end", "error", "Run aborted"))
+    urls = [u for u, _ in seen]
+    assert any("discord.com/api/webhooks" in u for u in urls)
+    assert any("hooks.slack.com/services" in u for u in urls)
+    assert any('"content"' in b for _, b in seen)  # discord shape
+    assert any('"text"' in b for _, b in seen)     # slack shape
+    await disp._client.aclose()
+
+
+async def test_discord_slack_block_internal_host():
+    disp, _bus = _dispatcher(AppConfig(), lambda r: httpx.Response(204))
+    ok, err = await disp._send(
+        AlertSink(id="d", kind="discord", token="http://192.168.1.5/hook"),
+        AlertEvent("run_end", "error", "x"))
+    assert ok is False and "blocked" in (err or "")
+    await disp._client.aclose()
+
+
+async def test_email_missing_fields_is_soft_error():
+    disp, _bus = _dispatcher(AppConfig(), lambda r: httpx.Response(200))
+    ok, err = await disp._send(
+        AlertSink(id="e", kind="email", smtp_host="", smtp_from="", smtp_to=""),
+        AlertEvent("run_end", "error", "x"))
+    assert ok is False and "email needs" in (err or "")  # never raised
+    await disp._client.aclose()
+
+
+async def test_email_send_ok_via_monkeypatched_smtp(monkeypatch):
+    sent = {}
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None): sent["addr"] = (host, port)
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): sent["tls"] = True
+        def login(self, u, p): sent["login"] = (u, p)
+        def send_message(self, msg, to_addrs=None): sent["to"] = to_addrs
+    import astrodeck.alerting as A
+    monkeypatch.setattr(A.smtplib, "SMTP", FakeSMTP) if hasattr(A, "smtplib") else None
+    monkeypatch.setattr("smtplib.SMTP", FakeSMTP)
+    cfg = AppConfig(alerts=[AlertSink(id="e", kind="email", smtp_host="smtp.x",
+                    smtp_port=587, smtp_user="a@x", token="pw",
+                    smtp_from="a@x", smtp_to="b@x, c@x")])
+    disp, _bus = _dispatcher(cfg, lambda r: httpx.Response(200))
+    ok, err = await disp._send(cfg.alerts[0], AlertEvent("test", "info", "hi"))
+    assert ok is True and err is None
+    assert sent["addr"] == ("smtp.x", 587) and sent["tls"] is True
+    assert sent["login"] == ("a@x", "pw") and sent["to"] == ["b@x", "c@x"]
+    await disp._client.aclose()
+
+
+# ------------------------------------------------------------------------ health
+
+async def test_health_reports_queue_and_deadman():
+    cfg = AppConfig(deadman_url="https://hc-ping.com/abc",
+                    alerts=[AlertSink(id="n", kind="ntfy", url="https://x/y",
+                                      events=["run_end"], min_level="warning")])
+    disp, _bus = _dispatcher(cfg, lambda r: httpx.ConnectError("offline"))
+    await disp._dispatch(AlertEvent("run_end", "error", "boom"))  # fails -> queued
+    h = disp.health()
+    assert h["undelivered"] == 1 and h["undelivered_by_sink"]["n"] == 1
+    assert h["deadman"]["configured"] is True
+    assert h["deadman"]["healthy"] is True   # not yet warned
     await disp._client.aclose()
