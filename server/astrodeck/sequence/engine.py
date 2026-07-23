@@ -39,6 +39,9 @@ from ..focus import run_autofocus
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
 from . import schedule
+from .instructions import (
+    FireRecord, FiredAction, TriggerContext, evaluate_instructions,
+)
 from .models import SequencePlan, Target
 from .report import FrameRecord, SessionReporter
 from .session import Session, SessionFrame, session_store
@@ -217,6 +220,10 @@ class SequenceEngine:
         self._frozen: dict[int, tuple[float | None, float | None]] = {}
         self._watchdog_task: asyncio.Task | None = None
         self._retakes_per_target: dict[int, int] = {}   # ti -> retakes spent
+        # PRO-3 conditional sequencer: per-instruction fire bookkeeping (edge/
+        # once/cooldown state), keyed by instruction id. Empty + never touched
+        # when plan.instructions == [] (the byte-identical no-op path).
+        self._fire_state: dict[str, FireRecord] = {}
         self._cfg = None                    # config snapshot taken at start()
         self._dawn_cutoff = False           # scheduler ran out of open windows
         # AlertDispatcher for the external dead-man's-switch + progress heartbeat
@@ -281,6 +288,7 @@ class SequenceEngine:
         self._progress_expected = False
         self._frozen = {}
         self._retakes_per_target = {}
+        self._fire_state = {}
         self._dawn_cutoff = False
         self._task = asyncio.create_task(self._run())
 
@@ -810,6 +818,14 @@ class SequenceEngine:
                         await self._setup_target(ti, ready)
                         for si, step in enumerate(ready.steps):
                             await self._run_step(ti, si, ready, step)
+                        # PRO-3: on_target_complete eval for a finished
+                        # non-calibration target. Guarded (no-op when empty).
+                        if self.plan and self.plan.instructions:
+                            await self._run_instructions(
+                                TriggerContext(now_ts=time.time(),
+                                               target_complete=True,
+                                               active_target=ready.name),
+                                ready, None)
                 except StopTarget as e:
                     # scheduling-only stop: skip this target, keep the night going.
                     bus.log("info", f"{ready.name}: skipped — {e}", "sequence")
@@ -1169,6 +1185,18 @@ class SequenceEngine:
             # advances. EVERY frame goes in the report.
             accepted = self._check_quality(info)
             self._reporter_record(target, step, info, accepted=accepted)
+            # PRO-3: per-frame instruction eval (accepted + info["hfr"] known).
+            # Guarded so an empty instruction list makes this path dead —
+            # byte-identical to the pre-PRO-3 loop.
+            if plan.instructions:
+                ctx = TriggerContext(
+                    now_ts=time.time(),
+                    frame_hfr=(info.get("hfr") if isinstance(info, dict) else None),
+                    guide_rms=self._guide_rms(),
+                    frame_rejected=(not accepted),
+                    target_complete=False,
+                    active_target=target.name)
+                await self._run_instructions(ctx, target, step)
             if accepted:
                 step_rejects = 0
                 self._night_rejects = 0            # resets on ANY accepted frame
@@ -2011,6 +2039,54 @@ class SequenceEngine:
                 bus.log("info", f"focuser temp drifted to {t:.1f}°C — refocusing", "sequence")
                 return True
         return False
+
+    async def _run_instructions(self, ctx: TriggerContext, target: Target,
+                                step) -> None:
+        """PRO-3: evaluate the plan's conditional instructions against ``ctx``
+        and dispatch whatever fired. Pure eval (Task 2) + thin dispatch to the
+        EXISTING capabilities. Only reached when ``plan.instructions`` is
+        non-empty (the caller guards it), so the empty-plan run is untouched."""
+        if not (self.plan and self.plan.instructions):
+            return
+        fired, self._fire_state = evaluate_instructions(
+            self.plan.instructions, ctx, self._fire_state)
+        if fired:
+            await self._dispatch_actions(fired, target, step)
+
+    async def _dispatch_actions(self, fired: list[FiredAction], target: Target,
+                                step) -> None:
+        """Map each fired action to its EXISTING engine capability (§1.2). No new
+        teardown code. ``abort`` is raised OUTSIDE the try so it always
+        propagates to ``_run``'s SafetyAbort arm (the shielded wind-down); every
+        other action is individually guarded so a notify/dither/refocus hiccup
+        never breaks capture. ``refocus``/``dither`` set ``_frame_had_event`` so
+        their wall-time is excluded from the overhead EMA (like the built-in
+        dither/AF blocks)."""
+        for fa in fired:
+            if fa.action == "abort":
+                raise SafetyAbort(fa.message or "aborted by sequence instruction")
+            try:
+                if fa.action == "notify":
+                    bus.log(fa.level, fa.message or "sequence instruction", "sequence")
+                elif fa.action == "pause":
+                    bus.log("warning", fa.message or "paused by sequence instruction",
+                            "sequence")
+                    self.pause()
+                elif fa.action == "refocus":
+                    if "focuser" in self.hub.devices:
+                        await self._autofocus("triggered refocus")
+                        self._frame_had_event = True
+                elif fa.action == "dither":
+                    if self.hub.guider and self.hub.guider.connected:
+                        await _bounded(self.hub.guider.dither(self.plan.dither_pixels),
+                                       GUIDE_OP_TIMEOUT_S, "instruction dither")
+                        self._frames_since_dither = 0
+                        self._frame_had_event = True
+            except SafetyAbort:
+                raise
+            except Exception as e:
+                bus.log("warning", f"instruction action '{fa.action}' failed: {e}",
+                        "sequence")
 
     def _guide_rms(self) -> float | None:
         """Current total guide RMS (arcsec) or None when unguided/unreadable."""

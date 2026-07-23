@@ -520,6 +520,8 @@ export interface SequencePlan {
   max_consecutive_rejects?: number;       // per-step guard (0 = off)
   max_consecutive_rejects_night?: number; // per-night guard (0 = off)
   max_eccentricity?: number;              // per-frame median-ecc ceiling, 0..1 (0 = off)
+  // --- conditional sequencer (PRO-3; additive/optional — [] / absent === today) ---
+  instructions?: Instruction[];
 }
 
 // ============================================================================
@@ -842,6 +844,28 @@ export interface Schedule {
   stop_time: string | null;
   max_run_min: number;                  // 0 = no cap
   on_missed: "wait" | "skip";           // default "wait" (C1-25)
+}
+
+// ---------------------------------------------------- conditional sequencer (PRO-3)
+// An additive when-trigger-do-action rule layer on SequencePlan. Flat closed
+// enums mirror the pydantic Instruction 1:1 (not a discriminated union). A plan
+// with no instructions runs byte-identical to today.
+export type TriggerKind =
+  | "on_hfr_above" | "on_guide_rms_above" | "on_frame_rejected"
+  | "on_target_complete" | "at_time";
+export type ActionKind = "notify" | "pause" | "refocus" | "dither" | "abort";
+export interface Instruction {
+  id?: string;                          // uuid4 hex; generated client-side on create
+  enabled: boolean;
+  trigger: TriggerKind;
+  threshold: number;                    // on_hfr_above / on_guide_rms_above value
+  at_time: string | null;               // "HH:MM" 24h local, when trigger === at_time
+  action: ActionKind;
+  message: string;                      // notify text / log + abort reason
+  level: "info" | "warning" | "error";  // notify severity
+  once: boolean;                        // fire at most once per run
+  cooldown_s: number;                   // min seconds between fires (0 = every boundary)
+  only_target: string | null;           // gate: only while this target (by name) active
 }
 
 // ------------------------------------------------------------ alerting / config

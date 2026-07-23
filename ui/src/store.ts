@@ -172,6 +172,9 @@ function defaultPlan(): SequencePlan {
     max_guide_rms: 0,
     max_consecutive_rejects: 10,
     max_consecutive_rejects_night: 20,
+    // conditional sequencer (PRO-3) — [] => byte-identical run. The loadPlan()
+    // spread `{ ...defaultPlan(), ...parsed }` backfills [] onto legacy plans.
+    instructions: [],
   };
 }
 
