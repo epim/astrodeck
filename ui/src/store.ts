@@ -35,6 +35,7 @@ import type {
   WsPhase,
 } from "./types";
 import { accumulateLight, type LightSnapshot } from "./lib/calibration";
+import type { MasterRow } from "./lib/calibrationLibrary";
 import { parseSeen, serializeSeen, withSeen, COACH_SEEN_KEY, WIZARD_SEEN_KEY, type SeenMap } from "./lib/coach";
 import type { WizardStepId } from "./lib/firstRunWizard";
 import { deriveNinaHealth } from "./lib/health";
@@ -472,6 +473,11 @@ interface AppState {
   // light frame of the session lands.
   lastLight: LightSnapshot | null;
 
+  // Built master calibration frames (PRO-1), fetched from GET /api/calibration/
+  // masters. Feeds the live pre-flight coverage row (via usePreflight) and the
+  // Settings → Calibration library panel. [] until loadMasters() lands.
+  masters: MasterRow[];
+
   // --- config / plan (settings + atlas, reconciled) ---
   config: AppConfig | null;
   // self-update snapshot (Phase 3). null until loadUpdate()/the first `update`
@@ -608,6 +614,9 @@ interface AppState {
   loadConfig: () => Promise<void>;
   // GET /api/update/status → hydrate the `update` slice (boot + after a check).
   loadUpdate: () => Promise<void>;
+  // GET /api/calibration/masters → hydrate the `masters` slice (drives the live
+  // pre-flight coverage row + the Calibration library panel). Best-effort.
+  loadMasters: () => Promise<void>;
   // GET /api/me → principal. On ApiError 401 (fail-closed server resolution) set a
   // viewer sentinel {role:"viewer",email:null,caps:[]} so the UI degrades to
   // read-only instead of hanging unresolved. Call from ws.ts onopen next to
@@ -711,6 +720,7 @@ export const useStore = create<AppState>((set, get) => ({
   polar: EMPTY_POLAR,
   logs: [],
   lastLight: null,
+  masters: [],
 
   // --- config / plan ---
   config: null,
@@ -825,6 +835,15 @@ export const useStore = create<AppState>((set, get) => ({
       set({ update });
     } catch {
       /* leave as-is; the panel shows a loading/unknown state */
+    }
+  },
+
+  loadMasters: async () => {
+    try {
+      const masters = await api.get<MasterRow[]>("/api/calibration/masters");
+      set({ masters });
+    } catch {
+      /* leave as-is; the pre-flight calibration row skips on an empty list */
     }
   },
 
@@ -1476,6 +1495,7 @@ applyBrightnessVars(
 export const useView = () => useStore((s) => s.view);
 export const useNight = () => useStore((s) => s.night);
 export const useStatus = () => useStore((s) => s.status);
+export const useMasters = () => useStore((s) => s.masters);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
 // Same-night per-provider RMS windows (P5-T1) — see AppState.guideRmsByKind.

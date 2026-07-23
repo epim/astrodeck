@@ -65,7 +65,9 @@ from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
+from .. import hub as hub_module
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
+from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
@@ -80,6 +82,13 @@ from ..sequence.session import migrate_legacy_resume, session_store
 from ..weather import NoNightError, weather_service
 
 engine = SequenceEngine(hub)
+
+# PRO-1 master calibration library (module singleton). Resolves CAPTURE_DIR LIVE
+# through ``hub_module`` (never bound at import) so the test monkeypatch of
+# ``hub.CAPTURE_DIR`` is honored, exactly like ``hub._counter_file``. Exposed on
+# the hub singleton so PRO-10 (master export) can resolve the same store.
+cal_library = CalibrationLibrary(lambda: hub_module.CAPTURE_DIR)
+hub.master_library = cal_library
 
 # Module-level outbound-alert dispatcher (Batch 4b §1.8). Reads the LIVE config
 # through ``config_store.cfg`` so an alert-sink edit is picked up without a
@@ -2241,6 +2250,36 @@ def create_app() -> FastAPI:
         except Exception as e:
             raise HTTPException(422, detail={"detail": str(e), "code": "invalid"})
 
+    # ------------------------------------------------ calibration library (PRO-1)
+
+    @app.get("/api/calibration/masters", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def list_masters():
+        # frame_type is stored upper-case internally (DARK/BIAS/FLAT) but the UI
+        # FrameType union (reused from NOV-10 calibration.ts) is title-case, so
+        # normalize at this one boundary: "DARK" -> "Dark".
+        masters = await asyncio.to_thread(cal_library.list_masters)
+        return [{**vars(m), "frame_type": m.frame_type.title()} for m in masters]
+
+    @app.post("/api/calibration/build", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def build_masters():
+        c = config_store.cfg().calibration
+        rep = await asyncio.to_thread(
+            cal_library.build, sigma=c.stack_sigma, temp_bin_width=c.temp_bin_c,
+            max_frames=c.max_stack_frames)
+        return vars(rep)
+
+    @app.delete("/api/calibration/masters/{master_id}",
+                dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def delete_master(master_id: str):
+        try:
+            await asyncio.to_thread(cal_library.delete, master_id)
+        except KeyError:
+            raise HTTPException(404, "master not found")
+        return {"deleted": master_id}
+
     # ------------------------------------------------ multi-night sessions (§6)
 
     @app.get("/api/sessions", dependencies=[Depends(require(CAP_VIEW_STATUS))])
@@ -3376,6 +3415,22 @@ def create_app() -> FastAPI:
                                     f"{floor:g} deg during its window "
                                     f"(peaks at {peak:.0f} deg)"),
                     })
+        # --- calibration coverage (PRO-1) — folded into this same non-blocking
+        # surface (NOT a separate preflight route). ``coverage`` returns [] when
+        # no masters exist, so a user who never built a library is never nagged;
+        # a gap warns only once ≥1 master exists. Not gated on ``is_default`` —
+        # calibration coverage is independent of the observing site.
+        cal = cfg.calibration
+        tol = MatchTolerance(cal.exposure_tol_pct, cal.temp_tol_c)
+        gaps = await asyncio.to_thread(cal_library.coverage, plan, tol, cal.temp_bin_c)
+        for g in gaps:
+            warnings.append({
+                "target": "",
+                "kind": "no_calibration",
+                "message": (f"no {' or '.join(g.missing)} master for "
+                            f"{g.exposure_s:g}s · gain {g.gain} · bin {g.binning}"
+                            + (f" · {g.filter}" if g.filter else "")),
+            })
         return {"ok": not warnings, "warnings": warnings}
 
     @app.get("/api/sequence/recoverable", dependencies=[Depends(require(CAP_VIEW_STATUS))])
