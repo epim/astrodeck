@@ -91,6 +91,8 @@ COOLER_CMD_TIMEOUT_S = 30.0     # a single set_cooler / get_temperature call
 MOUNT_QUERY_TIMEOUT_S = 30.0    # is_parked / set_tracking / time_to_meridian_flip
 FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
+CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
+FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
 
 # --- inter-target teardown -------------------------------------------------
 # Before a scheduler wait longer than this we stop tracking (park-hold) so the
@@ -999,16 +1001,46 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
 
-    async def _capture(self, step, target: Target) -> dict:
+    async def _capture(self, step, target: Target, *, exposure_s=None) -> dict:
         """Bounded ``hub.capture`` (P0-2). The timeout is exposure-relative: the
         exposure itself plus a generous fixed margin for download/save/detect, so
         a wedged camera/transport can never hang on an unbounded await — it
-        escalates through the abort+park path like any other stuck device I/O."""
-        budget = float(step.exposure_s) + CAPTURE_MARGIN_S
+        escalates through the abort+park path like any other stuck device I/O.
+
+        ``exposure_s`` overrides ``step.exposure_s`` (PRO-5: a solved flat
+        exposure); None keeps the step's fixed exposure (every existing path)."""
+        exp = float(exposure_s if exposure_s is not None else step.exposure_s)
+        budget = exp + CAPTURE_MARGIN_S
         return await _bounded(
-            self.hub.capture(step.exposure_s, step.gain, step.offset, step.binning,
+            self.hub.capture(exp, step.gain, step.offset, step.binning,
                              save=True, target=target.name, frame_type=step.frame_type),
-            budget, f"capture {step.exposure_s:g}s")
+            budget, f"capture {exp:g}s")
+
+    async def _solve_flat_exposure(self, step, target: Target) -> tuple[float, bool]:
+        """Meter the panel to ``step.adu_target`` (PRO-5). Returns
+        ``(exposure_s, converged)``. Trial captures are ``save=False`` (never
+        written to disk); each is bounded like any device I/O. The measurement is
+        the frame ``median`` — robust to the stars/dust a flat renders in."""
+        from ..imaging.flats import FlatExposureSolver
+        solver = FlatExposureSolver(step.adu_target, initial_exposure_s=step.exposure_s)
+        st = solver.first()
+        exp = st.exposure_s
+        for _ in range(FLAT_METER_MAX_S):
+            info = await _bounded(
+                self.hub.capture(exp, step.gain, step.offset, step.binning,
+                                 save=False, frame_type="Flat"),
+                float(exp) + CAPTURE_MARGIN_S, "flat metering capture")
+            med = float(info["stats"]["median"])
+            st = solver.update(med)
+            self._set_state(detail=f"{target.name}: metering flat "
+                                   f"{med:.0f} ADU @ {exp:g}s")
+            if st.done:
+                break
+            exp = st.exposure_s
+        if not st.converged:
+            bus.log("warning", f"{target.name}: flat exposure did not converge "
+                               f"({st.reason}); using {st.exposure_s:g}s", "sequence")
+        return st.exposure_s, st.converged
 
     async def _run_calibration(self, ti: int, target: Target) -> None:
         # this target is now actually starting — clear any stale waiting sub-state
@@ -1020,16 +1052,36 @@ class SequenceEngine:
         self._last_frame_at = time.time()
         self._progress_expected = True
         for si, step in enumerate(target.steps):
+            # PRO-5: a Flat step with adu_target > 0 turns the panel on, solves the
+            # per-filter exposure via bounded trial captures, then shoots the count
+            # at the SOLVED exposure. adu_target == 0 keeps the fixed-exposure path
+            # (every existing plan) verbatim. Panel-off is issued after the step and,
+            # on any abort/teardown, by _panel_off_safe (never leave the panel lit).
+            solved_exp = None
+            flat_auto = (step.frame_type.upper() == "FLAT" and step.adu_target > 0)
+            panel_lit = False
+            if flat_auto and "covercalibrator" in self.hub.devices:
+                if step.panel_brightness is not None:
+                    await _bounded(self.hub.calibrator_on(step.panel_brightness),
+                                   CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
+                    panel_lit = True
+                    cc = self.hub.calibrator
+                    if getattr(cc, "has_cover", False):
+                        await _bounded(self.hub.open_cover(),
+                                       CALIBRATOR_CMD_TIMEOUT_S, "open cover")
+                self._set_state(detail=f"{target.name}: solving flat exposure")
+                solved_exp, _ = await self._solve_flat_exposure(step, target)
             key = f"{target.id}:{step.id}"
             for i in range(self._done.get(key, 0), step.count):
                 await self._checkpoint()
                 # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
                 await self._frame_alerts_tick()
-                self._begin_frame(ti, si, step.exposure_s)
+                exp = solved_exp if solved_exp is not None else step.exposure_s
+                self._begin_frame(ti, si, exp)
                 self._set_state(state="running",
-                                detail=f"{target.name}: {step.frame_type} {step.exposure_s:g}s "
+                                detail=f"{target.name}: {step.frame_type} {exp:g}s "
                                        f"[{i + 1}/{step.count}]")
-                info = await self._capture(step, target)
+                info = await self._capture(step, target, exposure_s=solved_exp)
                 # calibration frames always record + advance (no quality gate on
                 # darks/bias/flats) — but they still go in the report.
                 accepted = self._check_quality(info, calibration=True)
@@ -1039,6 +1091,8 @@ class SequenceEngine:
                 else:
                     if not await self._handle_reject(info, key, i, target, step):
                         self._record_frame(key, i, target, step, info, accepted=False)
+            if panel_lit:
+                await self._panel_off_safe()
 
     async def _run_step(self, ti: int, si: int, target: Target, step) -> None:
         plan = self.plan
@@ -2035,6 +2089,22 @@ class SequenceEngine:
             if action == "skip":
                 raise StopTarget(f"autofocus failed: {failed_reason}")
 
+    async def _panel_off_safe(self) -> None:
+        """Best-effort flat-panel-off (PRO-5): an aborted/failed run must NEVER
+        leave the panel lit. Bounded + swallows every error (we may already be
+        tearing down); a missing/absent calibrator is a no-op."""
+        if "covercalibrator" not in self.hub.devices:
+            return
+        try:
+            await _bounded(self.hub.calibrator_off(), CALIBRATOR_CMD_TIMEOUT_S,
+                           "calibrator off")
+            cc = self.hub.calibrator
+            if getattr(cc, "has_cover", False):
+                await _bounded(self.hub.close_cover(), CALIBRATOR_CMD_TIMEOUT_S,
+                               "close cover")
+        except Exception as e:
+            bus.log("warning", f"panel-off failed: {e}", "sequence")
+
     async def _safe_stop(self) -> None:
         """Leave the rig in a safe state after abort/error. Bounded (P0-2): a
         wedged camera/guider can't hang the abort/error teardown."""
@@ -2050,12 +2120,16 @@ class SequenceEngine:
                                        GUIDE_OP_TIMEOUT_S)
         except Exception:
             pass
+        # never leave the flat panel lit after an abort/error.
+        await self._panel_off_safe()
 
     async def _wind_down(self, park: bool, warm: bool) -> None:
         # NB: every device call here is BOUNDED (P0-2) but a timeout is handled
         # LOCALLY (log + continue), never re-raised as SafetyAbort — we are
         # already tearing down, and a hung park must not stop the cooler from
         # warming (or orphan the shielded teardown with an unretrieved exception).
+        # PRO-5: never leave the flat panel lit through a normal/abort wind-down.
+        await self._panel_off_safe()
         try:
             if self.hub.guider and self.hub.guider.connected:
                 await asyncio.wait_for(self.hub.guider.stop_guiding(),

@@ -434,6 +434,9 @@ export interface ExposureStep {
   binning: number;
   count: number;
   frame_type: string;
+  // PRO-5 flat auto-exposure (additive; 0/undefined = off => back-compat).
+  adu_target?: number;      // >0 + Flat ⇒ solve exposure to this ADU
+  panel_brightness?: number; // flat-panel level while shooting; undefined = don't touch
 }
 
 export interface Target {

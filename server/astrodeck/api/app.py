@@ -519,6 +519,14 @@ class DewBody(BaseModel):
     power: int = 0
 
 
+class CalibratorBody(BaseModel):
+    brightness: int = Field(ge=0)
+
+
+class CoverBody(BaseModel):
+    open: bool
+
+
 class PHD2Body(BaseModel):
     host: str = "127.0.0.1"
     port: int = 4400
@@ -2607,6 +2615,35 @@ def create_app() -> FastAPI:
         try:
             cam = hub.require("camera")
             await cam.set_dew_heater(body.power)
+            return {"ok": True}
+        except DeviceError as e:
+            raise _err(e)
+
+    # ------------------------------------------------------- flat calibrator
+
+    @app.post("/api/calibrator/on", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def calibrator_on(body: CalibratorBody):
+        try:
+            await hub.calibrator_on(body.brightness)
+            return {"ok": True}
+        except DeviceError as e:
+            raise _err(e)
+
+    @app.post("/api/calibrator/off", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def calibrator_off():
+        try:
+            await hub.calibrator_off()
+            return {"ok": True}
+        except DeviceError as e:
+            raise _err(e)
+
+    @app.post("/api/calibrator/cover", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def calibrator_cover(body: CoverBody):
+        try:
+            await (hub.open_cover() if body.open else hub.close_cover())
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)
