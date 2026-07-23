@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import calendar
 import math
+from pathlib import Path
 
 import pytest
+from astropy.io import fits
 
 import astrodeck.hub as hub_module
 from astrodeck.config import ConfigStore
@@ -328,3 +330,66 @@ async def test_apply_profile_connects_nina_before_alpaca(monkeypatch, tmp_path):
     await h.apply_profile(prof)
     assert order and order[0] == "nina", f"NINA must connect first, got {order}"
     assert "alpaca:camera" in order
+
+
+# ------------------------------------------------- FITS header completeness (T4)
+
+async def test_capture_writes_full_headers(monkeypatch, tmp_path):
+    """Caller -> save_fits wiring: config/site/device telemetry lands in the FITS."""
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_module, "config_store", temp_store)
+    import astrodeck.config as config_mod
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    from astrodeck.config import Optics, Site
+    cfg = temp_store.cfg()
+    cfg.optics = Optics(focal_length_mm=530.0, pixel_size_um=3.76,
+                        telescope_name="Askar 71F")
+    cfg.site = Site(latitude=40.0, longitude=-105.0, elevation_m=1600.0,
+                    is_default=False)               # INVENTED coords (privacy)
+    temp_store.bump_and_save()
+
+    h = Hub()
+    await h.connect_sim()
+    try:
+        cam = h.devices["camera"]
+        await cam.set_cooler(True, -10.0)           # so SET-TEMP is present
+        await h.capture(1.0, 100, 30, binning=2, save=True, target="M42")
+        saved = Path(h.last_frame.saved_path)
+        with fits.open(saved) as hdul:
+            hd = hdul[0].header
+        assert hd["TELESCOP"] == "Askar 71F"
+        assert hd["FOCALLEN"] == pytest.approx(530.0)
+        assert hd["XPIXSZ"] == pytest.approx(3.76 * 2)
+        assert hd["INSTRUME"]
+        assert hd["SET-TEMP"] == pytest.approx(-10.0)
+        assert hd["SITELAT"] == pytest.approx(40.0)
+        assert hd["SITELONG"] == pytest.approx(-105.0)
+        assert "FOCPOS" in hd                        # sim focuser present
+        assert "ROTATANG" in hd                      # sim rotator present
+        assert hd["EQUINOX"] == pytest.approx(2000.0)
+        assert hd["RADESYS"] == "ICRS"
+    finally:
+        await h.disconnect_all()
+
+
+async def test_capture_radec_written_as_j2000(monkeypatch, tmp_path):
+    """A JNOW Alpaca mount's reported position is precessed to J2000 before it is
+    written, and EQUINOX=2000.0 pairs it (supervisor ruling 3). FICTIONAL coords."""
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        ra_jnow, dec_jnow = 7.7777, 22.2222
+        h.devices["telescope"] = _StatusAlpacaTel(ra_jnow, dec_jnow, equ=1)
+        await h.capture(0.5, 100, 30, 1, save=True)
+        saved = Path(h.last_frame.saved_path)
+        with fits.open(saved) as hdul:
+            hd = hdul[0].header
+        exp_ra, exp_dec = precess_jnow_to_j2000(ra_jnow, dec_jnow)
+        assert hd["RA"] == pytest.approx(exp_ra * 15.0, abs=1e-2)
+        assert hd["DEC"] == pytest.approx(exp_dec, abs=1e-2)
+        assert hd["EQUINOX"] == pytest.approx(2000.0)
+        assert abs(hd["RA"] - ra_jnow * 15.0) > 0.05   # genuinely moved off JNOW
+    finally:
+        await h.disconnect_all()
