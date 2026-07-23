@@ -34,7 +34,10 @@ export function scheduleSummary(s: Schedule | undefined): string {
   if (!s) return "Runs immediately";
   const start = startLabel(s);
   const gate = s.min_altitude_deg > 0 ? `Alt ≥ ${Math.round(s.min_altitude_deg)}°` : "";
-  const begin = [start, gate].filter(Boolean).join(" & ");
+  const ha = s.max_hour_angle_h > 0 ? `HA ±${s.max_hour_angle_h}h` : "";
+  const sep = s.min_moon_sep_deg > 0 ? `Moon ≥ ${Math.round(s.min_moon_sep_deg)}°` : "";
+  const illum = s.max_moon_illum_pct > 0 ? `Moon ≤ ${Math.round(s.max_moon_illum_pct)}%` : "";
+  const begin = [start, gate, ha, sep, illum].filter(Boolean).join(" & ");
   const stop = stopLabel(s);
   const missed = s.on_missed === "skip" ? "skip if missed" : "";
   if (!begin && !stop && !missed) return "Runs immediately";

@@ -27,7 +27,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Any
 
-from ..catalog.coords import altaz, lst_hours, sun_altaz
+from ..catalog.coords import (altaz, angular_sep_deg, lst_hours,
+                              moon_illumination, moon_radec, sun_altaz)
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; only needed for typing
     from .models import Schedule, Target
@@ -269,6 +270,17 @@ def resolve_window(sched: "Schedule", site: dict[str, Any], twilight_deg: float,
 
 # --------------------------------------------------------------------- meridian
 
+def hour_angle_h(ra_hours: float, lon_deg: float, now: float | None = None) -> float:
+    """Signed hour angle HA = LST - RA, wrapped to ``(-12, 12]``.
+
+    Negative => target is EAST of the meridian (rising toward transit); positive
+    => WEST (past transit). Single source of the HA truth shared by the meridian
+    countdown (:func:`hours_to_meridian_flip`) and the PRO-14 hour-angle gate
+    (:func:`constraint_gate`)."""
+    lst = lst_hours(lon_deg, now)
+    return ((lst - ra_hours + 12.0) % 24.0) - 12.0    # HA in [-12, 12)
+
+
 def hours_to_meridian_flip(ra_hours: float, lon_deg: float,
                            now: float | None = None) -> float:
     """Server-side hours until the target at ``ra_hours`` reaches the meridian
@@ -286,9 +298,52 @@ def hours_to_meridian_flip(ra_hours: float, lon_deg: float,
     still EAST of the meridian (counting down to the flip); **<= 0** once it has
     crossed and a German mount is tracking counterweight-up and must flip.
     """
-    lst = lst_hours(lon_deg, now)
-    ha = ((lst - ra_hours + 12.0) % 24.0) - 12.0    # HA in [-12, 12)
-    return -ha
+    return -hour_angle_h(ra_hours, lon_deg, now)
+
+
+def constraint_gate(target: "Target", site: dict[str, Any],
+                    now: float) -> tuple[str, str, float] | None:
+    """Evaluate the PRO-14 pro constraints (hour angle / moon sep / moon illum) at
+    ``now``. Returns ``None`` when all are satisfied or off, else
+    ``(state, reason, eta_s)`` where state is ``waiting`` or ``window_closed`` —
+    the same enforce-and-skip vocabulary as the altitude gate.
+
+    Moon-sep / illumination are IMAGE-QUALITY gates: they only bite while the Moon
+    is UP (mirrors ``visibility._moon_factor``'s moon-up rule); a Moon below the
+    horizon imposes no gate. This is the scheduler path only — unlike the Sun, the
+    Moon is not a motion-boundary safety constraint."""
+    sched = target.schedule
+    lat, lon = _lat_lon(site)
+
+    # --- hour angle (altitude-independent; predictable) ---
+    lim = float(getattr(sched, "max_hour_angle_h", 0.0) or 0.0)
+    if lim > 0.0:
+        ha = hour_angle_h(target.ra_hours, lon, now)
+        if ha > lim:
+            return ("window_closed", f"past hour-angle limit (+{lim:g}h)", 0.0)
+        if ha < -lim:
+            return ("waiting", f"before hour-angle window (-{lim:g}h)",
+                    (-lim - ha) * 3600.0)
+
+    # --- moon (only while the Moon is up — moon-up gates the constraint) ---
+    sep_min = float(getattr(sched, "min_moon_sep_deg", 0.0) or 0.0)
+    illum_max = float(getattr(sched, "max_moon_illum_pct", 0.0) or 0.0)
+    if sep_min > 0.0 or illum_max > 0.0:
+        m_ra, m_dec = moon_radec(now)
+        m_alt, _ = altaz(m_ra, m_dec, lat, lon, now)
+        if m_alt > 0.0:
+            if illum_max > 0.0:
+                pct = moon_illumination(now) * 100.0
+                if pct > illum_max:
+                    return ("waiting",
+                            f"moon too bright ({pct:.0f}% > {illum_max:g}%)", 0.0)
+            if sep_min > 0.0:
+                sep = angular_sep_deg(target.ra_hours, target.dec_deg, m_ra, m_dec)
+                if sep < sep_min:
+                    return ("waiting",
+                            f"too close to the Moon ({sep:.0f} deg < {sep_min:g})",
+                            0.0)
+    return None
 
 
 # --------------------------------------------------------------------- target alt
@@ -384,6 +439,19 @@ def gating_status(target: "Target", site: dict[str, Any], twilight_deg: float,
         eta = _time_to_gate(target, lat, lon, gate, now, stop_ts)
         return out("waiting", f"below start altitude ({gate:g} deg)",
                    eta if eta is not None else 0.0)
+
+    # 4b. pro constraints (moon sep / illumination / hour angle) — PRO-14, same
+    #     enforce-and-skip model as the altitude gate above.
+    cg = constraint_gate(target, site, now)
+    if cg is not None:
+        state, reason, eta = cg
+        # a constraint-"waiting" target has an OPEN clock window (start_ts is in
+        # the past); null the start anchor so the engine's earliest-waiter branch
+        # skips it and it rides the bounded else-sleep instead of busy-spinning on
+        # a past start_ts. window_closed keeps its window (it's skipped anyway).
+        start = None if state == "waiting" else start_ts
+        return {"state": state, "reason": reason, "eta_s": max(0.0, eta),
+                "start_ts": start, "stop_ts": stop_ts}
 
     # 5. open and high enough.
     return out("ready", "", 0.0)
