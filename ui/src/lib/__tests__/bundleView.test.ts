@@ -44,6 +44,7 @@ const empty: BundlePreview = {
   report_id: "r",
   plan_name: "p",
   layout: "grouped",
+  weight_altitude: false,
   groups: [],
   warnings: [],
 };

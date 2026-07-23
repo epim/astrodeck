@@ -980,6 +980,7 @@ export interface BundlePreview {
   report_id: string;
   plan_name: string;
   layout: string;
+  weight_altitude: boolean;             // was the opt-in sin(alt) term applied
   groups: BundleGroupSummary[];
   warnings: string[];
 }

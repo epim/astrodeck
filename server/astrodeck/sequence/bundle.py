@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,7 @@ class Bundle:
     layout: str
     groups: tuple[Group, ...]
     warnings: tuple[str, ...]
+    weight_altitude: bool = False  # was the opt-in sin(alt) term folded in?
 
 
 # --------------------------------------------------- PRO-1 library adapter
@@ -170,16 +172,23 @@ class CalibrationLibraryAdapter:
 # --------------------------------------------------------------- weighting
 
 def sub_weight(hfr: float | None, ecc: float | None, rms: float | None, *,
-               min_hfr: float | None, min_rms: float | None) -> float:
+               min_hfr: float | None, min_rms: float | None,
+               altitude_deg: float | None = None,
+               weight_altitude: bool = False) -> float:
     """Raw 0..1 quality score for one sub (higher = better), the mean of the
     available per-metric sub-scores where 1 = best-in-group:
 
     * ``s_hfr = min_hfr / hfr``  (smaller HFR is sharper)
     * ``s_ecc = 1 - ecc``        (ecc already 0 = round = best)
     * ``s_rms = min_rms / rms``  (smaller guide RMS is better)
+    * ``s_alt = sin(altitude)``  (OPT-IN, ``weight_altitude``; transparency
+      proxy — 1 at zenith, 0 at/below the horizon, since a higher sub sees
+      through less air). Off by default: v1 ships the honest sharpness/
+      roundness/RMS weight and exports altitude informational-only (§4
+      decision 2); this is the documented follow-up term.
 
     A sub with NO usable metric scores a neutral ``1.0`` (never penalized to 0
-    for being un-measured). Altitude is exported but NOT in the formula (v1)."""
+    for being un-measured)."""
     scores: list[float] = []
     if hfr is not None and min_hfr is not None and hfr > 0:
         scores.append(min(1.0, min_hfr / hfr))
@@ -187,6 +196,8 @@ def sub_weight(hfr: float | None, ecc: float | None, rms: float | None, *,
         scores.append(max(0.0, min(1.0, 1.0 - ecc)))
     if rms is not None and min_rms is not None and rms > 0:
         scores.append(min(1.0, min_rms / rms))
+    if weight_altitude and altitude_deg is not None:
+        scores.append(max(0.0, min(1.0, math.sin(math.radians(altitude_deg)))))
     return sum(scores) / len(scores) if scores else 1.0
 
 
@@ -210,12 +221,15 @@ def _median_or_none(values: list[float]) -> float | None:
 
 def build_bundle(report: SessionReport, library: MasterLibrary, *,
                  is_local: Callable[[str], bool],
-                 layout: str = "grouped") -> Bundle:
+                 layout: str = "grouped",
+                 weight_altitude: bool = False) -> Bundle:
     """Build a :class:`Bundle` from a finished report + a master library.
 
     1. Select light subs with a truthy, ``is_local`` ``saved_path``.
     2. Group by (target, filter, exposure, gain, binning).
     3. Weight each sub within its group and normalize so the best sub = 1.0.
+       ``weight_altitude`` (opt-in, off by default) folds a ``sin(alt)``
+       transparency term into that weight (§4 decision 2 follow-up).
     4. Match a Dark/Flat/Bias master per group via ``library.match``.
 
     Pure + deterministic (groups + subs keep report order); no numpy, O(subs)."""
@@ -249,7 +263,9 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
         min_rms = min(rmss) if rmss else None
 
         raw = [sub_weight(f.hfr, f.ecc, f.guide_rms_total,
-                          min_hfr=min_hfr, min_rms=min_rms) for f in frames]
+                          min_hfr=min_hfr, min_rms=min_rms,
+                          altitude_deg=f.altitude_deg,
+                          weight_altitude=weight_altitude) for f in frames]
         max_raw = max(raw) if raw else 0.0
         norm = [(w / max_raw) if max_raw > 0 else 1.0 for w in raw]
 
@@ -292,7 +308,8 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             master_sources=master_sources, missing_masters=tuple(missing)))
 
     return Bundle(report_id=report.id, plan_name=report.plan_name, layout=layout,
-                  groups=tuple(groups), warnings=tuple(warnings))
+                  groups=tuple(groups), warnings=tuple(warnings),
+                  weight_altitude=weight_altitude)
 
 
 # --------------------------------------------------------------- serializers
@@ -303,6 +320,7 @@ def manifest_json(bundle: Bundle) -> dict:
         "report_id": bundle.report_id,
         "plan_name": bundle.plan_name,
         "layout": bundle.layout,
+        "weight_altitude": bundle.weight_altitude,
         "warnings": list(bundle.warnings),
         "groups": [
             {
@@ -342,6 +360,7 @@ def bundle_summary(bundle: Bundle) -> dict:
         "report_id": bundle.report_id,
         "plan_name": bundle.plan_name,
         "layout": bundle.layout,
+        "weight_altitude": bundle.weight_altitude,
         "warnings": list(bundle.warnings),
         "groups": [
             {

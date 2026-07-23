@@ -94,6 +94,55 @@ def test_sub_weight_best_is_one_and_missing_metrics_ignored():
     assert sub_weight(None, None, None, min_hfr=None, min_rms=None) == 1.0
 
 
+def test_sub_weight_altitude_is_optin_and_off_by_default():
+    import math
+    # OFF (default): altitude is ignored -> byte-identical to the v1 score.
+    base = sub_weight(2.0, None, 1.0, min_hfr=2.0, min_rms=1.0)
+    assert sub_weight(2.0, None, 1.0, min_hfr=2.0, min_rms=1.0,
+                      altitude_deg=30.0) == base
+    # ON: a sin(alt) sub-score joins the mean (s_hfr=1, s_rms=1, s_alt=sin30=0.5).
+    on = sub_weight(2.0, None, 1.0, min_hfr=2.0, min_rms=1.0,
+                    altitude_deg=30.0, weight_altitude=True)
+    assert on == pytest.approx((1.0 + 1.0 + math.sin(math.radians(30.0))) / 3)
+    # a higher sub outscores a lower one under altitude weighting.
+    hi = sub_weight(None, None, None, min_hfr=None, min_rms=None,
+                    altitude_deg=80.0, weight_altitude=True)
+    lo = sub_weight(None, None, None, min_hfr=None, min_rms=None,
+                    altitude_deg=20.0, weight_altitude=True)
+    assert hi > lo
+
+
+def test_build_bundle_weight_altitude_reweights_within_group():
+    frames = [
+        FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300, gain=100,
+                    binning=1, hfr=2.0, altitude_deg=80.0, accepted=True,
+                    saved_path="/cap/a.fits"),
+        FrameRecord(ts=2, target="M42", filter="Ha", exposure_s=300, gain=100,
+                    binning=1, hfr=2.0, altitude_deg=20.0, accepted=True,
+                    saved_path="/cap/b.fits"),
+    ]
+    # OFF (default): equal HFR -> equal weight (both normalize to 1.0).
+    off = build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True)
+    w_off = [l.weight for l in off.groups[0].lights]
+    assert w_off[0] == w_off[1] == 1.0 and off.weight_altitude is False
+    # ON: the 80-deg sub is the group best; the 20-deg sub is down-weighted.
+    on = build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True,
+                      weight_altitude=True)
+    w_on = [l.weight for l in on.groups[0].lights]
+    assert on.weight_altitude is True
+    assert w_on[0] == 1.0 and w_on[1] < 1.0
+
+
+def test_bundle_summary_and_manifest_carry_weight_altitude():
+    frames = [FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300,
+                          hfr=2.0, altitude_deg=50.0, accepted=True,
+                          saved_path="/cap/a.fits")]
+    b = build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True,
+                     weight_altitude=True)
+    assert bundle_summary(b)["weight_altitude"] is True
+    assert manifest_json(b)["weight_altitude"] is True
+
+
 # ------------------------------------------ Task 1: build_bundle grouping/etc
 
 def test_build_bundle_groups_selects_locals_matches_masters():

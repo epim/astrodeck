@@ -2091,26 +2091,30 @@ def create_app() -> FastAPI:
 
     @app.get("/api/reports/{report_id}/bundle", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def report_bundle(report_id: str):
+    async def report_bundle(report_id: str, weight_altitude: bool = False):
         """Slim stacking-bundle preview (per-group counts + master-match status +
-        warnings) for the report viewer panel (PRO-10 §1.5). 404 if missing."""
+        warnings) for the report viewer panel (PRO-10 §1.5). 404 if missing.
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
-        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save)
+        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save,
+                         weight_altitude=weight_altitude)
         return bundle_summary(b)
 
     @app.get("/api/reports/{report_id}/bundle.zip", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def report_bundle_zip(report_id: str):
+    async def report_bundle_zip(report_id: str, weight_altitude: bool = False):
         """The stacking bundle as an in-memory ``.zip`` (manifest + weights CSV +
         README + build.sh/.ps1 — NOT the FITS; §4 decision 1). Mirrors
         ``report_frames_csv``: the sanitized slug (never the raw path param) forms
-        the download filename so the header can't carry CR/LF/quotes."""
+        the download filename so the header can't carry CR/LF/quotes.
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
-        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save)
+        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save,
+                         weight_altitude=weight_altitude)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("manifest.json", json.dumps(manifest_json(b), indent=2))
