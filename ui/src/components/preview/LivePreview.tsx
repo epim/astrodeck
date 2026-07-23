@@ -20,6 +20,7 @@ import {
   useViewport,
 } from "../../store";
 import { Panel } from "../ui";
+import { LiveStackReadout } from "./LiveStackReadout";
 import { PreviewMeta } from "./PreviewMeta";
 import { PreviewStage } from "./PreviewStage";
 import { PreviewToolbar } from "./PreviewToolbar";
@@ -78,7 +79,12 @@ export function LivePreview() {
   const clipAvailable = !!shown && shown.data_is_linear && shown.full_well != null;
 
   return (
-    <Panel title="Live Preview" right={<PreviewMeta preview={shown} />}>
+    <Panel title="Live Preview" right={
+      <span className="flex items-center gap-3">
+        <LiveStackReadout preview={shown} />
+        <PreviewMeta preview={shown} />
+      </span>
+    }>
       <div className="flex flex-col gap-3">
         <FocusVerdict preview={shown} prev={prev} hfrGood={hfrGood} hfrWarn={hfrWarn} />
 

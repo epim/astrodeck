@@ -442,6 +442,12 @@ class CaptureBody(BaseModel):
     frame_type: str = "Light"
 
 
+class LiveStackBody(CaptureBody):
+    # NOV-1 Live View: drift-reject threshold as a fraction of the frame's short
+    # edge (default 8%). Not surfaced in the beginner UI; a future Advanced knob.
+    reject_frac: float = 0.08
+
+
 class GotoBody(BaseModel):
     ra_hours: float
     dec_deg: float
@@ -2423,6 +2429,34 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         return {"looping": False}
+
+    # ---- Live View (NOV-1): arm/reset/disarm, mirroring capture_loop -------
+    @app.post("/api/capture/livestack/start", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def livestack_start(body: LiveStackBody):
+        if hub.polar.running:
+            raise HTTPException(409, "polar alignment in progress")
+        if engine.running:
+            raise HTTPException(409, "a sequence is running")
+        try:
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        hub.start_live_stack(reject_frac=body.reject_frac)
+        await hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning,
+                             frame_type="Light")
+        return {"active": True}
+
+    @app.post("/api/capture/livestack/reset", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def livestack_reset():
+        return hub.reset_live_stack()
+
+    @app.post("/api/capture/livestack/stop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def livestack_stop():
+        hub.stop_loop()
+        return hub.stop_live_stack()
 
     # ---- live-preview routes (Pass 1, live-preview spec §4.4) --------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
