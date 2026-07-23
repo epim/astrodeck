@@ -299,6 +299,7 @@ class SimCamera(Camera):
 
     FOV_DEG = 1.4  # diagonal field of view at bin 1
     AMBIENT_C = 12.3  # uncooled sensor temperature; also the cooler-power baseline
+    SIM_EGAIN = 0.8  # e-/ADU: a plausible constant so EGAIN is exercised end-to-end
 
     #: the sim is the one backend that reports a real cooler-power number so the
     #: Monitor ThermometerBar is exercised out of the box (monitor spec §6.2).
@@ -382,6 +383,7 @@ class SimCamera(Camera):
             # raw linear render that clips at 65535 → carry full_well so the
             # clip/saturation overlay is honest on the dev-default backend.
             full_well=self.full_well, data_is_linear=True,
+            egain_e_per_adu=self.SIM_EGAIN,
         )
 
     # ---------------------------------------------------------------- render
