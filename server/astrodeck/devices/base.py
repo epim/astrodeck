@@ -62,6 +62,9 @@ class CameraFrame:
     #: decoded-from-render 8-bit promotion (NINA → False). The preview gates the
     #: linear histogram + clip mask on this (live-preview spec finding #1).
     data_is_linear: bool = True
+    #: e-/ADU at the capture gain, when the backend reports it (Player One
+    #: get_egain / ZWO ElecPerADU / sim constant). None -> EGAIN card omitted.
+    egain_e_per_adu: float | None = None
 
 
 class Device(ABC):
