@@ -42,6 +42,7 @@ from .imaging import (
     detect_stars,
     display_histogram,
     frame_eccentricity,
+    frame_tilt,
     measure_stars,
     save_fits,
     stretch_with,
@@ -1592,6 +1593,12 @@ class Hub:
             fecc = frame_eccentricity(marks)
             if fecc is not None:
                 info.setdefault("ecc", round(fecc, 3))
+            # Sensor-tilt / corner-vs-center inspector (PRO-13) — additive zone
+            # map + pattern classification over the same trusted marks, no new
+            # detection pass. None (too sparse) => key omitted entirely.
+            tilt = frame_tilt(marks, info["data_width"], info["data_height"])
+            if tilt is not None:
+                info["tilt"] = tilt
             # Image-derived cloud verdict, reusing the star count from the single
             # detection pass above (no second detect). Linear frames only — the
             # contrast metric needs unstretched pixels. Complements the

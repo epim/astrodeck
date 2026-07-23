@@ -181,6 +181,187 @@ def frame_eccentricity(marks: list[dict]) -> float | None:
     return float(np.median(eccs)) if eccs else None
 
 
+# ---------------------------------------------------------------------------
+# Sensor-tilt / corner-vs-center optical-aberration inspector (PRO-13).
+#
+# Purely additive aggregation over the SAME `marks` frame_eccentricity reads —
+# no new detection pass, no reject gate. Bins marks into a cols x rows grid by
+# `data`-space x,y and classifies the spatial HFR/ecc/theta pattern into one of
+# uniform / tilt / coma / tracking. See docs/superpowers/specs/
+# 2026-07-23-tilt-inspector-design.md for the full design + rationale.
+# ---------------------------------------------------------------------------
+
+#: a zone needs >= this many binned marks to report hfr/ecc/theta (else None).
+_TILT_MIN_ZONE_STARS = 3
+#: need >= this many populated zones (of grid*grid) to classify at all.
+_TILT_MIN_POPULATED = 4
+#: relative HFR spread (max-min)/median below this (+ round) => uniform.
+_TILT_FLAT_TOL = 0.15
+#: mean ecc below this => round.
+_TILT_ROUND_TOL = 0.20
+#: mean ecc at/above this => elongated enough for tracking.
+_TILT_ELONG_TOL = 0.35
+#: axis_spread below this => one common elongation direction.
+_TILT_AXIS_ALIGN_TOL = 0.25
+#: fraction of zones radially aligned => radial (coma).
+_TILT_RADIAL_FRAC_TOL = 0.55
+#: radians (~29deg): theta-vs-radial alignment tolerance.
+_TILT_RADIAL_ANGLE = 0.5
+#: (corner_mean - center)/center at/above => corners degraded (coma).
+_TILT_RADIAL_EXCESS = 0.25
+#: normalized planar HFR gradient at/above => asymmetric tilt.
+_TILT_GRAD_TOL = 0.20
+
+
+def _axis_mean(thetas: list[float]) -> float:
+    """Doubled-angle circular mean of axial angles (mod pi), radians."""
+    c = float(np.mean(np.cos(2.0 * np.asarray(thetas))))
+    s = float(np.mean(np.sin(2.0 * np.asarray(thetas))))
+    return 0.5 * math.atan2(s, c)
+
+
+def _axis_spread(thetas: list[float]) -> float:
+    """Doubled-angle circular spread: 0 (all one axis) .. 1 (scattered)."""
+    c = float(np.mean(np.cos(2.0 * np.asarray(thetas))))
+    s = float(np.mean(np.sin(2.0 * np.asarray(thetas))))
+    return float(1.0 - math.hypot(c, s))
+
+
+def _axis_diff(a: float, b: float) -> float:
+    """Acute angle between two axes (mod pi), 0..pi/2."""
+    d = abs(a - b) % math.pi
+    return min(d, math.pi - d)
+
+
+def _bin_zones(marks: list[dict], width: float, height: float,
+               cols: int, rows: int) -> list[dict]:
+    """Row-major zones: ``[{'hfr','ecc','theta','n'}, ...]`` (len == rows*cols).
+
+    ``hfr`` is the zone's median (present on every mark); ``ecc`` is the mean
+    of the trusted subset that carries it; ``theta`` is their doubled-angle
+    circular mean. Zones with ``n < _TILT_MIN_ZONE_STARS`` report
+    ``hfr/ecc/theta = None`` but keep ``n`` (honest: too few stars to trust).
+    """
+    buckets: list[list[dict]] = [[] for _ in range(cols * rows)]
+    for m in marks:
+        x, y = m["x"], m["y"]
+        if not (0.0 <= x < width and 0.0 <= y < height):
+            continue
+        c = min(cols - 1, int(x / width * cols))
+        r = min(rows - 1, int(y / height * rows))
+        buckets[r * cols + c].append(m)
+    zones = []
+    for b in buckets:
+        n = len(b)
+        if n >= _TILT_MIN_ZONE_STARS:
+            hfr = float(np.median([m["hfr"] for m in b]))
+            eccs = [m["ecc"] for m in b if "ecc" in m]
+            thetas = [m["theta"] for m in b if "theta" in m]
+            ecc = float(np.mean(eccs)) if eccs else None
+            theta = _axis_mean(thetas) if thetas else None
+        else:
+            hfr = ecc = theta = None
+        zones.append({
+            "hfr": round(hfr, 2) if hfr is not None else None,
+            "ecc": round(ecc, 3) if ecc is not None else None,
+            "theta": round(theta, 3) if theta is not None else None,
+            "n": n,
+        })
+    return zones
+
+
+def _zone_center_frac(i: int, cols: int, rows: int) -> tuple[float, float]:
+    """Fractional (x,y) in [0,1] of zone ``i``'s center, row-major."""
+    r, c = divmod(i, cols)
+    return ((c + 0.5) / cols, (r + 0.5) / rows)
+
+
+def _classify(zones: list[dict], cols: int, rows: int) -> tuple[str, float, int | None]:
+    """Classify the zone map. Returns ``(pattern, severity, worst_zone)``,
+    ``pattern in {'uniform','tilt','coma','tracking'}``. Caller guarantees
+    >= _TILT_MIN_POPULATED populated zones."""
+    pop = [(i, z) for i, z in enumerate(zones) if z["hfr"] is not None]
+    hfrs = [z["hfr"] for _, z in pop]
+    med = float(np.median(hfrs))
+    rel_spread = (max(hfrs) - min(hfrs)) / med if med > 0 else 0.0
+    worst = max(pop, key=lambda iz: iz[1]["hfr"])[0]
+
+    eccs = [z["ecc"] for _, z in pop if z["ecc"] is not None]
+    mean_ecc = float(np.mean(eccs)) if eccs else 0.0
+    thetas = [z["theta"] for _, z in pop if z["theta"] is not None]
+    axis_spread = _axis_spread(thetas) if len(thetas) >= 2 else 1.0
+
+    # planar HFR gradient (asymmetry): first/last populated column & row means.
+    col_means: list[list[float]] = [[] for _ in range(cols)]
+    row_means: list[list[float]] = [[] for _ in range(rows)]
+    for i, z in pop:
+        r, c = divmod(i, cols)
+        col_means[c].append(z["hfr"])
+        row_means[r].append(z["hfr"])
+
+    def _span(groups: list[list[float]]) -> float:
+        ms = [float(np.mean(g)) for g in groups if g]
+        return (ms[-1] - ms[0]) if len(ms) >= 2 else 0.0
+
+    tilt_mag = math.hypot(_span(col_means), _span(row_means)) / med if med > 0 else 0.0
+
+    # radial excess: geometric corners vs the center cell.
+    center_i = (rows // 2) * cols + (cols // 2)
+    corner_ix = [0, cols - 1, (rows - 1) * cols, rows * cols - 1]
+    center = zones[center_i]["hfr"]
+    ch = [zones[i]["hfr"] for i in corner_ix if zones[i]["hfr"] is not None]
+    radial_excess = ((float(np.mean(ch)) - center) / center
+                      if (center and center > 0 and ch) else 0.0)
+
+    # radial alignment of elongation axes.
+    aligned = total = 0
+    for i, z in enumerate(zones):
+        if i == center_i or z["theta"] is None:
+            continue
+        zx, zy = _zone_center_frac(i, cols, rows)
+        radial = math.atan2(zy - 0.5, zx - 0.5)
+        total += 1
+        if _axis_diff(z["theta"], radial) < _TILT_RADIAL_ANGLE:
+            aligned += 1
+    radial_frac = aligned / total if total else 0.0
+
+    if rel_spread < _TILT_FLAT_TOL and mean_ecc < _TILT_ROUND_TOL:
+        pattern = "uniform"
+    elif (mean_ecc >= _TILT_ELONG_TOL and axis_spread < _TILT_AXIS_ALIGN_TOL
+          and radial_frac < _TILT_RADIAL_FRAC_TOL):
+        pattern = "tracking"
+    elif (radial_excess >= _TILT_RADIAL_EXCESS
+          and (radial_frac >= _TILT_RADIAL_FRAC_TOL or tilt_mag < _TILT_GRAD_TOL)):
+        pattern = "coma"
+    elif tilt_mag >= _TILT_GRAD_TOL:
+        pattern = "tilt"
+    else:
+        pattern = "uniform"
+    return pattern, rel_spread, worst
+
+
+def frame_tilt(marks: list[dict], width: float, height: float,
+               *, grid: int = 3) -> dict | None:
+    """Zone map + pattern classification for the tilt/aberration inspector,
+    over the same ``marks`` ``frame_eccentricity`` reads (no new detection
+    pass). ``None`` when too few zones have enough stars — the client then
+    shows nothing (abstain, exactly like ``frame_eccentricity`` -> ``None``).
+
+    Block shape: ``{'cols','rows','zones':[{hfr,ecc,theta,n}...],'pattern',
+    'severity','worst_zone'}``.
+    """
+    if not marks or width <= 0 or height <= 0:
+        return None
+    cols = rows = grid
+    zones = _bin_zones(marks, width, height, cols, rows)
+    if sum(1 for z in zones if z["hfr"] is not None) < _TILT_MIN_POPULATED:
+        return None
+    pattern, severity, worst = _classify(zones, cols, rows)
+    return {"cols": cols, "rows": rows, "zones": zones,
+            "pattern": pattern, "severity": round(severity, 3),
+            "worst_zone": worst}
+
+
 def measure_stars(stars: list[Star], *, full_well: int | None = None,
                   min_stars: int = 3) -> tuple[float | None, int, list[dict]]:
     """Derive ``(median_hfr, star_count, star_marks)`` from an already-detected

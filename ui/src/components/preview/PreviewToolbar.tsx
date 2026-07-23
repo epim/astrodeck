@@ -155,6 +155,14 @@ export function PreviewToolbar({
         title="Toggle center mark"
         onClick={() => setOverlays({ centerMark: !overlays.centerMark })}
       />
+      <Toggle
+        on={overlays.tilt}
+        disabled={!preview?.tilt}
+        icon="grid"
+        label="Tilt"
+        title={preview?.tilt ? "Toggle tilt / aberration heatmap" : "No tilt data for this frame"}
+        onClick={() => setOverlays({ tilt: !overlays.tilt })}
+      />
 
       <span className="flex-1" />
 
