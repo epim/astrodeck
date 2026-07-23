@@ -148,6 +148,14 @@ class AlertSink(BaseModel):
     events: list[str] = Field(default_factory=lambda: ["run_start", "run_end", "safety", "error"])
     verified: bool = False                 # set True only by a successful round-trip test
     heartbeat_min: int = 0                 # 0 = off; periodic progress ping
+    # --- email (SMTP) channel (PRO-9). The SMTP password rides in `token`
+    #     (the single per-sink secret). These are NON-secret and stay visible.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""          # login user (usually the From address)
+    smtp_from: str = ""          # From / envelope address
+    smtp_to: str = ""            # comma-separated recipients
+    smtp_starttls: bool = True   # STARTTLS after connect (587); False = plain
 
 
 # ------------------------------------------------------- auth / RBAC (W2.3)
@@ -1017,6 +1025,10 @@ def redacted(cfg: AppConfig) -> dict:
     for sink in data.get("alerts", []):
         if not isinstance(sink, dict):
             continue
+        # Derived marker: was a secret set? (never a persisted field — the client
+        # can't otherwise tell a configured Discord/Slack/email/Telegram sink
+        # from an empty one once `token` is blanked below.)
+        sink["token_configured"] = bool(sink.get("token"))
         # Telegram bot token — the at-rest secret. Always blanked.
         if sink.get("token"):
             sink["token"] = ""

@@ -102,6 +102,32 @@ def _url_is_safe(url: str, *, allow_private: bool = False) -> bool:
         blocked = blocked or ip.is_loopback or ip.is_private or ip.is_link_local
     return not blocked
 
+def _smtp_send_blocking(sink: Any, ev: "AlertEvent") -> tuple[bool, str | None]:
+    """Blocking SMTP send (runs in a worker thread). Returns (ok, err);
+    never raises. STARTTLS + optional login; password is sink.token."""
+    import smtplib
+    from email.message import EmailMessage
+    recipients = [a.strip() for a in sink.smtp_to.split(",") if a.strip()]
+    if not recipients:
+        return False, "email has no valid recipients"
+    msg = EmailMessage()
+    msg["Subject"] = f"AstroDeck: {ev.type}"
+    msg["From"] = sink.smtp_from
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(ev.message)
+    try:
+        with smtplib.SMTP(sink.smtp_host, sink.smtp_port or 587,
+                          timeout=_HTTP_TIMEOUT_S) as s:
+            if sink.smtp_starttls:
+                s.starttls()
+            if sink.smtp_user and sink.token:
+                s.login(sink.smtp_user, sink.token)
+            s.send_message(msg, to_addrs=recipients)
+        return True, None
+    except (OSError, smtplib.SMTPException) as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 # ntfy priority mapping by level.
 _NTFY_PRIORITY = {"error": "urgent", "warning": "high", "info": "default"}
 _LEVEL_RANK = {"info": 0, "warning": 1, "error": 2}
@@ -360,6 +386,12 @@ class AlertDispatcher:
                 return await self._send_webhook(client, sink, ev)
             if sink.kind == "telegram":
                 return await self._send_telegram(client, sink, ev)
+            if sink.kind == "discord":
+                return await self._send_discord(client, sink, ev)
+            if sink.kind == "slack":
+                return await self._send_slack(client, sink, ev)
+            if sink.kind == "email":
+                return await self._send_email(sink, ev)
             return False, f"unknown sink kind {sink.kind!r}"
         except (httpx.HTTPError, OSError) as e:
             return False, self._scrub(str(e), sink)
@@ -408,6 +440,33 @@ class AlertDispatcher:
                                          "text": ev.message})
         return self._ok(r)
 
+    async def _send_discord(self, client: httpx.AsyncClient, sink: Any,
+                            ev: AlertEvent) -> tuple[bool, str | None]:
+        url = sink.token  # the whole webhook URL is a bearer secret -> stored in token
+        if not url:
+            return False, "no discord webhook url"
+        if not _url_is_safe(url):
+            return False, "blocked discord url (require http(s); no internal host)"
+        content = f"**AstroDeck: {ev.type}** — {ev.message}"
+        r = await client.post(url, json={"content": content[:1900]})
+        return self._ok(r)  # Discord returns 204 on success (within 2xx)
+
+    async def _send_slack(self, client: httpx.AsyncClient, sink: Any,
+                          ev: AlertEvent) -> tuple[bool, str | None]:
+        url = sink.token
+        if not url:
+            return False, "no slack webhook url"
+        if not _url_is_safe(url):
+            return False, "blocked slack url (require http(s); no internal host)"
+        r = await client.post(url, json={"text": f"AstroDeck [{ev.type}] {ev.message}"})
+        return self._ok(r)
+
+    async def _send_email(self, sink: Any, ev: AlertEvent) -> tuple[bool, str | None]:
+        if not (sink.smtp_host and sink.smtp_from and sink.smtp_to):
+            return False, "email needs smtp host, from, and to"
+        ok, err = await asyncio.to_thread(_smtp_send_blocking, sink, ev)
+        return ok, (self._scrub(err, sink) if err else None)
+
     @staticmethod
     def _ok(r: httpx.Response) -> tuple[bool, str | None]:
         if 200 <= r.status_code < 300:
@@ -434,6 +493,25 @@ class AlertDispatcher:
     @property
     def undelivered_count(self) -> int:
         return len(self._undelivered)
+
+    def health(self) -> dict[str, Any]:
+        """Pure read of in-memory dispatcher state (no I/O): retry-queue depth
+        (global + per-sink) and dead-man's-switch state, for the settings panel."""
+        by_sink: dict[str, int] = {}
+        for sink, _ev in self._undelivered:
+            by_sink[sink.id] = by_sink.get(sink.id, 0) + 1
+        dm_url = getattr(self.get_config(), "deadman_url", "") or ""
+        last_age = (time.monotonic() - self._last_deadman
+                    if self._last_deadman else None)
+        return {
+            "undelivered": len(self._undelivered),
+            "undelivered_by_sink": by_sink,
+            "deadman": {
+                "configured": bool(dm_url),
+                "healthy": bool(dm_url) and self._deadman_warned is None,
+                "last_ping_age_s": last_age,
+            },
+        }
 
     # -- dead-man's-switch -----------------------------------------------------
 
