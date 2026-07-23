@@ -27,6 +27,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, Field, model_validator
 
 from .events import bus
+from .naming import DEFAULT_TEMPLATE, validate_template
 from .persist import ensure_dir, read_json, read_json_or, write_json_atomic
 
 # --------------------------------------------------------------------- locations
@@ -352,6 +353,12 @@ class SurveyConfig(BaseModel):
     online_fetch: bool = False
 
 
+class NamingConfig(BaseModel):
+    """PRO-11: NINA-style $$TOKEN$$ path template for capture folder+filename.
+    Default reproduces the legacy fixed layout byte-for-byte."""
+    template: str = DEFAULT_TEMPLATE
+
+
 class WeatherConfig(BaseModel):
     """Weather forecast + radar integration (sub-project C). enabled gates ALL
     weather upstream calls (Open-Meteo, Astrospheric, IEM tile proxy): False
@@ -453,6 +460,8 @@ class AppConfig(BaseModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    # --- file-naming template (PRO-11; appended — old configs load fine) ---
+    naming: NamingConfig = Field(default_factory=NamingConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
@@ -830,6 +839,17 @@ class ConfigStore:
         """Persist the survey-source config (offline-pack spec §4)."""
         cfg = self.cfg()
         cfg.survey = survey
+        return self.bump_and_save()
+
+    # -- file-naming template mutation (PRO-11) ---------------------------------
+
+    def set_naming(self, naming: "NamingConfig") -> AppConfig:
+        """Persist the capture-naming template. Write-time validated so an
+        unusable template (empty/unknown-token/traversal) is rejected here
+        (route maps ValueError -> 422) rather than reaching _capture_path."""
+        validate_template(naming.template)
+        cfg = self.cfg()
+        cfg.naming = naming
         return self.bump_and_save()
 
     def set_weather(self, weather: "WeatherConfig",

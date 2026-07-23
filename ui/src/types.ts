@@ -579,6 +579,9 @@ export interface AppConfig {
   // --- offline survey pack (spec 2026-07-13). Optional: an old WS `hello`
   //     bootstrap predates the field. ---
   survey?: SurveyConfig;
+  // --- file-naming template (PRO-11; appended). Optional: an old WS `hello`
+  //     bootstrap predates the field. ---
+  naming?: NamingConfig;
 }
 
 // ---------------------------------------------------------- rotator config
@@ -681,6 +684,14 @@ export interface DriversResponse {
 export interface SurveyConfig {
   /** True => hips2fits upstream is used for FOV < 4°; false (default) => pack only. */
   online_fetch: boolean;
+}
+
+// -------------------------------------------------------- file naming (PRO-11)
+// Mirrors server/astrodeck/config.py NamingConfig — the CONFIG (write) side of
+// POST /api/config/naming. The client PREVIEW render (ui/src/lib/naming.ts) is
+// advisory only; the server render is authoritative for the real path.
+export interface NamingConfig {
+  template: string;
 }
 export interface PackFetchProgress { done: number; total: number; failed: number; }
 export interface PackStatus {

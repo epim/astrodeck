@@ -51,9 +51,10 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
-                      EscalationConfig, GuideConfig, Optics, ProvidersConfig,
-                      RotatorConfig, SafetyConfig, Site, SurveyConfig,
-                      UpdateConfig, WeatherConfig, config_store, redacted)
+                      EscalationConfig, GuideConfig, NamingConfig, Optics,
+                      ProvidersConfig, RotatorConfig, SafetyConfig, Site,
+                      SurveyConfig, UpdateConfig, WeatherConfig, config_store,
+                      redacted)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
                          location_store)
 from .. import __version__
@@ -973,6 +974,23 @@ def create_app() -> FastAPI:
             body: SurveyConfig,
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         cfg = await asyncio.to_thread(config_store.set_survey, body)
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload(principal)
+
+    # ---------------------------------------------------- naming template (PRO-11)
+    # Capture folder+filename token template. config.site_optics (imaging/output
+    # concern, same rationale as the survey route). Write-time validated in
+    # set_naming (ValueError -> 422); redacted union broadcast so every open
+    # client's Naming panel updates.
+    @app.post("/api/config/naming")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_naming_config(
+            body: NamingConfig,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            cfg = await asyncio.to_thread(config_store.set_naming, body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
         return _config_payload(principal)
 
