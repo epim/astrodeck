@@ -584,6 +584,19 @@ test("G2: loadedPlanId defaults to null (a restored draft is not tied to a libra
   eq(useStore.getState().loadedPlanId, null, "an edit alone never ties to a saved plan");
 });
 
+// ====================================================================
+// calibration-capture spec §1.3 — lastLight store slice
+// ====================================================================
+
+// --------------------------------- noteLightFrame accumulates + refreshes temp
+test("calibration: noteLightFrame accumulates identical frames and refreshes tempC", () => {
+  useStore.setState({ lastLight: null });
+  useStore.getState().noteLightFrame({ exposureS: 120, gain: 120, offset: 30, binning: 1, tempC: -10 });
+  useStore.getState().noteLightFrame({ exposureS: 120, gain: 120, offset: 30, binning: 1, tempC: -9 });
+  eq(useStore.getState().lastLight?.count, 2, "second identical frame accumulates");
+  eq(useStore.getState().lastLight?.tempC, -9, "temp refreshes to latest");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console
