@@ -53,6 +53,7 @@ export interface RigStatus {
   connected: Record<string, DeviceInfo>;
   looping: boolean;
   live_stack_active?: boolean; // NOV-1: Live View armed
+  bahtinov_active?: boolean; // NOV-12: Bahtinov focus aid armed
   mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
@@ -228,6 +229,19 @@ export interface LiveStackInfo {
   accepted: boolean;     // was THIS sub accepted (vs a drift skip)
 }
 
+// NOV-12 Bahtinov focus aid — present only on raw/linear subs while the aid is
+// armed (server-side per-frame analysis). Old clients ignore it.
+export interface BahtinovInfo {
+  valid: boolean;
+  offset_px: number | null; // signed central-spike offset; null when invalid
+  in_focus: boolean; // |offset_px| <= tol_px
+  side: "left" | "right" | null; // geometric side of the crossing (invariant)
+  direction: "in" | "out" | null; // rig-calibrated IN/OUT (side flipped by invert)
+  angles_deg: number[]; // the 3 spike angles (empty when invalid)
+  tol_px: number;
+  reason: string; // plain-language status / why-invalid
+}
+
 export interface PreviewInfo {
   id: number;
   stats: { min: number; max: number; mean: number; median: number; std: number };
@@ -257,6 +271,7 @@ export interface PreviewInfo {
   star_list?: StarMark[];
   tilt?: TiltInfo; // PRO-13: present only when enough zones are populated
   livestack?: LiveStackInfo; // NOV-1: present only while Live View is armed
+  bahtinov?: BahtinovInfo; // NOV-12: present only while the Bahtinov aid is armed
   ts: number; // server epoch seconds (filmstrip age)
 }
 
