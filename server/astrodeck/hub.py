@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .config import config_store, fov_deg, image_scale_arcsec_px, redacted
+from .persist import read_json_or, write_json_atomic
 from .devices.base import (
     Camera,
     DeviceError,
@@ -1677,15 +1678,44 @@ class Hub:
                            fw.filter_names, fw.filter_offsets)
         return {"names": fw.filter_names, "offsets": fw.filter_offsets}
 
+    def _counter_file(self) -> Path:
+        # under CAPTURE_DIR (the persistent image library; auto-isolated by the
+        # CAPTURE_DIR monkeypatch every test already applies). Resolved live so
+        # the monkeypatch is honored.
+        return CAPTURE_DIR / ".frame_counters.json"
+
+    def _next_frame_counter(self, key: str) -> int:
+        """Persisted, per-target, monotonic frame number. Captures are serialized
+        by the exposure guard, so no lock is needed."""
+        data = read_json_or(self._counter_file(), {})
+        if not isinstance(data, dict):
+            data = {}
+        n = int(data.get(key, 0) or 0) + 1
+        data[key] = n
+        write_json_atomic(self._counter_file(), data)
+        return n
+
     def _capture_path(self, target: str, frame_type: str, filter_name: str = "") -> Path:
-        safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in target).strip() or "untargeted"
-        stamp = time.strftime("%Y-%m-%d_%H%M%S")
-        self._frame_counter = getattr(self, "_frame_counter", 0) + 1
-        # NINA-style filter token in the filename when a filter is active (UX-05):
-        # <FrameType>_<Target>_<Filter>_<stamp>_<NNNN>.fits. Sanitized the same way.
-        ftok = "".join(c if c.isalnum() or c in "-_" else "_" for c in (filter_name or "")).strip("_")
-        parts = [frame_type, safe] + ([ftok] if ftok else []) + [stamp, f"{self._frame_counter:04d}"]
-        return CAPTURE_DIR / safe / ("_".join(parts) + ".fits")
+        from .naming import render_relative_path, sanitize_component
+        # "untargeted" fallback keyed off the SANITIZED target (legacy parity,
+        # hub.py old :1681); sanitize is idempotent so the engine re-sanitize is a
+        # no-op.
+        safe_target = sanitize_component(target, "loose") or "untargeted"
+        n = self._next_frame_counter(safe_target)
+        t = time.localtime()
+        night = time.localtime(time.time() - 12 * 3600)   # noon-rollover night date
+        fields = {
+            "TARGET": safe_target,
+            "FRAMETYPE": frame_type,
+            "FILTER": filter_name or "",
+            "DATE": time.strftime("%Y-%m-%d", t),
+            "TIME": time.strftime("%H%M%S", t),
+            "DATETIME": time.strftime("%Y-%m-%d_%H%M%S", t),
+            "NIGHT": time.strftime("%Y-%m-%d", night),
+            "FRAMENR": f"{n:04d}",
+        }
+        template = config_store.cfg().naming.template
+        return CAPTURE_DIR / render_relative_path(template, fields)
 
     async def start_loop(self, exposure_s: float, gain: int, offset: int,
                          binning: int = 1, frame_type: str = "Light") -> None:

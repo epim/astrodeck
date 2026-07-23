@@ -16,6 +16,7 @@ import type {
   DriverEntry,
   DriverInfo,
   DriversResponse,
+  NamingConfig,
   PackStatus,
   Principal,
   PrincipalRole,
@@ -397,6 +398,11 @@ export const setSurveyConfig = (survey: SurveyConfig): Promise<AppConfig> =>
 /** GET /api/survey/pack → offline pack status + fetch progress. view.status. */
 export const getPackStatus = (): Promise<PackStatus> =>
   api.get<PackStatus>("/api/survey/pack");
+
+// -------------------------------------------------------- file naming (PRO-11)
+/** POST /api/config/naming → config payload. config.site_optics. */
+export const setNamingConfig = (naming: NamingConfig): Promise<AppConfig> =>
+  api.post<AppConfig>("/api/config/naming", naming);
 
 /** POST /api/survey/pack/fetch → 202 {started} | 200 {already} | 507 no space. config.site_optics. */
 export const startPackFetch = (order = 4): Promise<{ started: boolean; already?: boolean }> =>
