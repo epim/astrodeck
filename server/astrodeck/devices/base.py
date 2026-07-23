@@ -482,3 +482,87 @@ class CoverCalibrator(Device):
             "max_brightness": self.max_brightness,
             "has_cover": self.has_cover,
         }
+
+
+class DomeShutterState(enum.Enum):
+    """Roll-off-roof / dome shutter state (PRO-4). AstroDeck-style string states,
+    like ``PierSide``/``CoverState`` — an unknown/unreachable shutter reports
+    ``UNKNOWN``; a shutter that has faulted (e.g. the sim's collision guard)
+    reports ``ERROR``."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    OPENING = "opening"
+    CLOSING = "closing"
+    UNKNOWN = "unknown"
+    ERROR = "error"
+
+
+class Dome(Device):
+    """A roll-off roof / dome — the observatory-close role (PRO-4).
+
+    Vendor-neutral, modeled on ASCOM IDomeV2's shutter/slaved surface but with
+    AstroDeck-style string states. ``shutter_state``/``open_shutter``/
+    ``close_shutter`` are the required core; ``abort`` (halt motion),
+    ``set_slaved``/``get_slaved`` (dome-follows-mount) degrade gracefully for a
+    roll-off roof that doesn't slave (``can_slave=False`` → default raise /
+    False), exactly the ``Focuser.get_temperature`` / ``Rotator.set_reverse``
+    idiom. ``is_open``/``is_closed`` derive off ``shutter_state``.
+
+    ``requires_park_before_close`` is the safety-critical capability flag: a
+    roll-off roof whose travel passes THROUGH the mount's volume MUST have the
+    mount parked clear before the roof may close. True is the FAIL-SAFE default
+    (assume a collision is possible); a classic rotating dome whose shutter
+    clears the OTA at any orientation may set it False. The close-ordering guard
+    (``sequence/roof.close_observatory``) reads this to decide whether to require
+    a confirmed-parked mount before moving the shutter."""
+
+    kind = "dome"
+
+    #: A roll-off roof whose travel passes THROUGH the mount's volume: the mount
+    #: MUST be parked clear before the roof may close. True is the FAIL-SAFE
+    #: default (assume a collision is possible). A classic rotating dome whose
+    #: shutter clears the OTA at any orientation may set this False.
+    requires_park_before_close: bool = True
+    #: whether the dome can slave its azimuth to the mount (rotating domes only).
+    can_slave: bool = False
+
+    @abstractmethod
+    async def shutter_state(self) -> DomeShutterState: ...
+
+    @abstractmethod
+    async def open_shutter(self) -> None:
+        """Open the shutter/roof. Waits until motion is commanded (not necessarily
+        complete); ``shutter_state`` reports progress."""
+
+    @abstractmethod
+    async def close_shutter(self) -> None:
+        """Close the shutter/roof. SAFETY: the caller
+        (``sequence/roof.close_observatory``) must have confirmed the mount parked
+        first when ``requires_park_before_close`` — this method does NOT itself
+        park."""
+
+    async def abort(self) -> None:
+        """Halt any in-progress shutter motion. Default no-op."""
+        return None
+
+    async def set_slaved(self, on: bool) -> None:
+        raise DeviceError(f"{self.name} cannot slave to the mount")
+
+    async def get_slaved(self) -> bool:
+        return False
+
+    async def is_closed(self) -> bool:
+        return (await self.shutter_state()) is DomeShutterState.CLOSED
+
+    async def is_open(self) -> bool:
+        return (await self.shutter_state()) is DomeShutterState.OPEN
+
+    def describe(self) -> dict[str, Any]:
+        # static capabilities only (sync — no await); live shutter state comes
+        # from the ``/api/dome/state`` accessor.
+        return {
+            **super().describe(),
+            "can_slave": self.can_slave,
+            "requires_park_before_close": self.requires_park_before_close,
+        }

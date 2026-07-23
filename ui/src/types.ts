@@ -857,6 +857,9 @@ export interface SafetyConfig {
   resume_when_safe: boolean;
   resume_safe_consecutive: number;
   max_pause_min: number;                // 0 = no cap; escalates to park on timeout
+  // Roll-off roof / dome auto-close (PRO-4). Both default false server-side.
+  close_dome_on_unsafe: boolean;        // rain/cloud trip → park-and-close teardown
+  close_dome_when_done: boolean;        // close the roof at a normal end-of-night
 }
 
 export interface EscalationConfig {

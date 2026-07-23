@@ -216,6 +216,27 @@ export const setAuthConfig = (auth: Partial<AuthState> & Record<string, unknown>
 export const setSafetyConfig = (safety: SafetyConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config", { safety });
 
+// ------------------------------------------------------ dome / roof (PRO-4)
+import type { DomeShutter } from "../lib/dome";
+
+export interface DomeState {
+  connected: boolean;
+  shutter: DomeShutter;
+  requires_park_before_close: boolean;
+  can_slave: boolean;
+}
+
+/** GET /api/dome/state → the roof shutter status + capabilities. Honest defaults
+ *  (connected:false, shutter:"unknown") when no dome is connected. */
+export const getDomeState = (): Promise<DomeState> =>
+  api.get<DomeState>("/api/dome/state");
+
+/** POST /api/dome/close → the tested park-and-close ordering guard: fence gotos,
+ *  park under the motion lock, THEN close the roof. Requires control.mount (the
+ *  close moves the mount). Returns the spawned-task marker. */
+export const closeDome = (): Promise<{ started: string }> =>
+  api.post<{ started: string }>("/api/dome/close");
+
 // ----------------------------------------------------------------- self-update
 /** GET /api/update/status → live snapshot + can_apply/supervised/blocked reason. */
 export const getUpdateStatus = (): Promise<UpdateStatus> =>

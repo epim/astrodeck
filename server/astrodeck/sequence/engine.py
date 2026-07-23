@@ -621,7 +621,10 @@ class SequenceEngine:
                     bus.log("warning", f"sequence '{plan.name}' skipped — cooling "
                                        "required but not reached", "sequence")
                     self._finalize_report("cooling_skip")
-                    await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
+                    await self._wind_down(
+                        plan.park_when_done, plan.warm_cooler_when_done,
+                        close_dome=bool(self._cfg
+                                        and self._cfg.safety.close_dome_when_done))
                     return
 
             await self._run_scheduled(plan)
@@ -641,7 +644,9 @@ class SequenceEngine:
                                 + (f", {self._rejected} flagged" if self._rejected else ""),
                         "sequence")
                 self._finalize_report("complete")
-            await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
+            await self._wind_down(
+                plan.park_when_done, plan.warm_cooler_when_done,
+                close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done))
         except SafetyAbort as e:
             # UNSAFE teardown (§1.9-G): aborted + end_reason=unsafe, finalize the
             # report, then a SHIELDED park/warm that ACTUALLY COMPLETES before the
@@ -656,7 +661,8 @@ class SequenceEngine:
             self._finalize_report("unsafe")
             wind = asyncio.ensure_future(self._wind_down(
                 park=True,
-                warm=(self._cfg is not None and self._cfg.safety.on_unsafe == "abort_park_warm")))
+                warm=(self._cfg is not None and self._cfg.safety.on_unsafe == "abort_park_warm"),
+                close_dome=bool(self._cfg and self._cfg.safety.close_dome_on_unsafe)))
             cancelled = False
             while not wind.done():
                 try:
@@ -679,7 +685,9 @@ class SequenceEngine:
                             detail="stopped early: consecutive quality rejects",
                             end_reason="quality", schedule=None, session=None)
             self._finalize_report("quality")
-            await self._wind_down(plan.park_when_done, plan.warm_cooler_when_done)
+            await self._wind_down(
+                plan.park_when_done, plan.warm_cooler_when_done,
+                close_dome=bool(self._cfg and self._cfg.safety.close_dome_when_done))
         except asyncio.CancelledError:
             bus.log("warning", "sequence aborted", "sequence")
             await self._safe_stop()
@@ -1441,6 +1449,17 @@ class SequenceEngine:
         bus.publish("safety", is_safe=False, reason=reason, action=act, stale=stale)
         bus.log("error", f"UNSAFE: {reason} → {act}", "safety")
 
+        # PRO-4: a CLOSEABLE roof must CLOSE over the gear, not pause-hold under
+        # open sky. When close_dome_on_unsafe is set and a dome is connected,
+        # ESCALATE every on_unsafe action (INCLUDING pause) to the shielded
+        # park-and-close teardown by raising SafetyAbort here — BEFORE the
+        # warn/pause/abort branches below — so the roof close rides _wind_down's
+        # fenced-park + close ordering. No auto-reopen on safe-again (follow-up).
+        dome = self.hub.devices.get("dome")
+        if (cfg and cfg.safety.close_dome_on_unsafe
+                and dome is not None and getattr(dome, "connected", False)):
+            raise SafetyAbort(f"{reason} — closing roof")
+
         if act == "warn":
             return
         if act in ("abort_park_warm", "park"):
@@ -2123,7 +2142,8 @@ class SequenceEngine:
         # never leave the flat panel lit after an abort/error.
         await self._panel_off_safe()
 
-    async def _wind_down(self, park: bool, warm: bool) -> None:
+    async def _wind_down(self, park: bool, warm: bool,
+                         close_dome: bool = False) -> None:
         # NB: every device call here is BOUNDED (P0-2) but a timeout is handled
         # LOCALLY (log + continue), never re-raised as SafetyAbort — we are
         # already tearing down, and a hung park must not stop the cooler from
@@ -2165,6 +2185,27 @@ class SequenceEngine:
                                        "during wind-down — continuing", "sequence")
                 except Exception as e:
                     bus.log("warning", f"park failed during wind-down: {e}", "sequence")
+        # PRO-4: with the mount now fenced-and-parked ABOVE, close the roof over
+        # the parked gear (end-of-night or unsafe teardown). This runs AFTER the
+        # park block by construction; ``close_observatory`` additionally
+        # RE-CONFIRMS ``is_parked`` and REFUSES to move the shutter if the park
+        # failed/timed out — so the never-crush-the-mount invariant holds even if
+        # the park above did not complete. Best-effort like every other wind-down
+        # step: it never raises (returns False), and a failed/refused close pages
+        # loudly via an error-level bus.log.
+        if close_dome:
+            dome = self.hub.devices.get("dome")
+            if dome is not None and getattr(dome, "connected", False):
+                from .roof import close_observatory
+                tel = self.hub.devices.get("telescope")
+                ok = await close_observatory(dome, tel, log=bus.log)
+                if not ok:
+                    # An error-level bus.log IS the loud page: the AlertDispatcher
+                    # routes warning/error logs to every configured sink
+                    # (alerting._on_bus_event), so a failed/refused auto-close
+                    # reaches the user without a bespoke dispatcher call.
+                    bus.log("error", "AUTOMATED ROOF CLOSE FAILED — gear may be "
+                                     "exposed", "safety")
         if warm:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected and getattr(cam, "can_cool", False):
