@@ -32,3 +32,14 @@ def test_altaz_sane():
     alt, az = altaz(2.53, 89.26, lat_deg=37.77, lon_deg=-122.42)
     assert abs(alt - 37.77) < 2.0
     assert 0 <= az < 360
+
+
+def test_search_stamps_difficulty():
+    row = search_catalog("M42")[0]
+    assert row["id"] == "M42"
+    assert row["difficulty"] == "easy"
+    assert row["difficulty_source"] == "heuristic"
+    assert isinstance(row["surface_brightness"], float)
+    # a curated-override target carries its source through search too.
+    horse = next(r for r in search_catalog("horsehead") if r["id"] == "IC 434")
+    assert horse["difficulty"] == "hard" and horse["difficulty_source"] == "curated"

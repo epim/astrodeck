@@ -53,6 +53,7 @@ import { SkyCanvas } from "../components/atlas/SkyCanvas";
 import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
 import { CatalogSearch } from "../components/atlas/CatalogSearch";
+import { TonightPicker } from "../components/atlas/TonightPicker";
 import { Panel, Stat, Stepper, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
@@ -102,7 +103,7 @@ function AtlasEmpty({
 }): JSX.Element {
   return (
     <div className="grid place-items-center min-h-[60vh] p-4">
-      <div className="panel p-8 max-w-md text-center">
+      <div className="panel p-8 max-w-xl text-center">
         <EmptyState
           icon="atlas"
           title="Frame a target"
@@ -113,6 +114,9 @@ function AtlasEmpty({
               <button type="button" className="btn btn-accent btn-touch" onClick={onFreeRoam}>
                 Free-roam the sky
               </button>
+              <div className="w-full mt-2 pt-3 border-t border-line2">
+                <TonightPicker onPick={onPick} />
+              </div>
             </div>
           }
         />
