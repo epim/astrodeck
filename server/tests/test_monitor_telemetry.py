@@ -261,6 +261,11 @@ def test_preview_routes_resolve(tmp_path, monkeypatch):
         assert client.get(f"/api/preview/{pid}/thumb.jpg").status_code == 200
         assert client.get(f"/api/preview/{pid}/lossless.png").status_code == 200
         assert client.get(f"/api/preview/{pid}/png").status_code == 200
+        rs = client.get(f"/api/preview/{pid}/share.jpg")
+        assert rs.status_code == 200
+        assert rs.headers["content-type"] == "image/jpeg"
+        assert "attachment" in rs.headers.get("content-disposition", "")
+        assert client.get(f"/api/preview/{pid}/share.jpg?target=M42&subs=30").status_code == 200
         # Pass-2 routes are declared but stubbed 501
         assert client.get(f"/api/preview/{pid}/crop").status_code == 501
         assert client.get(f"/api/preview/{pid}/render.png").status_code == 501

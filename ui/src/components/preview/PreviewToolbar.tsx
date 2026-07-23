@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo } from "../../types";
 import { Icon, type IconName } from "../icons";
 import { u } from "../../lib/base";
+import { shareQuery } from "../../lib/share";
 
 function Toggle({
   on,
@@ -60,6 +61,7 @@ export function PreviewToolbar({
   starsAvailable,
   clipAvailable,
   linkDown,
+  shareMeta,
 }: {
   preview: PreviewInfo | null;
   overlays: OverlayToggles;
@@ -72,6 +74,7 @@ export function PreviewToolbar({
   starsAvailable: boolean;
   clipAvailable: boolean; // data_is_linear && full_well != null
   linkDown: boolean;
+  shareMeta?: { target?: string; subs?: number };
 }) {
   const [dlOpen, setDlOpen] = useState(false);
   const dlRef = useRef<HTMLDivElement>(null);
@@ -178,6 +181,15 @@ export function PreviewToolbar({
         </button>
         {dlOpen && id != null && (
           <div role="menu" className="panel absolute right-0 top-full mt-1 z-50 p-1 w-44 flex flex-col gap-0.5">
+            <a
+              role="menuitem"
+              href={u(`/api/preview/${id}/share.jpg${shareQuery(shareMeta?.target, shareMeta?.subs)}`)}
+              download={`firstlight_${id}.jpg`}
+              className="btn btn-accent !justify-start !px-2 !py-1.5 text-[11px] inline-flex items-center gap-1"
+              onClick={() => setDlOpen(false)}
+            >
+              <Icon name="capture" size={11} /> Save first light
+            </a>
             {pngAvailable ? (
               <a
                 role="menuitem"
