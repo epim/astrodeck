@@ -11,6 +11,7 @@ import type { IconName } from "../components/icons";
 import { humanizeSeqError } from "../lib/humanize";
 import { uid } from "../lib/ids";
 import { applyStepsToGroup } from "../lib/planGroups";
+import { SEQUENCE_TEMPLATES, templateSteps, type SequenceTemplate } from "../lib/sequenceTemplates";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
@@ -258,6 +259,23 @@ export default function SequenceView() {
     setPlanWithUndo(
       `Applied steps to ${memberCount} panel${memberCount === 1 ? "" : "s"}`,
       { ...plan, targets: applyStepsToGroup(plan.targets, group, plan.targets[sourceTi].steps) },
+    );
+  };
+
+  // Starter templates (NOV-5): replace ONE target's steps with a ready-made
+  // recipe from SEQUENCE_TEMPLATES, resolving filter intents against the connected
+  // wheel. Reversible (setPlanWithUndo — same 5s-undo path as delete / apply-to-all),
+  // so a mis-tap on a built-up target is one Undo away. ids are minted by
+  // setPlan.ensurePlanIds (store.ts:760).
+  const applyTemplate = (ti: number, tpl: SequenceTemplate) => {
+    const target = plan.targets[ti];
+    setPlanWithUndo(
+      `Applied '${tpl.label}' to ${target.name}`,
+      {
+        ...plan,
+        targets: plan.targets.map((t, i) =>
+          i === ti ? { ...t, steps: templateSteps(tpl, filters) } : t),
+      },
     );
   };
 
@@ -653,6 +671,25 @@ export default function SequenceView() {
                       <Icon name="x" size={18} />
                     </button>
                   </div>
+                </div>
+                {/* Starter templates (NOV-5): one-tap exposure recipes for first-timers.
+                    Always visible on each target card; run-locked like +step/delete. */}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="label !text-[9px] text-dim">starter</span>
+                  {SEQUENCE_TEMPLATES.map((tpl) => (
+                    <button
+                      key={tpl.id}
+                      type="button"
+                      className="tap min-h-[44px] !px-2.5 !text-[11px] inline-flex items-center gap-1
+                        border border-line2 text-dim hover:text-accent hover:border-accent/50 disabled:opacity-40"
+                      disabled={running}
+                      title={tpl.blurb}
+                      aria-label={`Apply starter template ${tpl.label} to ${t.name}`}
+                      onClick={() => applyTemplate(ti, tpl)}
+                    >
+                      <Icon name="plan" size={12} /> {tpl.label}
+                    </button>
+                  ))}
                 </div>
                 <div className="mt-2 flex flex-col gap-1.5">
                   {t.steps.map((s, si) => {
