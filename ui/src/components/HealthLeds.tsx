@@ -67,17 +67,24 @@ export default function HealthLeds() {
   const night = useStore((s) => s.night);
 
   const linkUp = wsPhase === "up";
-  const linkSev: Sev = linkUp ? "ok" : "bad";
+  // UX-44: a benign reconnect (connecting/reconnecting) is amber WARN, not a red
+  // alarm — matching the ConnectionBanner ("a Wi-Fi blip is amber, not alarm-red").
+  // Only a settled "down" is the red alarm.
+  const linkSev: Sev = linkUp ? "ok" : wsPhase === "down" ? "bad" : "warn";
+  const linkLabel = linkUp ? "LINK" : wsPhase === "down" ? "NO LINK" : "LINK…";
   const linkTitle = linkUp
     ? "Display link up"
-    : wsPhase === "connecting" ? "Connecting to AstroDeck server…"
-    : "Display disconnected — the rig keeps running. Reconnecting…";
+    : wsPhase === "down"
+      ? "Display disconnected — the rig keeps running."
+      : wsPhase === "reconnecting"
+        ? "Reconnecting to AstroDeck server…"
+        : "Connecting to AstroDeck server…";
 
   return (
     <div className="flex items-center gap-3">
       <HealthLed
         letter="L"
-        label={linkUp ? "LINK" : "NO LINK"}
+        label={linkLabel}
         sev={linkSev}
         title={linkTitle}
         night={night}
