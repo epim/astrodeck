@@ -25,6 +25,7 @@ import {
 import { u } from "../lib/base";
 import { Icon, type IconName } from "./icons";
 import { HoldButton as UiHoldButton, Led, Stat } from "./ui";
+import { TrendLine } from "./graphs";
 import { stateMeta, type StateTone } from "../lib/stateMeta";
 import {
   deriveFinish,
@@ -33,6 +34,7 @@ import {
   fmtDuration,
   SPARKLINE_SCALE_ARCSEC,
 } from "../lib/eta";
+import { pickSeries, type LiveSample } from "../lib/reportChart";
 import type { SequenceState } from "../types";
 import { deriveHealthIssues, type HealthIssue } from "../lib/health";
 // re-exported so existing imports of `deriveHealthIssues`/`HealthIssue` from
@@ -353,6 +355,23 @@ export const Sparkline = memo(function Sparkline({
         <path d={paths.trend} fill="none" stroke="var(--accent)" strokeWidth={1.4} />
       )}
     </svg>
+  );
+});
+
+// ============================================================ LIVE TREND STRIP
+/** Four-metric live in-acquisition strip (report viewer spec §3 Task 5): HFR /
+ *  stars / Guide RMS / Sensor temp, each a `TrendLine` over the SAME generalized
+ *  ring MonitorView keeps (`pushLiveSample`) — no separate/duplicate ring state.
+ *  Each TrendLine self-renders "no data" when its series is empty, so a rig with
+ *  no guiding still shows HFR/stars. */
+export const LiveTrendStrip = memo(function LiveTrendStrip({ ring }: { ring: LiveSample[] }) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <TrendLine values={pickSeries(ring, "hfr")} label="HFR" decimals={2} />
+      <TrendLine values={pickSeries(ring, "stars")} label="stars" decimals={0} />
+      <TrendLine values={pickSeries(ring, "rms")} label="Guide RMS" unit="″" />
+      <TrendLine values={pickSeries(ring, "temp")} label="Sensor °C" unit="°C" decimals={1} />
+    </div>
   );
 });
 

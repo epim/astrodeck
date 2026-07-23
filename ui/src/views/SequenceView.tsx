@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore, useAtlasBannerPending, defaultSchedule } from "../store";
+import { useStore, useAtlasBannerPending, useLastReportId, defaultSchedule } from "../store";
 import { HoldButton, IconButton, InfoDot, Panel, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import SessionsPanel from "../components/sequence/SessionsPanel";
@@ -77,6 +77,11 @@ export default function SequenceView() {
   const sequence = useStore((s) => s.sequence);
   const showToast = useStore((s) => s.showToast);
   const openLog = useStore((s) => s.openLog);
+  const setView = useStore((s) => s.setView);
+  // Deep-link target for the finished-run "View session report →" action
+  // (report viewer spec §3 Task 4) — the store stashes the id of the most
+  // recently finalized SessionReport on the `report` bus event.
+  const lastReportId = useLastReportId();
   // SSOT: the plan lives in the store (single writer of `astrodeck-plan`; setPlan
   // persists). No private useState / localStorage effect here.
   const plan = useStore((s) => s.plan);
@@ -535,6 +540,16 @@ export default function SequenceView() {
                     </button>
                   )}
                 </>
+              )}
+              {/* Deep-link to the end-of-night report (report viewer spec §3
+                  Task 4) — the engine publishes `report` on every terminal path
+                  (complete/aborted/error/…), so this shows alongside the failed
+                  actions above too, not just a clean "complete". */}
+              {finished && lastReportId && (
+                <button className="btn tap min-h-[44px]" onClick={() => setView("report")}>
+                  <Icon name="check" size={12} className="inline -mt-0.5 mr-1" />
+                  View session report →
+                </button>
               )}
             </div>
           </Panel>

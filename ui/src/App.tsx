@@ -30,6 +30,7 @@ import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
 import MonitorView from "./views/MonitorView";
 import AtlasView from "./views/AtlasView";
+import ReportView from "./views/ReportView";
 import SettingsView from "./components/settings/SettingsView";
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
@@ -52,19 +53,6 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-// Placeholder for views whose file has not landed yet (settings/atlas are built in
-// later batches). Guarding here keeps VIEWS a total Record<ViewName,…> so the union
-// stays exhaustive without importing a not-yet-present module. Monitor IS mounted
-// for real this batch (2E's MonitorView).
-function PlaceholderView({ label }: { label: string }): JSX.Element {
-  return (
-    <div className="panel p-6 max-w-md mx-auto mt-10 text-center">
-      <h2 className="panel-title mb-2">{label}</h2>
-      <p className="text-dim text-sm">This view is coming in a later build.</p>
-    </div>
-  );
-}
-
 const VIEWS: Record<ViewName, () => JSX.Element> = {
   connect: EquipmentView,
   capture: CaptureView,
@@ -77,12 +65,11 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   monitor: MonitorView,
   settings: SettingsView,
   atlas: AtlasView,
-  // "report" is NOT a primary-nav entry (Batch-4b §2.5): the Session Report is
-  // reached from the run-complete "View session report →" link + the mobile
-  // overflow sheet in the NEXT (frontend) workflow. The placeholder keeps the
-  // VIEWS Record<ViewName,…> total so the union stays exhaustive until ReportView
-  // lands; ViewName already includes "report" (types.ts).
-  report: () => <PlaceholderView label="Session Report" />,
+  // "report" is NOT a primary-nav entry (Batch-4b §2.5 / report viewer spec §1.4):
+  // ReportView has landed, reached from the run-complete "View session report →"
+  // link (SequenceView) + the mobile overflow sheet (NavMoreSheet), never from
+  // primary nav.
+  report: ReportView,
 };
 
 // Nav gating (onboarding §3b/§7b): equipment-dependent views show the

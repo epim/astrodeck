@@ -45,6 +45,7 @@ import {
   HealthStrip,
   HoldButton,
   LiveTimer,
+  LiveTrendStrip,
   MetricStrip,
   PauseButton,
   PreviewTile,
@@ -54,6 +55,7 @@ import {
   ThermometerBar,
   useReducedMotion,
 } from "../components/monitor";
+import { pushLiveSample, pickSeries, type LiveSample } from "../lib/reportChart";
 import {
   fmtCountdown,
   fmtDuration,
@@ -162,14 +164,29 @@ export default function MonitorView() {
     etaAnchorRef.current = { etaS: progress?.eta_s, receivedAtMs: Date.now() };
   }
 
-  // ----- tiny client HFR ring for the dew early-warning trend (resolves B9).
-  // Derived from preview events; capped at ~20 readings, no store slice. -----
-  const hfrRing = useRef<number[]>([]);
-  const lastHfrId = useRef<number | null>(null);
-  if (preview && preview.hfr != null && preview.id !== lastHfrId.current) {
-    lastHfrId.current = preview.id;
-    hfrRing.current = [...hfrRing.current, preview.hfr].slice(-20);
+  // ----- live 4-series ring for the dew early-warning trend AND the "Live
+  // trend" panel (resolves B9; generalizes the old single-HFR ring — report
+  // viewer spec §3 Task 5). Snapshots HFR/stars/RMS/temp on each new sub
+  // (`preview.id` change); capped at 40, no store slice. The inline Progress
+  // sparkline below AND LiveTrendStrip both read this SAME ring — one ring,
+  // not two. -----
+  const liveRing = useRef<LiveSample[]>([]);
+  const lastSubId = useRef<number | null>(null);
+  if (preview && preview.id !== lastSubId.current) {
+    lastSubId.current = preview.id;
+    liveRing.current = pushLiveSample(
+      liveRing.current,
+      {
+        t: Date.now(),
+        hfr: preview.hfr ?? null,
+        stars: preview.stars ?? null,
+        rms: guideRms?.rms_total ?? null,
+        temp: camera?.temperature ?? null,
+      },
+      40,
+    );
   }
+  const liveHfr = pickSeries(liveRing.current, "hfr");
 
   // ----- cold-load hydration (one shot, non-fatal, §8) -----
   useEffect(() => {
@@ -486,11 +503,13 @@ export default function MonitorView() {
                       </p>
                     )}
 
-                    {/* HFR-trend mini-sparkline (resolves B9) — dew early warning */}
-                    {hfrRing.current.length >= 3 && (
+                    {/* HFR-trend mini-sparkline (resolves B9) — dew early warning.
+                        Reads the same generalized `liveRing` as the Live Trend
+                        panel below (one ring, not two). */}
+                    {liveHfr.length >= 3 && (
                       <div>
                         <span className="label !text-[9px]">HFR trend</span>
-                        <Sparkline samples={hfrRing.current} mode="trend" />
+                        <Sparkline samples={liveHfr} mode="trend" />
                       </div>
                     )}
                   </>
@@ -559,6 +578,16 @@ export default function MonitorView() {
             )}
           </div>
         </Panel>
+
+        {/* ================================================== LIVE TREND
+            (report viewer spec §3 Task 5) — gated the same idiom as the inline
+            HFR sparkline above: run active + ring has >=3 samples. Reads the
+            SAME `liveRing` as that sparkline (one ring, not two). */}
+        {runActive && liveRing.current.length >= 3 && (
+          <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Live trend">
+            <LiveTrendStrip ring={liveRing.current} />
+          </Panel>
+        )}
 
         {/* ==================================== SKY CONDITIONS (weather spec §10) */}
         {canSeeWeather && <SkyConditionsPanel />}
