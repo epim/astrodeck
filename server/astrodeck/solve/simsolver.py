@@ -14,14 +14,35 @@ or an explicitly-sim mode may receive a synthetic solution.
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 
-from .base import PlateSolver, SolveResult
+from astropy.io import fits
+
+from .base import PlateSolver, SolveResult, WcsSolution
 
 #: Real-hardware hub modes the sim solver must never fake-solve for (review 5d).
 #: A discovery miss that falls back here on a live rig must FAIL loudly rather
 #: than echo the pointing hint as a centered solve.
 _REAL_MODES = ("nina", "alpaca")
+
+
+def _sim_wcs(fits_path: Path, ra_hours: float, dec_deg: float,
+             rot_deg: float, scale_arcsec: float) -> WcsSolution:
+    """A valid TAN WcsSolution centered on the sim pointing (hips_local idiom:
+    ctype RA---TAN/DEC--TAN, crval, crpix at image center, CD from scale+rot)."""
+    try:
+        with fits.open(fits_path) as hdul:
+            ny, nx = hdul[0].data.shape[-2:]
+    except Exception:
+        nx = ny = 1000                       # tolerate a not-yet-written path
+    scale = scale_arcsec / 3600.0
+    rot = math.radians(rot_deg)
+    return WcsSolution(
+        crval1=ra_hours * 15.0, crval2=dec_deg,
+        crpix1=(nx + 1) / 2.0, crpix2=(ny + 1) / 2.0,
+        cd11=-scale * math.cos(rot), cd12=scale * math.sin(rot),
+        cd21=scale * math.sin(rot), cd22=scale * math.cos(rot))
 
 
 class SimSolver(PlateSolver):
@@ -61,9 +82,12 @@ class SimSolver(PlateSolver):
             return SolveResult(True, ra_hours=self.sim_rig.ra_hours,
                                dec_deg=self.sim_rig.dec_deg,
                                rotation_deg=rot_pa, pixel_scale_arcsec=1.55,
+                               wcs=_sim_wcs(fits_path, self.sim_rig.ra_hours,
+                                            self.sim_rig.dec_deg, rot_pa, 1.55),
                                message="solved (simulator)")
         if ra_hint is not None and dec_hint is not None:
             return SolveResult(True, ra_hours=ra_hint, dec_deg=dec_hint,
                                rotation_deg=0.0, pixel_scale_arcsec=1.55,
+                               wcs=_sim_wcs(fits_path, ra_hint, dec_hint, 0.0, 1.55),
                                message="solved (simulator, from hint)")
         return SolveResult(False, message="simulator solver needs a hint or sim rig")
