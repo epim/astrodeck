@@ -32,6 +32,15 @@ class GuideStats:
     #: The arcsec/pixel image scale used to convert the engine's pixel errors,
     #: or 0.0 when unknown (see ``is_arcsec``). Purely informational for the UI.
     image_scale: float = 0.0
+    #: Plain-language narration phase (NOV-7 design doc §1.3):
+    #: ``"idle" | "finding" | "calibrating" | "settling" | "guiding" | "lost"``,
+    #: or ``""`` when unknown. Only ``NativeGuider`` fills this richly; the
+    #: PHD2/NINA bridge guider leaves it ``""`` and the UI narration falls back
+    #: to the ``guiding`` bool (honest — the bridge doesn't expose these
+    #: steps). Additive field: flows through ``hub.py``'s ``stats().__dict__``
+    #: spread and the ``bus.publish("guide", **stats().__dict__)`` calls for
+    #: free.
+    phase: str = ""
 
 
 class Guider(ABC):

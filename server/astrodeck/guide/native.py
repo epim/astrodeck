@@ -162,6 +162,12 @@ class NativeGuider(Guider):
         self._reacquire = 0
         self._fault_frames = 0
 
+        # NOV-7: a small host hint set during the finding/calibrating steps
+        # (which precede ``_active`` going True and are otherwise invisible to
+        # ``_current_phase()``), and cleared once the guide loop owns the
+        # phase. See ``_current_phase()`` for the full composition table.
+        self._phase_hint: str | None = None
+
         # Dither settle coordination: ``dither`` opens the engine's settle window
         # and awaits ``_settle_done``; the guide loop's ``_sync_settle_window``
         # sets it when the window (which only ``dither`` opens) closes, tracked
@@ -257,6 +263,11 @@ class NativeGuider(Guider):
                     # _maybe_recover_guiding's one-shot retry contract.
                     # Raising here keeps is_active() false so the recovery
                     # loop keeps firing until the star is really back.
+                    # NOV-7: one "finding" tick before the star-find so the
+                    # client has something to narrate during this otherwise
+                    # silent step (D2 — one tick per phase transition).
+                    self._phase_hint = "finding"
+                    bus.publish("guide", **self.stats().__dict__)
                     frame = await self._expose()
                     stars, _meta = _native.guide_star_find(frame.data)
                     if not stars:
@@ -310,6 +321,10 @@ class NativeGuider(Guider):
             await self._maybe_flip_for_pier()
             self._persist_calibration()
 
+            # NOV-7: the guide loop owns the phase from here on (via the
+            # engine dict / _active) — clear the hint so a stale
+            # "finding"/"calibrating" never outlives the transition it named.
+            self._phase_hint = None
             self._stop.clear()
             self._active = True
             self._loop_task = asyncio.create_task(self._guide_loop())
@@ -318,6 +333,7 @@ class NativeGuider(Guider):
 
     async def stop_guiding(self) -> None:
         self._active = False
+        self._phase_hint = None
         self._stop.set()
         task = self._loop_task
         self._loop_task = None
@@ -340,6 +356,11 @@ class NativeGuider(Guider):
         (expose → ``process`` → ``pulse_guide``) until it completes, and stamp
         the mount's real scope pointing (OBLIGATION (e)). Raises ``DeviceError``
         on no-star / calibration-failed / timeout."""
+        # NOV-7: one "finding" tick before the star-find (D2 — one tick per
+        # phase transition; the guide loop already publishes per frame once
+        # guiding).
+        self._phase_hint = "finding"
+        bus.publish("guide", **self.stats().__dict__)
         frame = await self._expose()
         stars, _meta = _native.guide_star_find(frame.data)
         if not stars:
@@ -347,6 +368,10 @@ class NativeGuider(Guider):
                 "native guider: no guide star found — cannot calibrate")
         x0, y0 = float(stars[0]["x"]), float(stars[0]["y"])
         self._engine.begin_calibration(x0, y0)
+        # NOV-7: one "calibrating" tick right after the engine enters its
+        # calibration state machine.
+        self._phase_hint = "calibrating"
+        bus.publish("guide", **self.stats().__dict__)
         # OBLIGATION (e): stamp real declination/pier onto the pending
         # calibration BEFORE it completes (patch_cal_from_scope applies it at
         # COMPLETE). declination/rotator are RADIANS at the PyO3 surface.
@@ -529,6 +554,36 @@ class NativeGuider(Guider):
             return bool(self._engine.stats().get("settling", False))
         except Exception:  # pragma: no cover - defensive
             return False
+
+    def _current_phase(self, engine_stats: dict | None = None) -> str:
+        """Compose the plain-language narration phase (NOV-7 design doc §1.3)
+        from state already tracked host-side — first match wins:
+
+            lost -> settling -> (active & engine guiding) -> _phase_hint ->
+            active (loop up, lock not yet established, == "finding") -> idle
+
+        ``engine_stats`` lets ``stats()`` pass its already-fetched engine dict
+        so this doesn't re-query the engine on the hot per-frame path; callers
+        without one (the finding/calibrating transition ticks) leave it None
+        and this fetches its own when it actually needs the ``guiding`` key."""
+        if self._lost:
+            return "lost"
+        if self._engine_settling():
+            return "settling"
+        if self._active and self._engine is not None:
+            s = engine_stats
+            if s is None:
+                try:
+                    s = self._engine.stats()
+                except Exception:  # pragma: no cover - defensive
+                    s = {}
+            if bool(s.get("guiding", False)):
+                return "guiding"
+        if self._phase_hint:
+            return self._phase_hint
+        if self._active:
+            return "finding"
+        return "idle"
 
     def _sync_settle_window(self, action: dict) -> None:
         """Wire the ``dither()`` settle-wait handshake (``_settle_open``/
@@ -739,9 +794,14 @@ class NativeGuider(Guider):
         ``self._image_scale`` (arcsec/px) — the SAME scale this guider was
         constructed with (``config["image_scale_arcsec"]``) and handed to the
         engine as ``image_scale_arcsec``; the sim wiring sources it from
-        ``rig.guide_scale_arcsec_px``. ``snr`` is unitless and passes through."""
+        ``rig.guide_scale_arcsec_px``. ``snr`` is unitless and passes through.
+
+        ``phase`` (NOV-7): the plain-language narration phase composed by
+        ``_current_phase()`` (design doc §1.3) — additive to the wire shape,
+        flows through ``hub.py``'s ``stats().__dict__`` poll and the
+        ``bus.publish("guide", **stats().__dict__)`` calls for free."""
         if self._engine is None:
-            return GuideStats(guiding=False)
+            return GuideStats(guiding=False, phase=self._current_phase())
         try:
             s = self._engine.stats()
         except Exception:  # pragma: no cover - defensive
@@ -764,6 +824,7 @@ class NativeGuider(Guider):
             recent=recent[-120:],
             is_arcsec=arcsec,
             image_scale=round(self._image_scale, 3) if arcsec else 0.0,
+            phase=self._current_phase(s),
         )
 
     def calibration_report(self) -> dict | None:
