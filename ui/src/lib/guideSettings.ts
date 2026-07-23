@@ -210,3 +210,25 @@ export function validateGuideSettings(s: GuideSettings): GuideSettings {
     blcPulseMs: clampBlcPulse(s.blcPulseMs),
   };
 }
+
+// ------------------------------------------------------------------- T7 wire
+// PRO-12 Tier 2 (T7): the settings drawer's per-axis param editor now sends
+// its (validated/clamped) params through to `PUT /api/guide/settings` as the
+// `ra_params`/`dec_params` sub-dicts the T6 `GuideAxisParams` model expects.
+// The client keys are camelCase (`minMove`, `slopeWeight`, `expFactor`, ...,
+// matching GUIDE_ALGORITHM_DEFAULTS above) while the engine/Python side is
+// snake_case (`min_move`, `slope_weight`, `exp_factor`, ...,
+// server/astrodeck/config.py `GuideAxisParams`) — `toSnake` is the pure,
+// one-way mapping between the two, applied at the PUT-body boundary only (the
+// client's own state/validation stays camelCase throughout).
+
+/** camelCase -> snake_case for a single param-defaults map. Pure; a key with
+ *  no uppercase letters (`aggression`, `hysteresis`) passes through
+ *  unchanged. */
+export function toSnake(params: GuideAlgorithmParamDefaults): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(params)) {
+    out[k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)] = v;
+  }
+  return out;
+}

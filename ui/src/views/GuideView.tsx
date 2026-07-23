@@ -26,7 +26,9 @@ import {
   isValidRaAlgorithm,
   isValidDecAlgorithm,
   isValidDecGuideMode,
+  toSnake,
   type GuideAlgorithmKind,
+  type GuideAlgorithmParamDefaults,
   type DecGuideMode,
 } from "../lib/guideSettings";
 
@@ -413,6 +415,16 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   const [busy, setBusy] = useState(false);
   const [ra, setRa] = useState<GuideAlgorithmKind>(defaultGuideSettings().ra.algorithm);
   const [dec, setDec] = useState<GuideAlgorithmKind>(defaultGuideSettings().dec.algorithm);
+  // PRO-12 Tier 2 (T7): per-axis PARAMETER edits, lifted here alongside the
+  // algorithm-kind state above. Seeded from GUIDE_ALGORITHM_DEFAULTS[kind]
+  // whenever the kind changes (algorithm swap in the select, or the initial
+  // load) — the engine's own dossier §15 default for a param not explicitly
+  // edited, matching the T6 "None -> engine default" contract on the Python
+  // side (GuideAxisParams / set_guide).
+  const [raParams, setRaParams] = useState<GuideAlgorithmParamDefaults>(
+    defaultGuideSettings().ra.params);
+  const [decParams, setDecParams] = useState<GuideAlgorithmParamDefaults>(
+    defaultGuideSettings().dec.params);
   // PRO-12 Tier 1: Dec guide direction + static BLC seed pulse. Both are
   // ALREADY forwarded end-to-end by the engine (_build_engine_config); this
   // drawer is the last missing layer. blcMs is a text field (parsed on save,
@@ -421,14 +433,23 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   const [decMode, setDecMode] = useState<DecGuideMode>(defaultGuideSettings().decGuideMode);
   const [blcMs, setBlcMs] = useState<string>("0");
 
+  const chooseRa = (kind: GuideAlgorithmKind) => {
+    setRa(kind);
+    setRaParams({ ...GUIDE_ALGORITHM_DEFAULTS[kind] });
+  };
+  const chooseDec = (kind: GuideAlgorithmKind) => {
+    setDec(kind);
+    setDecParams({ ...GUIDE_ALGORITHM_DEFAULTS[kind] });
+  };
+
   const load = async () => {
     try {
       const s = await api.get<{
         ra_algorithm: string; dec_algorithm: string;
         dec_guide_mode?: string; blc_pulse_ms?: number;
       }>("/api/guide/settings");
-      if (isValidRaAlgorithm(s.ra_algorithm)) setRa(s.ra_algorithm);
-      if (isValidDecAlgorithm(s.dec_algorithm)) setDec(s.dec_algorithm);
+      if (isValidRaAlgorithm(s.ra_algorithm)) chooseRa(s.ra_algorithm);
+      if (isValidDecAlgorithm(s.dec_algorithm)) chooseDec(s.dec_algorithm);
       if (isValidDecGuideMode(s.dec_guide_mode ?? "")) setDecMode(s.dec_guide_mode as DecGuideMode);
       if (typeof s.blc_pulse_ms === "number") setBlcMs(String(s.blc_pulse_ms));
       setLoaded(true);
@@ -450,17 +471,22 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
       // clamps the BLC pulse, snaps an invalid Dec direction to auto) before
       // PUTting the persisted fields.
       const v = validateGuideSettings({
-        ra: { algorithm: ra, params: { ...GUIDE_ALGORITHM_DEFAULTS[ra] } },
-        dec: { algorithm: dec, params: { ...GUIDE_ALGORITHM_DEFAULTS[dec] } },
+        ra: { algorithm: ra, params: raParams },
+        dec: { algorithm: dec, params: decParams },
         decGuideMode: decMode,
         blcPulseMs: Number(blcMs), // NaN/blank -> clampBlcPulse floors to 0
       });
       await api.put("/api/guide/settings", {
         ra_algorithm: v.ra.algorithm,
         dec_algorithm: v.dec.algorithm,
+        ra_params: toSnake(v.ra.params),
+        dec_params: toSnake(v.dec.params),
         dec_guide_mode: v.decGuideMode,
         blc_pulse_ms: v.blcPulseMs,
       });
+      // reflect any clamp validateGuideSettings applied back into the inputs
+      setRaParams(v.ra.params);
+      setDecParams(v.dec.params);
       onToast("success", "Guide tuning saved — applies on the next start");
     } catch (e) {
       onToast("error", (e as Error).message);
@@ -487,23 +513,23 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
           <label className="flex flex-col gap-1">
             <span className="label">RA algorithm</span>
             <select className="field" value={ra} disabled={!canGuide || busy}
-              onChange={(e) => setRa(e.target.value as GuideAlgorithmKind)}>
+              onChange={(e) => chooseRa(e.target.value as GuideAlgorithmKind)}>
               {RA_GUIDE_ALGORITHMS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
-            <AlgoParams kind={ra} />
+            <AlgoParams kind={ra} params={raParams} onChange={setRaParams} disabled={!canGuide} />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="label">Dec algorithm</span>
             <select className="field" value={dec} disabled={!canGuide || busy}
-              onChange={(e) => setDec(e.target.value as GuideAlgorithmKind)}>
+              onChange={(e) => chooseDec(e.target.value as GuideAlgorithmKind)}>
               {DEC_GUIDE_ALGORITHMS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
-            <AlgoParams kind={dec} />
+            <AlgoParams kind={dec} params={decParams} onChange={setDecParams} disabled={!canGuide} />
           </label>
 
           <label className="flex flex-col gap-1">
@@ -542,9 +568,10 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
             </button>
           </div>
           <p className="text-[11px] text-faint leading-snug">
-            Per-axis parameters shown are the PHD2-default set (dossier §15) and
-            are not yet editable. Dec guide direction and the backlash pulse ARE
-            saved here and apply to the native guider on its next start.
+            Per-axis parameters start at the PHD2-default set (dossier §15) and
+            are editable above — swapping an algorithm resets its params back
+            to that default. Dec guide direction and the backlash pulse are
+            saved here too and apply to the native guider on its next start.
           </p>
         </div>
       )}
@@ -552,13 +579,42 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   );
 }
 
-function AlgoParams({ kind }: { kind: GuideAlgorithmKind }) {
-  const params = GUIDE_ALGORITHM_DEFAULTS[kind];
+// PRO-12 Tier 2 (T7): per-axis algorithm-tunable editor. `params` is the
+// caller-owned draft (seeded from GUIDE_ALGORITHM_DEFAULTS[kind] — see
+// GuideSettingsDrawer's chooseRa/chooseDec); `onChange` merges a single
+// edited key back in, mirroring the Dither/BLC numeric-field idiom above
+// (Number(value) || 0 — a non-numeric/blank edit-in-progress falls back to 0
+// rather than propagating NaN into state). `validateGuideSettings` (called in
+// `save()`) is the single source of clamp truth for every param here — this
+// component does not re-implement aggression/hysteresis/min-move bounds.
+//
+// `disabled` (viewer without `control.guide`) uses the honest-disabled idiom
+// (spec §11.8, e.g. SafetyPanel.tsx:376-384): a wrapper with `aria-disabled` +
+// `title` + dim/`pointer-events-none`, never the native `disabled` attribute,
+// so the reason stays visible/announced instead of a plain greyed-out input.
+function AlgoParams({ kind, params, onChange, disabled }: {
+  kind: GuideAlgorithmKind;
+  params: GuideAlgorithmParamDefaults;
+  onChange: (next: GuideAlgorithmParamDefaults) => void;
+  disabled: boolean;
+}) {
   return (
-    <span className="text-[11px] text-dim flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+    <div
+      className={`flex flex-wrap gap-x-3 gap-y-1 mt-1 ${disabled ? "opacity-50 pointer-events-none select-none" : ""}`}
+      aria-disabled={disabled || undefined}
+      title={disabled ? `${accessPhrase("control.guide")} required to edit ${kind} parameters` : undefined}
+    >
       {Object.entries(params).map(([k, v]) => (
-        <span key={k}>{k}: <span className="text-fg">{v}</span></span>
+        <label key={k} className="flex flex-col gap-0.5">
+          <span className="label !text-[9px]">{k}</span>
+          <input
+            className="field !py-1 !text-[11px] w-20"
+            inputMode="decimal"
+            value={v}
+            onChange={(e) => onChange({ ...params, [k]: Number(e.target.value) || 0 })}
+          />
+        </label>
       ))}
-    </span>
+    </div>
   );
 }
