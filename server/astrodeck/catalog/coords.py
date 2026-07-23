@@ -112,6 +112,105 @@ def sun_altaz(lat_deg: float, lon_deg: float,
     return altaz(ra, dec, lat_deg, lon_deg, unix_time)
 
 
+# ---------------------------------------------------------------- lunar position
+
+def angular_sep_deg(ra1_h: float, dec1: float, ra2_h: float, dec2: float) -> float:
+    """Angular separation (deg) between two (RA hours, Dec deg) points — the
+    shared spherical-law-of-cosines helper (promoted from hub._ang_sep_deg)."""
+    ra1, ra2 = math.radians(ra1_h * 15.0), math.radians(ra2_h * 15.0)
+    d1, d2 = math.radians(dec1), math.radians(dec2)
+    cos_sep = (math.sin(d1) * math.sin(d2)
+               + math.cos(d1) * math.cos(d2) * math.cos(ra1 - ra2))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+
+
+def moon_radec(unix_time: float | None = None) -> tuple[float, float]:
+    """Apparent (RA hours, Dec degrees) of the Moon — low precision (≲0.5°).
+
+    Truncated lunar theory (Schlyter orbital elements + the main longitude /
+    latitude perturbation terms). Sufficient for a degrees-wide moon-separation
+    gate; the pure scheduler path stays astropy-free (one sky source = coords)."""
+    t = unix_time if unix_time is not None else time.time()
+    d = t / 86400.0 + 2440587.5 - 2451543.5      # days since 2000 Jan 0.0 (Schlyter epoch)
+
+    def rad(x: float) -> float:
+        return math.radians(x % 360.0)
+
+    # Moon orbital elements (degrees).
+    N = 125.1228 - 0.0529538083 * d              # long. ascending node
+    i = 5.1454                                    # inclination
+    w = 318.0634 + 0.1643573223 * d              # arg. of perigee
+    a = 60.2666                                   # mean distance (Earth radii)
+    e = 0.054900                                  # eccentricity
+    M = 115.3654 + 13.0649929509 * d             # mean anomaly
+    # Sun elements needed for perturbations.
+    Ms = 356.0470 + 0.9856002585 * d
+    ws = 282.9404 + 4.70935e-5 * d
+    Ls = (ws + Ms) % 360.0                        # Sun mean longitude
+    Lm = (N + w + M) % 360.0                       # Moon mean longitude
+    D = Lm - Ls                                    # mean elongation
+    F = Lm - N                                      # argument of latitude
+
+    # Eccentric anomaly (two iterations — ample at this precision).
+    Mr = rad(M)
+    E = Mr + e * math.sin(Mr) * (1.0 + e * math.cos(Mr))
+    for _ in range(2):
+        E = E - (E - e * math.sin(E) - Mr) / (1.0 - e * math.cos(E))
+
+    # Position in the orbital plane, then true anomaly + radius (Earth radii).
+    xv = a * (math.cos(E) - e)
+    yv = a * (math.sqrt(1.0 - e * e) * math.sin(E))
+    v = math.atan2(yv, xv)
+    r = math.hypot(xv, yv)
+
+    # Geocentric ecliptic rectangular coords.
+    vN, vi, vw = rad(N), math.radians(i), math.radians(w)
+    xh = r * (math.cos(vN) * math.cos(v + vw) - math.sin(vN) * math.sin(v + vw) * math.cos(vi))
+    yh = r * (math.sin(vN) * math.cos(v + vw) + math.cos(vN) * math.sin(v + vw) * math.cos(vi))
+    zh = r * (math.sin(v + vw) * math.sin(vi))
+
+    lon = math.degrees(math.atan2(yh, xh))
+    lat = math.degrees(math.atan2(zh, math.hypot(xh, yh)))
+
+    # Main perturbations (degrees) — Schlyter.
+    Dr, Mr2, Msr, Fr = rad(D), rad(M), rad(Ms), rad(F)
+    lon += (-1.274 * math.sin(Mr2 - 2 * Dr) + 0.658 * math.sin(2 * Dr)
+            - 0.186 * math.sin(Msr) - 0.059 * math.sin(2 * Mr2 - 2 * Dr)
+            - 0.057 * math.sin(Mr2 - 2 * Dr + Msr) + 0.053 * math.sin(Mr2 + 2 * Dr)
+            + 0.046 * math.sin(2 * Dr - Msr) + 0.041 * math.sin(Mr2 - Msr)
+            - 0.035 * math.sin(Dr) - 0.031 * math.sin(Mr2 + Msr)
+            - 0.015 * math.sin(2 * Fr - 2 * Dr) + 0.011 * math.sin(Mr2 - 4 * Dr))
+    lat += (-0.173 * math.sin(Fr - 2 * Dr) - 0.055 * math.sin(Mr2 - Fr - 2 * Dr)
+            - 0.046 * math.sin(Mr2 + Fr - 2 * Dr) + 0.033 * math.sin(Fr + 2 * Dr)
+            + 0.017 * math.sin(2 * Mr2 + Fr))
+
+    # Ecliptic -> equatorial.
+    lam, bet = math.radians(lon), math.radians(lat)
+    eps = math.radians(23.4393 - 3.563e-7 * d)
+    xe = math.cos(lam) * math.cos(bet)
+    ye = math.sin(lam) * math.cos(bet) * math.cos(eps) - math.sin(bet) * math.sin(eps)
+    ze = math.sin(lam) * math.cos(bet) * math.sin(eps) + math.sin(bet) * math.cos(eps)
+    ra = math.atan2(ye, xe)
+    dec = math.atan2(ze, math.hypot(xe, ye))
+    return (math.degrees(ra) % 360.0) / 15.0, math.degrees(dec)
+
+
+def moon_altaz(lat_deg: float, lon_deg: float,
+               unix_time: float | None = None) -> tuple[float, float]:
+    """The Moon's (altitude_deg, azimuth_deg) for a site."""
+    ra, dec = moon_radec(unix_time)
+    return altaz(ra, dec, lat_deg, lon_deg, unix_time)
+
+
+def moon_illumination(unix_time: float | None = None) -> float:
+    """Illuminated fraction of the Moon's disk, 0..1, from the geocentric
+    Sun–Moon elongation: k = (1 - cos elong)/2 (new=0, full=1)."""
+    sra, sdec = sun_radec(unix_time)
+    mra, mdec = moon_radec(unix_time)
+    elong = math.radians(angular_sep_deg(sra, sdec, mra, mdec))
+    return (1.0 - math.cos(elong)) / 2.0
+
+
 def dark_window(lat_deg: float, lon_deg: float,
                 unix_time: float | None = None,
                 sun_below_deg: float = -18.0) -> dict | None:
