@@ -86,6 +86,7 @@ export function deriveHealthIssues(input: {
   seqState?: SequenceState["state"];
   endReason?: string | null;
   wsConnected: boolean;
+  telemetryStale?: boolean;
 }): HealthIssue[] {
   const {
     safety,
@@ -99,6 +100,7 @@ export function deriveHealthIssues(input: {
     seqState,
     endReason,
     wsConnected,
+    telemetryStale,
   } = input;
   const issues: HealthIssue[] = [];
 
@@ -144,6 +146,12 @@ export function deriveHealthIssues(input: {
   }
 
   // ------------------------------------------------------- tier 1 (notice)
+  // Telemetry stale (UX-40): socket up but no status frame for a while, so every
+  // value on the dashboard is seconds old. Amber notice, matching the
+  // ConnectionBanner — so "Night looks OK" no longer contradicts it.
+  if (telemetryStale && wsConnected) {
+    issues.push({ tier: 1, icon: "clock", text: "Telemetry stale — values may be seconds old" });
+  }
   if (disk?.low && !disk.critical) {
     issues.push({
       tier: 1,

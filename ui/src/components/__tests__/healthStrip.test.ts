@@ -201,4 +201,16 @@ eq(
   eq(tiers(issues), [2, 1], "Act issues are pushed before Notice issues");
 }
 
+// --- tier 1: telemetry stale (UX-40) — socket up but values frozen ----------
+{
+  const issues = deriveHealthIssues({ safety: null, wsConnected: true, telemetryStale: true });
+  eq(tiers(issues), [1], "telemetry stale (socket up) is Notice (tier 1)");
+  eq(issues[0].text.includes("stale"), true, "telemetry-stale issue text says stale");
+}
+eq(
+  tiers(deriveHealthIssues({ safety: null, wsConnected: false, telemetryStale: true })),
+  [2],
+  "link down suppresses the telemetry-stale notice — only Link-down surfaces (no double signal)",
+);
+
 console.log("healthStrip.test.ts: all assertions passed");
