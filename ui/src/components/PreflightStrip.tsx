@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { api } from "../api";
-import { useStore, useStatus, useSite } from "../store";
+import { useStore, useStatus, useSite, useMasters } from "../store";
 import type { CheckItem, PreflightAlt, SequencePlan, SiteInfo } from "../types";
 import { buildPreflight, preflightVerdict, type PreflightActions } from "../lib/preflight";
 import { Checklist } from "./Checklist";
@@ -148,14 +148,21 @@ export function usePreflight(plan: SequencePlan, actions: PreflightActions = {})
   // Altitude is polled through a shared, de-duped poller so the view + strip +
   // modal (all calling usePreflight concurrently) drive a single fetch loop.
   const altById = useSharedAltById(plan, site);
+  // Built master calibration frames feed the (PRO-1) coverage row. Fetched once
+  // on mount; the Calibration panel re-fetches after a build/delete so the row
+  // stays in sync. The store getter keeps this out of the render-deps.
+  const masters = useMasters();
+  useEffect(() => {
+    void useStore.getState().loadMasters();
+  }, []);
 
   // Keep actions stable-ish without forcing callers to memoize: stash in a ref.
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
 
   const items = useMemo(
-    () => buildPreflight(status, plan, site, altById, actionsRef.current),
-    [status, plan, site, altById],
+    () => buildPreflight(status, plan, site, altById, actionsRef.current, masters),
+    [status, plan, site, altById, masters],
   );
   const verdict = useMemo(() => preflightVerdict(items), [items]);
 

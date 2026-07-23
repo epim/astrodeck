@@ -12,6 +12,7 @@ import type {
   Target,
 } from "../types";
 import { isExposureValueInvalid } from "./exposure";
+import { planCalibrationGaps, type MasterRow } from "./calibrationLibrary";
 
 /** In-place fix callbacks the readiness rows can invoke without leaving the view. */
 export interface PreflightActions {
@@ -44,6 +45,7 @@ export function buildPreflight(
   site: SiteInfo,
   altById: Record<string, PreflightAlt | undefined>,
   actions: PreflightActions = {},
+  masters: MasterRow[] = [],
 ): CheckItem[] {
   const items: CheckItem[] = [];
   const lights = lightTargets(plan);
@@ -177,6 +179,27 @@ export function buildPreflight(
           detail: { value: `wheel missing: ${missing.join(", ")}` },
         });
     }
+  }
+
+  // --- calibration (PRO-1) --- coverage of the plan's lights against the built
+  // master library. Skipped when no masters exist (never nag an empty library —
+  // D4) or the plan has no lights. A gap is a non-blocking WARN (the modal
+  // defaults to "Run anyway"); a missing master never prevents a run. Mirrors
+  // matcher.py via planCalibrationGaps (Open Decision D3) so the row re-checks
+  // live as the plan is edited, using the CalibrationConfig defaults.
+  const lightsForCal = lightTargets(plan);
+  if (masters.length === 0 || lightsForCal.length === 0)
+    push("calibration", "Calibration", "skipped");
+  else {
+    const { missing } = planCalibrationGaps(plan, masters, {
+      exposureTolPct: 5,
+      tempTolC: 2,
+    });
+    if (missing.length === 0) push("calibration", "Calibration", "ok");
+    else
+      push("calibration", "Calibration", "warn", {
+        detail: { value: `no ${missing.join(" · ")}` },
+      });
   }
 
   // --- exposure --- (F-P0.1 follow-up: a 0/negative/absurd per-step exposure
