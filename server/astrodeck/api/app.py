@@ -66,6 +66,8 @@ from ..devices.nina import discover_nina
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
+from ..imaging import build_caption, compose_share_jpeg, fmt_share_date
+from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles
 from ..rotation import angle_equals, map_sky_target, mod360
@@ -2551,6 +2553,29 @@ def create_app() -> FastAPI:
         return Response(png, media_type="image/png", headers={
             **_PREVIEW_CACHE,
             "Content-Disposition": f'attachment; filename="preview_{preview_id}.png"'})
+
+    @app.get("/api/preview/{preview_id}/share.jpg", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def preview_share(preview_id: int, target: str = "", subs: int = 0):
+        """Captioned, phone-sized shareable JPEG of this frame (NOV-11).
+
+        Composites a caption band (target · exposure×count · date) onto the
+        already-stretched display bytes. Caption carries NO location — target,
+        exposure, count, gain and date only."""
+        entry = hub.previews.get(preview_id)
+        if entry is None:
+            raise HTTPException(404, "preview expired")
+        m = entry.meta
+        date_str = fmt_share_date(m.get("ts") or time.time())
+        title, detail = build_caption(
+            target or None, m.get("exposure_s", 0.0),
+            subs or None, date_str, m.get("gain"))
+        base = entry.lossless or entry.display
+        jpeg, _w, _h = await asyncio.to_thread(compose_share_jpeg, base, title, detail)
+        safe = sanitize_component(target, "loose") or f"preview_{preview_id}"
+        return Response(jpeg, media_type="image/jpeg", headers={
+            **_PREVIEW_CACHE,
+            "Content-Disposition": f'attachment; filename="firstlight_{safe}.jpg"'})
 
     @app.get("/api/preview/{preview_id}/crop", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
