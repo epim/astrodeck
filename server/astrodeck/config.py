@@ -341,6 +341,23 @@ DEC_GUIDE_ALGORITHMS: tuple[str, ...] = (
 DEC_GUIDE_MODES: tuple[str, ...] = ("auto", "north", "south", "off")
 
 
+class GuideAxisParams(BaseModel):
+    """Per-axis algorithm-tunable overrides (PRO-12 Tier 2 / T6). Every field is
+    optional-``None``: ``None`` means "not pinned", so the Rust engine's own
+    per-algorithm default constant applies (dossier §15) — mirrors the
+    ``AxisAlgoParams`` carrier on the Rust side (open decision #2). Forwarded
+    verbatim (as a sub-dict, ``exclude_none``) to the ``astrodeck_native``
+    wheel by ``guide/native.py::guide_algo_config``; the wheel's PyO3 parser
+    ignores keys it doesn't recognize, so this is safe to forward even before
+    a wheel rebuild picks up the new engine-side fields."""
+    min_move: float | None = None
+    aggression: float | None = None
+    hysteresis: float | None = None
+    slope_weight: float | None = None
+    aggressiveness: float | None = None
+    exp_factor: float | None = None
+
+
 class GuideConfig(BaseModel):
     ra_algorithm: str = "hysteresis"       # DefaultRaGuideAlgorithm (dossier §6/§17)
     dec_algorithm: str = "resist_switch"   # DefaultDecGuideAlgorithm (dossier §6/§17)
@@ -349,6 +366,10 @@ class GuideConfig(BaseModel):
     # only the persisted-config + validation layer was missing. No Rust change.
     dec_guide_mode: str = "auto"           # DecMode default (engine.rs:168)
     blc_pulse_ms: int = 0                  # EngineConfig.blc_pulse_ms default (engine.rs:171)
+    # PRO-12 Tier 2 (T6): per-axis algorithm-tunable overrides, all-None by
+    # default so an unset config round-trips byte-identical (no params sent).
+    ra_params: GuideAxisParams = GuideAxisParams()
+    dec_params: GuideAxisParams = GuideAxisParams()
 
 
 class RotatorConfig(BaseModel):
@@ -844,6 +865,20 @@ class ConfigStore:
         # ceiling the client's clampBlcPulse enforces, so a value that skips the
         # UI still can't reach the engine out of range.
         guide.blc_pulse_ms = max(0, min(10000, int(guide.blc_pulse_ms)))
+        # PRO-12 Tier 2 (T6, open decision #3): clamp each PRESENT per-axis
+        # tunable to the engine's own bounds — defense in depth, the Rust
+        # ``new()`` constructors clamp again authoritatively. A param left
+        # ``None`` (not pinned) stays ``None`` so the engine's per-algorithm
+        # default constant applies.
+        for axis_params in (guide.ra_params, guide.dec_params):
+            if axis_params.aggression is not None:
+                axis_params.aggression = max(0.0, min(2.0, axis_params.aggression))
+            if axis_params.hysteresis is not None:
+                axis_params.hysteresis = max(0.0, min(0.99, axis_params.hysteresis))
+            for field in ("min_move", "slope_weight", "aggressiveness", "exp_factor"):
+                value = getattr(axis_params, field)
+                if value is not None:
+                    setattr(axis_params, field, max(0.0, value))
         cfg = self.cfg()
         cfg.guide = guide
         return self.bump_and_save()
