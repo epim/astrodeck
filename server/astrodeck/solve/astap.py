@@ -10,7 +10,9 @@ import math
 import os
 from pathlib import Path
 
-from .base import PlateSolver, SolveResult
+from astropy.io import fits
+
+from .base import PlateSolver, SolveResult, WcsSolution
 
 # The command-line build is named `astap_cli` (ASTAP docs: it "can be renamed
 # to astap"), so search both names on every OS. ASTAP_PATH overrides all of this.
@@ -86,6 +88,57 @@ def _solve_args(exe: str, fits_path: Path, ra_hint: float | None,
     return args
 
 
+def _read_ini(ini_path: Path) -> dict[str, str]:
+    kv: dict[str, str] = {}
+    for line in ini_path.read_text().splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            kv[k.strip()] = v.strip()
+    return kv
+
+
+def _wcs_from_astap(ini_path: Path, wcs_path: Path) -> "WcsSolution | None":
+    """Build a WcsSolution from ASTAP's result files. Prefers the `.wcs`
+    headerlet (a text FITS header) parsed with astropy; falls back to the `.ini`
+    numerics. Returns None on ANY failure — a WCS-parse error must never fail the
+    solve. Mirrors the `_solve_args` pattern: pure + subprocess-free, so it is
+    unit-testable from fixture files."""
+    try:
+        if wcs_path.exists():
+            h = fits.Header.fromtextfile(str(wcs_path))
+            def _f(key):
+                return float(h[key]) if key in h else None
+            sol = WcsSolution(
+                crval1=float(h["CRVAL1"]), crval2=float(h["CRVAL2"]),
+                crpix1=float(h["CRPIX1"]), crpix2=float(h["CRPIX2"]),
+                cd11=_f("CD1_1"), cd12=_f("CD1_2"),
+                cd21=_f("CD2_1"), cd22=_f("CD2_2"),
+                cdelt1=_f("CDELT1"), cdelt2=_f("CDELT2"), crota2=_f("CROTA2"),
+                ctype1=str(h.get("CTYPE1", "RA---TAN")),
+                ctype2=str(h.get("CTYPE2", "DEC--TAN")))
+        else:
+            kv = _read_ini(ini_path)
+            if "CRVAL1" not in kv or "CRPIX1" not in kv:
+                return None
+            def _g(key):
+                return float(kv[key]) if key in kv else None
+            sol = WcsSolution(
+                crval1=float(kv["CRVAL1"]), crval2=float(kv["CRVAL2"]),
+                crpix1=float(kv["CRPIX1"]), crpix2=float(kv["CRPIX2"]),
+                cd11=_g("CD1_1"), cd12=_g("CD1_2"),
+                cd21=_g("CD2_1"), cd22=_g("CD2_2"),
+                cdelt1=_g("CDELT1"), cdelt2=_g("CDELT2"), crota2=_g("CROTA2"))
+        # A reference point with no scale (no CD*, no CDELT*) is a bogus WCS —
+        # astropy reads it back as a silent 1 deg/pixel solution. Treat it as
+        # unsolved rather than let a wrong astrometric scale reach a saved light
+        # (spec §8: a wrong value is worse than an absent card).
+        if sol.cd11 is None and sol.cdelt1 is None:
+            return None
+        return sol
+    except Exception:
+        return None
+
+
 def find_astap() -> str | None:
     env = os.environ.get("ASTAP_PATH")
     if env and Path(env).exists():
@@ -118,16 +171,15 @@ class AstapSolver(PlateSolver):
             return SolveResult(False, message="ASTAP timed out")
 
         ini = fits_path.with_suffix(".ini")
+        wcs_path = fits_path.with_suffix(".wcs")
         if not ini.exists():
             return SolveResult(False, message="ASTAP produced no result file")
-        kv = {}
-        for line in ini.read_text().splitlines():
-            if "=" in line:
-                k, _, v = line.partition("=")
-                kv[k.strip()] = v.strip()
+        kv = _read_ini(ini)
+        # Capture the full WCS from the .wcs headerlet BEFORE deleting the files.
+        wcs = _wcs_from_astap(ini, wcs_path)
         try:
             ini.unlink()
-            fits_path.with_suffix(".wcs").unlink(missing_ok=True)
+            wcs_path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -139,7 +191,7 @@ class AstapSolver(PlateSolver):
         scale = abs(float(kv.get("CDELT2", 0))) * 3600
         return SolveResult(True, ra_hours=ra_deg / 15.0, dec_deg=dec_deg,
                            rotation_deg=rot, pixel_scale_arcsec=scale,
-                           message="solved by ASTAP")
+                           wcs=wcs, message="solved by ASTAP")
 
     @staticmethod
     def _fov_from_scale(scale_arcsec: float, height_px: int) -> float:

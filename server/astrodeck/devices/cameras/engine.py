@@ -20,6 +20,13 @@ from ..base import Camera, CameraFrame, DeviceError
 from .adapter import ROI, CameraAdapter
 
 
+def _egain_from_caps(caps) -> float | None:
+    """e-/ADU from the adapter's capability extras (Player One + ZWO both set
+    extra['egain']); None when unavailable."""
+    eg = caps.extra.get("egain") if (caps and getattr(caps, "extra", None)) else None
+    return float(eg) if eg else None
+
+
 class NativeCamera(Camera):
     #: extra wall-clock beyond the requested exposure before imageready is a
     #: timeout (download + USB latency). Matches the Alpaca margin family.
@@ -101,7 +108,8 @@ class NativeCamera(Camera):
             data=data, exposure_s=seconds, gain=gain, offset=offset,
             binning=binning, bayer_pattern=caps.bayer_pattern,
             temperature_c=temp, timestamp=time.time(),
-            full_well=caps.max_adu, data_is_linear=True)
+            full_well=caps.max_adu, data_is_linear=True,
+            egain_e_per_adu=_egain_from_caps(caps))
 
     @staticmethod
     def _shape(raw: bytes, roi: ROI, caps) -> np.ndarray:

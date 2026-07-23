@@ -51,6 +51,34 @@ def format_dec(deg: float) -> str:
     return f"{sign}{d:02d}° {m:02d}' {s:04.1f}\""
 
 
+def format_ra_fits(hours: float) -> str:
+    """FITS OBJCTRA convention: space-separated 'HH MM SS.s' (J2000)."""
+    total = (hours % 24.0) * 3600.0            # seconds of time
+    h = int(total // 3600)
+    m = int((total % 3600) // 60)
+    s = total % 60.0
+    return f"{h:02d} {m:02d} {s:04.1f}"
+
+
+def format_dec_fits(deg: float) -> str:
+    """FITS OBJCTDEC convention: space-separated '+DD MM SS' (J2000)."""
+    sign = "-" if deg < 0 else "+"
+    total = int(round(abs(deg) * 3600.0))      # arcsec, rollover-safe
+    d, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f"{sign}{d:02d} {m:02d} {s:02d}"
+
+
+def airmass(alt_deg: float) -> float | None:
+    """Relative optical airmass from apparent altitude, Kasten & Young (1989).
+    Returns None at or below the horizon (the formula diverges) so the caller
+    omits the AIRMASS card rather than write a bogus value."""
+    if alt_deg is None or alt_deg <= 0.0:
+        return None
+    h = float(alt_deg)
+    return 1.0 / (math.sin(math.radians(h)) + 0.50572 * (6.07995 + h) ** -1.6364)
+
+
 def lst_hours(longitude_deg: float, unix_time: float | None = None) -> float:
     """Local sidereal time in hours (good to ~1s, fine for goto/transit UX)."""
     t = unix_time if unix_time is not None else time.time()

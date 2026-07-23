@@ -77,6 +77,10 @@ class Optics(BaseModel):
     # image_scale_arcsec so on-sky RMS is reported in true arcsec instead of the
     # 1.0 "/px badge default. Validated > 0 when present.
     guide_focal_length_mm: float | None = Field(default=None, gt=0, le=20000)
+    # TELESCOP source (PRO-2 F-B, supervisor ruling 1): the optical tube's name.
+    # Written to the FITS TELESCOP card when set, omitted when blank. NOT the
+    # mount device name (a wrong string pollutes stacker grouping).
+    telescope_name: str = ""
 
 
 # ------------------------------------------------------- automation (Batch 4b)
@@ -487,6 +491,9 @@ class AppConfig(BaseModel):
     naming: NamingConfig = Field(default_factory=NamingConfig)
     # --- calibration master library (PRO-1; appended — old configs load fine) ---
     calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
+    # --- opt-in re-solve-free astrometry (PRO-2 F-B, supervisor ruling 4;
+    #     appended — old configs load fine) ---
+    solve_saved_lights: bool = False   # ON => solve each saved light in place, stamp WCS
 
 
 # ------------------------------------------------------- filter slot-name store

@@ -36,6 +36,7 @@ from .devices.nina import build_nina_rig, pick as nina_pick
 from .events import bus
 from .guide import Guider, PHD2Guider
 from .imaging import (
+    FrameMeta,
     auto_levels,
     cloud_score,
     compute_histogram,
@@ -49,6 +50,7 @@ from .imaging import (
     to_jpeg,
     to_png,
     to_thumb,
+    write_wcs,
 )
 from .imaging.processing import frame_stats
 from .polar import PolarAlignSession
@@ -970,6 +972,7 @@ class Hub:
             src = "none"
         return {
             "focal_length_mm": o.focal_length_mm,
+            "telescope_name": o.telescope_name,
             "pixel_size_um": px,
             "sensor_width_px": int(w),
             "sensor_height_px": int(h),
@@ -1416,6 +1419,89 @@ class Hub:
                                "using raw coordinates", "mount")
             return ra_hours, dec_deg
 
+    async def _frame_meta(self, frame, ra_hours: float | None,
+                          dec_deg: float | None) -> "FrameMeta":
+        """Best-effort telemetry snapshot for the FITS header (spec §8/§9). Every
+        read is individually guarded: an absent/hung device or a failed read
+        leaves its value None (its card omitted) and never blocks or fails the
+        save. Only Hub.capture builds this; save_fits stays device-free."""
+        from .catalog import coords
+        meta = FrameMeta()
+        # optics (config; FOCALLEN always available, pixel size only when known)
+        try:
+            opt = self.effective_optics()
+            fl = opt.get("focal_length_mm")
+            if fl:
+                meta.focal_length_mm = float(fl)
+            if opt.get("have_optics") and opt.get("pixel_size_um"):
+                meta.pixel_size_um = float(opt["pixel_size_um"])   # UNBINNED
+        except Exception:
+            pass
+        # site (only when a real, non-default site is configured)
+        lat = lon = None
+        try:
+            s = self.site
+            if not s.get("is_default", True):
+                lat, lon = float(s["latitude"]), float(s["longitude"])
+                meta.site_lat_deg, meta.site_lon_deg = lat, lon
+                meta.site_elev_m = float(s.get("elevation_m", 0.0))
+        except Exception:
+            lat = lon = None
+        # pointing geometry (needs J2000 RA/Dec; alt/airmass also need a real site)
+        if ra_hours is not None and dec_deg is not None:
+            try:
+                meta.objctra = coords.format_ra_fits(ra_hours)
+                meta.objctdec = coords.format_dec_fits(dec_deg)
+            except Exception:
+                pass
+            if lat is not None and lon is not None:
+                try:
+                    alt, _az = coords.altaz(ra_hours, dec_deg, lat, lon,
+                                            frame.timestamp)
+                    if alt > 0:
+                        meta.obj_alt_deg = alt
+                        meta.airmass = coords.airmass(alt)
+                except Exception:
+                    pass
+        # cooler setpoint (only when a cooler is present AND on)
+        try:
+            cam = self.devices.get("camera")
+            getc = getattr(cam, "get_cooler", None)
+            if callable(getc):
+                cooler = await getc()
+                if cooler and cooler.get("on") and cooler.get("target_c") is not None:
+                    meta.set_temp_c = float(cooler["target_c"])
+        except Exception:
+            pass
+        # focuser position + optional thermometer
+        try:
+            foc = self.devices.get("focuser")
+            if foc and getattr(foc, "connected", False):
+                meta.focuser_pos = int(await foc.get_position())
+                t = await foc.get_temperature()
+                if t is not None:
+                    meta.focuser_temp_c = float(t)
+        except Exception:
+            pass
+        # rotator sky position angle
+        try:
+            rot = self.devices.get("rotator")
+            if rot and getattr(rot, "connected", False):
+                meta.rotator_angle_deg = float(await rot.get_position())
+        except Exception:
+            pass
+        # EGAIN (populated on the frame by the backend in Task 5; getattr keeps
+        # this task decoupled from that field's existence)
+        eg = getattr(frame, "egain_e_per_adu", None)
+        if eg:
+            meta.egain_e_per_adu = float(eg)
+        # quality (already measured on the frame)
+        if frame.hfr is not None:
+            meta.hfr = float(frame.hfr)
+        if frame.stars is not None:
+            meta.star_count = int(frame.stars)
+        return meta
+
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
                       frame_type: str = "Light") -> dict:
@@ -1453,15 +1539,33 @@ class Hub:
             if tel and tel.connected:
                 try:
                     ra, dec = await tel.get_position()
+                    # Bring a JNOW Alpaca mount's report to J2000 (the frame ASTAP
+                    # and the catalog use); no-op for sim/NINA. Best-effort guarded
+                    # (supervisor ruling 3).
+                    if ra is not None:
+                        ra, dec = await self.from_mount_frame(tel, ra, dec)
                 except Exception:
                     pass
+            # Gather header telemetry (best-effort; never fails the save) and the
+            # OTA name for TELESCOP (omitted when blank). Wrapping the whole meta
+            # build keeps spec §9 (a header write never fails a capture) structural,
+            # not dependent on CameraFrame's field set staying non-raising.
+            try:
+                meta = await self._frame_meta(frame, ra, dec)
+            except Exception:
+                meta = FrameMeta()
+            try:
+                telescope_name = (self.effective_optics().get("telescope_name")
+                                  or "").strip()
+            except Exception:
+                telescope_name = ""
             # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
             # freezes the event loop for seconds every frame (WS/preview stall,
             # queued guide events, delayed STOP) — same as solve_and_sync's write.
             await asyncio.to_thread(
                 save_fits, frame, local_save_path, target=target, filter_name=filt,
                 frame_type=frame_type, ra_hours=ra, dec_deg=dec,
-                instrument=cam.name)
+                telescope=telescope_name, instrument=cam.name, meta=meta)
             # carry the path on the frame so _publish_preview reports a correct
             # saved_path/saved_local in the very first event (no stale re-publish).
             frame.saved_path = str(local_save_path)
@@ -1476,6 +1580,26 @@ class Hub:
                 bus.log("info", "NINA saved the frame", "capture")
         elif local_save_path is not None:
             bus.log("info", f"saved {local_save_path.name}", "capture")
+
+        # Opt-in (default OFF): AFTER the preview has published (so the solve's
+        # 1-10 s never delays what the user sees), solve the saved light in place
+        # and stamp its WCS so downstream stackers need no re-solve. Guarded on
+        # local_save_path (a local save ran => ra/dec are bound). Best-effort — a
+        # solve failure/timeout must never fail the capture (spec §6.3/§9).
+        if local_save_path is not None and config_store.cfg().solve_saved_lights:
+            try:
+                from . import providers as _providers
+                solver = _providers.pick_solver(self)
+                fov_hint = self.effective_optics().get("fov_h_deg") or None
+                res = await solver.solve(local_save_path, ra_hint=ra,
+                                         dec_hint=dec, fov_deg_hint=fov_hint)
+                if res.success and res.wcs is not None:
+                    await asyncio.to_thread(write_wcs, local_save_path, res.wcs)
+                    bus.log("info", f"stamped WCS on {local_save_path.name}", "solve")
+            except Exception as e:  # noqa: BLE001 - never fail the capture
+                bus.log("warning",
+                        f"solve-saved-light failed ({e}); frame saved without WCS",
+                        "solve")
         return info
 
     def _preview_source(self) -> str:
