@@ -29,6 +29,7 @@ import BackendLinkGrid from "./BackendLinkGrid";
 import DriversPanel from "./DriversPanel";
 import SitePanel from "./SitePanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
+import NamingPanel from "./NamingPanel";
 import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
 import AccountPanel from "./AccountPanel";
@@ -165,6 +166,7 @@ export default function SettingsView(): JSX.Element {
             <SitePanel />
             {canSeePrecise && <WeatherPanel />}
             <SkyAtlasPanel />
+            <NamingPanel />
           </div>
           <div className="order-1 lg:order-2 flex flex-col gap-4">
             <Panel title="Connection Status">
