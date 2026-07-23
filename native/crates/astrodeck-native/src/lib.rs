@@ -39,7 +39,7 @@ use astro_focus::{
     AfMethod, BacklashModel, CurveFitting, FailReason, FitOutcome, FocusConfig, Step,
 };
 use astro_guide::calibration::{default_calibration_distance, DecMode};
-use astro_guide::engine::{AlgoKind, EngineConfig, ScopePointing};
+use astro_guide::engine::{AlgoKind, AxisAlgoParams, EngineConfig, ScopePointing};
 use astro_guide::select::{auto_find, saturation_threshold, SelectParams};
 use astro_guide::starfind::FindParams;
 use astro_guide::transforms::{Cal, Parity, PierSide};
@@ -979,6 +979,28 @@ fn dict_to_cal(d: &Bound<'_, PyDict>) -> PyResult<Cal> {
     })
 }
 
+/// Parse an optional per-axis algorithm-parameter sub-dict (Tier 2) into an
+/// [`AxisAlgoParams`]. A missing or `None` sub-dict yields
+/// [`AxisAlgoParams::default`] (every field `None`), which the engine
+/// reconstructs at each algorithm's dossier §15 default — the no-regression
+/// invariant. Each present key is read as an optional `f64`; range validation
+/// is deliberately NOT done here — the engine's clamping constructors
+/// (astro-guide `make_algo`) own the clamp/fallback so the Rust and Python
+/// layers cannot disagree on it.
+fn parse_axis_params(d: &Bound<'_, PyDict>, key: &str) -> PyResult<AxisAlgoParams> {
+    let Some(sub) = get_opt::<Bound<'_, PyDict>>(d, key)? else {
+        return Ok(AxisAlgoParams::default());
+    };
+    Ok(AxisAlgoParams {
+        min_move: get_opt::<f64>(&sub, "min_move")?,
+        aggression: get_opt::<f64>(&sub, "aggression")?,
+        hysteresis: get_opt::<f64>(&sub, "hysteresis")?,
+        slope_weight: get_opt::<f64>(&sub, "slope_weight")?,
+        aggressiveness: get_opt::<f64>(&sub, "aggressiveness")?,
+        exp_factor: get_opt::<f64>(&sub, "exp_factor")?,
+    })
+}
+
 /// Build an [`EngineConfig`] from a `config` dict (snake_case field names;
 /// missing keys take the dossier §15 defaults from [`EngineConfig::default`]).
 /// `image_scale_arcsec`, when present, derives `cal.calibration_distance` via
@@ -1038,6 +1060,11 @@ fn build_engine_config(d: &Bound<'_, PyDict>) -> PyResult<EngineConfig> {
     if let Some(s) = get_opt::<String>(d, "dec_guide_mode")? {
         c.dec_guide_mode = parse_dec_mode(&s)?;
     }
+
+    // Tier 2: optional per-axis algorithm-parameter sub-dicts. Absent => each
+    // stays AxisAlgoParams::default() (all None) from EngineConfig::default().
+    c.ra_params = parse_axis_params(d, "ra_params")?;
+    c.dec_params = parse_axis_params(d, "dec_params")?;
 
     Ok(c)
 }
