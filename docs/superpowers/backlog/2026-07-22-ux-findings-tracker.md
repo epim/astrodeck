@@ -248,7 +248,7 @@ direction arrows, and typography (`−°″×·`, inline `⚠` in text banners).
 
 The tracker's "second-round gaps" reviewed as first-class surfaces (Settings, Monitor, Preview +
 capability-discovery + relay recovery), adversarial refute-by-default verify. **12 confirmed, all
-NEW** (none overlap UX-01..37). **Not yet fixed.** Several are the same *classes* the first round
+NEW** (none overlap UX-01..37). **All 12 FIXED + pushed 2026-07-22** (commits below). Several are the same *classes* the first round
 fixed, now on the un-reviewed surfaces (capability-discovery like UX-27; honest-disabled; night-mode
 `window.prompt`; honest-state).
 
@@ -269,6 +269,8 @@ fixed, now on the un-reviewed surfaces (capability-discovery like UX-27; honest-
 
 **Refuted (3):** cooler setpoint `[-60,40]` (intentional, commented UX-28 rationale; no device field exists to drive it);
 relay HELLO_ACK "hot-loop" (the redial DOES back off to a 15s cap — the finding's mechanism was wrong); + one preview edge case.
+
+**Fixes shipped (2026-07-22, UI-only, all tsc-b clean):** Settings `d23964b` (UX-38 effectiveArmed=avoidance&&cone>0 + cone-0 banner / UX-39 themed masked reset / UX-45 self-demote hold-confirm) · Monitor `26e00f7` (UX-40 telemetryStale→deriveHealthIssues +test / UX-41 sendControl client toast / UX-46 RmsVerdict stale / UX-47 44px) · Preview `fe5cfda` (UX-42 `download` attr / UX-48 JPEG-only copy / UX-49 honest-disabled) · Capture+Header `b57ba6d` (UX-43 gainInvalid guard / UX-44 warn-not-alarm LINK LED). No backend changes.
 
 ## Review results — 2026-07-21 (multi-lens workflow: 57 agents, 47 raised → 35 confirmed / 12 refuted)
 
