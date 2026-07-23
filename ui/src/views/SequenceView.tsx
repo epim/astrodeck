@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import { useStore, useAtlasBannerPending, useLastReportId, defaultSchedule } from "../store";
+import {
+  useStore, useAtlasBannerPending, useLastReportId, defaultSchedule,
+  usePhotometry, usePreview,
+} from "../store";
 import { HoldButton, IconButton, InfoDot, Panel, Toggle } from "../components/ui";
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import SessionsPanel from "../components/sequence/SessionsPanel";
@@ -19,6 +22,10 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import { fmtTime } from "../lib/visibility";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { EXPOSURE_MAX_S, isExposureValueInvalid } from "../lib/exposure";
+import {
+  integrationByFilter, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
+  subLengthVerdict, type SubVerdict,
+} from "../lib/photometry";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
@@ -97,6 +104,21 @@ export default function SequenceView() {
   // default as the /api/visibility route + VisibilityPanel).
   const site = useStore((s) => s.site);
   const altLimit = site?.horizon_min_deg ?? 30;
+  // PRO-6 sky-limited step advisory (photometry/SNR design §3 Task 5): read once
+  // here (not per-step) — the tested photometry.ts core does the math, this view
+  // only renders it. Additive display only; never touches run/plan totals.
+  const photometryProfile = usePhotometry();
+  const livePreview = usePreview();
+  const stepSkyLimitedS = (livePreview && livePreview.data_is_linear &&
+      photometryProfile.egain > 0 && photometryProfile.readNoiseE > 0)
+    ? skyLimitedSubSeconds(
+        photometryProfile.readNoiseE,
+        skyRateEPerSec(
+          skyElectronsPerSub(livePreview.stats.median, photometryProfile.biasAdu, photometryProfile.egain),
+          livePreview.exposure_s,
+        ),
+      )
+    : null;
   // Atlas hand-off: the store holds `atlasBannerPending` (the panel count of the
   // latest Send) so the one-shot "N panels added from Atlas" banner survives this
   // view's remount-on-nav. Dismiss clears the store flag. Store-held (not a useRef
@@ -687,6 +709,22 @@ export default function SequenceView() {
                     </button>
                   </div>
                 </div>
+                {/* PRO-6 per-filter projected integration (photometry/SNR design §3
+                    Task 5): a read-only rollup of this target's own steps via the
+                    tested integrationByFilter core. Hidden when the target has no
+                    steps yet. */}
+                {t.steps.length > 0 && (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mono text-[10px] text-dim">
+                    {integrationByFilter(t.steps).map((f) => {
+                      const min = f.seconds / 60;
+                      return (
+                        <span key={f.filter}>
+                          {f.filter} {Math.floor(min / 60)}h {Math.round(min % 60)}m
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
                 {/* Starter templates (NOV-5): one-tap exposure recipes for first-timers.
                     Always visible on each target card; run-locked like +step/delete. */}
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -713,8 +751,21 @@ export default function SequenceView() {
                     // guard since CAP-02-gemini/R3-CAP-02; the step editor didn't).
                     // Same bounds as CaptureView, via the shared lib/exposure.ts helper.
                     const stepExposureInvalid = isExposureValueInvalid(s.exposure_s);
+                    // PRO-6 sky-limited advisory (photometry/SNR design §3 Task 5):
+                    // compares THIS step's own exposure_s against the single
+                    // preview-derived sky-limited length (stepSkyLimitedS, computed
+                    // once above from the live preview + profile) — same rollup the
+                    // whole card shares, not a per-step sky measurement. Gated to
+                    // Light frames only (a "sky-limited" verdict is meaningless for
+                    // Dark/Flat/Bias). "unknown" (no preview/profile) renders nothing
+                    // — never a misleading chip.
+                    const isLightStep = (s.frame_type ?? "Light") === "Light";
+                    const stepVerdict: SubVerdict = isLightStep
+                      ? subLengthVerdict(s.exposure_s, stepSkyLimitedS)
+                      : "unknown";
                     return (
-                    <div key={s.id ?? si} className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 items-center">
+                    <div key={s.id ?? si} className="flex flex-col gap-0.5">
+                    <div className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 items-center">
                       <select className="field !py-1" title="frame type"
                         value={s.frame_type ?? "Light"}
                         onChange={(e) => patchStep(ti, si, { frame_type: e.target.value })}>
@@ -756,6 +807,18 @@ export default function SequenceView() {
                           <span aria-hidden className="text-xl leading-none">−</span>
                         </button>
                       </div>
+                    </div>
+                    {stepVerdict === "too_short" && (
+                      <p className="text-[10px] text-warn pl-1">
+                        read-noise limited · sky-limited ≈ {Math.round(stepSkyLimitedS!)}s
+                      </p>
+                    )}
+                    {stepVerdict === "good" && (
+                      <p className="text-[10px] text-dim pl-1">✓ sky-limited</p>
+                    )}
+                    {stepVerdict === "long" && (
+                      <p className="text-[10px] text-dim pl-1">longer than needed</p>
+                    )}
                     </div>
                     );
                   })}

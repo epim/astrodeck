@@ -33,9 +33,14 @@ import {
   useProviders,
   useWeather,
   useStore,
+  usePhotometry,
 } from "../store";
 import { Panel, Stat, EmptyState } from "../components/ui";
 import { Icon } from "../components/icons";
+import {
+  subNoise, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
+  subLengthVerdict, moreSubsForSnrMultiple,
+} from "../lib/photometry";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
@@ -118,6 +123,9 @@ export default function MonitorView() {
   const bootConnectFailed = useBootConnectFailed();
   const providers = useProviders();
   const setView = useStore((s) => s.setView);
+  // PRO-6 "Sub quality" tile (photometry/SNR design §3 Task 6) — reads the same
+  // tested photometry.ts core as Capture's Suggest + Sequence's advisory chips.
+  const photometryProfile = usePhotometry();
   // VIEWER-READ-ONLY (W2.5): the Monitor is a glance dashboard; its only writes are
   // Pause/Resume/Abort. Those hit the same /api/sequence/{pause,resume,abort}
   // routes as SequenceView's run controls, which require control.mount (a
@@ -155,6 +163,21 @@ export default function MonitorView() {
   // ----- ETA anchor: store {eta_s, receivedAt} on each new sequence frame so the
   // LiveTimer derives finish from one client clock (resolves C11/B4). -----
   const progress = seq.progress;
+  // PRO-6 "Sub quality" (Task 6): computed once per render from the live preview
+  // + profile, gated below on data_is_linear + a non-empty profile so a NINA
+  // (decoded, non-linear) frame or an inert profile never produces a chip.
+  const subQualityLinear = !!preview && preview.data_is_linear;
+  const subQualityProfileFilled = photometryProfile.egain > 0 && photometryProfile.readNoiseE > 0;
+  const subQuality = (subQualityLinear && subQualityProfileFilled && preview)
+    ? (() => {
+        const skyE = skyElectronsPerSub(preview.stats.median, photometryProfile.biasAdu, photometryProfile.egain);
+        const noise = subNoise(skyE, photometryProfile.readNoiseE);
+        const skyLimitedS = skyLimitedSubSeconds(
+          photometryProfile.readNoiseE, skyRateEPerSec(skyE, preview.exposure_s));
+        const verdict = subLengthVerdict(preview.exposure_s, skyLimitedS);
+        return { noise, skyLimitedS, verdict };
+      })()
+    : null;
   const etaAnchorRef = useRef<{ etaS?: number; receivedAtMs: number }>({ receivedAtMs: Date.now() });
   const lastEtaSentinel = useRef<number | null>(null);
   // Re-anchor when the server emits a fresh frame (server_now_ms changes) or eta.
@@ -639,6 +662,64 @@ export default function MonitorView() {
                   >
                     <Icon name="power" size={12} /> dew heater — control on Capture →
                   </button>
+                )}
+              </>
+            )}
+          </div>
+        </Panel>
+
+        {/* ================================================== SUB QUALITY
+            (photometry/SNR design §3 Task 6) — live noise/read-fraction/sky-limited
+            readout over usePreview + the photometry profile. Honest-disabled per
+            §11.8 when the profile is empty (never a native-disabled button — a
+            link to Capture where the profile lives). */}
+        <Panel className="col-span-full sm:col-span-1 lg:col-span-3" title="Sub quality">
+          <div className="data-dim flex flex-col gap-3">
+            {!subQualityLinear ? (
+              <p className="text-dim text-xs py-6 text-center tracking-widest uppercase">
+                no linear frame
+              </p>
+            ) : !subQualityProfileFilled ? (
+              <button
+                className="tap min-h-[44px] text-xs text-dim hover:text-accent text-left inline-flex items-center gap-1.5"
+                onClick={openCapture}
+                title="Add camera gain + read noise (Capture → Camera photometry) to see sub SNR"
+              >
+                <Icon name="lock" size={12} />
+                Add camera gain + read noise (Capture → Camera photometry) to see sub SNR →
+              </button>
+            ) : subQuality && (
+              <>
+                <MetricStrip>
+                  <Stat label="total noise" value={subQuality.noise.totalNoiseE.toFixed(1)} unit="e-" />
+                  <Stat
+                    label="read fraction"
+                    value={(subQuality.noise.readFraction * 100).toFixed(0)}
+                    unit="%"
+                    tone={subQuality.noise.readFraction > 0.2 ? "warn" : "good"}
+                  />
+                </MetricStrip>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-dim">sky-limited</span>
+                  <span className="mono">
+                    {subQuality.skyLimitedS != null ? `${Math.round(subQuality.skyLimitedS)}s` : "—"}
+                    {" vs "}
+                    {preview!.exposure_s}s actual
+                  </span>
+                </div>
+                <p className={`text-[11px] ${
+                  subQuality.verdict === "too_short" ? "text-warn"
+                    : subQuality.verdict === "good" ? "text-good" : "text-dim"
+                }`}>
+                  {subQuality.verdict === "too_short" && "read-noise limited — subs shorter than the sky-limited length"}
+                  {subQuality.verdict === "good" && "✓ sky-limited"}
+                  {subQuality.verdict === "long" && "longer than needed for this sky"}
+                  {subQuality.verdict === "unknown" && "—"}
+                </p>
+                {progress && progress.frames_done > 0 && (
+                  <p className="text-[11px] text-dim">
+                    to double stack SNR: +{moreSubsForSnrMultiple(progress.frames_done, 2)} subs
+                  </p>
                 )}
               </>
             )}
