@@ -20,7 +20,9 @@ import {
 } from "../store";
 import type { FocusEvent } from "../types";
 import { VCurve, type FocusFit } from "../components/graphs";
-import { afResultAgeLabel } from "../lib/autofocus";
+import {
+  afResultAgeLabel, deriveAutofocusParams, plainFocusVerdict, focusButtonState,
+} from "../lib/autofocus";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
@@ -70,6 +72,7 @@ export default function FocusView() {
   // it is. Binning options track the camera's reported ceiling (UX-27 shape).
   const [afFilter, setAfFilter] = useState("");
   const [afBin, setAfBin] = useState("2");
+  const [afAdvanced, setAfAdvanced] = useState(false);
 
   const plan = usePlan();
   const foc = status?.focuser;
@@ -159,6 +162,20 @@ export default function FocusView() {
             <div className="text-accent text-sm blink">Measuring…</div>
           ) : afResult ? (
             <>
+              {(() => {
+                const pv = plainFocusVerdict({
+                  state: afResult.state, hfr: afResult.best?.hfr ?? null,
+                  r2: afResult.fit?.r2 ?? null, hfrGood, hfrWarn,
+                });
+                const tone = pv.tone === "good" ? "text-good" : pv.tone === "warn" ? "text-warn"
+                  : pv.tone === "bad" ? "text-bad" : "text-dim";
+                return (
+                  <div className="mb-2" role="status" aria-live="polite">
+                    <div className={`text-base font-semibold ${tone}`}>{pv.headline}</div>
+                    <div className="text-xs text-dim">{pv.detail}</div>
+                  </div>
+                );
+              })()}
               <AutofocusVerdict
                 state={afResult.state}
                 hfr={afResult.best?.hfr ?? null}
@@ -218,38 +235,81 @@ export default function FocusView() {
         </Panel>
 
         <Panel title="Autofocus" right={!canFocus && <ReadOnlyBadge />}>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <Field label="Exposure (s)">
-              <input className="field" value={afExposure} disabled={!canFocus} onChange={(e) => setAfExposure(e.target.value)} />
-            </Field>
-            <Field label="Step size" hint={HELP.stepSize}>
-              <input className="field" value={afStep} disabled={!canFocus} onChange={(e) => setAfStep(e.target.value)} />
-            </Field>
-            {filterNames.length > 0 && (
-              <Field label="Filter">
-                <select className="field" value={afFilter} disabled={!canFocus}
-                  onChange={(e) => setAfFilter(e.target.value)}>
-                  <option value="">current</option>
-                  {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
-                </select>
-              </Field>
-            )}
-            <Field label="Binning">
-              <select className="field" value={afBin} disabled={!canFocus}
-                onChange={(e) => setAfBin(e.target.value)}>
-                {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
-              </select>
-            </Field>
-          </div>
-          <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!canFocus || !foc || running}
-            onClick={() => act(() => api.post("/api/focuser/autofocus", {
-              exposure_s: Number(afExposure) || 2,
-              step: Number(afStep) || 350,
-              binning: Number(afBin) || 2,
-              ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
-            }))}>
-            {running ? "Running…" : <><Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus</>}
+          {(() => {
+            const bs = focusButtonState({ canFocus, hasFocuser: !!foc, running });
+            const onTap = () => {
+              const d = deriveAutofocusParams({
+                focuserMax: focMax,
+                maxBin: status?.camera?.max_bin ?? null,
+                maxGain: status?.camera?.max_gain ?? null,
+                liveExposureS: shown?.exposure_s ?? null,
+                liveGain: shown?.gain ?? null,
+                liveStars: shown?.stars ?? null,
+                liveHfr: shown?.hfr ?? null,
+              });
+              return act(() => api.post("/api/focuser/autofocus", {
+                exposure_s: d.exposure_s, gain: d.gain, step: d.step,
+                steps_each_side: d.steps_each_side, binning: d.binning,
+              }));
+            };
+            return (
+              <button
+                className={`btn btn-accent w-full tap-lg min-h-[56px] mb-3 ${bs.disabled ? "opacity-40" : ""}`}
+                aria-disabled={bs.disabled || undefined}
+                title={bs.reason ?? undefined}
+                onClick={bs.disabled ? undefined : onTap}
+              >
+                {bs.locked && <Icon name="lock" size={13} className="inline -mt-0.5 mr-1.5" />}
+                {!bs.locked && <Icon name="focus" size={14} className="inline -mt-0.5 mr-1.5" />}
+                {bs.label}
+              </button>
+            );
+          })()}
+
+          <button
+            className="btn !px-2 !py-1 text-[11px] mb-3"
+            aria-expanded={afAdvanced}
+            onClick={() => setAfAdvanced((v) => !v)}
+          >
+            {afAdvanced ? "▾ Advanced" : "▸ Advanced"}
           </button>
+
+          {afAdvanced && (
+            <>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <Field label="Exposure (s)">
+                  <input className="field" value={afExposure} disabled={!canFocus} onChange={(e) => setAfExposure(e.target.value)} />
+                </Field>
+                <Field label="Step size" hint={HELP.stepSize}>
+                  <input className="field" value={afStep} disabled={!canFocus} onChange={(e) => setAfStep(e.target.value)} />
+                </Field>
+                {filterNames.length > 0 && (
+                  <Field label="Filter">
+                    <select className="field" value={afFilter} disabled={!canFocus}
+                      onChange={(e) => setAfFilter(e.target.value)}>
+                      <option value="">current</option>
+                      {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
+                    </select>
+                  </Field>
+                )}
+                <Field label="Binning">
+                  <select className="field" value={afBin} disabled={!canFocus}
+                    onChange={(e) => setAfBin(e.target.value)}>
+                    {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
+                  </select>
+                </Field>
+              </div>
+              <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!canFocus || !foc || running}
+                onClick={() => act(() => api.post("/api/focuser/autofocus", {
+                  exposure_s: Number(afExposure) || 2,
+                  step: Number(afStep) || 350,
+                  binning: Number(afBin) || 2,
+                  ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
+                }))}>
+                {running ? "Running…" : <><Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus</>}
+              </button>
+            </>
+          )}
           <p className="text-[11px] text-dim mt-3 leading-relaxed">
             Sweeps 4 steps each side of current position, measures star HFR,
             fits the V-curve and drives to its minimum.
