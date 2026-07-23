@@ -43,7 +43,7 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
       </div>
       <p className="text-xs text-dim max-w-[40ch]">{meta.line}</p>
       {canConnect ? (
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
           <button
             type="button"
             className="btn btn-accent min-h-11"
@@ -51,6 +51,16 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
           >
             <Icon name="rig" size={14} className="inline -mt-0.5 mr-1.5" />
             Go to Rig
+          </button>
+          {/* NOV-2 re-entry: the lost-first-timer anchor. A user who dismissed
+              the first-run wizard (or never triggered its blank-slate
+              auto-open) can reopen it from here. */}
+          <button
+            type="button"
+            className="btn min-h-11"
+            onClick={() => useStore.getState().openWizard()}
+          >
+            New here? Open the setup guide
           </button>
         </div>
       ) : (
