@@ -318,11 +318,21 @@ RA_GUIDE_ALGORITHMS: tuple[str, ...] = (
 #: Dec algorithm vocabulary (PHD2 ``DEC_ALGORITHMS`` — PPEC is RA-only, so absent).
 DEC_GUIDE_ALGORITHMS: tuple[str, ...] = (
     "hysteresis", "lowpass", "lowpass2", "resist_switch", "z_filter")
+#: Dec guide-DIRECTION vocabulary (PRO-12 Tier 1; engine `parse_dec_mode`,
+#: `native/crates/astrodeck-native/src/lib.rs:875-885` — accepts these four
+#: literals verbatim). Distinct from the algorithm KIND above: this picks
+#: which direction(s) the engine is willing to correct on the Dec axis.
+DEC_GUIDE_MODES: tuple[str, ...] = ("auto", "north", "south", "off")
 
 
 class GuideConfig(BaseModel):
     ra_algorithm: str = "hysteresis"       # DefaultRaGuideAlgorithm (dossier §6/§17)
     dec_algorithm: str = "resist_switch"   # DefaultDecGuideAlgorithm (dossier §6/§17)
+    # PRO-12 Tier 1: both fields are ALREADY forwarded by
+    # ``guide/native.py::_build_engine_config`` (dec_guide_mode, blc_pulse_ms) —
+    # only the persisted-config + validation layer was missing. No Rust change.
+    dec_guide_mode: str = "auto"           # DecMode default (engine.rs:168)
+    blc_pulse_ms: int = 0                  # EngineConfig.blc_pulse_ms default (engine.rs:171)
 
 
 class RotatorConfig(BaseModel):
@@ -785,6 +795,14 @@ class ConfigStore:
             raise ValueError(
                 f"unknown Dec guide algorithm: {guide.dec_algorithm!r} — valid "
                 f"values are {', '.join(DEC_GUIDE_ALGORITHMS)}")
+        if guide.dec_guide_mode not in DEC_GUIDE_MODES:
+            raise ValueError(
+                f"unknown Dec guide mode: {guide.dec_guide_mode!r} — valid "
+                f"values are {', '.join(DEC_GUIDE_MODES)}")
+        # Defense in depth (open decision #4): clamp to the same [0, 10000] ms
+        # ceiling the client's clampBlcPulse enforces, so a value that skips the
+        # UI still can't reach the engine out of range.
+        guide.blc_pulse_ms = max(0, min(10000, int(guide.blc_pulse_ms)))
         cfg = self.cfg()
         cfg.guide = guide
         return self.bump_and_save()

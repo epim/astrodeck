@@ -19,12 +19,15 @@ import { guideNarration } from "../lib/guideNarration";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
+  DEC_GUIDE_MODES,
   GUIDE_ALGORITHM_DEFAULTS,
   defaultGuideSettings,
   validateGuideSettings,
   isValidRaAlgorithm,
   isValidDecAlgorithm,
+  isValidDecGuideMode,
   type GuideAlgorithmKind,
+  type DecGuideMode,
 } from "../lib/guideSettings";
 
 export default function GuideView() {
@@ -410,12 +413,24 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   const [busy, setBusy] = useState(false);
   const [ra, setRa] = useState<GuideAlgorithmKind>(defaultGuideSettings().ra.algorithm);
   const [dec, setDec] = useState<GuideAlgorithmKind>(defaultGuideSettings().dec.algorithm);
+  // PRO-12 Tier 1: Dec guide direction + static BLC seed pulse. Both are
+  // ALREADY forwarded end-to-end by the engine (_build_engine_config); this
+  // drawer is the last missing layer. blcMs is a text field (parsed on save,
+  // like the dither settle fields above) so a blank/in-progress edit never
+  // fights the numeric coercion.
+  const [decMode, setDecMode] = useState<DecGuideMode>(defaultGuideSettings().decGuideMode);
+  const [blcMs, setBlcMs] = useState<string>("0");
 
   const load = async () => {
     try {
-      const s = await api.get<{ ra_algorithm: string; dec_algorithm: string }>("/api/guide/settings");
+      const s = await api.get<{
+        ra_algorithm: string; dec_algorithm: string;
+        dec_guide_mode?: string; blc_pulse_ms?: number;
+      }>("/api/guide/settings");
       if (isValidRaAlgorithm(s.ra_algorithm)) setRa(s.ra_algorithm);
       if (isValidDecAlgorithm(s.dec_algorithm)) setDec(s.dec_algorithm);
+      if (isValidDecGuideMode(s.dec_guide_mode ?? "")) setDecMode(s.dec_guide_mode as DecGuideMode);
+      if (typeof s.blc_pulse_ms === "number") setBlcMs(String(s.blc_pulse_ms));
       setLoaded(true);
     } catch (e) {
       onToast("error", (e as Error).message);
@@ -431,20 +446,22 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   const save = async () => {
     setBusy(true);
     try {
-      // build + validate the full settings (clamps params, rejects a bad axis)
-      // before PUTting the two algorithm kinds the server persists.
+      // build + validate the full settings (clamps params, rejects a bad axis,
+      // clamps the BLC pulse, snaps an invalid Dec direction to auto) before
+      // PUTting the persisted fields.
       const v = validateGuideSettings({
         ra: { algorithm: ra, params: { ...GUIDE_ALGORITHM_DEFAULTS[ra] } },
         dec: { algorithm: dec, params: { ...GUIDE_ALGORITHM_DEFAULTS[dec] } },
-        // This drawer edits only the algorithm kinds today; the static BLC
-        // pulse keeps its disabled default until a settings editor surfaces it.
-        blcPulseMs: 0,
+        decGuideMode: decMode,
+        blcPulseMs: Number(blcMs), // NaN/blank -> clampBlcPulse floors to 0
       });
       await api.put("/api/guide/settings", {
         ra_algorithm: v.ra.algorithm,
         dec_algorithm: v.dec.algorithm,
+        dec_guide_mode: v.decGuideMode,
+        blc_pulse_ms: v.blcPulseMs,
       });
-      onToast("success", "Guide algorithm saved — applies on the next start");
+      onToast("success", "Guide tuning saved — applies on the next start");
     } catch (e) {
       onToast("error", (e as Error).message);
     } finally {
@@ -453,7 +470,7 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
   };
 
   return (
-    <Panel title="Guide Algorithm"
+    <Panel title="Guide Tuning"
       right={
         <button className="btn text-[11px] !py-0.5 !px-2" onClick={toggle}
           aria-expanded={open}>
@@ -462,7 +479,8 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
       }>
       {!open ? (
         <p className="text-xs text-dim">
-          Per-axis guide algorithm (native guider). Tap Edit to change RA / Dec.
+          Per-axis guide algorithm, Dec direction, and backlash pulse (native
+          guider). Tap Edit to change.
         </p>
       ) : (
         <div className="flex flex-col gap-3">
@@ -488,6 +506,23 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
             <AlgoParams kind={dec} />
           </label>
 
+          <label className="flex flex-col gap-1">
+            <span className="label">Dec guide direction</span>
+            <select className="field" value={decMode} disabled={!canGuide || busy}
+              onChange={(e) => setDecMode(e.target.value as DecGuideMode)}>
+              {DEC_GUIDE_MODES.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex flex-col gap-1">
+            <span className="label">Dec backlash pulse (ms)</span>
+            <input className="field" value={blcMs} disabled={!canGuide || busy}
+              inputMode="numeric" placeholder="0"
+              onChange={(e) => setBlcMs(e.target.value)} />
+          </label>
+
           <div className="flex gap-2 mt-1">
             <button className="btn btn-accent flex-1" disabled={!canGuide || busy}
               onClick={() => void save()}>
@@ -507,8 +542,9 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
             </button>
           </div>
           <p className="text-[11px] text-faint leading-snug">
-            Parameters shown are the PHD2-default set (dossier §15); the algorithm
-            selection applies to the native guider on its next start.
+            Per-axis parameters shown are the PHD2-default set (dossier §15) and
+            are not yet editable. Dec guide direction and the backlash pulse ARE
+            saved here and apply to the native guider on its next start.
           </p>
         </div>
       )}

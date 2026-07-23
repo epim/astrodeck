@@ -4,6 +4,10 @@ import pytest
 
 native = pytest.importorskip("astrodeck_native")  # skip cleanly when wheel absent
 
+import astrodeck.config as config_mod
+from astrodeck.config import ConfigStore, GuideConfig, DEC_GUIDE_MODES
+from astrodeck.guide.native import guide_algo_config
+
 def _gaussian_frame(w, h, cx, cy, amp=4000.0, sg=1.6, bg=100):
     yy, xx = np.mgrid[0:h, 0:w]
     g = amp * np.exp(-(((xx-cx)**2 + (yy-cy)**2) / (2*sg*sg)))
@@ -138,3 +142,72 @@ def test_process_reason_calibration_failed():
     assert last["reason"] == "calibration_failed"
     # upstream-literal budget: max_steps + 1 = 61 pulses before GO_WEST fails
     assert cal_steps == 61
+
+
+# ---- PRO-12 Tier 1: GuideConfig.dec_guide_mode + blc_pulse_ms (T1) + the
+# guide_algo_config() passthrough (T2). No Rust change — _build_engine_config
+# already forwards both keys (native.py `_build_engine_config`); this only
+# exercises the persisted-config + validation + passthrough layers above it. ----
+
+@pytest.fixture
+def isolated_config(tmp_path, monkeypatch):
+    """Point the module-level ``config_store`` (both ``astrodeck.config`` and
+    the lazy import inside ``guide/native.py::guide_algo_config``, which
+    re-resolves ``config.config_store`` on every call) at a fresh temp-file
+    store, so this test never touches the real ``server/config/astrodeck.json``."""
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", store)
+    return store
+
+
+def test_guide_config_defaults_dec_mode_auto_blc_zero():
+    g = GuideConfig()
+    assert g.dec_guide_mode == "auto"
+    assert g.blc_pulse_ms == 0
+
+
+def test_set_guide_rejects_unknown_dec_guide_mode(isolated_config):
+    bad = GuideConfig(dec_guide_mode="sideways")
+    with pytest.raises(ValueError):
+        isolated_config.set_guide(bad)
+
+
+def test_set_guide_clamps_blc_pulse_ms(isolated_config):
+    too_high = GuideConfig(blc_pulse_ms=99999)
+    out = isolated_config.set_guide(too_high)
+    assert out.guide.blc_pulse_ms == 10000
+
+    too_low = GuideConfig(blc_pulse_ms=-5)
+    out = isolated_config.set_guide(too_low)
+    assert out.guide.blc_pulse_ms == 0
+
+
+def test_set_guide_valid_dec_mode_and_blc_round_trip(isolated_config):
+    isolated_config.set_guide(GuideConfig(dec_guide_mode="north", blc_pulse_ms=250))
+    dumped = isolated_config.cfg().guide.model_dump()
+    assert dumped["dec_guide_mode"] == "north"
+    assert dumped["blc_pulse_ms"] == 250
+
+
+def test_dec_guide_modes_vocabulary():
+    assert DEC_GUIDE_MODES == ("auto", "north", "south", "off")
+
+
+def test_guide_algo_config_forwards_dec_mode_and_blc(isolated_config):
+    isolated_config.set_guide(GuideConfig(dec_guide_mode="off", blc_pulse_ms=300))
+    out = guide_algo_config()
+    assert out["dec_guide_mode"] == "off"
+    assert out["blc_pulse_ms"] == 300
+    assert out["ra_algorithm"] == "hysteresis"
+    assert out["dec_algorithm"] == "resist_switch"
+
+
+def test_guide_algo_config_defensive_empty_on_failure(monkeypatch):
+    """A torn-down/broken config store must yield {} (the documented defensive
+    fallback), not raise, so ``_build_engine_config`` falls back to its
+    dossier §15 defaults during connect."""
+    class _Boom:
+        def cfg(self):
+            raise RuntimeError("config store unavailable")
+    monkeypatch.setattr(config_mod, "config_store", _Boom())
+    assert guide_algo_config() == {}
