@@ -67,6 +67,12 @@ export default function SafetyPanel(): JSX.Element {
   const dirty =
     avoidance !== seedAvoidance || Math.abs(coneDeg - seedCone) > 1e-9;
 
+  // A zeroed cone makes the server-side guard INERT (hub._check_solar returns on
+  // cone<=0), so "armed" must reflect BOTH the toggle AND a positive cone — else
+  // the panel would claim protection while the mount can freely slew at the Sun
+  // (UX-38). Drives the badge, the status copy, and the danger banner below.
+  const effectiveArmed = avoidance && coneDeg > 0;
+
   // Persist: echo the FULL current safety block with our two edits applied. The
   // server replaces SafetyConfig wholesale, so anything we omit would be lost.
   const persist = async (next: { avoidance: boolean; cone: number }) => {
@@ -159,18 +165,20 @@ export default function SafetyPanel(): JSX.Element {
             Sun avoidance
             <span
               className={`mono text-[9px] tracking-[0.16em] uppercase px-1.5 py-0.5 border ${
-                avoidance
+                effectiveArmed
                   ? "text-good border-good/50"
                   : "text-bad border-bad/60"
               }`}
             >
-              {avoidance ? "Armed" : "Disarmed"}
+              {effectiveArmed ? "Armed" : "Disarmed"}
             </span>
           </div>
           <p className="text-[11px] text-dim max-w-md">
-            {avoidance
+            {effectiveArmed
               ? "On — the mount refuses to point within the exclusion cone of the Sun."
-              : "OFF — SOLAR ASTRONOMY MODE. The mount may slew at the Sun. Use only with a proper solar filter installed."}
+              : avoidance
+                ? "Cone set to 0° — protection is OFF until you set an angle above 0."
+                : "OFF — SOLAR ASTRONOMY MODE. The mount may slew at the Sun. Use only with a proper solar filter installed."}
           </p>
         </div>
         <Toggle
@@ -227,6 +235,21 @@ export default function SafetyPanel(): JSX.Element {
             — the mount is allowed to slew at the Sun. Confirm a solar filter is
             installed before any daytime slew. Turn this back on as soon as solar
             observing is done.
+          </span>
+        </div>
+      )}
+
+      {/* cone-zero warning: toggle ON but the cone is 0 → the guard is inert
+          (UX-38). Distinct from the solar-mode banner so the state reads honestly. */}
+      {avoidance && coneDeg <= 0 && (
+        <div className="flex items-start gap-3 border border-bad/60 bg-bad/10 px-3 py-2 text-xs mt-4">
+          <Icon name="alert" size={14} className="text-bad shrink-0 mt-0.5" />
+          <span className="text-ink">
+            <span className="mono tracking-[0.12em] uppercase text-bad">
+              Exclusion cone is 0°
+            </span>{" "}
+            — sun avoidance is switched on but INERT: a 0° cone blocks nothing, so
+            the mount can still slew at the Sun. Set an angle above 0 to re-arm.
           </span>
         </div>
       )}
