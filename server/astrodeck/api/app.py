@@ -450,6 +450,13 @@ class LiveStackBody(CaptureBody):
     reject_frac: float = 0.08
 
 
+class BahtinovBody(CaptureBody):
+    # NOV-12 Bahtinov focus aid: |offset| <= tol_px reads "locked"; invert flips
+    # the per-rig IN/OUT direction word (the geometric side is invariant).
+    tol_px: float = 1.5
+    invert: bool = False
+
+
 class GotoBody(BaseModel):
     ra_hours: float
     dec_deg: float
@@ -2938,6 +2945,33 @@ def create_app() -> FastAPI:
                 t.cancel()
         await foc.halt()
         return {"ok": True}
+
+    # ---- Bahtinov focus aid (NOV-12) — mirrors the livestack start/stop routes.
+    # Arming attaches an additive `bahtinov` verdict to every raw/linear preview
+    # event (hub._publish_preview); stop disarms only, leaving the live loop as
+    # the user left it (design §4.3 — focusing overlaps ordinary live preview).
+
+    @app.post("/api/focuser/bahtinov/start", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def bahtinov_start(body: BahtinovBody):
+        if hub.polar.running:
+            raise HTTPException(409, "polar alignment in progress")
+        if engine.running:
+            raise HTTPException(409, "a sequence is running")
+        try:
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        hub.arm_bahtinov(tol_px=body.tol_px, invert=body.invert)
+        if not hub.looping:
+            await hub.start_loop(body.exposure_s, body.gain, body.offset,
+                                 body.binning, frame_type="Light")
+        return {"active": True}
+
+    @app.post("/api/focuser/bahtinov/stop", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def bahtinov_stop():
+        return hub.disarm_bahtinov()   # leaves the live loop as the user left it (§4.3)
 
     # ---------------------------------------------------------- rotator
 

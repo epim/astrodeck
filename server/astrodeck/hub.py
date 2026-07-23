@@ -182,6 +182,9 @@ class Hub:
         # Live View (NOV-1): the single EAA running-mean accumulator, non-None while
         # armed. Fed each raw linear sub in _publish_preview; None = feature off.
         self.live_stacker = None
+        # Bahtinov focus aid (NOV-12): None = off; {"tol_px","invert"} = armed. When
+        # armed, each raw linear sub gets an additive preview.bahtinov analysis.
+        self.bahtinov: dict | None = None
         # the sequence engine registers itself so poll_status can report the
         # active plan's meridian_flip setting without importing the engine.
         self.engine = None
@@ -712,6 +715,7 @@ class Hub:
         legacy apply path) can never cancel itself."""
         self.stop_loop()
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
+        self.bahtinov = None                # NOV-12: disarm the focus aid on teardown
         await self.polar.stop()
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
@@ -1607,6 +1611,17 @@ class Hub:
                 cloud = await asyncio.to_thread(
                     cloud_score, sub, stars=stars)
                 info["cloud"] = cloud.to_dict()
+            # NOV-12: additive Bahtinov focus verdict, only while the aid is armed
+            # and only on linear subs (the Radon fit needs unstretched pixels).
+            # Reuses the single detect_stars pass above (center on the brightest
+            # star); a no-op when disarmed so the preview path stays byte-identical.
+            if self.bahtinov is not None and data_is_linear:
+                from .imaging import analyze_bahtinov
+                res = await asyncio.to_thread(
+                    lambda: analyze_bahtinov(sub, None, stars=stars,
+                                             tol_px=self.bahtinov["tol_px"],
+                                             invert=self.bahtinov["invert"]))
+                info["bahtinov"] = res.to_dict()
             # backend-measured HFR/stars (e.g. native) win; else our detection.
             if hfr is not None:
                 info.setdefault("hfr", round(float(hfr), 2))
@@ -1840,6 +1855,18 @@ class Hub:
 
     def stop_live_stack(self) -> dict:
         self.live_stacker = None
+        return {"active": False}
+
+    # ---------------------------------------------------- Bahtinov focus aid
+
+    def arm_bahtinov(self, tol_px: float = 1.5, invert: bool = False) -> dict:
+        """NOV-12: arm the per-frame Bahtinov analysis (additive preview.bahtinov)."""
+        self.bahtinov = {"tol_px": float(tol_px), "invert": bool(invert)}
+        bus.log("info", "Bahtinov focus aid on", "focus")
+        return {"active": True}
+
+    def disarm_bahtinov(self) -> dict:
+        self.bahtinov = None
         return {"active": False}
 
     # -------------------------------------------------------- solve & center
@@ -2338,6 +2365,7 @@ class Hub:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
         out["live_stack_active"] = self.live_stacker is not None   # NOV-1 server truth
+        out["bahtinov_active"] = self.bahtinov is not None         # NOV-12 server truth
         # These must live in poll_status (not just summary): the store does a
         # wholesale set({status}) every 2s, so anything absent here flickers.
         s = self.site

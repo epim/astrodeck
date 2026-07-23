@@ -26,6 +26,7 @@ import {
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
+import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
 import { Field, Panel, Stat } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
@@ -78,6 +79,8 @@ export default function FocusView() {
   const foc = status?.focuser;
   const pos = foc?.position ?? 0;
   const running = focus?.state === "running";
+  // NOV-12 Bahtinov aid armed state (server truth via poll_status).
+  const bahtOn = status?.bahtinov_active ?? false;
   // UX-25: filter/binning for the autofocus sweep.
   const filterNames = status?.filterwheel?.names ?? [];
   const afMaxBin = Math.min(8, Math.max(1, status?.camera?.max_bin ?? 4));
@@ -146,6 +149,35 @@ export default function FocusView() {
             </div>
             {shown && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} compact />}
           </div>
+        </Panel>
+
+        {/* NOV-12 Bahtinov focus aid — arm/disarm + the live signed offset and a
+            go/stop verdict, sitting under the live preview it reads from. */}
+        <Panel title="Bahtinov Focus" right={!canFocus && <ReadOnlyBadge />}>
+          <BahtinovAid preview={shown} />
+          <button
+            className={`btn w-full tap min-h-11 mt-3 ${!canFocus ? "opacity-40" : ""} ${bahtOn ? "btn-accent" : ""}`}
+            aria-disabled={!canFocus || undefined}
+            aria-pressed={bahtOn}
+            title={!canFocus ? "Read-only — focusing needs operator access" : undefined}
+            onClick={
+              !canFocus
+                ? undefined
+                : () =>
+                    act(() =>
+                      api.post(
+                        bahtOn ? "/api/focuser/bahtinov/stop" : "/api/focuser/bahtinov/start",
+                        bahtOn ? {} : { exposure_s: 1, gain: 100, binning: 1 },
+                      ),
+                    )
+            }
+          >
+            {bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"}
+          </button>
+          <p className="text-[11px] text-dim mt-2 leading-relaxed">
+            Put a Bahtinov mask on the scope and point at a bright star, then watch
+            the middle spike offset drop to zero.
+          </p>
         </Panel>
 
         <Panel title="V-Curve · HFR vs Position"

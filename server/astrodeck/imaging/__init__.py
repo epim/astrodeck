@@ -15,6 +15,7 @@ from .stars import (
     measure_stars, median_hfr, star_marks,
 )
 from .clouds import CloudResult, cloud_score, frame_contrast
+from .bahtinov import BahtinovResult, analyze_bahtinov
 from .fitsio import save_fits
 from .livestack import (
     LiveStacker, StackOutcome, brightest_centroid, align_offset,
@@ -28,6 +29,7 @@ __all__ = [
     "to_thumb", "Star", "detect_stars", "frame_eccentricity", "frame_tilt",
     "measure_frame", "measure_stars", "median_hfr", "star_marks",
     "CloudResult", "cloud_score",
+    "BahtinovResult", "analyze_bahtinov",
     "frame_contrast", "save_fits",
     "LiveStacker", "StackOutcome", "brightest_centroid", "align_offset",
     "DEFAULT_REJECT_FRAC", "DEFAULT_REANCHOR_AFTER",
