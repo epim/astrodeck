@@ -18,6 +18,7 @@ import { Icon } from "../icons";
 import { useBackendLinks, useBootConnectFailed, useUpdate } from "../../store";
 import {
   accessPhrase,
+  useCan,
   useCanConfigBackend,
   useCanAdminUsers,
   useCanSystemUpdate,
@@ -34,12 +35,14 @@ import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
 import SafetyPanel from "./SafetyPanel";
+import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
 
 type Tab =
   | "connect"
   | "profiles"
   | "safety"
+  | "alerts"
   | "updates"
   | "account"
   | "users"
@@ -52,6 +55,7 @@ export default function SettingsView(): JSX.Element {
   const canConfig = useCanConfigBackend();
   const canAdminUsers = useCanAdminUsers();
   const canSystemUpdate = useCanSystemUpdate();
+  const canAlerts = useCan("config.alerts");
   const update = useUpdate();
   const isViewer = useIsViewer();
   const canSeePrecise = useCanViewSitePrecise();
@@ -63,6 +67,7 @@ export default function SettingsView(): JSX.Element {
     { value: "connect", label: "Connect" },
     { value: "profiles", label: "Profiles" },
     { value: "safety", label: "Safety" },
+    ...(canAlerts ? ([{ value: "alerts", label: "Alerts" }] as { value: Tab; label: string }[]) : []),
     ...(canSystemUpdate
       ? ([
           {
@@ -83,7 +88,8 @@ export default function SettingsView(): JSX.Element {
   // If the cap is lost while sitting on an admin tab (e.g. signed out), fall back.
   const activeTab: Tab =
     ((tab === "users" || tab === "auth") && !canAdminUsers) ||
-    (tab === "updates" && !canSystemUpdate)
+    (tab === "updates" && !canSystemUpdate) ||
+    (tab === "alerts" && !canAlerts)
       ? "connect"
       : tab;
 
@@ -116,11 +122,13 @@ export default function SettingsView(): JSX.Element {
 
       {/* read-only banner for viewers (W2.5: passive copy, not 403-on-tap). Hidden
           on the admin-only Users/Auth tabs (those are admin-gated already) and on
-          Safety (it carries its own config.solar_override read-only note). */}
+          Safety/Alerts (they carry their own config.solar_override/config.alerts
+          read-only notes). */}
       {!canConfig &&
         activeTab !== "users" &&
         activeTab !== "auth" &&
-        activeTab !== "safety" && (
+        activeTab !== "safety" &&
+        activeTab !== "alerts" && (
         <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs">
           <Icon name="lock" size={14} className="text-dim shrink-0" />
           <span className="text-dim">
@@ -133,6 +141,9 @@ export default function SettingsView(): JSX.Element {
 
       {/* ------------------------------------------------------------- SAFETY */}
       {activeTab === "safety" && <SafetyPanel />}
+
+      {/* ------------------------------------------------------------- ALERTS */}
+      {activeTab === "alerts" && canAlerts && <AlertsPanel />}
 
       {/* ------------------------------------------------------------ UPDATES */}
       {activeTab === "updates" && canSystemUpdate && <UpdatePanel />}
