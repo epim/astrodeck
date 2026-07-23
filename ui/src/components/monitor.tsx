@@ -672,13 +672,15 @@ export function MetricStrip({ children }: { children: ReactNode }) {
 // ============================================================ RMS WORD
 /** RMS qualitative word + glyph — the accessible channel (resolves C3/D16).
  *  <1" good, 1-2" soft, >2" poor. Color is decorative reinforcement only. */
-export function RmsVerdict({ rms }: { rms: number | null | undefined }) {
+export function RmsVerdict({ rms, stale }: { rms: number | null | undefined; stale?: boolean }) {
   if (rms == null) return <Stat label="RMS" value={null} />;
-  const tone: StateTone = rms < 1 ? "good" : rms <= 2 ? "warn" : "bad";
-  const word = rms < 1 ? "good" : rms <= 2 ? "soft" : "poor";
-  const glyph: IconName = rms < 1 ? "check" : rms <= 2 ? "alert" : "x";
+  // UX-46: a frozen guider must not keep asserting a confident "good" — when the
+  // reading is stale, downgrade the whole verdict to a neutral "stale".
+  const tone: StateTone = stale ? "warn" : rms < 1 ? "good" : rms <= 2 ? "warn" : "bad";
+  const word = stale ? "stale" : rms < 1 ? "good" : rms <= 2 ? "soft" : "poor";
+  const glyph: IconName = stale ? "clock" : rms < 1 ? "check" : rms <= 2 ? "alert" : "x";
   return (
-    <div className="flex flex-col gap-0.5 min-w-0">
+    <div className={`flex flex-col gap-0.5 min-w-0 ${stale ? "opacity-60" : ""}`}>
       <span className="label">RMS total</span>
       <span className={`inline-flex items-center gap-1 mono text-sm ${TONE_TEXT[tone]}`}>
         <Icon name={glyph} size={12} />

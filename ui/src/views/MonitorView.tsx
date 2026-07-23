@@ -12,7 +12,6 @@
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
 import { u } from "../lib/base";
 import {
   useSeq,
@@ -25,6 +24,7 @@ import {
   usePreview,
   useStatus,
   useWsConnected,
+  useTelemetryStale,
   useNight,
   useLogs,
   useSafety,
@@ -108,6 +108,7 @@ export default function MonitorView() {
   const preview = usePreview();
   const status = useStatus();
   const wsConnected = useWsConnected();
+  const telemetryStale = useTelemetryStale();
   const night = useNight();
   const logs = useLogs();
   const safety = useSafety();
@@ -245,21 +246,33 @@ export default function MonitorView() {
     if (!stallHard) vibratedStall.current = false;
   }, [stallHard]);
 
-  const act = (fn: () => Promise<unknown>) => {
-    void fn().catch(() => {
-      /* surfaced by the store's log->toast path; Monitor stays glanceable */
-    });
+  // UX-41: control writes must give feedback even when the WS is DOWN (the exact
+  // case Abort exists for) — the store's log->toast path rides the WS, so a
+  // failed/timed-out POST there is invisible. Send over a plain fetch (with a 4s
+  // timeout), check res.ok, and enqueue a CLIENT-side toast on both outcomes so
+  // confirm-to-act is never silent.
+  const sendControl = (label: string, path: string) => {
+    const toast = useStore.getState().enqueueToast;
+    void (async () => {
+      try {
+        const res = await fetch(u(path), {
+          method: "POST",
+          signal:
+            typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+              ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
+              : undefined,
+        });
+        if (!res.ok) {
+          toast({ level: "error", title: `${label} failed (${res.status})` });
+          return;
+        }
+        toast({ level: "success", title: `${label} sent` });
+      } catch {
+        toast({ level: "error", title: `${label} failed — link may be down` });
+      }
+    })();
   };
-  const abort = () =>
-    act(() =>
-      fetch(u("/api/sequence/abort"), {
-        method: "POST",
-        signal:
-          typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
-            ? (AbortSignal as unknown as { timeout(ms: number): AbortSignal }).timeout(4000)
-            : undefined,
-      }),
-    );
+  const abort = () => sendControl("Abort", "/api/sequence/abort");
 
   // ----- the single "is my night OK?" verdict (implementation brief §5) -----
   // Folds safety/disk/backend_links/meridian/nina_link/status.providers/boot +
@@ -282,8 +295,9 @@ export default function MonitorView() {
         seqState: state,
         endReason: seq.end_reason,
         wsConnected,
+        telemetryStale,
       }),
-    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected],
+    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale],
   );
 
   // ====================================================================== render
@@ -344,8 +358,8 @@ export default function MonitorView() {
                 <PauseButton
                   paused={paused}
                   disabled={!canRun}
-                  onPause={() => act(() => api.post("/api/sequence/pause"))}
-                  onResume={() => act(() => api.post("/api/sequence/resume"))}
+                  onPause={() => sendControl("Pause", "/api/sequence/pause")}
+                  onResume={() => sendControl("Resume", "/api/sequence/resume")}
                 />
                 <HoldButton
                   face="Abort"
@@ -537,7 +551,7 @@ export default function MonitorView() {
                   </span>
                   <span className="ml-auto">±{4}″ scale</span>
                 </div>
-                <RmsVerdict rms={guideRms?.rms_total} />
+                <RmsVerdict rms={guideRms?.rms_total} stale={guideStale} />
                 {guideStale && <p className="text-xs text-warn mono">guider stale (frozen reading)</p>}
               </>
             ) : (
@@ -591,7 +605,7 @@ export default function MonitorView() {
                 )}
                 {camera.has_dew_heater && (
                   <button
-                    className="text-xs text-dim hover:text-accent text-left inline-flex items-center gap-1"
+                    className="text-xs text-dim hover:text-accent text-left inline-flex items-center gap-1 min-h-[44px]"
                     onClick={() => setView("capture")}
                   >
                     <Icon name="power" size={12} /> dew heater — control on Capture →
