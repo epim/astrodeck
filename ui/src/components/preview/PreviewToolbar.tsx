@@ -94,6 +94,9 @@ export function PreviewToolbar({
   // 404s, so gate the menuitem and render the disabled+lock variant when false,
   // mirroring the FITS item's honest-disabled treatment.
   const pngAvailable = hasLossless || preview?.mime === "image/png";
+  // UX-49: honest-disabled for the Download control (the file's own §11.8 rule —
+  // dim token + lock + title, not native `disabled` which greys with no reason).
+  const dlDisabled = id == null || linkDown;
 
   return (
     <div className="preview-toolbar">
@@ -155,13 +158,23 @@ export function PreviewToolbar({
       {/* download */}
       <div className="relative" ref={dlRef}>
         <button
-          className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px]"
+          type="button"
+          className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px] ${
+            dlDisabled ? "!text-dim cursor-not-allowed" : ""
+          }`}
           aria-haspopup="menu"
-          aria-expanded={dlOpen}
-          disabled={id == null || linkDown}
-          onClick={() => setDlOpen((v) => !v)}
+          aria-expanded={dlDisabled ? undefined : dlOpen}
+          aria-disabled={dlDisabled}
+          title={
+            dlDisabled
+              ? linkDown
+                ? "Link down — downloads unavailable"
+                : "No frame to download yet"
+              : undefined
+          }
+          onClick={dlDisabled ? undefined : () => setDlOpen((v) => !v)}
         >
-          <Icon name="arrow-down" size={12} /> Download ▾
+          <Icon name={dlDisabled ? "lock" : "arrow-down"} size={12} /> Download ▾
         </button>
         {dlOpen && id != null && (
           <div role="menu" className="panel absolute right-0 top-full mt-1 z-50 p-1 w-44 flex flex-col gap-0.5">
@@ -169,6 +182,7 @@ export function PreviewToolbar({
               <a
                 role="menuitem"
                 href={u(`/api/preview/${id}/png`)}
+                download={`preview_${id}.png`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >
@@ -179,7 +193,7 @@ export function PreviewToolbar({
                 role="menuitem"
                 aria-disabled
                 className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
-                title="PNG only available while paused or zoomed (no lossless base for this frame)"
+                title="This frame is JPEG-only — no lossless source to export a PNG from."
               >
                 <Icon name="lock" size={11} /> Stretched PNG
               </span>
@@ -188,6 +202,7 @@ export function PreviewToolbar({
               <a
                 role="menuitem"
                 href={u(`/api/preview/${id}/lossless.png`)}
+                download={`preview_${id}_lossless.png`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >
@@ -198,6 +213,7 @@ export function PreviewToolbar({
               <a
                 role="menuitem"
                 href={u(`/api/preview/${id}/fits`)}
+                download={`preview_${id}.fits`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
                 onClick={() => setDlOpen(false)}
               >
