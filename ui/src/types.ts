@@ -55,6 +55,9 @@ export interface RigStatus {
     max_gain: number;
     max_bin?: number; // UX-27: bin ceiling; UI offers 1..max_bin (default 4)
     cooler?: CoolerInfo; // monitor (Batch-2) — null/absent when no cooler
+    // photometry/SNR design Task 7: e-/ADU at the current gain (native adapters
+    // only; 0/absent = unknown). Optional — older servers omit the field.
+    egain?: number;
   };
   guider?: GuideStats & { name: string };
   // --- guide-frame preview (SHARED lane; additive). Present only when the backend

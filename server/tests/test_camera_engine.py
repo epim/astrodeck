@@ -77,6 +77,32 @@ async def test_connect_maps_capabilities_to_camera_fields():
     assert cam.max_bin == 2  # UX-27: max(bin_modes=(1, 2))
 
 
+# --- Task 7 (photometry/SNR design): egain surfaced from caps.extra ------
+
+async def test_connect_maps_egain_from_caps_extra():
+    # Mirrors how Player One / ZWO ASI adapters populate capabilities().extra
+    # (player_one.py:63, zwo_asi.py:51) — the engine must copy it onto the
+    # Camera so hub.py's status.camera payload (and the client photometry
+    # profile prefill) can read a real e-/ADU value.
+    class EgainAdapter(FakeAdapter):
+        def capabilities(self):
+            c = super().capabilities()
+            return CameraCapabilities(**{**c.__dict__, "extra": {"egain": 0.25}})
+
+    cam = NativeCamera(EgainAdapter())
+    await cam.connect()
+    assert cam.egain == 0.25
+
+
+async def test_connect_defaults_egain_when_absent_from_extra():
+    # A camera whose adapter doesn't report egain (sim/Alpaca-style, or a native
+    # adapter with no readout for it) must leave egain at the inert 0.0 default
+    # — never a stale/garbage value — so the client shows its honest prompt.
+    cam = NativeCamera(FakeAdapter())
+    await cam.connect()
+    assert cam.egain == 0.0
+
+
 async def test_expose_returns_shaped_linear_frame():
     fa = FakeAdapter(w=6, h=4)
     cam = NativeCamera(fa)

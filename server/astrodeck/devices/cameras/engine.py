@@ -56,6 +56,9 @@ class NativeCamera(Camera):
         self.can_cool = caps.has_cooler
         self.has_dew_heater = caps.has_dew_heater
         self.bayer_pattern = caps.bayer_pattern
+        # photometry/SNR design §1.2/Task 7: brand-unique egain (e-/ADU) rides in
+        # caps.extra; absent/falsy on brands that don't report it (stays 0.0/unknown).
+        self.egain = float(caps.extra.get("egain", 0.0) or 0.0)
         self.connected = True
 
     async def disconnect(self) -> None:

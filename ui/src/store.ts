@@ -354,6 +354,38 @@ function applyTouchSizing(sizing: TouchSettings["touchSizing"]): void {
   c.toggle("no-touch-ui", sizing === "off");
 }
 
+// ------------------------------------------------------------ photometry profile
+// Small persisted client "photometry profile" (photometry/SNR design §1.3): egain
+// (e-/ADU), read noise (e-), and a bias-frame ADU pedestal — entered once by the
+// user (read-noise harness or camera datasheet), never on the wire today (no
+// config field/status payload carries them; see the design doc's seam survey).
+// All-zero is the inert default: consumers (NOV-4 Suggest, PRO-6 estimators) show
+// an honest "add gain + read noise" prompt rather than a wrong number.
+export interface PhotometryProfile {
+  egain: number;
+  readNoiseE: number;
+  biasAdu: number;
+}
+
+const PHOTOMETRY_KEY = "astrodeck-photometry";
+
+function loadPhotometry(): PhotometryProfile {
+  const def: PhotometryProfile = { egain: 0, readNoiseE: 0, biasAdu: 0 };
+  try {
+    const raw = localStorage.getItem(PHOTOMETRY_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as Partial<PhotometryProfile>;
+      if (typeof p.egain === "number" && Number.isFinite(p.egain)) def.egain = p.egain;
+      if (typeof p.readNoiseE === "number" && Number.isFinite(p.readNoiseE))
+        def.readNoiseE = p.readNoiseE;
+      if (typeof p.biasAdu === "number" && Number.isFinite(p.biasAdu)) def.biasAdu = p.biasAdu;
+    }
+  } catch {
+    /* defaults */
+  }
+  return def;
+}
+
 // ----------------------------------------------------------------- dimmer state
 // Global brightness dimmer — STORE-OWNED single source (F-dimmer). Day and night
 // each remember their own brightness; toggling mode swaps to the other memory
@@ -524,6 +556,11 @@ interface AppState {
   monitorAwake: boolean; // explicit wake-lock-as-monitor toggle (decoupled from locked, R13)
   touch: TouchSettings; // haptics / sizing / reverse-axis / auto-lock prefs
 
+  // --- photometry profile (photometry/SNR design §1.3) ---
+  // Persisted client-only egain/read-noise/bias inputs for NOV-4 Suggest + PRO-6
+  // integration/SNR estimators. All-zero (inert) until the user fills it in.
+  photometry: PhotometryProfile;
+
   // --- dimmer (Batch-3 F-dimmer; design-system §7.5) ---
   brightDay: number; // remembered day brightness (0.5..1), persisted
   brightNight: number; // remembered night brightness (0.5..1), persisted
@@ -601,6 +638,9 @@ interface AppState {
   setLocked: (v: boolean) => void; // setting true MUST stop any active slew (R11/§4.6)
   setMonitorAwake: (v: boolean) => void;
   setTouch: (patch: Partial<TouchSettings>) => void; // persists each key + mirrors side effects
+
+  // --- actions: photometry profile ---
+  setPhotometry: (p: Partial<PhotometryProfile>) => void; // merges + persists to localStorage
 
   // --- actions: dimmer ---
   setBrightness: (v: number) => void; // sets ACTIVE mode's brightness, persists, applies CSS vars
@@ -702,6 +742,9 @@ export const useStore = create<AppState>((set, get) => ({
   lockAvailable: true, // reliability sequence-error render shipped (R11) → lock enabled
   monitorAwake: false,
   touch: TOUCH_INIT,
+
+  // --- photometry profile ---
+  photometry: loadPhotometry(),
 
   // --- dimmer (F-dimmer) ---
   brightDay: readBright(BRIGHT_DAY_KEY, 1),
@@ -1052,6 +1095,18 @@ export const useStore = create<AppState>((set, get) => ({
     set({ touch });
   },
 
+  // Merge + persist (best-effort). Inert defaults (all-zero) mean a partial patch
+  // (e.g. only egain from Task 7's status prefill) never blanks the other fields.
+  setPhotometry: (p) => {
+    const next = { ...get().photometry, ...p };
+    try {
+      localStorage.setItem(PHOTOMETRY_KEY, JSON.stringify(next));
+    } catch {
+      /* quota / unavailable — keep in-memory */
+    }
+    set({ photometry: next });
+  },
+
   // -------------------------------------------------------------------- dimmer
   // Single source for the brightness dimmer (F-dimmer). Writes the ACTIVE mode's
   // remembered value + its localStorage key, then applies the CSS vars itself —
@@ -1367,6 +1422,7 @@ export const useGuideRmsByKind = () =>
 export const useFocus = () => useStore((s) => s.focus);
 export const useLastAutofocusResult = () => useStore((s) => s.lastAutofocusResult);
 export const usePreview = () => useStore((s) => s.preview);
+export const usePhotometry = () => useStore((s) => s.photometry);
 export const usePolar = () => useStore((s) => s.polar);
 export const useLogs = () => useStore((s) => s.logs);
 export const useLastLight = () => useStore((s) => s.lastLight);

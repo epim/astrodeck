@@ -2358,6 +2358,10 @@ class Hub:
                     "width": cam.sensor_width, "height": cam.sensor_height,
                     "max_gain": cam.max_gain,
                     "max_bin": getattr(cam, "max_bin", 4),
+                    # photometry/SNR design Task 7: e-/ADU at the current gain, when
+                    # the backend knows it (native adapters only); 0.0 = unknown.
+                    # Additive/default-inert — old clients simply ignore the field.
+                    "egain": getattr(cam, "egain", 0.0),
                 }
                 # Monitor cooler readout — driven by the per-backend get_cooler()
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The
