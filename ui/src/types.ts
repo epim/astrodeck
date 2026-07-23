@@ -446,6 +446,7 @@ export interface SequencePlan {
   max_guide_rms?: number;                 // guide-RMS ceiling, arcsec (0 = off)
   max_consecutive_rejects?: number;       // per-step guard (0 = off)
   max_consecutive_rejects_night?: number; // per-night guard (0 = off)
+  max_eccentricity?: number;              // per-frame median-ecc ceiling, 0..1 (0 = off)
 }
 
 // ============================================================================

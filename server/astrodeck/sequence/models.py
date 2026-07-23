@@ -80,6 +80,7 @@ class SequencePlan(BaseModel):
     count_mode: Literal["attempts", "accepted"] = "attempts"
     min_stars: int = 0                       # star-count floor (0 = off)
     max_guide_rms: float = 0.0               # guide-RMS ceiling, arcsec (0 = off)
+    max_eccentricity: float = 0.0            # per-frame median-ecc ceiling, 0..1 (0 = off)
     max_consecutive_rejects: int = 10        # per-STEP consecutive guard (0 = off)
     max_consecutive_rejects_night: int = 20  # per-NIGHT guard, crosses targets (0 = off)
     # unattended safety (Batch 4b; global safety/escalation live in config.py —

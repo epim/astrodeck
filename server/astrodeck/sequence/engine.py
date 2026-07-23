@@ -1953,8 +1953,9 @@ class SequenceEngine:
                        calibration: bool = False) -> bool:
         """Return whether a frame is ACCEPTED per the auto gate (spec §3): the
         existing HFR running-median factor AND an optional star floor
-        (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``) —
-        all three AND together; 0 disables each. Star/RMS gates skip
+        (``min_stars``) AND an optional guide-RMS ceiling (``max_guide_rms``)
+        AND an optional per-frame eccentricity ceiling (``max_eccentricity``) —
+        all AND together; 0 disables each. Star/RMS/ecc gates skip
         calibration frames (darks/bias/flats have no stars and no guiding).
 
         Preserves the legacy HFR logic exactly: gate against the median of the
@@ -1987,6 +1988,13 @@ class SequenceEngine:
                 self._rejected += 1
                 bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
                                    f'{plan.max_guide_rms:.2f}"', "sequence")
+                accepted = False
+        if accepted and not calibration and plan.max_eccentricity > 0:
+            ecc = info.get("ecc") if isinstance(info, dict) else None
+            if ecc is not None and float(ecc) > plan.max_eccentricity:
+                self._rejected += 1
+                bus.log("warning", f"frame eccentricity {float(ecc):.2f} above ceiling "
+                                   f"{plan.max_eccentricity:.2f} — trailing/tilt", "sequence")
                 accepted = False
         if accepted and record and factor and hfr is not None:
             self._recent_hfr.append(float(hfr))

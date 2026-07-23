@@ -976,6 +976,21 @@ export default function SequenceView() {
               </label>
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim inline-flex items-center gap-1">
+                  max eccentricity (0–1)
+                  <InfoDot
+                    label="About the eccentricity gate"
+                    content="Reject a frame whose stars are too elongated (trailing / tilt / coma): the median star eccentricity across the frame. 0 = off." />
+                </span>
+                <span className="inline-flex items-center gap-2">
+                  {(plan.max_eccentricity ?? 0) === 0 && (
+                    <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
+                  )}
+                  <input className="field !w-16 !py-1" value={plan.max_eccentricity ?? 0}
+                    onChange={(e) => setPlan({ ...plan, max_eccentricity: Math.min(1, Math.max(0, num(e.target.value, plan.max_eccentricity ?? 0))) })} />
+                </span>
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="text-dim inline-flex items-center gap-1">
                   skip step after N rejects
                   <InfoDot
                     label="About the per-step reject guard"
