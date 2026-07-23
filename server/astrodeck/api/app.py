@@ -2843,6 +2843,46 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
+    # -------------------------------------------------------------- dome / roof
+
+    @app.get("/api/dome/state", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def dome_state():
+        """``{connected, shutter, requires_park_before_close, can_slave}`` for the
+        Settings→Safety roof widget. Mirrors ``/api/safety/state``: honest defaults
+        when no dome is connected (v1 is sim-only — a real Alpaca/COM Dome client is
+        a follow-up)."""
+        dome = hub.devices.get("dome")
+        if dome is None:
+            return {"connected": False, "shutter": "unknown",
+                    "requires_park_before_close": True, "can_slave": False}
+        return {"connected": bool(getattr(dome, "connected", False)),
+                "shutter": (await dome.shutter_state()).value,
+                "requires_park_before_close": bool(dome.requires_park_before_close),
+                "can_slave": bool(dome.can_slave)}
+
+    @app.post("/api/dome/close", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Dome.close_shutter", "Telescope.park"})
+    async def dome_close():
+        """Manual park-and-close: a motion-committing action (it moves the mount),
+        so it reuses CAP_CONTROL_MOUNT (D4). Fence in-flight gotos, park under the
+        motion lock, THEN close via the tested ordering guard (close_observatory),
+        which re-confirms parked and REFUSES rather than crush the mount."""
+        dome = hub.devices.get("dome")
+        if dome is None or not getattr(dome, "connected", False):
+            raise _err(DeviceError("no dome connected"))
+        hub.bump_motion_epoch()
+
+        async def _run():
+            tel = hub.devices.get("telescope")
+            async with hub._motion_lock:
+                if (tel is not None and getattr(tel, "connected", False)
+                        and getattr(dome, "requires_park_before_close", True)):
+                    await tel.park()
+                from ..sequence.roof import close_observatory
+                return await close_observatory(dome, tel, log=bus.log)
+        return _spawn("goto", _run(), replace=True)
+
     # -------------------------------------------------------------- focuser
 
     @app.post("/api/focuser/move", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])

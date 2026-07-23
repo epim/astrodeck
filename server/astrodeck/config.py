@@ -94,7 +94,8 @@ SAFETY_PRESETS: dict[str, dict] = {
                      resume_when_safe=True, resume_safe_consecutive=3,
                      max_pause_min=120),
     "remote":   dict(on_unsafe="abort_park_warm", unsafe_consecutive=2,
-                     resume_when_safe=False, max_pause_min=0),
+                     resume_when_safe=False, max_pause_min=0,
+                     close_dome_on_unsafe=True),
 }
 
 
@@ -122,6 +123,16 @@ class SafetyConfig(BaseModel):
     resume_when_safe: bool = True
     resume_safe_consecutive: int = 3
     max_pause_min: int = 120               # 0 = no cap; escalates to park on timeout
+    # Roll-off roof / dome auto-close (PRO-4). Both default False → every existing
+    # rig/test byte-identical (the rotator_pa_offset/polar_misalignment opt-in
+    # precedent). close_dome_on_unsafe: a rain/cloud trip ESCALATES to the
+    # park-and-close teardown (a closeable roof closes over the parked gear rather
+    # than pause-holding under open sky). close_dome_when_done: close the roof at a
+    # normal end-of-night. Two flags (not one) so protective close-on-rain and
+    # end-of-night close are independently choosable. NO auto-reopen on safe-again
+    # (deferred follow-up). Enacting the close still requires a connected dome.
+    close_dome_on_unsafe: bool = False
+    close_dome_when_done: bool = False
 
 
 class EscalationConfig(BaseModel):

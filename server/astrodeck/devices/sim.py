@@ -20,6 +20,8 @@ from .base import (
     CoverCalibrator,
     CoverState,
     DeviceError,
+    Dome,
+    DomeShutterState,
     FilterWheel,
     Focuser,
     PierSide,
@@ -1065,6 +1067,60 @@ class SimCoverCalibrator(CoverCalibrator):
         self._cover = CoverState.CLOSED
 
 
+class SimDome(Dome):
+    """A simulated roll-off roof (PRO-4) with a SELF-CHECKING collision model.
+
+    A roll-off roof starts OPEN (imaging). The safety-critical bit:
+    ``close_shutter`` reads the SHARED ``rig.parked`` and, if the mount is NOT
+    parked, sets the shutter ERROR and RAISES ``DeviceError`` — because a real
+    roof closing over an unparked mount crushes the OTA. This makes the
+    close-ordering guard (``sequence/roof.close_observatory``) PROVABLE end to
+    end: a test (or a bug) that closed while unparked would trip the sim, and
+    the guard test asserts the sim was never even touched (state stayed OPEN).
+
+    Used correctly (park first, then close) the sim is byte-identical to any
+    other cooperative device — nothing here perturbs the existing sim rig, since
+    ``requires_park_before_close`` gating and the collision check only fire on a
+    close attempt, which no pre-PRO-4 test issues."""
+
+    def __init__(self, rig: SimRig, name: str = "Sim Roll-Off Roof") -> None:
+        super().__init__(name)
+        self.rig = rig
+        self._state = DomeShutterState.OPEN     # a roll-off roof starts OPEN (imaging)
+        self.requires_park_before_close = True
+        self.can_slave = False
+        self._halt = asyncio.Event()
+
+    async def connect(self) -> None:
+        await asyncio.sleep(0.02)
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def shutter_state(self) -> DomeShutterState:
+        return self._state
+
+    async def open_shutter(self) -> None:
+        self._state = DomeShutterState.OPENING
+        await asyncio.sleep(0.02)
+        self._state = DomeShutterState.OPEN
+
+    async def close_shutter(self) -> None:
+        # SELF-CHECKING collision model: a roll-off roof closing over an unparked
+        # mount crushes the OTA. The sim REFUSES with an error so the close-
+        # ordering guard (roof.close_observatory) is provable end to end.
+        if not self.rig.parked:
+            self._state = DomeShutterState.ERROR
+            raise DeviceError("roof closed onto an unparked mount (collision)")
+        self._state = DomeShutterState.CLOSING
+        await asyncio.sleep(0.02)
+        self._state = DomeShutterState.CLOSED
+
+    async def abort(self) -> None:
+        self._halt.set()
+
+
 def build_sim_rig() -> dict[str, object]:
     """One coherent simulated observatory."""
     rig = SimRig()
@@ -1078,5 +1134,6 @@ def build_sim_rig() -> dict[str, object]:
         "rotator": SimRotator(rig),
         "safety": SimSafetyMonitor(),
         "covercalibrator": SimCoverCalibrator(rig),
+        "dome": SimDome(rig),
         "_rig": rig,
     }

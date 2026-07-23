@@ -39,6 +39,7 @@ ROLES: tuple[str, ...] = (
     "rotator",
     "covercalibrator",
     "guide_camera",
+    "dome",
 )
 
 
