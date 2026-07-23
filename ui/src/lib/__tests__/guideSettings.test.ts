@@ -16,6 +16,7 @@ import {
   DEC_GUIDE_ALGORITHMS,
   DEC_GUIDE_MODES,
   isValidDecGuideMode,
+  toSnake,
   type GuideSettings,
 } from "../guideSettings";
 
@@ -177,6 +178,38 @@ test("validateGuideSettings preserves a valid non-default decGuideMode", () => {
   s.decGuideMode = "south";
   const out = validateGuideSettings(s);
   assert(out.decGuideMode === "south", `decGuideMode: ${out.decGuideMode}`);
+});
+
+// (e) T7 — toSnake: camelCase client param keys -> engine snake_case keys.
+test("toSnake maps the RA Hysteresis default keys to snake_case", () => {
+  const out = toSnake(defaultGuideSettings().ra.params);
+  assert(out.min_move === 0.2, `min_move: ${out.min_move}`);
+  assert(out.hysteresis === 0.1, `hysteresis: ${out.hysteresis}`);
+  assert(out.aggression === 0.7, `aggression: ${out.aggression}`);
+  assert(Object.keys(out).length === 3, `unexpected keys: ${Object.keys(out).join(",")}`);
+});
+
+test("toSnake maps lowpass/lowpass2/z_filter keys (slopeWeight/aggressiveness/expFactor)", () => {
+  assert(
+    JSON.stringify(toSnake({ minMove: 0.2, slopeWeight: 5.0 })) ===
+      JSON.stringify({ min_move: 0.2, slope_weight: 5.0 }),
+    "lowpass keys",
+  );
+  assert(
+    JSON.stringify(toSnake({ minMove: 0.2, aggressiveness: 80 })) ===
+      JSON.stringify({ min_move: 0.2, aggressiveness: 80 }),
+    "lowpass2 keys",
+  );
+  assert(
+    JSON.stringify(toSnake({ minMove: 0.1, expFactor: 2.0 })) ===
+      JSON.stringify({ min_move: 0.1, exp_factor: 2.0 }),
+    "z_filter keys",
+  );
+});
+
+test("toSnake leaves already-lowercase keys unchanged", () => {
+  const out = toSnake({ minMove: 0.2, aggression: 1.0 });
+  assert(out.aggression === 1.0, `aggression: ${out.aggression}`);
 });
 
 console.log(`guideSettings.test.ts: ${passed} passed, ${failed} failed`);

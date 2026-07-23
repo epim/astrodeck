@@ -5,7 +5,7 @@ import pytest
 native = pytest.importorskip("astrodeck_native")  # skip cleanly when wheel absent
 
 import astrodeck.config as config_mod
-from astrodeck.config import ConfigStore, GuideConfig, DEC_GUIDE_MODES
+from astrodeck.config import ConfigStore, GuideConfig, GuideAxisParams, DEC_GUIDE_MODES
 from astrodeck.guide.native import guide_algo_config
 
 def _gaussian_frame(w, h, cx, cy, amp=4000.0, sg=1.6, bg=100):
@@ -211,3 +211,62 @@ def test_guide_algo_config_defensive_empty_on_failure(monkeypatch):
             raise RuntimeError("config store unavailable")
     monkeypatch.setattr(config_mod, "config_store", _Boom())
     assert guide_algo_config() == {}
+
+
+# ---- PRO-12 Tier 2 (T6): GuideAxisParams — nested per-axis engine tunables,
+# clamp in set_guide, forwarded as sub-dicts by guide_algo_config(). The
+# installed astrodeck_native wheel has NOT been rebuilt for T5 yet, so these
+# tests validate the Python plumbing only (model round-trip, clamping, dict
+# emission) — not any end-to-end effect on guiding. ----
+
+def test_guide_axis_params_default_all_none():
+    p = GuideAxisParams()
+    assert p.min_move is None
+    assert p.aggression is None
+    assert p.hysteresis is None
+    assert p.slope_weight is None
+    assert p.aggressiveness is None
+    assert p.exp_factor is None
+
+
+def test_set_guide_round_trips_ra_hysteresis_param(isolated_config):
+    isolated_config.set_guide(GuideConfig(ra_params=GuideAxisParams(hysteresis=0.3)))
+    dumped = isolated_config.cfg().guide.model_dump()
+    assert dumped["ra_params"]["hysteresis"] == pytest.approx(0.3)
+    # untouched fields on the same axis, and the other axis entirely, stay None
+    assert dumped["ra_params"]["aggression"] is None
+    assert dumped["dec_params"]["hysteresis"] is None
+
+
+def test_set_guide_clamps_axis_params(isolated_config):
+    out = isolated_config.set_guide(
+        GuideConfig(ra_params=GuideAxisParams(aggression=9, hysteresis=5)))
+    assert out.guide.ra_params.aggression == 2
+    assert out.guide.ra_params.hysteresis == pytest.approx(0.99)
+
+
+def test_set_guide_clamps_axis_params_negative_to_zero(isolated_config):
+    out = isolated_config.set_guide(
+        GuideConfig(dec_params=GuideAxisParams(
+            min_move=-1, slope_weight=-2, aggressiveness=-3, exp_factor=-4)))
+    assert out.guide.dec_params.min_move == 0
+    assert out.guide.dec_params.slope_weight == 0
+    assert out.guide.dec_params.aggressiveness == 0
+    assert out.guide.dec_params.exp_factor == 0
+
+
+def test_guide_algo_config_emits_axis_param_subdicts(isolated_config):
+    isolated_config.set_guide(GuideConfig(ra_params=GuideAxisParams(hysteresis=0.3)))
+    out = guide_algo_config()
+    assert out["ra_params"] == {"hysteresis": pytest.approx(0.3)}
+    assert out["dec_params"] == {}
+
+
+def test_guide_algo_config_all_default_emits_empty_axis_subdicts(isolated_config):
+    """An all-default GuideConfig must forward empty ra_params/dec_params
+    sub-dicts (exclude_none) so existing behavior is byte-identical to
+    pre-T6 forwarding."""
+    isolated_config.set_guide(GuideConfig())
+    out = guide_algo_config()
+    assert out["ra_params"] == {}
+    assert out["dec_params"] == {}
