@@ -137,6 +137,23 @@ def _mint_report_id(plan_name: str, started_at: float, taken: list[str]) -> str:
     return f"{rid}-{n}"
 
 
+def _frame_altitude(target, site: dict, when: float) -> float | None:
+    """Best-effort target altitude (deg) at capture time; ``None`` on any gap.
+
+    Reuses the grounded ``altaz`` pattern (the mount-floor guard below) with the
+    site's lat/lon. Never raises — a missing site key, a ``None`` target, or a bad
+    coordinate all fall through to ``None`` so report recording stays best-effort
+    (PRO-10 §1.6 Task B)."""
+    try:
+        from ..catalog import altaz
+        lat = site["latitude"]
+        lon = site["longitude"]
+        alt, _ = altaz(target.ra_hours, target.dec_deg, lat, lon, when)
+        return round(float(alt), 2)
+    except Exception:
+        return None
+
+
 class SafetyAbort(DeviceError):
     """Raised by the safety gate / mount-floor guard to tear the run down through
     the shielded park/warm wind-down (§1.9-G). A subclass of ``DeviceError`` so
@@ -1237,6 +1254,7 @@ class SequenceEngine:
         if self.reporter is None:
             return
         hfr = info.get("hfr") if isinstance(info, dict) else None
+        ecc = info.get("ecc") if isinstance(info, dict) else None
         rms = None
         try:
             if self.hub.guider and self.hub.guider.connected:
@@ -1253,7 +1271,10 @@ class SequenceEngine:
                 ts=time.time(), target=target.name, filter=step.filter,
                 frame_type=step.frame_type, exposure_s=step.exposure_s,
                 accepted=accepted, hfr=hfr, sensor_temp_c=temp,
-                guide_rms_total=rms, saved_path=saved))
+                guide_rms_total=rms, saved_path=saved,
+                gain=getattr(step, "gain", None), offset=getattr(step, "offset", None),
+                binning=getattr(step, "binning", None), ecc=ecc,
+                altitude_deg=_frame_altitude(target, self.hub.site, time.time())))
         except Exception as e:
             bus.log("warning", f"report record failed: {e}", "sequence")
 

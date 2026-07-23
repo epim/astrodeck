@@ -68,6 +68,13 @@ class FrameRecord(BaseModel):
     sensor_temp_c: float | None = None
     guide_rms_total: float | None = None
     saved_path: str | None = None
+    # --- PRO-10 stacking-bundle fields (all additive; every existing persisted
+    # report loads unchanged because each defaults to None) ------------------
+    gain: int | None = None
+    offset: int | None = None
+    binning: int | None = None
+    ecc: float | None = None
+    altitude_deg: float | None = None
 
 
 class FilterBreakdown(BaseModel):
