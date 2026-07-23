@@ -11,7 +11,7 @@ import PlanLibraryPanel from "../components/sequence/PlanLibraryPanel";
 import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
-import { humanizeSeqError } from "../lib/humanize";
+import { diagnoseFailure } from "../lib/troubleshoot";
 import { uid } from "../lib/ids";
 import { applyStepsToGroup } from "../lib/planGroups";
 import { SEQUENCE_TEMPLATES, templateSteps, type SequenceTemplate } from "../lib/sequenceTemplates";
@@ -84,6 +84,7 @@ export default function SequenceView() {
   const sequence = useStore((s) => s.sequence);
   const showToast = useStore((s) => s.showToast);
   const openLog = useStore((s) => s.openLog);
+  const openHelp = useStore((s) => s.openHelp);
   const setView = useStore((s) => s.setView);
   // Deep-link target for the finished-run "View session report →" action
   // (report viewer spec §3 Task 4) — the store stashes the id of the most
@@ -453,9 +454,18 @@ export default function SequenceView() {
                   <p className="text-sm text-ink leading-snug">
                     {sequence.state === "error" ? "Sequence failed" : "Sequence aborted"}
                   </p>
-                  <p className="text-xs text-ink/85 leading-snug mt-0.5">
-                    {humanizeSeqError(sequence.detail)}
-                  </p>
+                  {(() => {
+                    const diag = diagnoseFailure(sequence.detail);
+                    return (
+                      <>
+                        <p className="text-xs text-ink/85 leading-snug mt-0.5">{diag.cause} {diag.fix}</p>
+                        {diag.topic && (
+                          <button type="button" onClick={() => openHelp(diag.topic!)}
+                            className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
+                        )}
+                      </>
+                    );
+                  })()}
                   {sequence.detail && (
                     <p className="text-[10px] mono text-dim leading-snug mt-1 break-words">
                       {sequence.detail}

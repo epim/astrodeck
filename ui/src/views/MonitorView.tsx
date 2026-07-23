@@ -69,7 +69,7 @@ import {
   stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
-import { humanizeSeqError } from "../lib/humanize";
+import { diagnoseFailure } from "../lib/troubleshoot";
 import type { MonitorSnapshot, PreviewInfo } from "../types";
 
 // ---------------------------------------------------------------- thumb dimmer
@@ -123,6 +123,7 @@ export default function MonitorView() {
   const bootConnectFailed = useBootConnectFailed();
   const providers = useProviders();
   const setView = useStore((s) => s.setView);
+  const openHelp = useStore((s) => s.openHelp);
   // PRO-6 "Sub quality" tile (photometry/SNR design §3 Task 6) — reads the same
   // tested photometry.ts core as Capture's Suggest + Sequence's advisory chips.
   const photometryProfile = usePhotometry();
@@ -458,7 +459,18 @@ export default function MonitorView() {
                       <p className="text-sm text-ink">
                         {state === "error" ? "Sequence failed" : "Sequence aborted"}
                       </p>
-                      <p className="text-xs text-ink/85 mt-0.5">{humanizeSeqError(seq.detail)}</p>
+                      {(() => {
+                        const diag = diagnoseFailure(seq.detail);
+                        return (
+                          <>
+                            <p className="text-xs text-ink/85 mt-0.5">{diag.cause} {diag.fix}</p>
+                            {diag.topic && (
+                              <button type="button" onClick={() => openHelp(diag.topic!)}
+                                className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
+                            )}
+                          </>
+                        );
+                      })()}
                       {/* last error/warning log lines, inline */}
                       <div className="mt-1.5 flex flex-col gap-0.5">
                         {logs
