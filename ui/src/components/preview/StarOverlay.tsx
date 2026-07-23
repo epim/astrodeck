@@ -16,6 +16,7 @@
 // caller via onDecimated.
 import { useEffect, useMemo } from "react";
 import type { StarMark } from "../../types";
+import { ellipseGeom } from "../../lib/starEllipse";
 
 interface Props {
   stars: StarMark[];
@@ -77,6 +78,9 @@ export function StarOverlay({
         const dash = q === "bad" ? "3 2" : undefined;
         const key = `${s.x},${s.y}`;
         const isSel = selectedKey === key;
+        // ecc → SHAPE (ellipse aspect + orientation); HFR keeps color+style.
+        // null when no ecc (Pass-1 / untrusted) → plain circle below.
+        const geom = ellipseGeom(r, s.ecc, s.theta);
         return (
           <g
             key={key}
@@ -91,18 +95,49 @@ export function StarOverlay({
               onSelect(isSel ? null : s);
             }}
           >
-            {/* dark halo under-stroke */}
-            <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--halo)" strokeWidth={sw + 2} vectorEffect="non-scaling-stroke" />
-            <circle
-              cx={cx}
-              cy={cy}
-              r={r}
-              fill="none"
-              stroke={color}
-              strokeWidth={isSel ? sw + 1 : sw}
-              strokeDasharray={dash}
-              vectorEffect="non-scaling-stroke"
-            />
+            {geom ? (
+              <>
+                {/* dark halo under-stroke (elongation-oriented) */}
+                <ellipse
+                  cx={cx}
+                  cy={cy}
+                  rx={geom.rx}
+                  ry={geom.ry}
+                  transform={`rotate(${geom.rotDeg} ${cx} ${cy})`}
+                  fill="none"
+                  stroke="var(--halo)"
+                  strokeWidth={sw + 2}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <ellipse
+                  cx={cx}
+                  cy={cy}
+                  rx={geom.rx}
+                  ry={geom.ry}
+                  transform={`rotate(${geom.rotDeg} ${cx} ${cy})`}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={isSel ? sw + 1 : sw}
+                  strokeDasharray={dash}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </>
+            ) : (
+              <>
+                {/* dark halo under-stroke */}
+                <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--halo)" strokeWidth={sw + 2} vectorEffect="non-scaling-stroke" />
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={isSel ? sw + 1 : sw}
+                  strokeDasharray={dash}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </>
+            )}
             {/* invisible larger hit area for cold-thumb taps */}
             <circle cx={cx} cy={cy} r={r + 8} fill="transparent" />
           </g>

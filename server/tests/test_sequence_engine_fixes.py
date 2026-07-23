@@ -397,6 +397,22 @@ async def test_rejected_frames_do_not_feed_hfr_median(sim_hub):
     assert 2.2 in engine._recent_hfr
 
 
+# ----------------------------------- per-frame eccentricity ceiling gate
+
+async def test_max_eccentricity_gate(sim_hub):
+    """The max_eccentricity ceiling rejects frames whose median star ecc is above
+    the plan limit (trailing / tilt / coma), skips calibration frames, and abstains
+    when no ecc scalar is present. 0 = off."""
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(name="p", targets=[], max_eccentricity=0.6)
+    assert engine._check_quality({"ecc": 0.80}) is False   # elongated -> reject
+    assert engine._check_quality({"ecc": 0.50}) is True    # round enough -> keep
+    assert engine._check_quality({"ecc": 0.80}, calibration=True) is True  # calib skips
+    assert engine._check_quality({}) is True               # no ecc -> abstain
+    engine.plan = SequencePlan(name="p", targets=[])       # 0 = off
+    assert engine._check_quality({"ecc": 0.99}) is True
+
+
 # ----------------------------------- report finalize vs snapshot write do not race
 
 async def test_finalize_does_not_race_snapshot_write(temp_store, tmp_path, monkeypatch):

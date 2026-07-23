@@ -10,6 +10,7 @@ for focusing and star counts; not a photometry tool.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -31,6 +32,23 @@ class Star:
 #: the detector already found; star_marks asserts this coupling (P3-5).
 DEFAULT_MAX_STARS = 200
 DEFAULT_MAX_MARKS = 400
+
+
+def _ecc_theta(ixx: float, iyy: float, ixy: float) -> tuple[float, float]:
+    """Second-moment eccentricity and major-axis position angle.
+
+    ecc in [0,1] (0 = round); theta in radians, (−π/2, π/2], measured from +x.
+    Degenerate/negative covariance → (0.0, 0.0)."""
+    mean = (ixx + iyy) / 2.0
+    common = math.hypot((ixx - iyy) / 2.0, ixy)
+    lam1 = mean + common            # major eigenvalue
+    lam2 = mean - common            # minor eigenvalue
+    if lam1 <= 0.0:
+        return 0.0, 0.0
+    ratio = min(1.0, max(0.0, lam2 / lam1))
+    ecc = math.sqrt(1.0 - ratio)
+    theta = 0.5 * math.atan2(2.0 * ixy, ixx - iyy)
+    return float(ecc), float(theta)
 
 
 def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
@@ -82,9 +100,19 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         hfr = float((r * cut).sum() / total)
         if hfr <= 0.05 or hfr > half:
             continue
+        # Second moments on the same background-subtracted cutout → real
+        # eccentricity + major-axis PA (~5 cheap reductions, arrays already
+        # in scope). Population policy (unsaturated mid-bright) lives in
+        # star_marks; every detection carries a value here.
+        dx = xx - cx
+        dy = yy - cy
+        ixx = float((dx * dx * cut).sum() / total)
+        iyy = float((dy * dy * cut).sum() / total)
+        ixy = float((dx * dy * cut).sum() / total)
+        ecc, theta = _ecc_theta(ixx, iyy, ixy)
         stars.append(Star(
             x=x - half + cx, y=y - half + cy, flux=total,
-            hfr=hfr, peak=float(img[y, x]),
+            hfr=hfr, peak=float(img[y, x]), ecc=ecc, theta=theta,
         ))
     return stars
 
@@ -143,6 +171,14 @@ def star_marks(stars: list[Star], *, full_well: int | None = None,
             m["theta"] = round(float(s.theta), 3)
         marks.append(m)
     return marks
+
+
+def frame_eccentricity(marks: list[dict]) -> float | None:
+    """Representative frame eccentricity: median of the trusted marks' ``ecc``
+    (the mid-bright unsaturated population ``star_marks`` already attached ecc
+    to). ``None`` when no star carried an ecc — the gate then abstains."""
+    eccs = [m["ecc"] for m in marks if "ecc" in m]
+    return float(np.median(eccs)) if eccs else None
 
 
 def measure_stars(stars: list[Star], *, full_well: int | None = None,

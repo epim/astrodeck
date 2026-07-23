@@ -17,7 +17,13 @@ from astrodeck.imaging import (
     to_jpeg,
     to_thumb,
 )
-from astrodeck.imaging.stars import DEFAULT_MAX_MARKS, DEFAULT_MAX_STARS, Star
+from astrodeck.imaging.stars import (
+    DEFAULT_MAX_MARKS,
+    DEFAULT_MAX_STARS,
+    Star,
+    _ecc_theta,
+    frame_eccentricity,
+)
 
 
 def synthetic_field(n_stars: int = 20, sigma: float = 1.6,
@@ -139,12 +145,17 @@ def test_star_marks_shape_and_coords():
     stars = detect_stars(img)
     marks = star_marks(stars)
     assert isinstance(marks, list) and len(marks) >= 12
+    assert any("ecc" in m for m in marks)        # Pass 2 is now live
     for m in marks:
-        assert set(m) >= {"x", "y", "hfr"}     # Pass 1: no ecc/theta
-        assert "ecc" not in m and "theta" not in m
+        assert set(m) >= {"x", "y", "hfr"}
         assert 0 <= m["x"] <= img.shape[1]
         assert 0 <= m["y"] <= img.shape[0]
         assert m["hfr"] > 0
+        if "ecc" in m:
+            assert 0.0 <= m["ecc"] <= 1.0 and "theta" in m
+    # round synthetic stars -> low typical elongation
+    eccs = [m["ecc"] for m in marks if "ecc" in m]
+    assert eccs and float(np.median(eccs)) < 0.5
 
 
 def test_measure_frame_single_pass_matches_median_hfr():
@@ -178,3 +189,62 @@ def test_star_marks_ecc_only_for_unsaturated_midbright():
     marks = star_marks(stars, full_well=full_well)
     sat_mark = next(m for m in marks if m["x"] == 10)
     assert "ecc" not in sat_mark   # saturated star never carries ecc
+
+
+# ----------------------------------------------------------- eccentricity core
+
+def test_ecc_theta_exact_vectors():
+    # round: equal moments, no cross term
+    e, t = _ecc_theta(4.0, 4.0, 0.0)
+    assert e == 0.0 and t == 0.0
+    # horizontal elongation Ixx>Iyy: ecc=sqrt(1-1/9), PA=0
+    e, t = _ecc_theta(9.0, 1.0, 0.0)
+    assert abs(e - math.sqrt(8/9)) < 1e-9 and abs(t) < 1e-9
+    # vertical elongation Iyy>Ixx: same ecc, PA=+pi/2
+    e, t = _ecc_theta(1.0, 9.0, 0.0)
+    assert abs(e - math.sqrt(8/9)) < 1e-9 and abs(t - math.pi/2) < 1e-9
+    # 45 deg: equal diagonal, cross term -> PA=pi/4
+    e, t = _ecc_theta(5.0, 5.0, 4.0)
+    assert abs(e - math.sqrt(8/9)) < 1e-9 and abs(t - math.pi/4) < 1e-9
+    # degenerate guard
+    assert _ecc_theta(0.0, 0.0, 0.0) == (0.0, 0.0)
+
+
+def _elongated_blob(sx: float, sy: float, angle: float = 0.0,
+                    shape=(120, 120), flux=3.0e5) -> np.ndarray:
+    cx, cy = shape[1] / 2, shape[0] / 2
+    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    xr = (xx - cx) * math.cos(angle) + (yy - cy) * math.sin(angle)
+    yr = -(xx - cx) * math.sin(angle) + (yy - cy) * math.cos(angle)
+    g = flux * np.exp(-(xr**2 / (2*sx**2) + yr**2 / (2*sy**2)))
+    img = np.full(shape, 500.0) + g
+    return np.clip(img, 0, 65535).astype(np.uint16)
+
+
+def test_detect_stars_measures_elongation():
+    stars = detect_stars(_elongated_blob(sx=2.2, sy=1.1))   # analytic ecc ~0.866
+    assert stars, "expected a detection"
+    s = max(stars, key=lambda s: s.flux)
+    assert 0.6 < s.ecc < 0.95          # box truncation lowers it below analytic
+    assert abs(s.theta) < 0.2          # major axis ~ +x
+
+
+def test_detect_stars_round_is_low_ecc():
+    stars = detect_stars(_elongated_blob(sx=1.5, sy=1.5))
+    s = max(stars, key=lambda s: s.flux)
+    assert s.ecc < 0.25
+
+
+def test_detect_stars_pa_tracks_rotation():
+    stars = detect_stars(_elongated_blob(sx=2.2, sy=1.1, angle=math.pi/4))
+    s = max(stars, key=lambda s: s.flux)
+    assert abs(abs(s.theta) - math.pi/4) < 0.25
+
+
+def test_frame_eccentricity_median_of_trusted():
+    assert frame_eccentricity([]) is None
+    assert frame_eccentricity([{"x": 1, "y": 1, "hfr": 2.0}]) is None  # no ecc key
+    marks = [{"x": 1, "y": 1, "hfr": 2.0, "ecc": 0.2, "theta": 0.0},
+             {"x": 2, "y": 2, "hfr": 2.0, "ecc": 0.4, "theta": 0.0},
+             {"x": 3, "y": 3, "hfr": 2.0, "ecc": 0.6, "theta": 0.0}]
+    assert abs(frame_eccentricity(marks) - 0.4) < 1e-9

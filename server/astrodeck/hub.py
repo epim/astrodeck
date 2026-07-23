@@ -40,6 +40,7 @@ from .imaging import (
     compute_histogram,
     detect_stars,
     display_histogram,
+    frame_eccentricity,
     measure_stars,
     save_fits,
     stretch_with,
@@ -1535,6 +1536,12 @@ class Hub:
                                 "white": round(white, 4)},
                 "star_list": marks,
             })
+            # Representative frame eccentricity = median of the trusted marks'
+            # ecc (no second detection pass). setdefault so a backend-supplied
+            # ecc (native/NINA) wins, mirroring hfr/stars below.
+            fecc = frame_eccentricity(marks)
+            if fecc is not None:
+                info.setdefault("ecc", round(fecc, 3))
             # Image-derived cloud verdict, reusing the star count from the single
             # detection pass above (no second detect). Linear frames only — the
             # contrast metric needs unstretched pixels. Complements the
