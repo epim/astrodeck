@@ -82,6 +82,32 @@ export function isValidDecAlgorithm(kind: string): kind is GuideAlgorithmKind {
   return DEC_GUIDE_ALGORITHMS.some((o) => o.value === kind);
 }
 
+// ------------------------------------------------------- Dec guide direction
+// PRO-12 Tier 1: Auto / North / South / Off — which direction(s) the native
+// guider is willing to correct on the Dec axis (distinct from the Dec
+// ALGORITHM above). Mirrors the engine's `parse_dec_mode`
+// (native/crates/astrodeck-native/src/lib.rs:875-885) and the persisted
+// `GuideConfig.dec_guide_mode` (server/astrodeck/config.py). Already forwarded
+// end-to-end by `_build_engine_config` — no Rust change needed here.
+
+export type DecGuideMode = "auto" | "north" | "south" | "off";
+
+export interface DecGuideModeOption {
+  value: DecGuideMode;
+  label: string;
+}
+
+export const DEC_GUIDE_MODES: readonly DecGuideModeOption[] = [
+  { value: "auto", label: "Auto (both directions)" },
+  { value: "north", label: "North only" },
+  { value: "south", label: "South only" },
+  { value: "off", label: "Off (no Dec guiding)" },
+];
+
+export function isValidDecGuideMode(m: string): m is DecGuideMode {
+  return DEC_GUIDE_MODES.some((o) => o.value === m);
+}
+
 // ---------------------------------------------------------------- edit model
 // The per-axis selection the GuideView settings drawer edits and PUTs to
 // `/api/guide/settings`. Each axis carries its algorithm KIND plus the dossier
@@ -98,6 +124,10 @@ export interface AxisGuideSettings {
 export interface GuideSettings {
   ra: AxisGuideSettings;
   dec: AxisGuideSettings;
+  /** Dec guide DIRECTION (PRO-12 Tier 1; the engine's `dec_guide_mode` config
+   *  key) — Auto / North only / South only / Off. Distinct from `dec.algorithm`
+   *  above (which picks the correction algorithm, not the allowed direction). */
+  decGuideMode: DecGuideMode;
   /** Static Dec backlash-compensation seed pulse (ms) added on a Dec direction
    *  reversal (dossier §10.1; the engine's `blc_pulse_ms` config key). 0 =
    *  disabled, matching PHD2's shipped default. It is an engine-level Dec-axis
@@ -108,8 +138,9 @@ export interface GuideSettings {
 }
 
 /** A FRESH default GuideSettings: RA Hysteresis (0.7/0.1/0.2), Dec Resist Switch
- *  (1.0) — the dossier §15 PHD2 defaults. Deep-copies GUIDE_ALGORITHM_DEFAULTS so
- *  a caller mutating the result never poisons the shared default table. */
+ *  (1.0), Dec guide direction Auto — the dossier §15 PHD2 defaults. Deep-copies
+ *  GUIDE_ALGORITHM_DEFAULTS so a caller mutating the result never poisons the
+ *  shared default table. */
 export function defaultGuideSettings(): GuideSettings {
   return {
     ra: {
@@ -120,6 +151,7 @@ export function defaultGuideSettings(): GuideSettings {
       algorithm: DEFAULT_DEC_ALGORITHM,
       params: { ...GUIDE_ALGORITHM_DEFAULTS[DEFAULT_DEC_ALGORITHM] },
     },
+    decGuideMode: "auto", // DecMode default (engine.rs:168)
     blcPulseMs: 0, // static BLC disabled by default (PHD2's shipped default)
   };
 }
@@ -165,13 +197,16 @@ function validateAxis(
 
 /** Validate + clamp a GuideSettings: rejects an unknown per-axis algorithm name
  *  (PPEC on Dec included, since it is RA-only), clamps aggression to <= 2.0,
- *  hysteresis to <= 0.99, and every param to >= 0, and clamps the static BLC
+ *  hysteresis to <= 0.99, and every param to >= 0, coerces an unknown
+ *  `decGuideMode` back to `"auto"` (snap, not throw — an invalid direction is
+ *  not as load-bearing as an invalid algorithm), and clamps the static BLC
  *  pulse to a non-negative integer ms (<= 10000). Returns a clamped COPY;
  *  throws on an unknown algorithm. */
 export function validateGuideSettings(s: GuideSettings): GuideSettings {
   return {
     ra: validateAxis(s.ra, isValidRaAlgorithm, "RA"),
     dec: validateAxis(s.dec, isValidDecAlgorithm, "Dec"),
+    decGuideMode: isValidDecGuideMode(s.decGuideMode) ? s.decGuideMode : "auto",
     blcPulseMs: clampBlcPulse(s.blcPulseMs),
   };
 }
