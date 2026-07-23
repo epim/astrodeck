@@ -789,6 +789,34 @@ class Hub:
         """The connected SafetyMonitor (cloud/rain/roof sensor), or None."""
         return self.devices.get("safety")
 
+    @property
+    def calibrator(self):
+        """The connected CoverCalibrator (flat panel + optional cover), or None."""
+        return self.devices.get("covercalibrator")
+
+    async def calibrator_on(self, brightness: int) -> None:
+        await self.require("covercalibrator").calibrator_on(int(brightness))
+
+    async def calibrator_off(self) -> None:
+        await self.require("covercalibrator").calibrator_off()
+
+    async def open_cover(self) -> None:
+        await self.require("covercalibrator").open_cover()
+
+    async def close_cover(self) -> None:
+        await self.require("covercalibrator").close_cover()
+
+    async def calibrator_status(self) -> dict | None:
+        """Live flat-panel state, or None when no CoverCalibrator is connected."""
+        cc = self.calibrator
+        if cc is None or not cc.connected:
+            return None
+        return {"state": await cc.get_calibrator_state(),
+                "brightness": await cc.get_brightness(),
+                "max_brightness": cc.max_brightness,
+                "has_cover": cc.has_cover,
+                "cover_state": (await cc.get_cover_state()).value}
+
     async def reconnect_role(self, role: str) -> bool:
         """Best-effort reconnect of one role from the recorded connection intent
         (Batch 4b escalation ``reconnect_resume`` / a dropped Alpaca link). Only

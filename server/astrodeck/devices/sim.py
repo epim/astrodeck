@@ -17,6 +17,8 @@ import numpy as np
 from .base import (
     Camera,
     CameraFrame,
+    CoverCalibrator,
+    CoverState,
     DeviceError,
     FilterWheel,
     Focuser,
@@ -224,6 +226,12 @@ class SimRig:
         # again to let it "return"; ``SimGuideCamera._render`` is the sole
         # reader.
         self.guide_star_hidden: bool = False
+        # --- PRO-5 flat panel: uniform ADU/sec the sim CoverCalibrator adds when
+        # on. OFF (0.0) by default so every existing SimCamera render is
+        # byte-for-byte unchanged (the guide_star_hidden / rotator_pa_offset_deg
+        # opt-in idiom). ``SimCoverCalibrator.calibrator_on`` sets it; the camera
+        # render (below) reads it.
+        self.flat_illumination = 0.0
 
     def guide_star_px(self, now_s: float) -> tuple[float, float]:
         """Ground-truth guide-star pixel position at instant ``now_s`` —
@@ -419,6 +427,12 @@ class SimCamera(Camera):
             # gentle sky background gradient
             yy = np.linspace(0, 1, h)[:, None]
             img += (8.0 + 14.0 * yy) * seconds * (1 + gain / 200.0)
+            # PRO-5 flat panel: a uniform, exposure-linear term so the sim panel
+            # is OBSERVABLE (turning it on brightens frames, letting the ADU
+            # solver converge end to end). Gated on the opt-in knob so a rig that
+            # never touches the panel renders byte-identically to before.
+            if self.rig.flat_illumination > 0:
+                img += self.rig.flat_illumination * seconds
 
         return np.clip(img, 0, 65535).astype(np.uint16)
 
@@ -1001,6 +1015,56 @@ class SimSafetyMonitor(SafetyMonitor):
         )
 
 
+class SimCoverCalibrator(CoverCalibrator):
+    """A simulated flat panel + motorized cover (PRO-5 / F-F).
+
+    ``calibrator_on`` sets ``rig.flat_illumination`` so SimCamera frames actually
+    brighten — a coherent rig, like the guide-loop wiring — which lets the ADU
+    solver converge against the sim end to end. The cover starts CLOSED."""
+
+    max_brightness = 255
+    has_cover = True
+    ADU_PER_BRIGHTNESS = 60.0    # ADU/sec per brightness unit at gain 0
+
+    def __init__(self, rig, name: str = "Sim Flat Panel"):
+        super().__init__(name)
+        self.rig = rig
+        self._brightness = 0
+        self._on = False
+        self._cover = CoverState.CLOSED
+
+    async def connect(self) -> None:
+        await asyncio.sleep(0.02)
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def get_brightness(self) -> int:
+        return self._brightness
+
+    async def get_calibrator_state(self) -> str:
+        return "ready" if self._on else "off"
+
+    async def calibrator_on(self, brightness: int) -> None:
+        self._brightness = max(0, min(self.max_brightness, int(brightness)))
+        self._on = True
+        self.rig.flat_illumination = self.ADU_PER_BRIGHTNESS * self._brightness
+
+    async def calibrator_off(self) -> None:
+        self._on = False
+        self.rig.flat_illumination = 0.0
+
+    async def get_cover_state(self) -> CoverState:
+        return self._cover
+
+    async def open_cover(self) -> None:
+        self._cover = CoverState.OPEN
+
+    async def close_cover(self) -> None:
+        self._cover = CoverState.CLOSED
+
+
 def build_sim_rig() -> dict[str, object]:
     """One coherent simulated observatory."""
     rig = SimRig()
@@ -1013,5 +1077,6 @@ def build_sim_rig() -> dict[str, object]:
         "switch": SimSwitch(),
         "rotator": SimRotator(rig),
         "safety": SimSafetyMonitor(),
+        "covercalibrator": SimCoverCalibrator(rig),
         "_rig": rig,
     }

@@ -818,6 +818,22 @@ export default function SequenceView() {
                         </button>
                       </div>
                     </div>
+                    {/* PRO-5 flat auto-exposure: a target-ADU field, Flat steps
+                        only. 0 = today's fixed-exposure behavior; >0 solves the
+                        exposure to that median ADU against the flat panel.
+                        Honest-disabled while running (§11.8): dim + lock +
+                        aria-disabled + title, never the native disabled attr. */}
+                    {(s.frame_type === "Flat") && (
+                      <div className="flex items-center gap-2 pl-1">
+                        <span className="label !text-[9px]">target ADU</span>
+                        <input
+                          className={`field !py-1 w-[90px] ${running ? "opacity-50 cursor-not-allowed" : ""}`}
+                          title="target ADU for auto-exposure (0 = fixed exposure)"
+                          aria-disabled={running || undefined}
+                          value={s.adu_target ?? 0}
+                          onChange={(e) => !running && patchStep(ti, si, { adu_target: num(e.target.value, s.adu_target ?? 0) })} />
+                      </div>
+                    )}
                     {stepVerdict === "too_short" && (
                       <p className="text-[10px] text-warn pl-1">
                         read-noise limited · sky-limited ≈ {Math.round(stepSkyLimitedS!)}s
