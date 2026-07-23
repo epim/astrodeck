@@ -20,6 +20,7 @@ from .livestack import (
     LiveStacker, StackOutcome, brightest_centroid, align_offset,
     DEFAULT_REJECT_FRAC, DEFAULT_REANCHOR_AFTER,
 )
+from .share import build_caption, compose_share_jpeg, fmt_exposure, fmt_share_date
 
 __all__ = [
     "auto_stretch", "auto_levels", "compute_histogram", "display_histogram",
@@ -29,4 +30,5 @@ __all__ = [
     "frame_contrast", "save_fits",
     "LiveStacker", "StackOutcome", "brightest_centroid", "align_offset",
     "DEFAULT_REJECT_FRAC", "DEFAULT_REANCHOR_AFTER",
+    "build_caption", "compose_share_jpeg", "fmt_exposure", "fmt_share_date",
 ]

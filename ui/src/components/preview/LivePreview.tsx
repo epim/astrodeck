@@ -51,6 +51,7 @@ export function LivePreview() {
   const { good: hfrGood, warn: hfrWarn } = useHfrThresholds();
   const night = useNight();
   const linkDown = useLinkDown();
+  const sequence = useStore((s) => s.sequence);
 
   const setViewport = useStore((s) => s.setViewport);
   const setStretch = useStore((s) => s.setStretch);
@@ -117,6 +118,7 @@ export function LivePreview() {
           starsAvailable={starsAvailable}
           clipAvailable={clipAvailable}
           linkDown={linkDown}
+          shareMeta={{ target: sequence.target, subs: sequence.progress?.frames_done }}
         />
 
         {shown && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} />}
