@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
-import { useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight } from "../store";
+import {
+  useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight,
+  usePhotometry, usePreview,
+} from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Field, Led, Panel, SegmentedControl, Stat, Toggle } from "../components/ui";
 import { useCanControlCapture } from "../lib/caps";
 import { isExposureInvalid } from "../lib/exposure";
+import { CAPTURE_PRESETS } from "../lib/capturePresets";
+import { suggestSubLength } from "../lib/photometry";
 import {
   FRAME_TYPES,
   FRAME_COACH,
@@ -55,6 +60,11 @@ export default function CaptureView() {
   const noteLightFrame = useStore((s) => s.noteLightFrame);
   const lastLight = useLastLight();
   const canCapture = useCanControlCapture(); // viewer => preview visible, controls read-only
+
+  // --- NOV-4 photometry profile + Suggest settings (photometry/SNR design §3 Task 4) ---
+  const photometryProfile = usePhotometry();
+  const setPhotometry = useStore((s) => s.setPhotometry);
+  const livePreview = usePreview();
 
   const [exposure, setExposure] = useState("2");
   const [gain, setGain] = useState("120");
@@ -129,6 +139,28 @@ export default function CaptureView() {
     save,
     target,
     frame_type: frameType,
+  };
+
+  // --- NOV-4 Suggest settings (photometry/SNR design §3 Task 4) ---
+  // egain prefers the manually-entered profile value; falls back to the
+  // camera-reported one (Task 7's status.camera.egain, native adapters only)
+  // when the profile is still empty. Never silently overrides a user entry.
+  const camEgain = status?.camera?.egain;
+  const usingCameraEgain = photometryProfile.egain <= 0 && !!camEgain && camEgain > 0;
+  const effectiveEgain = usingCameraEgain ? camEgain! : photometryProfile.egain;
+  const linearMedian = livePreview && livePreview.data_is_linear
+    ? livePreview.stats.median
+    : null;
+  const canSuggest = effectiveEgain > 0 && photometryProfile.readNoiseE > 0 && linearMedian != null;
+  const onSuggest = () => {
+    if (!canSuggest || linearMedian == null || !livePreview) return;
+    const s = suggestSubLength({
+      medianAdu: linearMedian, biasAdu: photometryProfile.biasAdu, egain: effectiveEgain,
+      readNoiseE: photometryProfile.readNoiseE, exposureS: livePreview.exposure_s,
+    });
+    if (!s.ok || s.suggestedS == null) { showToast("warning", s.reason); return; }
+    setExposure(String(s.suggestedS));
+    showToast("success", `Suggested ${s.suggestedS}s — ${s.reason}`);
   };
 
   const act = async (fn: () => Promise<unknown>) => {
@@ -335,6 +367,91 @@ export default function CaptureView() {
               </select>
             </Field>
           </div>
+
+          {/* ---- NOV-4 beginner capture presets (photometry/SNR design §3 Task 4):
+               one-tap exposure/gain/offset/binning fill via the same setter path as
+               "Match last lights" below. Pure data from lib/capturePresets. ---- */}
+          <div className="flex flex-wrap gap-2 mt-3">
+            {CAPTURE_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                className="btn tap min-h-[44px] !px-3"
+                disabled={!canCapture}
+                title={p.blurb}
+                onClick={() => {
+                  setExposure(String(p.exposure_s));
+                  setGain(String(p.gain));
+                  setOffset(String(p.offset));
+                  setBinning(String(p.binning));
+                  showToast("info", `Preset: ${p.label}`);
+                }}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ---- Camera photometry profile (NOV-4/PRO-6 shared input, §1.3): a small
+               persisted client-only egain/read-noise/bias-ADU profile. Feeds Suggest
+               settings below + the Sequence/Monitor SNR readouts (photometry.ts, the
+               tested core — no math duplicated here). All-zero = inert; never a wrong
+               number, only an honest "add these" prompt downstream. ---- */}
+          <div className="mt-3 border-t border-line pt-3">
+            <div className="label mb-2">Camera photometry</div>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Gain (e-/ADU)"
+                hint="Your camera's sensor gain in electrons/ADU at the gain setting above — from the read-noise harness or the camera datasheet.">
+                {usingCameraEgain ? (
+                  <div className="flex items-center gap-1.5">
+                    <input className="field" value={camEgain!.toFixed(3)} disabled title="From camera" />
+                  </div>
+                ) : (
+                  <input className="field" inputMode="decimal"
+                    value={photometryProfile.egain || ""}
+                    disabled={!canCapture}
+                    placeholder="0.25"
+                    onChange={(e) => setPhotometry({ egain: Number(e.target.value) || 0 })} />
+                )}
+                {usingCameraEgain && (
+                  <p className="text-[10px] text-dim mt-1 uppercase tracking-wider">from camera</p>
+                )}
+              </Field>
+              <Field label="Read noise (e-)"
+                hint="Your camera's read noise in electrons at this gain — from the read-noise harness or datasheet.">
+                <input className="field" inputMode="decimal"
+                  value={photometryProfile.readNoiseE || ""}
+                  disabled={!canCapture}
+                  placeholder="2.0"
+                  onChange={(e) => setPhotometry({ readNoiseE: Number(e.target.value) || 0 })} />
+              </Field>
+              <Field label="Bias (ADU)"
+                hint="Median of a Bias frame (offset pedestal). Defaults to 0 — slightly overestimates sky, which is safe.">
+                <input className="field" inputMode="decimal"
+                  value={photometryProfile.biasAdu || ""}
+                  disabled={!canCapture}
+                  placeholder="0"
+                  onChange={(e) => setPhotometry({ biasAdu: Number(e.target.value) || 0 })} />
+              </Field>
+            </div>
+            {canSuggest ? (
+              <button className="btn tap min-h-[44px] mt-3" onClick={onSuggest}>
+                Suggest settings
+              </button>
+            ) : (
+              // Honest-disabled idiom (§11.8): dim + lock glyph + aria-disabled +
+              // title, never native `disabled` — matches "Match last lights" below.
+              <span
+                className="btn tap min-h-[44px] mt-3 opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
+                aria-disabled
+                title={
+                  effectiveEgain <= 0 || photometryProfile.readNoiseE <= 0
+                    ? "Add camera gain + read noise above to enable Suggest"
+                    : "Take a light frame first — Suggest needs a linear preview"
+                }>
+                <Icon name="lock" size={12} /> Suggest settings
+              </span>
+            )}
+          </div>
+
           <div className="flex items-center gap-3 mt-3">
             <Toggle checked={save} onChange={setSave} disabled={!canCapture} label="Save FITS to library" />
             <span className="text-xs text-dim">save FITS to library</span>

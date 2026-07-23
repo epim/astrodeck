@@ -124,6 +124,13 @@ class Camera(Device):
     can_cool: bool = False
     has_dew_heater: bool = False
     bayer_pattern: str | None = None
+    #: Sensor gain in e-/ADU at the camera's current gain setting (0.0 = unknown
+    #: / not reported). Populated only by native adapters that expose it via
+    #: ``caps.extra["egain"]`` (photometry/SNR design §1.2); Alpaca/NINA/sim
+    #: backends leave this at the inert default. Lets the client photometry
+    #: profile (ui/src/store.ts PhotometryProfile) auto-prefill gain without a
+    #: manual read-noise-harness entry.
+    egain: float = 0.0
 
     @abstractmethod
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
