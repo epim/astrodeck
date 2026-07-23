@@ -1,10 +1,11 @@
 """Sequence plan data model (pydantic, shared with the REST API)."""
 from __future__ import annotations
 
+import re
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExposureStep(BaseModel):
@@ -63,6 +64,49 @@ class Target(BaseModel):
     schedule: Schedule = Field(default_factory=Schedule)
 
 
+_HHMM_RE = re.compile(r"^(\d{2}):(\d{2})$")
+
+TriggerKind = Literal[
+    "on_hfr_above", "on_guide_rms_above", "on_frame_rejected",
+    "on_target_complete", "at_time",
+]
+ActionKind = Literal["notify", "pause", "refocus", "dither", "abort"]
+
+
+class Instruction(BaseModel):
+    """A single additive when-trigger-do-action rule (PRO-3, conditional
+    sequencer v1). Flat closed-enum shape (mirrors the additive Schedule/plan
+    fields, not a discriminated union, so pydantic + the TS type mirror
+    trivially). A plan with no ``instructions`` runs BYTE-IDENTICAL to today.
+
+    Triggers: ``on_hfr_above``/``on_guide_rms_above`` are edge-triggered against
+    ``threshold``; ``on_frame_rejected``/``on_target_complete`` are per-event;
+    ``at_time`` fires once at the first frame boundary at/after ``at_time``.
+    Actions each map 1:1 to an EXISTING engine capability (no new teardown)."""
+    # stable identity (like Target/ExposureStep); backfilled on validation so an
+    # id-less client payload is never rejected.
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    enabled: bool = True
+    trigger: TriggerKind
+    threshold: float = Field(0.0, ge=0)     # on_hfr_above / on_guide_rms_above value
+    at_time: str | None = None              # "HH:MM" 24h local; required when trigger==at_time
+    action: ActionKind
+    message: str = ""                       # notify text / log + abort reason
+    level: Literal["info", "warning", "error"] = "warning"   # notify severity
+    once: bool = False                      # fire at most once per run
+    cooldown_s: float = Field(0.0, ge=0)    # min seconds between fires (0 = every boundary)
+    only_target: str | None = None          # gate: only while this target (by name) active
+
+    @model_validator(mode="after")
+    def _validate_at_time(self) -> "Instruction":
+        if self.trigger == "at_time":
+            m = _HHMM_RE.match(self.at_time or "")
+            if not m or int(m.group(1)) >= 24 or int(m.group(2)) >= 60:
+                raise ValueError(
+                    "trigger 'at_time' requires at_time in 'HH:MM' 24h form")
+        return self
+
+
 class SequencePlan(BaseModel):
     name: str = "Tonight"
     targets: list[Target] = []
@@ -97,6 +141,11 @@ class SequencePlan(BaseModel):
     # wind-down
     park_when_done: bool = False
     warm_cooler_when_done: bool = False
+    # --- conditional sequencer (PRO-3; ADDITIVE — [] => byte-identical run) ---
+    # An author-editable when-trigger-do-action layer on top of the fixed
+    # targets×steps plan. Empty by default so existing plans deserialize
+    # unchanged and the engine's eval path is a guarded no-op.
+    instructions: list[Instruction] = []
 
     def total_frames(self) -> int:
         return sum(s.count for t in self.targets for s in t.steps)

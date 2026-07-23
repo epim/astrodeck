@@ -8,6 +8,7 @@ import { HoldButton, IconButton, InfoDot, Panel, Toggle } from "../components/ui
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import SessionsPanel from "../components/sequence/SessionsPanel";
 import PlanLibraryPanel from "../components/sequence/PlanLibraryPanel";
+import InstructionsPanel from "../components/sequence/InstructionsPanel";
 import TargetSpark from "../components/sequence/TargetSpark";
 import { Icon } from "../components/icons";
 import type { IconName } from "../components/icons";
@@ -1113,6 +1114,11 @@ export default function SequenceView() {
             </div>
           </div>
         </Panel>
+
+        {/* Conditional sequencer (PRO-3): optional when-trigger-do-action rules
+            layered on the fixed plan. Empty === byte-identical run. One more
+            optional sub-panel, sits with the plan settings. */}
+        <InstructionsPanel plan={plan} setPlan={setPlan} canWrite={canRun} />
 
         {/* Multi-night sessions (sessions spec §7): resume/manage cards for
             non-abandoned sessions. Self-hides when there are none. Its OWN
