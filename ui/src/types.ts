@@ -41,6 +41,7 @@ export interface MountStatus {
 export interface RigStatus {
   connected: Record<string, DeviceInfo>;
   looping: boolean;
+  live_stack_active?: boolean; // NOV-1: Live View armed
   mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
@@ -188,6 +189,15 @@ export interface StarMark {
   theta?: number; // radians, Pass 2
 }
 
+// NOV-1 live-stacking readout — present only on raw/linear subs while Live View
+// is armed (server-side accumulator). Old clients ignore it.
+export interface LiveStackInfo {
+  frames: number;        // subs in the current stack
+  integrated_s: number;  // Σ accepted exposures
+  rejected: number;      // subs skipped by drift-reject
+  accepted: boolean;     // was THIS sub accepted (vs a drift skip)
+}
+
 export interface PreviewInfo {
   id: number;
   stats: { min: number; max: number; mean: number; median: number; std: number };
@@ -215,6 +225,7 @@ export interface PreviewInfo {
   hfr?: number;
   stars?: number;
   star_list?: StarMark[];
+  livestack?: LiveStackInfo; // NOV-1: present only while Live View is armed
   ts: number; // server epoch seconds (filmstrip age)
 }
 

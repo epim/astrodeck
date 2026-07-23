@@ -178,6 +178,9 @@ class Hub:
         self.previews: dict[int, PreviewEntry] = {}   # id -> ring slot
         self.preview_thumbs: dict[int, bytes] = {}    # id -> thumb (kept longer)
         self.last_frame = None                  # most recent CameraFrame
+        # Live View (NOV-1): the single EAA running-mean accumulator, non-None while
+        # armed. Fed each raw linear sub in _publish_preview; None = feature off.
+        self.live_stacker = None
         # the sequence engine registers itself so poll_status can report the
         # active plan's meridian_flip setting without importing the engine.
         self.engine = None
@@ -707,6 +710,7 @@ class Hub:
         the busy-cancel loop so a driver that runs teardown as its first step (the
         legacy apply path) can never cancel itself."""
         self.stop_loop()
+        self.live_stacker = None            # NOV-1: release the accumulator on teardown
         await self.polar.stop()
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
@@ -1515,6 +1519,26 @@ class Hub:
             })
             entry = PreviewEntry(display=display, mime=mime, thumb=thumb, meta=info)
         else:
+            sub = data                                   # the raw linear sub
+            # one detection pass on the SUB → alignment anchor + HFR + count +
+            # overlay marks + cloud verdict (all honest per-sub metrics)
+            stars = await asyncio.to_thread(detect_stars, sub)
+            # Live View (NOV-1): feed the armed accumulator this sub and, if a
+            # running mean exists, swap the pixels the IMAGE pipeline renders from
+            # the sub to the stacked mean. detect_stars / measure_stars /
+            # cloud_score stay on the sub below. No-op when unarmed.
+            ls_info = None
+            if self.live_stacker is not None:
+                outcome = await asyncio.to_thread(
+                    self.live_stacker.add, sub, frame.exposure_s, stars=stars)
+                mean = self.live_stacker.mean()
+                if mean is not None:
+                    data = mean                          # image pipeline shows the stack
+                    info["stats"] = await asyncio.to_thread(frame_stats, data)
+                ls_info = {"frames": outcome.frames,
+                           "integrated_s": round(outcome.integrated_s, 1),
+                           "rejected": outcome.rejected,
+                           "accepted": outcome.accepted}
             black, mid, white = await asyncio.to_thread(auto_levels, data)
             jpeg, dw, dh = await asyncio.to_thread(
                 to_jpeg, data, black=black, mid=mid, white=white)
@@ -1523,13 +1547,10 @@ class Hub:
             # display-domain histogram (handles have travel) + the true linear one
             stretched = await asyncio.to_thread(stretch_with, data, black, mid, white)
             hist_display = await asyncio.to_thread(display_histogram, stretched)
-            # one detection pass → HFR + count + overlay marks + cloud verdict
-            # (cloud detection inspects per-star peaks, so it shares this pass)
-            stars = await asyncio.to_thread(detect_stars, data)
             hfr, count, marks = measure_stars(stars, full_well=info["full_well"])
             info.update({
                 "histogram": hist_display,
-                "histogram_linear": await asyncio.to_thread(compute_histogram, data),
+                "histogram_linear": await asyncio.to_thread(compute_histogram, sub),
                 "histogram_domain": "display",
                 "display_width": dw, "display_height": dh,
                 "mime": "image/jpeg", "has_lossless": True,
@@ -1549,12 +1570,15 @@ class Hub:
             # forecast-based cloud cover in weather.py with what the camera sees.
             if data_is_linear:
                 cloud = await asyncio.to_thread(
-                    cloud_score, data, stars=stars)
+                    cloud_score, sub, stars=stars)
                 info["cloud"] = cloud.to_dict()
             # backend-measured HFR/stars (e.g. native) win; else our detection.
             if hfr is not None:
                 info.setdefault("hfr", round(float(hfr), 2))
                 info.setdefault("stars", int(count))
+            # NOV-1: additive live-stacking readout (only when Live View is armed).
+            if ls_info is not None:
+                info["livestack"] = ls_info
             # P3-1: do NOT retain the ~125 MB linear uint16 array in Pass 1 —
             # nothing reads entry.linear yet (/crop and /render are 501 stubs and
             # /lossless.png already covers paused/zoom). Re-enable retention
@@ -1765,6 +1789,23 @@ class Hub:
     @property
     def looping(self) -> bool:
         return self._loop_task is not None and not self._loop_task.done()
+
+    # -------------------------------------------------------- Live View (NOV-1)
+    def start_live_stack(self, reject_frac: float = 0.08) -> dict:
+        from .imaging import LiveStacker
+        self.live_stacker = LiveStacker(reject_frac=reject_frac)
+        bus.log("info", "Live View on — stacking subs", "capture")
+        return {"active": True}
+
+    def reset_live_stack(self) -> dict:
+        if self.live_stacker is not None:
+            self.live_stacker.reset()
+        return {"active": self.live_stacker is not None,
+                "frames": getattr(self.live_stacker, "frames", 0)}
+
+    def stop_live_stack(self) -> dict:
+        self.live_stacker = None
+        return {"active": False}
 
     # -------------------------------------------------------- solve & center
 
@@ -2261,6 +2302,7 @@ class Hub:
     async def poll_status(self) -> dict:
         out: dict[str, Any] = {"connected": self.summary()["devices"],
                                "looping": self.looping, "mode": self.mode}
+        out["live_stack_active"] = self.live_stacker is not None   # NOV-1 server truth
         # These must live in poll_status (not just summary): the store does a
         # wholesale set({status}) every 2s, so anything absent here flickers.
         s = self.site
