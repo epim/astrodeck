@@ -118,6 +118,32 @@ pub enum AlgoKind {
     Ppec,
 }
 
+/// Per-axis algorithm parameter overrides (dossier §15 knobs; Tier 2). Every
+/// field is `Option<f64>`, and `None` means "use this algorithm's dossier §15
+/// default" — so the [`Default`] (all `None`) reconstructs each algorithm
+/// **byte-identical to its own `::default()`**, the no-regression invariant a
+/// large body of golden tests relies on (see [`make_algo`], which reads each
+/// unset field straight off the algorithm's `::default()` rather than a copied
+/// literal, so the invariant holds by construction). A `Some(v)` is forwarded
+/// into the algorithm's clamping `new()`, so an out-of-range override is
+/// clamped or rejected exactly as that constructor would clamp it.
+///
+/// Fields not consumed by a given algorithm are simply ignored by its
+/// [`make_algo`] arm (e.g. `hysteresis` is Hysteresis-only, `slope_weight`
+/// Lowpass-only, `aggressiveness` Lowpass2-only, `exp_factor` ZFilter-only;
+/// `min_move` is shared by all the reactive algorithms). [`AlgoKind::Ppec`]
+/// ignores this struct entirely — the Gaussian-process predictor carries its
+/// own [`GpParams`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AxisAlgoParams {
+    pub min_move: Option<f64>,
+    pub aggression: Option<f64>,
+    pub hysteresis: Option<f64>,
+    pub slope_weight: Option<f64>,
+    pub aggressiveness: Option<f64>,
+    pub exp_factor: Option<f64>,
+}
+
 /// Engine configuration (dossier §15 defaults). `cal`/`find` are the
 /// calibration and star-find parameter blocks; the rest are the move-pipeline
 /// and algorithm knobs.
@@ -153,6 +179,12 @@ pub struct EngineConfig {
     /// the top-100 PSF-response peaks (dossier §2.3 `TOP_N`) long before a
     /// list this large could form.
     pub max_stars: usize,
+    /// Per-axis algorithm parameter overrides (Tier 2). Defaults to
+    /// [`AxisAlgoParams::default`] (all `None`) on each axis, so the shipped
+    /// default engine constructs every algorithm at its dossier §15 default —
+    /// the no-regression invariant. Consumed by [`make_algo`] at construction.
+    pub ra_params: AxisAlgoParams,
+    pub dec_params: AxisAlgoParams,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +202,8 @@ impl Default for EngineConfig {
             dec_algorithm: AlgoKind::ResistSwitch,
             blc_pulse_ms: 0,
             max_stars: 1,
+            ra_params: AxisAlgoParams::default(),
+            dec_params: AxisAlgoParams::default(),
         }
     }
 }
@@ -363,17 +397,72 @@ pub struct GuideEngine {
 /// PHD2 `mount.cpp:227-240` — present in `RA_ALGORITHMS`, absent from
 /// `DEC_ALGORITHMS`); a Dec `ppec` configuration is rejected at the PyO3
 /// validation layer (`astrodeck-native/src/lib.rs`) BEFORE it reaches here,
-/// so the constructor still never fails and this signature is unchanged. The
-/// Dec arm keeps the documented [`ResistSwitch`] fallback as defense in depth
-/// for a `ppec` string that somehow bypasses validation.
-fn make_algo(kind: AlgoKind, is_ra: bool) -> Box<dyn GuideAlgorithm> {
+/// so the constructor still never fails. The Dec arm keeps the documented
+/// [`ResistSwitch`] fallback as defense in depth for a `ppec` string that
+/// somehow bypasses validation.
+///
+/// Tier 2: `p` carries the per-axis [`AxisAlgoParams`] overrides. Each arm
+/// forwards `p`'s set fields into the algorithm's clamping `new()`, and reads
+/// every UNSET (`None`) field straight off that algorithm's own `::default()`.
+/// The consequence is the load-bearing no-regression invariant: an all-`None`
+/// `p` reconstructs each algorithm byte-identical to `::default()`, because
+/// every argument then equals the exact value `::default()` itself passes to
+/// `new()`. An out-of-range `Some(v)` is clamped/rejected by the reused `new()`
+/// (upstream's constructor-time validation), never here. [`AlgoKind::Ppec`]
+/// ignores `p` — the Gaussian-process predictor carries its own [`GpParams`].
+fn make_algo(kind: AlgoKind, is_ra: bool, p: &AxisAlgoParams) -> Box<dyn GuideAlgorithm> {
     match kind {
-        AlgoKind::Hysteresis => Box::new(Hysteresis::default()),
-        AlgoKind::ResistSwitch => Box::new(ResistSwitch::default()),
-        AlgoKind::Lowpass => Box::new(Lowpass::default()),
-        AlgoKind::Lowpass2 => Box::new(Lowpass2::default()),
-        AlgoKind::ZFilter => Box::new(ZFilter::default()),
+        AlgoKind::Hysteresis => {
+            // new(hysteresis, aggression, min_move); hysteresis clamps to
+            // [0, 0.99], aggression to [0, 2] (else default), min_move < 0 ->
+            // default (guide_algorithm_hysteresis.cpp validation).
+            let d = Hysteresis::default();
+            Box::new(Hysteresis::new(
+                p.hysteresis.unwrap_or(d.hysteresis),
+                p.aggression.unwrap_or(d.aggression),
+                p.min_move.unwrap_or(d.min_move),
+            ))
+        }
+        AlgoKind::ResistSwitch => {
+            // new(min_move, aggression, fast_switch). AxisAlgoParams has no
+            // fast_switch knob; keep the default's `true` (dossier §6.2/§15).
+            let d = ResistSwitch::default();
+            Box::new(ResistSwitch::new(
+                p.min_move.unwrap_or(d.min_move),
+                p.aggression.unwrap_or(d.aggression),
+                d.fast_switch,
+            ))
+        }
+        AlgoKind::Lowpass => {
+            // new(min_move, slope_weight).
+            let d = Lowpass::default();
+            Box::new(Lowpass::new(
+                p.min_move.unwrap_or(d.min_move),
+                p.slope_weight.unwrap_or(d.slope_weight),
+            ))
+        }
+        AlgoKind::Lowpass2 => {
+            // new(min_move, aggressiveness).
+            let d = Lowpass2::default();
+            Box::new(Lowpass2::new(
+                p.min_move.unwrap_or(d.min_move),
+                p.aggressiveness.unwrap_or(d.aggressiveness),
+            ))
+        }
+        AlgoKind::ZFilter => {
+            // new(min_move, exp_factor); exp_factor < 1.0 -> default, and the
+            // corner-period -> Butterworth/Bessel design choice happens inside
+            // new() (guide_algorithm_zfilter.cpp).
+            let d = ZFilter::default();
+            Box::new(ZFilter::new(
+                p.min_move.unwrap_or(d.min_move),
+                p.exp_factor.unwrap_or(d.exp_factor),
+            ))
+        }
         AlgoKind::Ppec => {
+            // PPEC ignores the reactive per-axis knobs (its own GpParams govern
+            // it); unchanged from before Tier 2.
+            let _ = p;
             if is_ra {
                 Box::new(GaussianProcessGuider::new(GpParams::default()))
             } else {
@@ -410,8 +499,8 @@ impl GuideEngine {
     /// [`begin_guiding`](Self::begin_guiding) (reuse a persisted one).
     pub fn new(cfg: EngineConfig) -> Self {
         GuideEngine {
-            ra_algo: make_algo(cfg.ra_algorithm, true),
-            dec_algo: make_algo(cfg.dec_algorithm, false),
+            ra_algo: make_algo(cfg.ra_algorithm, true, &cfg.ra_params),
+            dec_algo: make_algo(cfg.dec_algorithm, false, &cfg.dec_params),
             cfg,
             cal: None,
             scope: ScopePointing::default(),
@@ -1690,6 +1779,225 @@ impl GuideEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // Tier 2 (T5): per-axis AxisAlgoParams carried through `make_algo`.
+    //
+    // The load-bearing invariant is that an all-`None` AxisAlgoParams (the
+    // Default) reconstructs each algorithm byte-identical to `::default()`.
+    // `make_algo` returns a `Box<dyn GuideAlgorithm>` and the trait exposes
+    // neither `Debug` nor `PartialEq`, so equality is asserted BEHAVIOURALLY:
+    // identical `result()` output over a varied probe sequence. For these
+    // deterministic algorithms (the GP predictor included — it runs a
+    // synthesized, dt-driven clock, never a wall clock) identical traces pin
+    // identical construction parameters.
+
+    /// Drive a boxed algorithm through `inputs`, collecting each correction.
+    fn drive(mut algo: Box<dyn GuideAlgorithm>, inputs: &[f64]) -> Vec<f64> {
+        inputs.iter().map(|&x| algo.result(x)).collect()
+    }
+
+    /// Above and below the deadband, both signs, with repeats — so min_move
+    /// (veto), hysteresis (last-move memory) and aggression (scale) each leave
+    /// a fingerprint on the trace.
+    const PROBE: [f64; 10] = [1.0, -0.5, 0.3, 2.0, -1.5, 0.1, 0.05, 0.8, -0.8, 1.2];
+
+    /// Invariant (a): all-`None` params ⇒ each algorithm equals `::default()`.
+    /// This is the no-regression pin dozens of golden tests rely on.
+    #[test]
+    fn axis_params_all_none_reconstructs_each_algorithm_default() {
+        let none = AxisAlgoParams::default();
+        assert_eq!(
+            none,
+            AxisAlgoParams {
+                min_move: None,
+                aggression: None,
+                hysteresis: None,
+                slope_weight: None,
+                aggressiveness: None,
+                exp_factor: None,
+            },
+            "Default is all-None"
+        );
+
+        assert_eq!(
+            drive(make_algo(AlgoKind::Hysteresis, true, &none), &PROBE),
+            drive(Box::new(Hysteresis::default()), &PROBE),
+            "Hysteresis all-None must equal ::default()"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::ResistSwitch, false, &none), &PROBE),
+            drive(Box::new(ResistSwitch::default()), &PROBE),
+            "ResistSwitch all-None must equal ::default()"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::Lowpass, false, &none), &PROBE),
+            drive(Box::new(Lowpass::default()), &PROBE),
+            "Lowpass all-None must equal ::default()"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::Lowpass2, false, &none), &PROBE),
+            drive(Box::new(Lowpass2::default()), &PROBE),
+            "Lowpass2 all-None must equal ::default()"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::ZFilter, false, &none), &PROBE),
+            drive(Box::new(ZFilter::default()), &PROBE),
+            "ZFilter all-None must equal ::default()"
+        );
+
+        // PPEC arm is unchanged (params ignored): RA == GP(default),
+        // Dec == ResistSwitch::default() fallback.
+        assert_eq!(
+            drive(make_algo(AlgoKind::Ppec, true, &none), &PROBE),
+            drive(
+                Box::new(GaussianProcessGuider::new(GpParams::default())),
+                &PROBE
+            ),
+            "PPEC RA arm unchanged (GP default)"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::Ppec, false, &none), &PROBE),
+            drive(Box::new(ResistSwitch::default()), &PROBE),
+            "PPEC Dec arm unchanged (ResistSwitch fallback)"
+        );
+
+        // PPEC genuinely ignores `p`: a fully-populated params struct changes
+        // nothing on either PPEC arm.
+        let filled = AxisAlgoParams {
+            min_move: Some(0.03),
+            aggression: Some(0.42),
+            hysteresis: Some(0.55),
+            slope_weight: Some(9.0),
+            aggressiveness: Some(33.0),
+            exp_factor: Some(3.0),
+        };
+        assert_eq!(
+            drive(make_algo(AlgoKind::Ppec, true, &filled), &PROBE),
+            drive(make_algo(AlgoKind::Ppec, true, &none), &PROBE),
+            "PPEC RA ignores params"
+        );
+        assert_eq!(
+            drive(make_algo(AlgoKind::Ppec, false, &filled), &PROBE),
+            drive(make_algo(AlgoKind::Ppec, false, &none), &PROBE),
+            "PPEC Dec ignores params"
+        );
+    }
+
+    /// The production seam: the shipped default engine (all-None params) builds
+    /// RA `Hysteresis::default()` and Dec `ResistSwitch::default()` — the exact
+    /// pre-Tier-2 behavior. Exercises both `GuideEngine::new` call sites.
+    #[test]
+    fn default_engine_constructs_default_algorithms() {
+        let mut e = GuideEngine::new(EngineConfig::default());
+        let ra_got: Vec<f64> = PROBE.iter().map(|&x| e.ra_algo.result(x)).collect();
+        let dec_got: Vec<f64> = PROBE.iter().map(|&x| e.dec_algo.result(x)).collect();
+        assert_eq!(
+            ra_got,
+            drive(Box::new(Hysteresis::default()), &PROBE),
+            "default RA == Hysteresis::default()"
+        );
+        assert_eq!(
+            dec_got,
+            drive(Box::new(ResistSwitch::default()), &PROBE),
+            "default Dec == ResistSwitch::default()"
+        );
+    }
+
+    /// (b): set hysteresis/aggression/min_move reach the constructed algorithm.
+    #[test]
+    fn axis_params_set_values_reach_hysteresis() {
+        let p = AxisAlgoParams {
+            hysteresis: Some(0.3),
+            aggression: Some(0.5),
+            min_move: Some(0.15),
+            ..AxisAlgoParams::default()
+        };
+        // All three in range: the constructed algo must match a Hysteresis
+        // built directly with those exact (unclamped) values.
+        assert_eq!(
+            drive(make_algo(AlgoKind::Hysteresis, true, &p), &PROBE),
+            drive(Box::new(Hysteresis::new(0.3, 0.5, 0.15)), &PROBE),
+            "set hysteresis/aggression/min_move must reach Hysteresis::new"
+        );
+
+        // Isolate min_move: 0.17 sits BETWEEN the override (0.15) and the
+        // default (0.2), so it is vetoed only under the default deadband —
+        // proving the 0.15 override, not just aggression, actually landed.
+        let mut with_override = make_algo(AlgoKind::Hysteresis, true, &p);
+        assert_ne!(
+            with_override.result(0.17),
+            0.0,
+            "0.17 > overridden min_move 0.15 must NOT be vetoed"
+        );
+        let mut with_default =
+            make_algo(AlgoKind::Hysteresis, true, &AxisAlgoParams::default());
+        assert_eq!(
+            with_default.result(0.17),
+            0.0,
+            "0.17 < default min_move 0.2 is vetoed"
+        );
+    }
+
+    /// (c): an out-of-range override is clamped/rejected by the reused `new()`
+    /// — hysteresis 1.5 → 0.99, aggression 5.0 → default 0.7 (min_move unset →
+    /// default 0.2). The clamp lives in the algorithm constructor, never here.
+    #[test]
+    fn axis_params_out_of_range_are_clamped_by_reused_new() {
+        let p = AxisAlgoParams {
+            hysteresis: Some(1.5),
+            aggression: Some(5.0),
+            ..AxisAlgoParams::default()
+        };
+        // Reference built with the EXACT post-clamp values (all in range, so
+        // its own `new()` stores them verbatim).
+        assert_eq!(
+            drive(make_algo(AlgoKind::Hysteresis, true, &p), &PROBE),
+            drive(Box::new(Hysteresis::new(0.99, 0.7, 0.2)), &PROBE),
+            "1.5 hysteresis clamps to 0.99; 5.0 aggression falls back to 0.7"
+        );
+
+        // Legible spot-check: fresh algo, first correction on 1.0 px is
+        // ((1 - 0.99) * 1.0) * 0.7 — proving hysteresis 0.99 and aggression 0.7
+        // are what the algorithm actually holds (not the raw 1.5 / 5.0).
+        let mut a = make_algo(AlgoKind::Hysteresis, true, &p);
+        let expect_first = ((1.0 - 0.99) * 1.0) * 0.7;
+        assert!(
+            (a.result(1.0) - expect_first).abs() < 1e-12,
+            "clamped hysteresis 0.99 + fallback aggression 0.7"
+        );
+    }
+
+    /// Call-site wiring: `cfg.ra_params` feeds the RA axis and `cfg.dec_params`
+    /// the Dec axis — not swapped, each axis reads its OWN sub-struct. Both
+    /// axes run Hysteresis so they differ only by their params.
+    #[test]
+    fn engine_new_wires_ra_params_to_ra_and_dec_params_to_dec() {
+        let cfg = EngineConfig {
+            ra_algorithm: AlgoKind::Hysteresis,
+            dec_algorithm: AlgoKind::Hysteresis,
+            ra_params: AxisAlgoParams {
+                aggression: Some(0.2),
+                ..AxisAlgoParams::default()
+            },
+            dec_params: AxisAlgoParams {
+                aggression: Some(0.9),
+                ..AxisAlgoParams::default()
+            },
+            ..EngineConfig::default()
+        };
+        let mut e = GuideEngine::new(cfg);
+        // Fresh Hysteresis (default hysteresis 0.1, last_move 0) on 1.0 px:
+        // (1 - 0.1) * 1.0 * aggression = 0.9 * aggression.
+        assert!(
+            (e.ra_algo.result(1.0) - 0.9 * 0.2).abs() < 1e-12,
+            "RA axis uses ra_params.aggression (0.2)"
+        );
+        assert!(
+            (e.dec_algo.result(1.0) - 0.9 * 0.9).abs() < 1e-12,
+            "Dec axis uses dec_params.aggression (0.9)"
+        );
+    }
 
     // Provenance: direct unit coverage of `refine_multistar`'s PERSISTED
     // stabilization state machine (dossier §4; `m_stabilizing` /
