@@ -190,3 +190,213 @@ async def test_park_fails_refuses_close_and_pages(sim_hub, temp_store):
     assert not await tel.is_parked()
     assert _logged("AUTOMATED ROOF CLOSE FAILED") or _logged("REFUSED"), \
         "a refused auto-close must page via an error log"
+
+
+# =============================================================== auto-reopen (D3)
+#
+# reopen_dome_when_safe=True (+ close_dome_on_unsafe) turns an unsafe trip into
+# CLOSE → wait-for-safe (debounced) → REOPEN → re-acquire → RESUME instead of
+# ending the run. The SimDome's collision model still makes ordering PROVABLE: a
+# recorded "close" event means the mount was parked first (else close_shutter
+# would have raised). A "close" THEN "open" in the spy proves close-before-reopen.
+
+
+def _spy_shutter(dome):
+    """Record every actual open/close on the dome (wraps the real methods so the
+    SimDome collision model + state transitions still run). ``events`` is the
+    ordered list of "close"/"open"; proving order and that reopen used ONLY
+    open_shutter (never a raw close)."""
+    events: list[str] = []
+    orig_open = dome.open_shutter
+    orig_close = dome.close_shutter
+
+    async def spy_open():
+        events.append("open")
+        await orig_open()
+
+    async def spy_close():
+        events.append("close")
+        await orig_close()
+
+    dome.open_shutter = spy_open
+    dome.close_shutter = spy_close
+    return events
+
+
+def force_cached_safe(hub: Hub) -> None:
+    mon = hub.devices.get("safety")
+    if mon is not None:
+        mon.force_safe()
+    hub._safety_reading = SafetyReading(is_safe=True, source="Sim Safety Monitor")
+
+
+async def test_reopen_happy_path_closes_waits_reopens_resumes(sim_hub, temp_store):
+    """close_dome_on_unsafe + reopen_dome_when_safe: an unsafe trip CLOSES the roof
+    over the PARKED mount (via close_observatory — a recorded 'close' proves the
+    park ran first), waits, then on safe-again REOPENS (open_shutter) and
+    re-acquires the target and RESUMES to completion. INVARIANTS 1 (close via the
+    never-crush guard), 3 (reopen = open_shutter), 4/happy (resume streak)."""
+    dome = sim_hub.devices.get("dome")
+    tel = sim_hub.require("telescope")
+    events = _spy_shutter(dome)
+    set_safety(temp_store, enabled=True, on_unsafe="pause", unsafe_consecutive=1,
+               resume_safe_consecutive=1, max_pause_min=0, min_alt_deg=0.0,
+               close_dome_on_unsafe=True, reopen_dome_when_safe=True)
+    force_cached_unsafe(sim_hub, "cloud sensor")
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())
+    # The roof CLOSES over the parked gear and the run holds paused (does not end).
+    # Wait for BOTH the close AND the paused state: the close event fires inside
+    # close_observatory a hair before _await_safe_and_reopen sets state=paused.
+    assert await wait_for(lambda: "close" in events
+                          and engine.state.get("state") == "paused"), engine.state
+    assert await tel.is_parked(), "mount must be PARKED before the roof closed"
+    assert await dome.shutter_state() is DomeShutterState.CLOSED
+    assert "open" not in events, "must not reopen while still unsafe"
+
+    # Conditions clear → REOPEN (open_shutter), re-acquire, resume, complete.
+    force_cached_safe(sim_hub)
+    assert await wait_for(lambda: engine.state.get("state") == "complete",
+                          timeout=40), engine.state
+    assert events == ["close", "open"], events        # close BEFORE reopen
+    assert await dome.shutter_state() is DomeShutterState.OPEN
+    assert not await tel.is_parked(), "target must be re-acquired (unparked)"
+    assert _logged("reopening roof")
+    assert _logged("re-acquiring")
+
+
+async def test_reopen_close_refused_falls_back_to_open_sky_pause(sim_hub, temp_store):
+    """INVARIANT 2: if the never-crush close REFUSES (mount won't confirm parked),
+    the run does NOT enter the wait-reopen loop — it FALLS BACK to the open-sky
+    park-hold pause (the roof is never actuated → stays OPEN, never crushed), and
+    resumes when safe. A refused close never touches the shutter."""
+    dome = sim_hub.devices.get("dome")
+    tel = sim_hub.require("telescope")
+    events = _spy_shutter(dome)
+
+    async def broken_park():        # slews home but never confirms parked
+        pass
+
+    tel.park = broken_park
+    set_safety(temp_store, enabled=True, on_unsafe="pause", unsafe_consecutive=1,
+               resume_safe_consecutive=1, max_pause_min=0, min_alt_deg=0.0,
+               close_dome_on_unsafe=True, reopen_dome_when_safe=True)
+    force_cached_unsafe(sim_hub, "cloud sensor")
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())
+    # It fell back to the OPEN-sky park-hold pause (never crushed).
+    assert await wait_for(lambda: engine.state.get("state") == "paused"), engine.state
+    assert await dome.shutter_state() is DomeShutterState.OPEN, "roof never actuated"
+    assert "close" not in events, "a REFUSED close must never touch the shutter"
+    assert _logged("close refused") or _logged("holding under open sky")
+
+    # Clear the condition → the fallback pause resumes and completes normally.
+    force_cached_safe(sim_hub)
+    assert await wait_for(lambda: engine.state.get("state") == "complete",
+                          timeout=40), engine.state
+    assert "open" not in events, "fallback pause must not drive the shutter"
+    assert await dome.shutter_state() is DomeShutterState.OPEN
+
+
+async def test_reopen_max_pause_aborts_leaving_roof_closed(sim_hub, temp_store):
+    """INVARIANT 5: with the roof CLOSED, if conditions stay unsafe past
+    max_pause_min the run SafetyAborts and the roof is LEFT CLOSED (fail-safe) —
+    it is NEVER reopened. A tiny fractional cap keeps the test fast."""
+    dome = sim_hub.devices.get("dome")
+    tel = sim_hub.require("telescope")
+    events = _spy_shutter(dome)
+    set_safety(temp_store, enabled=True, on_unsafe="pause", unsafe_consecutive=1,
+               resume_safe_consecutive=1, max_pause_min=0, min_alt_deg=0.0,
+               close_dome_on_unsafe=True, reopen_dome_when_safe=True)
+    # 0.005 min == 0.3 s (pydantic doesn't re-validate on attribute assignment;
+    # the engine snapshots this same object at start()).
+    temp_store.cfg().safety.max_pause_min = 0.005
+    force_cached_unsafe(sim_hub, "rain")              # never cleared → must abort
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())
+    assert await wait_for(lambda: engine.state.get("state") == "aborted",
+                          timeout=20), engine.state
+    assert engine.state.get("end_reason") == "unsafe"
+    # Roof LEFT CLOSED (fail-safe), never reopened.
+    assert await dome.shutter_state() is DomeShutterState.CLOSED
+    assert "open" not in events, "max-pause must NOT reopen the roof"
+    assert await tel.is_parked()
+
+
+async def test_reopen_off_is_byte_identical_still_aborts(sim_hub, temp_store):
+    """INVARIANT 6: reopen_dome_when_safe=False (default) ⇒ close_dome_on_unsafe is
+    byte-identical to before — an unsafe trip ESCALATES to the park-and-close
+    teardown and the run ENDS aborted/unsafe. NO reopen loop, open_shutter never
+    called."""
+    dome = sim_hub.devices.get("dome")
+    tel = sim_hub.require("telescope")
+    events = _spy_shutter(dome)
+    set_safety(temp_store, enabled=True, on_unsafe="pause", unsafe_consecutive=1,
+               resume_safe_consecutive=1, max_pause_min=0, min_alt_deg=0.0,
+               close_dome_on_unsafe=True, reopen_dome_when_safe=False)
+    force_cached_unsafe(sim_hub, "cloud sensor")
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())
+    assert await wait_for(lambda: not engine.running), engine.state
+    assert engine.state.get("state") == "aborted"
+    assert engine.state.get("end_reason") == "unsafe"
+    assert await tel.is_parked()
+    assert await dome.shutter_state() is DomeShutterState.CLOSED
+    # The per-test shutter spy is the reliable proof of no reopen (bus.log_history
+    # is a cross-test accumulator, so a negative _logged() check is unreliable).
+    assert "open" not in events, "reopen OFF must never reopen the roof"
+
+
+async def test_reopen_debounce_single_safe_does_not_reopen(sim_hub, temp_store):
+    """INVARIANT 4: reopen requires resume_safe_consecutive CONSECUTIVE safe reads.
+    A single safe read INTERRUPTED by an unsafe read resets the streak — a passing
+    cloud must NOT cycle the roof. Driven deterministically by scripting
+    _read_safety once the roof is closed: [safe, UNSAFE, safe, safe] with
+    resume=2 must reopen only on the 4th scripted read (the interposed unsafe
+    delayed it), never the 3rd (which is what a missing reset would do)."""
+    dome = sim_hub.devices.get("dome")
+    events = _spy_shutter(dome)
+    set_safety(temp_store, enabled=True, on_unsafe="pause", unsafe_consecutive=1,
+               resume_safe_consecutive=2, max_pause_min=0, min_alt_deg=0.0,
+               close_dome_on_unsafe=True, reopen_dome_when_safe=True)
+    force_cached_unsafe(sim_hub, "cloud sensor")
+
+    engine = SequenceEngine(sim_hub)
+    engine.start(light_plan())
+    # Wait until the roof has closed and we are in the wait-for-safe loop.
+    assert await wait_for(lambda: "close" in events), engine.state
+
+    # Now drive the safety readings deterministically. A single SAFE then UNSAFE
+    # must reset the streak, so the 2 consecutive safes required come only from
+    # the LAST two scripted reads.
+    SAFE = SafetyReading(is_safe=True, source="Sim Safety Monitor")
+    UNSAFE = SafetyReading(is_safe=False, reason="passing cloud",
+                           source="Sim Safety Monitor")
+    script = [SAFE, UNSAFE, SAFE, SAFE]
+    st = {"i": 0}
+
+    async def scripted_read():
+        i = st["i"]
+        st["i"] += 1
+        return script[i] if i < len(script) else SAFE
+
+    reopen_at = {}
+    spy_open = dome.open_shutter           # the _spy_shutter wrapper (records "open")
+
+    async def counting_open():
+        reopen_at["reads"] = st["i"]       # scripted reads consumed at reopen time
+        await spy_open()
+
+    dome.open_shutter = counting_open      # wrap the spy: count reads, then record "open"
+    engine._read_safety = scripted_read
+
+    assert await wait_for(lambda: "reads" in reopen_at, timeout=20), engine.state
+    # The interposed UNSAFE reset the streak → reopen only after the 4th scripted
+    # read (2 consecutive safes AFTER the reset). A missing reset would reopen at 3.
+    assert reopen_at["reads"] >= 4, reopen_at
+    assert await wait_for(lambda: engine.state.get("state") == "complete",
+                          timeout=40), engine.state

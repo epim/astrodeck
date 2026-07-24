@@ -68,13 +68,18 @@ export default function SafetyPanel(): JSX.Element {
   const [dome, setDome] = useState<DomeState | null>(null);
   const seedCloseOnUnsafe = safety?.close_dome_on_unsafe ?? false;
   const seedCloseWhenDone = safety?.close_dome_when_done ?? false;
+  // PRO-4 D3: opt-in auto-reopen. Additive on the backend, so a legacy config
+  // without the key deserializes false — fall back to the same protective default.
+  const seedReopenWhenSafe = safety?.reopen_dome_when_safe ?? false;
   const [closeOnUnsafe, setCloseOnUnsafe] = useState(false);
   const [closeWhenDone, setCloseWhenDone] = useState(false);
+  const [reopenWhenSafe, setReopenWhenSafe] = useState(false);
   const [roofBusy, setRoofBusy] = useState(false);
   useEffect(() => {
     setCloseOnUnsafe(seedCloseOnUnsafe);
     setCloseWhenDone(seedCloseWhenDone);
-  }, [seedCloseOnUnsafe, seedCloseWhenDone]);
+    setReopenWhenSafe(seedReopenWhenSafe);
+  }, [seedCloseOnUnsafe, seedCloseWhenDone, seedReopenWhenSafe]);
   useEffect(() => {
     let live = true;
     getDomeState()
@@ -168,6 +173,10 @@ export default function SafetyPanel(): JSX.Element {
   const onToggleCloseWhenDone = async (on: boolean) => {
     setCloseWhenDone(on);
     await persistDomeFlag({ close_dome_when_done: on });
+  };
+  const onToggleReopenWhenSafe = async (on: boolean) => {
+    setReopenWhenSafe(on);
+    await persistDomeFlag({ reopen_dome_when_safe: on });
   };
 
   // Manual close: fence + park + close via the tested ordering guard on the
@@ -395,6 +404,41 @@ export default function SafetyPanel(): JSX.Element {
               onChange={onToggleCloseOnUnsafe}
               disabled={busy}
               label="Close roof on unsafe"
+              showState
+            />
+          </div>
+
+          {/* PRO-4 D3 opt-in auto-reopen — a SUB-control of "close on unsafe":
+              reopening requires closing first, so it is honest-disabled (§11.8:
+              dim + aria-disabled + pointer-events-none + title, NOT native
+              disabled) whenever close-on-unsafe is OFF. */}
+          <div
+            aria-disabled={!closeOnUnsafe}
+            title={
+              closeOnUnsafe
+                ? undefined
+                : "Turn on “Close roof on unsafe” first — reopening requires closing"
+            }
+            className={
+              closeOnUnsafe
+                ? "flex items-start justify-between gap-3 py-2 pl-6 border-t border-line"
+                : "flex items-start justify-between gap-3 py-2 pl-6 border-t border-line opacity-50 pointer-events-none select-none"
+            }
+          >
+            <div className="min-w-0">
+              <div className="text-sm text-ink">Reopen roof when safe again</div>
+              <p className="text-[11px] text-dim max-w-md">
+                Instead of ending the run, wait out the weather with the roof
+                closed, then reopen and resume the target once conditions clear.
+                If the roof can’t be reopened or stays unsafe past the max pause,
+                the run ends with the roof left closed.
+              </p>
+            </div>
+            <Toggle
+              checked={reopenWhenSafe}
+              onChange={onToggleReopenWhenSafe}
+              disabled={busy || !closeOnUnsafe}
+              label="Reopen roof when safe again"
               showState
             />
           </div>
