@@ -127,16 +127,26 @@ class SafetyConfig(BaseModel):
     resume_when_safe: bool = True
     resume_safe_consecutive: int = 3
     max_pause_min: int = 120               # 0 = no cap; escalates to park on timeout
-    # Roll-off roof / dome auto-close (PRO-4). Both default False → every existing
+    # Roll-off roof / dome auto-close (PRO-4). All default False → every existing
     # rig/test byte-identical (the rotator_pa_offset/polar_misalignment opt-in
     # precedent). close_dome_on_unsafe: a rain/cloud trip ESCALATES to the
     # park-and-close teardown (a closeable roof closes over the parked gear rather
     # than pause-holding under open sky). close_dome_when_done: close the roof at a
     # normal end-of-night. Two flags (not one) so protective close-on-rain and
-    # end-of-night close are independently choosable. NO auto-reopen on safe-again
-    # (deferred follow-up). Enacting the close still requires a connected dome.
+    # end-of-night close are independently choosable. Enacting the close still
+    # requires a connected dome.
     close_dome_on_unsafe: bool = False
     close_dome_when_done: bool = False
+    # reopen_dome_when_safe (PRO-4 D3): OPT-IN advanced flag that ONLY matters when
+    # close_dome_on_unsafe is also set. OFF (default) ⇒ close_dome_on_unsafe is
+    # byte-identical to before: an unsafe trip closes the roof and ENDS the run. ON
+    # ⇒ instead of ending, the run closes the roof over the parked gear, waits for
+    # safe-again (debounced by resume_safe_consecutive), REOPENS the roof, re-acquires
+    # the target, and RESUMES. If the never-crush close refuses (mount won't park),
+    # it falls back to the open-sky park-hold pause (never crushes); if still unsafe
+    # after max_pause_min it SafetyAborts with the roof left CLOSED (fail-safe). Left
+    # out of SAFETY_PRESETS on purpose (advanced opt-in, no surprise roof cycling).
+    reopen_dome_when_safe: bool = False
 
 
 class EscalationConfig(BaseModel):
