@@ -266,9 +266,12 @@ def test_preview_routes_resolve(tmp_path, monkeypatch):
         assert rs.headers["content-type"] == "image/jpeg"
         assert "attachment" in rs.headers.get("content-disposition", "")
         assert client.get(f"/api/preview/{pid}/share.jpg?target=M42&subs=30").status_code == 200
-        # Pass-2 routes are declared but stubbed 501
-        assert client.get(f"/api/preview/{pid}/crop").status_code == 501
-        assert client.get(f"/api/preview/{pid}/render.png").status_code == 501
+        # Former Pass-2 routes are now real: 1:1 ROI crop + baked-stretch
+        # render, both PNG (the latest capture holds its linear array).
+        rc = client.get(f"/api/preview/{pid}/crop")
+        assert rc.status_code == 200 and rc.headers["content-type"] == "image/png"
+        rr = client.get(f"/api/preview/{pid}/render.png")
+        assert rr.status_code == 200 and rr.headers["content-type"] == "image/png"
         # an unknown id 404s on both shapes
         assert client.get("/api/preview/99999").status_code == 404
         assert client.get("/api/preview/99999.png").status_code == 404
