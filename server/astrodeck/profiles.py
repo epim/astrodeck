@@ -12,6 +12,7 @@ at read time by the hub (it never stomps the global config).
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -175,8 +176,9 @@ class Profile(BaseModel):
         if self.nina_host and not self.devices:
             primary = "nina"
         return RigSpec(primary=primary, roles=roles)
-        # TODO(W2): redact ConnSpec.extra secrets at-rest if a future backend
-        # stores a credential there; no profile-borne secret exists in Stage B.
+        # W2: wire-redaction of any credential a future backend may stash in
+        # ``ConnSpec.extra`` now exists (see ``redact_profile`` below); the
+        # persisted profile keeps the value at-rest so the rig can still connect.
 
     def row(self, active_id: str | None = None) -> dict:
         return {
@@ -187,6 +189,71 @@ class Profile(BaseModel):
             "site_name": self.site_name,
             "active": self.id == active_id,
         }
+
+
+# ---------------------------------------------------------- wire redaction (W2)
+#
+# A device row's ``extra`` (ConnSpec options) carries NO credential in Stage B,
+# but a future backend could stash one there — and ``GET /api/profiles/{id}`` is
+# a VIEWER-visible read. ``redact_profile`` scrubs any secret-bearing ``extra``
+# key OVER THE WIRE while the persisted profile keeps the real value at-rest so
+# the rig can still connect. Redaction never mutates the source.
+
+# Substrings (matched case-insensitively) that mark an ``extra`` key as
+# secret-bearing. Benign connection metadata (``name`` / ``port_path`` /
+# ``dev_type`` / ``host`` / ``pixel_scale_arcsec`` …) contains none of these and
+# passes through untouched. Note ``"key"`` deliberately also matches
+# ``apikey`` / ``api_key`` / ``session_key`` etc.
+_SECRET_EXTRA_MARKERS = (
+    "password", "passwd", "secret", "token", "apikey", "api_key",
+    "credential", "passphrase", "auth", "key",
+)
+
+
+def _is_secret_extra_key(key: str) -> bool:
+    """True iff a device-``extra`` key name looks secret-bearing (a
+    case-insensitive substring match against ``_SECRET_EXTRA_MARKERS``)."""
+    lowered = (key or "").lower()
+    return any(marker in lowered for marker in _SECRET_EXTRA_MARKERS)
+
+
+def redact_profile(profile: "Profile | dict") -> dict:
+    """Return a wire-safe ``dict`` copy of ``profile`` with every device
+    ``extra`` scrubbed of secret-bearing values.
+
+    Accepts a :class:`Profile` (serialized via ``model_dump``) or an
+    already-serialized ``dict`` (e.g. a picker ``row``). For each device row's
+    ``extra``, any key whose name looks secret-bearing (:func:`_is_secret_extra_key`)
+    has its value replaced with ``""`` and gains a sibling
+    ``"<key>_configured": <bool>`` marker so the UI can still show that a
+    credential is set without the value crossing the wire.
+
+    Redaction is OVER-THE-WIRE ONLY — the at-rest profile keeps the real value
+    so the rig can connect. The source object is NEVER mutated: a ``Profile`` is
+    dumped to a fresh dict, and a passed-in dict is deep-copied first.
+    """
+    if isinstance(profile, BaseModel):
+        data = profile.model_dump()
+    else:
+        data = copy.deepcopy(profile)
+    if not isinstance(data, dict):
+        return data
+    devices = data.get("devices")
+    if not isinstance(devices, list):
+        return data  # picker rows / device-less shapes: nothing to scrub
+    for dev in devices:
+        if not isinstance(dev, dict):
+            continue
+        extra = dev.get("extra")
+        if not isinstance(extra, dict):
+            continue
+        scrubbed = dict(extra)
+        for key, value in extra.items():
+            if _is_secret_extra_key(key):
+                scrubbed[key] = ""
+                scrubbed[f"{key}_configured"] = bool(value)
+        dev["extra"] = scrubbed
+    return data
 
 
 class ProfileLibrary:

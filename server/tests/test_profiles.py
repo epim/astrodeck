@@ -12,6 +12,7 @@ from astrodeck.profiles import (
     Profile,
     ProfileDevice,
     ProfileLibrary,
+    redact_profile,
 )
 
 
@@ -433,3 +434,76 @@ async def test_capture_profile_stamps_sim_primary_for_sim_rig(tmp_path, monkeypa
     assert p.devices == []
     assert p.primary_backend == "sim"
     assert lib.get(p.id).primary_backend == "sim"
+
+
+# ------------------------------------------------- W2: extra-secret wire redaction
+#
+# A device row's ``extra`` (ConnSpec options) carries no credential in Stage B,
+# but a future backend could stash one there — and GET /api/profiles/{id} is a
+# VIEWER-visible read. ``redact_profile`` scrubs secret-bearing ``extra`` keys
+# OVER THE WIRE while the persisted profile keeps the real value at-rest.
+
+def test_redact_profile_scrubs_secret_extra_but_keeps_metadata():
+    """A device ``extra`` secret is blanked with a ``_configured`` marker over the
+    wire; benign metadata (name/port_path/dev_type) passes through unchanged."""
+    p = Profile(name="Rig", devices=[ProfileDevice(
+        role="guider", backend="phd2", name="ASI120",
+        extra={"password": "hunter2", "name": "X", "port_path": "COM3",
+               "pixel_scale_arcsec": 1.5})])
+    wire = redact_profile(p)
+    ex = wire["devices"][0]["extra"]
+    # secret blanked + configured marker set
+    assert ex["password"] == ""
+    assert ex["password_configured"] is True
+    # benign metadata untouched
+    assert ex["name"] == "X"
+    assert ex["port_path"] == "COM3"
+    assert ex["pixel_scale_arcsec"] == 1.5
+    # SOURCE never mutated — the real secret is still on the live Profile.
+    assert p.devices[0].extra["password"] == "hunter2"
+
+
+def test_redact_profile_at_rest_keeps_secret(tmp_path):
+    """Redaction is over-the-wire ONLY: the persisted (at-rest) profile keeps the
+    real secret so the rig can still connect; only the wire form is scrubbed."""
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", devices=[ProfileDevice(
+        role="guider", backend="phd2",
+        extra={"api_token": "sekret", "name": "X", "port_path": "COM3"})])
+    lib.save(p)
+    # at-rest: the real token survives a save/get round-trip untouched
+    loaded = lib.get(p.id)
+    assert loaded.devices[0].extra["api_token"] == "sekret"
+    # over-the-wire: scrubbed + marked
+    wire = redact_profile(loaded)
+    assert wire["devices"][0]["extra"]["api_token"] == ""
+    assert wire["devices"][0]["extra"]["api_token_configured"] is True
+    assert wire["devices"][0]["extra"]["port_path"] == "COM3"
+
+
+def test_redact_profile_covers_all_secret_key_shapes():
+    """Every documented secret-marker substring is caught (case-insensitive), and
+    a benign key that merely LOOKS adjacent (``username``) is left alone."""
+    secret_keys = ["password", "PASSWD", "clientSecret", "access_token",
+                   "apikey", "api_key", "credential", "passphrase",
+                   "authToken", "session_key"]
+    extra = {k: "x" for k in secret_keys}
+    extra.update({"username": "bob", "host": "10.0.0.5", "dev_type": "camera"})
+    p = Profile(name="Rig", devices=[ProfileDevice(role="camera", extra=extra)])
+    ex = redact_profile(p)["devices"][0]["extra"]
+    for k in secret_keys:
+        assert ex[k] == "", f"{k} not scrubbed"
+        assert ex[f"{k}_configured"] is True
+    # non-secret keys pass through
+    assert ex["username"] == "bob"
+    assert ex["host"] == "10.0.0.5"
+    assert ex["dev_type"] == "camera"
+
+
+def test_redact_profile_accepts_dict_and_is_noop_for_rows():
+    """``redact_profile`` accepts a dict (picker row) and, lacking a ``devices``
+    list, returns it unchanged without mutating the input."""
+    row = {"id": "x", "name": "R", "mode": "empty", "devices_count": 0}
+    out = redact_profile(row)
+    assert out == row
+    assert out is not row  # deep-copied, never the same object
