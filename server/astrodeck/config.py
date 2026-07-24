@@ -1154,9 +1154,9 @@ def redacted(cfg: AppConfig) -> dict:
     # Stage B: AppConfig holds only the active-profile POINTER (no profile records
     # — those live in ProfileLibrary), so there is no profile-borne secret to
     # scrub here today. A profile's only at-rest secret-capable field is a
-    # backend's ``ConnSpec.extra``, which carries no credential in Stage B.
-    # TODO(W2): redact ConnSpec.extra secrets in serialized Profile records when a
-    # future backend persists a credential there.
+    # backend's ``ConnSpec.extra``; the profile read routes now scrub any
+    # secret-bearing ``extra`` key over the wire (see ``profiles.redact_profile``),
+    # so no profile-borne credential can leak through this path either.
     #
     # W2 auth block: scrub every secret-bearing field, surface "configured"
     # booleans so the UI can show state without the secret. Non-secret fields

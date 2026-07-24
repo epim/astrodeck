@@ -73,7 +73,7 @@ from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
-from ..profiles import Profile, profiles
+from ..profiles import Profile, profiles, redact_profile
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
@@ -2131,13 +2131,19 @@ def create_app() -> FastAPI:
     @app.get("/api/profiles", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def list_profiles():
-        return profiles.list(config_store.cfg().active_profile_id)
+        # Rows carry no device ``extra`` today, but redact defensively so no
+        # secret-bearing ``extra`` value can ever cross the wire from this route.
+        return [redact_profile(r)
+                for r in profiles.list(config_store.cfg().active_profile_id)]
 
     @app.get("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def get_profile(profile_id: str):
         try:
-            return profiles.get(profile_id)
+            # Wire-redaction (W2): scrub secret-bearing device ``extra`` values
+            # before this VIEWER-visible read leaves the server; the at-rest
+            # profile keeps the real value so the rig can still connect.
+            return redact_profile(profiles.get(profile_id))
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "profile not found")
 
