@@ -6,10 +6,10 @@ Two pure pieces, tested independently:
   — copy/format logic only, no image work.
 * ``compose_share_jpeg`` — deterministic PIL geometry: decode the already-
   encoded display/lossless bytes, downscale (never upscale) to phone width,
-  draw a caption band, re-encode as JPEG. This does NOT re-derive a stretch —
-  Pass 1 ``entry.linear`` is always ``None``, so there is nothing to re-stretch
-  from; the caption composites onto the encoded bytes processing.py already
-  produced (see ``imaging/processing.py`` docstring).
+  draw a caption band, re-encode as JPEG. This deliberately does NOT re-derive a
+  stretch — the share is a WYSIWYG of what was on screen, so the caption
+  composites onto the encoded bytes processing.py already produced (see
+  ``imaging/processing.py`` docstring), not the linear array.
 
 Privacy: the caption is target / exposure / count / gain / date ONLY. It never
 reads or renders a site location (strip-entirely posture, spec §2).

@@ -2574,11 +2574,12 @@ def create_app() -> FastAPI:
         hub.stop_loop()
         return hub.stop_live_stack()
 
-    # ---- live-preview routes (Pass 1, live-preview spec §4.4) --------------
+    # ---- live-preview routes (live-preview spec §4.4) ---------------------
     # Canonical URL: the client builds `/api/preview/{id}` and reads `mime` from
     # the event. `/lossless.png` / `/thumb.jpg` / `/fits` / `/png` are the
     # paused-zoom / filmstrip / FITS-download / PNG-download variants. `/crop`
-    # and `/render.png` are declared now but stubbed 501 (Pass 2).
+    # (sensor-1:1 ROI) and `/render.png` (baked-stretch export) read the retained
+    # linear array.
 
     _PREVIEW_CACHE = {"Cache-Control": "max-age=3600"}
 

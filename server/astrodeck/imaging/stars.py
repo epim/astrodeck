@@ -23,8 +23,8 @@ class Star:
     flux: float
     hfr: float
     peak: float
-    ecc: float = 0.0      # Pass 2 (unsaturated mid-bright only); 0.0 placeholder in Pass 1
-    theta: float = 0.0    # Pass 2 (radians)
+    ecc: float = 0.0      # eccentricity 0..1 (unsaturated mid-bright only; else 0.0)
+    theta: float = 0.0    # major-axis position angle, radians (0.0 when ecc omitted)
 
 
 #: cap on detected stars (detect_stars) and on overlay marks (star_marks). The
@@ -143,10 +143,10 @@ def star_marks(stars: list[Star], *, full_well: int | None = None,
 
     Coords are in ``frame.data`` pixel space (the detector ran there); the
     client scales by ``display_width / data_width`` (spec finding #2). Rounded
-    to keep the event small. ``ecc``/``theta`` are Pass-2 and only attached for
-    the unsaturated, mid-bright population ``median_hfr`` already trusts — never
-    on saturated flat-top stars (spec finding #5); in Pass 1 they stay 0.0 and
-    are omitted.
+    to keep the event small. ``ecc``/``theta`` are only measured for the
+    unsaturated, mid-bright population ``median_hfr`` already trusts — never on
+    saturated flat-top stars (spec finding #5), where they stay 0.0 and are
+    omitted.
 
     ``max_marks`` MUST be >= ``detect_stars``' ``max_stars`` so the overlay never
     silently drops a star the detector found — otherwise a future bump of
