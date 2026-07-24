@@ -86,6 +86,9 @@ _DEV_TYPE_TO_ROLE: dict[str, str] = {
     "camera": "camera", "telescope": "telescope", "focuser": "focuser",
     "filterwheel": "filterwheel", "switch": "switch",
     "safetymonitor": "safety", "rotator": "rotator",
+    # PRO-4/PRO-5 now have real Alpaca clients (AlpacaDome/AlpacaCoverCalibrator),
+    # so a discovered Dome/CoverCalibrator is offered for assignment, not skipped.
+    "dome": "dome", "covercalibrator": "covercalibrator",
 }
 
 
