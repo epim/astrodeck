@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import time
 
 import numpy as np
@@ -33,6 +34,22 @@ from .base import (
     Telescope,
     TRACKING_RATES,
 )
+
+
+def _sim_delay(seconds: float) -> float:
+    """Real-time pacing wait for the simulator, in seconds.
+
+    Under the test fast-path (env ``ASTRODECK_FAST_TEST=1``, read LIVE on every
+    call so a conftest fixture / ``monkeypatch`` takes effect without a reimport)
+    this collapses to ``0.0`` so the sim's hard-coded connect-latency, exposure
+    dwell, and guide-pulse dwell sleeps disappear under the test suite. It is a
+    PACING knob ONLY: every simulated VALUE (RA/Dec offsets, rendered star/frame
+    pixels, calibration geometry, guiding corrections) is derived from the
+    logical/virtual clock + the REQUESTED ``exposure_s`` / commanded pulse ``ms``,
+    never from elapsed wall-clock dwell, so zeroing the wait leaves results
+    bit-identical. Production (flag unset) returns ``seconds`` unchanged, so the
+    sim paces exactly as it does today."""
+    return 0.0 if os.environ.get("ASTRODECK_FAST_TEST") == "1" else seconds
 
 
 # --------------------------------------------------------------------------
@@ -337,7 +354,7 @@ class SimCamera(Camera):
         self.full_well = 65535
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(_sim_delay(0.1))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -374,8 +391,11 @@ class SimCamera(Camera):
                      light: bool = True, save: bool = False,
                      target: str = "") -> CameraFrame:
         self._abort.clear()
-        # Wait out the exposure in small slices so aborts are responsive.
-        deadline = time.monotonic() + seconds
+        # Wait out the exposure in small slices so aborts are responsive. Only
+        # the wall-clock DWELL is faked out under tests (_sim_delay); the frame
+        # itself is rendered from the REQUESTED ``seconds`` below, so a fast-path
+        # exposure is byte-identical to a real-dwell one.
+        deadline = time.monotonic() + _sim_delay(seconds)
         while time.monotonic() < deadline:
             if self._abort.is_set():
                 raise asyncio.CancelledError("exposure aborted")
@@ -546,7 +566,7 @@ class SimGuideCamera(Camera):
         rig._guide_base_px = (self.SENSOR_WIDTH / 2.0, self.SENSOR_HEIGHT / 2.0)
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -565,7 +585,10 @@ class SimGuideCamera(Camera):
             self.guide_expose_fail_next_n -= 1
             raise DeviceError("sim guide camera: injected exposure fault")
         self._abort.clear()
-        deadline = time.monotonic() + seconds
+        # Fake out only the wall-clock dwell under tests (_sim_delay); the star
+        # is rendered from ``time.time()`` + the requested ``seconds`` in
+        # _render, so a zero-dwell frame is byte-identical to a real-dwell one.
+        deadline = time.monotonic() + _sim_delay(seconds)
         while time.monotonic() < deadline:
             if self._abort.is_set():
                 raise asyncio.CancelledError("exposure aborted")
@@ -684,7 +707,7 @@ class SimTelescope(Telescope):
         self._tracking_rate = "sidereal"
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(_sim_delay(0.1))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -812,7 +835,11 @@ class SimTelescope(Telescope):
             self.rig.dec_deg += sign * delta_deg
             off_y += sign * delta_px
         self.rig._guide_offset_px = (off_x, off_y)
-        await asyncio.sleep(ms / 1000.0)
+        # PACING ONLY: the star's pixel delta above is derived from the commanded
+        # ``ms`` (not from how long we sleep), so faking out the dwell under tests
+        # leaves ``_guide_offset_px`` — and every frame rendered from it —
+        # bit-identical.
+        await asyncio.sleep(_sim_delay(ms / 1000.0))
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         # Defensive clamp to the touch cap (the real clamp is server-side in the
@@ -844,7 +871,7 @@ class SimFocuser(Focuser):
         self._halt = asyncio.Event()
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -879,7 +906,7 @@ class SimRotator(Rotator):
         self._moving = False
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -927,7 +954,7 @@ class SimFilterWheel(FilterWheel):
         self.filter_offsets = [0, 12, 10, 15, 120, 110, 115]  # focuser steps
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -959,7 +986,7 @@ class SimSwitch(Switch):
         ]
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -992,7 +1019,7 @@ class SimSafetyMonitor(SafetyMonitor):
         self._reason = ""
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(_sim_delay(0.05))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -1038,7 +1065,7 @@ class SimCoverCalibrator(CoverCalibrator):
         self._cover = CoverState.CLOSED
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(_sim_delay(0.02))
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -1094,7 +1121,7 @@ class SimDome(Dome):
         self._halt = asyncio.Event()
 
     async def connect(self) -> None:
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(_sim_delay(0.02))
         self.connected = True
 
     async def disconnect(self) -> None:

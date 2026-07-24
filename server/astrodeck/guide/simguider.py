@@ -7,6 +7,7 @@ import random
 import time
 from collections import deque
 
+from ..devices.sim import _sim_delay
 from ..events import bus
 from .base import Guider, GuideStats
 
@@ -33,7 +34,7 @@ class SimGuider(Guider):
     async def start_guiding(self) -> None:
         if self._guiding:
             return
-        await asyncio.sleep(2.0)  # "calibrating"
+        await asyncio.sleep(_sim_delay(2.0))  # "calibrating" (pacing only)
         self._guiding = True
         self._task = asyncio.create_task(self._loop())
         bus.log("info", "sim guider calibrated and guiding", "guide")
@@ -51,8 +52,8 @@ class SimGuider(Guider):
         # kick then settle
         for decay in (1.0, 0.55, 0.25, 0.1):
             self._push(kick=pixels * decay)
-            await asyncio.sleep(0.8)
-        await asyncio.sleep(1.5)
+            await asyncio.sleep(_sim_delay(0.8))
+        await asyncio.sleep(_sim_delay(1.5))
 
     def _push(self, kick: float = 0.0) -> None:
         t = time.time()
@@ -64,6 +65,13 @@ class SimGuider(Guider):
         while self._guiding:
             self._push()
             bus.publish("guide", **self.stats().__dict__)
+            # NOT routed through the sim fast-path: this is an UNBOUNDED
+            # background loop; zeroing its cadence makes it a tight
+            # ``await asyncio.sleep(0)`` busy-spin (a CPU hog for the whole
+            # guiding window) with no test-runtime benefit — nothing awaits this
+            # believable-stream cadence. Real cadence only. (The one-shot
+            # "calibrating" wait in start_guiding and the bounded dither kicks
+            # ARE routed — they gate on completion, so zeroing them is safe.)
             await asyncio.sleep(1.0)
 
     def stats(self) -> GuideStats:
