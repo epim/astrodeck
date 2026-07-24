@@ -133,9 +133,18 @@ def _encode(img01: np.ndarray, *, max_width: int, fmt: str,
 
 
 def to_png(data: np.ndarray, stretch: bool = True, max_width: int = 1400,
-           quality_8bit: bool = True) -> bytes:
-    """Encode a frame as PNG for the UI preview (lossless base / download)."""
-    img = auto_stretch(data) if stretch else data.astype(np.float64) / 65535.0
+           quality_8bit: bool = True, *, black: float | None = None,
+           mid: float | None = None, white: float | None = None) -> bytes:
+    """Encode a frame as PNG for the UI preview (lossless base / download).
+
+    With all three of ``black``/``mid``/``white`` given, replays those exact
+    levels (``stretch_with``) so a server-baked render matches the live preview
+    LUT — mirrors ``to_jpeg``. Otherwise auto-stretches (``stretch=True``) or
+    passes the linear data through (``stretch=False``)."""
+    if black is not None and mid is not None and white is not None:
+        img = stretch_with(data, black, mid, white)
+    else:
+        img = auto_stretch(data) if stretch else data.astype(np.float64) / 65535.0
     return _encode(img, max_width=max_width, fmt="PNG", quality=0)[0]
 
 

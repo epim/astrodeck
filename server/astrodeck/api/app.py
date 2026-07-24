@@ -70,7 +70,7 @@ from ..focus import run_autofocus
 from .. import hub as hub_module
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
-from ..imaging import build_caption, compose_share_jpeg, fmt_share_date
+from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles, redact_profile
@@ -2695,15 +2695,42 @@ def create_app() -> FastAPI:
     @declare(CAP_VIEW_PREVIEW)
     async def preview_crop(preview_id: int, x: int = 0, y: int = 0,
                            w: int = 0, h: int = 0):
-        """Sensor-1:1 ROI from linear data. Pass 2 — stubbed."""
-        raise HTTPException(501, "preview crop is not implemented yet (Pass 2)")
+        """Sensor-1:1 (no downscale) auto-stretched PNG of an ROI cut from the
+        LINEAR frame data — a pixel-peep zoom. The linear array is held only for
+        the latest 1–2 frames, so an expired/old preview returns 404. ``w``/``h``
+        <= 0 default to the rest of the frame from ``(x, y)``; the ROI is clamped
+        inside the sensor so out-of-range params can never over-read."""
+        entry = hub.previews.get(preview_id)
+        if entry is None or entry.linear is None:
+            raise HTTPException(404, "preview linear data unavailable")
+        arr = entry.linear
+        ny, nx = arr.shape[:2]
+        x0 = max(0, min(int(x), nx - 1))
+        y0 = max(0, min(int(y), ny - 1))
+        w0 = (nx - x0) if int(w) <= 0 else min(int(w), nx - x0)
+        h0 = (ny - y0) if int(h) <= 0 else min(int(h), ny - y0)
+        crop = arr[y0:y0 + h0, x0:x0 + w0]
+        # 1:1: max_width >= the crop width so `_encode` never downscales.
+        png = await asyncio.to_thread(to_png, crop, True, max(1, int(crop.shape[1])))
+        return Response(png, media_type="image/png", headers=_PREVIEW_CACHE)
 
     @app.get("/api/preview/{preview_id}/render.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def preview_render(preview_id: int, black: float = 0.0,
                              mid: float = 0.5, white: float = 1.0):
-        """Server-side baked stretch / export. Pass 2 — stubbed."""
-        raise HTTPException(501, "server render is not implemented yet (Pass 2)")
+        """Full-resolution, server-side baked PNG of the LINEAR frame at the given
+        stretch levels (``black``/``mid``/``white`` — the same LUT as the live
+        preview, so a baked export matches what's on screen). The linear array is
+        held only for the latest 1–2 frames, so an expired preview returns 404."""
+        entry = hub.previews.get(preview_id)
+        if entry is None or entry.linear is None:
+            raise HTTPException(404, "preview linear data unavailable")
+        arr = entry.linear
+        # Full native resolution (an export, not the bandwidth-capped live view).
+        png = await asyncio.to_thread(
+            to_png, arr, True, max(1, int(arr.shape[1])), True,
+            black=black, mid=mid, white=white)
+        return Response(png, media_type="image/png", headers=_PREVIEW_CACHE)
 
     @app.post("/api/camera/cooler", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)

@@ -1753,12 +1753,15 @@ class Hub:
             # NOV-1: additive live-stacking readout (only when Live View is armed).
             if ls_info is not None:
                 info["livestack"] = ls_info
-            # P3-1: do NOT retain the ~125 MB linear uint16 array in Pass 1 —
-            # nothing reads entry.linear yet (/crop and /render are 501 stubs and
-            # /lossless.png already covers paused/zoom). Re-enable retention
-            # (linear=data) when those Pass-2 routes land.
+            # /crop + /render (the former Pass-2 501 stubs) now read
+            # entry.linear, so retain the raw linear sub for linear frames.
+            # Bounded to the latest PREVIEW_LINEAR_KEEP frames by _trim_previews
+            # (same memory policy as `lossless`); NINA display-domain frames have
+            # no linear pixels, so they keep linear=None.
             entry = PreviewEntry(display=jpeg, mime="image/jpeg", thumb=thumb,
-                                 lossless=lossless, linear=None, meta=info)
+                                 lossless=lossless,
+                                 linear=(sub if data_is_linear else None),
+                                 meta=info)
 
         # backend-measured HFR/stars override (NINA carries its own)
         if getattr(frame, "hfr", None) is not None:
