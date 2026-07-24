@@ -2361,6 +2361,11 @@ class Hub:
                 bus.publish("status", **await self.poll_status())
             except Exception:
                 pass
+            # NOTE: deliberately NOT routed through the sim fast-path knob. This
+            # is an UNBOUNDED background loop; zeroing its cadence turns it into a
+            # tight ``await asyncio.sleep(0)`` busy-spin that pegs a core for the
+            # whole life of any test that starts the poller (and no test awaits
+            # this cadence, so faking it saves no runtime). Real cadence only.
             await asyncio.sleep(2.0)
 
     # ------------------------------------------------------------ safety poller

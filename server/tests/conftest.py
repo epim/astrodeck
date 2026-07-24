@@ -43,6 +43,24 @@ if _root_str not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _fast_sim_delays(monkeypatch):
+    """Runtime seam (test-suite fast-path): collapse the simulator's hard-coded
+    real-time pacing sleeps to ~0 for the WHOLE suite. ``devices.sim._sim_delay``
+    reads ``ASTRODECK_FAST_TEST`` LIVE on every call, so setting it here (per
+    test, via ``monkeypatch`` so it's torn down cleanly) zeroes every routed
+    connect-latency / exposure-dwell / guide-pulse / status-loop / polar-sim
+    wait. PACING ONLY: the sim derives every VALUE (RA/Dec offsets, star/frame
+    pixels, calibration geometry, guiding corrections) from the logical/virtual
+    clock + the requested exposure/pulse, never from elapsed wall-clock dwell, so
+    results stay bit-identical — the suite just stops paying wall-clock for the
+    sim's fake time. ONE end-to-end timing-realism anchor
+    (test_native_guider_e2e.py::test_native_guider_converges_on_sim) opts back
+    OUT via its ``_real_dwell`` fixture."""
+    monkeypatch.setenv("ASTRODECK_FAST_TEST", "1")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_hub_singleton_locks():
     """Test-isolation seam: ``astrodeck.hub.hub`` is a process-wide singleton, but
     many tests each spin up their own ``TestClient(app)`` (own event loop) or their

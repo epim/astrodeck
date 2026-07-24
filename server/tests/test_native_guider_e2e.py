@@ -5,8 +5,23 @@ from astrodeck.providers import NATIVE_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
 
+
+@pytest.fixture
+def _real_dwell(_fast_sim_delays, monkeypatch):
+    """Timing-realism anchor: THIS most-end-to-end native-guider test opts OUT
+    of the suite-wide ``ASTRODECK_FAST_TEST`` fast-path (see conftest's
+    ``_fast_sim_delays``) so the sim's real exposure dwell + pulse sleeps run at
+    wall-clock. It is the one test that must prove the guide loop CONVERGES in
+    real time — against a real-time drift/periodic-error/seeing model at the true
+    guide cadence — not merely under logical time. Depends on ``_fast_sim_delays``
+    so the suite-wide setenv is guaranteed to run FIRST, and this delenv (on the
+    same function-scoped monkeypatch) then wins for the duration of this test."""
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
+    yield
+
+
 @pytest.mark.asyncio
-async def test_native_guider_converges_on_sim():
+async def test_native_guider_converges_on_sim(_real_dwell):
     from astrodeck.guide.native import NativeGuider
     rig = build_sim_rig()
     cam = rig["guide_camera"]; tel = rig["telescope"]
