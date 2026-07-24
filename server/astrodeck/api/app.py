@@ -601,6 +601,13 @@ class DitherBody(BaseModel):
     settle_timeout_s: float | None = None
 
 
+class AssistantStartBody(BaseModel):
+    """Guiding Assistant options (design §3.3). Both optional: skip Phase B, or
+    pin the Phase-A watch duration."""
+    include_backlash: bool = True
+    duration_s: int | None = None
+
+
 class SiteSaveBody(BaseModel):
     site: Site
     version: int | None = None
@@ -3335,6 +3342,57 @@ def create_app() -> FastAPI:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
         return config_store.cfg().guide.model_dump()
+
+    # ---------------------------------------------------- guiding assistant
+    # A guided ~1-2 min measurement session (drift / periodic error / seeing +
+    # Dec backlash) that RECOMMENDS guide params (design 2026-07-24). Apply is
+    # zero new backend — the client reuses PUT /api/guide/settings + DELETE
+    # /api/guide/calibration. Native-guider-only: it needs the raw pulse+centroid
+    # access the PHD2/NINA bridges don't expose (capability-probe idiom, mirrors
+    # clear_calibration above).
+
+    @app.post("/api/guide/assistant/start",
+              dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_assistant_start(body: AssistantStartBody):
+        if not hub.guider or not hub.guider.connected:
+            raise HTTPException(409, "no guider connected")
+        run = getattr(hub.guider, "run_guiding_assistant", None)
+        if not callable(run):
+            raise HTTPException(
+                400, "the Guiding Assistant works with the AstroDeck native "
+                "guider only")
+        if await hub.guider.is_active():
+            raise HTTPException(409, "stop guiding before running the Guiding "
+                                "Assistant")
+        return _spawn("guide_assistant",
+                      run({"include_backlash": body.include_backlash,
+                           "duration_s": body.duration_s}))
+
+    @app.get("/api/guide/assistant/report",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def guide_assistant_report():
+        """The last Guiding Assistant report (measurements + recommendations), or
+        ``{"report": null}`` when it has not run (or a non-native guider)."""
+        g = hub.guider
+        getter = getattr(g, "run_assistant_report", None) if g is not None else None
+        report = getter() if callable(getter) else None
+        return {"report": report}
+
+    @app.post("/api/guide/assistant/stop",
+              dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_assistant_stop():
+        if not hub.guider:
+            raise HTTPException(409, "no guider connected")
+        stop = getattr(hub.guider, "stop_guiding_assistant", None)
+        if not callable(stop):
+            raise HTTPException(
+                400, "the Guiding Assistant works with the AstroDeck native "
+                "guider only")
+        stop()
+        return {"ok": True}
 
     # ------------------------------------------------------------- sequence
 

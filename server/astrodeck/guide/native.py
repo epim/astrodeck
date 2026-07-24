@@ -161,6 +161,13 @@ class NativeGuider(Guider):
         self._stop = asyncio.Event()
         self._start_lock = asyncio.Lock()
 
+        # Guiding Assistant (design 2026-07-24): a one-shot measurement session
+        # that runs in the EXCLUSIVE mount window (refused while guiding). Its
+        # own stop-event (polled between measurement pulses) + the last cached
+        # report (read back by GET /api/guide/assistant/report).
+        self._assistant_stop = asyncio.Event()
+        self._last_assistant_report: dict | None = None
+
         # Host-side guiding state. ``_active`` is our guiding INTENT (drives
         # stats().guiding together with the engine's own phase); ``_lost`` latches
         # a real, unrecoverable star loss so is_active() goes false (the recovery
@@ -727,6 +734,191 @@ class NativeGuider(Guider):
                 engine_cfg["calibration_duration_ms"] = int(
                     max(_CAL_MS_MIN, min(_CAL_MS_MAX, ms)))
         return engine_cfg
+
+    # ------------------------------------------------------- guiding assistant
+
+    async def run_guiding_assistant(self, opts: dict | None = None,
+                                    on_progress=None) -> dict:
+        """Guiding Assistant one-shot (design 2026-07-24 §3.2): measure drift /
+        periodic error / seeing (Phase A, mount idle) then Dec backlash (Phase B,
+        raw N/S pulses), reduce, ``recommend`` guide params, cache + return the
+        report. Drives ``self._expose`` + ``_native.guide_star_find`` +
+        ``self.tel.pulse_guide`` directly — NO engine calibration state machine,
+        NO correction algorithms (the same raw-pulse regime PHD2's GA uses).
+
+        Runs ONLY in the exclusive mount window: refuses while guiding
+        (``_active``), while the mount is parked, or while it is slewing (MANDATORY
+        SAFETY GUARD 2 — the assistant owns the mount for the duration, like a
+        guide session). Each measurement pulse is capped at ``MAX_PULSE_MS``
+        (~1 s) and the Phase-B walk halts cleanly on the ``OutOfRoom`` edge guard
+        (SAFETY GUARD 1). Cancellable via ``self._assistant_stop`` (POST
+        /api/guide/assistant/stop), polled between pulses."""
+        from . import assistant as ga
+
+        # SAFETY: exclusive mount window only.
+        if self._active or (self._loop_task is not None
+                            and not self._loop_task.done()):
+            raise DeviceError(
+                "native guider: stop guiding before running the Guiding Assistant")
+        try:
+            parked = await self.tel.is_parked()
+        except Exception:  # pragma: no cover - defensive
+            parked = False
+        if parked:
+            raise DeviceError(
+                "native guider: unpark the mount before running the Guiding "
+                "Assistant")
+        try:
+            slewing = await self.tel.is_slewing()
+        except Exception:  # pragma: no cover - defensive
+            slewing = False
+        if slewing:
+            raise DeviceError(
+                "native guider: wait for the slew to finish before running the "
+                "Guiding Assistant")
+
+        opts = dict(opts or {})
+        include_backlash = bool(opts.get("include_backlash", True))
+        try:
+            duration_s = float(opts.get("duration_s") or 75.0)
+        except (TypeError, ValueError):
+            duration_s = 75.0
+        duration_s = max(20.0, min(240.0, duration_s))
+
+        self._assistant_stop.clear()
+        scale = self._image_scale if self._image_scale > 0 else 1.0
+        known = self._image_scale_known
+
+        def _progress(phase: str, pct: float, message: str) -> None:
+            payload = {"phase": phase, "pct": round(float(pct), 1),
+                       "message": message}
+            bus.publish("guide_assistant", **payload)
+            if on_progress is not None:
+                with contextlib.suppress(Exception):
+                    on_progress(payload)
+
+        bus.log("info", "native guider: Guiding Assistant started", "guide")
+        _progress("phase_a", 2.0, "Watching your mount…")
+
+        # ---- Phase A: uncalibrated drift / periodic error / seeing ----
+        # One centroid per exposure: in production each exposure takes
+        # ``exposure_s`` so the target-sample count IS the ~1-2 min watch window;
+        # under a faked dwell (tests) it just runs fast. Wall timestamps still
+        # drive the drift slope, so the reduction is cadence-independent.
+        cadence = self._exposure_s if self._exposure_s > 0 else 0.5
+        target_samples = int(max(20, min(3000, round(duration_s / cadence))))
+        samples: list[tuple[float, float, float]] = []
+        t0: float | None = None
+        no_star_streak = 0
+        while len(samples) < target_samples:
+            if self._assistant_stop.is_set():
+                raise DeviceError("native guider: Guiding Assistant cancelled")
+            frame = await self._expose()
+            stars, _meta = _native.guide_star_find(frame.data)
+            if not stars:
+                no_star_streak += 1
+                if no_star_streak >= _REACQUIRE_BUDGET:
+                    raise DeviceError(
+                        "native guider: Guiding Assistant found no guide star")
+                continue
+            no_star_streak = 0
+            ts = float(frame.timestamp)
+            if t0 is None:
+                t0 = ts
+            samples.append((ts - t0, float(stars[0]["x"]), float(stars[0]["y"])))
+            _progress("phase_a",
+                      2.0 + 55.0 * min(1.0, len(samples) / target_samples),
+                      "Watching your mount…")
+
+        phase_a = ga.reduce_phaseA(samples, scale, known)
+
+        # ---- Phase B: Dec backlash (raw N/S pulses) ----
+        backlash = ga.BacklashResult()
+        if include_backlash and self._last_frame is not None:
+            _progress("phase_b", 60.0, "Measuring Dec backlash…")
+            data = self._last_frame
+            frame_h, frame_w = int(data.shape[0]), int(data.shape[1])
+            margin = float(self.config.get("search_region", 15))
+
+            # D2: prefer the real calibration yRate when one is loaded, else the
+            # declared guide rate × image scale. Surface which was used.
+            rates = await self._read_guide_rates()
+            y_rate, y_src = self._assistant_y_rate(scale, rates)
+            run = ga.BacklashRun(
+                y_rate, phase_a.drift_per_min_px / 60.0,
+                frame_w=frame_w, frame_h=frame_h, margin=margin,
+                y_rate_source=y_src)
+
+            guard = 0
+            max_iters = 2 * ga.MAX_MEASUREMENT_STEPS + ga.MAX_CLEARING_STEPS + 10
+            while guard < max_iters:
+                guard += 1
+                if self._assistant_stop.is_set():
+                    raise DeviceError(
+                        "native guider: Guiding Assistant cancelled")
+                frame = await self._expose()
+                stars, _meta = _native.guide_star_find(frame.data)
+                if not stars:
+                    # A dropped star mid-walk: treat as out-of-data, stop the
+                    # walk and estimate from what we have.
+                    break
+                x, y = float(stars[0]["x"]), float(stars[0]["y"])
+                cmd = run.step(x, y, float(frame.timestamp))
+                if cmd.kind == "done":
+                    break
+                # SAFETY GUARD 1 (belt-and-suspenders): never dispatch a pulse
+                # that would walk a near-edge star further off-sensor.
+                if run._out_of_room(x, y):
+                    break
+                # SAFETY GUARD 2: cap every raw pulse.
+                ms = int(min(ga.MAX_PULSE_MS, max(0, cmd.ms or 0)))
+                if ms > 0:
+                    await self.tel.pulse_guide(cmd.direction, ms)
+            backlash = run.compute()
+
+        _progress("reducing", 96.0, "Crunching the numbers…")
+
+        current = guide_algo_config()
+        recs = ga.recommend(phase_a, backlash, current)
+        report = ga.report_dict(phase_a, backlash, recs, current, samples)
+        self._last_assistant_report = report
+        _progress("done", 100.0, "Recommended settings are ready.")
+        bus.log("info",
+                f"native guider: Guiding Assistant complete "
+                f"({len(recs)} recommendations, backlash "
+                f"{backlash.result_code})", "guide")
+        return report
+
+    def _assistant_y_rate(self, scale: float,
+                          rates: tuple[float, float] | None) -> tuple[float, str]:
+        """Dec rate (px/ms) for the backlash phase (open decision D2). Prefers a
+        loaded, valid calibration's ``y_rate``; otherwise derives it from the
+        mount's DECLARED guide rate × image scale. A wrong declared rate only
+        mis-scales the seed, which the user reviews before applying."""
+        if self._engine is not None:
+            try:
+                cal = self._engine.dump_calibration()
+                if cal and cal.get("is_valid"):
+                    yr = float(cal.get("y_rate", 0.0))
+                    if yr > 0:
+                        return yr, "calibration"
+            except Exception:  # pragma: no cover - defensive
+                pass
+        if rates:
+            dec_deg_s = abs(float(rates[1]))
+            if dec_deg_s > 0 and scale > 0:
+                return dec_deg_s * 3600.0 / scale / 1000.0, "declared"
+        return 0.0, "declared"
+
+    def run_assistant_report(self) -> dict | None:
+        """The last cached Guiding Assistant report (GET /api/guide/assistant/
+        report), or None when the assistant has not run this session."""
+        return self._last_assistant_report
+
+    def stop_guiding_assistant(self) -> None:
+        """Cancel an in-flight Guiding Assistant run (POST /api/guide/assistant/
+        stop). Sets the stop event the measurement loop polls between pulses."""
+        self._assistant_stop.set()
 
     # ------------------------------------------------------------------ dither
 
