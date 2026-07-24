@@ -13,6 +13,7 @@ import random
 from typing import Any
 
 from ..devices.nina import pick
+from ..devices.sim import _sim_delay
 from ..events import bus
 from ..providers import resolve
 
@@ -227,10 +228,10 @@ class PolarAlignSession:
         try:
             self._publish(state="running", source="sim", progress=0.05,
                           message="slewing to first point")
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(_sim_delay(1.2))
             for i in range(1, 4):
                 self._publish(message=f"measuring point {i}/3", progress=0.1 + 0.2 * i)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(_sim_delay(1.0))
 
             az = random.uniform(4.0, 9.0) * random.choice((-1, 1))
             alt = random.uniform(3.0, 8.0) * random.choice((-1, 1))
@@ -240,7 +241,7 @@ class PolarAlignSession:
             # Converge (as if the user were turning the bolts) so the whole
             # reticle/vector/auto-zoom flow is visible end to end.
             while math.hypot(az, alt) > 0.4:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(_sim_delay(1.0))
                 az = az * 0.82 + random.uniform(-0.2, 0.2)
                 alt = alt * 0.82 + random.uniform(-0.2, 0.2)
                 self._publish(az_error=round(az, 2), alt_error=round(alt, 2),

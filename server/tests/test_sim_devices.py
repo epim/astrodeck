@@ -25,7 +25,13 @@ async def test_camera_exposure_returns_frame(rig):
     assert frame.data.max() > frame.data.min()
 
 
-async def test_camera_abort(rig):
+async def test_camera_abort(rig, monkeypatch):
+    # This test proves an in-flight exposure ABORTS mid-dwell, which is only
+    # meaningful at real wall-clock dwell — so opt OUT of the suite-wide
+    # ASTRODECK_FAST_TEST fast-path (conftest._fast_sim_delays), which would
+    # otherwise collapse the 5 s exposure to ~0 and complete it before the abort
+    # could land. The abort still fires at 0.1 s, so the test itself stays fast.
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
     cam = rig["camera"]
     task = asyncio.create_task(cam.expose(5.0, 100, 30))
     await asyncio.sleep(0.1)
