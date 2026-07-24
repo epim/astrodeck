@@ -39,11 +39,13 @@ def test_enumerate_offers_maps_roles_and_dual_offers_guide_camera():
     read = _fake_reader({
         "Camera": {"ASCOM.Simulator.Camera": "Sim Cam"},
         "SafetyMonitor": {"ASCOM.Simulator.SafetyMonitor": "Sim Safety"},
-        "Dome": {"ASCOM.Simulator.Dome": "Sim Dome"},  # no role -> skipped
+        "Dome": {"ASCOM.Simulator.Dome": "Sim Dome"},  # real AlpacaDome -> offered
     }, )
     offers = reg.enumerate_offers_with(read)  # test hook: enumerate_offers over a reader
     roles = sorted(o["role"] for o in offers)
-    assert roles == ["camera", "guide_camera", "safety"]  # no dome; camera dual-offers
+    # Dome now maps to the dome role (the real AlpacaDome client landed); camera
+    # dual-offers as guide_camera.
+    assert roles == ["camera", "dome", "guide_camera", "safety"]
     cam = [o for o in offers if o["role"] == "camera"][0]
     assert cam == {"role": "camera", "name": "Sim Cam",
                    "dev_type": "camera", "dev_num": 0,

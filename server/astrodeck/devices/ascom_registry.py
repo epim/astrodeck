@@ -36,6 +36,9 @@ _DEV_TYPE_TO_ROLE: dict[str, str] = {
     "camera": "camera", "telescope": "telescope", "focuser": "focuser",
     "filterwheel": "filterwheel", "switch": "switch",
     "safetymonitor": "safety", "rotator": "rotator",
+    # Real Alpaca clients now exist (PRO-4 dome / PRO-5 cover) so an ASCOM Dome
+    # or CoverCalibrator served by the COM host is offered, not skipped.
+    "dome": "dome", "covercalibrator": "covercalibrator",
 }
 
 

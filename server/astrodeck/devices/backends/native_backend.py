@@ -36,6 +36,9 @@ _ROLE_TO_DEV_TYPE: dict[str, str] = {
     "safety": "safetymonitor",
     "rotator": "rotator",
     "guide_camera": "camera",
+    # PRO-4/PRO-5 real Alpaca clients: role-based connect resolves the dev_type.
+    "dome": "dome",
+    "covercalibrator": "covercalibrator",
 }
 
 

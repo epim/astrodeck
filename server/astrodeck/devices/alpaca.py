@@ -22,7 +22,11 @@ import numpy as np
 from .base import (
     Camera,
     CameraFrame,
+    CoverCalibrator,
+    CoverState,
     DeviceError,
+    Dome,
+    DomeShutterState,
     FilterWheel,
     Focuser,
     PierSide,
@@ -777,6 +781,164 @@ class AlpacaSafetyMonitor(_AlpacaDevice, SafetyMonitor):
         return bool(await self._get("issafe"))
 
 
+#: ASCOM ShutterState enum -> AstroDeck DomeShutterState (PRO-4). An out-of-range
+#: or unreadable value degrades to UNKNOWN in ``shutter_state`` (a state read must
+#: never raise).
+_DOME_SHUTTER_STATE = {
+    0: DomeShutterState.OPEN,
+    1: DomeShutterState.CLOSED,
+    2: DomeShutterState.OPENING,
+    3: DomeShutterState.CLOSING,
+    4: DomeShutterState.ERROR,
+}
+
+
+class AlpacaDome(_AlpacaDevice, Dome):
+    """ASCOM IDomeV2 roll-off roof / dome — the observatory-close role (PRO-4).
+
+    Mirrors ``AlpacaRotator`` (motion + halt) and ``AlpacaSafetyMonitor`` (a
+    single tolerant state read): ``shutter_state`` NEVER raises out of the read,
+    degrading any error/unreachable driver to ``UNKNOWN``. ``set_slaved`` is
+    gated on the probed ``CanSlave`` exactly like ``AlpacaRotator.set_reverse``.
+
+    ``requires_park_before_close`` is intentionally LEFT at its fail-safe True
+    default: ASCOM exposes no roof-through-mount geometry, so we must assume a
+    close could crush an unparked OTA and let ``sequence/roof.close_observatory``
+    enforce park-first. ``close_shutter`` does NOT itself park — the close-order
+    guard owns that.
+    """
+
+    dev_type = "dome"
+
+    async def connect(self) -> None:
+        await _AlpacaDevice.connect(self)
+        # Probe CanSlave ONCE at connect so set_slaved is correctly gated before
+        # the first call. Best-effort: a roll-off roof that can't slave (or any
+        # transport error) leaves the flag at its False default.
+        try:
+            self.can_slave = bool(await self._get("canslave"))
+        except (DeviceError, httpx.HTTPError, OSError):
+            self.can_slave = False
+
+    async def shutter_state(self) -> DomeShutterState:
+        # A state read must NEVER raise (dossier: like PierSide/CoverState): any
+        # driver error, unreachable host, or non-numeric value -> UNKNOWN.
+        try:
+            raw = int(await self._get("shutterstatus"))
+        except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
+            return DomeShutterState.UNKNOWN
+        return _DOME_SHUTTER_STATE.get(raw, DomeShutterState.UNKNOWN)
+
+    async def open_shutter(self) -> None:
+        await self._put("openshutter")
+
+    async def close_shutter(self) -> None:
+        # SAFETY: this does NOT park. sequence/roof.close_observatory owns the
+        # park-first ordering (requires_park_before_close); here we only command
+        # the shutter closed.
+        await self._put("closeshutter")
+
+    async def abort(self) -> None:
+        await self._put("abortslew")
+
+    async def get_slaved(self) -> bool:
+        try:
+            return bool(await self._get("slaved"))
+        except (DeviceError, httpx.HTTPError, OSError):
+            return False
+
+    async def set_slaved(self, on: bool) -> None:
+        if not self.can_slave:
+            raise DeviceError(f"{self.name} cannot slave to the mount")
+        await self._put("slaved", Slaved=bool(on))
+
+
+#: ASCOM CoverStatus enum -> AstroDeck CoverState (PRO-5). Same integer order.
+_COVER_STATE = {
+    0: CoverState.NOT_PRESENT,
+    1: CoverState.CLOSED,
+    2: CoverState.MOVING,
+    3: CoverState.OPEN,
+    4: CoverState.UNKNOWN,
+    5: CoverState.ERROR,
+}
+
+#: ASCOM CalibratorStatus enum -> AstroDeck calibrator-state string. NotReady(2)
+#: and Unknown(4) both collapse to "unknown" (the panel is not settled/known).
+_CALIBRATOR_STATE = {
+    0: "not_present",
+    1: "off",
+    2: "unknown",
+    3: "ready",
+    4: "unknown",
+    5: "error",
+}
+
+
+class AlpacaCoverCalibrator(_AlpacaDevice, CoverCalibrator):
+    """ASCOM ICoverCalibratorV1 flat panel (+ optional motorized cover) — the
+    F-F role (PRO-5).
+
+    ``get_cover_state``/``get_calibrator_state`` are tolerant state reads that
+    degrade to UNKNOWN/"unknown" rather than raising. ``calibrator_on`` clamps
+    the requested level into ``0..max_brightness`` (both probed at connect), and
+    ``close_cover`` is gated on the probed ``has_cover`` exactly like
+    ``AlpacaRotator.set_reverse`` gates on ``can_reverse``.
+    """
+
+    dev_type = "covercalibrator"
+
+    async def connect(self) -> None:
+        await _AlpacaDevice.connect(self)
+        # MaxBrightness -> clamp ceiling. Keep the base default (1, an on/off-only
+        # panel) if the driver doesn't report it or reports a nonsense <1.
+        try:
+            mb = int(await self._get("maxbrightness"))
+            if mb >= 1:
+                self.max_brightness = mb
+        except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
+            pass
+        # Derive has_cover: CoverState NotPresent(0) => no motorized cover, so the
+        # cover methods correctly raise. Any error leaves has_cover at its False
+        # default (fail-safe: don't command a cover we can't confirm).
+        try:
+            self.has_cover = int(await self._get("coverstate")) != 0
+        except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
+            self.has_cover = False
+
+    async def get_brightness(self) -> int:
+        return int(await self._get("brightness"))
+
+    async def get_calibrator_state(self) -> str:
+        try:
+            raw = int(await self._get("calibratorstate"))
+        except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
+            return "unknown"
+        return _CALIBRATOR_STATE.get(raw, "unknown")
+
+    async def calibrator_on(self, brightness: int) -> None:
+        level = max(0, min(self.max_brightness, int(brightness)))
+        await self._put("calibratoron", Brightness=level)
+
+    async def calibrator_off(self) -> None:
+        await self._put("calibratoroff")
+
+    async def get_cover_state(self) -> CoverState:
+        try:
+            raw = int(await self._get("coverstate"))
+        except (DeviceError, httpx.HTTPError, OSError, TypeError, ValueError):
+            return CoverState.UNKNOWN
+        return _COVER_STATE.get(raw, CoverState.UNKNOWN)
+
+    async def open_cover(self) -> None:
+        await self._put("opencover")
+
+    async def close_cover(self) -> None:
+        if not self.has_cover:
+            raise DeviceError(f"{self.name} has no cover")
+        await self._put("closecover")
+
+
 DEVICE_CLASSES = {
     "camera": AlpacaCamera,
     "telescope": AlpacaTelescope,
@@ -785,6 +947,8 @@ DEVICE_CLASSES = {
     "filterwheel": AlpacaFilterWheel,
     "switch": AlpacaSwitch,
     "safetymonitor": AlpacaSafetyMonitor,
+    "dome": AlpacaDome,
+    "covercalibrator": AlpacaCoverCalibrator,
 }
 
 
