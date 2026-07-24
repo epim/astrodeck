@@ -456,6 +456,11 @@ interface AppState {
   // never blank it. null until the first autofocus run completes this session.
   lastAutofocusResult: AutofocusResult | null;
   guide: (GuideStats & { name?: string }) | null;
+  // Guiding Assistant live progress (design 2026-07-24 D5): the latest
+  // `{phase, pct, message}` off the dedicated "guide_assistant" bus channel
+  // (kept OFF the "guide" channel so the live guide graph is untouched). null
+  // between runs; the GuideAssistantPanel drives its progress bar from this.
+  guideAssistant: { phase: string; pct: number; message: string } | null;
   // Same-night per-provider RMS windows (P5-T1, spec §6 P5): the LAST
   // guide-stats tick seen while a given provider KIND ("astrodeck"/"backend"/
   // "sim") was resolved, keyed by `status.providers.guide.kind` at the moment
@@ -718,6 +723,7 @@ export const useStore = create<AppState>((set, get) => ({
   focus: null,
   lastAutofocusResult: null,
   guide: null,
+  guideAssistant: null,
   guideRmsByKind: {},
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
@@ -1384,6 +1390,14 @@ export const useStore = create<AppState>((set, get) => ({
         }));
         break;
       }
+      case "guide_assistant": {
+        // Guiding Assistant progress (design D5). The final "done" tick is left
+        // in place so the panel can show 100% until it fetches the report; a
+        // fresh run's first tick replaces it, and the panel clears it on close.
+        const d = ev.data as unknown as { phase: string; pct: number; message: string };
+        set({ guideAssistant: d });
+        break;
+      }
       case "sequence": {
         const seq = ev.data as unknown as SequenceState;
         const prevState = get().sequence.state;
@@ -1501,6 +1515,7 @@ export const useStatus = () => useStore((s) => s.status);
 export const useMasters = () => useStore((s) => s.masters);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
+export const useGuideAssistant = () => useStore((s) => s.guideAssistant);
 // Same-night per-provider RMS windows (P5-T1) — see AppState.guideRmsByKind.
 // useShallow so an unrelated guide tick under the SAME kind (which replaces
 // the object at that key but leaves the other keys alone) doesn't spuriously

@@ -4,7 +4,12 @@ import { api, ApiError } from "../api";
 import { setProvidersConfig } from "../api/backends";
 import {
   useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
+  useGuideAssistant,
 } from "../store";
+import {
+  summarize, formatRecommendations, buildApplyBody, applyChangesAlgorithm,
+  type AssistantReport, type GuideSettingsPutBody,
+} from "../lib/guideAssistant";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Icon } from "../components/icons";
 import { Panel, Stat, Led } from "../components/ui";
@@ -88,6 +93,10 @@ export default function GuideView() {
   // visible before it runs the mount away from the star. Refetch when guiding
   // (re)starts — a fresh calibration completes on start / Force Recalibrate.
   const [calReport, setCalReport] = useState<CalibrationReport | null>(null);
+  // "Open in tuning editor" hand-off (design §4.2): the Guiding Assistant panel
+  // seeds the existing GuideSettingsDrawer with recommended params for hand
+  // tuning, reusing the AlgoParams editor rather than building a new one.
+  const [tuningSeed, setTuningSeed] = useState<GuideSettingsPutBody | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (!connected) { setCalReport(null); return; }
@@ -250,9 +259,13 @@ export default function GuideView() {
           </Panel>
         )}
 
+        <GuideAssistantPanel canGuide={canGuide} connected={connected}
+          onToast={showToast} onOpenInTuning={setTuningSeed} />
+
         <GuideProviderPanel onToast={showToast} />
 
-        <GuideSettingsDrawer canGuide={canGuide} connected={connected} onToast={showToast} />
+        <GuideSettingsDrawer canGuide={canGuide} connected={connected}
+          onToast={showToast} seed={tuningSeed} />
       </div>
     </div>
   );
@@ -405,10 +418,11 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   );
 }
 
-function GuideSettingsDrawer({ canGuide, connected, onToast }: {
+function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
   canGuide: boolean;
   connected: boolean;
   onToast: ToastFn;
+  seed?: GuideSettingsPutBody | null;
 }) {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -463,6 +477,29 @@ function GuideSettingsDrawer({ canGuide, connected, onToast }: {
     setOpen(next);
     if (next && !loaded) void load();
   };
+
+  // "Open in tuning editor" hand-off (design §4.2): when the Guiding Assistant
+  // hands us a recommended settings body, open the drawer and seed the editors
+  // with it (snake→camel for the param sub-dicts) so the expert can hand-tune
+  // the recommendation before saving. Reuses the SAME AlgoParams editor below.
+  useEffect(() => {
+    if (!seed) return;
+    const camel = (p: Record<string, number>): GuideAlgorithmParamDefaults => {
+      const out = {} as GuideAlgorithmParamDefaults;
+      for (const [k, v] of Object.entries(p)) {
+        out[k.replace(/_([a-z])/g, (_m, c) => c.toUpperCase())] = v;
+      }
+      return out;
+    };
+    if (isValidRaAlgorithm(seed.ra_algorithm)) setRa(seed.ra_algorithm);
+    if (isValidDecAlgorithm(seed.dec_algorithm)) setDec(seed.dec_algorithm);
+    setRaParams(camel(seed.ra_params));
+    setDecParams(camel(seed.dec_params));
+    if (isValidDecGuideMode(seed.dec_guide_mode)) setDecMode(seed.dec_guide_mode);
+    setBlcMs(String(seed.blc_pulse_ms));
+    setLoaded(true);
+    setOpen(true);
+  }, [seed]);
 
   const save = async () => {
     setBusy(true);
@@ -615,6 +652,253 @@ function AlgoParams({ kind, params, onChange, disabled }: {
           />
         </label>
       ))}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------- guiding assistant
+// The Guiding Assistant panel (design 2026-07-24 §4). A THIN render shell: all
+// copy + the apply-payload builder + the selective-apply merge live in the pure
+// lib/guideAssistant.ts. Novice = one Run button → progress → a plain-language
+// summary card + one "Apply recommended settings" button. Advanced = a collapsed
+// <details> with raw curves (reusing GuideScatter/GuideGraph), numeric
+// measurements, a per-recommendation before/after table with a per-field
+// checkbox for selective apply, and "Open in tuning editor" (hands the params to
+// the existing GuideSettingsDrawer). Honest-disabled (§11.8) for no-guider /
+// non-native / already-guiding / viewer.
+function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
+  canGuide: boolean;
+  connected: boolean;
+  onToast: ToastFn;
+  onOpenInTuning: (body: GuideSettingsPutBody) => void;
+}) {
+  const providers = useProviders();
+  const status = useStatus();
+  const guide = useGuide();
+  const progress = useGuideAssistant();
+  const [report, setReport] = useState<AssistantReport | null>(null);
+  const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const kind = providers?.guide?.kind;
+  const isNative = kind === "astrodeck" || kind === "sim";
+  const guiding = !!(guide?.guiding ?? status?.guider?.guiding);
+
+  // Honest-disabled reason (§11.8) — first blocking condition wins.
+  const reason = !canGuide
+    ? `${accessPhrase("control.guide")} required to run the Guiding Assistant`
+    : !connected
+      ? "connect a guider first"
+      : !isNative
+        ? "the Guiding Assistant works with the AstroDeck native guider"
+        : guiding
+          ? "stop guiding first"
+          : null;
+  const blocked = reason !== null;
+
+  // When a run reports "done", fetch the cached report and seed the advanced
+  // selection with the non-advanced recommendation keys (the novice apply set).
+  useEffect(() => {
+    if (progress?.phase === "done" && running) {
+      api.get<{ report: AssistantReport | null }>("/api/guide/assistant/report")
+        .then((r) => {
+          setReport(r.report);
+          if (r.report) {
+            setSelected(new Set(
+              r.report.recommendations.filter((x) => !x.advanced).map((x) => x.key)));
+          }
+        })
+        .catch((e) => onToast("error", (e as Error).message))
+        .finally(() => setRunning(false));
+    }
+  }, [progress?.phase, running, onToast]);
+
+  const run = async () => {
+    if (blocked || running) return;
+    setReport(null);
+    try {
+      await api.post("/api/guide/assistant/start", { include_backlash: true });
+      setRunning(true);
+    } catch (e) {
+      onToast("error", (e as Error).message);
+    }
+  };
+
+  const stop = async () => {
+    try { await api.post("/api/guide/assistant/stop"); } catch { /* ignore */ }
+    setRunning(false);
+  };
+
+  const apply = async (keys?: string[]) => {
+    if (!report || busy) return;
+    setBusy(true);
+    try {
+      const body = buildApplyBody(report, keys);
+      const changesAlgo = applyChangesAlgorithm(report, keys);
+      // D4: an algorithm change wants a fresh calibration. Novice one-tap
+      // (keys omitted) auto-clears with a toast; advanced selective apply
+      // prompts before discarding the calibration.
+      let clearCal = changesAlgo;
+      if (changesAlgo && keys) {
+        clearCal = (globalThis as { confirm?: (m: string) => boolean }).confirm?.(
+          "This changes a guide algorithm, which needs a fresh calibration. " +
+          "Clear the saved calibration now?") ?? true;
+      }
+      await api.put("/api/guide/settings", body);
+      if (clearCal) {
+        try { await api.del("/api/guide/calibration"); } catch { /* best effort */ }
+        onToast("info",
+          "Recommended settings applied — saved calibration cleared; it " +
+          "recalibrates on the next guiding start");
+      } else {
+        onToast("success",
+          "Recommended guide settings applied — they take effect on the next " +
+          "guiding start");
+      }
+    } catch (e) {
+      onToast("error", (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleKey = (key: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const summary = report ? summarize(report) : null;
+  const rows = report ? formatRecommendations(report) : [];
+  const toneClass = { good: "text-good", warn: "text-warn", bad: "text-bad" };
+
+  return (
+    <Panel title="Guiding Assistant" right={<ProviderBadge cap="guide" />}>
+      {/* Novice: one Run button (honest-disabled), progress, then a summary. */}
+      {running ? (
+        <div className="flex flex-col gap-2">
+          <div className="h-2 rounded bg-line overflow-hidden">
+            <div className="h-full bg-accent transition-all"
+              style={{ width: `${progress?.pct ?? 0}%` }} />
+          </div>
+          <p className="text-xs text-dim">{progress?.message ?? "Working…"}</p>
+          <button className="btn" onClick={() => void stop()}>Stop</button>
+        </div>
+      ) : !report ? (
+        <div className="flex flex-col gap-2">
+          <div aria-disabled={blocked || undefined}
+            title={reason ?? undefined}
+            className={blocked ? "opacity-50 pointer-events-none select-none" : ""}>
+            <button className="btn btn-accent w-full" onClick={() => void run()}>
+              <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />
+              Run Guiding Assistant
+            </button>
+          </div>
+          <p className="text-[11px] text-dim leading-snug">
+            {blocked
+              ? reason
+              : "Watches your mount for about a minute and recommends the best guide settings."}
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {summary && (
+            <p className={`text-sm leading-snug ${toneClass[summary.tone]}`}>
+              {summary.headline}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button className="btn btn-accent flex-1" disabled={!canGuide || busy}
+              onClick={() => void apply()}>
+              Apply recommended settings
+            </button>
+            <button className="btn" disabled={busy} onClick={() => setReport(null)}>
+              Redo
+            </button>
+          </div>
+
+          {/* Advanced disclosure — collapsed by default, zero novice clutter. */}
+          <details className="border-t border-line pt-2">
+            <summary className="text-[11px] text-dim cursor-pointer select-none">
+              Advanced · show measurements
+            </summary>
+            <div className="flex flex-col gap-3 mt-3">
+              <div className="flex justify-center">
+                <GuideScatter samples={report.samples} />
+              </div>
+              <GuideGraph samples={report.samples} />
+
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                <Meas label="RMS RA" px={report.measurements.rms_ra_px}
+                  as={report.measurements.rms_ra_arcsec} />
+                <Meas label="RMS Dec" px={report.measurements.rms_dec_px}
+                  as={report.measurements.rms_dec_arcsec} />
+                <Meas label="RMS total" px={report.measurements.rms_total_px}
+                  as={report.measurements.rms_total_arcsec} />
+                <Meas label="drift/min" px={report.measurements.drift_per_min_px}
+                  as={report.measurements.drift_per_min_arcsec} />
+                <div className="flex justify-between"><span className="label">PE p-p</span>
+                  <span className="mono tabular-nums">
+                    {(report.measurements.pe_amplitude_px * 2).toFixed(2)} px
+                    {report.measurements.pe_period_s != null
+                      ? ` · ~${report.measurements.pe_period_s.toFixed(0)}s` : ""}
+                  </span></div>
+                <div className="flex justify-between"><span className="label">jitter</span>
+                  <span className="mono tabular-nums">{report.measurements.jitter_px.toFixed(2)} px</span></div>
+                <div className="flex justify-between col-span-2"><span className="label">backlash</span>
+                  <span className="mono tabular-nums">
+                    {report.measurements.backlash.bl_ms} ± {report.measurements.backlash.sigma_ms.toFixed(0)} ms
+                    <span className="text-faint"> ({report.measurements.backlash.result_code}, {report.measurements.backlash.y_rate_source})</span>
+                  </span></div>
+              </div>
+
+              {/* Per-recommendation before→after with a checkbox for selective apply. */}
+              <div className="flex flex-col gap-1 border-t border-line pt-2">
+                {rows.map((r) => (
+                  <label key={r.key} className="flex items-start gap-2 text-[11px]">
+                    <input type="checkbox" className="mt-0.5"
+                      checked={selected.has(r.key)}
+                      onChange={() => toggleKey(r.key)} />
+                    <span className="flex-1">
+                      <span className="font-medium">{r.label}</span>
+                      {r.advanced && <span className="text-warn"> · advanced</span>}
+                      <span className="text-dim"> · {String(r.current)} → </span>
+                      <span className="mono">{String(r.recommended)}{r.unit}</span>
+                      <span className="block text-faint">{r.rationale}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <button className="btn flex-1" disabled={!canGuide || busy || selected.size === 0}
+                  onClick={() => void apply([...selected])}>
+                  Apply selected
+                </button>
+                <button className="btn"
+                  onClick={() => onOpenInTuning(buildApplyBody(report,
+                    selected.size ? [...selected] : undefined))}>
+                  Open in tuning editor
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** One numeric measurement row: shows arcsec when the image scale is known,
+ *  else raw pixels (UX-15 — never label pixels as arcsec). */
+function Meas({ label, px, as }: { label: string; px: number; as: number | null }) {
+  return (
+    <div className="flex justify-between">
+      <span className="label">{label}</span>
+      <span className="mono tabular-nums">
+        {as != null ? `${as.toFixed(2)}″` : `${px.toFixed(2)} px`}
+      </span>
     </div>
   );
 }
