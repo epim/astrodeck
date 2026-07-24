@@ -75,7 +75,7 @@ def levels_to_mtf(black: float, mid: float, white: float) -> tuple[float, float,
 
     Clamps the order (black < white), keeps the midtones balance in (0,1), and
     returns the same three numbers the client LUT uses. Kept as a named function
-    so the server ``/render`` (Pass 2) and the client agree on the mapping.
+    so the server ``/render.png`` and the client agree on the mapping.
     """
     black = float(np.clip(black, 0.0, 1.0))
     white = float(np.clip(white, 0.0, 1.0))
