@@ -33,7 +33,7 @@ from statistics import median
 from typing import Any
 
 from ..config import config_store
-from ..devices.base import DeviceError, PierSide
+from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
 from ..hub import Hub
@@ -96,6 +96,9 @@ FILTER_MOVE_TIMEOUT_S = 90.0    # a filter-wheel slot change (incl. settle)
 FOCUSER_MOVE_TIMEOUT_S = 180.0  # a focuser offset move (a big Ha offset can crawl)
 CALIBRATOR_CMD_TIMEOUT_S = 30.0  # flat panel on/off / cover move (PRO-5)
 FLAT_METER_MAX_S = 8            # trial metering captures cap (belt-and-braces)
+DOME_OPEN_TIMEOUT_S = 180.0    # roll-off roof reopen (PRO-4 D3); mirrors roof.py's
+                               # DOME_CLOSE_TIMEOUT_S — a real motor run is minutes
+DOME_QUERY_TIMEOUT_S = 30.0    # a single shutter_state query during reopen
 
 # --- inter-target teardown -------------------------------------------------
 # Before a scheduler wait longer than this we stop tracking (park-hold) so the
@@ -1499,15 +1502,32 @@ class SequenceEngine:
         bus.log("error", f"UNSAFE: {reason} → {act}", "safety")
 
         # PRO-4: a CLOSEABLE roof must CLOSE over the gear, not pause-hold under
-        # open sky. When close_dome_on_unsafe is set and a dome is connected,
-        # ESCALATE every on_unsafe action (INCLUDING pause) to the shielded
-        # park-and-close teardown by raising SafetyAbort here — BEFORE the
-        # warn/pause/abort branches below — so the roof close rides _wind_down's
-        # fenced-park + close ordering. No auto-reopen on safe-again (follow-up).
+        # open sky. When close_dome_on_unsafe is set and a dome is connected we do
+        # NOT fall through to the warn/pause/abort branches below.
         dome = self.hub.devices.get("dome")
         if (cfg and cfg.safety.close_dome_on_unsafe
                 and dome is not None and getattr(dome, "connected", False)):
-            raise SafetyAbort(f"{reason} — closing roof")
+            if not cfg.safety.reopen_dome_when_safe:
+                # Reopen OPT-IN OFF (default) ⇒ BYTE-IDENTICAL to before: ESCALATE
+                # every on_unsafe action (INCLUDING pause) to the shielded
+                # park-and-close teardown by raising SafetyAbort here — the roof
+                # close rides _wind_down's fenced-park + close ordering and the RUN
+                # ENDS. No reopen.
+                raise SafetyAbort(f"{reason} — closing roof")
+            # Reopen ENABLED (PRO-4 D3): instead of ending the run, CLOSE the roof
+            # over the parked gear (park-first, never-crush via close_observatory),
+            # wait for safe-again (debounced), REOPEN, re-acquire, and RESUME.
+            if await self._close_for_reopen(dome, reason):
+                await self._await_safe_and_reopen(dome, reason, target=target)
+                return
+            # INVARIANT 2: the never-crush close REFUSED / failed (couldn't confirm a
+            # parked mount). Do NOT enter the wait-reopen loop over a still-open roof
+            # — FALL BACK to the existing open-sky park-hold pause so the gear is
+            # never left in a bad state (the roof was never actuated → still OPEN).
+            bus.log("warning", "auto-reopen: roof close refused/failed — holding "
+                               "under open sky (park-hold pause)", "safety")
+            await self._park_hold_pause(reason, target)
+            return
 
         if act == "warn":
             return
@@ -1515,6 +1535,16 @@ class SequenceEngine:
             raise SafetyAbort(reason)
 
         # act == "pause": stop tracking / park-hold and wait for safe-again.
+        await self._park_hold_pause(reason, target)
+
+    async def _park_hold_pause(self, reason: str, target: Target | None) -> None:
+        """The open-sky safety pause (§1.9-A): stop tracking / park-hold, then loop
+        re-reading safety until ``resume_safe_consecutive`` clean reads → re-check
+        the mount floor+pier and RESUME (re-acquire the target), or ``max_pause_min``
+        elapses → SafetyAbort. Extracted verbatim from the old inline pause path so
+        it can also serve as the close-refused fallback for the auto-reopen feature
+        (INVARIANT 2). Behavior is unchanged for the plain pause caller."""
+        cfg = self._cfg
         await self._park_hold()
         self._set_state(state="paused", detail=f"paused (unsafe): {reason}")
         resume_n = max(1, cfg.safety.resume_safe_consecutive if cfg else 3)
@@ -1562,6 +1592,127 @@ class SequenceEngine:
             if max_pause_s > 0 and (time.time() - pause_started) >= max_pause_s:
                 bus.log("error", "max pause elapsed while unsafe — parking", "safety")
                 raise SafetyAbort(f"unsafe for over {cfg.safety.max_pause_min} min: {reason}")
+
+    async def _close_for_reopen(self, dome, reason: str) -> bool:
+        """Auto-reopen (PRO-4 D3) — CLOSE step. Park the mount clear (fenced, like
+        the wind-down) then close the roof over it via the never-crush
+        ``close_observatory`` guard. Returns ``True`` iff the shutter is CONFIRMED
+        CLOSED. INVARIANT 1: the close ALWAYS goes through ``close_observatory`` —
+        we never command ``close_shutter`` directly. On any refusal/failure returns
+        ``False`` (INVARIANT 2: the caller falls back to an open-sky park-hold
+        pause) — ``close_observatory`` never touches the shutter when it refuses,
+        so the roof stays OPEN and nothing is ever crushed."""
+        bus.log("info", f"auto-reopen: closing roof over parked gear — {reason}",
+                "safety")
+        # Stop guiding + tracking, then PARK (so close_observatory can confirm
+        # parked before the roof travels through the mount's volume).
+        await self._park_hold()
+        await self._fenced_park()
+        from .roof import close_observatory
+        tel = self.hub.devices.get("telescope")
+        return await close_observatory(dome, tel, log=bus.log)
+
+    async def _fenced_park(self) -> None:
+        """Park the mount under the hub motion fence+lock (best-effort; never
+        raises), mirroring the wind-down park so ``close_observatory`` can confirm
+        parked before moving the roof. A park failure/timeout is swallowed here —
+        ``close_observatory`` then RE-CONFIRMS ``is_parked`` and REFUSES to move the
+        shutter (fail-safe), so a failed park never crushes the mount."""
+        tel = self.hub.devices.get("telescope")
+        if not (tel and getattr(tel, "connected", False)):
+            return
+        bus.log("info", "parking mount", "sequence")
+        bump = getattr(self.hub, "bump_motion_epoch", None)
+        if callable(bump):
+            bump()
+        try:
+            lock = getattr(self.hub, "_motion_lock", None)
+            if lock is not None:
+                async with lock:
+                    await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+            else:
+                await asyncio.wait_for(tel.park(), PARK_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            bus.log("warning", f"park timed out after {PARK_TIMEOUT_S:.0f}s during "
+                               "auto-reopen close — continuing", "sequence")
+        except Exception as e:
+            bus.log("warning", f"park failed during auto-reopen close: {e}",
+                    "sequence")
+
+    async def _await_safe_and_reopen(self, dome, reason: str, *,
+                                     target: Target | None) -> None:
+        """Auto-reopen (PRO-4 D3) — WAIT → REOPEN → RESUME step, entered ONLY after
+        the roof is confirmed CLOSED. Mirrors the park-hold pause loop but reopens
+        the roof instead of resuming under open sky:
+
+        * Debounce (INVARIANT 4): resume ONLY after ``resume_safe_consecutive``
+          CONSECUTIVE safe reads — a single safe read then unsafe resets the streak,
+          so a passing cloud never cycles the roof.
+        * max_pause (INVARIANT 5): still unsafe after ``max_pause_min`` → SafetyAbort
+          with the roof LEFT CLOSED (fail-safe; the run's teardown re-confirms closed,
+          which is idempotent). 0 = no cap.
+        * Reopen (INVARIANT 3): ONLY ``dome.open_shutter()`` (opening never crushes
+          the mount — no park gate), then ``_setup_target`` to unpark/re-acquire."""
+        cfg = self._cfg
+        self._set_state(state="paused",
+                        detail=f"roof closed (unsafe): {reason}")
+        resume_n = max(1, cfg.safety.resume_safe_consecutive if cfg else 3)
+        max_pause_s = (cfg.safety.max_pause_min * 60.0) if cfg else 0.0
+        pause_started = time.time()
+        self._safe_streak = 0
+        while True:
+            await self._checkpoint()
+            await asyncio.sleep(SAFETY_PAUSE_POLL_S)
+            reading = await self._read_safety()
+            if reading is not None and not reading.stale and reading.is_safe:
+                self._safe_streak += 1
+                if self._safe_streak >= resume_n:
+                    self._unsafe_streak = 0
+                    bus.log("info", "conditions safe again — reopening roof",
+                            "safety")
+                    # INVARIANT 3: reopen is ONLY open_shutter (opening is safe at
+                    # any mount state). Bound + CONFIRM OPEN before we unpark: if the
+                    # roof does not confirm OPEN, do NOT slew the OTA under a closed
+                    # roof — SafetyAbort and leave the gear parked/closed (fail-safe).
+                    try:
+                        await asyncio.wait_for(dome.open_shutter(),
+                                               DOME_OPEN_TIMEOUT_S)
+                        st = await asyncio.wait_for(dome.shutter_state(),
+                                                    DOME_QUERY_TIMEOUT_S)
+                    except Exception as e:
+                        raise SafetyAbort(
+                            f"roof reopen failed ({e}) — gear left parked, roof "
+                            "not confirmed open")
+                    if st is not DomeShutterState.OPEN:
+                        raise SafetyAbort(
+                            "roof reopen did not confirm OPEN — gear left parked")
+                    bus.publish("safety", is_safe=True, reason="safe again",
+                                action="reopen", stale=False)
+                    # Roof is OPEN again: re-check the mount floor+pier, then re-run
+                    # the full target setup (unpark + tracking on, re-center/re-slew,
+                    # restart guiding) — the mount was PARKED while we waited, so we
+                    # must re-acquire exactly as if fresh. Calibration targets (no
+                    # mount) have nothing to restore.
+                    if target is not None:
+                        await self._enforce_mount_floor(projected=True, target=target)
+                    if target is not None and not target.calibration:
+                        ti = self._index_of_target(target)
+                        bus.log("info", f"re-acquiring {target.name} after roof "
+                                        "reopen (unpark, re-center, restart guiding)",
+                                "sequence")
+                        await self._setup_target(ti, target)
+                    self._set_state(state="running",
+                                    detail="resumed (roof reopened)")
+                    return
+            else:
+                self._safe_streak = 0
+            if max_pause_s > 0 and (time.time() - pause_started) >= max_pause_s:
+                # INVARIANT 5: fail-safe — the roof STAYS CLOSED, the run ends.
+                bus.log("error", "max pause elapsed while roof closed — leaving "
+                                 "roof CLOSED, ending run", "safety")
+                raise SafetyAbort(
+                    f"unsafe for over {cfg.safety.max_pause_min} min "
+                    f"(roof stays closed): {reason}")
 
     async def _park_hold(self) -> None:
         """Stop tracking (park-hold) when pausing for safety so the mount isn't
