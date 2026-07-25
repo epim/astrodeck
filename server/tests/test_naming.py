@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 import pytest
 from astrodeck.naming import (
-    DEFAULT_TEMPLATE, render_relative_path, sanitize_component, validate_template)
+    DEFAULT_TEMPLATE, capture_tokens, format_exposure_token,
+    render_relative_path, sanitize_component, validate_template)
 
 
 def test_default_template_byte_for_byte():
@@ -14,6 +15,31 @@ def test_default_template_byte_for_byte():
     # no filter -> the empty piece drops, no double underscore (legacy parity)
     assert render_relative_path(DEFAULT_TEMPLATE, dict(f, FILTER="")).as_posix() == \
         "M42/Light_M42_2026-07-23_213045_0001.fits"
+
+
+@pytest.mark.parametrize("gain,exposure,binning,expect", [
+    (100, 300.0, 1, "M42_100_300_1.fits"),          # whole seconds -> plain int
+    (100, 1.5, 2, "M42_100_1p5_2.fits"),            # fractional -> '.' becomes 'p'
+    (0, 0.001, 1, "M42_0_0p001_1.fits"),            # sub-second bias/flat exposure
+    (None, None, None, "M42.fits"),                 # absent values drop the tokens
+])
+def test_capture_setting_tokens_render(gain, exposure, binning, expect):
+    """PRO-10 (e): the three new tokens render through the (unchanged) engine.
+    A '.' inside a filename segment invites extension confusion, so a fractional
+    exposure renders 1p5 — never 1.5."""
+    tmpl = "$$TARGET$$_$$GAIN$$_$$EXPOSURE$$_$$BINNING$$"
+    fields = dict(TARGET="M42", **capture_tokens(gain, exposure, binning))
+    assert render_relative_path(tmpl, fields).as_posix() == expect
+    validate_template(tmpl)                          # dry render must not raise
+
+
+def test_exposure_token_edge_values():
+    assert format_exposure_token(None) == ""
+    assert format_exposure_token(float("nan")) == ""
+    assert format_exposure_token(float("inf")) == ""
+    assert format_exposure_token(300) == "300"       # int in, no ".0"
+    # the formatted values are path-safe: no separators survive sanitization
+    assert "/" not in format_exposure_token(2.25) and "." not in format_exposure_token(2.25)
 
 
 def test_sanitizers_match_legacy():
