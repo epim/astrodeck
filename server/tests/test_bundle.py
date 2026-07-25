@@ -507,6 +507,26 @@ def test_layout_variants_shape_dests_and_build_script(layout, light_dir, master_
     assert light_dir in readme_text(b)
 
 
+@pytest.mark.parametrize("layout", ["grouped", "siril", "app"])
+def test_build_sh_never_emits_a_backslash(layout):
+    """The bundle's dests are POSIX by construction, so the SCRIPT must be too.
+
+    ``str(Path(dest).parent)`` is os-dependent: on a Windows-hosted AstroDeck it
+    yields ``M42\\Ha\\300s...\\darks``, and under ``set -eu`` the emitted build.sh
+    would create one literal backslash-named directory then abort at the next
+    ``cp`` — taking every remaining group with it. The per-group layouts are what
+    exposed this (grouped's master parent is the separator-free 'masters')."""
+    b = _two_group_bundle(layout)
+    sh = build_script(b, "sh")
+    assert "\\" not in sh
+    # the mkdir really does precede its cp, with the SAME directory prefix
+    for g in b.groups:
+        for kind_lc, dest in g.masters.items():
+            if g.master_sources.get(kind_lc):
+                assert f"mkdir -p {dest.rsplit('/', 1)[0]}" in sh
+    assert "\\" not in build_script(b, "ps1")
+
+
 def test_bad_layout_and_threshold_rejected(env):
     """Pure guard raises ValueError; the routes turn that into 400 (not a 500)."""
     frames = [FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300,

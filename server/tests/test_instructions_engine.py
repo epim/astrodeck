@@ -176,6 +176,40 @@ async def test_skip_active_target_still_abandons_it(sim_hub, temp_store,
     assert shots == 3                     # A: 1 frame then abandoned; B: 2
 
 
+@pytest.mark.parametrize("target_arg", ["ZZZ", "A"])
+async def test_degenerate_run_target_does_not_abandon_the_active_target(
+        sim_hub, temp_store, monkeypatch, target_arg):
+    """The two documented ``run_target`` NO-OPS must really be no-ops.
+
+    ``ZZZ`` = a typo'd/unknown name; ``A`` = a run aimed at the target already
+    being shot (the natural "re-run this" intent). Both log "ignored"/"no-op",
+    and both used to still cost the user the running target because the caller
+    removed it unconditionally. A is re-selected and finishes its quota."""
+    eng = SequenceEngine(sim_hub)
+    shots = 0
+    inner = _returns({"hfr": 9.9, "stats": {"median": 100}, "saved_path": None})
+
+    async def counting_capture(*a, **k):
+        nonlocal shots
+        shots += 1
+        return await inner(*a, **k)
+    monkeypatch.setattr(eng, "_capture", counting_capture)
+    seen = _spy_steps(eng, monkeypatch)
+    plan = _multi_plan(["A", "B"], count=2, instructions=[Instruction(
+        trigger="on_hfr_above", threshold=3.0, action="run_target",
+        target_arg=target_arg, once=True)])
+    eng.start(plan)
+    await _wait_done(eng)
+    # A is re-entered (resuming from its persisted per-step count) rather than
+    # vanishing from the night, and every planned frame is still shot.
+    assert seen == ["A", "A", "B"]
+    # 5, not 4: the instruction eval runs before `_done` advances for the frame
+    # that raised, so the resumed step re-shoots that one sub (it is on disk and
+    # in the report either way). One duplicate sub beats losing the target.
+    assert shots == 5
+    assert eng._jumps_spent == 1          # the unwind still spent budget
+
+
 async def test_mutual_jumps_terminate_via_budget(sim_hub, temp_store, monkeypatch):
     """A -> run B and B -> run A, neither ever completing: the run MUST end via
     the hard jump budget (degrade + warn), never hang and never abort."""

@@ -901,8 +901,13 @@ class SequenceEngine:
                     # control-flow expansion: a fired run_target/skip_target
                     # instruction redirects the scheduler. Like StopTarget this
                     # NEVER ends the night — an unknown/degenerate jump is a
-                    # logged no-op and the normal ordering carries on.
-                    self._apply_jump(plan, j, ready, remaining)
+                    # logged no-op and the normal ordering carries on. _apply_jump
+                    # answers whether the ACTIVE target was consumed: on a no-op
+                    # it is NOT, so it stays in `remaining` and is re-selected
+                    # (resuming from its persisted per-step counts) instead of
+                    # being silently dropped by the removal below.
+                    if not self._apply_jump(plan, j, ready, remaining):
+                        continue
                 remaining.remove(ready)
                 continue
 
@@ -945,17 +950,28 @@ class SequenceEngine:
         # loop exhausted naturally → all targets ran (or were skipped above).
 
     def _apply_jump(self, plan: SequencePlan, j: "JumpTarget", ready: Target,
-                    remaining: list[Target]) -> None:
+                    remaining: list[Target]) -> bool:
         """Apply a caught :class:`JumpTarget` to the scheduler's ``remaining``
         queue (control-flow expansion). Pure list surgery + logging — no device
-        I/O, so it is safe in the scheduler's except arm. The caller removes
-        ``ready`` right after, which is what abandons the current target.
+        I/O, so it is safe in the scheduler's except arm.
 
-        Because the jump is delivered as an exception at the frame boundary, the
-        ACTIVE target is abandoned by the caller. That is correct for ``run``
-        (abandon-and-jump) and for a ``skip`` aimed at the target being shot. A
-        ``skip`` aimed at some OTHER (future) target never reaches here at all —
-        ``_dispatch_actions`` queues it in ``_pending_skips`` and the scheduler
+        RETURNS whether the ACTIVE target was consumed, i.e. whether the caller
+        should drop ``ready`` from ``remaining``. The jump arrives as an
+        exception at a frame boundary, so the active target's frame loop has
+        already unwound; only this answer decides whether it is abandoned or
+        picked back up (per-step counts live in ``self._done``, so re-selecting
+        it RESUMES rather than restarts, and ``MAX_JUMPS`` bounds a jump that
+        keeps re-firing).
+
+        * ``True``  — ``run`` to a different target (abandon-and-jump) and
+          ``skip`` aimed at the target being shot. Both mark ``ready`` skipped.
+        * ``False`` — the documented no-ops: an unknown target name (a typo must
+          not silently cost the user the target that is shooting) and ``run`` to
+          the ACTIVE target (the trivial self-loop). The night carries on with
+          ``ready`` exactly where it was.
+
+        A ``skip`` aimed at some OTHER (future) target never reaches here at all
+        — ``_dispatch_actions`` queues it in ``_pending_skips`` and the scheduler
         drains it, so the running target keeps shooting.
 
         ``skip``: drop the named target from the night (no-op when it is already
@@ -975,28 +991,34 @@ class SequenceEngine:
         if dest is None:
             bus.log("warning",
                     f"instruction {j.kind}_target: no target named {name!r} "
-                    "— ignored", "sequence")
-            return
+                    f"— ignored ({ready.name} continues)", "sequence")
+            return False
         if j.kind == "skip":
             bus.log("info", f"instruction: skipping target {name!r}", "sequence")
             if self.reporter:
                 self.reporter.mark_skipped(dest)
             if dest is not ready:
                 _drop(dest)
-            return
+                return False
+            return True
         # kind == "run"
         if dest is ready:
             bus.log("info",
                     f"instruction run_target: {name!r} is already running — no-op",
                     "sequence")
-            return
+            return False
         _drop(dest)
         remaining.insert(0, dest)
         bus.log("info",
                 f"instruction: jumping to target {name!r} "
                 f"(abandoning {ready.name})", "sequence")
         if self.reporter:
+            # the jump itself in the report timeline, next to the skip it causes
+            self.reporter.record_safety(
+                f"instruction run_target {name!r} (abandoning {ready.name})",
+                "jump")
             self.reporter.mark_skipped(ready)
+        return True
 
     async def _wait_until(self, deadline_ts: float) -> None:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
