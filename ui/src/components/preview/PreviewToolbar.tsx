@@ -148,15 +148,17 @@ export function PreviewToolbar({
         {/* ADVANCED (§1.4): the sensor-1:1 loupe. Off by default; a novice never
             needs it. "100%" is 100% of the ≤1400px preview — this is 100% of the
             SENSOR, which is a different and much stricter thing. */}
+        {/* "1:1" and "100%" are adjacent homographs to a novice — this one is
+            100% of the SENSOR, so give it a name instead of a ratio. */}
         <Toggle
           on={loupeOn}
           disabled={!loupeAvailable}
           icon="focus"
-          label="1:1"
+          label="Magnifier"
           title={
             loupeAvailable
-              ? "1:1 loupe — real sensor pixels at the centre of the view (true focus/noise check)"
-              : "1:1 loupe needs linear data — this frame came from NINA"
+              ? "Magnifier — real sensor pixels at the centre of the view (the true focus/noise check; 1:1)"
+              : "The magnifier needs linear data — this frame came from NINA"
           }
           onClick={() => onLoupe?.(!loupeOn)}
         />
@@ -203,6 +205,20 @@ export function PreviewToolbar({
         title={preview?.tilt ? "Toggle tilt / aberration heatmap" : "No tilt data for this frame"}
         onClick={() => setOverlays({ tilt: !overlays.tilt })}
       />
+      {/* Bahtinov spikes — offered ONLY while the aid is armed and fitting, so
+          the toolbar never grows a permanently dead switch. It lives here (not
+          just in FocusView's panel) so the overlay is reachable from CaptureView,
+          where the preview is shown without that panel. `undefined` reads as ON,
+          matching the shipped opt-OUT default. */}
+      {preview?.bahtinov?.geom && (
+        <Toggle
+          on={overlays.bahtinov !== false}
+          icon="focus"
+          label="Spikes"
+          title="Draw the fitted Bahtinov spike lines and their crossing on the preview"
+          onClick={() => setOverlays({ bahtinov: overlays.bahtinov === false })}
+        />
+      )}
 
       <span className="flex-1" />
 
@@ -247,6 +263,7 @@ export function PreviewToolbar({
               <span
                 role="menuitem"
                 aria-disabled
+                tabIndex={0}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
                 title="Full-res export needs linear data — this frame came from NINA already stretched."
               >
@@ -276,6 +293,7 @@ export function PreviewToolbar({
               <span
                 role="menuitem"
                 aria-disabled
+                tabIndex={0}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
                 title="This frame is JPEG-only — no lossless source to export a PNG from."
               >
@@ -307,6 +325,7 @@ export function PreviewToolbar({
               <span
                 className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
                 aria-disabled
+                tabIndex={0}
                 title="FITS saved on the NINA host — not downloadable here"
               >
                 <Icon name="lock" size={11} /> FITS (on host)

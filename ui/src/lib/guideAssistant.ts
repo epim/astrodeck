@@ -117,6 +117,27 @@ function _driftPhrase(m: AssistantMeasurements): string {
   return `drifts about ${Math.abs(m.drift_per_min_px).toFixed(1)} px/min`;
 }
 
+/** The server's BL_* result code as a sentence. The advanced panel used to print
+ *  the enum verbatim ("TOO_FEW_NORTH"), which tells a user nothing they can act
+ *  on. Unknown codes fall through to a neutral sentence rather than leaking the
+ *  identifier. */
+export function backlashResultSentence(code: string): string {
+  switch (code) {
+    case "VALID":
+      return "clean measurement";
+    case "TOO_FEW_NORTH":
+      return "few usable north steps — treat this as a rough figure";
+    case "TOO_FEW_SOUTH":
+      return "not enough south steps to measure — no figure derived";
+    case "BL_NOT_CLEARED":
+      return "the slack never took up, so nothing could be measured";
+    case "SANITY":
+      return "the numbers didn't add up, so the result was rejected";
+    default:
+      return "measurement result unavailable";
+  }
+}
+
 function _backlashPhrase(b: AssistantBacklash): string {
   // Same gate as the server's recommend(): believe bl_ms ONLY when the run
   // derived it and was not cut short by the edge guard.

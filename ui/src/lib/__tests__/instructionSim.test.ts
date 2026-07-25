@@ -107,6 +107,21 @@ test("default snapshot renders every rule with zero configuration", () => {
   eq(out[1].wouldFire, true, "default HFR 3 > 2");
 });
 
+// A firing Abort must not render as the same cheerful green "would fire" as a
+// firing Notify, so the outcome carries the flag the panel tints/words from.
+test("outcomes flag destructive actions on both branches", () => {
+  const [fires] = simulateInstructions(
+    [rule({ trigger: "on_hfr_above", threshold: 1, action: "abort" })], SNAP);
+  assert(fires.wouldFire && fires.destructive, "a firing abort is destructive");
+  const [waits] = simulateInstructions(
+    [rule({ trigger: "on_hfr_above", threshold: 99, action: "skip_target",
+            target_arg: "M42" })], SNAP);
+  assert(!waits.wouldFire && waits.destructive, "a waiting skip is still destructive");
+  const [safe] = simulateInstructions(
+    [rule({ trigger: "on_hfr_above", threshold: 1, action: "refocus" })], SNAP);
+  assert(safe.wouldFire && !safe.destructive, "refocus is not destructive");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

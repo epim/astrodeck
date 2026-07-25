@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { listReports, getReport, getBundlePreview, materializeBundle } from "../api/reports";
 import { useStore, useLastReportId } from "../store";
-import { Panel, EmptyState, Stat } from "../components/ui";
+import { Panel, EmptyState, Stat, Toggle } from "../components/ui";
 import { Icon } from "../components/icons";
 import { TrendLine } from "../components/graphs";
 import { fmtDuration } from "../lib/eta";
@@ -170,29 +170,32 @@ function BundleAdvanced(p: {
           )}
         </label>
 
-        {/* ------------------------------------------------------ weight alt */}
-        <label
-          className="flex items-center gap-2 text-xs text-dim cursor-pointer"
+        {/* ------------------------------------------------------ weight alt.
+            Toggle, not a bare <input type=checkbox>: the UA checkbox renders a
+            white box that turns system-blue, which on :root.night is the only
+            non-red thing on screen. */}
+        <div
+          className="flex items-center gap-2 text-xs text-dim"
           title="Fold a sin(altitude) transparency term into each sub's weight — higher subs (less airmass) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
         >
-          <input
-            type="checkbox"
+          <Toggle
             checked={p.weightAlt}
-            onChange={(e) => p.setWeightAlt(e.target.checked)}
+            onChange={p.setWeightAlt}
+            label="Weight subs by altitude"
           />
-          Weight subs by altitude
-        </label>
+          <span>Weight subs by altitude</span>
+        </div>
 
         {/* -------------------------------------------------- keep_threshold */}
         <div className="flex flex-col gap-1.5">
-          <label className="flex items-center gap-2 text-xs text-dim cursor-pointer">
-            <input
-              type="checkbox"
+          <div className="flex items-center gap-2 text-xs text-dim">
+            <Toggle
               checked={p.keepOn}
-              onChange={(e) => p.setKeepOn(e.target.checked)}
+              onChange={p.setKeepOn}
+              label="Flag the weakest subs"
             />
-            Flag the weakest subs
-          </label>
+            <span>Flag the weakest subs</span>
+          </div>
           {p.keepOn && (
             <label className="flex flex-col gap-1 text-xs text-dim pl-6">
               <span className="flex items-center gap-2">
@@ -222,12 +225,22 @@ function BundleAdvanced(p: {
 
         {/* ----------------------------------------------------- materialize */}
         <div className="flex flex-col gap-1.5">
+          {/* Plain language, and the DANGER first: "hardlink" is jargon, and
+              "costs no extra disk" reads as "safe" to someone who does not know
+              that the export files ARE the originals. */}
           <p className="text-xs text-dim">
-            Materialize lays the actual FITS out under{" "}
-            <span className="mono">captures/exports/</span> on this machine —
-            hardlinked where possible, so it is instant and costs no extra disk.
-            Hardlinks share one file with your original: treat the export tree as
-            read-only.
+            Sorts tonight&apos;s photos into stacker-ready folders under{" "}
+            <span className="mono">captures/exports/</span> on this machine,
+            without using extra disk space.
+          </p>
+          <p className="text-xs text-warn flex items-start gap-1.5">
+            <Icon name="alert" size={12} className="shrink-0 mt-0.5" />
+            <span>
+              The photos in the exports folder are the SAME files as your
+              originals, not copies — deleting or editing one there deletes or
+              edits your original capture. Stack from this folder; don&apos;t
+              tidy up inside it.
+            </span>
           </p>
           <div className="flex justify-end">
             {matReason ? (
@@ -236,7 +249,7 @@ function BundleAdvanced(p: {
                 title={matReason}
                 className="btn inline-flex items-center gap-1.5 min-h-[44px] opacity-50 cursor-not-allowed"
               >
-                <Icon name="lock" size={12} /> Materialize on this machine
+                <Icon name="lock" size={12} /> Make a folder of tonight&apos;s photos here
               </span>
             ) : (
               <button
@@ -246,7 +259,9 @@ function BundleAdvanced(p: {
                 disabled={p.materializing}
               >
                 <Icon name="download" size={12} />
-                {p.materializing ? "Materializing…" : "Materialize on this machine"}
+                {p.materializing
+                  ? "Sorting…"
+                  : "Make a folder of tonight's photos here"}
               </button>
             )}
           </div>
@@ -304,6 +319,15 @@ export default function ReportView() {
   const [matResult, setMatResult] = useState<BundleMaterializeResult | null>(null);
   const canCapture = useCanControlCapture(); // materialize WRITES to disk
   const keepParam = keepOn ? keepThreshold : null;
+  // Typing "0.55" is four keystrokes; without this the preview fired four
+  // server round-trips (each recomputed over the whole night's frames) and the
+  // kept counts visibly thrashed. The INPUT still shows keepThreshold live —
+  // only the refetch waits for the typing to settle.
+  const [keepDebounced, setKeepDebounced] = useState<number | null>(keepParam);
+  useEffect(() => {
+    const t = setTimeout(() => setKeepDebounced(keepParam), 300);
+    return () => clearTimeout(t);
+  }, [keepParam]);
 
   // Effect A (mount): list all reports, default to lastReportId or the newest
   // (the list route is already newest-first — report.py:374-394).
@@ -373,7 +397,9 @@ export default function ReportView() {
     setMatResult(null); // a stale "linked 42" must not outlive its options
     (async () => {
       try {
-        const p = await getBundlePreview(sel, { layout, weightAlt, keepThreshold: keepParam });
+        const p = await getBundlePreview(sel, {
+          layout, weightAlt, keepThreshold: keepDebounced,
+        });
         if (!cancelled) setPreview(p);
       } catch {
         if (!cancelled) setPreview(null);
@@ -382,7 +408,7 @@ export default function ReportView() {
     return () => {
       cancelled = true;
     };
-  }, [sel, layout, weightAlt, keepParam]);
+  }, [sel, layout, weightAlt, keepDebounced]);
 
   return (
     <div className="px-3 pb-20 sm:px-0 sm:pb-4 flex flex-col gap-3">
@@ -523,9 +549,10 @@ export default function ReportView() {
               return (
                 <div className="flex flex-col gap-3">
                   <p className="text-xs text-dim">
-                    Light subs grouped by target/filter/exposure with matched masters
-                    and a per-sub weighting manifest — one .zip you can materialize
-                    with the included build script (PixInsight / Siril / APP).
+                    One .zip with tonight&apos;s photos already sorted into
+                    folders your stacking software understands — PixInsight,
+                    Siril or APP — together with the matching calibration
+                    frames and a quality score for each photo.
                   </p>
                   {preview && preview.groups.length > 0 && (
                     <div className="overflow-x-auto">
@@ -541,9 +568,12 @@ export default function ReportView() {
                       <Icon name="alert" size={12} /> {w}
                     </p>
                   ))}
+                  {/* informational, not a problem report — an amber alert here
+                      read as "photos were thrown away". */}
                   {keptSummary(preview) && (
-                    <p className="text-xs text-warn flex items-center gap-1.5">
-                      <Icon name="alert" size={12} /> {keptSummary(preview)}
+                    <p className="text-xs text-dim flex items-start gap-1.5">
+                      <Icon name="info" size={12} className="shrink-0 mt-0.5" />
+                      <span>{keptSummary(preview)}</span>
                     </p>
                   )}
                   {!reason && (

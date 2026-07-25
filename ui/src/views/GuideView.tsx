@@ -8,7 +8,7 @@ import {
 } from "../store";
 import {
   summarize, formatRecommendations, buildApplyBody, applyChangesAlgorithm,
-  toggleRecommendationKey,
+  toggleRecommendationKey, backlashResultSentence,
   type AssistantReport, type GuideSettingsPutBody,
 } from "../lib/guideAssistant";
 import { confirmDialog } from "../components/ConfirmDialog";
@@ -918,20 +918,30 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
                   </span></div>
                 <div className="flex justify-between"><span className="label">jitter</span>
                   <span className="mono tabular-nums">{report.measurements.jitter_px.toFixed(2)} px</span></div>
-                <div className="flex justify-between col-span-2"><span className="label">backlash</span>
-                  <span className="mono tabular-nums">
+                <div className="flex justify-between col-span-2 gap-2">
+                  <span className="label">backlash</span>
+                  <span className="mono tabular-nums text-right">
                     {report.measurements.backlash.bl_ms} ± {report.measurements.backlash.sigma_ms.toFixed(0)} ms
-                    <span className="text-faint"> ({report.measurements.backlash.result_code}, {report.measurements.backlash.y_rate_source})</span>
+                    {/* a sentence, not the raw BL_* enum — and y_rate_source is
+                        internal provenance the user cannot act on. */}
+                    <span className="block text-faint text-[10px] font-sans">
+                      {backlashResultSentence(report.measurements.backlash.result_code)}
+                    </span>
                   </span></div>
               </div>
 
               {/* Per-recommendation before→after with a checkbox for selective apply. */}
               <div className="flex flex-col gap-1 border-t border-line pt-2">
                 {rows.map((r) => (
-                  <label key={r.key} className="flex items-start gap-2 text-[11px]">
-                    <input type="checkbox" className="mt-0.5"
+                  // Toggle, not a bare <input type=checkbox>: the UA checkbox is
+                  // a white box that turns system-blue, and on :root.night that
+                  // is the only non-red, high-luminance thing on the screen.
+                  <div key={r.key} className="flex items-start gap-2 text-[11px]">
+                    <Toggle
                       checked={selected.has(r.key)}
-                      onChange={() => toggleKey(r.key)} />
+                      onChange={() => toggleKey(r.key)}
+                      label={`Include: ${r.label}`}
+                    />
                     <span className="flex-1">
                       <span className="font-medium">{r.label}</span>
                       {r.advanced && <span className="text-warn"> · advanced</span>}
@@ -948,7 +958,7 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
                         </span>
                       )}
                     </span>
-                  </label>
+                  </div>
                 ))}
               </div>
 

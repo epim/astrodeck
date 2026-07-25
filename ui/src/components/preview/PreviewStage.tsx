@@ -30,6 +30,7 @@ import { StarOverlay } from "./StarOverlay";
 import { ClipMaskLayer, type ClipCropPixels } from "./ClipMaskLayer";
 import { TiltOverlay } from "./TiltOverlay";
 import { BahtinovOverlay } from "./BahtinovAid";
+import { bahtinovAid } from "../../lib/bahtinov";
 import { SnrChip } from "./SnrChip";
 import { tiltSummary } from "../../lib/tilt";
 import { useCropZoom } from "./useCropZoom";
@@ -537,13 +538,36 @@ export function PreviewStage(props: Props) {
           className={`absolute top-2 left-2 preview-chip !text-warn ${preview.bayer_pattern ? "mt-14" : ""}`}
           title={
             clipCropPixels
-              ? "Saturated pixels are painted inside the zoomed region; the amber frame still means the whole frame contains clipped pixels."
-              : "Frame-level indicator (stats.max ≥ full well). Zoom in to paint the individual saturated pixels."
+              ? "The exact overexposed pixels are painted inside the zoomed region. The amber frame means somewhere in the full frame is overexposed."
+              : "Somewhere in this frame is overexposed. Zoom in to see exactly which pixels."
           }
         >
-          Clip: {clipCropPixels ? "per-pixel in view" : "frame-level"}
+          Some stars are overexposed
+          {clipCropPixels ? " — shown in view" : ""}
         </div>
       )}
+
+      {/* Bahtinov verdict — the WORD, on the preview itself. The overlay's
+          focused/unfocused state was carried by a --accent → --good swap, and
+          on :root.night those tokens are #ff3a3a vs #ff3333 under a red filter:
+          indistinguishable. The word-bearing verdict used to live only in
+          FocusView's panel, so a user focusing from CaptureView had colour
+          alone. Top-centre keeps it clear of the scale bar and the left chips. */}
+      {overlays.bahtinov !== false && preview.bahtinov?.geom && (() => {
+        const v = bahtinovAid(preview.bahtinov);
+        const tint = v.tone === "good" ? "!text-good"
+          : v.tone === "bad" ? "!text-bad" : v.tone === "warn" ? "!text-warn" : "";
+        return (
+          <div
+            className={`absolute top-2 left-1/2 -translate-x-1/2 preview-chip flex items-center gap-1 ${tint}`}
+            role="status"
+            aria-live="polite"
+          >
+            <Icon name={v.tone === "good" ? "check" : "focus"} size={11} />
+            {v.headline}
+          </div>
+        );
+      })()}
 
       {/* selected star readout */}
       {selectedStar && (

@@ -9,7 +9,7 @@ import {
   subNoise, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
   subLengthVerdict, subSnr, stackedSnr, subsForStackedSnr, moreSubsForSnrMultiple,
   projectedIntegrationSeconds, integrationByFilter, suggestSubLength,
-  perSubSnrFromFlux,
+  perSubSnrFromFlux, starSnrWord,
   SKY_LIMIT_FACTOR, SUB_LONG_MULT,
 } from "../photometry";
 
@@ -158,6 +158,15 @@ test("perSubSnrFromFlux: abstains with an honest reason when the profile/flux is
     assert(!!r.reason && r.reason.toLowerCase().includes(word), `${name}: reason mentions ${word}`);
   }
 });
+
+// The chip leads with a WORD so "~38" is never read as a score out of 100.
+const SNR_WORDS: Array<[number, string]> = [
+  [0, "faint"], [9.9, "faint"], [10, "usable"], [29.9, "usable"],
+  [30, "strong"], [120, "strong"],
+];
+for (const [snr, word] of SNR_WORDS) {
+  test(`starSnrWord(${snr}) is ${word}`, () => eq(starSnrWord(snr), word));
+}
 
 // ---------------------------------------------------------------- report
 const total = passed + failed;

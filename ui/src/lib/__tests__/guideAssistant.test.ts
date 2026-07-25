@@ -13,6 +13,7 @@ import {
   applyChangesAlgorithm,
   formatRecommendations,
   toggleRecommendationKey,
+  backlashResultSentence,
   type AssistantReport,
   type AssistantRecommendation,
 } from "../guideAssistant";
@@ -182,6 +183,18 @@ test("toggleRecommendationKey enforces the same-field either/or", () => {
   const off = toggleRecommendationKey(PPEC_REPORT, on, "ra_algorithm_ppec");
   assert(!off.has("ra_algorithm_ppec") && !off.has("ra_algorithm"), "both off");
 });
+
+// The advanced panel must never print a raw BL_* enum at the user (and an
+// unknown code must not leak the identifier either).
+for (const code of ["VALID", "TOO_FEW_NORTH", "TOO_FEW_SOUTH", "BL_NOT_CLEARED",
+                    "SANITY", "WAT_IS_THIS"]) {
+  test(`backlashResultSentence(${code}) is a sentence, not the enum`, () => {
+    const s = backlashResultSentence(code);
+    assert(s.length > 8, `too short to be a sentence: ${s}`);
+    assert(!s.includes(code), `leaks the code itself: ${s}`);
+    assert(!/[A-Z_]{3,}/.test(s), `leaks an identifier: ${s}`);
+  });
+}
 
 console.log(`guideAssistant.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {

@@ -57,8 +57,10 @@ export function bundleQuery(opts: {
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
-/** "38 of 42 subs kept" across the whole preview — `null` when no threshold is
- *  active (nothing to say) or no preview has loaded. */
+/** "38 of 42 rated good" across the whole preview — `null` when no threshold is
+ *  active (nothing to say) or no preview has loaded. Says the OUTCOME ("all 42
+ *  are still in the download") rather than only the flag count, which read as a
+ *  warning that photos had been thrown away. */
 export function keptSummary(preview: BundlePreview | null): string | null {
   if (!preview || preview.keep_threshold == null) return null;
   let total = 0;
@@ -68,14 +70,25 @@ export function keptSummary(preview: BundlePreview | null): string | null {
     kept += g.kept_count ?? g.light_count;
   }
   if (total === 0) return null;
-  return `${kept} of ${total} subs kept — ${total - kept} flagged (nothing is deleted)`;
+  return `${kept} of ${total} photos rated good — the weakest ${total - kept} are `
+    + `marked so your stacker can skip them, but nothing is deleted and all `
+    + `${total} are in the download.`;
 }
 
-/** One-line outcome of a materialize run. */
+/** One-line OUTCOME of a materialize run — what the user got, not the link/copy
+ *  telemetry. Failures are still named rather than hidden behind a total. */
 export function materializeSummary(r: BundleMaterializeResult): string {
-  const bits = [`linked ${r.linked}`, `copied ${r.copied}`];
-  if (r.failed.length) bits.push(`${r.failed.length} failed`);
-  return bits.join(", ");
+  const n = r.linked + r.copied;
+  const disk = r.copied === 0
+    ? "no extra disk used"
+    : r.linked === 0
+      ? "copied, so they use extra disk"
+      : `${r.copied} had to be copied, so those use extra disk`;
+  const bits = [`Ready: ${n} photo${n === 1 ? "" : "s"} (${disk})`];
+  if (r.failed.length) {
+    bits.push(`${r.failed.length} couldn't be written`);
+  }
+  return bits.join(" · ");
 }
 
 /** Honest-disabled reason (§11.8) for the Materialize action. Materializing
