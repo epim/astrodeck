@@ -5,8 +5,24 @@ import pytest
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 
+@pytest.fixture
+def _real_solve_dwell(monkeypatch):
+    """Timing-realism anchor for the ROTATE lane. ``SimSolver.solve``'s 1.2 s
+    "pretend to work" pause now routes through ``devices.sim._sim_delay``, so
+    the suite-wide fast-path (conftest's ``_fast_sim_delays``) collapses it to
+    0. THIS test opts that ONE pause back in, so the discover-the-clock-offset
+    loop (solve → move → verify solve) is still proven to converge at a
+    realistic per-attempt cadence rather than only under collapsed pacing.
+    Deliberately narrower than the ``_real_dwell`` idiom (which deletes
+    ``ASTRODECK_FAST_TEST`` wholesale and would also restore ~8 s of sim
+    rotator dwell that this phase never faked)."""
+    from astrodeck.solve import simsolver
+    monkeypatch.setattr(simsolver, "_sim_delay", lambda seconds: seconds)
+    yield
+
+
 @pytest.mark.asyncio
-async def test_converges_on_target_pa(sim_hub):
+async def test_converges_on_target_pa(sim_hub, _real_solve_dwell):
     rig = sim_hub.sim_rig
     rig.rotator_pa_offset_deg = 30.0        # hidden truth the loop must discover
     rig.rotator_mech_deg = 10.0             # camera PA = 40.0
