@@ -15,7 +15,7 @@ import { useEffect, useState, type JSX } from "react";
 import { setWcsStampConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useProviders, useStore } from "../../store";
-import { useCan } from "../../lib/caps";
+import { accessPhrase, useCan } from "../../lib/caps";
 import { Panel, Field, SegmentedControl, Toggle } from "../ui";
 import { Icon } from "../icons";
 import {
@@ -24,14 +24,17 @@ import {
 } from "../../lib/wcsStamp";
 import type { WcsStampConfig } from "../../types";
 
-const LOCK = "config.site_optics required";
-
 export default function WcsStampPanel(): JSX.Element {
   const config = useConfig();
   const providers = useProviders();
   const canEdit = useCan("config.site_optics");
   const enabled = config?.solve_saved_lights ?? false;
   const stamp = wcsStampOrDefault(config?.wcs_stamp);
+
+  // Named at RENDER time (accessPhrase reads the live role table) and phrased
+  // as a sentence — never the raw capability string, which meant nothing to a
+  // user who has never read the RBAC table.
+  const LOCK = `Changing this needs ${accessPhrase("config.site_optics")}.`;
 
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -71,7 +74,7 @@ export default function WcsStampPanel(): JSX.Element {
   const lockClass = canEdit ? "" : "opacity-50";
 
   return (
-    <Panel title="Frame Astrometry">
+    <Panel title="Record where each photo points">
       <div className="flex flex-col gap-3">
         {/* ---------------------------------------------------------- novice */}
         <div className="flex items-start gap-3">
@@ -79,18 +82,19 @@ export default function WcsStampPanel(): JSX.Element {
             <Toggle
               checked={enabled}
               onChange={canEdit ? (v) => void save(v, stamp) : () => {}}
-              label="Solve and tag each frame's sky coordinates"
+              label="Record where each photo points"
               showState
             />
           </span>
           <div className="min-w-0">
             <div className="text-[12px] text-ink">
-              Solve &amp; tag each frame&apos;s sky coordinates
+              Write each photo&apos;s sky position into the file
             </div>
             <p className="text-[11px] text-dim leading-snug">
-              Plate-solves every saved light and writes its WCS into the FITS
-              header — slower, but stackers and PixInsight then know exactly
-              where each frame points instead of re-solving. Off by default.
+              After each photo is saved, AstroDeck works out exactly where the
+              scope was pointing and stores it inside the file. Stacking
+              software can then line your photos up without figuring it out
+              again. Costs a little time per photo, so it is off by default.
             </p>
           </div>
         </div>
@@ -173,17 +177,17 @@ export default function WcsStampPanel(): JSX.Element {
         {err && <p className="text-[12px] text-warn">{err}</p>}
 
         <p className="text-[11px] text-dim leading-snug">
-          One frame is solved at a time in the background, so capture never
-          waits. On short subs the solver can fall behind — the oldest untagged
-          frames are then skipped, and those subs simply save without
-          coordinates. Frames your imaging backend saves on its own machine are
-          never tagged.
+          One photo is worked out at a time in the background, so capturing
+          never waits. With very short exposures it can fall behind — the
+          oldest ones are then skipped and simply save without a position.
+          Photos your imaging backend saves on its own machine are never
+          tagged.
         </p>
 
         {!canEdit && (
           <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
-            <Icon name="lock" size={11} /> Read-only — changing frame astrometry
-            needs config.site_optics access.
+            <Icon name="lock" size={11} /> Read-only — changing this needs{" "}
+            {accessPhrase("config.site_optics")}.
           </p>
         )}
       </div>

@@ -113,16 +113,31 @@ export function BahtinovOverlay({
             strokeWidth={1.4}
             vectorEffect="non-scaling-stroke"
           />
+          {/* SHAPE carries the focus state, not tint: on :root.night --accent
+              (#ff3a3a) and --good (#ff3333) differ by 7/255 on one channel under
+              a red display filter, so the colour swap alone is invisible. In
+              focus the vertex gains a second, tight "locked" ring and its
+              crosshairs go solid; out of focus they stay dashed. The word-bearing
+              verdict rides above the image (PreviewStage). */}
+          {inFocus && (
+            <circle
+              cx={vertex.x} cy={vertex.y} r={r * 0.45}
+              fill="none" stroke="var(--good)" strokeWidth={1.4}
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
           {/* crosshair ticks: the vertex stays findable at any zoom even when the
               ring is small, and shape (not tint) says "this is the crossing". */}
           <line
             x1={vertex.x - r * 1.8} y1={vertex.y} x2={vertex.x + r * 1.8} y2={vertex.y}
             stroke={inFocus ? "var(--good)" : "var(--accent)"} strokeWidth={1}
+            strokeDasharray={inFocus ? undefined : "4 3"}
             vectorEffect="non-scaling-stroke" opacity={0.8}
           />
           <line
             x1={vertex.x} y1={vertex.y - r * 1.8} x2={vertex.x} y2={vertex.y + r * 1.8}
             stroke={inFocus ? "var(--good)" : "var(--accent)"} strokeWidth={1}
+            strokeDasharray={inFocus ? undefined : "4 3"}
             vectorEffect="non-scaling-stroke" opacity={0.8}
           />
         </g>

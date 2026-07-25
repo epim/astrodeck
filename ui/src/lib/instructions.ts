@@ -8,22 +8,68 @@ import type {
 } from "../types";
 import { uid } from "./ids";
 
+// Plain-language trigger names: the jargon stays in parentheses so an expert
+// still recognises the metric, but the row reads as a sentence to a first-timer.
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
-  on_hfr_above: "HFR above",
-  on_guide_rms_above: "Guide RMS above",
-  on_frame_rejected: "Frame rejected",
-  on_target_complete: "Target complete",
-  at_time: "At time",
+  on_hfr_above: "Stars look bloated (HFR above)",
+  on_guide_rms_above: "Guiding is wandering (guide error above)",
+  on_frame_rejected: "A frame is rejected",
+  on_target_complete: "A target finishes",
+  at_time: "The clock reaches",
 };
 
+// KEY ORDER IS THE PICKER ORDER (the editor derives its <option> list from
+// ACTION_GROUPS below). Destructive actions come LAST and in their own group so
+// "end the night" is never one slot away from "send me a message".
 export const ACTION_LABELS: Record<ActionKind, string> = {
-  notify: "Notify",
+  notify: "Notify me",
   pause: "Pause",
   refocus: "Refocus",
   dither: "Dither",
-  abort: "Abort",
-  run_target: "Jump to target",
-  skip_target: "Skip target",
+  skip_target: "Drop a target from tonight",
+  run_target: "Stop this target and switch to…",
+  abort: "Stop the whole session",
+};
+
+/** Actions that END or ABANDON work in progress. The editor renders these in a
+ *  separate picker group, shows a consequence line on selection, and the dry run
+ *  tints them warn instead of the same cheerful green as Notify. */
+export function isDestructiveAction(a: ActionKind): boolean {
+  return a === "abort" || a === "run_target" || a === "skip_target";
+}
+
+/** The picker's two groups, in order. Rendered as <optgroup>s — a real,
+ *  browser-honoured separation rather than styling the option list. */
+export const ACTION_GROUPS: { label: string; actions: ActionKind[] }[] = [
+  { label: "Keep imaging", actions: ["notify", "pause", "refocus", "dither"] },
+  { label: "Give up on something", actions: ["skip_target", "run_target", "abort"] },
+];
+
+/** What the user LOSES by choosing this action, in one sentence. Shown in warn
+ *  tone the moment a destructive action is selected — the picker label alone
+ *  cannot carry "your night ends here". */
+export const ACTION_CONSEQUENCE: Partial<Record<ActionKind, string>> = {
+  abort:
+    "Ends the whole night: the sequence stops and nothing more is captured, "
+    + "even if the sky is fine.",
+  run_target:
+    "The target running now is abandoned — its remaining subs are never "
+    + "captured and the scheduler does not come back to it.",
+  skip_target:
+    "That target is dropped for the rest of tonight, including any subs it "
+    + "still owed.",
+};
+
+/** Short verb used in the one-line rule summary (the picker labels are full
+ *  sentences and would not read as `When … → …`). */
+const ACTION_SUMMARY: Record<ActionKind, string> = {
+  notify: "notify",
+  pause: "pause",
+  refocus: "refocus",
+  dither: "dither",
+  skip_target: "drop",
+  run_target: "switch to",
+  abort: "stop the session",
 };
 
 /** Leaf predicates of a compound condition — the SAME closed vocabulary as the
@@ -62,8 +108,33 @@ export function predicateNeedsTime(k: PredicateKind): boolean {
   return k === "at_time";
 }
 
+/** A REALISTIC starting value per metric, so switching a rule's trigger never
+ *  lands the author on "Threshold must be greater than 0." with an empty,
+ *  unitless box. HFR is in pixels (typical good focus 2–3); guide error is the
+ *  guider's own RMS unit (arcsec when the guide scope's focal length is known,
+ *  pixels otherwise). */
+export const THRESHOLD_SEED: Record<"hfr_above" | "guide_rms_above", number> = {
+  hfr_above: 4,
+  guide_rms_above: 1.5,
+};
+
+/** Placeholder + "what does normal look like" hint for the threshold box. */
+export const THRESHOLD_HINT: Record<"hfr_above" | "guide_rms_above", string> = {
+  hfr_above: "e.g. 4.0 — typical good focus is 2–3",
+  guide_rms_above: "e.g. 1.5 — under 1 is good guiding",
+};
+
+/** Seeded clock for the at_time trigger — same reason as THRESHOLD_SEED: an
+ *  empty "HH:MM" box is an instant validation error. */
+export const AT_TIME_SEED = "23:00";
+
 export function defaultPredicate(kind: PredicateKind = "frame_rejected"): Predicate {
-  return { kind, threshold: predicateNeedsThreshold(kind) ? 1 : 0, at_time: null };
+  return {
+    kind,
+    threshold: predicateNeedsThreshold(kind)
+      ? THRESHOLD_SEED[kind as "hfr_above" | "guide_rms_above"] : 0,
+    at_time: predicateNeedsTime(kind) ? AT_TIME_SEED : null,
+  };
 }
 
 /** Lossless upgrade: the rule's CURRENT flat trigger becomes term 1, so the
@@ -133,6 +204,44 @@ export function actionChangePatch(
   return { action, target_arg: i.target_arg || other, once: true };
 }
 
+/** Patch for a TRIGGER change. Seeds the value the new trigger needs so the
+ *  novice never lands straight on a validation error (the compound editor's
+ *  TermRow already did this; the simple path — the one a beginner uses — did
+ *  not). A threshold the author already typed is KEPT, except when the metric
+ *  itself changes: 4.0 means "bloated stars" for HFR and "hopeless guiding" for
+ *  guide error, so carrying it across units would be worse than re-seeding. */
+export function triggerChangePatch(
+  i: Instruction, trigger: TriggerKind,
+): Partial<Instruction> {
+  const patch: Partial<Instruction> = { trigger };
+  if (triggerNeedsThreshold(trigger)) {
+    const unitChanged = triggerNeedsThreshold(i.trigger) && i.trigger !== trigger;
+    if (unitChanged || !(i.threshold > 0)) {
+      patch.threshold = THRESHOLD_SEED[PREDICATE_OF[trigger] as "hfr_above" | "guide_rms_above"];
+    }
+  }
+  if (triggerNeedsTime(trigger) && !validHhmm(i.at_time)) patch.at_time = AT_TIME_SEED;
+  return patch;
+}
+
+/** The leaf-predicate twin of `triggerChangePatch`, so the AND/OR editor seeds
+ *  the same realistic values instead of a bare `|| 1`. */
+export function predicateChangePatch(
+  p: Predicate, kind: PredicateKind,
+): Predicate {
+  const seeded = defaultPredicate(kind);
+  const unitChanged = predicateNeedsThreshold(p.kind) && p.kind !== kind;
+  return {
+    kind,
+    threshold: predicateNeedsThreshold(kind)
+      ? (!unitChanged && p.threshold > 0 ? p.threshold : seeded.threshold)
+      : 0,
+    at_time: predicateNeedsTime(kind)
+      ? (validHhmm(p.at_time) ? p.at_time : AT_TIME_SEED)
+      : null,
+  };
+}
+
 const HHMM_RE = /^(\d{2}):(\d{2})$/;
 
 function validHhmm(s: string | null): boolean {
@@ -166,7 +275,7 @@ export function validateInstruction(i: Instruction): string[] {
     }
   }
   if (actionNeedsTarget(i.action) && !(i.target_arg ?? "").trim()) {
-    problems.push(`${ACTION_LABELS[i.action]} needs a target to act on.`);
+    problems.push("Choose which target this rule acts on.");
   }
   if (i.action === "notify" && !i.message.trim()) {
     problems.push("Notify needs a message.");
@@ -177,11 +286,19 @@ export function validateInstruction(i: Instruction): string[] {
   return problems;
 }
 
+/** Options for the human summaries. `rmsArcsec` mirrors GuideStats.is_arcsec:
+ *  the guider only reports arcseconds when the guide scope's focal length is
+ *  known — otherwise its RMS is PIXELS, and printing ″ would be a lie (UX-15).
+ *  Defaults true, matching GuideView's `stats?.is_arcsec !== false`. */
+export interface DescribeOpts { rmsArcsec?: boolean }
+
+const rmsUnit = (o?: DescribeOpts) => (o?.rmsArcsec === false ? " px" : "\"");
+
 /** One leaf predicate as plain language (no leading "When"). */
-export function describePredicate(p: Predicate): string {
+export function describePredicate(p: Predicate, opts?: DescribeOpts): string {
   switch (p.kind) {
     case "hfr_above": return `HFR > ${p.threshold}`;
-    case "guide_rms_above": return `guide RMS > ${p.threshold}"`;
+    case "guide_rms_above": return `guide error > ${p.threshold}${rmsUnit(opts)}`;
     case "frame_rejected": return "a frame is rejected";
     case "target_complete": return "target complete";
     case "at_time": return `after ${p.at_time ?? "??:??"}`;
@@ -190,12 +307,14 @@ export function describePredicate(p: Predicate): string {
 }
 
 /** A one-line human summary, e.g. `When HFR > 3.5 → refocus (once) · only M31`. */
-export function describeInstruction(i: Instruction, _targetNames?: string[]): string {
+export function describeInstruction(
+  i: Instruction, _targetNames?: string[], opts?: DescribeOpts,
+): string {
   let cond: string;
   const when = i.when ?? null;
   if (when) {
     const joiner = when.op === "all" ? " AND " : " OR ";
-    cond = `When ${when.terms.map(describePredicate).join(joiner)}`;
+    cond = `When ${when.terms.map((t) => describePredicate(t, opts)).join(joiner)}`;
     return finishDescribe(i, cond);
   }
   switch (i.trigger) {
@@ -203,7 +322,7 @@ export function describeInstruction(i: Instruction, _targetNames?: string[]): st
       cond = `When HFR > ${i.threshold}`;
       break;
     case "on_guide_rms_above":
-      cond = `When guide RMS > ${i.threshold}"`;
+      cond = `When guide error > ${i.threshold}${rmsUnit(opts)}`;
       break;
     case "on_frame_rejected":
       cond = "When a frame is rejected";
@@ -221,7 +340,7 @@ export function describeInstruction(i: Instruction, _targetNames?: string[]): st
 }
 
 function finishDescribe(i: Instruction, cond: string): string {
-  let s = `${cond} → ${ACTION_LABELS[i.action].toLowerCase()}`;
+  let s = `${cond} → ${ACTION_SUMMARY[i.action]}`;
   if (actionNeedsTarget(i.action)) s += ` ${i.target_arg ?? "?"}`;
   if (i.once) s += " (once)";
   if (i.only_target) s += ` · only ${i.only_target}`;
