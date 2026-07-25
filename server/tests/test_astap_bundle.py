@@ -1,6 +1,9 @@
 """Release-eng (UX-04): bundled-ASTAP wiring — the `-d` star-DB flag assembly and
-the vendored binary/DB discovery."""
+the vendored binary/DB discovery. Also covers the additive `-z` downsample knob
+(per-frame-wcs spec §2.3), whose 0 default keeps the argv byte-identical."""
 from pathlib import Path
+
+import pytest
 
 import astrodeck.solve.astap as astap
 
@@ -23,6 +26,15 @@ def test_solve_args_hinted_includes_ra_spd_fov_and_db():
     assert args[args.index("-spd") + 1] == "135.0000"            # dec + 90
     assert args[args.index("-fov") + 1] == "1.50"
     assert args[args.index("-d") + 1] == str(Path("/db"))
+
+
+@pytest.mark.parametrize("downsample,expected", [(0, "0"), (1, "1"), (2, "2"), (4, "4")])
+def test_solve_args_threads_downsample_into_z(downsample, expected):
+    """`-z` carries the configured downsample; 0 (every pre-existing caller) is
+    ASTAP's own automatic choice, i.e. exactly the previously-hardcoded argv."""
+    args = astap._solve_args("astap", Path("i.fits"), None, None, None, None,
+                             downsample)
+    assert args[args.index("-z") + 1] == expected
 
 
 def test_bundled_db_dir_detects_290(tmp_path, monkeypatch):

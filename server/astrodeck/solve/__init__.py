@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from .base import PlateSolver, SolveResult
 from .astap import AstapSolver, find_astap
+from .gate import wcs_should_solve
 from .simsolver import SimSolver
 
 __all__ = ["PlateSolver", "SolveResult", "AstapSolver", "SimSolver",
-           "find_astap", "get_solver"]
+           "find_astap", "get_solver", "wcs_should_solve"]
 
 
 def get_solver(sim_rig=None, mode: str | None = None,

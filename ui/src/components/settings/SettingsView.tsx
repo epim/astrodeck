@@ -30,6 +30,7 @@ import DriversPanel from "./DriversPanel";
 import SitePanel from "./SitePanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
 import NamingPanel from "./NamingPanel";
+import WcsStampPanel from "./WcsStampPanel";
 import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
 import CalibrationLibraryPanel from "./CalibrationLibraryPanel";
@@ -170,6 +171,7 @@ export default function SettingsView(): JSX.Element {
             {canSeePrecise && <WeatherPanel />}
             <SkyAtlasPanel />
             <NamingPanel />
+            <WcsStampPanel />
           </div>
           <div className="order-1 lg:order-2 flex flex-col gap-4">
             <Panel title="Connection Status">

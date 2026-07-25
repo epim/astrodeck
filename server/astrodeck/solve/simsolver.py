@@ -65,7 +65,10 @@ class SimSolver(PlateSolver):
 
     async def solve(self, fits_path: Path, *, ra_hint: float | None = None,
                     dec_hint: float | None = None,
-                    fov_deg_hint: float | None = None) -> SolveResult:
+                    fov_deg_hint: float | None = None,
+                    downsample: int = 0) -> SolveResult:
+        # `downsample` is an ASTAP speed/precision knob; the synthetic solver
+        # has no such trade-off, so it is accepted (ABC contract) and ignored.
         # Refuse on a real rig: a SimSolver only ever reaches a live rig as the
         # ASTAP-not-found fallback, and faking a solve there would silently
         # fake-center a real mount (review 5d). Fail loudly instead.
