@@ -45,9 +45,37 @@ testpaths = ["tests"]
 # is its own process, so the process-wide hub singleton stays isolated per worker
 # (see conftest's _reset_hub_singleton_locks). Use `-n0` for interactive debugging
 # (--pdb / clean -x / live output); `-n auto` is fine on an otherwise-idle box.
-addopts = "-n 12"
+#
+# WORKER COUNT stays 12 (see above) -- the starvation cap is unchanged.
+#
+# `--dist worksteal` (xdist >= 3.2) replaces the default `load` SCHEDULER. This
+# is a distribution strategy only: same workers, same tests, same per-test
+# behaviour, nothing about isolation or ordering-within-a-worker changes.
+# `load` front-loads a large initial batch round-robin and then hands out the
+# rest one at a time, so a worker that draws several of this suite's
+# multi-second device/solve/guiding tests finishes long after the others and
+# the whole run waits on that tail. That tail is also chaotically sensitive to
+# per-test durations: making the sim solver's pacing sleep fake (this phase)
+# LOWERED total test CPU by ~35 s yet pushed `load`'s wall clock from ~124 s to
+# ~188 s purely by reshuffling which worker drew the tail. `worksteal` lets an
+# idle worker take pending items back off a busy one, which removes both the
+# tail and the sensitivity -- measured on this box (24 logical CPUs), full
+# suite, same code: load 124 s vs worksteal 100 s BEFORE this phase's changes,
+# and load 188 s vs worksteal 101 s after. It is strictly a scheduling fix, so
+# it helps independently of anything else here.
+addopts = "-n 12 --dist worksteal"
 markers = [
     "selftest: real-I/O end-to-end self-update checks (CI runs on win+linux)",
+    # Fast/slow lane. `pytest -m 'not slow'` is the inner loop; CI and every
+    # gate keep running the FULL suite (no marker filter), so `slow` never
+    # means "optional" -- it means "this test deliberately spends wall clock on
+    # timing realism (real device dwell, a real grace period, a long
+    # logical-time guiding run) rather than on assertions you can get faster".
+    "slow: deliberately wall-clock-bound (timing-realism / long guiding runs)",
+    # Drives real I/O or a real second process (sockets, subprocesses, the
+    # relay lane) rather than in-process fakes. Disjoint from `slow` in intent:
+    # a test can be one, both, or neither.
+    "integration: exercises real I/O or a real second process end to end",
 ]
 
 [tool.setuptools.packages.find]

@@ -149,9 +149,27 @@ def test_verify_id_token_happy_path():
     assert claims["aud"] == cid
 
 
-def test_verify_rejects_alg_none():
+@pytest.mark.parametrize("malformer", [
+    # Each case forges the SAME otherwise-valid, correctly-signed token with
+    # exactly ONE claim/header field poisoned, and asserts the same verdict
+    # through the same call: verify_id_token must raise OIDCError. These were
+    # seven byte-identical test functions; the only thing that ever differed
+    # was this one kwarg, so the difference is the parameter.
+    pytest.param({"alg": "none"}, id="alg_none"),
+    pytest.param({"client_id": "other-client"}, id="wrong_audience"),
+    pytest.param({"iss": "https://evil.example"}, id="bad_issuer"),
+    pytest.param({"exp_delta": -10000}, id="expired"),
+    pytest.param({"email_verified": False}, id="unverified_email"),
+    pytest.param({"nonce": "REAL"}, id="nonce_mismatch"),
+    pytest.param({"kid": "rotated-away"}, id="unknown_kid"),
+])
+def test_verify_rejects_malformed_token(malformer):
+    """One poisoned field per case -> rejection. NOT merged in here: the
+    tampered-SIGNATURE case (it mutates the assembled token string, not a
+    claim) and the hd-pin case (it also asserts the positive match), both of
+    which stay their own tests below because they genuinely differ."""
     cid = "client-123"
-    tok = _make_id_token(client_id=cid, alg="none")
+    tok = _make_id_token(**{"client_id": cid, **malformer})
     with pytest.raises(OIDCError):
         verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="NONCE")
 
@@ -170,41 +188,6 @@ def test_verify_rejects_tampered_signature():
                         nonce="NONCE")
 
 
-def test_verify_rejects_wrong_audience():
-    tok = _make_id_token(client_id="other-client")
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id="client-123",
-                        nonce="NONCE")
-
-
-def test_verify_rejects_bad_issuer():
-    cid = "client-123"
-    tok = _make_id_token(client_id=cid, iss="https://evil.example")
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="NONCE")
-
-
-def test_verify_rejects_expired():
-    cid = "client-123"
-    tok = _make_id_token(client_id=cid, exp_delta=-10000)
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="NONCE")
-
-
-def test_verify_rejects_unverified_email():
-    cid = "client-123"
-    tok = _make_id_token(client_id=cid, email_verified=False)
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="NONCE")
-
-
-def test_verify_rejects_nonce_mismatch():
-    cid = "client-123"
-    tok = _make_id_token(client_id=cid, nonce="REAL")
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="EXPECTED")
-
-
 def test_verify_hd_pin_enforced():
     cid = "client-123"
     # token carries the wrong hosted domain -> reject when hd is pinned
@@ -217,13 +200,6 @@ def test_verify_hd_pin_enforced():
     claims = verify_id_token(tok2, jwks=_fake_jwks(), client_id=cid,
                              nonce="NONCE", hd="mycorp.com")
     assert claims["hd"] == "mycorp.com"
-
-
-def test_verify_rejects_unknown_kid():
-    cid = "client-123"
-    tok = _make_id_token(client_id=cid, kid="rotated-away")
-    with pytest.raises(OIDCError):
-        verify_id_token(tok, jwks=_fake_jwks(), client_id=cid, nonce="NONCE")
 
 
 # ================================================== PKCE helper round-trip
