@@ -559,6 +559,46 @@ def save_filter_config(profile_id: str | None, names: list[str],
     write_json_atomic(FILTER_CONFIG_FILE, data)
 
 
+# --------------------------------------------------- learned camera EGAIN store
+# Measured conversion gain (e-/ADU) per camera GAIN setting, persisted per
+# profile. Conversion gain varies with the gain setting (notably across an HCG
+# transition), so this is a MAP keyed by the exact gain integer and applied only
+# on an exact match — no interpolation. A driver-reported EGAIN always wins; a
+# learned value is used ONLY when the driver reports 0.0 (never override real
+# hardware with an estimate).
+EGAIN_CONFIG_FILE = CONFIG_DIR / "egain.json"
+_EGAIN_DEFAULT_KEY = "__default__"
+
+
+def load_egain_config(profile_id: str | None) -> dict:
+    """``{gain:int -> egain:float}`` learned for a profile (``{}`` when nothing
+    is saved or the store is missing/corrupt)."""
+    data = read_json_or(EGAIN_CONFIG_FILE, {})
+    if not isinstance(data, dict):
+        return {}
+    entry = data.get(profile_id or _EGAIN_DEFAULT_KEY)
+    if not isinstance(entry, dict):
+        return {}
+    out: dict[int, float] = {}
+    for k, v in entry.items():
+        try:
+            out[int(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def save_egain_config(profile_id: str | None, by_gain: dict) -> None:
+    """Persist the learned per-gain EGAIN map for a profile (best-effort merge
+    into the shared store; other profiles' entries are preserved)."""
+    data = read_json_or(EGAIN_CONFIG_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    data[profile_id or _EGAIN_DEFAULT_KEY] = {
+        str(int(g)): float(v) for g, v in by_gain.items()}
+    write_json_atomic(EGAIN_CONFIG_FILE, data)
+
+
 # --------------------------------------------------------------------- pure math
 
 def image_scale_arcsec_px(focal_mm: float, pixel_um: float, binning: int = 1) -> float:

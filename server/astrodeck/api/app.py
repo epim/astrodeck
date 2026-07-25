@@ -538,6 +538,26 @@ class FilterNamesBody(BaseModel):
     offsets: list[int] = []
 
 
+class LearnOffsetsBody(BaseModel):
+    """Per-filter AF-offset auto-learn. ``ref_slot`` None -> the hub picks an
+    L/Lum/Clear slot when the wheel has one, else the current position."""
+    ref_slot: int | None = None
+    exposure_s: float = 2.0
+    gain: int = 120
+    step: int = 350
+    steps_each_side: int = 4
+    binning: int = 2
+
+
+class EgainLearnBody(BaseModel):
+    """Mean-variance EGAIN measurement: ``count`` bias + ``count`` flat frames."""
+    gain: int
+    count: int = 4
+    exposure_s: float = 2.0
+    offset: int = 10
+    binning: int = 1
+
+
 class SwitchBody(BaseModel):
     port_id: int
     value: float
@@ -2760,6 +2780,26 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
 
+    @app.post("/api/camera/egain/learn",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def learn_egain(body: EgainLearnBody):
+        """Measure the camera's conversion gain (e-/ADU) by mean-variance.
+
+        Camera-exclusive (it takes its own bias/flat frames), so it 409s while a
+        capture loop or sequence owns the camera. The measured value is stored
+        per gain and used ONLY when the driver reports no egain."""
+        if engine.running or hub.looping:
+            raise HTTPException(409, "camera is busy (a capture loop or sequence "
+                                     "is running)")
+        try:
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("egain", hub.learn_egain(
+            gain=body.gain, count=body.count, exposure_s=body.exposure_s,
+            offset=body.offset, binning=body.binning))
+
     # ------------------------------------------------------- flat calibrator
 
     @app.post("/api/calibrator/on", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -3194,6 +3234,28 @@ def create_app() -> FastAPI:
             return await hub.set_filter_names(body.names, body.offsets)
         except DeviceError as e:
             raise _err(e)
+
+    @app.post("/api/filterwheel/learn-offsets",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def learn_filter_offsets(body: LearnOffsetsBody):
+        """Autofocus each filter slot and fill in the per-filter offsets.
+
+        Camera-exclusive (a full AF sweep per slot), so it 409s while a capture
+        loop or sequence owns the camera — the same guard autofocus uses."""
+        if engine.running or hub.looping:
+            raise HTTPException(409, "camera is busy (a capture loop or sequence "
+                                     "is running)")
+        try:
+            hub.require("filterwheel")
+            hub.require("focuser")
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("filter_offsets", hub.learn_filter_offsets(
+            ref_slot=body.ref_slot, exposure_s=body.exposure_s, gain=body.gain,
+            step=body.step, steps_each_side=body.steps_each_side,
+            binning=body.binning))
 
     # --------------------------------------------------------------- switch
 

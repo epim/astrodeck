@@ -97,16 +97,35 @@ class ZwoAm5Telescope(Telescope):
 
     # ------------------------------------------------------------ helpers
 
+    async def _refused_error(self, what: str) -> DeviceError:
+        """Compose an HONEST error for the mount's ``e14#`` refusal.
+
+        ``e14`` means "refused in current state" — parked is only ONE cause
+        (below-horizon limit, a motion already running, an un-set target all
+        produce it too), so we probe the actual park flag before blaming park.
+        The probe runs only on this already-exceptional path and is best-effort:
+        a failed ``:Gps#`` must never mask the refusal we came here to report."""
+        parked = False
+        try:
+            parked = await self.is_parked()
+        except Exception:  # noqa: BLE001 - probe is advisory only
+            pass
+        if parked:
+            return DeviceError(
+                f"{self.name}: {what} refused — mount is parked; unpark first "
+                "(AM5 e14)")
+        return DeviceError(
+            f"{self.name}: {what} refused in current state — check limits / "
+            "that a slew isn't already running (AM5 e14)")
+
     async def _cmd_ack(self, cmd: str, what: str) -> None:
-        """Send an ack-class command; map e14 to the honest parked error."""
+        """Send an ack-class command; map e14 to the honest refusal error."""
         try:
             reply = await self._link.request(cmd, reply="ack")
         except LinkError as exc:
             raise DeviceError(f"{self.name}: {what} failed: {exc}") from exc
         if reply == lx200.REFUSED:
-            raise DeviceError(
-                f"{self.name}: {what} refused — mount is parked; unpark first "
-                "(AM5 e14)")
+            raise await self._refused_error(what)
         if reply != lx200.ACK_OK:
             raise DeviceError(f"{self.name}: {what} rejected (reply {reply!r})")
 
@@ -253,9 +272,7 @@ class ZwoAm5Telescope(Telescope):
         await self._set_target(ra_hours, dec_deg)
         reply = await self._link.request("MS", reply="ack")
         if reply == lx200.REFUSED:
-            raise DeviceError(
-                f"{self.name}: goto refused — mount is parked; unpark first "
-                "(AM5 e14)")
+            raise await self._refused_error("goto")
         # LX200 :MS# convention: '0' = slew accepted; anything else = refused.
         if reply != "0":
             raise DeviceError(f"{self.name}: goto rejected (reply {reply!r})")
@@ -296,9 +313,7 @@ class ZwoAm5Telescope(Telescope):
         except LinkError as exc:
             raise DeviceError(f"{self.name}: sync failed: {exc}") from exc
         if reply == lx200.REFUSED:
-            raise DeviceError(
-                f"{self.name}: sync refused — mount is parked; unpark first "
-                "(AM5 e14)")
+            raise await self._refused_error("sync")
 
     async def move_axis(self, axis: str, rate_deg_s: float) -> None:
         if axis not in ("ra", "dec"):

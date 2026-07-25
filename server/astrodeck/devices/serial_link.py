@@ -13,6 +13,7 @@ Reply modes mirror the AM5 wire truth (see devices/lx200.py):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 try:  # guarded: absent pyserial must not break imports (non-serial installs)
     import serial  # type: ignore
@@ -71,7 +72,19 @@ class SerialLink:
 
     async def request(self, cmd: str, *, reply: str = "hash",
                       timeout: float = 1.5) -> str | None:
-        """Send ``cmd`` (unframed, e.g. ``"GR"``) and read per ``reply`` mode."""
+        """Send ``cmd`` (unframed, e.g. ``"GR"``) and read per ``reply`` mode.
+
+        CANCEL SAFETY (single-owner port). ``asyncio.to_thread`` cannot cancel
+        the worker: if the awaiting coroutine is cancelled or times out
+        mid-exchange, the thread keeps writing/reading ``self._ser``. Releasing
+        ``self._lock`` at that moment would let the NEXT exchange
+        ``reset_input_buffer`` + ``write`` on top of the orphan -> interleaved,
+        corrupt framing (a real path: ``ZwoAm5Telescope.slew`` halts with ``:Q#``
+        from its ``except`` while the settle poll may still be in flight). So on
+        an abnormal exit we JOIN the orphaned exchange before the ``async with``
+        releases the lock. The join is BOUNDED by the exchange's own deadline
+        (``timeout``, default 1.5 s; pyserial read timeout is 0.2 s), which is
+        the accepted price of a port that is never handed over mid-frame."""
         if self._ser is None:
             raise LinkError("link not open")
         async with self._lock:
@@ -85,12 +98,29 @@ class SerialLink:
                 if reply == "ack":
                     return self._read_ack(deadline)
                 return None
-            return await asyncio.to_thread(_exchange)
+            task = asyncio.ensure_future(asyncio.to_thread(_exchange))
+            try:
+                return await asyncio.shield(task)
+            finally:
+                if not task.done():
+                    # Suppress a second cancel (and any exchange error) so the
+                    # join always completes and the original exception wins.
+                    with contextlib.suppress(BaseException):
+                        await asyncio.shield(task)
+                elif not task.cancelled():
+                    # Already finished (normal path, or it raised in the same
+                    # tick a cancel landed): mark its result retrieved so a
+                    # cancelled-away exchange error can't log "never retrieved".
+                    task.exception()
 
     async def close(self) -> None:
-        ser, self._ser = self._ser, None
-        if ser is not None:
-            try:
-                await asyncio.to_thread(ser.close)
-            except Exception:  # noqa: BLE001 - best-effort close
-                pass
+        """Close the port. Takes ``self._lock`` so teardown waits for any
+        in-flight exchange instead of nulling ``self._ser`` (AttributeError) or
+        closing the OS handle under a blocking read."""
+        async with self._lock:
+            ser, self._ser = self._ser, None
+            if ser is not None:
+                try:
+                    await asyncio.to_thread(ser.close)
+                except Exception:  # noqa: BLE001 - best-effort close
+                    pass

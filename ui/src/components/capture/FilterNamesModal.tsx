@@ -5,18 +5,40 @@
 // POST /api/filterwheel/names, so they survive a reconnect.
 
 import { useEffect, useRef, useState, type JSX } from "react";
+import { useFilterOffsetsLearn } from "../../store";
+
+/** Slot to pre-select as the offset reference: an L/Lum/Clear slot when the
+ *  wheel has one (case-insensitive), else the wheel's current position. Mirrors
+ *  the server's `focus.filter_offsets.default_ref_slot` so the picker shows the
+ *  same slot the API would choose on its own. */
+function defaultRefSlot(names: string[], current: number): number {
+  const lum = ["l", "lum", "luminance", "clear", "lp", "uv/ir cut", "uvir"];
+  const i = names.findIndex((n) => lum.includes(n.trim().toLowerCase()));
+  return i >= 0 ? i : current;
+}
 
 export function FilterNamesModal({
   open,
   onClose,
   names,
   offsets,
+  position = 0,
+  canLearn = false,
+  learnDisabledReason = null,
+  onLearn,
   onSave,
 }: {
   open: boolean;
   onClose: () => void;
   names: string[];
   offsets: number[];
+  /** current wheel slot — the reference-picker fallback */
+  position?: number;
+  /** show the auto-learn disclosure at all (a focuser is present) */
+  canLearn?: boolean;
+  /** non-null => Start is honest-disabled with this reason in its title */
+  learnDisabledReason?: string | null;
+  onLearn?: (refSlot: number) => Promise<void>;
   onSave: (names: string[], offsets: number[]) => Promise<void>;
 }): JSX.Element | null {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -25,15 +47,28 @@ export function FilterNamesModal({
   const [draftOffsets, setDraftOffsets] = useState<string[]>(offsets.map(String));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [learnOpen, setLearnOpen] = useState(false);
+  const [refSlot, setRefSlot] = useState(0);
+  const learn = useFilterOffsetsLearn();
 
   // Re-seed the drafts from the live wheel each time the modal opens.
   useEffect(() => {
     if (!open) return;
     setDraftNames(names);
     setDraftOffsets(names.map((_, i) => String(offsets[i] ?? 0)));
+    setRefSlot(defaultRefSlot(names, position));
     setErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // A finished learn run fills the offset inputs as EDITABLE DRAFTS — the
+  // expert can hand-tweak any slot before Save. Slots whose autofocus failed
+  // are reported in `kept` and keep their prior value (never a bogus 0).
+  useEffect(() => {
+    if (!open || learn?.state !== "done" || !learn.offsets) return;
+    setDraftOffsets(learn.offsets.map(String));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, learn?.state]);
 
   // Focus trap + initial focus + Escape + restore (same shell as PreflightModal).
   useEffect(() => {
@@ -141,6 +176,71 @@ export function FilterNamesModal({
             Names appear in FITS headers and saved filenames. Offsets are the
             per-filter focuser step delta autofocus applies when switching filters.
           </p>
+
+          {/* --- Advanced: learn the offsets automatically. Collapsed by
+               default; the manual grid above is untouched and still the novice
+               path (offsets of 0 image perfectly well). --- */}
+          {canLearn && (
+            <div className="mt-2 border-t border-line pt-2">
+              <button
+                type="button"
+                className="btn !px-2 !py-1 text-[11px]"
+                aria-expanded={learnOpen}
+                onClick={() => setLearnOpen((v) => !v)}>
+                {learnOpen ? "▾ Learn offsets automatically" : "▸ Learn offsets automatically"}
+              </button>
+              {learnOpen && (
+                <div className="mt-2 flex flex-col gap-2">
+                  <p className="text-[11px] text-dim leading-snug">
+                    Focuses each filter for you and fills in the offsets. Point at
+                    a star field first. Takes a few minutes.
+                  </p>
+                  <label className="flex items-center gap-2 text-[11px] text-dim">
+                    <span>Reference</span>
+                    <select
+                      className="field !w-32"
+                      value={refSlot}
+                      aria-label="Reference filter"
+                      onChange={(e) => setRefSlot(Number(e.target.value))}>
+                      {draftNames.map((n, i) => (
+                        <option key={i} value={i}>{n || `Slot ${i + 1}`}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="text-[10px] text-dim">
+                    Offsets are measured relative to this filter (it stays at 0).
+                  </p>
+                  <button
+                    type="button"
+                    className={`btn self-start ${learnDisabledReason ? "opacity-50 cursor-default" : ""}`}
+                    aria-disabled={learnDisabledReason ? true : undefined}
+                    title={learnDisabledReason ? `Unavailable — ${learnDisabledReason}` : undefined}
+                    onClick={learnDisabledReason || !onLearn ? undefined : () => {
+                      setErr(null);
+                      onLearn(refSlot).catch((e) => setErr((e as Error).message));
+                    }}>
+                    Start
+                  </button>
+                  {learn?.state === "running" && (
+                    <p className="text-[11px] text-accent" role="status">
+                      Focusing {learn.name ?? `slot ${(learn.slot ?? 0) + 1}`}
+                      {learn.of ? ` (${(learn.slot ?? 0) + 1} of ${learn.of})` : ""}…
+                    </p>
+                  )}
+                  {learn?.state === "failed" && (
+                    <p className="text-[11px] text-bad">{learn.error ?? "learn failed"}</p>
+                  )}
+                  {learn?.state === "done" && (learn.kept?.length ?? 0) > 0 && (
+                    <p className="text-[11px] text-dim">
+                      kept prior offset (no focus found) for:{" "}
+                      {learn.kept!.map((i) => draftNames[i] || `slot ${i + 1}`).join(", ")}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {err && <p className="text-[11px] text-bad">{err}</p>}
         </div>
 

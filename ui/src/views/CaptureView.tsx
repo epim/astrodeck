@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import {
   useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight,
-  usePhotometry, usePreview,
+  usePhotometry, usePreview, useEgainLearn,
 } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
@@ -75,6 +75,8 @@ export default function CaptureView() {
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
+  const [camAdvanced, setCamAdvanced] = useState(false); // Advanced disclosure (egain)
+  const egainLearn = useEgainLearn();
   // Calibration quick-action (calibration-capture spec §1.3): which frame type
   // Single/Loop will shoot. Manual capture defaults to Light (today's only
   // behavior); the shutter follows this via body.frame_type -> hub.capture.
@@ -667,6 +669,19 @@ export default function CaptureView() {
             onClose={() => setFilterEditOpen(false)}
             names={status.filterwheel.names}
             offsets={status.filterwheel.offsets ?? []}
+            position={status.filterwheel.position}
+            canLearn={!!status.focuser}
+            learnDisabledReason={
+              !canCapture ? "this is a read-only session"
+                : captureBlocked ? "a sequence or polar alignment owns the camera"
+                  : looping ? "a capture loop is running"
+                    : !status.focuser ? "no focuser is connected"
+                      : null
+            }
+            onLearn={async (refSlot) => {
+              await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
+              showToast("info", "Learning filter offsets…");
+            }}
             onSave={async (names, offsets) => {
               await api.post("/api/filterwheel/names", { names, offsets });
               showToast("success", "Filter names saved");
@@ -741,6 +756,74 @@ export default function CaptureView() {
                   onTouchEnd={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))} />
               </div>
             )}
+          </Panel>
+        )}
+
+        {/* ------------------------------------- camera Advanced (e-/ADU learn)
+             Novice default: nothing to do — EGAIN "just works" when the driver
+             reports it and is simply absent when it doesn't. This disclosure is
+             the expert path for Alpaca/NINA rigs that report nothing. Honest-
+             disabled (§11.8): dimmed + aria-disabled + title, never hidden. */}
+        {cam && (
+          <Panel title="Camera" right={!canCapture && <ReadOnlyBadge />}>
+            <button
+              className="btn !px-2 !py-1 text-[11px]"
+              aria-expanded={camAdvanced}
+              onClick={() => setCamAdvanced((v) => !v)}>
+              {camAdvanced ? "▾ Advanced" : "▸ Advanced"}
+            </button>
+            {camAdvanced && (() => {
+              const measuring = egainLearn?.state === "running";
+              const reason = !canCapture
+                ? "this is a read-only session"
+                : captureBlocked
+                  ? "a sequence or polar alignment owns the camera"
+                  : looping
+                    ? "a capture loop is running"
+                    : measuring
+                      ? "a measurement is already running"
+                      : null;
+              const learned = cam.egain_learned ?? {};
+              const gainKey = String(Math.round(Number(gain) || 0));
+              const learnedHere = learned[gainKey];
+              const shown = cam.egain || learnedHere;
+              return (
+                <div className="mt-3 flex flex-col gap-2">
+                  <p className="text-[11px] text-dim leading-snug">
+                    Measures your camera's true gain (e-/ADU) from a few flat and
+                    dark frames — it improves the noise and SNR readouts. Point at
+                    an evenly lit surface first; takes about a minute.
+                  </p>
+                  <button
+                    className={`btn tap min-h-[44px] self-start ${reason ? "opacity-50 cursor-default" : ""}`}
+                    aria-disabled={reason ? true : undefined}
+                    title={reason ? `Unavailable — ${reason}` : undefined}
+                    onClick={reason ? undefined : () => act(async () => {
+                      await api.post("/api/camera/egain/learn", { gain: Number(gainKey) });
+                      showToast("info", `Measuring gain at ${gainKey}…`);
+                    })}>
+                    {measuring
+                      ? `Measuring… ${egainLearn?.step ?? 0}/${egainLearn?.of ?? 0}`
+                      : `Measure gain (e-/ADU) at gain ${gainKey}`}
+                  </button>
+                  <div className="flex flex-wrap gap-3 items-end">
+                    <Stat label="e-/ADU" value={shown ? shown.toFixed(3) : "—"} />
+                    <span className="text-[11px] text-dim mb-0.5">
+                      {cam.egain ? "from driver" : learnedHere ? `measured at gain ${gainKey}` : "unknown"}
+                    </span>
+                  </div>
+                  {Object.keys(learned).length > 0 && (
+                    <p className="mono text-[11px] text-dim">
+                      measured: {Object.entries(learned)
+                        .map(([g, v]) => `g${g}=${Number(v).toFixed(2)}`).join("  ")}
+                    </p>
+                  )}
+                  <p className="text-[10px] text-dim">
+                    A gain reported by the driver always overrides a measured one.
+                  </p>
+                </div>
+              );
+            })()}
           </Panel>
         )}
       </div>

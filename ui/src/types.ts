@@ -71,6 +71,9 @@ export interface RigStatus {
     // photometry/SNR design Task 7: e-/ADU at the current gain (native adapters
     // only; 0/absent = unknown). Optional — older servers omit the field.
     egain?: number;
+    // Tech-debt hardening (c1): MEASURED e-/ADU per gain setting from the
+    // auto-learn loop. Advanced-UI only — the driver value above always wins.
+    egain_learned?: Record<string, number>;
   };
   guider?: GuideStats & { name: string };
   // --- guide-frame preview (SHARED lane; additive). Present only when the backend
@@ -853,7 +856,25 @@ export interface Schedule {
 export type TriggerKind =
   | "on_hfr_above" | "on_guide_rms_above" | "on_frame_rejected"
   | "on_target_complete" | "at_time";
-export type ActionKind = "notify" | "pause" | "refocus" | "dither" | "abort";
+export type ActionKind =
+  | "notify" | "pause" | "refocus" | "dither" | "abort"
+  // control-flow expansion: target jumps. Both carry their destination in
+  // `target_arg` (NOT `only_target`, which stays a gate).
+  | "run_target" | "skip_target";
+// Bounded 1-level compound condition (control-flow expansion). `terms` holds
+// LEAVES only — no nesting — so the grammar stays a closed vocabulary.
+export type PredicateKind =
+  | "hfr_above" | "guide_rms_above" | "frame_rejected"
+  | "target_complete" | "at_time";
+export interface Predicate {
+  kind: PredicateKind;
+  threshold: number;
+  at_time: string | null;
+}
+export interface Condition {
+  op: "all" | "any";                    // all = AND, any = OR
+  terms: Predicate[];                   // 2..8
+}
 export interface Instruction {
   id?: string;                          // uuid4 hex; generated client-side on create
   enabled: boolean;
@@ -866,6 +887,8 @@ export interface Instruction {
   once: boolean;                        // fire at most once per run
   cooldown_s: number;                   // min seconds between fires (0 = every boundary)
   only_target: string | null;           // gate: only while this target (by name) active
+  target_arg?: string | null;           // jump DESTINATION for run_target / skip_target
+  when?: Condition | null;              // compound condition; when set it OVERRIDES `trigger`
 }
 
 // ------------------------------------------------------------ alerting / config

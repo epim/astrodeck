@@ -166,13 +166,27 @@ async def test_position_and_tracking_reads(fixed_env):
     assert await tel.pier_side() == PierSide.EAST
 
 
-async def test_parked_refusal_maps_to_honest_error(fixed_env):
+@pytest.mark.parametrize("gps, expect", [
+    ("2", "parked"),                    # really parked -> say so
+    ("0", "refused in current state"),  # e14 for some OTHER reason (limits, ...)
+    (None, "refused in current state"), # park probe itself fails -> stay generic
+])
+async def test_e14_refusal_is_labeled_honestly(fixed_env, gps, expect):
+    """``e14`` is "refused in current state" — parked is only ONE cause. The
+    driver probes :Gps# on the error path and must never blame park unless the
+    mount actually reports parked (and a failed probe must not mask the error)."""
     fl = FakeLink(_connect_script())
-    fl.script["Te"] = "e14"
     tel = am5.ZwoAm5Telescope(fl)
     await tel.connect()
-    with pytest.raises(DeviceError, match="parked"):
+    fl.script["Te"] = "e14"
+    if gps is None:
+        fl.script.pop("Gps")            # probe raises LinkError -> best-effort
+    else:
+        fl.script["Gps"] = gps
+    with pytest.raises(DeviceError, match=expect) as exc:
         await tel.set_tracking(True)
+    if gps != "2":
+        assert "parked" not in str(exc.value)   # never send the user to unpark
 
 
 # --------------------------------------------------------- telescope: tracking rate

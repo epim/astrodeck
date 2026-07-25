@@ -260,6 +260,36 @@ async def test_distinct_hosts_open_separate_sessions(registry):
     assert result.rig["telescope"][2] == "10.0.0.2"
 
 
+# ---------------------- serial transport: port_path is part of the endpoint key
+
+@pytest.mark.asyncio
+async def test_distinct_serial_ports_open_separate_sessions(registry):
+    """A serial ConnSpec addresses its device with ``port_path`` and leaves
+    host/port None. Keying only on host/port would coalesce two DIFFERENT serial
+    units of one backend into ONE session — the second role would silently be
+    served from the first unit's port."""
+    from astrodeck.devices.orchestrator import _normalize
+    be = FakeBackend("serialbe", ("camera", "telescope"))
+    registry(be)
+    spec = RigSpec(
+        primary="serialbe",
+        roles={
+            "camera": ConnSpec(backend="serialbe", role="camera",
+                               transport="serial", port_path="COM3"),
+            "telescope": ConnSpec(backend="serialbe", role="telescope",
+                                  transport="serial", port_path="COM4"),
+        },
+    )
+    result = await connect_profile(spec)
+    assert len(be.opens) == 2
+    assert ("serialbe", "COM3", None) in result.sessions
+    assert ("serialbe", "COM4", None) in result.sessions
+    # network specs are byte-identical to before (host/port key)
+    assert _normalize(ConnSpec(backend="serialbe", role="camera",
+                               host="10.0.0.9", port=11111)) == \
+        ("serialbe", "10.0.0.9", 11111)
+
+
 # ------------------------ T2(10)/(11): hostless coalescing (sim + generic hostless)
 
 @pytest.mark.asyncio

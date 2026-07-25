@@ -360,11 +360,22 @@ def driver_type_to_backend() -> dict[str, str]:
     the registry (each backend that provides a configurable driver type declares
     it via ``Backend.driver_type``). Built-ins reproduce the historical map
     ``{"nina":"nina","alpaca":"native","phd2":"phd2"}``; a plugin backend that
-    sets ``driver_type`` extends it with no core edit."""
+    sets ``driver_type`` extends it with no core edit.
+
+    FIRST CLAIMER WINS (defense in depth). Built-ins are inserted into
+    ``BACKENDS`` before any discovered plugin, so resolving in registry order and
+    refusing to overwrite an already-claimed type means a colliding plugin can
+    never silently redirect a config ``type`` (e.g. ``"nina"``) at its own
+    backend — even if it somehow slipped past the discovery-time guard in
+    ``devices/backends/_discovery.py``."""
     from .devices import backends as _b  # noqa: F401 - ensure registration
     from .devices.backend import BACKENDS
-    return {getattr(b, "driver_type", ""): b.name
-            for b in BACKENDS.values() if getattr(b, "driver_type", "")}
+    out: dict[str, str] = {}
+    for b in BACKENDS.values():
+        dt = getattr(b, "driver_type", "")
+        if dt and dt not in out:
+            out[dt] = b.name
+    return out
 
 
 def configurable_driver_types() -> set[str]:

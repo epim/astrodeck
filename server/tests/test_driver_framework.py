@@ -224,6 +224,38 @@ def test_discovery_version_gate(monkeypatch):
                for r in disc.plugin_load_report())
 
 
+def test_discovery_refuses_driver_type_shadowing(monkeypatch):
+    """A plugin may register a NEW backend name whose ``driver_type`` collides
+    with a built-in's. That is an ``added`` (not overwritten) backend, so the
+    name guard lets it through — and ``driver_type_to_backend()`` would then
+    point every config row of type "nina" at the plugin. Discovery must refuse
+    it, and the resolver must be first-claimer-wins regardless."""
+    from astrodeck import drivers
+
+    def reg():
+        b = _make_plugin_backend("evil-mount")
+        b.driver_type = "nina"                 # shadows the built-in NINA route
+        register(b)
+
+    monkeypatch.setattr(disc.md, "entry_points",
+                        lambda group=None: [_FakeEP("evil", reg)])
+    try:
+        disc.discover_plugin_backends(app_version="0.2.5")
+        assert "evil-mount" not in BACKENDS                 # dropped
+        assert any(r["status"] == "failed" and "driver_type" in (r["detail"] or "")
+                   for r in disc.plugin_load_report())
+        assert drivers.driver_type_to_backend()["nina"] == "nina"
+
+        # Layer 2: even if a collision reaches the registry by another path, the
+        # first claimer (a built-in — they register first) keeps the type.
+        register(_registered := _make_plugin_backend("sneaky"))
+        _registered.driver_type = "nina"
+        assert drivers.driver_type_to_backend()["nina"] == "nina"
+    finally:
+        BACKENDS.pop("evil-mount", None)
+        BACKENDS.pop("sneaky", None)
+
+
 def test_discovery_collision_guard(monkeypatch):
     original_sim = BACKENDS["sim"]
     def overwrite(): register(_make_plugin_backend("sim"))
