@@ -47,3 +47,28 @@ export function difficultyHint(t: DifficultyTier): string {
 export function isBeginnerFriendly(t: DifficultyTier): boolean {
   return BEGINNER_TIERS.includes(t);
 }
+
+/** Resolve the difficulty tier of the CURRENTLY-IMAGED target (polish grab-bag
+ *  (c2)): match the running sequence's target string against catalog entries the
+ *  client already holds (e.g. the framing session's origin object), by id or name,
+ *  case- and whitespace-insensitively.
+ *
+ *  Returns `null` whenever it cannot be sure — no target, no entries, no match, or
+ *  a matched entry that carries no server-derived tier. The caller then renders
+ *  NOTHING: a difficulty badge on the wrong object would be worse than no badge. */
+export function tierForTargetName(
+  target: string | null | undefined,
+  entries: readonly { id?: string; name?: string; difficulty?: DifficultyTier }[],
+): DifficultyTier | null {
+  const key = (s: string | null | undefined) =>
+    (s ?? "").toLowerCase().replace(/\s+/g, "");
+  const k = key(target);
+  if (!k) return null;
+  for (const e of entries) {
+    if (!e) continue;
+    if ((key(e.id) && key(e.id) === k) || (key(e.name) && key(e.name) === k)) {
+      return e.difficulty ?? null;
+    }
+  }
+  return null;
+}

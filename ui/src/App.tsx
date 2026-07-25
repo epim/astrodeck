@@ -31,6 +31,7 @@ import SequenceView from "./views/SequenceView";
 import PowerView from "./views/PowerView";
 import MonitorView from "./views/MonitorView";
 import AtlasView from "./views/AtlasView";
+import TonightView from "./views/TonightView";
 import ReportView from "./views/ReportView";
 import HelpView from "./views/HelpView";
 import SettingsView from "./components/settings/SettingsView";
@@ -52,6 +53,12 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "sequence", label: "Plan", icon: "plan" },
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
+  // APPENDED (polish grab-bag (c), same Risk-10 precedent as Monitor): "what can I
+  // image tonight?" gets a first-class destination instead of living one tab deep
+  // inside Atlas. No reorder, no eviction. On mobile it lands in the More sheet —
+  // the 5-slot primary bar is full and reordering it would break the append-only
+  // rule (Decision C).
+  { id: "tonight", label: "Tonight", icon: "moon" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
@@ -67,6 +74,10 @@ const VIEWS: Record<ViewName, () => JSX.Element> = {
   monitor: MonitorView,
   settings: SettingsView,
   atlas: AtlasView,
+  // Informational shell (like Atlas/Monitor) — deliberately NOT in GATED below:
+  // "what's up tonight?" is exactly the question a user asks BEFORE any equipment
+  // is connected.
+  tonight: TonightView,
   // "report" is NOT a primary-nav entry (Batch-4b §2.5 / report viewer spec §1.4):
   // ReportView has landed, reached from the run-complete "View session report →"
   // link (SequenceView) + the mobile overflow sheet (NavMoreSheet), never from
