@@ -161,17 +161,24 @@ async def test_wcs_queue_drops_oldest_and_never_raises(wcs_hub, monkeypatch):
 
 # ------------------------------------ no work at all when off / not locally saved
 
-@pytest.mark.parametrize("reason", ["feature-off", "remote-saved"])
+@pytest.mark.parametrize("reason", ["feature-off", "remote-saved",
+                                    "dark", "bias", "flat"])
 async def test_no_wcs_work_when_off_or_not_locally_saved(wcs_hub, monkeypatch,
                                                          reason):
     """OFF (the default) must be byte-identical to before this feature existed:
     no queue, no worker task, no solver call, no WCS cards. Same for a frame the
-    backend saved on ITS box (decision D5) — the file isn't here to reopen."""
+    backend saved on ITS box (decision D5) — the file isn't here to reopen.
+
+    And same for a calibration frame: ``solve_saved_lights`` means LIGHTS. A
+    starless dark can never solve, so a 50-frame dark-library run would only burn
+    50 full ASTAP timeouts (min_stars defaults to 0, so that gate won't catch
+    them either) and flood the log with failures."""
     h, store = wcs_hub
+    frame_type = {"dark": "Dark", "bias": "Bias", "flat": "Flat"}.get(reason, "Light")
     if reason == "feature-off":
         store.cfg().solve_saved_lights = False
         store.bump_and_save()
-    else:
+    elif reason == "remote-saved":
         # Make the sim camera answer like a remote (NINA) backend: pre-rendered
         # bytes + a saved_path that lives on the imaging host.
         from astrodeck.imaging import to_jpeg
@@ -198,7 +205,8 @@ async def test_no_wcs_work_when_off_or_not_locally_saved(wcs_hub, monkeypatch,
 
     monkeypatch.setattr("astrodeck.providers.pick_solver", lambda hub: _Tripwire())
 
-    await h.capture(0.5, 100, 30, 1, save=True, target="M42")
+    await h.capture(0.5, 100, 30, 1, save=True, target="M42",
+                    frame_type=frame_type)
     await asyncio.sleep(0)          # give any (wrongly) spawned task a chance to run
 
     assert called == []
