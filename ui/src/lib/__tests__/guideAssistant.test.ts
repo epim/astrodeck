@@ -12,6 +12,7 @@ import {
   buildApplyBody,
   applyChangesAlgorithm,
   formatRecommendations,
+  toggleRecommendationKey,
   type AssistantReport,
   type AssistantRecommendation,
 } from "../guideAssistant";
@@ -41,7 +42,7 @@ function makeReport(over: Partial<AssistantReport> = {}): AssistantReport {
       drift_per_min_px: 6.0, drift_per_min_arcsec: 72.0,
       pe_amplitude_px: 1.0, pe_period_s: 200.0, jitter_px: 0.05,
       image_scale_arcsec: 2.0, image_scale_known: true,
-      backlash: { bl_px: 3.4, bl_ms: 430, sigma_ms: 40, north_rate: 0.008, result_code: "VALID", y_rate_source: "declared", halted: false },
+      backlash: { bl_px: 3.4, bl_ms: 430, sigma_ms: 40, north_rate: 0.008, result_code: "VALID", y_rate_source: "declared", halted: false, measured: true },
       ...(over.measurements ?? {}),
     },
     recommendations: over.recommendations ?? DEFAULT_RECS,
@@ -57,11 +58,15 @@ function makeReport(over: Partial<AssistantReport> = {}): AssistantReport {
 // (a) summarize copy bands — parametrized over polar tone + backlash presence.
 const SUMMARY_CASES: {
   name: string; tone: "good" | "warn" | "bad"; verdict: string;
-  bl_ms: number; code: string; wants: string;
+  bl_ms: number; code: string; measured: boolean; wants: string;
 }[] = [
-  { name: "good polar + backlash", tone: "good", verdict: "good", bl_ms: 430, code: "VALID", wants: "430 ms" },
-  { name: "bad polar", tone: "bad", verdict: "consider re-doing polar alignment", bl_ms: 0, code: "VALID", wants: "negligible" },
-  { name: "unmeasured backlash", tone: "warn", verdict: "fair", bl_ms: 0, code: "SANITY", wants: "couldn't measure" },
+  { name: "good polar + backlash", tone: "good", verdict: "good", bl_ms: 430, code: "VALID", measured: true, wants: "430 ms" },
+  { name: "bad polar", tone: "bad", verdict: "consider re-doing polar alignment", bl_ms: 0, code: "VALID", measured: true, wants: "negligible" },
+  { name: "unmeasured backlash", tone: "warn", verdict: "fair", bl_ms: 0, code: "SANITY", measured: false, wants: "couldn't measure" },
+  // SAFETY: bl_ms 0 + TOO_FEW_NORTH is what a run that never measured returns.
+  // It must NOT read as "negligible" (that copy is why Apply zeroed a tuned
+  // blc_pulse_ms) — it must say the current setting is left alone.
+  { name: "phase B never ran", tone: "good", verdict: "good", bl_ms: 0, code: "TOO_FEW_NORTH", measured: false, wants: "current setting is left alone" },
 ];
 for (const c of SUMMARY_CASES) {
   test(`summarize: ${c.name}`, () => {
@@ -69,7 +74,7 @@ for (const c of SUMMARY_CASES) {
       polar: { verdict: c.verdict, tone: c.tone, drift_per_min_arcsec: 72.0 },
       measurements: {
         ...makeReport().measurements,
-        backlash: { bl_px: 1, bl_ms: c.bl_ms, sigma_ms: 5, north_rate: 0.008, result_code: c.code, y_rate_source: "declared", halted: false },
+        backlash: { bl_px: 1, bl_ms: c.bl_ms, sigma_ms: 5, north_rate: 0.008, result_code: c.code, y_rate_source: "declared", halted: false, measured: c.measured },
       },
     });
     const s = summarize(r);
@@ -142,6 +147,40 @@ test("formatRecommendations labels each row", () => {
   const blc = rows.find((r) => r.field === "blc_pulse_ms");
   assert(!!blc && blc.label === "Dec backlash pulse", `blc label: ${blc?.label}`);
   assert(blc!.recommended === 430, `blc recommended: ${blc!.recommended}`);
+});
+
+// (g) two recommendations can target the SAME field (default vs advanced opt-in).
+// They must not render with an identical label, and ticking one must untick the
+// other — apply order used to decide the winner with no signal to the user.
+const PPEC_REPORT = makeReport({
+  recommendations: [
+    ...DEFAULT_RECS,
+    { key: "ra_algorithm_ppec", field: "ra_algorithm", current: "hysteresis", recommended: "ppec", unit: "", rationale: "PE", confidence: "medium", advanced: true },
+  ],
+});
+
+test("same-field recommendations get distinct labels + conflict lists", () => {
+  const rows = formatRecommendations(PPEC_REPORT);
+  const a = rows.find((r) => r.key === "ra_algorithm")!;
+  const b = rows.find((r) => r.key === "ra_algorithm_ppec")!;
+  assert(a.label !== b.label, `labels must differ: ${a.label} / ${b.label}`);
+  assert(a.conflicts.includes("ra_algorithm_ppec"), `conflicts: ${a.conflicts}`);
+  assert(b.conflicts.includes("ra_algorithm"), `conflicts: ${b.conflicts}`);
+  const mm = rows.find((r) => r.key === "min_move")!;
+  assert(mm.conflicts.length === 0, "single-row fields have no conflicts");
+});
+
+test("toggleRecommendationKey enforces the same-field either/or", () => {
+  const base = new Set(["ra_algorithm", "min_move"]);
+  const on = toggleRecommendationKey(PPEC_REPORT, base, "ra_algorithm_ppec");
+  assert(on.has("ra_algorithm_ppec"), "ppec selected");
+  assert(!on.has("ra_algorithm"), "the other RA-algorithm row must be unticked");
+  assert(on.has("min_move"), "unrelated fields untouched");
+  // buildApplyBody then has exactly one ra_algorithm rec to apply.
+  assert(buildApplyBody(PPEC_REPORT, [...on]).ra_algorithm === "ppec", "ppec applied");
+  // toggling off is a plain removal.
+  const off = toggleRecommendationKey(PPEC_REPORT, on, "ra_algorithm_ppec");
+  assert(!off.has("ra_algorithm_ppec") && !off.has("ra_algorithm"), "both off");
 });
 
 console.log(`guideAssistant.test.ts: ${passed} passed, ${failed} failed`);

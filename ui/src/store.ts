@@ -634,6 +634,14 @@ interface AppState {
   noteLightFrame: (snap: Omit<LightSnapshot, "count">) => void;
   clearLastLight: () => void;
 
+  // --- actions: Guiding Assistant ---
+  // Drop the retained progress tick. The panel calls this the instant Run is
+  // pressed: the previous run's terminal {phase:"done"} tick is deliberately
+  // retained (so the bar can sit at 100% while the report is fetched), and
+  // without this clear the next run's effect sees a "done" on its very first
+  // commit and latches the PREVIOUS run's cached report as if it were fresh.
+  clearGuideAssistant: () => void;
+
   // --- actions: config / plan / site ---
   loadConfig: () => Promise<void>;
   // GET /api/update/status → hydrate the `update` slice (boot + after a check).
@@ -845,6 +853,9 @@ export const useStore = create<AppState>((set, get) => ({
   // ------------------------------------------------------ calibration capture
   noteLightFrame: (snap) => set((s) => ({ lastLight: accumulateLight(s.lastLight, snap) })),
   clearLastLight: () => set({ lastLight: null }),
+
+  // ---------------------------------------------------------- guide assistant
+  clearGuideAssistant: () => set({ guideAssistant: null }),
 
   // --------------------------------------------------------- config/plan/site
   loadConfig: async () => {
@@ -1409,9 +1420,11 @@ export const useStore = create<AppState>((set, get) => ({
         break;
       }
       case "guide_assistant": {
-        // Guiding Assistant progress (design D5). The final "done" tick is left
-        // in place so the panel can show 100% until it fetches the report; a
-        // fresh run's first tick replaces it, and the panel clears it on close.
+        // Guiding Assistant progress (design D5). The final "done"/"error" tick
+        // is left in place so the panel can show 100% (or the failure message)
+        // until it fetches the report; a fresh run's first tick replaces it, and
+        // the panel calls clearGuideAssistant() the moment Run is pressed so a
+        // stale "done" can never be mistaken for this run's result.
         const d = ev.data as unknown as { phase: string; pct: number; message: string };
         set({ guideAssistant: d });
         break;

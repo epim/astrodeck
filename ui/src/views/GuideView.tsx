@@ -8,11 +8,13 @@ import {
 } from "../store";
 import {
   summarize, formatRecommendations, buildApplyBody, applyChangesAlgorithm,
+  toggleRecommendationKey,
   type AssistantReport, type GuideSettingsPutBody,
 } from "../lib/guideAssistant";
+import { confirmDialog } from "../components/ConfirmDialog";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Icon } from "../components/icons";
-import { Panel, Stat, Led } from "../components/ui";
+import { Panel, Stat, Led, Toggle } from "../components/ui";
 import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
@@ -680,6 +682,8 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [includeBacklash, setIncludeBacklash] = useState(true);
+  const clearProgress = useStore((s) => s.clearGuideAssistant);
 
   const kind = providers?.guide?.kind;
   const isNative = kind === "astrodeck" || kind === "sim";
@@ -697,10 +701,19 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
           : null;
   const blocked = reason !== null;
 
-  // When a run reports "done", fetch the cached report and seed the advanced
-  // selection with the non-advanced recommendation keys (the novice apply set).
+  // Terminal ticks. "done" -> fetch the cached report and seed the advanced
+  // selection with the non-advanced recommendation keys (the novice apply set);
+  // "error" -> stop the bar and let the error card render the message.
+  // `run()` clears the retained tick BEFORE the POST, so a "done" seen here can
+  // only belong to THIS run (the previous run's tick used to latch instantly
+  // and paint last run's numbers as if they were fresh).
   useEffect(() => {
-    if (progress?.phase === "done" && running) {
+    if (!running) return;
+    if (progress?.phase === "error") {
+      setRunning(false);
+      return;
+    }
+    if (progress?.phase === "done") {
       api.get<{ report: AssistantReport | null }>("/api/guide/assistant/report")
         .then((r) => {
           setReport(r.report);
@@ -717,8 +730,12 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
   const run = async () => {
     if (blocked || running) return;
     setReport(null);
+    // Drop any retained tick from a PREVIOUS run (done or error) first — see
+    // the effect above.
+    clearProgress();
     try {
-      await api.post("/api/guide/assistant/start", { include_backlash: true });
+      await api.post("/api/guide/assistant/start",
+        { include_backlash: includeBacklash });
       setRunning(true);
     } catch (e) {
       onToast("error", (e as Error).message);
@@ -736,14 +753,25 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
     try {
       const body = buildApplyBody(report, keys);
       const changesAlgo = applyChangesAlgorithm(report, keys);
-      // D4: an algorithm change wants a fresh calibration. Novice one-tap
-      // (keys omitted) auto-clears with a toast; advanced selective apply
-      // prompts before discarding the calibration.
-      let clearCal = changesAlgo;
+      // D4 (reworked after review): applying NEVER discards the saved
+      // calibration on its own — losing it mid-night costs a full calibration
+      // walk on the next Start Guiding, and the old code did it silently from
+      // the one-tap accent button. The novice path states the consequence above
+      // the button and leaves the calibration alone; the advanced selective
+      // path offers it through the app's own themed, focus-trapped confirm,
+      // whose dismiss/unavailable answer is KEEP (the old native confirm()
+      // fell back to `?? true` — destroying the calibration by default).
+      let clearCal = false;
       if (changesAlgo && keys) {
-        clearCal = (globalThis as { confirm?: (m: string) => boolean }).confirm?.(
-          "This changes a guide algorithm, which needs a fresh calibration. " +
-          "Clear the saved calibration now?") ?? true;
+        clearCal = await confirmDialog({
+          title: "Clear the saved calibration?",
+          body: "You changed a guiding algorithm. You can keep the calibration "
+            + "you already have, or clear it so the mount re-learns which way is "
+            + "which — that adds about 2 minutes the next time guiding starts.",
+          confirmLabel: "Clear it",
+          cancelLabel: "Keep it",
+          tone: "warn",
+        });
       }
       await api.put("/api/guide/settings", body);
       if (clearCal) {
@@ -763,15 +791,25 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
     }
   };
 
-  const toggleKey = (key: string) => setSelected((prev) => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    return next;
-  });
+  // Same-field recommendations are mutually exclusive (the default vs its
+  // advanced alternative) — ticking one unticks the other instead of letting
+  // apply-order silently pick the winner.
+  const toggleKey = (key: string) => setSelected((prev) =>
+    report ? toggleRecommendationKey(report, prev, key) : prev);
 
   const summary = report ? summarize(report) : null;
   const rows = report ? formatRecommendations(report) : [];
   const toneClass = { good: "text-good", warn: "text-warn", bad: "text-bad" };
+  // A run that FAILED (no star, cancelled, device error) publishes a terminal
+  // {phase:"error", message} tick — render it as a sentence with a way out
+  // instead of leaving a half-filled bar reading "Watching…" forever.
+  const failed = !running && !report && progress?.phase === "error";
+  // The server message is a DeviceError string prefixed with the driver name —
+  // strip that so the card reads as a sentence to the user.
+  const failMessage = (progress?.message ?? "")
+    .replace(/^native guider:\s*/i, "")
+    .replace(/^Guiding Assistant\s*/i, "");
+  const changesAlgoAll = report ? applyChangesAlgorithm(report) : false;
 
   return (
     <Panel title="Guiding Assistant" right={<ProviderBadge cap="guide" />}>
@@ -784,6 +822,19 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
           </div>
           <p className="text-xs text-dim">{progress?.message ?? "Working…"}</p>
           <button className="btn" onClick={() => void stop()}>Stop</button>
+        </div>
+      ) : failed ? (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-bad leading-snug">
+            The Guiding Assistant stopped: {failMessage || "something went wrong."}
+          </p>
+          <p className="text-[11px] text-dim leading-snug">
+            Nothing was changed. Check that a star is visible in the guide camera
+            and that the mount is tracking, then try again.
+          </p>
+          <button className="btn btn-accent w-full" onClick={() => void run()}>
+            Try again
+          </button>
         </div>
       ) : !report ? (
         <div className="flex flex-col gap-2">
@@ -798,14 +849,35 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
           <p className="text-[11px] text-dim leading-snug">
             {blocked
               ? reason
-              : "Watches your mount for about a minute and recommends the best guide settings."}
+              : includeBacklash
+                ? "This takes 2–4 minutes. AstroDeck watches a guide star, then "
+                  + "deliberately nudges the mount up and down a few times to "
+                  + "measure its slack. Make sure the scope can move freely."
+                : "This takes about 2 minutes. AstroDeck watches a guide star "
+                  + "drift and recommends guide settings. The mount keeps "
+                  + "tracking and is not moved."}
           </p>
+          <label className="flex items-center gap-2 text-[11px] text-dim">
+            <Toggle checked={includeBacklash} onChange={setIncludeBacklash}
+              label="Also measure mount slack (moves the scope)" />
+            <span>Also measure mount slack (moves the scope)</span>
+          </label>
         </div>
       ) : (
         <div className="flex flex-col gap-3">
           {summary && (
             <p className={`text-sm leading-snug ${toneClass[summary.tone]}`}>
               {summary.headline}
+            </p>
+          )}
+          {/* The consequence goes ABOVE the button, and applying never discards
+              the saved calibration on its own (review fix). */}
+          {changesAlgoAll && (
+            <p className="text-[11px] text-dim leading-snug">
+              This changes the guiding algorithm. Your saved calibration is kept,
+              so guiding still starts straight away — if it behaves oddly
+              afterwards, clear the calibration and let the mount re-learn its
+              directions (about 2 minutes).
             </p>
           )}
           <div className="flex gap-2">
@@ -863,9 +935,18 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
                     <span className="flex-1">
                       <span className="font-medium">{r.label}</span>
                       {r.advanced && <span className="text-warn"> · advanced</span>}
+                      {r.confidence === "low" && (
+                        <span className="text-warn"> · low confidence</span>
+                      )}
                       <span className="text-dim"> · {String(r.current)} → </span>
                       <span className="mono">{String(r.recommended)}{r.unit}</span>
                       <span className="block text-faint">{r.rationale}</span>
+                      {r.conflicts.length > 0 && (
+                        <span className="block text-faint">
+                          Either/or with the other {FIELD_WORD[r.field] ?? r.field}
+                          {" "}suggestion — ticking this one unticks it.
+                        </span>
+                      )}
                     </span>
                   </label>
                 ))}
@@ -889,6 +970,13 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
     </Panel>
   );
 }
+
+/** Plain-language name for a guide field, used by the either/or note on rows
+ *  that share a field (RA algorithm: Hysteresis vs Predictive PEC). */
+const FIELD_WORD: Record<string, string> = {
+  ra_algorithm: "RA algorithm",
+  dec_algorithm: "Dec algorithm",
+};
 
 /** One numeric measurement row: shows arcsec when the image scale is known,
  *  else raw pixels (UX-15 — never label pixels as arcsec). */

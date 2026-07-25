@@ -42,6 +42,10 @@ export interface AssistantBacklash {
   result_code: string;
   y_rate_source: string;
   halted: boolean;
+  // True only when the server actually DERIVED a backlash number. A default /
+  // cut-short / edge-halted run reports result_code TOO_FEW_NORTH with bl_ms 0,
+  // which must never be summarised as "negligible Dec backlash".
+  measured: boolean;
 }
 
 export interface AssistantMeasurements {
@@ -114,12 +118,21 @@ function _driftPhrase(m: AssistantMeasurements): string {
 }
 
 function _backlashPhrase(b: AssistantBacklash): string {
-  const measured = b.result_code === "VALID" || b.result_code === "TOO_FEW_NORTH";
+  // Same gate as the server's recommend(): believe bl_ms ONLY when the run
+  // derived it and was not cut short by the edge guard.
+  const measured =
+    b.measured === true && !b.halted
+    && (b.result_code === "VALID" || b.result_code === "TOO_FEW_NORTH");
   if (measured && b.bl_ms > 0) {
     return `has about ${b.bl_ms} ms of Dec backlash`;
   }
   if (measured) return "has negligible Dec backlash";
-  return "couldn't measure Dec backlash reliably";
+  if (b.halted) {
+    return "couldn't measure Dec backlash (the run stopped early to keep the "
+      + "star on the sensor), so your current setting is left alone";
+  }
+  return "couldn't measure Dec backlash (the run was cut short), so your "
+    + "current setting is left alone";
 }
 
 /** The novice summary card copy (design §4.1). Plain language only — never a raw
@@ -144,6 +157,9 @@ export interface RecommendationRow {
   rationale: string;
   confidence: string;
   advanced: boolean;
+  // Keys of OTHER rows that write the same field — ticking this row must untick
+  // them (see `toggleRecommendationKey`). Empty for the ordinary one-row fields.
+  conflicts: string[];
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -155,20 +171,60 @@ const FIELD_LABELS: Record<string, string> = {
   blc_pulse_ms: "Dec backlash pulse",
 };
 
+// Two recommendations can target the SAME field (the conservative default and
+// an advanced opt-in — e.g. ra_algorithm→hysteresis vs ra_algorithm_ppec→ppec).
+// Labelling them off `field` printed two identical "RA algorithm" rows, and
+// ticking both silently applied whichever came last. Label off the KEY so each
+// row says which choice it is.
+const KEY_LABELS: Record<string, string> = {
+  ra_algorithm: "RA algorithm → Hysteresis",
+  ra_algorithm_ppec: "RA algorithm → Predictive PEC",
+  dec_algorithm: "Dec algorithm → Resist Switch",
+  dec_algorithm_lowpass2: "Dec algorithm → Lowpass2",
+};
+
 /** Advanced before→after rows (design §4.2). One row per recommendation, with a
- *  human label; the panel renders a per-row checkbox for selective apply. */
+ *  human label; the panel renders a per-row checkbox for selective apply. Rows
+ *  that write the same field carry each other in `conflicts` so the panel can
+ *  enforce the either/or the server intends. */
 export function formatRecommendations(report: AssistantReport): RecommendationRow[] {
   return report.recommendations.map((r) => ({
     key: r.key,
     field: r.field,
-    label: FIELD_LABELS[r.field] ?? r.field,
+    label: KEY_LABELS[r.key] ?? FIELD_LABELS[r.field] ?? r.field,
     current: r.current ?? "default",
     recommended: r.recommended,
     unit: r.unit,
     rationale: r.rationale,
     confidence: r.confidence,
     advanced: r.advanced,
+    conflicts: report.recommendations
+      .filter((o) => o.field === r.field && o.key !== r.key)
+      .map((o) => o.key),
   }));
+}
+
+/** Toggle one recommendation key in the selective-apply set, enforcing the
+ *  same-field either/or: ticking "RA algorithm → Predictive PEC" unticks
+ *  "RA algorithm → Hysteresis" instead of letting apply-order decide. Pure. */
+export function toggleRecommendationKey(
+  report: AssistantReport,
+  selected: ReadonlySet<string>,
+  key: string,
+): Set<string> {
+  const next = new Set(selected);
+  if (next.has(key)) {
+    next.delete(key);
+    return next;
+  }
+  const field = report.recommendations.find((r) => r.key === key)?.field;
+  if (field) {
+    for (const r of report.recommendations) {
+      if (r.field === field && r.key !== key) next.delete(r.key);
+    }
+  }
+  next.add(key);
+  return next;
 }
 
 // --------------------------------------------------------------- apply builder
