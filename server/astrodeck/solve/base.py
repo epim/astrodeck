@@ -44,4 +44,10 @@ class PlateSolver(ABC):
     @abstractmethod
     async def solve(self, fits_path: Path, *, ra_hint: float | None = None,
                     dec_hint: float | None = None,
-                    fov_deg_hint: float | None = None) -> SolveResult: ...
+                    fov_deg_hint: float | None = None,
+                    downsample: int = 0) -> SolveResult:
+        """Solve ``fits_path``. ``downsample`` is an OPTIONAL speed/precision
+        trade (0 = the solver's own automatic choice, which is what every
+        pre-existing caller gets); solvers that have no such knob accept and
+        ignore it. Additive with a default, so no existing caller changes."""
+        ...

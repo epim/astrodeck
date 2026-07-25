@@ -55,8 +55,8 @@ from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
-                      SurveyConfig, UpdateConfig, WeatherConfig, config_store,
-                      redacted)
+                      SurveyConfig, UpdateConfig, WcsStampConfig, WeatherConfig,
+                      config_store, redacted)
 from ..locations import (LocationLibraryFull, LocationNameCollision,
                          location_store)
 from .. import __version__
@@ -773,6 +773,16 @@ class WeatherSaveBody(BaseModel):
     clear_astrospheric_key: bool = False
 
 
+class WcsStampBody(BaseModel):
+    """POST /api/config/wcs body (per-frame-wcs spec §3). The master enable and
+    its advanced block travel together so one panel save is one atomic
+    version bump — a half-applied state can never be broadcast. MUST be
+    module-level (PEP 563 / FastAPI annotation resolution — see
+    IgnoreTonightBody below)."""
+    solve_saved_lights: bool = False
+    wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
+
+
 class IgnoreTonightBody(BaseModel):
     """POST /api/weather/ignore-tonight body (weather spec §4). MUST be
     module-level (like every other ``*Body`` model here) rather than nested
@@ -1065,6 +1075,26 @@ def create_app() -> FastAPI:
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         try:
             cfg = await asyncio.to_thread(config_store.set_naming, body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload(principal)
+
+    # ------------------------------------------- per-frame WCS (per-frame-wcs §3)
+    # Master enable + advanced knobs for stamping each saved light's plate-solved
+    # WCS into its FITS header. config.site_optics — a capture-OUTPUT concern,
+    # exactly like the naming/survey routes above (NOT config.backend: it changes
+    # what lands in the file, not which hardware is driven). Write-time validated
+    # in set_wcs_stamp (ValueError -> 422); redacted union broadcast so every open
+    # client's panel updates.
+    @app.post("/api/config/wcs")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_wcs_stamp_config(
+            body: WcsStampBody,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            cfg = await asyncio.to_thread(
+                config_store.set_wcs_stamp, body.solve_saved_lights, body.wcs_stamp)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))

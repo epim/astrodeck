@@ -405,6 +405,30 @@ class NamingConfig(BaseModel):
     template: str = DEFAULT_TEMPLATE
 
 
+#: Downsample factors the WCS-stamp solve may use. 0 = ASTAP's own "auto"
+#: (today's hardcoded ``-z 0``), so the default is byte-identical to the
+#: shipped behaviour. Higher = faster + less precise.
+WCS_DOWNSAMPLE_CHOICES = (0, 1, 2, 4)
+
+
+class WcsStampConfig(BaseModel):
+    """Advanced knobs for per-frame WCS stamping (per-frame-wcs spec §3).
+
+    The MASTER ENABLE is the sibling ``AppConfig.solve_saved_lights`` bool —
+    already persisted in live configs and wired at the capture seam — so this
+    block is purely additive with all-default fields (decision D1: zero
+    migration, the bool alone fully drives the feature).
+
+    ``solver`` is deliberately Auto/ASTAP only (decision D4): "auto" defers to
+    ``providers.pick_solver`` — the single owner of ASTAP-vs-sim precedence —
+    and there is no "force sim", because faking a solve on a real rig is the
+    exact hazard ``SimSolver`` refuses."""
+    solver: Literal["auto", "astap"] = "auto"
+    downsample: int = Field(0, ge=0, le=4)     # 0=auto; else ASTAP -z
+    min_stars: int = Field(0, ge=0, le=100000)  # 0=off; else skip below N stars
+    queue_max: int = Field(4, ge=1, le=64)      # bounded backlog, drop-oldest
+
+
 class CalibrationConfig(BaseModel):
     """PRO-1 master-library matching + stacking tolerances (appended — old
     configs load fine). ``exposure_tol_pct``/``temp_tol_c`` control how
@@ -525,6 +549,9 @@ class AppConfig(BaseModel):
     # --- opt-in re-solve-free astrometry (PRO-2 F-B, supervisor ruling 4;
     #     appended — old configs load fine) ---
     solve_saved_lights: bool = False   # ON => solve each saved light in place, stamp WCS
+    # --- per-frame-WCS advanced knobs (per-frame-wcs spec §3; appended — old
+    #     configs load fine, and every field defaults to today's behaviour) ---
+    wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
 
 
 # ------------------------------------------------------- filter slot-name store
@@ -967,6 +994,27 @@ class ConfigStore:
         validate_template(naming.template)
         cfg = self.cfg()
         cfg.naming = naming
+        return self.bump_and_save()
+
+    # -- per-frame WCS stamping mutation (per-frame-wcs spec §3) ----------------
+
+    def set_wcs_stamp(self, solve_saved_lights: bool,
+                      wcs_stamp: "WcsStampConfig") -> AppConfig:
+        """Persist the per-frame-WCS master enable + its advanced block in ONE
+        atomic bump (they are edited by a single panel, so splitting them across
+        two routes would let a half-applied state be broadcast).
+
+        Write-time validated so an unusable downsample never reaches ASTAP's
+        ``-z`` flag (route maps ValueError -> 422). ``solver`` is already
+        Literal-validated by pydantic."""
+        if wcs_stamp.downsample not in WCS_DOWNSAMPLE_CHOICES:
+            raise ValueError(
+                f"downsample must be one of "
+                f"{', '.join(str(d) for d in WCS_DOWNSAMPLE_CHOICES)} "
+                f"(0 = automatic)")
+        cfg = self.cfg()
+        cfg.solve_saved_lights = bool(solve_saved_lights)
+        cfg.wcs_stamp = wcs_stamp
         return self.bump_and_save()
 
     def set_weather(self, weather: "WeatherConfig",

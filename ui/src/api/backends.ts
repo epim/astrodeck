@@ -30,6 +30,7 @@ import type {
   UpdateConfig,
   UpdateStatus,
   User,
+  WcsStampConfig,
 } from "../types";
 import type { DiscoveredHardware } from "../components/settings/backendMeta";
 
@@ -424,6 +425,13 @@ export const getPackStatus = (): Promise<PackStatus> =>
 /** POST /api/config/naming → config payload. config.site_optics. */
 export const setNamingConfig = (naming: NamingConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config/naming", naming);
+
+// ------------------------------------------------- per-frame WCS (per-frame-wcs)
+/** POST /api/config/wcs → config payload. config.site_optics.
+ *  Master enable + advanced block travel together (one atomic version bump). */
+export const setWcsStampConfig = (
+  body: { solve_saved_lights: boolean; wcs_stamp: WcsStampConfig },
+): Promise<AppConfig> => api.post<AppConfig>("/api/config/wcs", body);
 
 /** POST /api/survey/pack/fetch → 202 {started} | 200 {already} | 507 no space. config.site_optics. */
 export const startPackFetch = (order = 4): Promise<{ started: boolean; already?: boolean }> =>

@@ -168,6 +168,19 @@ class PreviewEntry:
     meta: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _WcsJob:
+    """One queued per-frame-WCS stamp: an already-closed local FITS plus the
+    pointing/quality context captured at save time (so a config change or a
+    mount slew between enqueue and solve can't retroactively alter the hints)."""
+
+    path: Path
+    ra: float | None
+    dec: float | None
+    fov_deg: float | None
+    star_count: int | None
+
+
 class Hub:
     def __init__(self) -> None:
         self.devices: dict[str, Any] = {}     # role -> Device
@@ -195,6 +208,17 @@ class Hub:
         self.last_meridian: dict | None = None
         self._loop_task: asyncio.Task | None = None
         self._status_task: asyncio.Task | None = None
+        # --- per-frame WCS stamping (per-frame-wcs spec §2.1) -------------------
+        # Saved lights are handed to a SINGLE background consumer so a 2-10 s
+        # ASTAP solve never sits on the capture hot path. The queue is created
+        # lazily on the first enqueue (feature is OFF by default => neither the
+        # queue nor the task ever exists), trimmed drop-oldest at enqueue time,
+        # and the task is cancelled in _teardown alongside the capture loop.
+        self._wcs_queue: asyncio.Queue | None = None
+        self._wcs_task: asyncio.Task | None = None
+        # log-once latch for the drop-oldest notice; cleared when the backlog
+        # drains, so a later backlog episode is reported again (not spammed).
+        self._wcs_drop_logged = False
         # --- safety monitor (Batch 4b) -----------------------------------------
         # own-cadence poller task + the latest CACHED SafetyReading. safety_reading()
         # always returns this cache (NEVER an inline is_safe()), so the 2s status
@@ -725,6 +749,7 @@ class Hub:
         the busy-cancel loop so a driver that runs teardown as its first step (the
         legacy apply path) can never cancel itself."""
         self.stop_loop()
+        self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
         self.bahtinov = None                # NOV-12: disarm the focus aid on teardown
         await self.polar.stop()
@@ -1597,26 +1622,150 @@ class Hub:
         elif local_save_path is not None:
             bus.log("info", f"saved {local_save_path.name}", "capture")
 
-        # Opt-in (default OFF): AFTER the preview has published (so the solve's
-        # 1-10 s never delays what the user sees), solve the saved light in place
-        # and stamp its WCS so downstream stackers need no re-solve. Guarded on
-        # local_save_path (a local save ran => ra/dec are bound). Best-effort — a
-        # solve failure/timeout must never fail the capture (spec §6.3/§9).
+        # Opt-in (default OFF): hand the saved light to the BACKGROUND WCS worker
+        # so its plate solve stamps astrometry into the header without the
+        # capture path ever waiting on it (per-frame-wcs spec §2.1 — an inline
+        # 2-10 s ASTAP run would delay the next sub by its whole duration, every
+        # frame). Guarded on local_save_path: a local save ran => ra/dec are
+        # bound AND the file is on this box (decision D5 — a NINA/remote save
+        # lives on the imaging host and cannot be reopened here). Enqueue is
+        # non-blocking, bounded and total: it can neither await nor raise into
+        # the capture.
         if local_save_path is not None and config_store.cfg().solve_saved_lights:
-            try:
-                from . import providers as _providers
-                solver = _providers.pick_solver(self)
-                fov_hint = self.effective_optics().get("fov_h_deg") or None
-                res = await solver.solve(local_save_path, ra_hint=ra,
-                                         dec_hint=dec, fov_deg_hint=fov_hint)
-                if res.success and res.wcs is not None:
-                    await asyncio.to_thread(write_wcs, local_save_path, res.wcs)
-                    bus.log("info", f"stamped WCS on {local_save_path.name}", "solve")
-            except Exception as e:  # noqa: BLE001 - never fail the capture
-                bus.log("warning",
-                        f"solve-saved-light failed ({e}); frame saved without WCS",
-                        "solve")
+            # star count from the preview's SINGLE detection pass (info["stars"]),
+            # not frame.stars — the latter is only ever set by a backend that
+            # measured it (NINA), so the min-stars gate would be a silent no-op
+            # on exactly the local frames it exists to filter.
+            self._enqueue_wcs_stamp(local_save_path, ra, dec, info.get("stars"))
         return info
+
+    # ------------------------------------------------- per-frame WCS stamping
+    # (per-frame-wcs spec §2; the mechanism — solvers, WcsSolution, write_wcs —
+    #  shipped with PRO-2 F-B. What lives here is the OFF-the-hot-path plumbing.)
+
+    def _enqueue_wcs_stamp(self, path: Path, ra: float | None, dec: float | None,
+                           star_count: int | None) -> None:
+        """Queue one saved light for background solve+stamp. Never blocks, never
+        raises (the capture must survive any failure here), and never grows
+        without bound.
+
+        Overflow policy (decision D2) is **drop-oldest**: when the backlog is at
+        ``wcs_stamp.queue_max`` we discard the stalest pending job so the NEWEST
+        frames stay tagged, memory stays capped, and a slow solver can never
+        wedge capture. Dropped frames simply ship without WCS — downstream can
+        always re-solve. Logged once per backlog episode, not per frame."""
+        try:
+            cfg = config_store.cfg()
+            stamp = getattr(cfg, "wcs_stamp", None)
+            bound = max(1, int(getattr(stamp, "queue_max", 4) or 4))
+            if self._wcs_queue is None:
+                self._wcs_queue = asyncio.Queue()
+            q = self._wcs_queue
+            dropped = 0
+            while q.qsize() >= bound:
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:      # pragma: no cover - defensive
+                    break
+                q.task_done()
+                dropped += 1
+            fov_hint = None
+            try:
+                fov_hint = self.effective_optics().get("fov_h_deg") or None
+            except Exception:                   # pragma: no cover - defensive
+                fov_hint = None
+            q.put_nowait(_WcsJob(path=path, ra=ra, dec=dec, fov_deg=fov_hint,
+                                 star_count=star_count))
+            if dropped and not self._wcs_drop_logged:
+                self._wcs_drop_logged = True
+                bus.log("warning",
+                        "WCS tagging is falling behind — the oldest untagged "
+                        "frames are being skipped (capture is never delayed)",
+                        "solve")
+            if self._wcs_task is None or self._wcs_task.done():
+                self._wcs_task = asyncio.create_task(self._wcs_worker())
+        except Exception as e:  # noqa: BLE001 - enqueue must never fail a capture
+            bus.log("warning",
+                    f"could not queue WCS tagging ({e}); frame saved without WCS",
+                    "solve")
+
+    async def _wcs_worker(self) -> None:
+        """Single long-lived consumer: one solve in flight at a time (ASTAP is
+        CPU-heavy — parallel solves would thrash a Pi). Each job is fully
+        isolated: a failure/timeout is logged and the worker moves on, and a
+        cancel mid-solve ends the worker silently (no error log, no half-written
+        header — ``write_wcs`` is itself non-fatal)."""
+        q = self._wcs_queue
+        assert q is not None
+        while True:
+            job = await q.get()
+            try:
+                await self._solve_and_stamp(job)
+            except asyncio.CancelledError:
+                raise                       # teardown asked us to stop: obey it
+            except Exception as e:  # noqa: BLE001 - best-effort, per spec §9
+                bus.log("warning",
+                        f"WCS tagging failed for {job.path.name} ({e}); "
+                        "frame saved without WCS", "solve")
+            finally:
+                q.task_done()
+                if q.empty():
+                    self._wcs_drop_logged = False   # backlog drained: re-arm
+
+    def _wcs_solver(self, stamp):
+        """The solver for the WCS-stamp path. "auto" defers to
+        ``providers.pick_solver`` — the single authority on ASTAP-vs-sim
+        precedence, including the real-rig fake-solve refusal. "astap" is an
+        advanced override that degrades to auto (with a log) when ASTAP is not
+        installed. There is deliberately no "force sim" (decision D4)."""
+        if getattr(stamp, "solver", "auto") == "astap":
+            from .solve import AstapSolver, find_astap
+            exe = find_astap()
+            if exe:
+                return AstapSolver(exe)
+            bus.log("warning",
+                    "WCS tagging is set to ASTAP but ASTAP was not found — "
+                    "using automatic solver selection", "solve")
+        # module attribute (never `from . import pick_solver`) so tests can
+        # monkeypatch the precedence owner.
+        from . import providers as _providers
+        return _providers.pick_solver(self)
+
+    async def _solve_and_stamp(self, job: "_WcsJob") -> None:
+        """Solve one saved light and merge its WCS into the header in place.
+        The file is already closed and every job targets its OWN path (the next
+        capture writes a different one), so there is no same-file contention."""
+        from .config import WcsStampConfig
+        from .solve import wcs_should_solve
+        stamp = getattr(config_store.cfg(), "wcs_stamp", None) or WcsStampConfig()
+        if not wcs_should_solve(job.star_count, stamp):
+            return
+        solver = self._wcs_solver(stamp)
+        kwargs = {}
+        # Only pass the knob when the user actually set one: 0 == "solver's own
+        # automatic choice" == today's behaviour, and omitting it keeps every
+        # pre-existing/monkeypatched solver stand-in callable unchanged.
+        down = max(0, int(getattr(stamp, "downsample", 0) or 0))
+        if down:
+            kwargs["downsample"] = down
+        res = await solver.solve(job.path, ra_hint=job.ra, dec_hint=job.dec,
+                                 fov_deg_hint=job.fov_deg, **kwargs)
+        # A failed solve, or a solve whose WCS was REJECTED upstream (ASTAP's
+        # scale-less-result guard returns wcs=None rather than a bogus ~1°/px
+        # solution), stamps nothing. An absent card beats a wrong one.
+        if res.success and res.wcs is not None:
+            await asyncio.to_thread(write_wcs, job.path, res.wcs)
+            bus.log("info", f"stamped WCS on {job.path.name}", "solve")
+
+    def stop_wcs_worker(self) -> None:
+        """Cancel the background WCS worker and drop any pending backlog. Called
+        from ``_teardown`` alongside ``stop_loop`` so the task can never outlive
+        its hub (risk R1)."""
+        if self._wcs_task and not self._wcs_task.done():
+            self._wcs_task.cancel()
+        self._wcs_task = None
+        self._wcs_queue = None
+        self._wcs_drop_logged = False
 
     def _preview_source(self) -> str:
         """The PreviewSource label ("sim"|"alpaca"|"nina") for the event."""

@@ -651,6 +651,12 @@ export interface AppConfig {
   // --- file-naming template (PRO-11; appended). Optional: an old WS `hello`
   //     bootstrap predates the field. ---
   naming?: NamingConfig;
+  // --- per-frame WCS stamping (per-frame-wcs; appended). `solve_saved_lights`
+  //     is the MASTER enable (shipped with PRO-2 F-B); `wcs_stamp` is the
+  //     additive advanced block. Both optional: an old WS `hello` bootstrap
+  //     predates them. ---
+  solve_saved_lights?: boolean;
+  wcs_stamp?: WcsStampConfig;
 }
 
 // ---------------------------------------------------------- rotator config
@@ -761,6 +767,20 @@ export interface SurveyConfig {
 // advisory only; the server render is authoritative for the real path.
 export interface NamingConfig {
   template: string;
+}
+
+// --------------------------------------------------- per-frame WCS (per-frame-wcs)
+// Mirrors server/astrodeck/config.py WcsStampConfig — the ADVANCED half of
+// POST /api/config/wcs. The master enable is the sibling `solve_saved_lights`
+// bool on AppConfig; every field here defaults to today's behaviour, so the
+// bool alone fully drives the feature. `solver` is Auto/ASTAP only on purpose:
+// there is deliberately no "force sim" (faking a solve on a real rig is the
+// exact hazard the sim solver refuses).
+export interface WcsStampConfig {
+  solver: "auto" | "astap";
+  downsample: number;   // 0 = automatic; else ASTAP -z (1/2/4)
+  min_stars: number;    // 0 = gate off; else skip the solve below N detected stars
+  queue_max: number;    // bounded backlog before the oldest pending frame is dropped
 }
 export interface PackFetchProgress { done: number; total: number; failed: number; }
 export interface PackStatus {
