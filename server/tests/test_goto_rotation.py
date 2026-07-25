@@ -5,6 +5,29 @@ import pytest
 from _simhub import sim_hub  # noqa: F401 (fixture import)
 
 
+@pytest.fixture
+def _real_solve_dwell(monkeypatch):
+    """Timing-realism anchor for the GOTO lane. ``SimSolver.solve``'s 1.2 s
+    "pretend to work" pause now routes through ``devices.sim._sim_delay``, so
+    the suite-wide fast-path (conftest's ``_fast_sim_delays``) collapses it to
+    0 — a centering loop that used to pay several real seconds per attempt now
+    pays none. THIS test opts that ONE pause back in (by restoring the
+    identity delay on the ``simsolver`` module's imported reference), so the
+    plain goto→solve→sync→re-slew centering loop — the lane's core contract —
+    is still proven to converge at a realistic per-attempt cadence and the
+    collapsed-pacing runs are never the only evidence.
+
+    Deliberately NARROWER than the ``_real_dwell`` idiom used elsewhere (which
+    deletes ``ASTRODECK_FAST_TEST`` wholesale): un-faking the sim MOUNT's slew
+    dwell too costs ~8 s here and anchors nothing this change touched — Phase 1
+    already keeps its own real-dwell device anchor in
+    ``test_native_guider_e2e.py``. This fixture anchors exactly the pacing this
+    phase faked, and nothing else."""
+    from astrodeck.solve import simsolver
+    monkeypatch.setattr(simsolver, "_sim_delay", lambda seconds: seconds)
+    yield
+
+
 @pytest.mark.asyncio
 async def test_goto_and_center_rotates_before_centering(sim_hub):
     rig = sim_hub.sim_rig
@@ -18,7 +41,7 @@ async def test_goto_and_center_rotates_before_centering(sim_hub):
 
 
 @pytest.mark.asyncio
-async def test_goto_without_rotation_unchanged(sim_hub):
+async def test_goto_without_rotation_unchanged(sim_hub, _real_solve_dwell):
     result = await sim_hub.goto_and_center(5.0, 10.0)
     assert result["centered"] is True
     assert result.get("rotation") is None

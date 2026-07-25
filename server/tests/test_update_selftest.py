@@ -25,7 +25,15 @@ from astrodeck.update import github, signing
 from astrodeck.update.service import UpdateService
 from astrodeck.update.state import update_state
 
-pytestmark = pytest.mark.selftest
+pytestmark = [
+    pytest.mark.selftest,
+    # Fast/slow lane (pyproject markers): real HTTP server + real subprocesses
+    # + real tar/Ed25519 work, so it is both wall-clock-bound and genuinely
+    # out-of-process. `pytest -m 'not slow'` skips it for the inner loop; the
+    # release workflow's `-m selftest` run and the FULL suite still include it.
+    pytest.mark.slow,
+    pytest.mark.integration,
+]
 
 
 @pytest.fixture(autouse=True)

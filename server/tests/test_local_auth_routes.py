@@ -126,34 +126,47 @@ def test_local_login_happy_path_sets_cookie(tmp_path, monkeypatch):
         assert me.json()["role"] == "operator"
 
 
-def test_local_login_wrong_password_is_generic_401(tmp_path, monkeypatch):
-    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+def _seed_wrong_password(users) -> dict:
     users.create(username="bob", password="right", role="admin")
-    with TestClient(app) as c:
-        r = c.post("/auth/local", json={"username": "bob", "password": "WRONG"})
-        assert r.status_code == 401
-        # generic detail -- no reason leaked
-        assert "invalid" in r.json()["detail"].lower()
-        # no cookie set on failure
-        assert SESSION_COOKIE not in r.cookies
+    return {"username": "bob", "password": "WRONG"}
 
 
-def test_local_login_unknown_user_401(tmp_path, monkeypatch):
-    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+def _seed_unknown_user(users) -> dict:
     users.create(username="bob", password="right", role="admin")
-    with TestClient(app) as c:
-        r = c.post("/auth/local", json={"username": "ghost", "password": "x"})
-        assert r.status_code == 401
+    return {"username": "ghost", "password": "x"}
 
 
-def test_local_login_disabled_user_denied(tmp_path, monkeypatch):
-    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+def _seed_disabled_user(users) -> dict:
     users.create(username="admin1", password="pw", role="admin")  # keep an admin
     u = users.create(username="carol", password="pw", role="operator")
     users.set_enabled(u.id, False)
+    return {"username": "carol", "password": "pw"}
+
+
+@pytest.mark.parametrize("seed", [
+    pytest.param(_seed_wrong_password, id="wrong_password"),
+    pytest.param(_seed_unknown_user, id="unknown_user"),
+    pytest.param(_seed_disabled_user, id="disabled_user"),
+])
+def test_local_login_denial_is_generic_401_with_no_cookie(tmp_path, monkeypatch,
+                                                          seed):
+    """Every local-login denial looks the SAME from outside: 401, a generic
+    "invalid" detail that leaks no reason, and no session cookie. The three
+    causes (bad password / no such user / account disabled) were separate
+    tests, but only the wrong-password one checked the detail and the absent
+    cookie -- the leak-nothing property is exactly what must hold across ALL
+    of them, so the arms are parameters and the assertions are shared. (That
+    STRENGTHENS the unknown-user and disabled-user arms, which previously
+    asserted the status code alone.)"""
+    app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
+    creds = seed(users)
     with TestClient(app) as c:
-        r = c.post("/auth/local", json={"username": "carol", "password": "pw"})
-        assert r.status_code == 401  # disabled -> same generic denial
+        r = c.post("/auth/local", json=creds)
+        assert r.status_code == 401
+        # generic detail -- no reason leaked (which user, or which field)
+        assert "invalid" in r.json()["detail"].lower()
+        # no cookie set on failure
+        assert SESSION_COOKIE not in r.cookies
 
 
 # --------------------------------------------------------------- first-run setup

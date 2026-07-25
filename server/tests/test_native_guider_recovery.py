@@ -10,13 +10,57 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+import time as _realtime
 import uuid
 
 import pytest
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.providers import NATIVE_AVAILABLE
 
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = [
+    pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent"),
+    # Fast/slow lane (pyproject markers): this module is deliberately
+    # wall-clock-bound -- it buys timing realism, not extra assertions --
+    # so `pytest -m 'not slow'` skips it for the inner loop. Every gate and
+    # CI still run the FULL suite unfiltered.
+    pytest.mark.slow,
+]
+
+#: The engine's star-lost grace period (``LOST_STAR_TIMEOUT_S``,
+#: astro-guide/src/engine.rs:86). It is a Rust const, NOT configurable through
+#: the engine config surface — but the clock it is measured against is the
+#: FRAME TIMESTAMP the host hands ``process()`` (``engine.rs:719``:
+#: ``let now = meta.timestamp_s``), which for the sim rig is
+#: ``astrodeck.devices.sim.time.time()``. So a test can reach the timeout in
+#: LOGICAL time by advancing that clock, with the engine still enforcing the
+#: real 20 s.
+_LOST_STAR_TIMEOUT_S = 20.0
+
+
+class _OffsetClock:
+    """Stand-in for the ``time`` module inside ``astrodeck.devices.sim`` (the
+    ``test_native_guider_ppec.py`` virtual-clock idiom, in its minimal form):
+    ``time()`` is real wall-clock plus a test-controlled ``offset``; every
+    other attribute (``monotonic`` for the exposure dwell, ``sleep``, …)
+    delegates to the real module.
+
+    Raising ``offset`` mid-test jumps the clock the guide camera stamps its
+    frames with — and therefore the ONLY clock the engine's star-lost
+    staleness check reads — forward by that many seconds, so the engine's real
+    20 s grace period elapses in logical time instead of being idled at wall
+    clock. The clock stays monotone and the jump is applied while the star is
+    already hidden, so no found-star frame ever sees a discontinuity; the sim
+    derives the (undrawn) star's position from this same clock, so nothing else
+    observes an inconsistency either."""
+
+    def __init__(self) -> None:
+        self.offset = 0.0
+
+    def time(self) -> float:
+        return _realtime.time() + self.offset
+
+    def __getattr__(self, name):  # monotonic / sleep / perf_counter / ...
+        return getattr(_realtime, name)
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +101,15 @@ async def test_star_lost_recovery_reacquires_and_resumes():
     ``_maybe_recover_guiding`` contract (``engine.py:1908-1924``: poll
     ``is_active()``, call ``start_guiding()`` again on a real loss) — restore
     the star and restart; guiding must resume, FAST (the persisted
-    calibration reused rather than a full recalibration walk)."""
+    calibration reused rather than a full recalibration walk).
+
+    GOLDEN GRACE-PERIOD ANCHOR: this is the ONE test that idles the engine's
+    real ``LOST_STAR_TIMEOUT_S`` at wall clock, and it now asserts the wait as
+    well as the outcome — the guider must NOT report inactive before the grace
+    period is nearly up (a guider that gave up on the first missing frame would
+    pass the old outcome-only assertion). Every other star-loss scenario in
+    this module reaches the same threshold in logical time via
+    ``_OffsetClock``."""
     from astrodeck.guide.native import NativeGuider
 
     rig = build_sim_rig()
@@ -74,6 +126,7 @@ async def test_star_lost_recovery_reacquires_and_resumes():
 
     # Inject the cloud: SimGuideCamera renders no star (T9 field idiom —
     # SimRig.guide_star_hidden, opt-in, off by default) from here on.
+    t_hidden = time.monotonic()
     srig.guide_star_hidden = True
 
     # The engine tolerates a locally-missing star for LOST_STAR_TIMEOUT_S
@@ -83,8 +136,16 @@ async def test_star_lost_recovery_reacquires_and_resumes():
     # "not-active" transition _maybe_recover_guiding polls for.
     became_inactive = await _wait_until(lambda: not g.stats().guiding,
                                         timeout=60.0)
+    loss_elapsed = time.monotonic() - t_hidden
     assert became_inactive, "expected guiding to report inactive after sustained star loss"
     assert not await g.is_active()
+    # The grace period was really SERVED, at wall clock (a guider that bailed on
+    # the first starless frame would satisfy the assertion above). 0.75x the
+    # constant leaves head-room for the ~1 frame of slack between the last good
+    # find and the hide, and for the poll interval.
+    assert loss_elapsed >= 0.75 * _LOST_STAR_TIMEOUT_S, (
+        f"guiding went inactive after only {loss_elapsed:.1f}s — the engine's "
+        f"{_LOST_STAR_TIMEOUT_S:.0f}s star-lost grace period was not honored")
 
     # The cloud clears. Recovery is an explicit restart (the guide loop task
     # itself exited when the budget ran out) — the sequence engine's job,
@@ -199,7 +260,7 @@ async def test_persisted_calibration_reused_across_guider_instances():
 
 
 @pytest.mark.asyncio
-async def test_restart_under_cloud_stays_inactive_and_retries():
+async def test_restart_under_cloud_stays_inactive_and_retries(monkeypatch):
     """Scenario 4 (P2-T2 fix round, coverage (a) — the review's missing
     fourth gate scenario): a recovery restart while the occlusion PERSISTS
     must NOT succeed silently. Pre-fix, the reuse branch had no
@@ -209,9 +270,22 @@ async def test_restart_under_cloud_stays_inactive_and_retries():
     one-shot recovery (``_maybe_recover_guiding``: is_active check, then ONE
     start_guiding call) was permanently silenced. Post-fix the reuse path
     mirrors ``_calibrate``'s one-frame guide_star_find precondition: it
-    raises, is_active stays false, and recovery retries keep firing."""
+    raises, is_active stays false, and recovery retries keep firing.
+
+    LOGICAL-TIME STAR LOSS: the contract under test here is the REFUSAL
+    behaviour of a restart attempted while the occlusion persists — reaching
+    the not-active state is only its precondition. So instead of idling the
+    engine's real 20 s grace period at wall clock a second time (the golden
+    ``test_star_lost_recovery_reacquires_and_resumes`` above does that, and
+    asserts it), this test advances the frame-timestamp clock the engine
+    measures staleness against. The engine still enforces its own unmodified
+    ``LOST_STAR_TIMEOUT_S``; only the clock it reads moves faster."""
+    import astrodeck.devices.sim as simmod
     from astrodeck.devices.base import DeviceError
     from astrodeck.guide.native import NativeGuider
+
+    clock = _OffsetClock()
+    monkeypatch.setattr(simmod, "time", clock)
 
     rig = build_sim_rig()
     cam, tel, srig = rig["guide_camera"], rig["telescope"], rig["_rig"]
@@ -225,8 +299,11 @@ async def test_restart_under_cloud_stays_inactive_and_retries():
     assert await g.is_active()
     await asyncio.sleep(1.0)
 
-    # The cloud rolls in and STAYS.
+    # The cloud rolls in and STAYS. Both statements land in the SAME event-loop
+    # step (no await between them), so the guide loop can never observe the
+    # clock jump while a star is still being drawn.
     srig.guide_star_hidden = True
+    clock.offset += _LOST_STAR_TIMEOUT_S + 5.0
     became_inactive = await _wait_until(lambda: not g.stats().guiding,
                                         timeout=60.0)
     assert became_inactive, "expected guiding to report inactive after sustained star loss"

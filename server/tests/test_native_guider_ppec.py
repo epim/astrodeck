@@ -1,9 +1,12 @@
 """P4 acceptance gate (spec §5): PPEC beats hysteresis on strong injected
 periodic error, plus the native.py config-passthrough for `ppec` + `blc_pulse_ms`.
 
-DITHER-FREE (binding review condition): the engine RESETS PPEC on dither today
-(a ledgered parity gap), so this gate is two CONTINUOUS guiding runs with no
-dither call anywhere.
+The gate is ONE test with THREE arms sharing ONE calibration and ONE reactive
+baseline: hysteresis (the denominator), continuous PPEC (the P4 gate), and PPEC
+dithered mid-run (the A2 gate — the trained model must survive the dither, not
+be reset). The P4 arm itself remains dither-free (the original binding review
+condition); the A2 arm is the one that deliberately dithers, and it measures
+only its post-dither window.
 
 ------------------------------------------------------------------------------
 GATE-SCENARIO ADJUDICATION (constants below vs the P4-T2 brief's literals)
@@ -39,21 +42,30 @@ amplitude at the pinned 4.0 px and keep the PE period at the engine's NATIVE
 200 s default (so PPEC's kernel is correctly tuned with NO engine change and
 maximum parity), and we drive the loop under a VIRTUAL CLOCK: `sim.time` is
 monkeypatched so each frame advances the sim's PE phase by a fixed LOGICAL
-`dt = 5 s` — the same `dt` handed to `GuideEngine.process` — so the PE clock and
-the engine clock stay perfectly aligned. 100 learning frames = 500 engine-
+`dt = 10 s` — the same `dt` handed to `GuideEngine.process` — so the PE clock and
+the engine clock stay perfectly aligned. 50 learning frames = 500 engine-
 seconds > the 400 s blend/FFT threshold, giving PPEC ≳2 full periods of data
-before the 50-frame (~1.25-period) measurement window opens. The whole gate
-(shared calibration + both arms) completes in ~45 s of real wall-clock.
+before the 50-frame (~2.5-period) measurement window opens.
+
+The logical `dt` is a COMPRESSION RATIO, not a tuned value: nothing in the gate
+depends on its magnitude, only on the engine-seconds it accumulates. Doubling
+it from 5 s to 10 s crosses the same 400 s threshold in half the frames, which
+is where most of this gate's wall clock went. It does raise the REACTIVE arm's
+residual (a hysteresis controller corrects the same PE half as often), so the
+gate got *harder* for PPEC to fail, not easier: the measured ratios moved from
+0.457/0.488 to 0.377/0.466 against the unchanged `< 0.8 ×` bar, and the
+per-arm convergence bounds (`hyst < 2.0`, `ppec < 1.5`) are unchanged and still
+met (hyst 1.27 px, ppec 0.48 px, post-dither ppec 0.59 px).
 
 Because the virtual clock is deterministic, the run is bit-reproducible: the PE
 phase AND the seeing jitter (seeded off the clock) are identical frame-for-frame
-between the two arms, so the RMS difference is PURELY algorithmic. The `< 0.8 ×`
-margin is generous against the measured ratio (~0.46 on this box) and against
-cross-platform FP drift; there is no run-to-run variance to be flaky about.
+between the arms, so the RMS difference is PURELY algorithmic. The `< 0.8 ×`
+margin is generous against the measured ratios and against cross-platform FP
+drift; there is no run-to-run variance to be flaky about.
 
 Same drift/seeing/PE conditions per arm; same post-learning window definition
-for both. Calibration is run once with PE off (a quiet-sky calibration) and the
-resulting Cal is reused by both arms, so the geometry is identical too.
+for all. Calibration is run once with PE off (a quiet-sky calibration) and the
+resulting Cal is reused by every arm, so the geometry is identical too.
 """
 import math
 import time as _realtime
@@ -62,19 +74,26 @@ import pytest
 
 from astrodeck.providers import NATIVE_AVAILABLE
 
-pytestmark = pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent")
+pytestmark = [
+    pytest.mark.skipif(not NATIVE_AVAILABLE, reason="native wheel absent"),
+    # Fast/slow lane (pyproject markers): this module is deliberately
+    # wall-clock-bound -- it buys timing realism, not extra assertions --
+    # so `pytest -m 'not slow'` skips it for the inner loop. Every gate and
+    # CI still run the FULL suite unfiltered.
+    pytest.mark.slow,
+]
 
 # --- gate constants (see the adjudication above) ---------------------------
-_LOGICAL_DT_S = 5.0        # PE-phase advance per frame == engine `process` dt
+_LOGICAL_DT_S = 10.0       # PE-phase advance per frame == engine `process` dt
 _PE_PERIOD_S = 200.0       # the engine's native GpParams default period
 _PE_AMPLITUDE_PX = 4.0     # the brief's pinned amplitude (kept)
 _SEEING_PX = 0.1           # small: PE dominates so the advantage is legible
 _GUIDE_SCALE = 0.5         # arcsec/px; also the engine image scale (consistent)
 _RENDER_EXP_S = 0.1        # real exposure — only sizes the rendered star flux
-_LEARN_FRAMES = 100        # 500 engine-s > 400 s blend/FFT threshold (~2.5 P)
-_MEASURE_FRAMES = 50       # ~1.25 periods of post-learning window
+_LEARN_FRAMES = 50         # 500 engine-s > 400 s blend/FFT threshold (~2.5 P)
+_MEASURE_FRAMES = 50       # ~2.5 periods of post-learning window
 _VT_BASE = 1000.0          # virtual-clock start (identical phase per arm)
-_MAX_DITHER_SETTLE = 20    # frames (~100 engine-s) for the dither to settle out
+_MAX_DITHER_SETTLE = 20    # frames (~200 engine-s) for the dither to settle out
 
 
 class _VirtualClock:
@@ -178,48 +197,6 @@ async def _guide_arm(ra_algo: str, cal: dict, clock) -> float:
     return math.sqrt(sum(e * e for e in window) / len(window))
 
 
-@pytest.mark.asyncio
-async def test_ppec_beats_hysteresis_on_injected_pe(monkeypatch):
-    """P4 GATE (spec §5): with a strong injected periodic error, RA=PPEC has a
-    strictly lower post-learning RMS than RA=Hysteresis. Dither-free."""
-    import astrodeck.devices.sim as simmod
-    from astrodeck.devices.sim import build_sim_rig
-
-    clock = _VirtualClock()
-    monkeypatch.setattr(simmod, "time", clock)
-
-    # One shared calibration, PE OFF (quiet-sky calibration).
-    clock.vt = _VT_BASE
-    rig = build_sim_rig()
-    r = rig["_rig"]
-    cam, tel = rig["guide_camera"], rig["telescope"]
-    r.guide_scale_arcsec_px = _GUIDE_SCALE
-    r.guide_pe_amplitude_px = 0.0
-    r.guide_seeing_px = 0.05
-    r.guide_drift_px_s = 0.0
-    await cam.connect()
-    await tel.connect()
-    cal = await _calibrate(
-        cam, tel,
-        {"image_scale_arcsec": _GUIDE_SCALE, "exposure_s": _RENDER_EXP_S},
-        clock,
-    )
-
-    hyst_rms = await _guide_arm("hysteresis", cal, clock)
-    ppec_rms = await _guide_arm("ppec", cal, clock)
-
-    # Generous margin (controller note #2): the measured ratio is ~0.46; assert
-    # a strict win with head-room against cross-platform FP drift.
-    assert ppec_rms < 0.8 * hyst_rms, (
-        f"PPEC must beat hysteresis on injected PE: "
-        f"ppec_rms={ppec_rms:.4f}px hyst_rms={hyst_rms:.4f}px "
-        f"ratio={ppec_rms / hyst_rms:.3f} (want < 0.8)"
-    )
-    # Sanity: both arms actually guided (residual well below the 4 px PE).
-    assert hyst_rms < 2.0, f"hysteresis arm did not converge: {hyst_rms:.4f}px"
-    assert ppec_rms < 1.5, f"ppec arm did not converge: {ppec_rms:.4f}px"
-
-
 def test_native_config_passes_ppec_and_blc():
     """native.py `_build_engine_config` passes `ra_algorithm='ppec'` and
     `blc_pulse_ms` through its allowlist, and the engine accepts the RA-PPEC
@@ -317,17 +294,31 @@ async def _guide_arm_with_dither(cal: dict, clock, dither_at: int) -> float:
 
 
 @pytest.mark.asyncio
-async def test_ppec_survives_mid_run_dither(monkeypatch):
-    """A2 GATE third arm (spec §3 A2 / §5): PPEC dithered mid-run recovers to
-    beat reactive Hysteresis on the SAME injected PE — proving the model was
-    compensated, not reset. Deterministic (virtual clock); <= ~40 s added."""
+async def test_ppec_beats_hysteresis_plain_and_after_a_mid_run_dither(monkeypatch):
+    """P4 GATE (spec §5) + A2 GATE third arm (spec §3 A2 / §5), as ONE gate.
+
+    With a strong injected periodic error, RA=PPEC must have a strictly lower
+    post-learning RA RMS than RA=Hysteresis — BOTH run continuously (the P4
+    gate) AND after a mid-run dither (the A2 gate: the trained model is
+    compensated, not reset, so post-dither RMS still beats the reactive arm).
+
+    The two gates were separate tests that each re-ran the SAME quiet-sky
+    calibration and the SAME hysteresis baseline arm before diverging by one
+    ``eng.dither(...)`` call. Nothing was learned twice: the calibration is
+    deterministic (virtual clock from a fixed ``_VT_BASE``) and the hysteresis
+    arm is the shared denominator of both ratios. Running the baseline once and
+    asserting both PPEC arms against it keeps every assertion — and makes the
+    two ratios directly comparable to each other, which two independent tests
+    could not guarantee."""
     import astrodeck.devices.sim as simmod
     from astrodeck.devices.sim import build_sim_rig
 
     clock = _VirtualClock()
     monkeypatch.setattr(simmod, "time", clock)
 
-    # Shared quiet-sky calibration (PE off), reused by both arms.
+    # ONE shared calibration, PE OFF (quiet-sky calibration), reused by all
+    # three arms — the calibrator never consults the per-axis guide algorithms,
+    # so the Cal is the same geometry whichever ra_algorithm the session runs.
     clock.vt = _VT_BASE
     rig = build_sim_rig()
     r = rig["_rig"]
@@ -340,17 +331,28 @@ async def test_ppec_survives_mid_run_dither(monkeypatch):
     await tel.connect()
     cal = await _calibrate(
         cam, tel,
-        {"image_scale_arcsec": _GUIDE_SCALE, "exposure_s": _RENDER_EXP_S,
-         "ra_algorithm": "ppec"},
+        {"image_scale_arcsec": _GUIDE_SCALE, "exposure_s": _RENDER_EXP_S},
         clock,
     )
 
+    # ONE reactive baseline; both PPEC arms are measured against it.
     hyst_rms = await _guide_arm("hysteresis", cal, clock)
+    ppec_rms = await _guide_arm("ppec", cal, clock)
     ppec_dither_rms = await _guide_arm_with_dither(cal, clock,
                                                    dither_at=_LEARN_FRAMES // 2)
 
+    # Generous margin (controller note #2): the measured ratio is ~0.46; assert
+    # a strict win with head-room against cross-platform FP drift.
+    assert ppec_rms < 0.8 * hyst_rms, (
+        f"PPEC must beat hysteresis on injected PE: "
+        f"ppec_rms={ppec_rms:.4f}px hyst_rms={hyst_rms:.4f}px "
+        f"ratio={ppec_rms / hyst_rms:.3f} (want < 0.8)"
+    )
     assert ppec_dither_rms < 0.8 * hyst_rms, (
         f"post-dither PPEC must still beat hysteresis (model survived the "
         f"dither): ppec={ppec_dither_rms:.4f}px hyst={hyst_rms:.4f}px "
         f"ratio={ppec_dither_rms / hyst_rms:.3f}")
+    # Sanity: every arm actually guided (residual well below the 4 px PE).
+    assert hyst_rms < 2.0, f"hysteresis arm did not converge: {hyst_rms:.4f}px"
+    assert ppec_rms < 1.5, f"ppec arm did not converge: {ppec_rms:.4f}px"
     assert ppec_dither_rms < 1.5, f"ppec arm did not reconverge: {ppec_dither_rms:.4f}px"

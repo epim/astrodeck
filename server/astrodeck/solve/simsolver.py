@@ -19,6 +19,7 @@ from pathlib import Path
 
 from astropy.io import fits
 
+from ..devices.sim import _sim_delay
 from .base import PlateSolver, SolveResult, WcsSolution
 
 #: Real-hardware hub modes the sim solver must never fake-solve for (review 5d).
@@ -78,7 +79,19 @@ class SimSolver(PlateSolver):
                 False,
                 message=("ASTAP not found — refusing to fake a plate solve on a "
                          f"real ({what}) rig. Install ASTAP or set ASTAP_PATH."))
-        await asyncio.sleep(1.2)  # pretend to work
+        # "Pretend to work" pacing, routed through the SAME ``_sim_delay`` knob
+        # every other simulator wait uses (devices/sim.py): under the test
+        # fast-path (``ASTRODECK_FAST_TEST=1``, set suite-wide by conftest's
+        # ``_fast_sim_delays``) this collapses to 0.0, so a centering/rotate
+        # loop's dozen-plus solve attempts stop costing 1.2 s of wall clock
+        # each. PACING ONLY: every value below is derived from the sim rig's
+        # pointing/rotator state and the FITS geometry, never from elapsed
+        # dwell, so a zero-wait solve is byte-identical to a paced one. In
+        # production (flag unset) the pause is unchanged. Two tests
+        # (test_goto_rotation / test_rotate_to_pa) opt back OUT via their
+        # ``_real_solve_dwell`` fixture, keeping one realistically-paced goto
+        # loop and one realistically-paced rotate loop as timing anchors.
+        await asyncio.sleep(_sim_delay(1.2))
         if self.sim_rig is not None:
             # Physical truth: the camera's sky PA is the rotator's mechanical
             # angle plus how the camera is clocked on it. Both default 0.0, so

@@ -13,6 +13,12 @@ from astrodeck.devices.base import DeviceError
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.guide.native import NativeGuider
 
+# Fast/slow lane (pyproject markers): this whole module runs the guide loop at
+# REAL dwell on purpose (see ``_real_dwell`` below), so it is wall-clock-bound
+# by construction -- `pytest -m 'not slow'` skips it for the inner loop, while
+# every gate and CI still run the FULL suite unfiltered.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture(autouse=True)
 def _real_dwell(_fast_sim_delays, monkeypatch):
