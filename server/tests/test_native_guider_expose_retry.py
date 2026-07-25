@@ -14,6 +14,20 @@ from astrodeck.devices.sim import build_sim_rig
 from astrodeck.guide.native import NativeGuider
 
 
+@pytest.fixture(autouse=True)
+def _real_dwell(_fast_sim_delays, monkeypatch):
+    """This whole module drives ``_guide_loop`` in REAL TIME and asserts on the
+    loop's live state (frames counted so far, task not yet finished), so it must
+    opt OUT of the suite-wide ``ASTRODECK_FAST_TEST`` fast path (conftest's
+    ``_fast_sim_delays``). The guide camera's exposure dwell is the loop's ONLY
+    pacing — zeroing it makes the loop busy-spin thousands of iterations per
+    second, which both burns the fault budget before the assertions run and
+    pegs a core. Depends on ``_fast_sim_delays`` so the suite-wide setenv is
+    guaranteed to run FIRST and this delenv then wins for the test."""
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
+    yield
+
+
 def _guider(monkeypatch):
     monkeypatch.setattr(nativemod, "_EXPOSE_BACKOFF_S", (0.0, 0.0, 0.0))
     rig = build_sim_rig()
