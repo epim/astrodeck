@@ -101,6 +101,11 @@ _FAULT_FRAME_BUDGET = 5
 # Cap on how long ``dither`` waits for the engine's settle window to close.
 _SETTLE_TIMEOUT_S = 90.0
 
+# Guiding Assistant progress copy (review fix): Phase B issues raw N/S pulses —
+# the scope MOVES — so neither message may read as passive "watching".
+_PHASE_A_MSG = "Watching a star drift (1 of 2)…"
+_PHASE_B_MSG = "Nudging the mount up and down to measure slack (2 of 2)…"
+
 # The Rust engine's sentinel for "no real declination stamped" (dossier §8.4
 # `UNKNOWN_DECLINATION`; astro_guide::calibration::UNKNOWN_DECLINATION).
 # Mirrored here — the wheel exposes no Python constant for it — so the P2
@@ -167,6 +172,16 @@ class NativeGuider(Guider):
         # report (read back by GET /api/guide/assistant/report).
         self._assistant_stop = asyncio.Event()
         self._last_assistant_report: dict | None = None
+        # MUTUAL EXCLUSION (review fix): the exclusive mount window is now
+        # two-directional. ``run_guiding_assistant`` holds ``_start_lock`` for
+        # its WHOLE duration (structural — a would-be starter cannot slip
+        # between checks) and additionally raises this flag so an initiator that
+        # arrives mid-run is REFUSED loudly instead of silently blocking for
+        # minutes. Without it a sequence-engine ``start_guiding()`` (which
+        # bypasses the HTTP lane entirely) could drive its calibration walk
+        # while the assistant is pulsing N/S on the same mount and exposing the
+        # same guide camera — garbage calibration rates for the rest of the night.
+        self._assistant_active = False
 
         # Host-side guiding state. ``_active`` is our guiding INTENT (drives
         # stats().guiding together with the engine's own phase); ``_lost`` latches
@@ -240,8 +255,23 @@ class NativeGuider(Guider):
 
     async def start_guiding(self) -> None:
         """Select the star, calibrate, and begin guiding; returns once guiding
-        is active (calibration complete + the engine in its guiding phase)."""
+        is active (calibration complete + the engine in its guiding phase).
+
+        Refuses while the Guiding Assistant owns the mount (the other half of
+        the exclusive-window contract): the assistant is driving raw N/S pulses
+        and exposing the guide camera, so a calibration walk started on top of
+        it would measure nonsense rates. Checked BEFORE the lock so the common
+        case fails fast and loud (a direct sequence-engine call would otherwise
+        simply block behind the assistant's lock for minutes)."""
+        if self._assistant_active:
+            raise DeviceError(
+                "native guider: the Guiding Assistant is using the mount — "
+                "stop it before starting guiding")
         async with self._start_lock:
+            if self._assistant_active:  # pragma: no cover - lock makes this rare
+                raise DeviceError(
+                    "native guider: the Guiding Assistant is using the mount — "
+                    "stop it before starting guiding")
             # Already-active guard INSIDE the lock (milestone review I2): two
             # idle-state initiators (an API start racing a sequence-engine direct
             # call) would otherwise both pass an outside guard, serialize on the
@@ -746,20 +776,64 @@ class NativeGuider(Guider):
         ``self.tel.pulse_guide`` directly — NO engine calibration state machine,
         NO correction algorithms (the same raw-pulse regime PHD2's GA uses).
 
-        Runs ONLY in the exclusive mount window: refuses while guiding
-        (``_active``), while the mount is parked, or while it is slewing (MANDATORY
-        SAFETY GUARD 2 — the assistant owns the mount for the duration, like a
-        guide session). Each measurement pulse is capped at ``MAX_PULSE_MS``
-        (~1 s) and the Phase-B walk halts cleanly on the ``OutOfRoom`` edge guard
-        (SAFETY GUARD 1). Cancellable via ``self._assistant_stop`` (POST
-        /api/guide/assistant/stop), polled between pulses."""
+        Runs ONLY in the exclusive mount window, and that window is now
+        MUTUAL: it refuses while guiding (``_active``), while the mount is parked
+        or slewing (MANDATORY SAFETY GUARD 2), AND it holds ``self._start_lock``
+        plus ``self._assistant_active`` for its whole duration so a guide start
+        arriving from any lane (HTTP or a direct sequence-engine call) is
+        refused rather than calibrating on top of the assistant's raw pulses.
+        Each measurement pulse is capped at ``MAX_PULSE_MS`` (~1 s) and the
+        Phase-B walk halts cleanly on the ``OutOfRoom`` edge guard (SAFETY GUARD
+        1). Cancellable via ``self._assistant_stop`` (POST
+        /api/guide/assistant/stop), polled between pulses.
+
+        Every failure path (refusal, cancel, star loss, device error) publishes a
+        TERMINAL ``{phase: "error", message}`` progress tick before re-raising —
+        the panel is spawned as a background task, so without it a failed run
+        leaves the progress bar running forever with no message."""
+        def _progress(phase: str, pct: float, message: str) -> None:
+            payload = {"phase": phase, "pct": round(float(pct), 1),
+                       "message": message}
+            bus.publish("guide_assistant", **payload)
+            if on_progress is not None:
+                with contextlib.suppress(Exception):
+                    on_progress(payload)
+
+        try:
+            # Fast, lock-free refusal for the obvious "already guiding" case so
+            # the caller isn't parked on _start_lock behind a live guide start.
+            if self._active or (self._loop_task is not None
+                                and not self._loop_task.done()):
+                raise DeviceError("native guider: stop guiding before running "
+                                  "the Guiding Assistant")
+            # STRUCTURAL EXCLUSION: hold the same lock ``start_guiding`` takes
+            # for the ENTIRE run — there is no window between check and use.
+            async with self._start_lock:
+                if self._active or (self._loop_task is not None
+                                    and not self._loop_task.done()):
+                    raise DeviceError(
+                        "native guider: stop guiding before running the "
+                        "Guiding Assistant")
+                self._assistant_active = True
+                try:
+                    return await self._run_guiding_assistant_locked(
+                        opts, _progress)
+                finally:
+                    self._assistant_active = False
+        except asyncio.CancelledError:
+            _progress("error", 100.0, "Guiding Assistant cancelled.")
+            raise
+        except Exception as e:
+            _progress("error", 100.0, str(e))
+            raise
+
+    async def _run_guiding_assistant_locked(self, opts: dict | None,
+                                            _progress) -> dict:
+        """The assistant body, run with ``_start_lock`` held and
+        ``_assistant_active`` raised (see ``run_guiding_assistant``)."""
         from . import assistant as ga
 
         # SAFETY: exclusive mount window only.
-        if self._active or (self._loop_task is not None
-                            and not self._loop_task.done()):
-            raise DeviceError(
-                "native guider: stop guiding before running the Guiding Assistant")
         try:
             parked = await self.tel.is_parked()
         except Exception:  # pragma: no cover - defensive
@@ -789,16 +863,8 @@ class NativeGuider(Guider):
         scale = self._image_scale if self._image_scale > 0 else 1.0
         known = self._image_scale_known
 
-        def _progress(phase: str, pct: float, message: str) -> None:
-            payload = {"phase": phase, "pct": round(float(pct), 1),
-                       "message": message}
-            bus.publish("guide_assistant", **payload)
-            if on_progress is not None:
-                with contextlib.suppress(Exception):
-                    on_progress(payload)
-
         bus.log("info", "native guider: Guiding Assistant started", "guide")
-        _progress("phase_a", 2.0, "Watching your mount…")
+        _progress("phase_a", 2.0, _PHASE_A_MSG)
 
         # ---- Phase A: uncalibrated drift / periodic error / seeing ----
         # One centroid per exposure: in production each exposure takes
@@ -828,14 +894,14 @@ class NativeGuider(Guider):
             samples.append((ts - t0, float(stars[0]["x"]), float(stars[0]["y"])))
             _progress("phase_a",
                       2.0 + 55.0 * min(1.0, len(samples) / target_samples),
-                      "Watching your mount…")
+                      _PHASE_A_MSG)
 
         phase_a = ga.reduce_phaseA(samples, scale, known)
 
         # ---- Phase B: Dec backlash (raw N/S pulses) ----
         backlash = ga.BacklashResult()
         if include_backlash and self._last_frame is not None:
-            _progress("phase_b", 60.0, "Measuring Dec backlash…")
+            _progress("phase_b", 60.0, _PHASE_B_MSG)
             data = self._last_frame
             frame_h, frame_w = int(data.shape[0]), int(data.shape[1])
             margin = float(self.config.get("search_region", 15))
@@ -856,6 +922,10 @@ class NativeGuider(Guider):
                 if self._assistant_stop.is_set():
                     raise DeviceError(
                         "native guider: Guiding Assistant cancelled")
+                # Keep the bar honest during the multi-minute walk (it used to
+                # sit at 60% for the whole of Phase B).
+                _progress("phase_b", 60.0 + 35.0 * (guard / max_iters),
+                          _PHASE_B_MSG)
                 frame = await self._expose()
                 stars, _meta = _native.guide_star_find(frame.data)
                 if not stars:
@@ -933,6 +1003,15 @@ class NativeGuider(Guider):
         UX-24: the engine self-manages the settle pixels/time criteria, so a
         caller-supplied ``settle`` only overrides the WAIT timeout here (the one
         knob honored Python-side); pixels/time are ignored for the native path."""
+        # Exclusive-window contract (review fix): never dispatch a dither offset
+        # while the Guiding Assistant owns the mount. Unreachable in practice
+        # (the assistant refuses to start while guiding, and dither needs an
+        # active guide loop) — kept as the explicit third guard alongside
+        # start_guiding's, so a future caller cannot re-open the hole.
+        if self._assistant_active:
+            raise DeviceError(
+                "native guider: the Guiding Assistant is using the mount — "
+                "cannot dither")
         if self._engine is None or not self._active:
             raise DeviceError("native guider: cannot dither when not guiding")
         timeout_s = _SETTLE_TIMEOUT_S

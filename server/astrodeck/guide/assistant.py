@@ -72,6 +72,14 @@ class BacklashResult:
     result_code: str = BL_TOO_FEW_NORTH
     y_rate_source: str = "declared"
     halted: bool = False               # SAFETY GUARD (1): OutOfRoom edge halt
+    # True ONLY when compute() actually derived a number from a real N/S trace.
+    # The DEFAULT instance (Phase B skipped / never ran) and every early-return
+    # path leave it False — review fix: ``BL_TOO_FEW_NORTH`` + ``bl_ms == 0`` is
+    # exactly what an unrun / halted / star-lost walk produces, and recommend()
+    # used to read that as "measured: backlash is negligible" and then ZERO a
+    # tuned ``blc_pulse_ms``. Everything downstream must gate on
+    # ``measured and not halted`` before treating ``bl_ms`` as a measurement.
+    measured: bool = False
 
 
 @dataclass
@@ -443,6 +451,9 @@ class BacklashRun:
             if is_good:
                 good += 1
                 if good == 2:
+                    # THE one path that genuinely derives a backlash number from
+                    # a real north run + two good south moves.
+                    res.measured = True
                     bl_px = (i * expected_mag
                              - abs(early_south - i * drift_per_frame))
                     if north_rate > 0 and bl_px * north_rate < -200.0:
@@ -584,7 +595,15 @@ def recommend(a: PhaseAResult, b: BacklashResult, current: dict) -> list[Recomme
         current=current.get("dec_algorithm"), recommended="resist_switch",
         unit="", rationale="Resist Switch is robust to Dec backlash",
         confidence="high"))
-    low_backlash = b.result_code in (BL_VALID, BL_TOO_FEW_NORTH) and b.bl_ms < 50
+    # A backlash number may only be BELIEVED when compute() actually derived one
+    # AND the walk was not cut short by the edge guard. Without this gate the
+    # DEFAULT BacklashResult (Phase B skipped, star lost mid-walk, OutOfRoom
+    # halt) reads as "measured 0 ms" -> "very low Dec backlash" -> Lowpass2 and
+    # a blc_pulse_ms of 0 recommended off a measurement that never happened.
+    bl_measured = bool(b.measured and not b.halted)
+    low_backlash = (bl_measured
+                    and b.result_code in (BL_VALID, BL_TOO_FEW_NORTH)
+                    and b.bl_ms < 50)
     low_drift = (known and scale > 0
                  and abs(a.drift_per_min_px) * scale < 1.0)
     if low_backlash and low_drift:
@@ -596,7 +615,15 @@ def recommend(a: PhaseAResult, b: BacklashResult, current: dict) -> list[Recomme
             confidence="low"))
 
     # --- Dec backlash seed ---
-    if b.result_code in (BL_VALID, BL_TOO_FEW_NORTH):
+    # NEVER recommend a value the run did not measure: when the walk produced no
+    # usable number the recommendation is the user's CURRENT setting, so Apply is
+    # a no-op instead of silently wiping a hand-tuned compensation pulse.
+    cur_blc = current.get("blc_pulse_ms", 0)
+    try:
+        cur_blc_i = int(max(0, min(BLC_SEED_MAX_MS, int(cur_blc or 0))))
+    except (TypeError, ValueError):
+        cur_blc_i = 0
+    if bl_measured and b.result_code in (BL_VALID, BL_TOO_FEW_NORTH):
         seed = int(max(0, min(BLC_SEED_MAX_MS, b.bl_ms)))
         if seed <= 0:
             bl_r = ("measured Dec backlash is negligible — leaving backlash "
@@ -607,9 +634,15 @@ def recommend(a: PhaseAResult, b: BacklashResult, current: dict) -> list[Recomme
                     f"(±{b.sigma_ms:.0f} ms) — seed the static compensation pulse")
             bl_c = "high" if b.result_code == BL_VALID else "low"
     else:
-        seed = 0
-        bl_r = ("couldn't measure Dec backlash reliably "
-                f"({b.result_code}) — leaving it off")
+        seed = cur_blc_i
+        if b.halted:
+            why = "the run stopped early to keep the star on the sensor"
+        elif not b.measured:
+            why = "the run was cut short"
+        else:
+            why = f"the measurement didn't settle ({b.result_code})"
+        bl_r = (f"couldn't measure Dec backlash ({why}) — leaving your current "
+                f"setting alone")
         bl_c = "low"
     recs.append(Recommendation(
         key="blc_pulse_ms", field="blc_pulse_ms",
@@ -667,6 +700,9 @@ def report_dict(a: PhaseAResult, b: BacklashResult, recs: list[Recommendation],
                 "result_code": b.result_code,
                 "y_rate_source": b.y_rate_source,
                 "halted": b.halted,
+                # The UI copy gates on this: a run that measured nothing must
+                # never be summarised as "negligible Dec backlash".
+                "measured": b.measured,
             },
         },
         "recommendations": [r.to_dict() for r in recs],

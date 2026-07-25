@@ -28,28 +28,28 @@ def _rec(recs, key):
 @pytest.mark.parametrize("phase_a, backlash, check", [
     # high backlash -> seed the measured pulse
     (ga.PhaseAResult(image_scale_arcsec=2.0, image_scale_known=True),
-     ga.BacklashResult(bl_ms=430, result_code=ga.BL_VALID),
+     ga.BacklashResult(bl_ms=430, result_code=ga.BL_VALID, measured=True),
      lambda recs, rep: _rec(recs, "blc_pulse_ms").recommended == 430),
     # ~zero backlash (VALID) -> floored to 0
     (ga.PhaseAResult(image_scale_arcsec=2.0, image_scale_known=True),
-     ga.BacklashResult(bl_ms=0, result_code=ga.BL_VALID),
+     ga.BacklashResult(bl_ms=0, result_code=ga.BL_VALID, measured=True),
      lambda recs, rep: _rec(recs, "blc_pulse_ms").recommended == 0),
     # high drift / poor polar -> advisory band is "bad" (never applied)
     (ga.PhaseAResult(drift_per_min_px=600.0, image_scale_arcsec=2.0,
                      image_scale_known=True),
-     ga.BacklashResult(result_code=ga.BL_VALID),
+     ga.BacklashResult(result_code=ga.BL_VALID, measured=True),
      lambda recs, rep: rep["polar"]["tone"] == "bad"),
     # calm seeing -> tighter min-move than the smart-formula base
     (ga.PhaseAResult(jitter_px=0.02, rms_ra_px=0.3, image_scale_arcsec=2.0,
                      image_scale_known=True),
-     ga.BacklashResult(result_code=ga.BL_VALID),
+     ga.BacklashResult(result_code=ga.BL_VALID, measured=True),
      lambda recs, rep: (_rec(recs, "min_move").recommended
                         < ga._smart_min_move(2.0, True)
                         and _rec(recs, "min_move").recommended >= 0.15)),
     # clear periodic error -> PPEC offered as an ADVANCED opt-in (never auto)
     (ga.PhaseAResult(pe_period_s=200.0, pe_amplitude_px=1.0, rms_ra_px=0.9,
                      image_scale_arcsec=2.0, image_scale_known=True),
-     ga.BacklashResult(result_code=ga.BL_VALID),
+     ga.BacklashResult(result_code=ga.BL_VALID, measured=True),
      lambda recs, rep: (_rec(recs, "ra_algorithm_ppec") is not None
                         and _rec(recs, "ra_algorithm_ppec").advanced is True
                         and _rec(recs, "ra_algorithm_ppec").recommended == "ppec"
@@ -57,7 +57,7 @@ def _rec(recs, key):
                         and _rec(recs, "ra_algorithm").recommended == "hysteresis")),
     # sanity / too-few -> backlash floored to 0 with low confidence
     (ga.PhaseAResult(image_scale_arcsec=2.0, image_scale_known=True),
-     ga.BacklashResult(bl_ms=999, result_code=ga.BL_SANITY),
+     ga.BacklashResult(bl_ms=999, result_code=ga.BL_SANITY, measured=True),
      lambda recs, rep: (_rec(recs, "blc_pulse_ms").recommended == 0
                         and _rec(recs, "blc_pulse_ms").confidence == "low")),
 ])
@@ -78,11 +78,54 @@ def test_recommend_rules(phase_a, backlash, check):
         assert r.recommended in ("hysteresis", "resist_switch")
 
 
+# SAFETY (review must-fix #5): an UNMEASURED backlash run must never be treated
+# as "measured 0 ms" — that used to zero a hand-tuned blc_pulse_ms and to claim
+# "very low Dec backlash" (recommending Lowpass2) off a measurement that never
+# happened. BL_TOO_FEW_NORTH + bl_ms 0 is exactly the default BacklashResult, so
+# it is what a skipped Phase B, a lost star, or an edge-guard halt produces.
+@pytest.mark.parametrize("bl, seed, lowpass2", [
+    # Phase B never ran / was cut short (the DEFAULT result object).
+    (ga.BacklashResult(), 800, False),
+    # OutOfRoom edge guard halted the walk before it derived anything.
+    (ga.BacklashResult(result_code=ga.BL_TOO_FEW_NORTH, halted=True), 800, False),
+    # halted mid-walk even though some number came out -> still not believed.
+    (ga.BacklashResult(bl_ms=20, result_code=ga.BL_VALID, measured=True,
+                       halted=True), 800, False),
+    # a GENUINE near-zero measurement does zero it (and may offer Lowpass2).
+    (ga.BacklashResult(bl_ms=0, result_code=ga.BL_VALID, measured=True), 0, True),
+])
+def test_unmeasured_backlash_leaves_current_blc_alone(bl, seed, lowpass2):
+    cur = _current()
+    cur["blc_pulse_ms"] = 800                     # a hand-tuned compensation
+    a = ga.PhaseAResult(drift_per_min_px=0.1, image_scale_arcsec=1.0,
+                        image_scale_known=True)
+    recs = ga.recommend(a, bl, cur)
+    r = _rec(recs, "blc_pulse_ms")
+    assert r.recommended == seed, r.rationale
+    assert (_rec(recs, "dec_algorithm_lowpass2") is not None) is lowpass2
+    if seed == 800:                                # the leave-alone path
+        assert "couldn't measure" in r.rationale
+        assert "leaving your current setting alone" in r.rationale
+        assert r.confidence == "low"
+
+
+def test_backlash_measured_flag_only_set_when_derived():
+    """The flag the gate above reads: False on every path that returned early."""
+    assert ga.BacklashResult().measured is False
+    # <=3 north samples -> early return, nothing derived.
+    assert _run_with_traces(0.008, 500, [0, 4, 8], [8, 4, 0]).compute().measured is False
+    # a real N/S trace -> derived.
+    good = _run_with_traces(0.008, 500,
+                            [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40],
+                            [40, 40, 40, 36, 32, 28, 24]).compute()
+    assert good.measured is True and good.result_code == ga.BL_VALID
+
+
 def test_recommend_no_ppec_without_periodic_term():
     """No dominant period => PPEC is not even offered (conservative gate)."""
     a = ga.PhaseAResult(pe_period_s=None, pe_amplitude_px=2.0,
                         image_scale_arcsec=2.0, image_scale_known=True)
-    recs = ga.recommend(a, ga.BacklashResult(result_code=ga.BL_VALID), _current())
+    recs = ga.recommend(a, ga.BacklashResult(result_code=ga.BL_VALID, measured=True), _current())
     assert _rec(recs, "ra_algorithm_ppec") is None
 
 
