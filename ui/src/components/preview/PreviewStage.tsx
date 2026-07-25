@@ -27,9 +27,13 @@ import { useImageRemap } from "./useImageRemap";
 import { Reticle } from "./Reticle";
 import { ScaleBar } from "./ScaleBar";
 import { StarOverlay } from "./StarOverlay";
-import { ClipMaskLayer } from "./ClipMaskLayer";
+import { ClipMaskLayer, type ClipCropPixels } from "./ClipMaskLayer";
 import { TiltOverlay } from "./TiltOverlay";
 import { tiltSummary } from "../../lib/tilt";
+import { useCropZoom } from "./useCropZoom";
+import { CropOverlay } from "./CropOverlay";
+import { LoupePanel } from "./LoupePanel";
+import { shouldCrop, type RoiGeom } from "../../lib/cropRoi";
 
 interface Props {
   preview: PreviewInfo | null;
@@ -47,7 +51,21 @@ interface Props {
   stretchDragging?: boolean;
   compact?: boolean;
   // expose gesture controls to a parent toolbar
-  onControls?: (c: { fit: () => void; hundred: () => void; zoomIn: () => void; zoomOut: () => void }) => void;
+  onControls?: (c: StageControls) => void;
+}
+
+/** What the stage hands the toolbar. `loupe*` is the advanced 1:1 pixel-peep
+ *  (crop+render design Decision F: ephemeral view state, owned HERE, surfaced
+ *  through the existing onControls channel rather than a store slice). */
+export interface StageControls {
+  fit: () => void;
+  hundred: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  loupeOn: boolean;
+  setLoupeOn: (v: boolean) => void;
+  /** the 1:1 loupe needs the linear /crop path — false ⇒ honest-disabled */
+  loupeAvailable: boolean;
 }
 
 const FADE_MS = 120;
@@ -88,7 +106,14 @@ export function PreviewStage(props: Props) {
   const [zoomMsg, setZoomMsg] = useState("");
   const kbInteracted = useRef(false);
 
+  // ADVANCED (opt-in, off by default): the sensor-1:1 loupe. Local state per
+  // Decision F — ephemeral view state, not worth a store slice.
+  const [loupeOn, setLoupeOn] = useState(false);
+
   const isNina = !!preview?.is_stretched;
+  // The linear path is the capability gate for the client LUT canvas AND for both
+  // /crop and /render.png (they 404 without entry.linear). One flag, one truth.
+  const linearEnabled = !!preview && !isNina && preview.data_is_linear;
   // P3-2 (client half): `_image_dims` returns 0 on a PIL decode failure, and 0 is
   // not nullish — so `??` would keep a 0-wide invisible stage. Use a FALSY fallback
   // so display_width=0 falls back to data_width (then 0). Same for height.
@@ -169,9 +194,12 @@ export function PreviewStage(props: Props) {
       hundred: setHundred,
       zoomIn: () => zoomAt(viewport.scale * 1.25, stageSize.w / 2, stageSize.h / 2),
       zoomOut: () => zoomAt(viewport.scale / 1.25, stageSize.w / 2, stageSize.h / 2),
+      loupeOn,
+      setLoupeOn,
+      loupeAvailable: linearEnabled,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setFit, setHundred, zoomAt, viewport.scale, stageSize.w, stageSize.h]);
+  }, [setFit, setHundred, zoomAt, viewport.scale, stageSize.w, stageSize.h, loupeOn, linearEnabled]);
 
   // ----- double buffer (NINA / display <img> path) -----
   // ALWAYS keep the old front visible until the new image has DECODED in the back
@@ -226,7 +254,6 @@ export function PreviewStage(props: Props) {
   useEffect(() => () => { if (fadeTimer.current != null) clearTimeout(fadeTimer.current); }, []);
 
   // ----- linear path canvas remap -----
-  const linearEnabled = !!preview && !isNina && preview.data_is_linear;
   useImageRemap(canvasRef, linearEnabled ? displayUrl : null, stretch, linearEnabled, stretchDragging);
 
   // displayScale: display px per data px (for star coords)
@@ -238,6 +265,71 @@ export function PreviewStage(props: Props) {
     preview.full_well != null &&
     overlays.clip &&
     preview.stats.max >= preview.full_well;
+
+  // ----- pixel-peep zoom (sensor-1:1 /crop of the visible ROI) -----
+  // The display base is capped at ≤1400px, so past display-native the CSS upscale
+  // is a lie about focus/noise/stars. useCropZoom fetches the REAL sensor pixels
+  // of the visible box — debounced to gesture-settle, ROI-quantized, aborted on
+  // supersede, LRU-cached, and silently degrading to the CSS upscale on 404.
+  const dataW = preview?.data_width ?? 0;
+  const dataH = preview?.data_height ?? 0;
+  const cropGeom = useMemo<RoiGeom>(
+    () => ({
+      scale: viewport.scale,
+      x: viewport.x,
+      y: viewport.y,
+      stageW: stageSize.w,
+      stageH: stageSize.h,
+      dispW,
+      dispH,
+      dataW,
+      dataH,
+    }),
+    [viewport.scale, viewport.x, viewport.y, stageSize.w, stageSize.h, dispW, dispH, dataW, dataH],
+  );
+  // "peeping" == the user has zoomed PAST display-native, so the crop covers the
+  // visible box. Below that the only crop that can exist is the loupe's small
+  // centre sample, which must NOT be painted over the base or treated as a
+  // viewport-wide clip mask (it would overclaim coverage).
+  const peeping = shouldCrop(cropGeom);
+  const crop = useCropZoom({
+    previewId: preview?.id ?? null,
+    // /crop is linear-only — it 404s for NINA/pre-stretched frames
+    enabled: linearEnabled,
+    geom: cropGeom,
+    wantPixels: clipActive && peeping,
+    loupe: loupeOn,
+  });
+
+  // Tier-2 clip mask input: the crop's RGBA plus where to paint it in DISPLAY
+  // coordinates (the overlay <svg>'s viewBox space).
+  const clipCropPixels = useMemo<ClipCropPixels | null>(() => {
+    if (!peeping) return null;
+    if (!crop.pixels || !crop.roi || !dataW || !dataH || !dispW || !dispH) return null;
+    const sx = dispW / dataW;
+    const sy = dispH / dataH;
+    return {
+      data: crop.pixels.data,
+      pw: crop.pixels.w,
+      ph: crop.pixels.h,
+      x: crop.roi.x * sx,
+      y: crop.roi.y * sy,
+      w: crop.roi.w * sx,
+      h: crop.roi.h * sy,
+    };
+  }, [peeping, crop.pixels, crop.roi, dataW, dataH, dispW, dispH]);
+
+  // Where the loupe samples: the VIEWPORT CENTRE in sensor px (Decision D — it
+  // reuses the already-fetched crop, so it costs no extra traffic).
+  const loupeCenter = useMemo(() => {
+    if (!dispW || !dispH || !dataW || !dataH || !(viewport.scale > 0)) return { x: 0, y: 0 };
+    const dx = (stageSize.w / 2 - viewport.x) / viewport.scale;
+    const dy = (stageSize.h / 2 - viewport.y) / viewport.scale;
+    return {
+      x: Math.round((dx * dataW) / dispW),
+      y: Math.round((dy * dataH) / dispH),
+    };
+  }, [dispW, dispH, dataW, dataH, viewport.scale, viewport.x, viewport.y, stageSize.w, stageSize.h]);
 
   const starsAvailable = !!preview?.star_list && preview.star_list.length > 0;
   const tiltAvailable = !!preview?.tilt;
@@ -347,6 +439,18 @@ export function PreviewStage(props: Props) {
           />
         )}
 
+        {/* pixel-peep: real sensor pixels over the CSS-upscaled base. Lives in
+            THIS transform layer (R6) so it can never drift; renders nothing at
+            all when we have no crop, leaving the base untouched. */}
+        <CropOverlay
+          url={peeping ? crop.url : null}
+          roi={crop.roi}
+          dispW={dispW}
+          dispH={dispH}
+          dataW={dataW}
+          dataH={dataH}
+        />
+
         {/* overlays in the same transform space (perfect alignment) */}
         <svg
           className="absolute top-0 left-0 pointer-events-none"
@@ -355,7 +459,7 @@ export function PreviewStage(props: Props) {
           viewBox={`0 0 ${dispW} ${dispH}`}
           style={{ overflow: "visible" }}
         >
-          <ClipMaskLayer w={dispW} h={dispH} active={clipActive} />
+          <ClipMaskLayer w={dispW} h={dispH} active={clipActive} cropPixels={clipCropPixels} />
           {overlays.tilt && tiltAvailable && (
             <TiltOverlay tilt={preview.tilt!} dispW={dispW} dispH={dispH} />
           )}
@@ -403,6 +507,23 @@ export function PreviewStage(props: Props) {
         <div className="absolute top-2 left-2 mt-7 preview-chip">Mono preview of OSC frame</div>
       )}
 
+      {/* Clip-mask SCOPE disclosure (advanced nuance, §1.4). The amber frame
+          always means "this frame clips"; the per-pixel paint only exists inside
+          the ROI we actually fetched. Say which one the user is looking at rather
+          than letting an un-painted region read as "clean". */}
+      {clipActive && (
+        <div
+          className={`absolute top-2 left-2 preview-chip !text-warn ${preview.bayer_pattern ? "mt-14" : ""}`}
+          title={
+            clipCropPixels
+              ? "Saturated pixels are painted inside the zoomed region; the amber frame still means the whole frame contains clipped pixels."
+              : "Frame-level indicator (stats.max ≥ full well). Zoom in to paint the individual saturated pixels."
+          }
+        >
+          Clip: {clipCropPixels ? "per-pixel in view" : "frame-level"}
+        </div>
+      )}
+
       {/* selected star readout */}
       {selectedStar && (
         <div className="absolute bottom-2 left-2 preview-chip mono" aria-live="polite">
@@ -429,10 +550,25 @@ export function PreviewStage(props: Props) {
         );
       })()}
 
-      {/* decimation disclosure */}
+      {/* decimation disclosure — lifted clear of the loupe when it's open */}
       {overlays.stars && starsAvailable && decimated && decimated.shown < decimated.total && (
-        <div className="absolute bottom-2 right-2 preview-chip">
+        <div className="absolute right-2 preview-chip" style={{ bottom: loupeOn && !compact ? 212 : 8 }}>
           Showing {decimated.shown}/{decimated.total} stars
+        </div>
+      )}
+
+      {/* ADVANCED: sensor-1:1 loupe (opt-in; the toolbar's "1:1" toggle). Reuses
+          the debounced crop the zoom layer already fetched — Decision D. */}
+      {loupeOn && linearEnabled && !compact && (
+        <div className="absolute bottom-2 right-2">
+          <LoupePanel
+            url={crop.url}
+            roi={crop.roi}
+            centerX={loupeCenter.x}
+            centerY={loupeCenter.y}
+            previewId={preview.id}
+            loading={crop.loading}
+          />
         </div>
       )}
 
