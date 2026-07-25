@@ -20,9 +20,11 @@ from astrodeck.config import ConfigStore
 from astrodeck.calibration.matcher import MasterRecord
 from astrodeck.sequence.report import FrameRecord, SessionReport
 from astrodeck.sequence.engine import _frame_altitude
-from astrodeck.sequence.bundle import (CalibKey, CalibrationLibraryAdapter,
+from astrodeck.sequence.bundle import (HFR_TO_FWHM_K, CalibKey,
+                                       CalibrationLibraryAdapter,
                                        NullMasterLibrary, build_bundle,
-                                       build_script, bundle_summary,
+                                       bundle_materialize_plan, build_script,
+                                       bundle_summary, fwhm_from_hfr,
                                        manifest_json, readme_text, sub_weight,
                                        weights_csv)
 
@@ -250,6 +252,24 @@ def test_weights_csv_blanks_none_metrics():
     row = dict(zip(cols, rows[1]))
     assert row["hfr"] == "" and row["ecc"] == "" and row["altitude_deg"] == ""
     assert row["weight"] == "1.0"                     # neutral for an un-measured sub
+    # PRO-10 (c): fwhm_est is blank when there is no HFR to estimate it FROM —
+    # we never invent a sharpness number for an un-measured sub.
+    assert row["fwhm_est"] == ""
+    assert row["keep"] == "True"                      # no threshold -> everything kept
+
+    # ...and it is exactly k*hfr when hfr IS measured, in the CSV and manifest.
+    frames = [FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300,
+                          gain=100, binning=1, hfr=1.8, saved_path="/cap/a.fits")]
+    b = build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True)
+    rows = list(csv.reader(io.StringIO(weights_csv(b))))
+    row = dict(zip(rows[0], rows[1]))
+    assert float(row["fwhm_est"]) == pytest.approx(1.8 * HFR_TO_FWHM_K)
+    assert fwhm_from_hfr(None) is None
+    light = manifest_json(b)["groups"][0]["lights"][0]
+    assert light["fwhm_est"] == pytest.approx(3.6)
+    # The manifest says IN BAND that this is estimated, not a measured PSF FWHM.
+    assert "ESTIMATED" in manifest_json(b)["fwhm_est_note"]
+    assert "fwhm_est" in readme_text(b) and "hfr" in readme_text(b)
 
 
 # -------------------------------------------------------- Task 3: build_script
@@ -431,3 +451,204 @@ def test_bundle_routes_404_when_missing(env):
     c, _ = env
     assert c.get("/api/reports/nope/bundle").status_code == 404
     assert c.get("/api/reports/nope/bundle.zip").status_code == 404
+
+
+# ============================================================================
+# PRO-10 enrichments: layout variants / fwhm_est / keep_threshold / materialize
+# (design: docs/superpowers/specs/2026-07-24-export-enrich-design.md)
+# ============================================================================
+
+def _two_group_bundle(layout="grouped"):
+    """Two groups (Ha + OIII) with a Dark master matched for both."""
+    frames = [
+        FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300, gain=100,
+                    binning=1, hfr=2.0, saved_path="/cap/ha_1.fits", accepted=True),
+        FrameRecord(ts=2, target="M42", filter="OIII", exposure_s=300, gain=100,
+                    binning=1, hfr=2.5, saved_path="/cap/o3_1.fits", accepted=True),
+    ]
+
+    class Lib:
+        def match(self, key):
+            return "/masters/dark.fits" if key.frame_type == "Dark" else None
+
+    return build_bundle(_rep(frames), Lib(), is_local=lambda p: True, layout=layout)
+
+
+@pytest.mark.parametrize("layout,light_dir,master_dest", [
+    ("grouped", "lights", "masters/masterDark.fits"),
+    ("siril", "lights", "M42/Ha/300s_g100_bin1/darks/masterDark.fits"),
+    ("app", "Light", "M42/Ha/300s_g100_bin1/Dark/masterDark.fits"),
+])
+def test_layout_variants_shape_dests_and_build_script(layout, light_dir, master_dest):
+    """(b) Layout is entirely a function of the relative dest strings — and the
+    build script replays exactly those, in both shells."""
+    b = _two_group_bundle(layout)
+    assert b.layout == layout
+    g0 = b.groups[0]
+    assert g0.dir == "M42/Ha/300s_g100_bin1"
+    assert g0.lights[0].dest == f"M42/Ha/300s_g100_bin1/{light_dir}/ha_1.fits"
+    assert g0.masters["dark"] == master_dest
+    # grouped shares ONE top-level masters/ across groups; per-group layouts give
+    # each group its own copy (each stack's calibration is independent).
+    if layout == "grouped":
+        assert b.groups[1].masters["dark"] == master_dest
+    else:
+        assert b.groups[1].masters["dark"].startswith("M42/OIII/")
+
+    # (these paths need no shell quoting, so shlex.quote passes them through)
+    sh = build_script(b, "sh")
+    assert f"mkdir -p M42/Ha/300s_g100_bin1/{light_dir}" in sh
+    assert f"cp -- /cap/ha_1.fits M42/Ha/300s_g100_bin1/{light_dir}/ha_1.fits" in sh
+    assert f"cp -- /masters/dark.fits {master_dest}" in sh
+    ps1 = build_script(b, "ps1")
+    assert f"'M42/Ha/300s_g100_bin1/{light_dir}'" in ps1
+    assert f"-Destination '{master_dest}'" in ps1
+    # the README's illustrative tree follows the layout too
+    assert light_dir in readme_text(b)
+
+
+def test_bad_layout_and_threshold_rejected(env):
+    """Pure guard raises ValueError; the routes turn that into 400 (not a 500)."""
+    frames = [FrameRecord(ts=1, target="M42", filter="Ha", exposure_s=300,
+                          saved_path="/cap/a.fits")]
+    with pytest.raises(ValueError):
+        build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True,
+                     layout="pixinsight")
+    with pytest.raises(ValueError):
+        build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True,
+                     keep_threshold=1.5)
+
+    c, cap = env
+    rid = _seed_report(cap)
+    assert c.get(f"/api/reports/{rid}/bundle?layout=nope").status_code == 400
+    assert c.get(f"/api/reports/{rid}/bundle.zip?layout=nope").status_code == 400
+    assert c.get(f"/api/reports/{rid}/bundle?keep_threshold=2").status_code == 400
+    assert c.post(f"/api/reports/{rid}/bundle/materialize?layout=nope").status_code == 400
+    # ...and the good ones still work through every surface
+    assert c.get(f"/api/reports/{rid}/bundle?layout=siril").status_code == 200
+    assert c.get(f"/api/reports/{rid}/bundle.zip?layout=app").status_code == 200
+
+
+@pytest.mark.parametrize("threshold,expected_keep,expected_kept", [
+    (None, [True, True, True], 3),
+    (0.5, [True, True, False], 2),      # the 0.4-weight tail gets flagged
+    (1.0, [True, False, False], 1),     # only the best sub clears a 1.0 cutoff
+])
+def test_keep_threshold_flags_tail_but_never_deletes(threshold, expected_keep,
+                                                     expected_kept):
+    """(d) keep is ADVISORY: it flags the relatively-worst subs of a group and
+    NEVER removes one from the bundle, the manifest, or the build script."""
+    # hfr 2/4/5 -> normalized weights 1.0 / 0.5 / 0.4 within the one group.
+    frames = [FrameRecord(ts=i, target="M42", filter="Ha", exposure_s=300,
+                          gain=100, binning=1, hfr=h,
+                          saved_path=f"/cap/a{i}.fits", accepted=True)
+              for i, h in enumerate([2.0, 4.0, 5.0])]
+    b = build_bundle(_rep(frames), NullMasterLibrary(), is_local=lambda p: True,
+                     keep_threshold=threshold)
+    assert [l.keep for l in b.groups[0].lights] == expected_keep
+    assert b.keep_threshold == threshold
+    assert bundle_summary(b)["groups"][0]["kept_count"] == expected_kept
+    assert manifest_json(b)["groups"][0]["kept_count"] == expected_kept
+
+    # SAFETY PROPERTY: every sub is still present everywhere, flagged or not.
+    assert len(b.groups[0].lights) == 3
+    assert len(manifest_json(b)["groups"][0]["lights"]) == 3
+    sh = build_script(b, "sh")
+    for i in range(3):
+        assert f"/cap/a{i}.fits" in sh
+    rows = list(csv.reader(io.StringIO(weights_csv(b))))
+    assert len(rows) == 4                              # header + all 3 subs
+    keep_col = rows[0].index("keep")
+    assert [r[keep_col] for r in rows[1:]] == [str(k) for k in expected_keep]
+
+
+def test_materialize_plan_dests_stay_under_root_and_refuse_escapes(tmp_path):
+    """(a)/R1 — the pure planner IS the containment guard the write loop trusts."""
+    import dataclasses
+    from pathlib import Path
+
+    root = tmp_path / "captures" / "exports" / "M42-1"
+    b = _two_group_bundle("siril")
+    plan = bundle_materialize_plan(b, root)
+    assert len(plan) == 4                              # 2 lights + 2 per-group darks
+    for it in plan:
+        assert it.refused is None
+        assert Path(it.dest).is_relative_to(root)
+    assert {it.kind for it in plan} == {"light", "dark"}
+
+    # A hostile target can't escape either — _group_dir sanitizes every component
+    # BEFORE the planner ever sees it (belt), and the planner re-checks (braces).
+    evil = build_bundle(
+        _rep([FrameRecord(ts=1, target="../../../etc", filter="../x",
+                          exposure_s=300, saved_path="/cap/a.fits")]),
+        NullMasterLibrary(), is_local=lambda p: True)
+    evil_plan = bundle_materialize_plan(evil, root)
+    assert evil_plan and all(it.refused is None for it in evil_plan)
+    for it in evil_plan:
+        assert Path(it.dest).is_relative_to(root)
+
+    # And if a dest ever DID escape (a future bug upstream), the planner refuses
+    # it rather than handing the write loop an arbitrary-write primitive.
+    g = b.groups[0]
+    tampered = dataclasses.replace(
+        b, groups=(dataclasses.replace(
+            g, lights=(dataclasses.replace(g.lights[0], dest="../../pwned.fits"),),
+            masters={}, master_sources={}),))
+    bad = bundle_materialize_plan(tampered, root)
+    assert len(bad) == 1 and bad[0].refused is not None
+    assert "escapes" in bad[0].refused
+
+
+def test_materialize_route_links_then_falls_back_to_copy(env, monkeypatch):
+    """(a) Route integration: real files land under captures/exports/<id>/ via
+    hardlink, and a filesystem that can't hardlink transparently copies."""
+    import os as _os
+
+    c, cap = env
+    rid = _seed_report(cap)
+    export = cap / "exports" / rid
+
+    r = c.post(f"/api/reports/{rid}/bundle/materialize")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["export_dir"] == str(export)
+    assert body["failed"] == []
+    assert body["linked"] + body["copied"] == 1
+    laid = export / "M42" / "Ha" / "300s_g100_bin1" / "lights" / "light_0001.fits"
+    assert laid.exists() and laid.read_bytes() == b"FAKEFITS"
+    assert "read-only" in body["hardlink_note"]
+
+    # Idempotent: re-materializing the same tree is a no-op, not an error.
+    again = c.post(f"/api/reports/{rid}/bundle/materialize")
+    assert again.status_code == 200 and again.json()["failed"] == []
+
+    # EXDEV / no-hardlink filesystem -> copy2 fallback (still lands the bytes).
+    def _boom(*a, **k):
+        raise OSError(18, "EXDEV")
+
+    monkeypatch.setattr(_os, "link", _boom)
+    r2 = c.post(f"/api/reports/{rid}/bundle/materialize?layout=app")
+    assert r2.status_code == 200, r2.text
+    b2 = r2.json()
+    assert b2["copied"] == 1 and b2["linked"] == 0 and b2["failed"] == []
+    assert b2["bytes_copied"] == len(b"FAKEFITS")
+    app_laid = export / "M42" / "Ha" / "300s_g100_bin1" / "Light" / "light_0001.fits"
+    assert app_laid.exists()
+    # every laid-out file is inside the export root — nothing escaped
+    for p in export.rglob("*.fits"):
+        assert p.resolve().is_relative_to(export.resolve())
+
+
+def test_materialize_404_and_no_local_subs(env):
+    c, cap = env
+    assert c.post("/api/reports/nope/bundle/materialize").status_code == 404
+    # a report whose subs are NOT on this box has nothing to materialize: an
+    # honest 400 telling the user to run build.sh on the imaging host.
+    from astrodeck.persist import write_json_atomic
+    rep = SessionReport(id="remote-1", plan_name="P",
+                        frames=[FrameRecord(ts=1.0, target="M42", exposure_s=300,
+                                            saved_path="Z:/nina/remote.fits")])
+    (cap / "reports").mkdir(parents=True, exist_ok=True)
+    write_json_atomic(cap / "reports" / "remote-1.json", rep.model_dump())
+    r = c.post("/api/reports/remote-1/bundle/materialize")
+    assert r.status_code == 400 and "build.sh" in r.json()["detail"]

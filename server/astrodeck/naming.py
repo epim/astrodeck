@@ -19,6 +19,10 @@ KNOWN_TOKENS: dict[str, str] = {
     "TARGET": "loose", "FRAMETYPE": "loose", "FILTER": "strict",
     "DATE": "loose", "TIME": "loose", "DATETIME": "loose",
     "NIGHT": "loose", "FRAMENR": "loose",
+    # Capture-settings tokens. All opt-in: a template that doesn't mention them
+    # is byte-for-byte unchanged, and an unknown/absent value renders empty, so
+    # the token simply drops out (existing engine behavior).
+    "GAIN": "loose", "EXPOSURE": "loose", "BINNING": "loose",
 }
 
 _TOKEN_RE = re.compile(r"\$\$([A-Z0-9_]+)\$\$")
@@ -74,11 +78,47 @@ def render_relative_path(template: str, fields: Mapping[str, str]) -> Path:
     return Path(*segments)
 
 
+def format_exposure_token(exposure_s: float | None) -> str:
+    """``$$EXPOSURE$$`` value: integer seconds when whole (``300`` -> ``"300"``),
+    otherwise a ``g``-format with ``.`` -> ``p`` (``1.5`` -> ``"1p5"``).
+
+    A ``.`` inside a filename segment is legal but invites extension confusion
+    (``M42_1.5_0001.fits``), and sub-second exposures are rare enough that the
+    ``p`` idiom (borrowed from electronics part numbers) is the safer default.
+    ``None``/non-numeric renders empty so the token drops out of the filename."""
+    if exposure_s is None:
+        return ""
+    try:
+        v = float(exposure_s)
+    except (TypeError, ValueError):
+        return ""
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / inf
+        return ""
+    if v == int(v):
+        return str(int(v))
+    return f"{v:g}".replace(".", "p")
+
+
+def capture_tokens(gain: int | None = None, exposure_s: float | None = None,
+                   binning: int | None = None) -> dict[str, str]:
+    """The three capture-settings token values, formatted per the design (D4).
+    ``None`` -> ``""`` so the token drops out and old templates are unaffected.
+
+    Kept here (not at the capture seam) so the formatting is unit-testable
+    without a Hub and every future caller renders these tokens identically."""
+    return {
+        "GAIN": "" if gain is None else str(int(gain)),
+        "EXPOSURE": format_exposure_token(exposure_s),
+        "BINNING": "" if binning is None else str(int(binning)),
+    }
+
+
 #: sample fields used by validate_template's dry render.
 _SAMPLE = {"TARGET": "M42", "FRAMETYPE": "Light", "FILTER": "Ha",
            "DATE": "2026-07-23", "TIME": "213045",
            "DATETIME": "2026-07-23_213045", "NIGHT": "2026-07-23",
-           "FRAMENR": "0001"}
+           "FRAMENR": "0001",
+           **capture_tokens(gain=100, exposure_s=300.0, binning=1)}
 
 
 def validate_template(template: str) -> None:
