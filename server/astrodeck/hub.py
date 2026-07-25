@@ -250,6 +250,13 @@ class Hub:
         self._move_rates_seen: dict[str, float] = {"ra": 0.0, "dec": 0.0}
         self._move_watchdog_task: asyncio.Task | None = None
         self._busy: dict[str, asyncio.Task] = {}
+        # --- learned camera EGAIN (measured e-/ADU per gain setting) ------------
+        # In-memory mirror of the per-profile egain store so the 2s status poll
+        # never touches disk. A DRIVER-REPORTED egain always wins; this map is
+        # consulted ONLY when the camera reports 0.0, and only on an EXACT gain
+        # match (conversion gain is not linear across an HCG transition, so v1
+        # deliberately does not interpolate).
+        self._egain_learned: dict[int, float] = {}
         # --- motion serialization (W3.7 owner invariant) -----------------------
         # The single mount has ONE motion authority. ``_motion_lock`` serializes
         # the device-touching section of every motion-committing path (slew/park/
@@ -303,6 +310,7 @@ class Hub:
             self.devices[role] = dev
             self._last_connect[role] = {"backend": "sim"}
         self._seed_filter_config()  # UX-05: user slot names over hardware letters
+        self._seed_egain_config()   # learned e-/ADU (driver value still wins)
         await guide_cam.connect()
         self.devices["guide_camera"] = guide_cam
         # native guider from the assembled rig (the SimGuider), connected here.
@@ -623,6 +631,7 @@ class Hub:
             self._last_connect[role] = meta.get(
                 role, {"backend": getattr(dev, "backend", primary)})
         self._seed_filter_config()  # UX-05: user slot names over hardware letters
+        self._seed_egain_config()   # learned e-/ADU (driver value still wins)
         # dedicated guide camera (sim only; None for nina/native/phd2).
         if result.guide_camera is not None:
             await result.guide_camera.connect()
@@ -1103,7 +1112,9 @@ class Hub:
             live.add("looping")
         for name, label in (("goto", "slewing"), ("solve", "solving"),
                             ("autofocus", "focusing"), ("focuser", "focusing"),
-                            ("capture", "capturing"), ("looping", "capturing")):
+                            ("filter_offsets", "focusing"),
+                            ("capture", "capturing"), ("looping", "capturing"),
+                            ("egain", "capturing")):
             if name in live:
                 return label
         return None
@@ -1493,6 +1504,11 @@ class Hub:
         # EGAIN (populated on the frame by the backend in Task 5; getattr keeps
         # this task decoupled from that field's existence)
         eg = getattr(frame, "egain_e_per_adu", None)
+        if not eg:
+            # Driver reported nothing (Alpaca/NINA): fall back to a MEASURED
+            # value for exactly this gain, when the user has learned one. The
+            # driver's own number always wins the branch above.
+            eg = self.learned_egain(getattr(frame, "gain", -1))
         if eg:
             meta.egain_e_per_adu = float(eg)
         # quality (already measured on the frame)
@@ -1853,6 +1869,173 @@ class Hub:
                     except (TypeError, ValueError):
                         pass
             fw.filter_offsets = cur
+
+    # ------------------------------------------------- learned camera EGAIN
+    def _seed_egain_config(self) -> None:
+        """Load the active profile's learned per-gain EGAIN map into memory.
+        Best-effort: a missing/corrupt store just leaves the map empty (the
+        driver-reported value, or nothing, still applies)."""
+        try:
+            from .config import config_store, load_egain_config
+            self._egain_learned = load_egain_config(
+                config_store.cfg().active_profile_id)
+        except Exception:  # pragma: no cover - defensive
+            self._egain_learned = {}
+
+    def learned_egain(self, gain: int) -> float | None:
+        """The MEASURED e-/ADU for exactly this gain, or None.
+
+        Exact-match only — conversion gain changes across a camera's HCG
+        transition, so interpolating between learned points would invent a
+        number. Callers must prefer any driver-reported value over this."""
+        try:
+            v = self._egain_learned.get(int(gain))
+        except (TypeError, ValueError):
+            return None
+        return float(v) if v else None
+
+    async def learn_egain(self, gain: int, count: int = 4,
+                          exposure_s: float = 2.0, offset: int = 10,
+                          binning: int = 1) -> dict:
+        """Measure e-/ADU by mean-variance: ``count`` bias frames then ``count``
+        flats at ``gain``, all under the shared exposure guard.
+
+        The result is PERSISTED per gain and stamped onto the camera ONLY when
+        the driver reports no egain — a real hardware number is never overridden
+        by an estimate."""
+        from .imaging.egain import measure_egain
+        cam: Camera = self.require("camera")
+        n = max(2, int(count))
+        total = 2 * n
+        bus.publish("egain", state="running", step=0, of=total)
+        bus.log("info", f"measuring e-/ADU at gain {gain} "
+                        f"({n} bias + {n} flat frames)…", "egain")
+        try:
+            biases: list = []
+            flats: list = []
+            for i in range(n):
+                async with self.exposure_guard("egain bias"):
+                    fr = await cam.expose(0.0, int(gain), int(offset),
+                                          int(binning), light=False)
+                biases.append(np.asarray(fr.data))
+                bus.publish("egain", state="running", step=len(biases), of=total)
+            for i in range(n):
+                async with self.exposure_guard("egain flat"):
+                    fr = await cam.expose(float(exposure_s), int(gain),
+                                          int(offset), int(binning), light=True)
+                flats.append(np.asarray(fr.data))
+                bus.publish("egain", state="running",
+                            step=n + len(flats), of=total)
+            value = measure_egain(flats, biases)
+        except asyncio.CancelledError:
+            bus.publish("egain", state="failed", step=0, of=total,
+                        error="cancelled")
+            raise
+        except Exception as e:
+            bus.publish("egain", state="failed", step=0, of=total, error=str(e))
+            bus.log("error", f"e-/ADU measurement failed: {e}", "egain")
+            raise
+        self._egain_learned[int(gain)] = float(value)
+        try:
+            from .config import config_store, save_egain_config
+            save_egain_config(config_store.cfg().active_profile_id,
+                              self._egain_learned)
+        except Exception:  # pragma: no cover - persistence is best-effort
+            pass
+        # Driver-reported EGAIN always wins: only stamp a camera that reports 0.
+        applied = False
+        if not getattr(cam, "egain", 0.0):
+            cam.egain = float(value)
+            applied = True
+        bus.publish("egain", state="done", step=total, of=total,
+                    gain=int(gain), egain=float(value), applied=applied)
+        bus.log("info", f"measured {value:.3f} e-/ADU at gain {gain}"
+                        + ("" if applied else " (driver value kept)"), "egain")
+        return {"gain": int(gain), "egain": float(value), "applied": applied,
+                "learned": dict(self._egain_learned)}
+
+    async def learn_filter_offsets(self, ref_slot: int | None = None,
+                                   exposure_s: float = 2.0, gain: int = 120,
+                                   step: int = 350, steps_each_side: int = 4,
+                                   binning: int = 2) -> dict:
+        """Autofocus every filter slot and persist the ref-relative offsets.
+
+        A slot whose autofocus FAILS (a starless narrowband slot is the usual
+        cause) KEEPS its prior offset and is reported in ``kept`` — writing a
+        bogus 0 there would defocus that filter on every future exposure."""
+        from .focus.autofocus import run_autofocus
+        from .focus.filter_offsets import default_ref_slot, offsets_from_positions
+        fw = self.require("filterwheel")
+        foc = self.require("focuser")
+        cam: Camera = self.require("camera")
+        names = list(fw.filter_names or [])
+        n_slots = len(names)
+        if n_slots == 0:
+            raise DeviceError("filter wheel reports no slots")
+        if ref_slot is None:
+            ref_slot = default_ref_slot(names, await fw.get_position())
+        ref_slot = int(ref_slot)
+        if not 0 <= ref_slot < n_slots:
+            raise DeviceError(
+                f"reference slot {ref_slot} is outside the wheel (0..{n_slots - 1})")
+        prior = list(fw.filter_offsets) if fw.filter_offsets else [0] * n_slots
+
+        best_by_slot: dict[int, int] = {}
+        bus.publish("filter_offsets", state="running", slot=None, of=n_slots,
+                    done_slots=[])
+        try:
+            # Reference first: without it there is nothing to measure against,
+            # so a failed reference aborts before burning time on the rest.
+            for i in [ref_slot] + [s for s in range(n_slots) if s != ref_slot]:
+                bus.publish("filter_offsets", state="running", slot=i,
+                            of=n_slots, name=names[i],
+                            done_slots=sorted(best_by_slot))
+                await fw.set_position(i)
+                try:
+                    res = await run_autofocus(
+                        cam, foc, exposure_s=exposure_s, gain=gain, step=step,
+                        steps_each_side=steps_each_side, binning=binning,
+                        expose_guard=self.exposure_guard, hub=self)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:   # one bad slot must not kill the loop
+                    bus.log("warning", f"autofocus failed on "
+                                       f"{names[i] or i}: {e} — keeping its "
+                                       "existing offset", "filter_offsets")
+                    if i == ref_slot:
+                        raise DeviceError(
+                            f"autofocus failed on the reference filter "
+                            f"{names[i] or i}: {e}") from e
+                    continue
+                if getattr(res, "success", False):
+                    best_by_slot[i] = int(res.best_position)
+                else:
+                    if i == ref_slot:
+                        raise DeviceError(
+                            "autofocus did not succeed on the reference filter "
+                            f"{names[i] or i} — offsets cannot be measured")
+                    bus.log("warning", f"no focus on {names[i] or i} — keeping "
+                                       "its existing offset", "filter_offsets")
+            offsets, kept = offsets_from_positions(best_by_slot, ref_slot,
+                                                   n_slots, prior)
+        except asyncio.CancelledError:
+            bus.publish("filter_offsets", state="failed", slot=None,
+                        of=n_slots, error="cancelled")
+            raise
+        except Exception as e:
+            bus.publish("filter_offsets", state="failed", slot=None,
+                        of=n_slots, error=str(e))
+            raise
+        result = await self.set_filter_names(names, offsets)
+        bus.publish("filter_offsets", state="done", slot=None, of=n_slots,
+                    ref_slot=ref_slot, offsets=list(result["offsets"]),
+                    kept=kept, done_slots=sorted(best_by_slot))
+        bus.log("info", f"filter offsets learned against "
+                        f"{names[ref_slot] or ref_slot}"
+                        + (f"; kept prior for {len(kept)} slot(s)" if kept else ""),
+                "filter_offsets")
+        return {"ref_slot": ref_slot, "offsets": result["offsets"],
+                "names": result["names"], "kept": kept}
 
     async def set_filter_names(self, names: list[str],
                                offsets: list[int] | None = None) -> dict:
@@ -2629,6 +2812,10 @@ class Hub:
                     # the backend knows it (native adapters only); 0.0 = unknown.
                     # Additive/default-inert — old clients simply ignore the field.
                     "egain": getattr(cam, "egain", 0.0),
+                    # Additive: MEASURED e-/ADU per gain setting (auto-learn).
+                    # Advanced-UI only; the driver value above always wins.
+                    "egain_learned": {str(g): v
+                                      for g, v in self._egain_learned.items()},
                 }
                 # Monitor cooler readout — driven by the per-backend get_cooler()
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The

@@ -22,6 +22,14 @@ def test_format_roundtrip():
     assert lx200.format_ra(10 + 13 / 60 + 56 / 3600) == "10:13:56"
     assert lx200.format_dec(-(5 + 30 / 60 + 15 / 3600)) == "-05*30:15"
     assert abs(lx200.parse_dec(lx200.format_dec(37.1308)) - 37.1308) < 1 / 3600
+    # RA is CYCLIC: >=24h, negatives and the 59.9999s carry must all land back
+    # inside [0,24) — the mount's :Sr# parser rejects/misreads "24:00:00".
+    assert lx200.format_ra(24.0) == "00:00:00"
+    assert lx200.format_ra(25.5) == "01:30:00"
+    assert lx200.format_ra(-1.0) == "23:00:00"
+    assert lx200.format_ra(23.999999) == "00:00:00"
+    # Declination is NOT cyclic — format_dec keeps sign/magnitude untouched.
+    assert lx200.format_dec(-89.5) == "-89*30:00"
 
 
 def test_smge_uses_w_positive_longitude():

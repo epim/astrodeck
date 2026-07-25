@@ -461,6 +461,18 @@ interface AppState {
   // (kept OFF the "guide" channel so the live guide graph is untouched). null
   // between runs; the GuideAssistantPanel drives its progress bar from this.
   guideAssistant: { phase: string; pct: number; message: string } | null;
+  // Auto-learn loop progress (tech-debt hardening c1/c2). Each is the latest
+  // tick off its own small bus channel; null between runs. Deliberately thin —
+  // the actual per-slot autofocus sweeps ride the existing "focus" channel the
+  // UI already renders.
+  egainLearn:
+    | { state: string; step?: number; of?: number; gain?: number; egain?: number;
+        applied?: boolean; error?: string }
+    | null;
+  filterOffsetsLearn:
+    | { state: string; slot?: number | null; of?: number; name?: string;
+        ref_slot?: number; offsets?: number[]; kept?: number[]; error?: string }
+    | null;
   // Same-night per-provider RMS windows (P5-T1, spec §6 P5): the LAST
   // guide-stats tick seen while a given provider KIND ("astrodeck"/"backend"/
   // "sim") was resolved, keyed by `status.providers.guide.kind` at the moment
@@ -724,6 +736,8 @@ export const useStore = create<AppState>((set, get) => ({
   lastAutofocusResult: null,
   guide: null,
   guideAssistant: null,
+  egainLearn: null,
+  filterOffsetsLearn: null,
   guideRmsByKind: {},
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
@@ -1398,6 +1412,16 @@ export const useStore = create<AppState>((set, get) => ({
         set({ guideAssistant: d });
         break;
       }
+      case "egain": {
+        set({ egainLearn: ev.data as unknown as AppState["egainLearn"] });
+        break;
+      }
+      case "filter_offsets": {
+        set({
+          filterOffsetsLearn: ev.data as unknown as AppState["filterOffsetsLearn"],
+        });
+        break;
+      }
       case "sequence": {
         const seq = ev.data as unknown as SequenceState;
         const prevState = get().sequence.state;
@@ -1516,6 +1540,8 @@ export const useMasters = () => useStore((s) => s.masters);
 export const useSequence = () => useStore((s) => s.sequence);
 export const useGuide = () => useStore((s) => s.guide);
 export const useGuideAssistant = () => useStore((s) => s.guideAssistant);
+export const useEgainLearn = () => useStore((s) => s.egainLearn);
+export const useFilterOffsetsLearn = () => useStore((s) => s.filterOffsetsLearn);
 // Same-night per-provider RMS windows (P5-T1) — see AppState.guideRmsByKind.
 // useShallow so an unrelated guide tick under the SAME kind (which replaces
 // the object at that key but leaves the other keys alone) doesn't spuriously

@@ -54,8 +54,17 @@ def _sex(value: float) -> tuple[int, int, int]:
 
 
 def format_ra(hours: float) -> str:
-    """Hours -> ``HH:MM:SS`` (no frame)."""
-    h, m, s = _sex(hours)
+    """Hours -> ``HH:MM:SS`` (no frame), normalized to the cyclic range [0,24).
+
+    RA is cyclic, so ``25.5`` and ``-1.0`` are legal inputs the mount's ``:Sr#``
+    parser is NOT willing to see spelled ``25:30:00`` / a dropped sign. Wrapping
+    happens on the INTEGER SECONDS count so a 59.9999s carry (``23.999999`` ->
+    86400s) collapses back to ``00:00:00`` instead of emitting ``24:00:00``.
+    (``_sex`` stays sign-magnitude for ``format_dec`` — declination is NOT
+    cyclic and must keep its sign, never wrap.)"""
+    total = round((hours % 24.0) * 3600) % 86400
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
