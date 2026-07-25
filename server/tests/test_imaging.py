@@ -1,6 +1,8 @@
 """Imaging math: stretch, histogram, star detection, HFR."""
 import math
 
+import pytest
+
 import numpy as np
 
 from astrodeck.imaging import (
@@ -12,6 +14,7 @@ from astrodeck.imaging import (
     levels_to_mtf,
     measure_frame,
     median_hfr,
+    star_flux_median,
     star_marks,
     stretch_with,
     to_jpeg,
@@ -169,6 +172,30 @@ def test_measure_frame_single_pass_matches_median_hfr():
     # only because DEFAULT_MAX_MARKS >= DEFAULT_MAX_STARS so marks never drops a
     # detected star. A bump of max_stars above the marks cap would break this.
     assert len(marks) == min(count, DEFAULT_MAX_MARKS)
+
+
+@pytest.mark.parametrize("keep,full_well,expect", [
+    # no full-well knowledge: only the 5%-of-median-peak floor applies, so the
+    # bright and the mid star both count -> median of (1e5, 5e4).
+    ("all", None, 75000.0),
+    # with a full well the 90% flat-top star drops out -> the mid star alone.
+    ("all", 60000, 50000.0),
+    # nothing trusted -> None (never 0.0): the client then shows no SNR at all
+    # rather than a number built from noise.
+    ("saturated", 60000, None),
+    ("none", None, None),
+])
+def test_star_flux_median_over_the_trusted_midbright_population(keep, full_well, expect):
+    pop = {
+        "all": [
+            Star(x=10, y=10, flux=1e5, hfr=2.0, peak=59000),  # saturated at fw=60000
+            Star(x=20, y=20, flux=5e4, hfr=2.1, peak=30000),  # mid-bright
+            Star(x=30, y=30, flux=1.0, hfr=2.2, peak=100),    # below the 5% peak floor
+        ],
+        "saturated": [Star(x=1, y=1, flux=9e4, hfr=2.0, peak=59000)],
+        "none": [],
+    }[keep]
+    assert star_flux_median(pop, full_well=full_well) == expect
 
 
 def test_star_marks_cap_covers_detect_cap():

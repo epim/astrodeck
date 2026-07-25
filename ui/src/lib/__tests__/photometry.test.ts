@@ -9,6 +9,7 @@ import {
   subNoise, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
   subLengthVerdict, subSnr, stackedSnr, subsForStackedSnr, moreSubsForSnrMultiple,
   projectedIntegrationSeconds, integrationByFilter, suggestSubLength,
+  perSubSnrFromFlux,
   SKY_LIMIT_FACTOR, SUB_LONG_MULT,
 } from "../photometry";
 
@@ -123,6 +124,39 @@ test("suggestSubLength: missing profile => honest not-ok", () => {
   const s = suggestSubLength({ medianAdu: 1200, biasAdu: 1000, egain: 0,
     readNoiseE: 2, exposureS: 10 });
   eq(s.ok, false, "not ok"); assert(s.reason.includes("gain"), "reason mentions gain");
+});
+
+// ------------------------------------------------ perSubSnrFromFlux (grab-bag b)
+// Absolute per-SUB SNR from the server's background-subtracted star flux. The
+// number must be reproducible by hand, and must ABSTAIN (never guess) when the
+// photometry profile is unset.
+test("perSubSnrFromFlux: known flux/gain/sky/read reproduces the hand-computed SNR", () => {
+  // flux 1000 ADU x 2 e-/ADU = 2000 e- signal.
+  // sky = (medianAdu 600 - bias 100) x 2 = 1000 e-;  read 5 e-
+  // noise = sqrt(1000 + 25) = 32.0156...  -> snr = 2000 / 32.0156 = 62.47
+  const r = perSubSnrFromFlux({ fluxAdu: 1000, egain: 2, biasAdu: 100, medianAdu: 600, readNoiseE: 5 });
+  eq(r.ok, true, "ok");
+  eq(r.signalE, 2000, "signal e-");
+  near(r.noise!.skyE, 1000, 1e-9, "sky e-");
+  near(r.noise!.totalNoiseE, Math.sqrt(1025), 1e-9, "total noise e-");
+  near(r.snr, 2000 / Math.sqrt(1025), 1e-9, "per-sub snr");
+  // sanity: this is PER SUB — stacking 25 of them is 5x better, not the same.
+  near(stackedSnr(r.snr, 25), r.snr * 5, 1e-9, "stacked is sqrt(N) better");
+});
+
+test("perSubSnrFromFlux: abstains with an honest reason when the profile/flux is missing", () => {
+  const cases: [string, Parameters<typeof perSubSnrFromFlux>[0], string][] = [
+    ["no egain", { fluxAdu: 1000, egain: 0, biasAdu: 0, medianAdu: 600, readNoiseE: 5 }, "gain"],
+    ["no read noise", { fluxAdu: 1000, egain: 2, biasAdu: 0, medianAdu: 600, readNoiseE: 0 }, "read noise"],
+    ["no flux", { fluxAdu: 0, egain: 2, biasAdu: 0, medianAdu: 600, readNoiseE: 5 }, "flux"],
+  ];
+  for (const [name, inp, word] of cases) {
+    const r = perSubSnrFromFlux(inp);
+    eq(r.ok, false, name);
+    eq(r.snr, 0, `${name}: no number`);
+    eq(r.noise, null, `${name}: no decomposition`);
+    assert(!!r.reason && r.reason.toLowerCase().includes(word), `${name}: reason mentions ${word}`);
+  }
 });
 
 // ---------------------------------------------------------------- report

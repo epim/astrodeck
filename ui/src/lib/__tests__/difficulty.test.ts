@@ -7,7 +7,7 @@
 
 import {
   difficultyLabel, difficultyGlyph, difficultyTone, difficultyHint,
-  isBeginnerFriendly, BEGINNER_TIERS, type DifficultyTier,
+  isBeginnerFriendly, BEGINNER_TIERS, tierForTargetName, type DifficultyTier,
 } from "../difficulty";
 
 // ---------------------------------------------------------------- harness
@@ -64,6 +64,32 @@ test("beginner filter admits easy+moderate, excludes hard", () => {
   eq(isBeginnerFriendly("moderate"), true);
   eq(isBeginnerFriendly("hard"), false);
   eq(BEGINNER_TIERS.length, 2);
+});
+
+// ------------------------------------------------- tierForTargetName (grab-bag c2)
+// The active-session difficulty chip: resolve the RUNNING target's tier from
+// catalog entries the client already holds, and abstain whenever unsure.
+test("tierForTargetName: matches by id or name, ignoring case/space; abstains otherwise", () => {
+  const entries = [
+    { id: "M 31", name: "Andromeda Galaxy", difficulty: "easy" as DifficultyTier },
+    { id: "NGC 7000", name: "North America Nebula", difficulty: "hard" as DifficultyTier },
+    { id: "IC 1396", name: "Elephant Trunk" },   // server sent no tier
+  ];
+  const cases: [string | null | undefined, DifficultyTier | null][] = [
+    ["M 31", "easy"],                 // exact id
+    ["m31", "easy"],                  // case + space insensitive
+    ["andromeda galaxy", "easy"],     // by name
+    ["North America Nebula", "hard"],
+    ["IC 1396", null],                // matched but tier unknown -> abstain
+    ["M 42", null],                   // no such entry
+    ["", null],
+    [null, null],
+    [undefined, null],
+  ];
+  for (const [target, want] of cases) {
+    eq(tierForTargetName(target, entries), want, `target=${String(target)}`);
+  }
+  eq(tierForTargetName("M 31", []), null, "no entries at all");
 });
 
 // ---------------------------------------------------------------- report

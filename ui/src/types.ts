@@ -20,6 +20,10 @@ export type ViewName =
   | "settings"
   | "monitor"
   | "atlas"
+  // APPENDED (Risk-10 "land the order once, append thereafter"): the "what can I
+  // image tonight?" destination. Desktop rail + mobile More sheet; never a
+  // reorder/eviction of the landed primary order.
+  | "tonight"
   | "report"
   | "help";
 
@@ -234,6 +238,22 @@ export interface LiveStackInfo {
 
 // NOV-12 Bahtinov focus aid — present only on raw/linear subs while the aid is
 // armed (server-side per-frame analysis). Old clients ignore it.
+// One fitted spike line, in DATA pixel space: a point ON the line plus the
+// direction to draw it in (degrees, [0,180), measured from +x). `central` marks
+// the middle spike — the one that moves as you focus.
+export interface BahtinovSpike {
+  x: number;
+  y: number;
+  angle_deg: number;
+  central: boolean;
+}
+// Drawable overlay geometry — present ONLY on a valid fit. Same pixel space as
+// `star_list`, so the client scales it with the same displayScale.
+export interface BahtinovGeom {
+  center: [number, number]; // the star the fit centered on
+  vertex: [number, number]; // crossing of the two outer spikes
+  spikes: BahtinovSpike[]; // 3 lines; exactly one has central:true
+}
 export interface BahtinovInfo {
   valid: boolean;
   offset_px: number | null; // signed central-spike offset; null when invalid
@@ -243,6 +263,7 @@ export interface BahtinovInfo {
   angles_deg: number[]; // the 3 spike angles (empty when invalid)
   tol_px: number;
   reason: string; // plain-language status / why-invalid
+  geom?: BahtinovGeom; // absent on an invalid fit (overlay abstains)
 }
 
 export interface PreviewInfo {
@@ -272,6 +293,9 @@ export interface PreviewInfo {
   hfr?: number;
   stars?: number;
   star_list?: StarMark[];
+  // Median background-subtracted flux (ADU) over the trusted mid-bright stars of
+  // THIS sub — the input to the per-sub SNR chip. Absent when no star qualified.
+  star_flux_median?: number;
   tilt?: TiltInfo; // PRO-13: present only when enough zones are populated
   livestack?: LiveStackInfo; // NOV-1: present only while Live View is armed
   bahtinov?: BahtinovInfo; // NOV-12: present only while the Bahtinov aid is armed
@@ -301,6 +325,10 @@ export interface OverlayToggles {
   reticle: boolean; // default false (full reticle)
   centerMark: boolean; // default TRUE (subtle framing aid)
   tilt: boolean; // default false — tilt/aberration heatmap (PRO-13)
+  // Bahtinov spike overlay: default TRUE. It only ever draws while the aid is
+  // armed AND the fit is valid, so "on" costs a novice nothing — this flag is
+  // purely the expert's opt-out for a clean canvas.
+  bahtinov: boolean;
 }
 
 export interface FocusPoint {
@@ -1021,6 +1049,7 @@ export interface BundleGroupSummary {
   binning: number | null;
   light_count: number;
   accepted_count: number;
+  kept_count?: number;                  // subs with weight >= keep_threshold
   masters: Record<string, boolean>; // {dark:true, flat:true, bias:false}
 }
 export interface BundlePreview {
@@ -1028,8 +1057,21 @@ export interface BundlePreview {
   plan_name: string;
   layout: string;
   weight_altitude: boolean;             // was the opt-in sin(alt) term applied
+  keep_threshold?: number | null;       // normalized-weight tail cutoff, if any
   groups: BundleGroupSummary[];
   warnings: string[];
+}
+/** POST /api/reports/{id}/bundle/materialize — the server laid the actual FITS
+ *  out under captures/exports/<id>/. No file body; counts + the export path. */
+export interface BundleMaterializeResult {
+  export_dir: string;
+  layout: string;
+  linked: number;                       // hardlinked (no extra bytes on disk)
+  copied: number;                       // copy2 fallback (cross-device etc.)
+  bytes_copied: number;
+  failed: { src: string; reason: string }[];
+  groups: { dir: string; linked: number; copied: number }[];
+  hardlink_note: string;
 }
 
 // List-row summary (GET /api/reports) — header fields only, no per-frame payload.

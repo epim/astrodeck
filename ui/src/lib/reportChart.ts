@@ -10,7 +10,12 @@ export interface LiveSample {
   temp: number | null;
 }
 
-export interface TrendGeom { d: string; yMin: number; yMax: number; }
+export interface TrendGeom {
+  d: string; yMin: number; yMax: number;
+  // Present only on the TIME-axis path (trendGeomTimed) and only when the series
+  // actually spans time — the caller uses them for the start/end clock captions.
+  tMin?: number; tMax?: number;
+}
 
 /** Polyline over a fixed w×h box; x by index, y auto-scaled to data
  *  min/max with `padY` fractional headroom. Handles negatives (temp) and
@@ -30,6 +35,51 @@ export function trendGeom(
     .map((v, i) => `${i === 0 ? "M" : "L"}${toX(i).toFixed(1)} ${toY(v).toFixed(1)}`)
     .join(" ");
   return { d, yMin, yMax };
+}
+
+export interface TrendPoint { t: number; v: number; }
+
+/** Polyline with x scaled by REAL time — the report trends carry `[ts, v]` pairs
+ *  and each series is downsampled INDEPENDENTLY (HFR only on lights, temp on every
+ *  frame), so index spacing silently distorts them: an hour-long guiding gap
+ *  compresses to one pixel step and the three panels don't line up in wall-clock
+ *  time. This is the sibling of `trendGeom`, not a replacement — the live
+ *  in-acquisition strip is genuinely index-native and keeps using that one.
+ *
+ *  Degenerate input degrades safely: a single point, all-identical timestamps, or
+ *  any non-finite timestamp falls back to even index spacing (never a divide by
+ *  zero, never a collapse to x=0). Y-scaling is identical to `trendGeom`,
+ *  including the flat-series padding. `null` when empty. */
+export function trendGeomTimed(
+  points: TrendPoint[], w: number, h: number, padY = 0.1,
+): TrendGeom | null {
+  if (points.length === 0) return null;
+  const values = points.map((p) => p.v);
+  let yMin = Math.min(...values), yMax = Math.max(...values);
+  const span = Math.max(yMax - yMin, 1e-6);
+  yMin -= span * padY;
+  yMax += span * padY;
+
+  const times = points.map((p) => p.t);
+  const n = points.length;
+  const usable = n > 1 && times.every((t) => Number.isFinite(t));
+  const tMin = usable ? Math.min(...times) : 0;
+  const tMax = usable ? Math.max(...times) : 0;
+  const tSpan = tMax - tMin;
+  const timed = usable && tSpan > 0;
+
+  const toX = (t: number, i: number) =>
+    timed ? ((t - tMin) / tSpan) * w : n <= 1 ? w : (i / (n - 1)) * w;
+  const toY = (v: number) => h - ((v - yMin) / (yMax - yMin)) * h;
+  // On a real time axis the polyline must walk left-to-right, so order by t (the
+  // server already emits time-ordered frames; this just makes it impossible for an
+  // out-of-order point to draw a backwards zigzag). The index fallback keeps the
+  // caller's order — there, order IS the x axis.
+  const ordered = timed ? [...points].sort((a, b) => a.t - b.t) : points;
+  const d = ordered
+    .map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.t, i).toFixed(1)} ${toY(p.v).toFixed(1)}`)
+    .join(" ");
+  return timed ? { d, yMin, yMax, tMin, tMax } : { d, yMin, yMax };
 }
 
 /** Append one sample; keep at most `cap`, newest last (bounded ring). */

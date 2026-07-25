@@ -40,6 +40,10 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   { id: "sequence", label: "Plan", icon: "plan" },
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
+  // Tonight lands HERE on mobile (polish grab-bag Decision C): the 5-slot primary
+  // bar is full and reordering it would violate the append-only nav rule. The
+  // desktop rail lists it directly.
+  { id: "tonight", label: "Tonight", icon: "moon" },
   { id: "settings", label: "Settings", icon: "settings" },
   // Reports is NOT primary nav (App.tsx VIEWS comment) but needs to stay
   // reachable on a phone even with the engine idle — ReportView's own picker

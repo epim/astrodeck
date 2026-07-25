@@ -99,12 +99,35 @@ def _intersect(line_a, line_b):
     return (float(x), float(y))
 
 
-def bahtinov_offset(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
-    """Fit 3 spikes in a background-subtracted ROI centered at ``(cx, cy)``.
+def _spike_geometry(lines, central, vertex) -> dict:
+    """Overlay geometry for the three fitted spikes, **relative to the ROI center**
+    the Radon was measured from.
 
-    Returns ``(signed_offset_px | None, spike_angles_deg[3], valid, reason)``: the
-    central spike's signed perpendicular offset from the crossing of the two outer
-    spikes (0 == in focus; sign flips across best focus)."""
+    ``_radon`` bins on ``rho = (px-cx)·cosφ + (py-cy)·sinφ``, so a line's foot of
+    perpendicular from that center is ``rho·(cosφ, sinφ)`` and ``_intersect``'s
+    vertex is in the same center-relative frame. ``angle_deg`` is the DRAW
+    direction (the tangent, ``φ + 90°``, folded into ``[0, 180)``) so a client can
+    stroke a full-length line through the point without re-deriving normals.
+    ``analyze_bahtinov`` lifts every coordinate to data space by adding the star
+    center — see its docstring."""
+    spikes = []
+    for line in lines:
+        nx, ny, rho, phi = line
+        spikes.append({
+            "dx": float(rho * nx),
+            "dy": float(rho * ny),
+            "angle_deg": float(np.rad2deg(phi + np.pi / 2.0) % 180.0),
+            "central": line is central,
+        })
+    return {"vertex": (float(vertex[0]), float(vertex[1])), "spikes": spikes}
+
+
+def _fit_spikes(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
+    """The full fit: ``(signed_offset | None, angles_deg, valid, reason, geom)``.
+
+    ``geom`` is the center-relative overlay geometry (``_spike_geometry``) and is
+    ``None`` on every invalid path — the overlay then draws nothing rather than
+    guessing. :func:`bahtinov_offset` is the (unchanged) 4-tuple public wrapper."""
     a = np.asarray(roi, dtype=np.float64)
     a = a - float(np.median(a))
     a = np.clip(a, 0.0, None)
@@ -120,7 +143,7 @@ def bahtinov_offset(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
     strength = R.max(axis=1) - np.median(R, axis=1)
     idx = _spike_angles(strength, angles, n=3)
     if len(idx) < 3:
-        return None, [], False, "need three spikes — point at a bright star through the mask"
+        return None, [], False, "need three spikes — point at a bright star through the mask", None
 
     # Validity floor (design §1.3 step 6): the three picked angles must be real
     # line prominences, not the arbitrary argmax of a flat/starless frame. Each
@@ -131,7 +154,7 @@ def bahtinov_offset(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
     floor = max(0.15 * smax, 2.0 * smed)
     if smax <= 0.0 or min(float(strength[k]) for k in idx) < floor:
         return None, [round(np.rad2deg(float(angles[k])), 2) for k in idx], False, \
-            "spikes too weak — point at a bright star through the mask"
+            "spikes too weak — point at a bright star through the mask", None
 
     lines = []          # (nx, ny, rho, angle_rad)
     for k in idx:
@@ -150,15 +173,29 @@ def bahtinov_offset(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
     sep_r = _circ_sep(central[3], outer[1][3])
     if abs(sep_l - sep_r) > np.deg2rad(8.0) or min(sep_l, sep_r) < np.deg2rad(4.0):
         return None, [round(np.rad2deg(L[3]), 2) for L in lines], False, \
-            "spikes not symmetric — reseat the mask and recenter the star"
+            "spikes not symmetric — reseat the mask and recenter the star", None
 
     v = _intersect(outer[0][:3], outer[1][:3])
     if v is None:
         return None, [round(np.rad2deg(L[3]), 2) for L in lines], False, \
-            "outer spikes parallel — recenter the star"
+            "outer spikes parallel — recenter the star", None
     ncx, ncy, rc, _ = central
     offset = ncx * v[0] + ncy * v[1] - rc      # signed distance of vertex from central line
-    return float(offset), [round(np.rad2deg(L[3]), 2) for L in lines], True, "ok"
+    return (float(offset), [round(np.rad2deg(L[3]), 2) for L in lines], True, "ok",
+            _spike_geometry(lines, central, v))
+
+
+def bahtinov_offset(roi, cx, cy, *, n_angles=360, core_mask_px=8.0):
+    """Fit 3 spikes in a background-subtracted ROI centered at ``(cx, cy)``.
+
+    Returns ``(signed_offset_px | None, spike_angles_deg[3], valid, reason)``: the
+    central spike's signed perpendicular offset from the crossing of the two outer
+    spikes (0 == in focus; sign flips across best focus). Overlay geometry is the
+    5th element of :func:`_fit_spikes`; this wrapper keeps the historical 4-tuple
+    contract for callers that only want the number."""
+    off, angles, valid, reason, _geom = _fit_spikes(
+        roi, cx, cy, n_angles=n_angles, core_mask_px=core_mask_px)
+    return off, angles, valid, reason
 
 
 @dataclass
@@ -179,9 +216,13 @@ class BahtinovResult:
     center: tuple[float, float] | None
     tol_px: float
     reason: str                   # plain-language status / why-invalid
+    #: DATA-space overlay geometry (polish grab-bag (a)); None whenever invalid.
+    #: ``{"center":[cx,cy], "vertex":[vx,vy], "spikes":[{x,y,angle_deg,central}]}``
+    #: — the same pixel space ``star_list`` uses, so the client reuses displayScale.
+    geom: dict | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "valid": self.valid,
             "offset_px": (round(self.offset_px, 2) if self.offset_px is not None else None),
             "in_focus": self.in_focus,
@@ -191,13 +232,24 @@ class BahtinovResult:
             "tol_px": self.tol_px,
             "reason": self.reason,
         }
+        # additive: only a VALID fit carries drawable geometry. Old clients ignore
+        # the key; a client that reads it can trust every coordinate is real.
+        if self.valid and self.geom is not None:
+            d["geom"] = self.geom
+        return d
 
 
 def analyze_bahtinov(data, center=None, *, stars=None, half=128,
                      tol_px=1.5, invert=False) -> BahtinovResult:
     """Full analyzer: pick the brightest star if ``center`` is None, crop a square
-    ROI, run :func:`bahtinov_offset`, and build the verdict. Never raises on a
-    starless/blank frame — returns ``BahtinovResult(valid=False, ...)``."""
+    ROI, run the spike fit, and build the verdict. Never raises on a
+    starless/blank frame — returns ``BahtinovResult(valid=False, ...)``.
+
+    Coordinate lift: the fit measures ``rho``/vertex from the ROI-local center
+    ``(cx - x0, cy - y0)``, which IS the star center in data space, so every
+    center-relative geometry coordinate becomes data space by adding ``(cx, cy)``
+    — no ROI-origin term (the two cancel). The emitted geom is therefore in the
+    same pixel space as ``star_list``."""
     def _invalid(reason, angles=()):
         return BahtinovResult(False, None, False, None, None, list(angles),
                               None, tol_px, reason)
@@ -216,9 +268,16 @@ def analyze_bahtinov(data, center=None, *, stars=None, half=128,
     roi = data[y0:y1, x0:x1]
     if roi.shape[0] < 32 or roi.shape[1] < 32:
         return _invalid("star too close to the edge — recenter it")
-    off, angles, valid, reason = bahtinov_offset(roi, cx - x0, cy - y0)
+    off, angles, valid, reason, geom = _fit_spikes(roi, cx - x0, cy - y0)
     if not valid:
         return _invalid(reason, angles)
+    data_geom = {
+        "center": [round(cx, 1), round(cy, 1)],
+        "vertex": [round(cx + geom["vertex"][0], 1), round(cy + geom["vertex"][1], 1)],
+        "spikes": [{"x": round(cx + s["dx"], 1), "y": round(cy + s["dy"], 1),
+                    "angle_deg": round(s["angle_deg"], 1), "central": s["central"]}
+                   for s in geom["spikes"]],
+    }
     in_focus = abs(off) <= tol_px
     side = None if in_focus else ("left" if off < 0 else "right")
     direction = None
@@ -228,4 +287,4 @@ def analyze_bahtinov(data, center=None, *, stars=None, half=128,
     reason = ("locked — you're focused" if in_focus
               else f"middle spike {abs(off):.1f} px {side} of the crossing")
     return BahtinovResult(valid, off, in_focus, side, direction, angles,
-                          (cx, cy), tol_px, reason)
+                          (cx, cy), tol_px, reason, geom=data_geom)
