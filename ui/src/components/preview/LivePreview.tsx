@@ -22,14 +22,12 @@ import {
 import { Panel } from "../ui";
 import { LiveStackReadout } from "./LiveStackReadout";
 import { PreviewMeta } from "./PreviewMeta";
-import { PreviewStage } from "./PreviewStage";
+import { PreviewStage, type StageControls } from "./PreviewStage";
 import { PreviewToolbar } from "./PreviewToolbar";
 import { StretchHistogram } from "./StretchHistogram";
 import { FrameFilmstrip } from "./FrameFilmstrip";
 import { FocusVerdict } from "./FocusVerdict";
 import { FrameStats } from "./FrameStats";
-
-type StageControls = { fit: () => void; hundred: () => void; zoomIn: () => void; zoomOut: () => void };
 
 export function LivePreview() {
   const previews = usePreviews();
@@ -60,6 +58,11 @@ export function LivePreview() {
 
   const [stretchDragging, setStretchDragging] = useState(false);
   const controls = useRef<StageControls | null>(null);
+  // The 1:1 loupe's state LIVES in PreviewStage (Decision F — ephemeral view
+  // state, no store slice). We only mirror it here so the toolbar's toggle can
+  // render its pressed/disabled state; the mirror is guarded so an unchanged
+  // controls callback can never loop.
+  const [loupe, setLoupe] = useState({ on: false, available: false });
 
   const pinned = selectedId != null && selectedId !== liveId;
   // count live arrivals since the pin (frames with id > pinned id)
@@ -103,7 +106,14 @@ export function LivePreview() {
           newSincePinned={newSincePinned}
           onReturnToLive={() => selectPreview(null)}
           stretchDragging={stretchDragging}
-          onControls={(c) => (controls.current = c)}
+          onControls={(c) => {
+            controls.current = c;
+            setLoupe((p) =>
+              p.on === c.loupeOn && p.available === c.loupeAvailable
+                ? p
+                : { on: c.loupeOn, available: c.loupeAvailable },
+            );
+          }}
         />
 
         <PreviewToolbar
@@ -119,6 +129,10 @@ export function LivePreview() {
           clipAvailable={clipAvailable}
           linkDown={linkDown}
           shareMeta={{ target: sequence.target, subs: sequence.progress?.frames_done }}
+          stretch={stretch}
+          loupeOn={loupe.on}
+          loupeAvailable={loupe.available}
+          onLoupe={(v) => controls.current?.setLoupeOn(v)}
         />
 
         {shown && <FrameStats preview={shown} hfrGood={hfrGood} hfrWarn={hfrWarn} />}
