@@ -130,6 +130,75 @@ async def test_assistant_refuses_outside_exclusive_window(setup, needle):
     await g.disconnect()
 
 
+# -------------------------------------------- mutual exclusion (review must-fix)
+def _idle_guider():
+    """A NativeGuider over the sim rig, NOT connected — enough for the guards,
+    which all fire before any engine/wheel work."""
+    from astrodeck.devices.sim import build_sim_rig
+    from astrodeck.guide.native import NativeGuider
+
+    rig = build_sim_rig()
+    return NativeGuider(rig["guide_camera"], rig["telescope"],
+                        config={"image_scale_arcsec": 1.0}, profile_id=None)
+
+
+@pytest.mark.parametrize("initiator", ["start_guiding", "dither"])
+async def test_mount_is_exclusive_while_the_assistant_runs(initiator):
+    """The exclusive mount window is MUTUAL. While the assistant owns the mount
+    (raw N/S pulses + the guide camera), a guide start arriving from ANY lane —
+    including the sequence engine's direct ``hub.guider.start_guiding()`` that
+    never touches HTTP — is refused, and ``_start_lock`` is held for the whole
+    run so there is no check-then-use window to slip through."""
+    g = _idle_guider()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _body(opts, progress):               # stands in for the real run
+        started.set()
+        await release.wait()
+        return {"ok": True}
+
+    g._run_guiding_assistant_locked = _body
+    task = asyncio.create_task(g.run_guiding_assistant({}))
+    await asyncio.wait_for(started.wait(), 5.0)
+    assert g._start_lock.locked(), "the assistant must hold the start lock"
+
+    with pytest.raises(DeviceError) as ei:
+        await getattr(g, initiator)()
+    assert "Guiding Assistant" in str(ei.value)
+
+    release.set()
+    await asyncio.wait_for(task, 5.0)
+    # ...and the window reopens cleanly once the run ends (try/finally).
+    assert g._assistant_active is False
+    assert not g._start_lock.locked()
+
+
+async def test_assistant_refuses_while_guiding_and_ticks_the_error():
+    """The other direction plus the terminal tick: a failed/refused run must
+    publish {phase:"error", message} or the panel's progress bar runs forever."""
+    g = _idle_guider()
+    g._active = True                               # pretend a guide loop owns us
+    ticks: list[dict] = []
+    with pytest.raises(DeviceError):
+        await g.run_guiding_assistant({}, on_progress=ticks.append)
+    assert ticks and ticks[-1]["phase"] == "error"
+    assert "stop guiding" in ticks[-1]["message"]
+
+    g._active = False
+    ticks.clear()
+
+    async def _boom(opts, progress):
+        raise DeviceError("native guider: Guiding Assistant found no guide star")
+
+    g._run_guiding_assistant_locked = _boom
+    with pytest.raises(DeviceError):
+        await g.run_guiding_assistant({}, on_progress=ticks.append)
+    assert ticks[-1]["phase"] == "error"
+    assert "no guide star" in ticks[-1]["message"]
+    assert g._assistant_active is False
+
+
 # ------------------------------------------------------------- edge guard (§8)
 def test_backlash_edge_guard_halts_before_walking_off_frame():
     """SAFETY GUARD 1: a star already within ``margin`` px of a frame edge yields
