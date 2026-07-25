@@ -109,6 +109,47 @@ export function integrationByFilter(
   return order.map((f) => ({ filter: f, seconds: acc.get(f) ?? 0 }));
 }
 
+// ---------------------------------------------------------------- per-sub SNR
+// Polish grab-bag (b): an ABSOLUTE per-star SNR for THIS sub, from the server's
+// background-subtracted star flux (ADU) and the user's photometry profile. It is
+// deliberately a per-SUB number — never the stacked result (that is
+// `stackedSnr(snr, n)`), and the copy at every call site must say "this sub".
+
+export interface PerSubSnrInput {
+  fluxAdu: number;      // background-subtracted star flux in THIS sub
+  egain: number;        // e-/ADU
+  biasAdu: number;      // bias pedestal (ADU)
+  medianAdu: number;    // frame background median (ADU) — the sky term
+  readNoiseE: number;   // read noise (e-)
+}
+export interface PerSubSnr {
+  ok: boolean;
+  snr: number;          // 0 when !ok
+  signalE: number;      // star electrons in this sub
+  noise: SubNoise | null;
+  reason?: string;      // plain-language why-not, when !ok
+}
+
+/** Per-sub SNR of one star: signal = flux x egain (flux is already background-
+ *  subtracted, so no bias term on the signal), noise = sqrt(sky + read²) from the
+ *  existing tested primitives. `ok:false` with an honest prompt when the
+ *  photometry profile is unset — identical posture to `suggestSubLength`. */
+export function perSubSnrFromFlux(inp: PerSubSnrInput): PerSubSnr {
+  const { fluxAdu, egain, biasAdu, medianAdu, readNoiseE } = inp;
+  if (!(egain > 0) || !(readNoiseE > 0)) {
+    return { ok: false, snr: 0, signalE: 0, noise: null,
+      reason: "Add your camera's gain (e-/ADU) and read noise (e-) to see SNR." };
+  }
+  if (!(fluxAdu > 0)) {
+    return { ok: false, snr: 0, signalE: 0, noise: null,
+      reason: "No measured star flux in this sub yet." };
+  }
+  const signalE = fluxAdu * egain;
+  const skyE = skyElectronsPerSub(medianAdu, biasAdu, egain);
+  const noise = subNoise(skyE, readNoiseE);
+  return { ok: true, snr: subSnr(signalE, noise), signalE, noise };
+}
+
 export interface SuggestInput {
   medianAdu: number; biasAdu: number; egain: number; readNoiseE: number;
   exposureS: number; minSubS?: number; maxSubS?: number; factor?: number;

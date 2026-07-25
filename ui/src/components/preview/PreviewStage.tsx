@@ -29,6 +29,8 @@ import { ScaleBar } from "./ScaleBar";
 import { StarOverlay } from "./StarOverlay";
 import { ClipMaskLayer, type ClipCropPixels } from "./ClipMaskLayer";
 import { TiltOverlay } from "./TiltOverlay";
+import { BahtinovOverlay } from "./BahtinovAid";
+import { SnrChip } from "./SnrChip";
 import { tiltSummary } from "../../lib/tilt";
 import { useCropZoom } from "./useCropZoom";
 import { CropOverlay } from "./CropOverlay";
@@ -333,6 +335,10 @@ export function PreviewStage(props: Props) {
 
   const starsAvailable = !!preview?.star_list && preview.star_list.length > 0;
   const tiltAvailable = !!preview?.tilt;
+  // bottom-left chip stack: selected-star readout, then the tilt verdict, then the
+  // per-sub SNR chip — each one lifts the next by a row so they never overlap.
+  const chipRows = (selectedStar ? 1 : 0) + (overlays.tilt && tiltAvailable ? 1 : 0);
+  const snrChipPos = chipRows >= 2 ? "bottom-20" : chipRows === 1 ? "bottom-11" : "bottom-2";
 
   // NINA / pre-stretched path: Brightness/Contrast are display-only and MUST
   // visibly act on the rendered <img> (honesty rule #6 — no fake control). We
@@ -479,6 +485,21 @@ export function PreviewStage(props: Props) {
               />
             </g>
           )}
+          {/* Bahtinov spikes (polish grab-bag (a)) — LAST inside the shared
+              transform so the focus lines sit over the star overlay, in exactly
+              the same data->display space (displayScale), and only while the aid
+              is armed AND the server sent a valid fit. Passive: pointer-events
+              off (it must never eat a star tap). `!== false` so a persisted
+              pre-grab-bag overlay blob still defaults ON. */}
+          {overlays.bahtinov !== false && preview.bahtinov?.geom && (
+            <BahtinovOverlay
+              geom={preview.bahtinov.geom}
+              dispW={dispW}
+              dispH={dispH}
+              displayScale={displayScale}
+              inFocus={!!preview.bahtinov.in_focus}
+            />
+          )}
           <Reticle w={dispW} h={dispH} centerMark={overlays.centerMark} reticle={overlays.reticle} />
         </svg>
       </div>
@@ -549,6 +570,11 @@ export function PreviewStage(props: Props) {
           </div>
         );
       })()}
+
+      {/* per-sub SNR chip (polish grab-bag (b)). Self-subscribes to the photometry
+          profile and renders NOTHING when it is unset or when this frame carried
+          no trusted star flux — zero novice clutter, never a fabricated number. */}
+      <SnrChip preview={preview} star={selectedStar} className={`absolute ${snrChipPos} left-2`} />
 
       {/* decimation disclosure — lifted clear of the loupe when it's open */}
       {overlays.stars && starsAvailable && decimated && decimated.shown < decimated.total && (

@@ -3,7 +3,10 @@
 // no vitest/jest wired into this UI. Compiles under `tsc -b`; run directly with a
 // TS-aware runner:  npx tsx src/lib/__tests__/reportChart.test.ts
 
-import { trendGeom, pushLiveSample, pickSeries, endReasonMeta, type LiveSample } from "../reportChart";
+import {
+  trendGeom, trendGeomTimed, pushLiveSample, pickSeries, endReasonMeta,
+  type LiveSample,
+} from "../reportChart";
 
 // ---------------------------------------------------------------- harness
 let passed = 0;
@@ -128,6 +131,47 @@ test("endReasonMeta: null -> IN PROGRESS/warn", () => {
 });
 test('endReasonMeta: unknown "weird" -> uppercased word/warn', () => {
   deepEq(endReasonMeta("weird"), { word: "WEIRD", tone: "warn" });
+});
+
+// ------------------------------------------------- trendGeomTimed (grab-bag d)
+// x by REAL time, with every degenerate series degrading safely (no NaN, no
+// divide-by-zero, never a collapse to x=0).
+const xsOf = (d: string): number[] =>
+  d.split(/[ML]/).filter((s) => s.trim()).map((s) => parseFloat(s.trim().split(" ")[0]));
+
+test("trendGeomTimed: x is proportional to real time, not index", () => {
+  // three points at t=0,10,100 over w=100 -> x = 0, 10, 100 (index spacing would
+  // have put the middle point at 50 — the whole bug this fixes).
+  const g = trendGeomTimed([{ t: 0, v: 1 }, { t: 10, v: 2 }, { t: 100, v: 3 }], 100, 50);
+  assert(g !== null, "non-null");
+  deepEq(xsOf(g!.d), [0, 10, 100], "time-proportional x");
+  eq(g!.tMin, 0, "tMin");
+  eq(g!.tMax, 100, "tMax");
+});
+
+test("trendGeomTimed: degenerate series fall back to index spacing without NaN", () => {
+  const cases: { name: string; pts: { t: number; v: number }[]; xs: number[] }[] = [
+    { name: "single point", pts: [{ t: 1700, v: 5 }], xs: [100] },
+    { name: "identical timestamps (clock glitch)",
+      pts: [{ t: 42, v: 1 }, { t: 42, v: 2 }, { t: 42, v: 3 }], xs: [0, 50, 100] },
+    { name: "non-finite timestamp",
+      pts: [{ t: NaN, v: 1 }, { t: 10, v: 2 }], xs: [0, 100] },
+  ];
+  for (const c of cases) {
+    const g = trendGeomTimed(c.pts, 100, 50);
+    assert(g !== null, c.name);
+    deepEq(xsOf(g!.d), c.xs, c.name);
+    assert(!/NaN|Infinity/.test(g!.d), `${c.name}: path has no NaN/Infinity — ${g!.d}`);
+    // no honest time span => no clock captions (the caller drops them).
+    eq(g!.tMin, undefined, `${c.name}: tMin absent`);
+  }
+  eq(trendGeomTimed([], 100, 50), null, "empty -> null");
+  // a FLAT series still scales its y exactly like the index path (padded band).
+  const flatT = trendGeomTimed([{ t: 0, v: 3 }, { t: 5, v: 3 }], 100, 50)!;
+  const flatI = trendGeom([3, 3], 100, 50)!;
+  assert(!/NaN/.test(flatT.d), "flat series is finite");
+  eq(flatT.yMin, flatI.yMin, "flat yMin matches the index path");
+  eq(flatT.yMax, flatI.yMax, "flat yMax matches the index path");
 });
 
 // ---------------------------------------------------------------- report

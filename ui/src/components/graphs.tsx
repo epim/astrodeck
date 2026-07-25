@@ -5,7 +5,7 @@
  *  Histogram collapsed to a single <path>, guide graphs React.memo'd (perf review). */
 import { memo, useMemo } from "react";
 import type { FocusPoint } from "../types";
-import { trendGeom } from "../lib/reportChart";
+import { trendGeom, trendGeomTimed } from "../lib/reportChart";
 
 export const Histogram = memo(function Histogram({ data }: { data: number[] }) {
   const w = 256, h = 64;
@@ -248,15 +248,38 @@ export const GuideScatter = memo(function GuideScatter({ samples }: { samples: {
 });
 
 // ------------------------------------------------------------------ TrendLine
-// Night-safe time-series line consuming `trendGeom` (report viewer spec §3
-// Task 2). Reused by both the end-of-night report trends and the live
-// in-acquisition strip — one primitive, x by index (the backend already
-// downsamples each series to <=200 time-ordered points, so index-spacing
-// already tracks time closely; a true time axis is later polish).
+/** hh:mm for a trend-axis caption. `t` is epoch SECONDS — the unit the report
+ *  trends carry ([ts, v] from report.trends, same as ReportView's ev.ts). */
+function fmtClock(t: number): string {
+  return new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// Night-safe time-series line (report viewer spec §3 Task 2). Reused by both the
+// end-of-night report trends and the live in-acquisition strip.
+//
+// TWO x-axis modes, one primitive:
+//   - `times` omitted  -> x by INDEX (`trendGeom`). The live in-acquisition strip
+//     is index-native (one sample per sub, drawn as it arrives) and is untouched.
+//   - `times` given    -> x by REAL TIME (`trendGeomTimed`), the report path: each
+//     report series is downsampled independently, so a pause or a lights-only
+//     series would otherwise plot with a lying x-axis. With real time the panels
+//     line up in wall-clock and a gap reads as a gap. Faint start/end clock
+//     captions are drawn under the line whenever the series actually spans time
+//     (polish grab-bag Decision D) — dropped when it doesn't, rather than
+//     printing the same minute twice.
 export const TrendLine = memo(function TrendLine({
-  values, label, unit = "", decimals = 2, w = 240, h = 56,
-}: { values: number[]; label: string; unit?: string; decimals?: number; w?: number; h?: number; }) {
-  const geom = useMemo(() => trendGeom(values, w, h), [values, w, h]);
+  values, times, label, unit = "", decimals = 2, w = 240, h = 56,
+}: {
+  values: number[]; times?: number[]; label: string; unit?: string;
+  decimals?: number; w?: number; h?: number;
+}) {
+  const geom = useMemo(
+    () =>
+      times && times.length === values.length
+        ? trendGeomTimed(values.map((v, i) => ({ t: times[i], v })), w, h)
+        : trendGeom(values, w, h),
+    [values, times, w, h],
+  );
   const last = values.length ? values[values.length - 1] : null;
   return (
     <div className="flex flex-col gap-0.5">
@@ -279,6 +302,18 @@ export const TrendLine = memo(function TrendLine({
         <div className="flex justify-between mono text-[9px] text-dim/70 tabular-nums">
           <span>{geom.yMin.toFixed(decimals)}{unit}</span>
           <span>{geom.yMax.toFixed(decimals)}{unit}</span>
+        </div>
+      )}
+      {/* real-time axis captions (only on the timed path, only when the series
+          spans time). Faint + off the novice's critical path: the corrected
+          spacing is the feature, these just name its ends. */}
+      {geom?.tMin != null && geom.tMax != null && (
+        <div
+          className="flex justify-between mono text-[9px] text-dim/50 tabular-nums"
+          title="Wall-clock span of this trend — the line is plotted on a real time axis"
+        >
+          <span>{fmtClock(geom.tMin)}</span>
+          <span>{fmtClock(geom.tMax)}</span>
         </div>
       )}
     </div>

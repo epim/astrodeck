@@ -46,6 +46,7 @@ from .imaging import (
     frame_tilt,
     measure_stars,
     save_fits,
+    star_flux_median,
     stretch_with,
     to_jpeg,
     to_png,
@@ -1880,6 +1881,14 @@ class Hub:
                                 "white": round(white, 4)},
                 "star_list": marks,
             })
+            # Absolute per-SUB SNR input (polish grab-bag (b)): the median
+            # background-subtracted flux of the SAME trusted mid-bright stars the
+            # marks come from, over the same single detection pass. The client
+            # multiplies by its own e-/ADU gain to show a real "this sub" SNR.
+            # Omitted entirely when no star passes the gate — honest abstain.
+            fmed = star_flux_median(stars, full_well=info["full_well"])
+            if fmed is not None:
+                info["star_flux_median"] = round(fmed, 1)
             # Representative frame eccentricity = median of the trusted marks'
             # ecc (no second detection pass). setdefault so a backend-supplied
             # ecc (native/NINA) wins, mirroring hfr/stars below.

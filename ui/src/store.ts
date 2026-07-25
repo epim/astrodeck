@@ -270,6 +270,10 @@ function defaultOverlays(): OverlayToggles {
     reticle: false,
     centerMark: true, // subtle framing aid on by default
     tilt: false, // PRO-13 tilt/aberration heatmap
+    // ON by default: the Bahtinov spike overlay only draws while the aid is armed
+    // and the fit is valid, so the novice gets the visual for free; this flag is
+    // the expert's opt-out (polish grab-bag Decision B).
+    bahtinov: true,
   };
 }
 

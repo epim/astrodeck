@@ -137,6 +137,36 @@ def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]
     return _median_hfr_from(detect_stars(data), min_stars)
 
 
+def _mid_bright_gate(stars: list[Star], full_well: int | None) -> tuple[float, float | None]:
+    """``(peak floor, saturation ceiling|None)`` for the "trusted mid-bright"
+    population: brighter than 5% of the median peak (above the noise-floor
+    detections) and below 90% of full well (not a flat-top). ONE definition,
+    shared by ``star_marks`` (which attaches ecc/theta only there) and
+    ``star_flux_median`` (which averages flux only there)."""
+    floor = float(np.median([s.peak for s in stars])) * 0.05 if stars else 0.0
+    sat = (full_well * 0.9) if full_well else None
+    return floor, sat
+
+
+def star_flux_median(stars: list[Star], *, full_well: int | None = None) -> float | None:
+    """Median background-subtracted flux (ADU) over the trusted mid-bright stars.
+
+    The client turns this into an honest per-SUB SNR (flux x e-/ADU against the
+    sub's sky+read noise) — never a stacked-SNR claim. Deliberately a standalone
+    helper rather than a 4th ``measure_stars`` return value: the hot measure path
+    keeps its 3-tuple contract and every existing call site is untouched.
+
+    ``None`` when no star passes the gate (empty list, all saturated, or all at
+    the noise floor) — the caller then omits the key and the client shows
+    nothing rather than a number built from noise."""
+    if not stars:
+        return None
+    floor, sat = _mid_bright_gate(stars, full_well)
+    fluxes = [float(s.flux) for s in stars
+              if s.peak > floor and (sat is None or s.peak < sat)]
+    return float(np.median(fluxes)) if fluxes else None
+
+
 def star_marks(stars: list[Star], *, full_well: int | None = None,
                max_marks: int = DEFAULT_MAX_MARKS) -> list[dict]:
     """Compact per-star overlay payload: ``[{x, y, hfr[, ecc, theta]}]``.
@@ -158,10 +188,7 @@ def star_marks(stars: list[Star], *, full_well: int | None = None,
         "star_marks max_marks must be >= detect_stars max_stars so the overlay "
         "never drops detected stars")
     marks: list[dict] = []
-    floor = 0.0
-    if stars:
-        floor = float(np.median([s.peak for s in stars])) * 0.05
-    sat = (full_well * 0.9) if full_well else None
+    floor, sat = _mid_bright_gate(stars, full_well)
     for s in sorted(stars, key=lambda s: -s.flux)[:max_marks]:
         m = {"x": round(float(s.x), 1), "y": round(float(s.y), 1),
              "hfr": round(float(s.hfr), 2)}
