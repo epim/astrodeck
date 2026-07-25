@@ -84,7 +84,13 @@ def _normalize(conn: ConnSpec) -> EndpointKey:
 
     Normalizing off ``get_backend(name).hostless`` (NOT a literal ``{sim, phd2}``
     name set) means all sim roles always collapse to ``("sim", None, None)`` and
-    a stray host on a sim/phd2-local override can never split the shared state."""
+    a stray host on a sim/phd2-local override can never split the shared state.
+
+    SERIAL transport carries its address in ``port_path`` (COM3 / /dev/ttyACM0)
+    and leaves host/port at None, so keying on host/port alone would coalesce two
+    DIFFERENT serial units of the same backend into ONE session — the second
+    role would silently be served from the first unit's port. The serial address
+    therefore takes the host slot (the key is opaque; shape is preserved)."""
     name = conn.backend
     try:
         hostless = bool(getattr(get_backend(name), "hostless", False))
@@ -93,6 +99,8 @@ def _normalize(conn: ConnSpec) -> EndpointKey:
         hostless = False
     if hostless:
         return (name, None, None)
+    if getattr(conn, "transport", "network") == "serial":
+        return (name, conn.port_path, None)
     return (name, conn.host, conn.port)
 
 
