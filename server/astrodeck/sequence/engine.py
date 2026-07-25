@@ -67,6 +67,13 @@ SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
+# --- target-jump budget (control-flow expansion) ---------------------------
+# Hard per-run ceiling on EXECUTED run_target/skip_target jumps. This is the
+# real backstop against a mutual-jump cycle (A -> run B, B -> run A, neither
+# ever completing): once the budget is spent, further jumps are IGNORED with a
+# warning and the scheduler degrades to normal ordering. Degrade-and-warn, never
+# abort — finishing the plan beats killing a real imaging night over a rule typo.
+MAX_JUMPS = 64
 # --- meridian-flip trigger (server HA countdown) ---------------------------
 # Slack added to the next exposure when deciding "would this frame cross the flip
 # point?": we never START an exposure that cannot finish (plus download/settle
@@ -170,6 +177,19 @@ class StopTarget(Exception):
     skip-ahead loop, marks the target skipped, and moves on (§1.9-C)."""
 
 
+class JumpTarget(Exception):
+    """Raised by a fired ``run_target``/``skip_target`` instruction to redirect
+    the SCHEDULER (control-flow expansion). Mirrors :class:`StopTarget` exactly:
+    raised only at a frame boundary in ``_dispatch_actions``, unwinds out of
+    ``_run_step`` and the step loop, and is caught by ``_run_scheduled``'s
+    per-target try — it NEVER aborts the night."""
+
+    def __init__(self, kind: str, name: str):
+        super().__init__(f"{kind} target {name!r}")
+        self.kind = kind        # "run" | "skip"
+        self.name = name
+
+
 class NightQualityStop(Exception):
     """Per-night consecutive-reject guard tripped (spec §3): end the night
     early -> session dormant, ``end_reason="quality"``. Caught in ``_run`` as
@@ -244,6 +264,17 @@ class SequenceEngine:
         # once/cooldown state), keyed by instruction id. Empty + never touched
         # when plan.instructions == [] (the byte-identical no-op path).
         self._fire_state: dict[str, FireRecord] = {}
+        # Executed target-jumps this run (control-flow expansion). Inert at 0
+        # unless a run_target/skip_target action actually fires; capped by
+        # MAX_JUMPS so a mutual-jump cycle can never spin forever.
+        self._jumps_spent = 0
+        # Names queued by a ``skip_target`` aimed at a FUTURE target. Skipping a
+        # target you are not currently shooting must NOT abandon the one you are
+        # (that would silently throw away the rest of its subs), so those skips
+        # are recorded here and drained by the scheduler when the target comes
+        # up, instead of unwinding the frame loop. A set => idempotent, so a rule
+        # that re-fires every frame can never queue work or loop.
+        self._pending_skips: set[str] = set()
         self._cfg = None                    # config snapshot taken at start()
         self._dawn_cutoff = False           # scheduler ran out of open windows
         # AlertDispatcher for the external dead-man's-switch + progress heartbeat
@@ -309,6 +340,8 @@ class SequenceEngine:
         self._frozen = {}
         self._retakes_per_target = {}
         self._fire_state = {}
+        self._jumps_spent = 0
+        self._pending_skips = set()
         self._dawn_cutoff = False
         self._task = asyncio.create_task(self._run())
 
@@ -806,6 +839,19 @@ class SequenceEngine:
 
         while remaining:
             await self._checkpoint()
+            # Drain skips queued by a skip_target aimed at a FUTURE target (the
+            # current target was left running on purpose). Pure list surgery, no
+            # device I/O. Names are matched against what is still remaining, so
+            # an unknown/already-gone name is a harmless no-op.
+            if self._pending_skips:
+                for _t in [t for t in remaining if t.name in self._pending_skips]:
+                    bus.log("info", f"{_t.name}: skipped by instruction", "sequence")
+                    if self.reporter:
+                        self.reporter.mark_skipped(_t)
+                    remaining.remove(_t)
+                self._pending_skips.clear()
+                if not remaining:
+                    break
             now = time.time()
             ready = None
             earliest = None         # (start_ts, target) of the soonest waiter
@@ -851,6 +897,12 @@ class SequenceEngine:
                     bus.log("info", f"{ready.name}: skipped — {e}", "sequence")
                     if self.reporter:
                         self.reporter.mark_skipped(ready)
+                except JumpTarget as j:
+                    # control-flow expansion: a fired run_target/skip_target
+                    # instruction redirects the scheduler. Like StopTarget this
+                    # NEVER ends the night — an unknown/degenerate jump is a
+                    # logged no-op and the normal ordering carries on.
+                    self._apply_jump(plan, j, ready, remaining)
                 remaining.remove(ready)
                 continue
 
@@ -891,6 +943,60 @@ class SequenceEngine:
                 await self._wait_until(time.time() + SCHEDULE_WAIT_STEP_S)
 
         # loop exhausted naturally → all targets ran (or were skipped above).
+
+    def _apply_jump(self, plan: SequencePlan, j: "JumpTarget", ready: Target,
+                    remaining: list[Target]) -> None:
+        """Apply a caught :class:`JumpTarget` to the scheduler's ``remaining``
+        queue (control-flow expansion). Pure list surgery + logging — no device
+        I/O, so it is safe in the scheduler's except arm. The caller removes
+        ``ready`` right after, which is what abandons the current target.
+
+        Because the jump is delivered as an exception at the frame boundary, the
+        ACTIVE target is abandoned by the caller. That is correct for ``run``
+        (abandon-and-jump) and for a ``skip`` aimed at the target being shot. A
+        ``skip`` aimed at some OTHER (future) target never reaches here at all —
+        ``_dispatch_actions`` queues it in ``_pending_skips`` and the scheduler
+        drains it, so the running target keeps shooting.
+
+        ``skip``: drop the named target from the night (no-op when it is already
+        gone or unknown). ``run``: move the named target to the FRONT so it is
+        the next one selected; a jump to the ACTIVE target is a deliberate no-op
+        (the trivial self-loop). Names are matched by identity within
+        ``plan.targets`` so duplicate-valued targets can never be confused."""
+        name = (j.name or "").strip()
+        dest = next((t for t in plan.targets if t.name == name), None)
+
+        def _drop(t: Target) -> None:
+            for k, cur in enumerate(remaining):
+                if cur is t:
+                    del remaining[k]
+                    return
+
+        if dest is None:
+            bus.log("warning",
+                    f"instruction {j.kind}_target: no target named {name!r} "
+                    "— ignored", "sequence")
+            return
+        if j.kind == "skip":
+            bus.log("info", f"instruction: skipping target {name!r}", "sequence")
+            if self.reporter:
+                self.reporter.mark_skipped(dest)
+            if dest is not ready:
+                _drop(dest)
+            return
+        # kind == "run"
+        if dest is ready:
+            bus.log("info",
+                    f"instruction run_target: {name!r} is already running — no-op",
+                    "sequence")
+            return
+        _drop(dest)
+        remaining.insert(0, dest)
+        bus.log("info",
+                f"instruction: jumping to target {name!r} "
+                f"(abandoning {ready.name})", "sequence")
+        if self.reporter:
+            self.reporter.mark_skipped(ready)
 
     async def _wait_until(self, deadline_ts: float) -> None:
         """Bounded, cancel- and pause-responsive wait until ``deadline_ts`` (or a
@@ -2233,10 +2339,45 @@ class SequenceEngine:
         other action is individually guarded so a notify/dither/refocus hiccup
         never breaks capture. ``refocus``/``dither`` set ``_frame_had_event`` so
         their wall-time is excluded from the overhead EMA (like the built-in
-        dither/AF blocks)."""
+        dither/AF blocks).
+
+        ``run_target``/``skip_target`` (control-flow expansion) likewise raise
+        OUTSIDE the try — a :class:`JumpTarget` that ``_run_scheduled`` catches —
+        and are the ONLY new branch here, spending from the ``MAX_JUMPS``
+        budget. With neither action authored this method behaves exactly as
+        before."""
         for fa in fired:
             if fa.action == "abort":
                 raise SafetyAbort(fa.message or "aborted by sequence instruction")
+            if fa.action == "skip_target":
+                # Skipping a target we are NOT shooting must not abandon the one
+                # we are: queue the name and let the scheduler drop it when it
+                # comes up (no unwind, current target keeps shooting). Skipping
+                # the ACTIVE target still falls through to the jump raise below,
+                # where abandoning it IS the requested behavior.
+                _skip_name = (fa.target_arg or "").strip()
+                if _skip_name and _skip_name != target.name:
+                    if _skip_name not in self._pending_skips:
+                        self._pending_skips.add(_skip_name)
+                        bus.log("info",
+                                f"instruction: target {_skip_name!r} queued to be "
+                                "skipped (current target continues)", "sequence")
+                    continue
+            if fa.action in ("run_target", "skip_target"):
+                # Raised OUTSIDE the try (like abort) so it always unwinds
+                # cleanly out of _run_step's frame loop to _run_scheduled. This
+                # is a FRAME BOUNDARY — the same safe point StopTarget uses — so
+                # no per-frame cleanup can be skipped. Budget-exhausted jumps
+                # degrade to a warning and normal scheduling (never a hang).
+                if self._jumps_spent >= MAX_JUMPS:
+                    bus.log("warning",
+                            f"target-jump budget exhausted ({MAX_JUMPS}) — "
+                            f"ignoring '{fa.action}' to {fa.target_arg!r}; "
+                            "continuing with normal scheduling", "sequence")
+                    continue
+                self._jumps_spent += 1
+                raise JumpTarget("run" if fa.action == "run_target" else "skip",
+                                 fa.target_arg or "")
             try:
                 if fa.action == "notify":
                     bus.log(fa.level, fa.message or "sequence instruction", "sequence")

@@ -70,7 +70,45 @@ TriggerKind = Literal[
     "on_hfr_above", "on_guide_rms_above", "on_frame_rejected",
     "on_target_complete", "at_time",
 ]
-ActionKind = Literal["notify", "pause", "refocus", "dither", "abort"]
+ActionKind = Literal[
+    "notify", "pause", "refocus", "dither", "abort",
+    # --- control-flow expansion (ADDITIVE): target jumps. Both need target_arg.
+    "run_target", "skip_target",
+]
+
+# Leaf predicate vocabulary for the bounded compound grammar. Deliberately the
+# SAME closed vocabulary as TriggerKind (minus the "on_" prefix) — a compound is
+# a composition of the existing bounded predicate set, never a scripting runtime.
+PredicateKind = Literal[
+    "hfr_above", "guide_rms_above", "frame_rejected", "target_complete", "at_time",
+]
+
+
+def _bad_hhmm(value: str | None) -> bool:
+    m = _HHMM_RE.match(value or "")
+    return not m or int(m.group(1)) >= 24 or int(m.group(2)) >= 60
+
+
+class Predicate(BaseModel):
+    """One leaf term of a compound condition. Mirrors a flat trigger's inputs."""
+    kind: PredicateKind
+    threshold: float = Field(0.0, ge=0)   # hfr_above / guide_rms_above value
+    at_time: str | None = None            # "HH:MM" 24h local; required when kind==at_time
+
+    @model_validator(mode="after")
+    def _validate_at_time(self) -> "Predicate":
+        if self.kind == "at_time" and _bad_hhmm(self.at_time):
+            raise ValueError(
+                "predicate 'at_time' requires at_time in 'HH:MM' 24h form")
+        return self
+
+
+class Condition(BaseModel):
+    """A bounded, ONE-LEVEL compound condition: an ``all``(AND) / ``any``(OR)
+    over 2..8 leaf predicates. No nesting in v1 — ``terms`` holds leaves only,
+    so the grammar stays a closed vocabulary rather than an expression tree."""
+    op: Literal["all", "any"]
+    terms: list[Predicate] = Field(min_length=2, max_length=8)
 
 
 class Instruction(BaseModel):
@@ -82,7 +120,12 @@ class Instruction(BaseModel):
     Triggers: ``on_hfr_above``/``on_guide_rms_above`` are edge-triggered against
     ``threshold``; ``on_frame_rejected``/``on_target_complete`` are per-event;
     ``at_time`` fires once at the first frame boundary at/after ``at_time``.
-    Actions each map 1:1 to an EXISTING engine capability (no new teardown)."""
+    Actions each map 1:1 to an EXISTING engine capability (no new teardown).
+
+    Control-flow expansion (additive): ``when`` carries an optional bounded
+    1-level AND/OR compound that OVERRIDES ``trigger`` when set, and
+    ``run_target``/``skip_target`` actions carry their destination in
+    ``target_arg``. Both default to None => the PRO-3 path, unchanged."""
     # stable identity (like Target/ExposureStep); backfilled on validation so an
     # id-less client payload is never rejected.
     id: str = Field(default_factory=lambda: uuid4().hex)
@@ -96,14 +139,27 @@ class Instruction(BaseModel):
     once: bool = False                      # fire at most once per run
     cooldown_s: float = Field(0.0, ge=0)    # min seconds between fires (0 = every boundary)
     only_target: str | None = None          # gate: only while this target (by name) active
+    # --- control-flow expansion (ADDITIVE; both default to the PRO-3 path) ----
+    # Jump DESTINATION (target name) for run_target / skip_target. Deliberately
+    # NOT `only_target` (that is a GATE, not a destination) and not `message`
+    # (notify text / abort reason) — overloading either is a footgun.
+    target_arg: str | None = None
+    # Optional bounded compound condition. None => the flat trigger path runs
+    # exactly as today. When set it OVERRIDES `trigger` (one validated active
+    # path per rule); `trigger` stays in the schema with its value to avoid
+    # serialization churn.
+    when: Condition | None = None
 
     @model_validator(mode="after")
     def _validate_at_time(self) -> "Instruction":
-        if self.trigger == "at_time":
-            m = _HHMM_RE.match(self.at_time or "")
-            if not m or int(m.group(1)) >= 24 or int(m.group(2)) >= 60:
-                raise ValueError(
-                    "trigger 'at_time' requires at_time in 'HH:MM' 24h form")
+        # flat at_time trigger only matters on the flat path (when is None).
+        if self.when is None and self.trigger == "at_time" and _bad_hhmm(self.at_time):
+            raise ValueError(
+                "trigger 'at_time' requires at_time in 'HH:MM' 24h form")
+        if self.action in ("run_target", "skip_target") and not (
+                self.target_arg or "").strip():
+            raise ValueError(
+                f"action '{self.action}' requires target_arg (a target name)")
         return self
 
 

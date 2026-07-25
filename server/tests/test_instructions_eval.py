@@ -1,6 +1,8 @@
 import time
 
-from astrodeck.sequence.models import Instruction
+import pytest
+
+from astrodeck.sequence.models import Condition, Instruction, Predicate
 from astrodeck.sequence.instructions import (
     TriggerContext, FireRecord, evaluate_instructions, parse_hhmm,
 )
@@ -77,3 +79,58 @@ def test_none_metric_never_fires():
     i = Instruction(id="g", trigger="on_guide_rms_above", threshold=1.0, action="pause")
     fired, _ = _fire([i], TriggerContext(now_ts=1.0, guide_rms=None))
     assert fired == []
+
+
+# ------------------------------------------------- compound AND/OR grammar
+# The whole 1-level expression is edge-triggered as ONE level. Every case below
+# leaves the FLAT trigger (on_frame_rejected) unsatisfied (frame_rejected stays
+# False), so any fire proves `when` OVERRIDES the flat path.
+_HFR = Predicate(kind="hfr_above", threshold=3.0)
+_RMS = Predicate(kind="guide_rms_above", threshold=1.0)
+_DONE = Predicate(kind="target_complete")
+
+
+@pytest.mark.parametrize("op,terms,frames,expect", [
+    # AND: fires only on the rising edge of the WHOLE expression, re-arms when
+    # the expression goes decisively false.
+    ("all", [_HFR, _RMS],
+     [dict(frame_hfr=4.0, guide_rms=0.5), dict(frame_hfr=4.0, guide_rms=2.0),
+      dict(frame_hfr=4.0, guide_rms=2.0), dict(frame_hfr=1.0, guide_rms=2.0),
+      dict(frame_hfr=4.0, guide_rms=2.0)],
+     [0, 1, 0, 0, 1]),
+    # OR: either term suffices; stuck-true never re-fires.
+    ("any", [_HFR, _RMS],
+     [dict(frame_hfr=1.0, guide_rms=0.5), dict(frame_hfr=4.0, guide_rms=0.5),
+      dict(frame_hfr=4.0, guide_rms=2.0), dict(frame_hfr=1.0, guide_rms=0.5),
+      dict(frame_hfr=1.0, guide_rms=2.0)],
+     [0, 1, 0, 0, 1]),
+    # AND + unreadable metric = INDETERMINATE: no fire, armed left untouched, so
+    # the very next decisive-true frame still fires the rising edge.
+    ("all", [_HFR, _RMS],
+     [dict(frame_hfr=4.0, guide_rms=None), dict(frame_hfr=4.0, guide_rms=2.0)],
+     [0, 1]),
+    # AND short-circuits on a decisive False even with a None sibling (re-arms).
+    ("all", [_HFR, _RMS],
+     [dict(frame_hfr=4.0, guide_rms=2.0), dict(frame_hfr=1.0, guide_rms=None),
+      dict(frame_hfr=4.0, guide_rms=2.0)],
+     [1, 0, 1]),
+    # OR short-circuits on a decisive True even with a None sibling.
+    ("any", [_HFR, _RMS],
+     [dict(frame_hfr=4.0, guide_rms=None)],
+     [1]),
+    # a momentary predicate inside a compound fires once, then re-arms.
+    ("all", [_DONE, _HFR],
+     [dict(target_complete=True, frame_hfr=4.0),
+      dict(target_complete=False, frame_hfr=4.0),
+      dict(target_complete=True, frame_hfr=4.0)],
+     [1, 0, 1]),
+])
+def test_compound_condition_is_edge_triggered(op, terms, frames, expect):
+    i = Instruction(id="cmp", trigger="on_frame_rejected", action="notify",
+                    message="x", when=Condition(op=op, terms=terms))
+    st: dict = {}
+    got = []
+    for n, kw in enumerate(frames):
+        fired, st = _fire([i], TriggerContext(now_ts=100.0 + n, **kw), st)
+        got.append(len(fired))
+    assert got == expect
