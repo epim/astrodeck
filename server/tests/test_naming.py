@@ -99,6 +99,8 @@ def test_old_config_without_naming_key_loads(tmp_path):
 
 # ------------------------------------------------------------------ hub.py (T3)
 
+from pathlib import Path
+
 import astrodeck.hub as hub_module
 from astrodeck.hub import Hub
 
@@ -135,6 +137,47 @@ def test_custom_template_folders_by_night_and_filter(tmp_path, monkeypatch):
     p = Hub()._capture_path("M42", "Light", "Ha")
     assert p.relative_to(tmp_path).parts[:3] == ("M42",) + tuple(p.parent.parts[-2:])
     assert p.parent.name == "Ha" and p.name == "Light_0001.fits"
+
+
+@pytest.mark.parametrize("gain,exposure_s,binning,expect", [
+    (100, 300.0, 1, "g100_300s_bin1"),
+    (0, 1.5, 2, "g0_1p5s_bin2"),        # sub-second uses the 'p' idiom
+    (None, None, None, ""),             # nothing passed => the tokens drop out
+])
+def test_capture_settings_tokens_render_from_the_call_site(
+        tmp_path, monkeypatch, gain, exposure_s, binning, expect):
+    """$$GAIN$$/$$EXPOSURE$$/$$BINNING$$ must be THREADED, not just validated:
+    they used to preview as M42/300s_g100/ and then render M42/s_g/ at capture
+    time, collapsing every exposure and gain into one directory."""
+    store = _isolate(tmp_path, monkeypatch)
+    store.set_naming(configmod.NamingConfig(
+        template="$$TARGET$$/g$$GAIN$$_$$EXPOSURE$$s_bin$$BINNING$$/$$FRAMENR$$"))
+    p = Hub()._capture_path("M42", "Light", "", gain=gain, exposure_s=exposure_s,
+                            binning=binning)
+    assert p.name == "0001.fits"
+    parts = p.relative_to(tmp_path).parts
+    if expect:
+        assert parts == ("M42", expect, "0001.fits")
+    else:
+        assert parts == ("M42", "g_s_bin", "0001.fits")   # literals only
+
+
+async def test_capture_threads_the_settings_tokens(tmp_path, monkeypatch):
+    """End-to-end through hub.capture(): the saved file really lands under the
+    per-setting directory the settings preview promises."""
+    store = _isolate(tmp_path, monkeypatch)
+    store.set_naming(configmod.NamingConfig(
+        template="$$TARGET$$/$$EXPOSURE$$s_g$$GAIN$$_bin$$BINNING$$/"
+                 "$$FRAMETYPE$$_$$FRAMENR$$"))
+    h = Hub()
+    await h.connect_sim()
+    try:
+        await h.capture(0.5, 120, 30, 2, save=True, target="M42")
+    finally:
+        await h.disconnect_all()
+    saved = Path(h.last_frame.saved_path)
+    assert saved.parent == tmp_path / "M42" / "0p5s_g120_bin2"
+    assert saved.name == "Light_0001.fits" and saved.exists()
 
 
 # --------------------------------------------------------------- route (T4)

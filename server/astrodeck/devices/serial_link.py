@@ -38,10 +38,35 @@ class SerialLink:
         if serial is None:
             raise LinkError("pyserial is not installed")
         try:
+            # write_timeout is NOT optional: pyserial's default is None (block
+            # forever). A bumped cable / stalled CDC-ACM TX buffer would park the
+            # worker thread inside write() with no deadline at all, which the
+            # cancel-join below would then have to wait out.
             self._ser = await asyncio.to_thread(
-                serial.Serial, self.port_path, self.baud, timeout=0.2)
+                serial.Serial, self.port_path, self.baud,
+                timeout=0.2, write_timeout=2.0)
         except Exception as exc:  # noqa: BLE001 - surface as one link error
             raise LinkError(f"cannot open {self.port_path}: {exc}") from exc
+
+    def _abandon(self, task) -> None:
+        """The orphaned exchange outlived even the hard join bound: give up on
+        the port rather than hand it back with an unknown writer on it.
+
+        ``_ser`` is dropped (so the lock can be released and later commands fail
+        fast with ``LinkError`` -> the driver reopens) and the never-joined task's
+        eventual result is consumed so it can't log "exception was never
+        retrieved" minutes later. The OS handle is deliberately NOT closed: the
+        worker thread is still using it."""
+        self._ser = None
+        task.add_done_callback(
+            lambda t: None if t.cancelled() else t.exception())
+        try:
+            from ..events import bus
+            bus.log("error",
+                    f"serial {self.port_path}: exchange did not return — "
+                    "marking the link unusable (it will be reopened)", "mount")
+        except Exception:       # pragma: no cover - logging must never raise here
+            pass
 
     def _read_until_hash(self, deadline: float) -> str:
         """Blocking helper (thread): accumulate bytes until '#' or deadline."""
@@ -82,12 +107,21 @@ class SerialLink:
         corrupt framing (a real path: ``ZwoAm5Telescope.slew`` halts with ``:Q#``
         from its ``except`` while the settle poll may still be in flight). So on
         an abnormal exit we JOIN the orphaned exchange before the ``async with``
-        releases the lock. The join is BOUNDED by the exchange's own deadline
-        (``timeout``, default 1.5 s; pyserial read timeout is 0.2 s), which is
-        the accepted price of a port that is never handed over mid-frame."""
-        if self._ser is None:
-            raise LinkError("link not open")
+        releases the lock. That join is BOUNDED TWICE: by the exchange's own
+        deadline (``timeout``, default 1.5 s) and, because a worker can also park
+        in a syscall the deadline doesn't govern, by a hard
+        ``wait_for(timeout + 0.5)``. If even that expires the port is declared
+        UNUSABLE (``_ser = None``) instead of being handed back with an unknown
+        in-flight writer on it: the lock is released, every later command fails
+        fast with ``LinkError``, and the driver reopens rather than the whole
+        mount subsystem wedging until process restart."""
         async with self._lock:
+            # Inside the lock: close() nulls _ser while holding it, so checking
+            # outside would race a teardown into AttributeError (call sites catch
+            # only LinkError).
+            if self._ser is None:
+                raise LinkError("link not open")
+
             def _exchange():
                 import time
                 self._ser.reset_input_buffer()
@@ -106,7 +140,11 @@ class SerialLink:
                     # Suppress a second cancel (and any exchange error) so the
                     # join always completes and the original exception wins.
                     with contextlib.suppress(BaseException):
-                        await asyncio.shield(task)
+                        try:
+                            await asyncio.wait_for(asyncio.shield(task),
+                                                   timeout + 0.5)
+                        except asyncio.TimeoutError:
+                            self._abandon(task)
                 elif not task.cancelled():
                     # Already finished (normal path, or it raised in the same
                     # tick a cancel landed): mark its result retrieved so a

@@ -116,6 +116,84 @@ async def test_cancel_joins_orphan_before_releasing_the_port(reply, wire):
     assert link.max_inside == 1                # never two exchanges at once
 
 
+async def test_open_sets_a_write_timeout():
+    """pyserial's default ``write_timeout`` is None — block forever. A stalled
+    CDC-ACM TX buffer would then park the worker in ``write()`` with no deadline
+    at all (and the cancel-join would have to wait it out)."""
+    seen = {}
+
+    class _FakeSerialMod:
+        @staticmethod
+        def Serial(port, baud, **kw):
+            seen.update(port=port, baud=baud, **kw)
+            return FakeSerial()
+
+    import astrodeck.devices.serial_link as mod
+    orig, mod.serial = mod.serial, _FakeSerialMod
+    try:
+        link = SerialLink("COM-TEST", 9600)
+        await link.open()
+    finally:
+        mod.serial = orig
+    assert seen["timeout"] == 0.2 and seen["write_timeout"] == 2.0
+
+
+class StuckLink(SerialLink):
+    """An exchange whose worker ignores the deadline entirely (the parked-write /
+    stuck-syscall case the exchange deadline cannot govern)."""
+
+    def __init__(self, ser, block_s=1.2):
+        super().__init__("COM-STUCK")
+        self._ser = ser
+        self._block_s = block_s
+
+    def _read_until_hash(self, deadline):
+        time.sleep(self._block_s)
+        return "stuck"
+
+
+async def test_unreturning_exchange_marks_the_link_unusable_instead_of_wedging():
+    """The join is bounded TWICE. If even the hard bound expires, the port is
+    declared unusable so the lock is released and later commands fail fast (the
+    driver reopens) — rather than every future mount command blocking forever."""
+    link = StuckLink(FakeSerial())
+
+    t = asyncio.create_task(link.request("GR", timeout=0.1))
+    await asyncio.sleep(0.03)
+    t0 = time.monotonic()
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    elapsed = time.monotonic() - t0
+
+    assert 0.4 <= elapsed < 1.1              # bounded by timeout + 0.5, not by 1.2
+    assert not link._lock.locked()           # the lock IS released
+    assert link._ser is None                 # ...and the link is marked unusable
+    with pytest.raises(LinkError):           # so the next command fails fast
+        await link.request("GR", timeout=0.1)
+    # close() must stay callable (and not touch the handle the orphan still uses)
+    await link.close()
+
+
+async def test_request_on_a_closed_link_raises_linkerror_not_attributeerror():
+    """The not-open check lives INSIDE the lock: ``close`` nulls ``_ser`` while
+    holding it, so a teardown racing a poll must still surface as ``LinkError``
+    (call sites catch only that)."""
+    ser = FakeSerial()
+    link = TracedLink(ser)
+
+    t = asyncio.create_task(link.request("GR", timeout=0.2))
+    await asyncio.sleep(0.03)
+    closer = asyncio.create_task(link.close())
+    racer = asyncio.create_task(link.request("GR", timeout=0.2))
+
+    with pytest.raises(LinkError):
+        await t
+    await closer
+    with pytest.raises(LinkError):
+        await racer
+
+
 async def test_close_waits_for_an_in_flight_exchange():
     """``close`` must not null ``_ser`` / close the OS handle under a blocking
     read — it takes the same lock every exchange holds."""

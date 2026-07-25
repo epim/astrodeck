@@ -263,6 +263,18 @@ def _light_dest(layout: str, gdir: str, name: str) -> str:
     return f"{_lights_dir(layout, gdir)}/{name}"
 
 
+def _parent_dir(dest: str) -> str:
+    """The directory part of a bundle-relative dest, ALWAYS '/'-separated.
+
+    ``str(Path(x).parent)`` is os-dependent: on Windows it hands back
+    ``M42\\Ha\\300s\\darks``, and the emitted build.sh would then ``mkdir`` one
+    literal backslash-named directory and abort the whole script at the next
+    ``cp`` (``set -eu``). Every dest here is built by '/'-joining sanitized
+    components, so the split is exact."""
+    head, sep, _tail = dest.rpartition("/")
+    return head if sep else "."
+
+
 def _master_dest(layout: str, gdir: str, kind: str) -> str:
     """Bundle-relative dest for one master, per layout (``kind`` title-case).
 
@@ -714,7 +726,7 @@ def _build_sh(bundle: Bundle) -> str:
             src = g.master_sources.get(kind_lc)
             if not src:
                 continue
-            out.append(f"mkdir -p {q(str(Path(dest).parent))}")
+            out.append(f"mkdir -p {q(_parent_dir(dest))}")
             out.append(f"cp -- {q(src)} {q(dest)}")
         out.append("")
     return "\n".join(out)
@@ -745,7 +757,7 @@ def _build_ps1(bundle: Bundle) -> str:
             if not src:
                 continue
             out.append("New-Item -ItemType Directory -Force -Path "
-                       f"{_ps1_lit(str(Path(dest).parent))} | Out-Null")
+                       f"{_ps1_lit(_parent_dir(dest))} | Out-Null")
             out.append(f"Copy-Item -LiteralPath {_ps1_lit(src)} "
                        f"-Destination {_ps1_lit(dest)}")
         out.append("")

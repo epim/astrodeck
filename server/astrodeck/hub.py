@@ -1575,7 +1575,9 @@ class Hub:
                     filt = fw.filter_names[await fw.get_position()]
                 except Exception:
                     pass
-            local_save_path = self._capture_path(target or "untargeted", frame_type, filt)
+            local_save_path = self._capture_path(
+                target or "untargeted", frame_type, filt,
+                gain=gain, exposure_s=exposure_s, binning=binning)
             ra = dec = None
             tel = self.devices.get("telescope")
             if tel and tel.connected:
@@ -1632,7 +1634,12 @@ class Hub:
         # lives on the imaging host and cannot be reopened here). Enqueue is
         # non-blocking, bounded and total: it can neither await nor raise into
         # the capture.
-        if local_save_path is not None and config_store.cfg().solve_saved_lights:
+        # LIGHT only, as the config field is named: a dark/bias/flat has no stars
+        # to solve, so enqueuing one only burns a full ASTAP run (and its 60 s
+        # kill timeout) per frame — a 50-frame dark library would peg a core of
+        # the Pi for the whole unattended run and flood the log with failures.
+        if (local_save_path is not None and frame_type.upper() == "LIGHT"
+                and config_store.cfg().solve_saved_lights):
             # star count from the preview's SINGLE detection pass (info["stars"]),
             # not frame.stars — the latter is only ever set by a backend that
             # measured it (NINA), so the min-stars gate would be a silent no-op
@@ -2237,8 +2244,10 @@ class Hub:
         write_json_atomic(self._counter_file(), data)
         return n
 
-    def _capture_path(self, target: str, frame_type: str, filter_name: str = "") -> Path:
-        from .naming import render_relative_path, sanitize_component
+    def _capture_path(self, target: str, frame_type: str, filter_name: str = "",
+                      *, gain: int | None = None, exposure_s: float | None = None,
+                      binning: int | None = None) -> Path:
+        from .naming import capture_tokens, render_relative_path, sanitize_component
         # "untargeted" fallback keyed off the SANITIZED target (legacy parity,
         # hub.py old :1681); sanitize is idempotent so the engine re-sanitize is a
         # no-op.
@@ -2255,6 +2264,11 @@ class Hub:
             "DATETIME": time.strftime("%Y-%m-%d_%H%M%S", t),
             "NIGHT": time.strftime("%Y-%m-%d", night),
             "FRAMENR": f"{n:04d}",
+            # Capture-settings tokens ($$GAIN$$/$$EXPOSURE$$/$$BINNING$$). Passed
+            # in from capture() rather than re-read off the camera so the name
+            # always describes THIS frame. Omitted (None) -> empty -> the token
+            # drops out, which is what every non-capture caller gets.
+            **capture_tokens(gain=gain, exposure_s=exposure_s, binning=binning),
         }
         template = config_store.cfg().naming.template
         return CAPTURE_DIR / render_relative_path(template, fields)
