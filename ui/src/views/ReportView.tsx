@@ -10,17 +10,29 @@
 
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
-import { listReports, getReport, getBundlePreview } from "../api/reports";
+import { listReports, getReport, getBundlePreview, materializeBundle } from "../api/reports";
 import { useStore, useLastReportId } from "../store";
 import { Panel, EmptyState, Stat } from "../components/ui";
 import { Icon } from "../components/icons";
 import { TrendLine } from "../components/graphs";
 import { fmtDuration } from "../lib/eta";
 import { endReasonMeta } from "../lib/reportChart";
-import { masterChips, bundleDisabledReason } from "../lib/bundleView";
+import {
+  masterChips,
+  bundleDisabledReason,
+  bundleQuery,
+  keptSummary,
+  layoutOptions,
+  materializeDisabledReason,
+  materializeSummary,
+  relayoutDirs,
+  type BundleLayout,
+} from "../lib/bundleView";
+import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import { BASE } from "../lib/base";
 import type {
   BundleGroupSummary,
+  BundleMaterializeResult,
   BundlePreview,
   FilterBreakdown,
   SessionReport,
@@ -56,6 +68,9 @@ function BundleGroupRow({ g }: { g: BundleGroupSummary }) {
       <span className="text-dim">
         {g.light_count} lights
         {g.accepted_count !== g.light_count && ` (${g.accepted_count} accepted)`}
+        {g.kept_count != null && g.kept_count !== g.light_count && (
+          <span className="text-warn"> · {g.kept_count} kept</span>
+        )}
       </span>
       <span className="ml-auto flex items-center gap-2.5">
         {masterChips(g.masters).map((c) => (
@@ -70,6 +85,187 @@ function BundleGroupRow({ g }: { g: BundleGroupSummary }) {
         ))}
       </span>
     </div>
+  );
+}
+
+/** The collapsed "Advanced" disclosure for the stacking-bundle panel (PRO-10
+ *  enrichments). Progressive disclosure on purpose: a novice never sees a layout
+ *  picker, a weight threshold, or a hardlink — the one-click Download bundle.zip
+ *  above stays the whole novice path and its default URL is unchanged. Nothing
+ *  in here is persisted; every option is query-at-request-time. */
+function BundleAdvanced(p: {
+  reportId: string;
+  framesCaptured: number;
+  preview: BundlePreview | null;
+  layout: BundleLayout;
+  setLayout: (v: BundleLayout) => void;
+  weightAlt: boolean;
+  setWeightAlt: (v: boolean) => void;
+  keepOn: boolean;
+  setKeepOn: (v: boolean) => void;
+  keepThreshold: number;
+  setKeepThreshold: (v: number) => void;
+  keepParam: number | null;
+  canCapture: boolean;
+  materializing: boolean;
+  setMaterializing: (v: boolean) => void;
+  matResult: BundleMaterializeResult | null;
+  setMatResult: (v: BundleMaterializeResult | null) => void;
+}) {
+  const enqueueToast = useStore((s) => s.enqueueToast);
+  const dirs = relayoutDirs(p.preview, p.layout);
+  // Honest-disabled (§11.8): "not on the capture box" and "you lack the write
+  // capability" are DIFFERENT truths and each gets its own sentence.
+  const matReason = !p.canCapture
+    ? `Writing to the capture box needs ${accessPhrase("control.capture")}.`
+    : materializeDisabledReason(p.framesCaptured, p.preview);
+
+  async function onMaterialize() {
+    p.setMaterializing(true);
+    try {
+      const r = await materializeBundle(p.reportId, {
+        layout: p.layout,
+        weightAlt: p.weightAlt,
+        keepThreshold: p.keepParam,
+      });
+      p.setMatResult(r);
+    } catch (e) {
+      p.setMatResult(null);
+      enqueueToast({
+        level: "error",
+        title: "Couldn't materialize the bundle",
+        detail: e instanceof ApiError ? e.message : undefined,
+      });
+    } finally {
+      p.setMaterializing(false);
+    }
+  }
+
+  return (
+    <details className="border border-line/50 px-2.5 py-1.5">
+      <summary className="text-xs text-dim cursor-pointer select-none min-h-[32px] flex items-center">
+        Advanced (layout, weighting, materialize)
+      </summary>
+      <div className="flex flex-col gap-3 pt-2.5">
+        {/* ---------------------------------------------------------- layout */}
+        <label className="flex flex-col gap-1 text-xs text-dim">
+          <span>Folder layout for your stacker.</span>
+          <select
+            className="field"
+            value={p.layout}
+            onChange={(e) => p.setLayout(e.target.value as BundleLayout)}
+            aria-label="Bundle folder layout"
+          >
+            {layoutOptions().map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <span className="text-dim">
+            {layoutOptions().find((o) => o.value === p.layout)?.hint}
+          </span>
+          {dirs.length > 0 && (
+            <span className="mono text-[10px] text-dim truncate">{dirs[0]}/…</span>
+          )}
+        </label>
+
+        {/* ------------------------------------------------------ weight alt */}
+        <label
+          className="flex items-center gap-2 text-xs text-dim cursor-pointer"
+          title="Fold a sin(altitude) transparency term into each sub's weight — higher subs (less airmass) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
+        >
+          <input
+            type="checkbox"
+            checked={p.weightAlt}
+            onChange={(e) => p.setWeightAlt(e.target.checked)}
+          />
+          Weight subs by altitude
+        </label>
+
+        {/* -------------------------------------------------- keep_threshold */}
+        <div className="flex flex-col gap-1.5">
+          <label className="flex items-center gap-2 text-xs text-dim cursor-pointer">
+            <input
+              type="checkbox"
+              checked={p.keepOn}
+              onChange={(e) => p.setKeepOn(e.target.checked)}
+            />
+            Flag the weakest subs
+          </label>
+          {p.keepOn && (
+            <label className="flex flex-col gap-1 text-xs text-dim pl-6">
+              <span className="flex items-center gap-2">
+                Weight cutoff
+                <input
+                  type="number"
+                  className="field w-24"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={p.keepThreshold}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (Number.isFinite(v)) p.setKeepThreshold(Math.min(1, Math.max(0, v)));
+                  }}
+                  aria-label="Keep threshold (normalized weight)"
+                />
+              </span>
+              <span>
+                Subs whose weight is below this are marked <span className="mono">keep=false</span>{" "}
+                in the manifest and weights.csv. Weights are normalized per group
+                (best sub = 1.0). Nothing is deleted — every sub is still exported.
+              </span>
+            </label>
+          )}
+        </div>
+
+        {/* ----------------------------------------------------- materialize */}
+        <div className="flex flex-col gap-1.5">
+          <p className="text-xs text-dim">
+            Materialize lays the actual FITS out under{" "}
+            <span className="mono">captures/exports/</span> on this machine —
+            hardlinked where possible, so it is instant and costs no extra disk.
+            Hardlinks share one file with your original: treat the export tree as
+            read-only.
+          </p>
+          <div className="flex justify-end">
+            {matReason ? (
+              <span
+                aria-disabled="true"
+                title={matReason}
+                className="btn inline-flex items-center gap-1.5 min-h-[44px] opacity-50 cursor-not-allowed"
+              >
+                <Icon name="lock" size={12} /> Materialize on this machine
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="btn inline-flex items-center gap-1.5 min-h-[44px]"
+                onClick={onMaterialize}
+                disabled={p.materializing}
+              >
+                <Icon name="download" size={12} />
+                {p.materializing ? "Materializing…" : "Materialize on this machine"}
+              </button>
+            )}
+          </div>
+          {p.matResult && (
+            <div className="flex flex-col gap-1 text-xs">
+              <span className="text-good flex items-center gap-1.5">
+                <Icon name="check" size={12} /> {materializeSummary(p.matResult)}
+              </span>
+              <span className="mono text-dim break-all">{p.matResult.export_dir}</span>
+              {p.matResult.failed.map((f, i) => (
+                <span key={i} className="text-warn break-all">
+                  {f.src}: {f.reason}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -98,6 +294,16 @@ export default function ReportView() {
   const [weightAlt, setWeightAlt] = useState(false); // opt-in sin(alt) bundle weighting
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // PRO-10 enrichments — all ADVANCED, all default-off, none persisted: the
+  // novice one-click .zip below is byte-for-byte the URL it always was.
+  const [layout, setLayout] = useState<BundleLayout>("grouped");
+  const [keepOn, setKeepOn] = useState(false);
+  const [keepThreshold, setKeepThreshold] = useState(0.5);
+  const [materializing, setMaterializing] = useState(false);
+  const [matResult, setMatResult] = useState<BundleMaterializeResult | null>(null);
+  const canCapture = useCanControlCapture(); // materialize WRITES to disk
+  const keepParam = keepOn ? keepThreshold : null;
 
   // Effect A (mount): list all reports, default to lastReportId or the newest
   // (the list route is already newest-first — report.py:374-394).
@@ -128,13 +334,11 @@ export default function ReportView() {
   useEffect(() => {
     if (!sel) {
       setReport(null);
-      setPreview(null);
       return;
     }
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    setPreview(null);
     (async () => {
       try {
         const r = await getReport(sel);
@@ -149,18 +353,36 @@ export default function ReportView() {
         if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sel, enqueueToast]);
+
+  // Effect C (sel + bundle options): the stacking-bundle preview, best-effort —
+  // a preview failure just leaves the panel's download honest-disabled, never
+  // blocks the report render. Re-runs when an Advanced option changes so the
+  // server-computed `kept_count` matches the threshold the user just set (the
+  // alternative — shipping a 2000-row weight vector to the client — is what this
+  // route exists to avoid).
+  useEffect(() => {
+    if (!sel) {
+      setPreview(null);
+      return;
+    }
+    let cancelled = false;
+    setMatResult(null); // a stale "linked 42" must not outlive its options
     (async () => {
       try {
-        const p = await getBundlePreview(sel);
+        const p = await getBundlePreview(sel, { layout, weightAlt, keepThreshold: keepParam });
         if (!cancelled) setPreview(p);
       } catch {
-        // best-effort: leave preview null (panel stays honest-disabled)
+        if (!cancelled) setPreview(null);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [sel, enqueueToast]);
+  }, [sel, layout, weightAlt, keepParam]);
 
   return (
     <div className="px-3 pb-20 sm:px-0 sm:pb-4 flex flex-col gap-3">
@@ -319,18 +541,31 @@ export default function ReportView() {
                       <Icon name="alert" size={12} /> {w}
                     </p>
                   ))}
+                  {keptSummary(preview) && (
+                    <p className="text-xs text-warn flex items-center gap-1.5">
+                      <Icon name="alert" size={12} /> {keptSummary(preview)}
+                    </p>
+                  )}
                   {!reason && (
-                    <label
-                      className="flex items-center gap-2 self-end text-xs text-dim cursor-pointer"
-                      title="Fold a sin(altitude) transparency term into each sub's weight — higher subs (less airmass) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
-                    >
-                      <input
-                        type="checkbox"
-                        checked={weightAlt}
-                        onChange={(e) => setWeightAlt(e.target.checked)}
-                      />
-                      Weight subs by altitude
-                    </label>
+                    <BundleAdvanced
+                      reportId={sel ?? ""}
+                      framesCaptured={report.frames_captured}
+                      preview={preview}
+                      layout={layout}
+                      setLayout={setLayout}
+                      weightAlt={weightAlt}
+                      setWeightAlt={setWeightAlt}
+                      keepOn={keepOn}
+                      setKeepOn={setKeepOn}
+                      keepThreshold={keepThreshold}
+                      setKeepThreshold={setKeepThreshold}
+                      keepParam={keepParam}
+                      canCapture={canCapture}
+                      materializing={materializing}
+                      setMaterializing={setMaterializing}
+                      matResult={matResult}
+                      setMatResult={setMatResult}
+                    />
                   )}
                   <div className="flex justify-end">
                     {reason ? (
@@ -343,7 +578,7 @@ export default function ReportView() {
                       </span>
                     ) : (
                       <a
-                        href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip${weightAlt ? "?weight_altitude=1" : ""}`}
+                        href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip${bundleQuery({ layout, weightAlt, keepThreshold: keepParam })}`}
                         download
                         className="btn inline-flex items-center gap-1.5 min-h-[44px]"
                       >

@@ -80,7 +80,8 @@ from ..sequence import schedule as schedule_mod
 from ..sequence.models import quota_unbounded
 from ..sequence.report import SessionReporter, _slug
 from ..sequence.bundle import (CalibrationLibraryAdapter, NullMasterLibrary,
-                               build_bundle, bundle_summary, build_script,
+                               build_bundle, bundle_materialize_plan,
+                               bundle_summary, build_script,
                                manifest_json, readme_text, weights_csv)
 from ..sequence.resume_arm import ResumeArm
 from ..sequence.session import migrate_legacy_resume, session_store
@@ -446,6 +447,87 @@ def _get_master_library():
     if lib:
         return CalibrationLibraryAdapter(lib)
     return NullMasterLibrary()
+
+
+def _export_root(report_id: str) -> Path:
+    """The materialize destination root: ``CAPTURE_DIR/exports/<sanitized id>``.
+
+    CAPTURE_DIR is read LIVE off ``hub_module`` (never the import-time binding)
+    so a test monkeypatch is honored, exactly like ``cal_library``. The leaf is
+    ``_slug(report_id)`` — the SANITIZED id, never the raw path parameter — so no
+    request can steer the export tree out of ``captures/exports``."""
+    return hub_module.CAPTURE_DIR / "exports" / _slug(report_id)
+
+
+def _materialize_bundle(b, root: Path) -> dict:
+    """Lay a bundle's ACTUAL FITS out under ``root`` (blocking disk I/O — the
+    route runs this in a worker thread).
+
+    Placement strategy per file: ``os.link`` first (a hardlink costs zero extra
+    bytes and is instant — the whole point of materializing on the capture box),
+    falling back to ``shutil.copy2`` when the filesystem can't hardlink
+    (EXDEV across devices, EMLINK, EPERM, a read-only FS, or a dest that already
+    exists as a different file). Idempotent: a dest that is already the same
+    inode counts as ``linked`` and is left alone, so re-materializing after more
+    subs land just tops the tree up.
+
+    Failures are collected, never fatal — a partial export is reported honestly
+    rather than 500ing after having already placed half the files. Any plan item
+    the containment guard refused is reported here and NEVER written."""
+    items = bundle_materialize_plan(b, root)
+    linked = copied = 0
+    bytes_copied = 0
+    failed: list[dict] = []
+    per_group: dict[str, dict] = {}
+
+    def _g(name: str) -> dict:
+        return per_group.setdefault(name, {"dir": name, "linked": 0, "copied": 0})
+
+    for it in items:
+        g = _g(it.group_dir)
+        if it.refused:
+            failed.append({"src": it.src, "reason": it.refused})
+            continue
+        dest = Path(it.dest)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            failed.append({"src": it.src, "reason": f"could not create {dest.parent}: {e}"})
+            continue
+        try:
+            os.link(it.src, dest)
+            linked += 1
+            g["linked"] += 1
+            continue
+        except OSError:
+            pass  # cross-device / already exists / FS can't hardlink -> fall back
+        try:
+            if dest.exists() and os.path.samefile(it.src, dest):
+                linked += 1          # already the same inode: idempotent no-op
+                g["linked"] += 1
+                continue
+        except OSError:
+            pass
+        try:
+            shutil.copy2(it.src, dest)
+            copied += 1
+            g["copied"] += 1
+            bytes_copied += dest.stat().st_size
+        except OSError as e:
+            failed.append({"src": it.src, "reason": str(e)})
+
+    return {
+        "export_dir": str(root),
+        "layout": b.layout,
+        "linked": linked,
+        "copied": copied,
+        "bytes_copied": bytes_copied,
+        "failed": failed,
+        "groups": list(per_group.values()),
+        "hardlink_note": ("Hardlinked files share an inode with the original — "
+                          "editing an exported FITS in place also changes your "
+                          "capture. Treat the export tree as read-only."),
+    }
 
 
 # ------------------------------------------------------------ request models
@@ -2148,30 +2230,49 @@ def create_app() -> FastAPI:
 
     @app.get("/api/reports/{report_id}/bundle", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def report_bundle(report_id: str, weight_altitude: bool = False):
+    async def report_bundle(report_id: str, weight_altitude: bool = False,
+                            layout: str = "grouped",
+                            keep_threshold: float | None = None):
         """Slim stacking-bundle preview (per-group counts + master-match status +
         warnings) for the report viewer panel (PRO-10 §1.5). 404 if missing.
-        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights."""
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights.
+        ``layout`` picks the folder convention; ``keep_threshold`` (a normalized
+        weight in [0,1]) makes each group report ``kept_count`` — one scalar
+        instead of shipping a 2000-row weight vector to the client."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
-        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save,
-                         weight_altitude=weight_altitude)
+        try:
+            b = build_bundle(report, _get_master_library(),
+                             is_local=hub._is_local_save, layout=layout,
+                             weight_altitude=weight_altitude,
+                             keep_threshold=keep_threshold)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         return bundle_summary(b)
 
     @app.get("/api/reports/{report_id}/bundle.zip", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def report_bundle_zip(report_id: str, weight_altitude: bool = False):
+    async def report_bundle_zip(report_id: str, weight_altitude: bool = False,
+                                layout: str = "grouped",
+                                keep_threshold: float | None = None):
         """The stacking bundle as an in-memory ``.zip`` (manifest + weights CSV +
         README + build.sh/.ps1 — NOT the FITS; §4 decision 1). Mirrors
         ``report_frames_csv``: the sanitized slug (never the raw path param) forms
         the download filename so the header can't carry CR/LF/quotes.
-        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights."""
+        ``weight_altitude`` (opt-in) folds a sin(alt) term into the sub weights;
+        ``layout``/``keep_threshold`` are the PRO-10 enrichments (defaults keep the
+        one-click download byte-for-byte what it was)."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
-        b = build_bundle(report, _get_master_library(), is_local=hub._is_local_save,
-                         weight_altitude=weight_altitude)
+        try:
+            b = build_bundle(report, _get_master_library(),
+                             is_local=hub._is_local_save, layout=layout,
+                             weight_altitude=weight_altitude,
+                             keep_threshold=keep_threshold)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("manifest.json", json.dumps(manifest_json(b), indent=2))
@@ -2182,6 +2283,44 @@ def create_app() -> FastAPI:
         fname = f"{_slug(report_id)}.bundle.zip"
         return Response(buf.getvalue(), media_type="application/zip", headers={
             "Content-Disposition": f'attachment; filename="{fname}"'})
+
+    @app.post("/api/reports/{report_id}/bundle/materialize",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def report_bundle_materialize(report_id: str,
+                                        weight_altitude: bool = False,
+                                        layout: str = "grouped",
+                                        keep_threshold: float | None = None):
+        """Lay the ACTUAL FITS out under ``captures/exports/<id>/`` for someone
+        running AstroDeck ON the capture box — hardlinks where possible, so a
+        200 GB night materializes instantly and costs no extra disk (§2.4).
+
+        POST + **CAP_CONTROL_CAPTURE**, unlike the other bundle routes: this one
+        WRITES to the capture box's filesystem, so it needs the same authority as
+        capturing, and a verb no browser will prefetch. Returns a summary only —
+        no file body; the bytes are on disk where the user's stacker can see them.
+
+        The sources are provably under CAPTURE_DIR (``build_bundle`` selects only
+        ``is_local`` lights); masters may legitimately live in a shared library
+        elsewhere, and they are library-chosen, not user-supplied. Every
+        DESTINATION is re-validated for containment by
+        ``bundle_materialize_plan``."""
+        report = await asyncio.to_thread(SessionReporter.load, report_id)
+        if report is None:
+            raise HTTPException(404, "report not found")
+        try:
+            b = build_bundle(report, _get_master_library(),
+                             is_local=hub._is_local_save, layout=layout,
+                             weight_altitude=weight_altitude,
+                             keep_threshold=keep_threshold)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        if not b.groups:
+            raise HTTPException(
+                400, "no local light subs on this machine — nothing to materialize "
+                     "(download bundle.zip and run build.sh on your imaging host)")
+        root = _export_root(report_id)
+        return await asyncio.to_thread(_materialize_bundle, b, root)
 
     # ----------------------------------------------------------------- profiles
 
