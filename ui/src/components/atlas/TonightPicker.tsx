@@ -8,7 +8,7 @@ import { api, ApiError } from "../../api";
 import type { CatalogEntry, TonightPick, TonightResponse } from "../../types";
 import { useStore } from "../../store";
 import { Icon } from "../icons";
-import { EmptyState } from "../ui";
+import { EmptyState, SegmentedControl } from "../ui";
 import {
   difficultyLabel, difficultyGlyph, difficultyTone, isBeginnerFriendly,
 } from "../../lib/difficulty";
@@ -63,19 +63,20 @@ export function TonightPicker({
 
   return (
     <div className="flex flex-col gap-2 w-full text-left">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="panel-title">What can I image tonight?</span>
-        {/* segmented beginner filter (not a disable — a scope toggle) */}
-        <div className="inline-flex text-xs border border-line2">
-          {([["Beginner", true], ["All", false]] as const).map(([label, v]) => (
-            <button key={label} type="button"
-              aria-pressed={beginnerOnly === v}
-              onClick={() => setBeginnerOnly(v)}
-              className={`px-2 py-1 ${beginnerOnly === v ? "bg-raise text-ink" : "text-dim"}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* Scope filter (not a disable). The house SegmentedControl already is a
+            real radiogroup with roving tabindex, arrow keys and a 44px floor —
+            the hand-rolled aria-pressed pair it replaces was ~24px tall. */}
+        <SegmentedControl
+          ariaLabel="Difficulty filter"
+          value={beginnerOnly ? "beginner" : "all"}
+          onChange={(v) => setBeginnerOnly(v === "beginner")}
+          options={[
+            { value: "beginner", label: "Beginner" },
+            { value: "all", label: "All" },
+          ]}
+        />
       </div>
 
       {state.kind === "ok" && state.res.site_is_default && (
@@ -101,8 +102,10 @@ export function TonightPicker({
         <ul className="flex flex-col max-h-72 overflow-y-auto border border-line2 divide-y divide-line2">
           {shown.slice(0, 20).map((p) => (
             <li key={p.id}>
+              {/* Tapping a target IS this view, and its audience is a first-timer
+                  on a phone in the dark — the house floor is 44px (§8). */}
               <button type="button" onClick={() => onPick(toEntry(p))}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex items-center justify-between gap-2 cursor-pointer">
+                className="tap min-h-[44px] w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex items-center justify-between gap-2 cursor-pointer">
                 <span className="min-w-0 truncate">
                   <span className="mono text-accent">{p.id}</span> {p.name}
                   <span className="text-dim"> · {p.type}</span>

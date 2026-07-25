@@ -2,7 +2,10 @@
 // (b)). Thin shell: every number comes from lib/photometry's tested core.
 //
 // Progressive disclosure (Decision E):
-//   - novice default: ONE plain line — "Typical star SNR ~38 · this sub".
+//   - novice default: ONE plain line — a verdict WORD, the number, and what
+//     stacking buys ("Star signal strong — SNR ~38 in this photo").
+//   - NOT aria-live: this is ambient per-frame telemetry, and announcing it on
+//     every new sub all night is screen-reader spam, not information.
 //   - on tap: the tapped star's own measured value rides in the same chip, so
 //     one glance answers both "how is this frame doing" and "what did I tap".
 //   - advanced: the decomposition (signal e-, sky e-, read e-, read-noise share
@@ -23,7 +26,7 @@
 // for it.
 import type { PreviewInfo, StarMark } from "../../types";
 import { usePhotometry } from "../../store";
-import { perSubSnrFromFlux } from "../../lib/photometry";
+import { perSubSnrFromFlux, starSnrWord } from "../../lib/photometry";
 
 function fmtSnr(v: number): string {
   return v >= 10 ? v.toFixed(0) : v.toFixed(1);
@@ -59,9 +62,13 @@ export function SnrChip({
     `variance). Star flux is background-subtracted ADU from the detector, so treat ` +
     `it as an estimate, not photometry.`;
 
+  // A bare "~38" reads as a score out of 100. Lead with the WORD, keep the
+  // number, and say what stacking buys — the whole point of a per-sub figure is
+  // that it is not the final one (SNR grows as sqrt(N), so 4x the subs = 2x).
   return (
-    <div className={`preview-chip mono ${className}`} aria-live="polite" title={detail}>
-      Typical star SNR ~{fmtSnr(res.snr)} · this sub
+    <div className={`preview-chip mono ${className}`} title={detail}>
+      Star signal {starSnrWord(res.snr)} — SNR ~{fmtSnr(res.snr)} in this photo
+      <span className="text-dim"> · 4× as many photos ≈ 2× better</span>
       {star && (
         <span className="text-dim"> · tapped star HFR {star.hfr.toFixed(2)} px</span>
       )}

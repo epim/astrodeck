@@ -123,6 +123,8 @@ test("keptSummary is silent without a threshold and honest with one", () => {
   const s = keptSummary(flagged) ?? "";
   assert(s.includes("38 of 42"), `expected the kept count, got ${s}`);
   assert(s.includes("nothing is deleted"), "must say nothing is deleted");
+  assert(s.includes("all 42 are in the download"),
+    `must say every sub still ships, got ${s}`);
 });
 test("materializeSummary names failures instead of hiding a partial export", () => {
   const base: BundleMaterializeResult = {
@@ -135,9 +137,14 @@ test("materializeSummary names failures instead of hiding a partial export", () 
     groups: [],
     hardlink_note: "",
   };
-  eq(materializeSummary(base), "linked 12, copied 3");
-  eq(materializeSummary({ ...base, failed: [{ src: "a", reason: "b" }] }),
-     "linked 12, copied 3, 1 failed");
+  // the OUTCOME, not link/copy telemetry — but a partial export still says so
+  const s = materializeSummary(base);
+  assert(s.includes("15 photos"), `expected the total, got ${s}`);
+  assert(s.includes("3 had to be copied"), `expected the disk caveat, got ${s}`);
+  assert(materializeSummary({ ...base, copied: 0 }).includes("no extra disk used"),
+    "all-hardlinked says no extra disk");
+  assert(materializeSummary({ ...base, failed: [{ src: "a", reason: "b" }] })
+    .includes("1 couldn't be written"), "failures are named, never hidden");
 });
 test("materialize is honest-disabled off the capture box", () => {
   assert(materializeDisabledReason(0, ok) !== null, "no frames -> disabled");

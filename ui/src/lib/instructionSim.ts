@@ -11,7 +11,9 @@
 //
 // Pure: no React, no clock (the caller passes `now`), fully unit-testable.
 import type { Condition, Instruction, Predicate, PredicateKind } from "../types";
-import { PREDICATE_OF, describeInstruction } from "./instructions";
+import {
+  PREDICATE_OF, describeInstruction, isDestructiveAction, type DescribeOpts,
+} from "./instructions";
 
 export interface SimSnapshot {
   hfr: number | null;
@@ -36,6 +38,9 @@ export interface SimOutcome {
   reason: string;                   // why it fires / why it does not
   gate?: SimGate;                   // present only when wouldFire === false
   note?: string;                    // honest caveat (once / cooldown)
+  /** the action ENDS or ABANDONS work (abort / jump / skip) — the preview must
+   *  not render it as the same cheerful "would fire" as a notify. */
+  destructive: boolean;
 }
 
 /** Honest copy for the preview panel — the preview is a single frame, not a run. */
@@ -101,36 +106,37 @@ function conditionOf(i: Instruction): Condition {
 /** Single-frame preview of every rule against one snapshot. Gate order mirrors
  *  the server: enabled -> only_target -> condition. */
 export function simulateInstructions(
-  rules: Instruction[], s: SimSnapshot,
+  rules: Instruction[], s: SimSnapshot, opts?: DescribeOpts,
 ): SimOutcome[] {
   return rules.map((i, idx) => {
     const id = i.id ?? `rule-${idx}`;
-    const summary = describeInstruction(i);
+    const summary = describeInstruction(i, undefined, opts);
+    const destructive = isDestructiveAction(i.action);
     if (!i.enabled) {
-      return { id, wouldFire: false, summary, gate: "disabled" as const,
+      return { id, wouldFire: false, summary, destructive, gate: "disabled" as const,
                reason: "rule is switched off" };
     }
     if (i.only_target !== null && i.only_target !== s.activeTarget) {
-      return { id, wouldFire: false, summary, gate: "only_target" as const,
+      return { id, wouldFire: false, summary, destructive, gate: "only_target" as const,
                reason: `only runs while ${i.only_target} is the active target` };
     }
     if ((i.action === "run_target" || i.action === "skip_target")
         && !(i.target_arg ?? "").trim()) {
-      return { id, wouldFire: false, summary, gate: "invalid" as const,
+      return { id, wouldFire: false, summary, destructive, gate: "invalid" as const,
                reason: "no target chosen for the jump" };
     }
     const v = evalCondition(conditionOf(i), s);
     if (v === null) {
-      return { id, wouldFire: false, summary, gate: "needs_input" as const,
+      return { id, wouldFire: false, summary, destructive, gate: "needs_input" as const,
                reason: "waiting on a reading this rule needs" };
     }
     if (!v) {
-      return { id, wouldFire: false, summary, gate: "not_met" as const,
+      return { id, wouldFire: false, summary, destructive, gate: "not_met" as const,
                reason: "condition not met" };
     }
     const throttled = i.once || i.cooldown_s > 0;
     return {
-      id, wouldFire: true, summary, reason: "condition met",
+      id, wouldFire: true, summary, destructive, reason: "condition met",
       ...(throttled
         ? { note: i.once
               ? "fires once per run — skipped if it already fired"
@@ -140,10 +146,18 @@ export function simulateInstructions(
   });
 }
 
+/** Local wall clock as "HH:MM". Pure over its argument, so a test can pin it. */
+export function hhmmOf(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** A sensible starting snapshot so the preview renders instantly with zero
- *  configuration (the novice one-tap path). */
+ *  configuration (the novice one-tap path). `now` defaults to the REAL clock —
+ *  a hardcoded "22:00" made every time-based rule preview wrong for anyone not
+ *  imaging at 10pm. */
 export function defaultSnapshot(
-  targetNames: string[], now: string = "22:00",
+  targetNames: string[], now: string = hhmmOf(new Date()),
 ): SimSnapshot {
   return {
     hfr: 3, guideRms: 0.8, frameRejected: false, targetComplete: false,

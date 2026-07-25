@@ -14,22 +14,32 @@ import type {
   TriggerKind,
 } from "../../types";
 import {
-  ACTION_LABELS, MAX_TERMS, MIN_TERMS, PREDICATE_LABELS, TRIGGER_LABELS,
+  ACTION_CONSEQUENCE, ACTION_GROUPS, ACTION_LABELS, MAX_TERMS, MIN_TERMS,
+  PREDICATE_LABELS, PREDICATE_OF, THRESHOLD_HINT, TRIGGER_LABELS,
   actionChangePatch, actionNeedsTarget, defaultInstruction, defaultPredicate,
-  describeInstruction, predicateNeedsThreshold, predicateNeedsTime, toCompound,
-  toFlat, triggerNeedsThreshold, triggerNeedsTime, validateInstruction,
+  describeInstruction, predicateChangePatch,
+  predicateNeedsThreshold, predicateNeedsTime, toCompound, toFlat,
+  triggerChangePatch, triggerNeedsThreshold, triggerNeedsTime,
+  validateInstruction, type DescribeOpts,
 } from "../../lib/instructions";
 import {
   SIM_CAVEAT, defaultSnapshot, simulateInstructions, type SimSnapshot,
 } from "../../lib/instructionSim";
 import { accessPhrase } from "../../lib/caps";
+import { useGuideRms } from "../../store";
+import { Icon } from "../icons";
 import { IconButton, InfoDot, Panel, Toggle } from "../ui";
 
 const TRIGGERS = Object.keys(TRIGGER_LABELS) as TriggerKind[];
-const ACTIONS = Object.keys(ACTION_LABELS) as ActionKind[];
 const PREDICATES = Object.keys(PREDICATE_LABELS) as PredicateKind[];
 const LEVELS = ["info", "warning", "error"] as const;
 const JUMP_HINT = "Target jumps need 2 or more targets.";
+
+/** Threshold placeholder/hint for whichever metric this trigger reads. */
+function thresholdHint(t: TriggerKind): string | null {
+  const k = PREDICATE_OF[t];
+  return k === "hfr_above" || k === "guide_rms_above" ? THRESHOLD_HINT[k] : null;
+}
 
 function num(v: string, fallback: number): number {
   const n = Number(v);
@@ -47,16 +57,15 @@ function TermRow({ term, idx, ruleIdx, canRemove, onPatch, onRemove }: {
   onRemove: () => void;
 }) {
   const tag = `Rule ${ruleIdx + 1} condition ${idx + 1}`;
+  const hint = term.kind === "hfr_above" || term.kind === "guide_rms_above"
+    ? THRESHOLD_HINT[term.kind] : null;
   return (
     <div className="flex items-center gap-2 flex-wrap">
       <select
         className="field !py-1"
         aria-label={`${tag} kind`}
         value={term.kind}
-        onChange={(e) => {
-          const kind = e.target.value as PredicateKind;
-          onPatch({ ...defaultPredicate(kind), threshold: term.threshold || 1 });
-        }}
+        onChange={(e) => onPatch(predicateChangePatch(term, e.target.value as PredicateKind))}
       >
         {PREDICATES.map((k) => (
           <option key={k} value={k}>{PREDICATE_LABELS[k]}</option>
@@ -68,6 +77,7 @@ function TermRow({ term, idx, ruleIdx, canRemove, onPatch, onRemove }: {
           type="number"
           step="0.1"
           min="0"
+          title={hint ?? undefined}
           aria-label={`${tag} threshold`}
           value={term.threshold}
           onChange={(e) => onPatch({ threshold: Math.max(0, num(e.target.value, term.threshold)) })}
@@ -148,19 +158,34 @@ function CompoundEditor({ when, ruleIdx, onChange, onDrop }: {
 
 /** One rule row. Holds only its own "advanced" disclosure state; the rule itself
  *  is controlled by the parent (plan SSOT). */
-function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
+function RuleRow({ ins, idx, targetNames, descOpts, onPatch, onRemove }: {
   ins: Instruction;
   idx: number;
   targetNames: string[];
+  descOpts: DescribeOpts;
   onPatch: (patch: Partial<Instruction>) => void;
   onRemove: () => void;
 }) {
   const [adv, setAdv] = useState(false);
   const problems = validateInstruction(ins);
   const when = ins.when ?? null;
-  // Honest-disabled (§11.8): jumps are meaningless with fewer than 2 targets, so
-  // the options are DIMMED + aria-disabled + explained — never natively disabled.
+  // Jumps are meaningless with fewer than 2 targets. Honest-disabled means the
+  // user is never offered a control that silently does nothing — and a styled/
+  // aria-disabled <option> is exactly that, because browsers IGNORE both inside
+  // a closed <select> (and title never renders on an option at all). So the
+  // options are REMOVED from the list and a persistent note says why; the
+  // onChange guard below stays as defence in depth.
   const jumpsOk = targetNames.length >= 2;
+  const groups = ACTION_GROUPS
+    .map((g) => ({
+      ...g,
+      // a rule authored earlier (when there WERE 2 targets) keeps its own option
+      // so the select never renders a value it doesn't offer.
+      actions: g.actions.filter(
+        (a) => jumpsOk || !actionNeedsTarget(a) || a === ins.action),
+    }))
+    .filter((g) => g.actions.length > 0);
+  const consequence = ACTION_CONSEQUENCE[ins.action];
 
   return (
     <div className="border-t border-line/60 pt-2 flex flex-col gap-2 text-[11px]">
@@ -180,7 +205,9 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
             className="field !py-1"
             aria-label={`Rule ${idx + 1} trigger`}
             value={ins.trigger}
-            onChange={(e) => onPatch({ trigger: e.target.value as TriggerKind })}
+            // Seed whatever the new trigger needs (threshold / clock) so the
+            // author never lands straight on a red validation error.
+            onChange={(e) => onPatch(triggerChangePatch(ins, e.target.value as TriggerKind))}
           >
             {TRIGGERS.map((t) => (
               <option key={t} value={t}>{TRIGGER_LABELS[t]}</option>
@@ -194,6 +221,7 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
             type="number"
             step="0.1"
             min="0"
+            title={thresholdHint(ins.trigger) ?? undefined}
             aria-label={`Rule ${idx + 1} threshold`}
             value={ins.threshold}
             onChange={(e) => onPatch({ threshold: Math.max(0, num(e.target.value, ins.threshold)) })}
@@ -216,23 +244,18 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
           className="field !py-1"
           aria-label={`Rule ${idx + 1} action`}
           value={ins.action}
-          title={jumpsOk ? undefined : JUMP_HINT}
           onChange={(e) => {
             const a = e.target.value as ActionKind;
-            if (actionNeedsTarget(a) && !jumpsOk) return;   // honest-disabled: inert
+            if (actionNeedsTarget(a) && !jumpsOk) return;   // defence in depth
             onPatch(actionChangePatch(ins, a, targetNames));
           }}
         >
-          {ACTIONS.map((a) => (
-            <option
-              key={a}
-              value={a}
-              className={actionNeedsTarget(a) && !jumpsOk ? "opacity-40" : undefined}
-              aria-disabled={actionNeedsTarget(a) && !jumpsOk ? true : undefined}
-              title={actionNeedsTarget(a) && !jumpsOk ? JUMP_HINT : undefined}
-            >
-              {ACTION_LABELS[a]}
-            </option>
+          {groups.map((g) => (
+            <optgroup key={g.label} label={g.label}>
+              {g.actions.map((a) => (
+                <option key={a} value={a}>{ACTION_LABELS[a]}</option>
+              ))}
+            </optgroup>
           ))}
         </select>
 
@@ -250,6 +273,27 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
           onClick={onRemove}
         />
       </div>
+
+      {/* Visible hint, not only title=: title never fires on touch, and "4.0"
+          means nothing without knowing what normal looks like. */}
+      {!when && thresholdHint(ins.trigger) && (
+        <p className="text-[10px] text-dim">{thresholdHint(ins.trigger)}</p>
+      )}
+      {/* Persistent note instead of a picker entry the browser would let them
+          choose anyway (see the honest-disabled comment above). */}
+      {!jumpsOk && (
+        <p className="text-[10px] text-dim flex items-start gap-1">
+          <span aria-hidden>·</span>
+          <span>{JUMP_HINT} Add another target to this plan to jump between them.</span>
+        </p>
+      )}
+      {/* What this action COSTS, in warn tone, the moment it is selected. */}
+      {consequence && (
+        <p className="text-[10px] text-warn flex items-start gap-1.5 leading-snug">
+          <Icon name="alert" size={11} className="shrink-0 mt-px" />
+          <span>{consequence}</span>
+        </p>
+      )}
 
       {/* --- notify message + level --- */}
       {ins.action === "notify" && (
@@ -277,11 +321,11 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
       {actionNeedsTarget(ins.action) && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-dim">
-            {ins.action === "run_target" ? "jump to" : "skip"}
+            {ins.action === "run_target" ? "switch to" : "drop"}
           </span>
           <select
             className="field !py-1"
-            aria-label={`Rule ${idx + 1} target to ${ins.action === "run_target" ? "jump to" : "skip"}`}
+            aria-label={`Rule ${idx + 1} target to ${ins.action === "run_target" ? "switch to" : "drop"}`}
             value={ins.target_arg ?? ""}
             onChange={(e) => onPatch({ target_arg: e.target.value || null })}
           >
@@ -291,7 +335,7 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
             ))}
           </select>
           <span className="text-dim text-[10px]">
-            Jumps change which target runs next. “Once” is on so a rule can’t loop.
+            “Once” is on so a rule can’t loop.
           </span>
         </div>
       )}
@@ -299,7 +343,7 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
       {ins.action === "abort" && (
         <input
           className="field !py-1"
-          placeholder="abort reason (optional)"
+          placeholder="why the session stopped (optional — goes in the report)"
           aria-label={`Rule ${idx + 1} abort reason`}
           value={ins.message}
           onChange={(e) => onPatch({ message: e.target.value })}
@@ -379,7 +423,7 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
 
       {/* --- live summary + validation --- */}
       <div className="mono text-[10px] text-dim truncate">
-        {describeInstruction(ins, targetNames)}
+        {describeInstruction(ins, targetNames, descOpts)}
       </div>
       {problems.length > 0 && (
         <ul className="text-[10px] text-warn list-disc pl-4">
@@ -393,22 +437,30 @@ function RuleRow({ ins, idx, targetNames, onPatch, onRemove }: {
 /** Dry run: "what would these rules do right now?". A THIN render over the pure
  *  `simulateInstructions` helper — no evaluation logic lives here. Read-only, so
  *  it stays usable for viewers who cannot edit the plan. */
-function DryRunPanel({ rules, targetNames }: {
+function DryRunPanel({ rules, targetNames, descOpts }: {
   rules: Instruction[];
   targetNames: string[];
+  descOpts: DescribeOpts;
 }) {
   // every control is optional — the defaults render a useful preview instantly.
+  // `now` is seeded from the REAL clock (a hardcoded 22:00 made every time-based
+  // rule preview wrong for anyone not imaging at 10pm).
   const [snap, setSnap] = useState<SimSnapshot>(() => defaultSnapshot(targetNames));
-  const outcomes = useMemo(() => simulateInstructions(rules, snap), [rules, snap]);
+  const outcomes = useMemo(
+    () => simulateInstructions(rules, snap, descOpts), [rules, snap, descOpts]);
   const patch = (p: Partial<SimSnapshot>) => setSnap((s) => ({ ...s, ...p }));
   const firing = outcomes.filter((o) => o.wouldFire).length;
+  const rmsUnit = descOpts.rmsArcsec === false ? " px" : "\"";
 
   return (
     <div className="mt-2 flex flex-col gap-2 text-[11px] rounded-md border border-line/60 p-2">
       <div className="flex items-center gap-3 flex-wrap">
         <label className="inline-flex items-center gap-2">
           <span className="text-dim w-16">HFR</span>
+          {/* .dimmer is the app's themed range (index.css) — an unclassed range
+              renders UA grey/blue, the only non-red thing on a night screen. */}
           <input
+            className="dimmer w-24"
             type="range" min="0" max="10" step="0.1"
             aria-label="Preview HFR"
             value={snap.hfr ?? 0}
@@ -417,14 +469,17 @@ function DryRunPanel({ rules, targetNames }: {
           <span className="mono w-8 text-right">{(snap.hfr ?? 0).toFixed(1)}</span>
         </label>
         <label className="inline-flex items-center gap-2">
-          <span className="text-dim w-16">guide RMS</span>
+          <span className="text-dim w-16">guide error</span>
           <input
+            className="dimmer w-24"
             type="range" min="0" max="5" step="0.05"
-            aria-label="Preview guide RMS"
+            aria-label="Preview guide error"
             value={snap.guideRms ?? 0}
             onChange={(e) => patch({ guideRms: num(e.target.value, 0) })}
           />
-          <span className="mono w-10 text-right">{(snap.guideRms ?? 0).toFixed(2)}"</span>
+          <span className="mono w-12 text-right">
+            {(snap.guideRms ?? 0).toFixed(2)}{rmsUnit}
+          </span>
         </label>
       </div>
       <div className="flex items-center gap-3 flex-wrap">
@@ -441,12 +496,12 @@ function DryRunPanel({ rules, targetNames }: {
             label="Preview target complete" />
         </label>
         <label className="inline-flex items-center gap-2">
-          <span className="text-dim">time</span>
+          <span className="text-dim">pretend the time is</span>
           <input
             className="field !w-20 !py-1 mono text-center"
             placeholder="HH:MM"
             inputMode="numeric"
-            aria-label="Preview time"
+            aria-label="Pretend the time is"
             value={snap.now}
             onChange={(e) => patch({ now: e.target.value })}
           />
@@ -467,13 +522,23 @@ function DryRunPanel({ rules, targetNames }: {
 
       <ul className="flex flex-col gap-1">
         {outcomes.map((o) => (
+          // A firing Abort must not read as the same cheerful green ● as a
+          // firing Notify: destructive outcomes get warn tone AND say so in
+          // words (status is never colour-only).
           <li key={o.id}
-            className={`flex items-start gap-2 ${o.wouldFire ? "text-good" : "text-dim"}`}>
-            <span aria-hidden>{o.wouldFire ? "●" : "○"}</span>
+            className={`flex items-start gap-2 ${
+              !o.wouldFire ? "text-dim" : o.destructive ? "text-warn" : "text-good"}`}>
+            {o.wouldFire && o.destructive
+              ? <Icon name="alert" size={11} className="shrink-0 mt-0.5" />
+              : <span aria-hidden>{o.wouldFire ? "●" : "○"}</span>}
             <span className="flex-1 min-w-0">
               <span className="mono block truncate">{o.summary}</span>
               <span className="text-[10px]">
-                {o.wouldFire ? "would fire" : `waiting: ${o.reason}`}
+                {o.wouldFire
+                  ? (o.destructive
+                      ? "would fire — this ends or abandons work"
+                      : "would fire")
+                  : `waiting: ${o.reason}`}
                 {o.note ? ` — ${o.note}` : ""}
               </span>
             </span>
@@ -496,6 +561,12 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
   const [preview, setPreview] = useState(false);
   const instructions = plan.instructions ?? [];
   const targetNames = plan.targets.map((t) => t.name).filter(Boolean);
+  // The guider only reports arcseconds when the guide scope's focal length is
+  // known (native.py:1093-1109) — otherwise its RMS is PIXELS, and printing ″
+  // would be a lie. Same default as GuideView: unknown reads as arcsec.
+  const guideStats = useGuideRms();
+  const descOpts = useMemo<DescribeOpts>(
+    () => ({ rmsArcsec: guideStats?.is_arcsec !== false }), [guideStats?.is_arcsec]);
 
   const patchAt = (idx: number, patch: Partial<Instruction>) =>
     setPlan({
@@ -530,7 +601,8 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
         <span className="truncate">
           {instructions.length === 0
             ? "Add conditional rules (optional)"
-            : instructions.map((i) => describeInstruction(i, targetNames)).join("  ·  ")}
+            : instructions.map((i) => describeInstruction(i, targetNames, descOpts))
+                .join("  ·  ")}
         </span>
         <span className="flex-1" />
         <span aria-hidden className="text-sm leading-none">{open ? "▾" : "▸"}</span>
@@ -549,6 +621,7 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
               ins={ins}
               idx={idx}
               targetNames={targetNames}
+              descOpts={descOpts}
               onPatch={(patch) => patchAt(idx, patch)}
               onRemove={() => removeAt(idx)}
             />
@@ -580,7 +653,8 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
             <span aria-hidden className="text-sm leading-none">{preview ? "▾" : "▸"}</span>
           </button>
           {preview && (
-            <DryRunPanel rules={instructions} targetNames={targetNames} />
+            <DryRunPanel rules={instructions} targetNames={targetNames}
+              descOpts={descOpts} />
           )}
         </>
       )}

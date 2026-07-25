@@ -3,10 +3,12 @@
 // `tsc -b` and runs directly with:  npx tsx src/lib/__tests__/instructions.test.ts
 // Each `test(...)` maps 1:1 to an `it(...)` if a real runner lands later.
 
-import type { Instruction } from "../../types";
+import type { Instruction, PredicateKind, TriggerKind } from "../../types";
 import {
-  actionChangePatch, defaultInstruction, describeInstruction, toCompound, toFlat,
-  validateInstruction, triggerNeedsThreshold, triggerNeedsTime,
+  ACTION_GROUPS, THRESHOLD_SEED, actionChangePatch, defaultInstruction,
+  describeInstruction, isDestructiveAction, predicateChangePatch, toCompound,
+  toFlat, triggerChangePatch, validateInstruction, triggerNeedsThreshold,
+  triggerNeedsTime,
 } from "../instructions";
 
 // ---------------------------------------------------------------- harness
@@ -115,6 +117,66 @@ test("switching to a jump action seeds a target and turns once on", () => {
   const back = actionChangePatch(
     { ...defaultInstruction(), action: "run_target", target_arg: "M31" }, "notify", ["M31"]);
   eq(back.target_arg, null, "clears the destination when leaving a jump");
+});
+
+// ------------------------------------------- trigger/predicate seeding (UX)
+// Every trigger change must leave the rule VALID: the novice path used to patch
+// only `trigger`, landing straight on "Threshold must be greater than 0."
+const SEED_CASES: Array<[TriggerKind, Partial<Instruction>]> = [
+  ["on_hfr_above", { trigger: "on_frame_rejected", threshold: 0 }],
+  ["on_guide_rms_above", { trigger: "on_frame_rejected", threshold: 0 }],
+  ["at_time", { trigger: "on_frame_rejected", at_time: null }],
+  ["on_hfr_above", { trigger: "at_time", at_time: "23:00", threshold: 0 }],
+  ["on_frame_rejected", { trigger: "on_hfr_above", threshold: 3 }],
+  ["on_target_complete", { trigger: "at_time", at_time: null }],
+];
+for (const [next, from] of SEED_CASES) {
+  test(`changing the trigger to ${next} leaves the rule valid`, () => {
+    const before = { ...defaultInstruction(), ...from } as Instruction;
+    const after = { ...before, ...triggerChangePatch(before, next) };
+    const problems = validateInstruction(after);
+    eq(problems.length, 0, `${next}: ${problems.join(" | ")}`);
+  });
+}
+
+test("switching metric re-seeds the threshold; same metric keeps the typed one", () => {
+  const hfr = { ...defaultInstruction(), trigger: "on_hfr_above" as const, threshold: 3.2 };
+  // HFR 3.2 would be a hopeless guide-error limit — never carry it across units
+  eq(triggerChangePatch(hfr, "on_guide_rms_above").threshold,
+     THRESHOLD_SEED.guide_rms_above, "re-seeds across units");
+  // ... but leaving to a threshold-free trigger must not clobber the value
+  eq(triggerChangePatch(hfr, "on_frame_rejected").threshold, undefined,
+     "no threshold patch when the trigger doesn't use one");
+});
+
+const PRED_CASES: PredicateKind[] = [
+  "hfr_above", "guide_rms_above", "frame_rejected", "target_complete", "at_time",
+];
+for (const kind of PRED_CASES) {
+  test(`compound term seeded for ${kind} is valid`, () => {
+    const term = predicateChangePatch(
+      { kind: "frame_rejected", threshold: 0, at_time: null }, kind);
+    const problems = validateInstruction({
+      ...defaultInstruction(),
+      when: { op: "all", terms: [term, term] },
+    });
+    eq(problems.length, 0, `${kind}: ${problems.join(" | ")}`);
+  });
+}
+
+// ------------------------------------------------- destructive-action model
+test("destructive actions are grouped last and flagged", () => {
+  for (const a of ["abort", "run_target", "skip_target"] as const) {
+    assert(isDestructiveAction(a), `${a} must be destructive`);
+  }
+  for (const a of ["notify", "pause", "refocus", "dither"] as const) {
+    assert(!isDestructiveAction(a), `${a} must not be destructive`);
+  }
+  const flat = ACTION_GROUPS.flatMap((g) => g.actions);
+  eq(flat[flat.length - 1], "abort", "abort is the last option offered");
+  eq(flat.length, 7, "every action is offered exactly once");
+  assert(ACTION_GROUPS[0].actions.every((a) => !isDestructiveAction(a)),
+    "the first group holds nothing destructive");
 });
 
 // ---------------------------------------------------------------- report

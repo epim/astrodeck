@@ -70,6 +70,14 @@ export function subSnr(signalE: number, noise: SubNoise): number {
   return noise.totalNoiseE > 0 ? Math.max(0, signalE) / noise.totalNoiseE : 0;
 }
 
+/** A WORD for a per-sub star SNR, so "~38" is not read as a score out of 100.
+ *  Bands are the conventional per-sub reading: below ~10 a star is barely above
+ *  the noise in one frame, ~10-30 stacks well, above ~30 is a strong signal. */
+export function starSnrWord(snr: number): "faint" | "usable" | "strong" {
+  if (snr >= 30) return "strong";
+  return snr >= 10 ? "usable" : "faint";
+}
+
 /** Stacked SNR after n subs (shot/read-noise limited): perSubSnr * sqrt(n). */
 export function stackedSnr(perSubSnr: number, n: number): number {
   return n > 0 ? perSubSnr * Math.sqrt(n) : 0;
