@@ -419,7 +419,11 @@ async def test_capture_radec_written_as_j2000(monkeypatch, tmp_path):
 
 async def test_solve_saved_lights_stamps_wcs(monkeypatch, tmp_path):
     """When solve_saved_lights is ON, a saved light is solved in place and gets a
-    celestial WCS a stacker can read without re-solving (supervisor ruling 4)."""
+    celestial WCS a stacker can read without re-solving (supervisor ruling 4).
+
+    The solve now runs on the hub's BACKGROUND worker (per-frame-wcs spec §2.1),
+    so the round trip is: capture (returns immediately) -> drain the worker ->
+    the header carries a WCS astropy accepts as celestial."""
     monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
     temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
     monkeypatch.setattr(hub_module, "config_store", temp_store)
@@ -437,6 +441,8 @@ async def test_solve_saved_lights_stamps_wcs(monkeypatch, tmp_path):
     try:
         await h.capture(0.5, 100, 30, 1, save=True, target="M42")
         saved = Path(h.last_frame.saved_path)
+        assert h._wcs_queue is not None                  # handed to the worker
+        await asyncio.wait_for(h._wcs_queue.join(), timeout=30)
         from astropy.wcs import WCS
         with fits.open(saved) as hdul:
             hd = hdul[0].header

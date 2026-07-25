@@ -73,10 +73,14 @@ def _db_dir() -> Path | None:
 
 def _solve_args(exe: str, fits_path: Path, ra_hint: float | None,
                 dec_hint: float | None, fov_deg_hint: float | None,
-                db_dir: Path | None) -> list[str]:
+                db_dir: Path | None, downsample: int = 0) -> list[str]:
     """Assemble the astap_cli argv (extracted so the flag wiring — including the
-    bundled ``-d`` DB path — is unit-testable without launching a subprocess)."""
-    args = [exe, "-f", str(fits_path), "-z", "0"]
+    bundled ``-d`` DB path — is unit-testable without launching a subprocess).
+
+    ``downsample`` becomes ASTAP's ``-z``; 0 (the default, and what every
+    pre-existing caller passes) is ASTAP's own automatic choice, so the argv is
+    byte-identical to before this parameter existed."""
+    args = [exe, "-f", str(fits_path), "-z", str(max(0, int(downsample or 0)))]
     if ra_hint is not None and dec_hint is not None:
         args += ["-ra", f"{ra_hint:.4f}", "-spd", f"{dec_hint + 90:.4f}", "-r", "15"]
     else:
@@ -157,9 +161,10 @@ class AstapSolver(PlateSolver):
 
     async def solve(self, fits_path: Path, *, ra_hint: float | None = None,
                     dec_hint: float | None = None,
-                    fov_deg_hint: float | None = None) -> SolveResult:
+                    fov_deg_hint: float | None = None,
+                    downsample: int = 0) -> SolveResult:
         args = _solve_args(self.exe, fits_path, ra_hint, dec_hint,
-                           fov_deg_hint, _db_dir())
+                           fov_deg_hint, _db_dir(), downsample)
 
         proc = await asyncio.create_subprocess_exec(
             *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
