@@ -1,11 +1,15 @@
 // TonightView — the dedicated "Tonight" destination (polish grab-bag (c)).
 //
-// A first-timer should not have to know that "what can I image right now?" lives
-// one tab deep inside Atlas. This view is a thin shell around the SAME
-// `TonightPicker` AtlasView mounts (server-ranked, difficulty-tagged, beginner
-// filter already ON by default) — no new backend, no new picker, no duplicated
-// logic. Picking hands straight to `openFraming`, exactly like Atlas does, so the
-// flow is: Tonight -> tap a target -> it's framed.
+// A first-timer should not have to already know that "what can I image right
+// now?" is a panel inside Atlas — this view gives the question a NAMED
+// destination. (It is a discoverability fix, not a tap-count one: on a phone it
+// still lives in the More sheet. See the NAV comment in App.tsx for why the
+// append-only nav rule wins over a primary-bar promotion.)
+//
+// A thin shell around the SAME `TonightPicker` AtlasView mounts (server-ranked,
+// difficulty-tagged, beginner filter already ON by default) — no new backend, no
+// new picker, no duplicated logic. Picking hands straight to `openFraming`,
+// exactly like Atlas does, so the flow is: Tonight -> tap a target -> it's framed.
 //
 // (c2) While a sequence is RUNNING or PAUSED it also re-surfaces what you are
 // already imaging, with its difficulty tier when the client can honestly resolve
@@ -13,7 +17,7 @@
 // Unknown tier => the chip is simply absent; we never guess a badge.
 import type { JSX } from "react";
 import { useStore } from "../store";
-import { Panel } from "../components/ui";
+import { Panel, Tooltip } from "../components/ui";
 import { Icon } from "../components/icons";
 import { TonightPicker } from "../components/atlas/TonightPicker";
 import {
@@ -45,17 +49,21 @@ export default function TonightView(): JSX.Element {
             </span>
             <span className="text-ink">{seqTarget}</span>
           </span>
+          {/* The tier hint used to live only in `title=`, which never fires on
+              touch — this app's primary field device is a tablet. Tooltip has a
+              tap path, a keyboard path and an Escape. */}
           {tier && (
-            <span
-              className={`inline-flex items-center gap-1 shrink-0 ${
-                difficultyTone(tier) === "good" ? "text-good"
-                : difficultyTone(tier) === "warn" ? "text-warn" : "text-bad"
-              }`}
-              title={difficultyHint(tier)}
-            >
-              <span aria-hidden>{difficultyGlyph(tier)}</span>
-              {difficultyLabel(tier)}
-            </span>
+            <Tooltip content={difficultyHint(tier)}>
+              <span
+                className={`inline-flex items-center gap-1 shrink-0 ${
+                  difficultyTone(tier) === "good" ? "text-good"
+                  : difficultyTone(tier) === "warn" ? "text-warn" : "text-bad"
+                }`}
+              >
+                <span aria-hidden>{difficultyGlyph(tier)}</span>
+                {difficultyLabel(tier)}
+              </span>
+            </Tooltip>
           )}
         </div>
       )}

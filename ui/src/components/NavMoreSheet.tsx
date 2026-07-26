@@ -41,8 +41,10 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
   // Tonight lands HERE on mobile (polish grab-bag Decision C): the 5-slot primary
-  // bar is full and reordering it would violate the append-only nav rule. The
-  // desktop rail lists it directly.
+  // bar holds the setup-critical tabs (touch spec R14) and reordering it would
+  // violate the append-only nav rule (App.tsx Risk-10). So on a phone Tonight
+  // costs two taps, and the nav comment says so rather than claiming otherwise.
+  // The desktop rail lists it directly.
   { id: "tonight", label: "Tonight", icon: "moon" },
   { id: "settings", label: "Settings", icon: "settings" },
   // Reports is NOT primary nav (App.tsx VIEWS comment) but needs to stay

@@ -299,17 +299,21 @@ export const TrendLine = memo(function TrendLine({
         <div className="text-dim text-[10px] py-3 text-center">no data</div>
       )}
       {geom && (
-        <div className="flex justify-between mono text-[9px] text-dim/70 tabular-nums">
+        // y-range are DATA numbers, so they take the AA text rung (--text-dim,
+        // `text-dim`) at the 10px floor — NOT an opacity-thinned variant of it.
+        <div className="flex justify-between mono text-[10px] text-dim tabular-nums">
           <span>{geom.yMin.toFixed(decimals)}{unit}</span>
           <span>{geom.yMax.toFixed(decimals)}{unit}</span>
         </div>
       )}
       {/* real-time axis captions (only on the timed path, only when the series
-          spans time). Faint + off the novice's critical path: the corrected
-          spacing is the feature, these just name its ends. */}
+          spans time). These are AXIS TICKS, which is exactly the role --text-faint
+          is defined for ("ticks, gridline ghosts", index.css); `text-dim/50` was
+          an invented rung BELOW that defined floor, at 9px. Now the defined
+          `text-faint` token at the 10px type floor. */}
       {geom?.tMin != null && geom.tMax != null && (
         <div
-          className="flex justify-between mono text-[9px] text-dim/50 tabular-nums"
+          className="flex justify-between mono text-[10px] text-faint tabular-nums"
           title="Wall-clock span of this trend — the line is plotted on a real time axis"
         >
           <span>{fmtClock(geom.tMin)}</span>
