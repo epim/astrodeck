@@ -107,8 +107,18 @@ export default function MountView() {
     }));
   };
 
+  // `grid-cols-[minmax(0,1fr)]` at the base breakpoint is load-bearing on a
+  // phone. An implicit/`1fr` grid track floors at the item's MIN-CONTENT, and
+  // the target-catalog table below is legitimately ~423px wide (six columns).
+  // That forced the single mobile column to 456px inside 348px, and `main` is
+  // overflow-x-hidden, so the excess was CLIPPED rather than scrollable — the
+  // Alt column, the GOTO buttons and the right-hand edge of every panel on
+  // this view were unreachable at 380px. `minmax(0,1fr)` lets the track shrink
+  // to the space available; the table then scrolls inside its own
+  // overflow-auto wrapper, which is where wide content belongs. The md+
+  // two-column template is unchanged.
   return (
-    <div className="grid gap-4 md:grid-cols-[minmax(290px,340px)_1fr]">
+    <div className="grid gap-4 grid-cols-[minmax(0,1fr)] md:grid-cols-[minmax(290px,340px)_1fr]">
       <div className="flex flex-col gap-4">
         <Panel title="Pointing" right={!canMount && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -178,7 +188,16 @@ export default function MountView() {
         }>
         <input className="field mb-3" placeholder="Search — M42, Andromeda, nebula, galaxy…"
           value={query} onChange={(e) => setQuery(e.target.value)} />
-        <div className="overflow-y-auto max-h-[58vh] -mx-1 px-1">
+        {/* `overflow-x-auto` is load-bearing on a phone. The catalog table has
+            six columns and a min-content of ~423px, and a container that only
+            scrolls VERTICALLY still propagates that min-content outward — so
+            the panel rendered 457px inside a 348px column and `main`, being
+            overflow-x-hidden, CLIPPED the excess instead of scrolling it. The
+            Alt column and the GOTO button were unreachable on a 380px screen.
+            Making this a horizontal scroll container both drops its
+            min-content contribution to 0 (the panel can now shrink) and gives
+            the wide table somewhere legitimate to scroll. */}
+        <div className="overflow-auto min-w-0 max-h-[58vh] -mx-1 px-1">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left">
