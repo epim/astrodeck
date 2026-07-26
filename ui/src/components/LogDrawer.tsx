@@ -1,21 +1,33 @@
-import { useEffect, useRef } from "react";
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { fmtLogTime, severityWord } from "../lib/logFormat";
+import { Overlay } from "./Overlay";
 
 /**
  * Event-log drawer, available on ALL viewports.
  *
- * - lg+        : a docked right column (as today), only when logOpen.
- * - below lg   : a bottom sheet (~55vh) that COEXISTS with the run panel — no
- *                full-screen scrim that would hide sequence progress; a light
- *                tap-outside catcher only over the area above the sheet.
+ * - lg+        : a docked right column, only when logOpen.
+ * - below lg   : a bottom sheet that COEXISTS with the run panel — no dark scrim
+ *                that would hide sequence progress; a transparent tap-outside
+ *                catcher instead.
  * - a11y       : role="dialog", Escape to close, focus-trap, return-focus to the
- *                control that opened it.
+ *                control that opened it — all from <Overlay/> now.
+ *
+ * REVIEW #44: the sheet used `bg-raise/95 backdrop-blur` and stacked with the
+ * phone MORE sheet, so "08:23:14 [Info · hub] simulator rig connected" read
+ * straight through the "Monitor" nav row. Overlay's `.overlay-surface` is
+ * OPAQUE (`--bg-raise`, no alpha), which is the whole point of routing both
+ * surfaces through it: two opaque sheets cannot bleed into each other.
+ *
+ * Both viewport treatments used to be mounted at once and toggled with
+ * `hidden lg:flex` / `lg:hidden`, which is why this file carried a pair of refs
+ * and a getClientRects() probe to find the visible one. Overlay picks the
+ * geometry off a live media query and renders ONE node, so that whole class of
+ * "the focus trap ran against a display:none copy" bug is gone.
  *
  * Open/close + the unseen-error badge live in the store (openLog resets
  * unseenError to 0). This component only renders; the LOG button + badge live in
- * the header (App.tsx, owned by 1D) and read store.unseenError.
+ * the header (App.tsx) and read store.unseenError.
  */
 
 const LEVEL_TONE: Record<string, string> = {
@@ -27,67 +39,6 @@ export default function LogDrawer() {
   const logOpen = useStore((s) => s.logOpen);
   const closeLog = useStore((s) => s.closeLog);
   const openHelp = useStore((s) => s.openHelp);
-
-  // Both dialog nodes (desktop docked column + mobile bottom sheet) are ALWAYS
-  // mounted — Tailwind toggles them via `hidden lg:flex` / `lg:hidden`
-  // (display:none), not by unmounting. A single shared ref would last-write-wins
-  // to whichever renders last (the sheet), so on lg+ the focus/trap effect would
-  // run against a display:none node and Tab would never trap. Keep one ref each
-  // and pick the VISIBLE one at effect time.
-  const deskRef = useRef<HTMLDivElement>(null);
-  const sheetRef = useRef<HTMLDivElement>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-
-  // Capture the element to return focus to, move focus into the drawer, trap Tab,
-  // and restore focus on close.
-  useEffect(() => {
-    if (!logOpen) return;
-    returnFocusRef.current = (document.activeElement as HTMLElement) ?? null;
-
-    // Pick whichever dialog node is actually rendered. The sheet is
-    // position:fixed so offsetParent is null even when visible — use
-    // getClientRects().length to detect display:none instead.
-    const isVisible = (el: HTMLElement | null) => !!el && el.getClientRects().length > 0;
-    const node = isVisible(deskRef.current) ? deskRef.current : sheetRef.current;
-    const focusables = () =>
-      node
-        ? Array.from(
-            node.querySelectorAll<HTMLElement>(
-              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-            ),
-          ).filter((el) => !el.hasAttribute("disabled"))
-        : [];
-
-    // Move focus into the drawer (the close button is first).
-    focusables()[0]?.focus();
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        closeLog();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const items = focusables();
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      returnFocusRef.current?.focus?.();
-    };
-  }, [logOpen, closeLog]);
 
   if (!logOpen) return null;
 
@@ -114,13 +65,13 @@ export default function LogDrawer() {
   );
 
   const header = (
-    <header className="flex items-center justify-between mb-2 shrink-0">
+    <header className="flex items-center justify-between px-3 py-1.5">
       <h2 className="panel-title">Event Log</h2>
       <button
         type="button"
         aria-label="Close event log"
         onClick={closeLog}
-        className="text-dim hover:text-ink p-1 cursor-pointer min-h-[44px] sm:min-h-0 flex items-center"
+        className="text-dim hover:text-ink p-1 cursor-pointer min-h-[44px] min-w-[44px] flex items-center justify-center"
       >
         <Icon name="x" size={16} />
       </button>
@@ -133,50 +84,28 @@ export default function LogDrawer() {
     <button
       type="button"
       onClick={() => { openHelp(); closeLog(); }}
-      className="mt-2 text-[11px] text-accent hover:underline self-start min-h-[44px] sm:min-h-0 inline-flex items-center gap-1 shrink-0"
+      className="px-3 text-[11px] text-accent hover:underline min-h-[44px] w-full inline-flex items-center gap-1"
     >
       <Icon name="info" size={12} /> Troubleshooting guide →
     </button>
   );
 
   return (
-    <>
-      {/* lg+ docked right column */}
-      <aside
-        ref={deskRef}
-        role="dialog"
-        aria-modal="false"
-        aria-label="Event log"
-        className="hidden lg:flex flex-col w-[340px] border-l border-line bg-raise/60
-          backdrop-blur p-3 overflow-y-auto shrink-0"
-      >
-        {header}
-        {rows}
-        {footer}
-      </aside>
-
-      {/* below lg: bottom sheet that coexists with the run panel.
-          A tap-catcher only over the area ABOVE the sheet (does NOT cover the
-          sheet itself); no dark scrim so progress underneath stays visible. */}
-      <div className="lg:hidden">
-        <div
-          className="fixed inset-x-0 top-0 bottom-[55vh] z-30"
-          onClick={closeLog}
-          aria-hidden="true"
-        />
-        <div
-          ref={sheetRef}
-          role="dialog"
-          aria-modal="false"
-          aria-label="Event log"
-          className="fixed inset-x-0 bottom-0 z-40 h-[55vh] flex flex-col
-            border-t border-line2 bg-raise/95 backdrop-blur p-3 sheet-enter"
-        >
-          {header}
-          <div className="overflow-y-auto flex-1">{rows}</div>
-          {footer}
-        </div>
-      </div>
-    </>
+    <Overlay
+      open
+      label="Event log"
+      variant="dock"
+      modal={false}
+      scrim={false}
+      dismissOnOutside
+      trapFocus
+      autoFocus
+      onClose={closeLog}
+      head={header}
+      foot={footer}
+      bodyClassName="px-3 py-2"
+    >
+      {rows}
+    </Overlay>
   );
 }
