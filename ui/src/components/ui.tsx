@@ -486,6 +486,116 @@ export function InfoDot({ label = "More information", content }: { label?: strin
   );
 }
 
+/* ============================================================ UI-LOCKED
+   ONE read-only presentation for the whole app. Before this, five files dimmed
+   read-only surfaces at four different opacities (0.35/0.4/0.5) and put the
+   reason only in `title=` — which never fires on touch and is not reachable by
+   keyboard, so on a tablet (the primary field device) a locked control was
+   simply dead with no stated cause.
+
+   `LOCKED_CLASS` is the single dimming token. `lockedProps(reason)` spreads
+   onto a read-only CONTAINER; `LockedNote` renders the reason as VISIBLE text
+   beside a lock glyph; `LockedChip` is the focusable inline variant that
+   replaces locked `<span>`s (tabIndex={0}, so keyboard users land on it and
+   hear the reason instead of tabbing straight past). */
+export const LOCKED_CLASS = "opacity-50 pointer-events-none select-none";
+
+/** Spread onto a container that is read-only for `reason`. Returns empty
+ *  props (no dimming, no aria) when `reason` is falsy, so call sites read
+ *  `<div {...lockedProps(canEdit ? null : accessPhrase(cap))}>` with no
+ *  ternary around the className. `aria-disabled` — never the native
+ *  `disabled` attribute, which strips the element from the a11y tree along
+ *  with the reason we are trying to convey (house rule §11.8). */
+export function lockedProps(reason?: string | null): {
+  className?: string; "aria-disabled"?: true; "data-locked"?: "true";
+} {
+  if (!reason) return {};
+  return { className: LOCKED_CLASS, "aria-disabled": true, "data-locked": "true" };
+}
+
+/** Visible lock glyph + reason. Pair with `lockedProps` on the container —
+ *  the container carries the dimming, this carries the explanation. Rendered
+ *  OUTSIDE the dimmed element so the reason stays at full contrast. */
+export function LockedNote({ reason, className = "" }: {
+  reason: string; className?: string;
+}) {
+  return (
+    <p className={`flex items-center gap-1.5 text-[11px] text-dim ${className}`}>
+      <Icon name="lock" size={12} aria-hidden />
+      <span>{reason}</span>
+    </p>
+  );
+}
+
+/** Inline read-only stand-in for a control the user cannot operate. Focusable
+ *  on purpose: `aria-disabled` keeps it in the tab order (unlike `disabled`),
+ *  and the reason rides in `aria-label` AND in a tooltip, so it is reachable
+ *  by keyboard, by screen reader, and by tap. */
+export function LockedChip({ reason, children, className = "" }: {
+  reason: string; children: ReactNode; className?: string;
+}) {
+  return (
+    <Tooltip content={reason}>
+      <span
+        tabIndex={0}
+        role="button"
+        aria-disabled
+        aria-label={`Unavailable — ${reason}`}
+        className={`inline-flex items-center gap-1.5 tap min-h-[44px] ${LOCKED_CLASS}
+          !pointer-events-auto cursor-default ${className}`}
+      >
+        <Icon name="lock" size={12} aria-hidden />
+        {children}
+      </span>
+    </Tooltip>
+  );
+}
+
+/* ============================================================ UI-DISCLOSURE
+   The house progressive-disclosure row, extracted. Fourteen call sites hand-rolled
+   this same shape (aria-expanded button, >=44px tap target, ▸/▾ caret); two later
+   ones reached for native <details>/<summary> instead, which renders a different
+   caret, ignores the 44px floor, and cannot be driven open from outside. This is
+   the hand-rolled shape as one component so new disclosures have somewhere to go.
+
+   `summary` is what the collapsed row shows; `label` is the accessible verb
+   phrase ("Show raw curves"). Controlled `open`/`onToggle` is optional — omit
+   for the common self-managing case. */
+export function Disclosure({
+  summary, label, glyph, children, className = "", open: openProp, onToggle,
+  defaultOpen = false,
+}: {
+  summary: ReactNode; label: string; glyph?: ReactNode; children: ReactNode;
+  className?: string; open?: boolean; onToggle?: (next: boolean) => void;
+  defaultOpen?: boolean;
+}) {
+  const [openState, setOpenState] = useState(defaultOpen);
+  const open = openProp ?? openState;
+  const toggle = () => {
+    const next = !open;
+    if (openProp === undefined) setOpenState(next);
+    onToggle?.(next);
+  };
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} ${label}`}
+        onClick={toggle}
+        className="w-full tap min-h-[44px] flex items-center gap-2 px-1 text-left
+          text-[11px] text-dim hover:text-accent transition-colors cursor-pointer"
+      >
+        {glyph && <span aria-hidden className="text-accent">{glyph}</span>}
+        <span className="min-w-0 truncate">{summary}</span>
+        <span className="flex-1" />
+        <span aria-hidden className="text-sm leading-none">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && <div className="mt-1 px-1 pb-1">{children}</div>}
+    </div>
+  );
+}
+
 /* ============================================================ UI-EMPTY (EmptyState)
    Static (no pulse — would imply loading). hero (default) fills a view panel;
    inline is a one-line muted note for tight containers (log drawer, lists). */
