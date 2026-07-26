@@ -20,6 +20,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo, StarMark, StretchParams, Viewport } from "../../types";
 import { Icon } from "../icons";
+import { Tooltip } from "../ui";
 import Logo from "../Logo";
 import { u } from "../../lib/base";
 import { usePreviewGestures } from "./usePreviewGestures";
@@ -36,7 +37,7 @@ import { tiltSummary } from "../../lib/tilt";
 import { useCropZoom } from "./useCropZoom";
 import { CropOverlay } from "./CropOverlay";
 import { LoupePanel } from "./LoupePanel";
-import { shouldCrop, type RoiGeom } from "../../lib/cropRoi";
+import { LOUPE_CHROME_PX, loupeBoxSize, shouldCrop, type RoiGeom } from "../../lib/cropRoi";
 
 interface Props {
   preview: PreviewInfo | null;
@@ -341,6 +342,18 @@ export function PreviewStage(props: Props) {
   const chipRows = (selectedStar ? 1 : 0) + (overlays.tilt && tiltAvailable ? 1 : 0);
   const snrChipPos = chipRows >= 2 ? "bottom-20" : chipRows === 1 ? "bottom-11" : "bottom-2";
 
+  // The loupe is sized from the MEASURED stage, not a viewport media query — the
+  // stage is a panel in a scrolling column, so the two are different numbers.
+  // 0 == even the minimum useful 1:1 window would crowd this stage; we then say
+  // so where the loupe would have been instead of dropping the toggle on the
+  // floor. (lib/cropRoi.loupeBoxSize documents the scale-vs-suppress reasoning.)
+  const loupeBox = loupeBoxSize(stageSize.w);
+  const loupeShown = loupeOn && linearEnabled && !compact && loupeBox > 0;
+  // Horizontal room the bottom-left chips must leave for the loupe panel (its
+  // own 8px inset + chrome + an 8px gap). Without this the untruncated SNR chip
+  // ran straight under the loupe on a phone.
+  const chipReserve = loupeShown ? loupeBox + LOUPE_CHROME_PX + 24 : 16;
+
   // NINA / pre-stretched path: Brightness/Contrast are display-only and MUST
   // visibly act on the rendered <img> (honesty rule #6 — no fake control). We
   // chain them onto the shared night tint (.astro -> var(--img-filter)) inline so
@@ -532,18 +545,25 @@ export function PreviewStage(props: Props) {
       {/* Clip-mask SCOPE disclosure (advanced nuance, §1.4). The amber frame
           always means "this frame clips"; the per-pixel paint only exists inside
           the ROI we actually fetched. Say which one the user is looking at rather
-          than letting an un-painted region read as "clean". */}
+          than letting an un-painted region read as "clean".
+
+          The scope explanation is a `Tooltip`, not a raw `title=`: title never
+          fires on touch, and a tablet at the scope is the primary field device,
+          so on the device that matters most the nuance simply did not exist. */}
       {clipActive && (
-        <div
-          className={`absolute top-2 left-2 preview-chip !text-warn ${preview.bayer_pattern ? "mt-14" : ""}`}
-          title={
-            clipCropPixels
-              ? "The exact overexposed pixels are painted inside the zoomed region. The amber frame means somewhere in the full frame is overexposed."
-              : "Somewhere in this frame is overexposed. Zoom in to see exactly which pixels."
-          }
-        >
-          Some stars are overexposed
-          {clipCropPixels ? " — shown in view" : ""}
+        <div className={`absolute top-2 left-2 ${preview.bayer_pattern ? "mt-14" : ""}`}>
+          <Tooltip
+            content={
+              clipCropPixels
+                ? "The exact overexposed pixels are painted inside the zoomed region. The amber frame means somewhere in the full frame is overexposed."
+                : "Somewhere in this frame is overexposed. Zoom in to see exactly which pixels."
+            }
+          >
+            <span className="preview-chip !text-warn">
+              Some stars are overexposed
+              {clipCropPixels ? " — shown in view" : ""}
+            </span>
+          </Tooltip>
         </div>
       )}
 
@@ -579,37 +599,49 @@ export function PreviewStage(props: Props) {
 
       {/* tilt/aberration classification chip (PRO-13) — bottom-left, mirroring
           the selected-star readout; stacked above it when both are on (niche,
-          rarely simultaneous — Open Decision E). */}
+          rarely simultaneous — Open Decision E).
+
+          NOT aria-live (same rule as SnrChip): the label is recomputed from every
+          incoming sub, so a live region here re-announces "Field: tilted" all
+          night and talks over everything that actually needs saying. The advice
+          moved out of `title=` into a Tooltip so it has a tap path. */}
       {overlays.tilt && tiltAvailable && (() => {
         const s = tiltSummary(preview.tilt!);
         const tint = s.tone === "good" ? "!text-good" : s.tone === "warn" ? "!text-warn" : "!text-bad";
         const pos = selectedStar ? "bottom-11" : "bottom-2";
         return (
-          <div
-            className={`absolute ${pos} left-2 preview-chip flex items-center gap-1 ${tint}`}
-            aria-live="polite"
-            title={s.advice}
-          >
-            Field: {s.label}
+          <div className={`absolute ${pos} left-2`}>
+            <Tooltip content={s.advice}>
+              <span className={`preview-chip flex items-center gap-1 ${tint}`}>
+                Field: {s.label}
+              </span>
+            </Tooltip>
           </div>
         );
       })()}
 
       {/* per-sub SNR chip (polish grab-bag (b)). Self-subscribes to the photometry
           profile and renders NOTHING when it is unset or when this frame carried
-          no trusted star flux — zero novice clutter, never a fabricated number. */}
-      <SnrChip preview={preview} star={selectedStar} className={`absolute ${snrChipPos} left-2`} />
+          no trusted star flux — zero novice clutter, never a fabricated number.
+          Width-capped so it wraps instead of sliding under the loupe. */}
+      <div
+        className={`absolute ${snrChipPos} left-2`}
+        style={{ maxWidth: `calc(100% - ${chipReserve}px)` }}
+      >
+        <SnrChip preview={preview} />
+      </div>
 
       {/* decimation disclosure — lifted clear of the loupe when it's open */}
       {overlays.stars && starsAvailable && decimated && decimated.shown < decimated.total && (
-        <div className="absolute right-2 preview-chip" style={{ bottom: loupeOn && !compact ? 212 : 8 }}>
+        <div className="absolute right-2 preview-chip" style={{ bottom: loupeShown ? loupeBox + 52 : 8 }}>
           Showing {decimated.shown}/{decimated.total} stars
         </div>
       )}
 
       {/* ADVANCED: sensor-1:1 loupe (opt-in; the toolbar's "1:1" toggle). Reuses
-          the debounced crop the zoom layer already fetched — Decision D. */}
-      {loupeOn && linearEnabled && !compact && (
+          the debounced crop the zoom layer already fetched — Decision D. Sized to
+          the measured stage; see loupeBoxSize. */}
+      {loupeShown && (
         <div className="absolute bottom-2 right-2">
           <LoupePanel
             url={crop.url}
@@ -618,7 +650,22 @@ export function PreviewStage(props: Props) {
             centerY={loupeCenter.y}
             previewId={preview.id}
             loading={crop.loading}
+            size={loupeBox}
           />
+        </div>
+      )}
+
+      {/* …and when the stage is too narrow to host even the minimum useful 1:1
+          window, say that where the loupe would have been. A toggle the user
+          just pressed must never silently do nothing (§11.8) — Icon + WORD, with
+          the full reason on a tap/hover/focus path. */}
+      {loupeOn && linearEnabled && !compact && loupeBox === 0 && (
+        <div className="absolute bottom-2 right-2">
+          <Tooltip content="A 1:1 view needs about 320 px of preview width to show enough sensor pixels to judge focus. Rotate the device, or open the preview in a wider panel.">
+            <span className="preview-chip flex items-center gap-1">
+              <Icon name="lock" size={11} /> Magnifier hidden
+            </span>
+          </Tooltip>
         </div>
       )}
 

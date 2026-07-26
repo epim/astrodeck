@@ -6,6 +6,11 @@ import {
   cropCacheKey,
   cropQuery,
   displayNativeScale,
+  LOUPE_BOX_MAX,
+  LOUPE_BOX_MIN,
+  LOUPE_CHROME_PX,
+  LOUPE_STAGE_FRACTION,
+  loupeBoxSize,
   quantizeRoi,
   shouldCrop,
   visibleSensorRoi,
@@ -89,6 +94,52 @@ test("quantizeRoi: lattice snap survives a small pan (this is the anti-storm)", 
   eq(edge.y + edge.h, 4000, "no over-read y");
 
   eq(cropQuery(q), "?x=1280&y=896&w=640&h=512");
+});
+
+// ------------------------------------------------------------------ loupe fit
+// The one piece of the loupe with real behaviour: how big its 1:1 box may be on
+// a MEASURED stage (not the viewport — the stage is a panel inside a scrolling
+// column). Scale down to a floor, then suppress and let the stage say why.
+test("loupeBoxSize: full size on a roomy stage, unmeasured assumed roomy", () => {
+  eq(loupeBoxSize(1200), LOUPE_BOX_MAX, "desktop stage");
+  eq(loupeBoxSize(507), LOUPE_BOX_MAX, "just wide enough for full size");
+  // ResizeObserver has not fired yet — must NOT flash the "too narrow" note.
+  eq(loupeBoxSize(0), LOUPE_BOX_MAX, "unmeasured");
+  eq(loupeBoxSize(-5), LOUPE_BOX_MAX, "nonsense width");
+  eq(loupeBoxSize(NaN), LOUPE_BOX_MAX, "NaN width");
+});
+
+test("loupeBoxSize: scales down on a phone stage instead of suppressing", () => {
+  // The reported regression: a 172px panel on a 360px stage was ~48% of it.
+  eq(loupeBoxSize(360), 108, "360px stage");
+  eq(loupeBoxSize(320), LOUPE_BOX_MIN, "320px stage lands on the floor");
+  eq((360 - (108 + LOUPE_CHROME_PX)) > 0, true, "still leaves room for the chip stack");
+});
+
+test("loupeBoxSize: suppresses (0) only below the usable floor", () => {
+  eq(loupeBoxSize(318), LOUPE_BOX_MIN, "last width that still fits the floor");
+  eq(loupeBoxSize(317), 0, "one px narrower suppresses");
+  eq(loupeBoxSize(280), 0, "tiny stage");
+  eq(loupeBoxSize(1), 0, "degenerate stage");
+});
+
+test("loupeBoxSize: monotonic, never over the stage budget, never a peephole", () => {
+  let prev = 0;
+  for (let w = 1; w <= 1400; w++) {
+    const s = loupeBoxSize(w);
+    if (w <= 0) continue;
+    // 0 (suppressed) or a genuinely usable window — never something in between.
+    eq(s === 0 || s >= LOUPE_BOX_MIN, true, `w=${w} size=${s} is 0 or usable`);
+    eq(s <= LOUPE_BOX_MAX, true, `w=${w} never exceeds the full size`);
+    if (s > 0) {
+      eq(s % 4, 0, `w=${w} sits on the 4px lattice (whole-pixel crosshair)`);
+      // the whole PANEL (box + chrome) stays inside the stage-share budget
+      eq(s + LOUPE_CHROME_PX <= Math.floor(w * LOUPE_STAGE_FRACTION), true,
+        `w=${w} panel ${s + LOUPE_CHROME_PX} within budget`);
+    }
+    eq(s >= prev, true, `w=${w} never shrinks as the stage grows`);
+    prev = s;
+  }
 });
 
 console.log(`${passed} passed, ${failed} failed`);
