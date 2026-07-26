@@ -20,6 +20,7 @@ one is kept only behind the Advanced disclosure (``compute_histogram``).
 from __future__ import annotations
 
 import io
+import math
 
 import numpy as np
 from PIL import Image
@@ -76,13 +77,33 @@ def levels_to_mtf(black: float, mid: float, white: float) -> tuple[float, float,
     Clamps the order (black < white), keeps the midtones balance in (0,1), and
     returns the same three numbers the client LUT uses. Kept as a named function
     so the server ``/render.png`` and the client agree on the mapping.
+
+    TOTAL by contract: the result is always three finite numbers, whatever it is
+    handed. ``/render.png`` takes these three straight off the query string as
+    plain floats, and FastAPI accepts ``?black=nan`` for a ``float`` param —
+    ``np.clip`` PROPAGATES NaN rather than clamping it, so a NaN used to survive
+    every guard here, poison the whole stretched array, and encode as a valid
+    84-byte all-black PNG returned with HTTP 200. A user asking for a baked
+    export got a blank frame and no error. ``+-inf`` was never a problem (clip
+    saturates it to the range end, which is the sensible reading of "stretch
+    infinitely"), so only the NaN case substitutes the neutral default.
     """
+    black = _neutral_if_nan(black, 0.0)
+    mid = _neutral_if_nan(mid, 0.5)
+    white = _neutral_if_nan(white, 1.0)
     black = float(np.clip(black, 0.0, 1.0))
     white = float(np.clip(white, 0.0, 1.0))
     if white <= black:
         white = min(1.0, black + 1e-4)
     mid = float(np.clip(mid, 1e-4, 1 - 1e-4))
     return black, mid, white
+
+
+def _neutral_if_nan(v: float, default: float) -> float:
+    """``v`` unless it is NaN (which has no meaningful clamp), else ``default``.
+    ``float(v)`` first so a numpy scalar or an int is handled the same way."""
+    v = float(v)
+    return default if math.isnan(v) else v
 
 
 def stretch_with(data: np.ndarray, black: float, mid: float,

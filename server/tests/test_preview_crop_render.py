@@ -107,3 +107,72 @@ def test_render_404_when_linear_unavailable(client):
     _seed(7, None)
     assert client.get("/api/preview/7/render.png").status_code == 404
     assert client.get("/api/preview/54321/render.png").status_code == 404
+
+
+# --------------------------------------------------- hostile stretch levels
+# `/render.png` takes black/mid/white straight off the query string as plain
+# floats, and FastAPI accepts `?black=nan` for a `float` param. `levels_to_mtf`
+# guarded the range with `np.clip`, which PROPAGATES NaN instead of clamping it
+# — so a NaN survived every guard, poisoned the whole stretched array, and
+# encoded as a *valid* all-black PNG served with HTTP 200. The user asked for a
+# baked export and got a blank frame with no error.
+#
+# The contract is now that `levels_to_mtf` is TOTAL: three finite numbers out,
+# whatever goes in. That is asserted directly below, because it is the property
+# that was violated — an endpoint-level assertion on PNG bytes does NOT catch
+# this (a uniform frame and a smooth gradient both compress to a few hundred
+# bytes, so no byte-length threshold separates them).
+
+_HOSTILE_LEVELS = [
+    (float("nan"), 0.5, 1.0),                       # NaN in each slot
+    (0.0, float("nan"), 1.0),
+    (0.0, 0.5, float("nan")),
+    (float("nan"), float("nan"), float("nan")),     # all three
+    (float("-inf"), 0.5, float("inf")),             # infinities saturate
+    (0.9, 0.5, 0.1),                                # inverted order
+    (-5.0, 0.5, 12.0),                              # far out of range
+    (0.0, 0.0, 1.0),                                # mid at the MTF pole
+]
+
+
+@pytest.mark.parametrize("black,mid,white", _HOSTILE_LEVELS)
+def test_levels_to_mtf_is_total(black, mid, white):
+    """Every triple normalizes to three FINITE numbers in the documented
+    order/range. Fails on the pre-fix normalizer for all four NaN rows."""
+    import math
+
+    from astrodeck.imaging.processing import levels_to_mtf
+
+    b, m, w = levels_to_mtf(black, mid, white)
+    assert math.isfinite(b) and math.isfinite(m) and math.isfinite(w), (b, m, w)
+    assert 0.0 <= b < w <= 1.0, f"order/range violated: {(b, m, w)}"
+    assert 0.0 < m < 1.0, f"midtones outside the open unit interval: {m}"
+
+
+@pytest.mark.parametrize("black,mid,white", _HOSTILE_LEVELS)
+def test_stretch_never_emits_nan(black, mid, white):
+    """The array handed to the encoder is NaN-free, so the cast to uint8 is
+    defined. Fails on the pre-fix normalizer for all four NaN rows (numpy also
+    raises `RuntimeWarning: invalid value encountered in cast` there)."""
+    from astrodeck.imaging.processing import stretch_with
+
+    arr = np.tile(np.linspace(0, 65535, 128, dtype=np.uint16), (40, 1))
+    out = stretch_with(arr, black, mid, white)
+    assert not np.isnan(out).any(), f"NaN reached the encoder for {(black, mid, white)}"
+
+
+def test_render_serves_a_real_image_for_hostile_levels(client):
+    """Integration end of the same contract: the endpoint still answers 200
+    with a full-resolution PNG when handed a NaN off the query string."""
+    arr = np.tile(np.linspace(0, 65535, 128, dtype=np.uint16), (40, 1))
+    _seed(8, arr)
+    r = client.get("/api/preview/8/render.png",
+                   params={"black": "nan", "mid": "nan", "white": "nan"})
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "image/png"
+    assert _png_dims(r.content) == (128, 40)
+    # The gradient must survive as a gradient — the poisoned path produced a
+    # uniform frame, which this separates from a real stretch (byte length
+    # does not: both compress to a few hundred bytes).
+    px = np.asarray(Image.open(io.BytesIO(r.content)).convert("L"))
+    assert len(np.unique(px)) > 2, f"degenerate frame: {np.unique(px)[:8]}"
