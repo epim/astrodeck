@@ -14,6 +14,9 @@ import {
   formatRecommendations,
   toggleRecommendationKey,
   backlashResultSentence,
+  applyActionReason,
+  APPLYING_REASON,
+  EMPTY_SELECTION_REASON,
   type AssistantReport,
   type AssistantRecommendation,
 } from "../guideAssistant";
@@ -195,6 +198,34 @@ for (const code of ["VALID", "TOO_FEW_NORTH", "TOO_FEW_SOUTH", "BL_NOT_CLEARED",
     assert(!/[A-Z_]{3,}/.test(s), `leaks an identifier: ${s}`);
   });
 }
+
+// The result-card buttons are honest-disabled (§11.8), never natively
+// `disabled` — so EVERY inert state must hand back a reason to state. Pins the
+// precedence and, in particular, that the empty-selection case (which shipped
+// with no stated cause at all) now has one.
+test("applyActionReason: live when nothing blocks", () => {
+  assert(applyActionReason({ busy: false }) === null, "novice apply is live");
+  assert(applyActionReason({ busy: false, selectedCount: 2 }) === null,
+    "apply-selected is live with a non-empty selection");
+});
+
+test("applyActionReason: permission beats busy beats empty selection", () => {
+  const perm = "operator access required to apply guide settings";
+  assert(applyActionReason({ noPermissionReason: perm, busy: true, selectedCount: 0 }) === perm,
+    "permission wins");
+  assert(applyActionReason({ busy: true, selectedCount: 0 }) === APPLYING_REASON,
+    "an in-flight apply wins over the empty selection");
+  assert(applyActionReason({ busy: false, selectedCount: 0 }) === EMPTY_SELECTION_REASON,
+    "an empty selection states its own reason");
+});
+
+test("applyActionReason: every reason is a plain-language sentence", () => {
+  for (const r of [APPLYING_REASON, EMPTY_SELECTION_REASON]) {
+    assert(r.length > 20, `too terse to explain anything: ${r}`);
+    assert(/[.!]$/.test(r), `not a sentence: ${r}`);
+    assert(!/[A-Z_]{3,}/.test(r), `leaks an identifier: ${r}`);
+  }
+});
 
 console.log(`guideAssistant.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
