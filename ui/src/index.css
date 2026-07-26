@@ -9,11 +9,26 @@
 /* ===================================================================== CSS-TOKENS
    CANONICAL palette (Batch-2 design-system owns the full token pass).
    Every token routed into text / button labels / graph DATA labels measures
-   >=4.5:1 against the surface it sits on. --text-faint is the ONLY sub-4.5:1
-   role and is decoration-only (gridline / ghost-illustration strokes).
+   >=4.5:1 against the surface it sits on.
    --accent-dim is borders / large-text only (it is ~3.78:1 — fails as small text).
-   Night LUT uses an INVERTED luminance ladder: alarm (--bad) is the brightest,
-   most-saturated rung; --good is the calm dim rung. Severity tracks salience.   */
+
+   R4-19 (--text-faint): the "decoration only" contract was a fiction. Two
+   reviewers independently measured `text-faint` at 3.39–3.52:1 carrying
+   INSTRUCTIONAL PROSE — "Not started — press Start Alignment to measure." (the
+   only instruction on the Align screen), "Run autofocus to measure focus
+   quality.", "Planning works with the rig switched off.", eleven "UNASSIGNED"
+   labels — some of it over the photographic wallpaper, where it measured as
+   effectively invisible. A token whose stated role is contradicted by 40+ call
+   sites in a dozen files owned by a dozen people is a TOKEN defect, not a
+   discipline problem: fixing it here closes every call site at once. Every rung
+   of the ladder now clears 4.5:1 on the LIGHTEST solid surface it can land on
+   (--bg-raise), so `text-faint` is safe for prose and still reads as the
+   quietest rung (5.1:1 vs --text-dim's 8.0:1 vs --text's 15:1).
+
+   Night LUT: --bad is the most SATURATED rung (the alarm channel a pure-red
+   palette can actually carry), --warn and --good are the calmer ones. See the
+   --bad note in the `.night` block for why "brightest" stopped being the right
+   target for danger and what it costs.                                         */
 
 :root {
   --bg: #06070B;
@@ -24,7 +39,10 @@
 
   --text: #e8ecf7;
   --text-dim: #9aa6c2;
-  --text-faint: #5a6684;
+  /* was #5a6684 = 3.39:1 on a panel, 3.52:1 on --bg — see the R4-19 note above.
+     #7683a5 measures 5.33:1 on --bg, 5.14:1 on the panel ground, 4.87:1 on
+     --bg-raise: AA at every size on every solid surface in the app. */
+  --text-faint: #7683a5;
 
   --accent: #00D2FF;
   --accent-dim: #9B51E0;
@@ -64,7 +82,7 @@
 
   --text: #10151d;            /* ~15:1 on --bg */
   --text-dim: #47566b;        /* ~7:1 on --bg — AA small text */
-  --text-faint: #7c8aa0;      /* decoration ONLY */
+  --text-faint: #647084;      /* 4.63:1 on --bg, 5.01:1 on white (was #7c8aa0 = 3.23:1) */
 
   --accent: #0f9e88;          /* phosphor teal, readable on light */
   --accent-dim: #5cbfab;      /* borders / large-text / panel corner brackets */
@@ -98,16 +116,50 @@
      r1 CAP-01). New rungs are monotonic and stay below the --bad alarm rung. */
   --text: #ff7a7a;       /* ~8.3:1 on #000 */
   --text-dim: #e07070;   /* ~6.7:1 — operational labels / series / numbers */
-  --text-faint: #b85252; /* ~4.4:1 — dimmest rung (ticks, gridline ghosts) */
+  /* was #b85252 = 4.37:1 on #000 and 4.19:1 on the night panel ground — i.e. the
+     night rung ALSO failed AA, and by the same R4-19 argument it carries prose.
+     #c65e5e = 5.16:1 on #000, 4.96:1 on the panel ground. */
+  --text-faint: #c65e5e;
 
   --accent: #ff3a3a;
   --accent-dim: #ff0000;
 
-  --bad:  #ff8f8f;
+  /* R4-S3 (the inverted --bad token). The old #ff8f8f was inverted on BOTH
+     channels at once:
+       - LUMINANCE 9.58:1 on #000, i.e. brighter than body text (8.32) and the
+         highest-luminance object the app could paint on a dark-adapted screen.
+         Novice, independently: "the full-width STOP block is the brightest
+         object on the entire night screen."
+       - CHROMA 112, the LEAST saturated red in the whole night palette
+         (--accent is 197). Designer, independently: "danger is currently the
+         least alarming red in the palette." It read as pastel pink.
+     And the operational consequence the review actually measured: STOP vs LOOP
+     on Capture came out 1.15:1 — a danger control and a neutral control
+     separated by nothing.
+
+     #ff5252 improves every one of those:
+       6.58:1 on #000 / 6.32:1 on the night panel ground   (AA, comfortably)
+       1.26:1 against body text, up from 1.15               (the measured metric)
+       chroma 173, up from 112                              (vivid, not pastel)
+       no longer the brightest object on a dark-adapted screen.
+
+     HONEST TRADE, stated rather than hidden: on a pure-red night palette
+     luminance and chroma are coupled — you cannot make a red both brighter and
+     more saturated. Buying separation from body text costs luminance, so --bad
+     (6.58) now sits just under --warn (7.20) instead of above it. They are 1.09
+     apart, they differ in hue (pure red vs orange-red — the only two night
+     tokens that do), and both always ship with a word and a glyph. That is a
+     better failure than "danger is the palest thing on screen".
+
+     What this token CANNOT fix, and does not pretend to: 1.26:1 is still a
+     hue-only distinction. Any status that must survive night mode needs a
+     non-hue channel — dash pattern for traces, fill/weight/glyph for danger,
+     fill for selection. That is per-control work, not palette work. */
+  --bad:  #ff5252;
   --warn: #ff6633;
   --good: #ff3333;
 
-  --danger-ink: #ff8f8f;
+  --danger-ink: #ff5252;
 
   --glow: rgba(255, 50, 50, 0.4);
   --sky: #ff5a3c;
@@ -190,6 +242,96 @@ body {
   position: fixed; inset: 0; z-index: 50; pointer-events: none;
 }
 .overlay-top > * { pointer-events: auto; }  /* children opt back in */
+
+/* ===================================================================== CSS-OVERLAY
+   THE overlay primitive (components/Overlay.tsx). Every dialog / sheet / drawer
+   in the app renders through it. Review S1 found five separate findings that are
+   all one bug — an overlay that lands somewhere other than the viewport, on an
+   see-through surface, with its action buttons past the bottom edge and no
+   gesture that can reach them (`body { overflow: hidden }` while
+   documentElement.scrollHeight 1541 > innerHeight 1180). The contract:
+
+   1. PORTALLED OUT. `.overlay-host` is appended to <body>, so nothing an
+      overlay renders inside can be captured by an ancestor's filter /
+      backdrop-filter / transform. This is belt-and-braces on top of the
+      fill-mode fix in CSS-MOTION: `.panel`'s backdrop-filter is a containing
+      block that is NOT going away, so any overlay authored inside a panel would
+      break again the moment someone nests one.
+   2. STILL DIMMED. The host carries the same brightness filter `.dim-content`
+      does. Portalling out of the dimmed subtree must NOT mean a dialog flares to
+      full brightness on a dark-adapted screen at 2am. Because the host is
+      `fixed; inset: 0` with no offset parent, its padding box IS the viewport —
+      so its own filter's containing block is exactly the viewport, and a
+      `fixed`/`absolute inset-0` child clamps to the screen by construction.
+   3. CLAMPED. `max-height: 100dvh` (dvh, not vh — mobile browser chrome) and
+      `max-width: 100vw` on the surface, so nothing can exceed the screen.
+   4. OPAQUE. `--bg-raise`, not the translucent `--bg-panel`: reviewers could
+      read event-log lines straight through MORE-sheet rows and AUTOMATION
+      toggles through frame metadata.
+   5. REACHABLE ACTIONS. The surface is a flex column: header / scrolling body /
+      footer. The footer is outside the scroll region and `flex: none`, so the
+      action buttons are pinned inside the clamped height and can never scroll
+      off. Bottom padding rides `env(safe-area-inset-bottom)` (#46). */
+
+.overlay-host {
+  position: fixed; inset: 0; z-index: 45; pointer-events: none;
+  filter: brightness(var(--screen-brightness, 1));
+  transition: filter 0.25s ease;
+}
+.overlay-host > * { pointer-events: auto; }
+
+/* Non-modal overlays (the first-run wizard) must not eat taps over the rest of
+   the screen — the wrapper opts OUT and only the surface opts back in. */
+.overlay-passthrough { pointer-events: none; }
+.overlay-passthrough .overlay-surface { pointer-events: auto; }
+
+.overlay-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.72); border: 0; }
+/* invisible dismiss catcher for the scrim-less drawers (log / review) */
+.overlay-catcher { position: absolute; inset: 0; background: transparent; border: 0; cursor: default; }
+
+/* Sizing rides CUSTOM PROPERTIES, not utility classes, and that is deliberate.
+   This file has no @layer wrapper, so every rule in it is unlayered and beats
+   ANY Tailwind utility regardless of specificity or class order — the tooltip
+   war story, again, and it bit this very primitive on the first build: an
+   authored `max-width: 100vw` here silently ate the variant's
+   `sm:max-w-[560px]`, and the preflight rendered 788px wide on an 820px tablet.
+   The clamp and the per-variant size therefore have to live in the SAME
+   declaration, which means the variant feeds it through a var. */
+.overlay-surface {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: var(--ov-w, 100%);
+  height: var(--ov-h, auto);
+  max-width: min(100vw, var(--ov-max-w, 100vw));
+  max-height: min(100dvh, var(--ov-max-h, 100dvh));
+  background: var(--bg-raise);                    /* OPAQUE — never --bg-panel */
+  color: var(--text);
+  border: 1px solid var(--line-bright);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.66);
+  overscroll-behavior: contain;
+}
+@supports not (height: 100dvh) {
+  .overlay-surface { max-height: min(100vh, var(--ov-max-h, 100vh)); }
+}
+
+.overlay-head { flex: none; border-bottom: 1px solid var(--line); }
+.overlay-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.overlay-foot {
+  flex: none;
+  border-top: 1px solid var(--line);
+  background: var(--bg-raise);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+/* A bottom-docked surface with no footer still has to clear the home indicator. */
+.overlay-safe-b { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* A NON-MODAL bottom-docked card (the first-run wizard) must clear the phone's
+   fixed bottom nav as well as the inset — it exists to tell you which tab to
+   press next, so covering the tabs would be self-defeating. Modal sheets
+   deliberately do NOT get this: covering the nav is the point of a modal. */
+.overlay-above-nav { bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px)); }
 
 /* ===================================================================== CSS-FOCUS
    ONE :focus-visible ring, whole-app. Specificity above Tailwind's outline-none
@@ -346,6 +488,35 @@ select.field { appearance: none; }
 
 .mono { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
 
+/* ===================================================================== CSS-SAFEAREA
+   R4-46: `env(safe-area-inset-bottom)` appeared NOWHERE in ui/src. The phone
+   bottom nav is `fixed bottom-0` and measured 787->844 in an 844px viewport, so
+   on any hardware with a home indicator the bottom row of the primary navigation
+   sits under it. These rules are authored (unlayered) CSS deliberately: the nav's
+   own Tailwind `p-*` utilities are in @layer utilities and would otherwise be
+   indistinguishable in the cascade. The `nav.fixed` qualifier keeps this off the
+   desktop rail, which is the other `nav[aria-label="Primary"]` in the app. */
+nav.fixed[aria-label="Primary"] { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* <main>'s own bottom padding has to clear BOTH the bottom nav and the inset, or
+   the last row of a view is unreachable behind the nav on a notched phone. Below
+   sm: the nav is gone and only the inset matters. */
+.main-safe-pad { padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px)); }
+@media (min-width: 640px) { .main-safe-pad { padding-bottom: 1rem; } }
+
+/* Anything floating against the bottom edge (the brightness escape hatch). */
+.float-safe-b { bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)); }
+
+/* ===================================================================== CSS-HEADERSET
+   R4-47: the three header icon buttons were an obviously-a-set that wasn't —
+   brightness 44x44 radius 0 (.step-btn), night 36x44 radius 10 (.btn), log
+   36x44 radius 10 (.btn); two of them below the 44px touch minimum. One rule
+   makes the cluster one component: same radius, same 44px square floor. Scoped
+   to `.app-header` so it cannot leak into `<header>` elements inside Panel /
+   the overlay heads, which are text rows, not icon clusters. */
+.app-header .btn,
+.app-header .step-btn { min-width: 44px; min-height: 44px; border-radius: 10px; }
+
 .label {
   font-size: 11px;             /* bumped 10->11 (settings) for AA legibility */
   letter-spacing: 0.18em;
@@ -472,7 +643,8 @@ select.field { appearance: none; }
    Mobile "More" overflow sheet slide-up (touch §5.2). Mirrors .sheet-enter but
    named so NavMoreSheet's class has a real definition (Tailwind v4 won't invent it). */
 @keyframes more-sheet-in { from { transform: translateY(100%); } to { transform: none; } }
-.more-sheet-in { animation: more-sheet-in 0.2s ease both; }
+/* `backwards`, not `both` — see the CSS-MOTION containing-block note. */
+.more-sheet-in { animation: more-sheet-in 0.2s ease backwards; }
 
 /* ===================================================================== CSS-TAP
    Touch-target sizing override (touch §3, R17). `.tap` / `.tap-lg` mark gloved
@@ -540,12 +712,43 @@ select.field { appearance: none; }
 }
 
 @keyframes slide-up { from { transform: translateY(100%); } to { transform: none; } }
-.sheet-enter { animation: slide-up 0.2s ease both; }
+.sheet-enter { animation: slide-up 0.2s ease backwards; }
 
 /* ===================================================================== CSS-MOTION
-   View cross-fade with NO scale() (scale re-rasters text -> shimmer). */
+   View cross-fade with NO scale() (scale re-rasters text -> shimmer).
+
+   ============================ THE `animation-fill-mode: both` CONTAINING-BLOCK TRAP
+   These three entry animations used to end in `both`. That is the MEASURED root
+   cause of the "overlays land off the viewport" family (review S1 / #3), and it
+   is not the cause the reviewers guessed at:
+
+     `both` keeps the animation's FINAL keyframe applied forever. The final
+     keyframe here says `transform: none` — but a filled animation resolves to a
+     computed MATRIX, so the element reports `transform: matrix(1,0,0,1,0,0)`
+     permanently. An identity matrix is still "a value other than none", so the
+     element becomes the CONTAINING BLOCK for every `position: fixed`
+     descendant. `.view-enter` wraps every routed view, so on the Plan view —
+     1320x2886 and scrolled to y=-781 — the preflight's `fixed inset-0` overlay
+     resolved to that box instead of the viewport. Measured before this fix, on
+     the sim rig: tablet 820x1180 -> dialog x=-10, its status column at
+     x=-80/right=620 (pro's exact numbers); desktop 1440x900 -> CANCEL /
+     RUN SEQUENCE at y=899..947 against vh=900, i.e. off the bottom (mono's).
+
+   `backwards` is the correct fill mode for an ENTRY animation: it covers the
+   pre-start period (so there is no first-frame flash) and then hands the
+   property back to the element's own computed value when the animation ends —
+   `transform: none`, no matrix, no containing block. Identical to the eye;
+   1541px of difference to `position: fixed`.
+
+   Two other always-on containing blocks remain by design and cannot be removed:
+   `.panel`'s `backdrop-filter: blur(14px)` (measured: a `fixed inset-0` probe
+   inside a panel resolves to 700x1515, not the viewport) and `.dim-content`'s
+   `filter: brightness()` (harmless TODAY only because that element is exactly
+   `h-full`, so its box happens to equal the viewport — a latent trap, not a
+   safe one). That is why the overlay primitive below PORTALS out of the view
+   tree entirely rather than relying on any of this staying true. */
 @keyframes view-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.view-enter { animation: view-fade 0.22s ease both; }
+.view-enter { animation: view-fade 0.22s ease backwards; }
 
 @media (prefers-reduced-motion: reduce) {
   .view-enter, .blink, .blink-alert, .sheet-enter, .empty-ghost, .more-sheet-in,

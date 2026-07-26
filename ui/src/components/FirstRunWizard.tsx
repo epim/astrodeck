@@ -11,7 +11,26 @@
 // events over the rest of the screen — the user has to be able to keep
 // operating SitePanel / the Equipment dropdowns / the cooler input while the
 // card is up. There is no full-viewport scrim element here at all: the card
-// is just a small `fixed` panel docked in a corner (bottom sheet on phone).
+// is just a small overlay docked in a corner (bottom sheet on phone). That is
+// why it renders through <Overlay variant="corner" modal={false}
+// dismissOnOutside={false} autoFocus={false}> — every one of those flags is
+// load-bearing, not a default being restated.
+//
+// REVIEW #4 (the novice's blocker, root cause CONFIRMED by measurement — the
+// review filed the culprit as NEEDS-REPRO and it was right): this card carried
+// `fixed bottom-0 inset-x-0` AND `panel`. `.panel { position: relative }` is
+// UNLAYERED authored CSS and Tailwind's `fixed` lives in @layer utilities, and
+// unlayered always beats layered regardless of specificity or order — so the
+// card computed `position: relative` and laid out in normal flow at the BOTTOM
+// OF THE DOCUMENT. Measured on this tree before the fix: tablet {x:-16, y:1164}
+// in vh 1180, phone {x:0, y:844} in vh 844, desktop {x:-16, y:884} in vh 900 —
+// with `body { overflow: hidden }` and scrollHeight 1561 > 1180, so no gesture
+// on any viewport could reveal it. The 5-step checklist that teaches a
+// first-time user what to do was invisible on first load on every device, and
+// stayed invisible when they explicitly pressed "OPEN THE SETUP GUIDE".
+// The fix is not "add !important": it is to stop putting a positioned overlay
+// inside a class that owns `position`. Overlay's surface is `.overlay-surface`,
+// which does not.
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -29,6 +48,7 @@ import { computeWizard, WIZARD_STEPS, type WizardStepId } from "../lib/firstRunW
 import { WIZARD_SEEN_KEY } from "../lib/coach";
 import { listProfiles } from "../api/backends";
 import { Icon } from "./icons";
+import { Overlay } from "./Overlay";
 
 export default function FirstRunWizard(): JSX.Element | null {
   const open = useWizardOpen();
@@ -99,33 +119,40 @@ export default function FirstRunWizard(): JSX.Element | null {
   };
 
   return (
-    <div
-      role="dialog"
-      aria-label="First-run setup guide"
-      className="panel sheet-enter fixed bottom-0 inset-x-0 sm:inset-x-auto sm:right-4 sm:bottom-4
-        z-[55] sm:max-w-[380px] max-h-[70vh] sm:max-h-[80vh] flex flex-col p-4 gap-3 overflow-y-auto"
-    >
-      {/* header: progress + Later/X. Dismiss marks the wizard permanently
-          seen (closeWizard) — the interstitial's "Open the setup guide" is
-          the deliberate way back in. */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <h2 className="panel-title !mb-0 truncate">Get set up</h2>
-          <span className="text-[11px] text-dim mono shrink-0">
-            {view.doneCount}/{view.total}
-          </span>
+    <Overlay
+      open
+      label="First-run setup guide"
+      variant="corner"
+      modal={false}
+      scrim={false}
+      dismissOnOutside={false}
+      trapFocus={false}
+      autoFocus={false}
+      onClose={closeWizard}
+      bodyClassName="p-4 flex flex-col gap-3"
+      head={
+        /* header: progress + Later/X. Dismiss marks the wizard permanently
+           seen (closeWizard) — the interstitial's "Open the setup guide" is
+           the deliberate way back in. */
+        <div className="flex items-center justify-between gap-3 px-4 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <h2 className="panel-title !mb-0 truncate">Get set up</h2>
+            <span className="text-[11px] text-dim mono shrink-0">
+              {view.doneCount}/{view.total}
+            </span>
+          </div>
+          <button
+            type="button"
+            aria-label="Later"
+            title="Later"
+            className="btn btn-touch inline-flex items-center justify-center p-0 shrink-0"
+            onClick={closeWizard}
+          >
+            <Icon name="x" size={14} />
+          </button>
         </div>
-        <button
-          type="button"
-          aria-label="Later"
-          title="Later"
-          className="btn btn-touch inline-flex items-center justify-center p-0 shrink-0"
-          onClick={closeWizard}
-        >
-          <Icon name="x" size={14} />
-        </button>
-      </div>
-
+      }
+    >
       {/* compact step rail — done steps are revisitable, always enabled (free
           navigation, so no honest-disabled treatment is needed here). */}
       <ol className="flex flex-col gap-1">
@@ -169,18 +196,26 @@ export default function FirstRunWizard(): JSX.Element | null {
           </div>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
+              {/* #24: `title` is never the sole channel for a state a user can
+                  hit — it does not fire on touch. These two are no-ops at the
+                  ends of the rail, so say so in the accessible name and dim
+                  them; never the native `disabled` attribute. */}
               <button
                 type="button"
-                className="btn min-h-11"
+                className={`btn min-h-11 ${view.activeIndex === 0 ? "opacity-50" : ""}`}
                 onClick={goBack}
+                aria-disabled={view.activeIndex === 0 || undefined}
+                aria-label={view.activeIndex === 0 ? "Back — already at the first step" : "Back"}
                 title={view.activeIndex === 0 ? "Already at the first step" : "Back"}
               >
                 Back
               </button>
               <button
                 type="button"
-                className="btn min-h-11"
+                className={`btn min-h-11 ${view.activeIndex === view.steps.length - 1 ? "opacity-50" : ""}`}
                 onClick={goSkip}
+                aria-disabled={view.activeIndex === view.steps.length - 1 || undefined}
+                aria-label={view.activeIndex === view.steps.length - 1 ? "Skip — already at the last step" : "Skip"}
                 title={view.activeIndex === view.steps.length - 1 ? "Already at the last step" : "Skip"}
               >
                 Skip
@@ -196,7 +231,7 @@ export default function FirstRunWizard(): JSX.Element | null {
           </div>
         </div>
       )}
-    </div>
+    </Overlay>
   );
 }
 

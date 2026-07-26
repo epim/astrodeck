@@ -12,6 +12,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useStore, useConfirm } from "../store";
 import { HoldButton } from "./ui";
+import { Overlay } from "./Overlay";
 
 export type ConfirmMode = "ok" | "confirm" | "hold";
 
@@ -58,55 +59,21 @@ export function confirmDialog(opts: ConfirmOpts): Promise<boolean> {
 export function ConfirmHost() {
   const req = useConfirm();
   const resolve = useStore((s) => s.resolveConfirm);
-  const panelRef = useRef<HTMLDivElement>(null);
   const confirmBtnRef = useRef<HTMLButtonElement>(null);
   const cancelBtnRef = useRef<HTMLButtonElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
 
   const mode: ConfirmMode = req?.mode ?? "confirm";
 
-  // Capture the opener and restore focus on close.
+  // Focus trap / Escape / focus restore now come from <Overlay/>. What stays
+  // here is the one behaviour Overlay's generic "focus the first control" rule
+  // would get WRONG: initial focus belongs on the SAFEST control (Cancel for
+  // confirm/hold, OK for a hard block), not on whatever renders first.
   useEffect(() => {
     if (!req) return;
-    openerRef.current = (document.activeElement as HTMLElement) ?? null;
-    // initial focus on the SAFEST control (Cancel for confirm/hold; OK for "ok").
     const safe = mode === "ok" ? confirmBtnRef.current : (cancelBtnRef.current ?? confirmBtnRef.current);
     safe?.focus();
-    return () => {
-      openerRef.current?.focus?.();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [req]);
-
-  // Escape cancels; Tab is trapped inside the panel.
-  useEffect(() => {
-    if (!req) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        resolve(false);
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const focusables = panel.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [req, resolve]);
 
   if (!req) return null;
 
@@ -116,26 +83,16 @@ export function ConfirmHost() {
   const primary = req.confirmPrimary ?? false;
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-      role="presentation"
-      onPointerDown={(e) => {
-        // outside-scrim click cancels
-        if (e.target === e.currentTarget) resolve(false);
-      }}
-    >
-      <div className="fixed inset-0 bg-black/70" aria-hidden />
-      <div
-        ref={panelRef}
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={req.title}
-        className="panel relative z-[61] w-full max-w-[440px] p-5 sheet-enter"
-      >
-        <h2 className={`panel-title mb-2 ${danger ? "!text-bad" : ""}`}>{req.title}</h2>
-        {req.body && <p className="text-sm text-ink leading-relaxed mb-4 break-words">{req.body}</p>}
-
-        <div className="flex flex-wrap justify-end gap-2 mt-2">
+    <Overlay
+      open
+      role="alertdialog"
+      label={req.title}
+      variant="center"
+      onClose={() => resolve(false)}
+      surfaceClassName="sm:max-w-[440px]"
+      bodyClassName="p-5"
+      foot={
+        <div className="flex flex-wrap justify-end gap-2 p-4">
           {mode !== "ok" && (
             <button
               ref={cancelBtnRef}
@@ -195,7 +152,10 @@ export function ConfirmHost() {
             </HoldButton>
           )}
         </div>
-      </div>
-    </div>
+      }
+    >
+      <h2 className={`panel-title mb-2 ${danger ? "!text-bad" : ""}`}>{req.title}</h2>
+      {req.body && <p className="text-sm text-ink leading-relaxed break-words">{req.body}</p>}
+    </Overlay>
   );
 }
