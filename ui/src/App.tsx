@@ -22,19 +22,8 @@ import { useMonitorWakeLock } from "./lib/useWakeLock";
 import { useShouldShowLogin, useAuthResolving } from "./lib/caps";
 import Login from "./views/Login";
 import EquipmentView from "./views/EquipmentView";
-import CaptureView from "./views/CaptureView";
-import FocusView from "./views/FocusView";
-import MountView from "./views/MountView";
-import PolarView from "./views/PolarView";
-import GuideView from "./views/GuideView";
-import SequenceView from "./views/SequenceView";
-import PowerView from "./views/PowerView";
-import MonitorView from "./views/MonitorView";
-import AtlasView from "./views/AtlasView";
-import TonightView from "./views/TonightView";
-import ReportView from "./views/ReportView";
-import HelpView from "./views/HelpView";
-import SettingsView from "./components/settings/SettingsView";
+import ViewBoundary from "./components/ViewBoundary";
+import { preloadAllViews, preloadView } from "./lib/lazyViews";
 
 // IA reorder (master-plan Risk-10 canonical 8-entry order, Align before Mount) +
 // header/nav entries for Settings (placeholder) and Monitor (real this batch).
@@ -75,31 +64,26 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
-const VIEWS: Record<ViewName, () => JSX.Element> = {
+// ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
+// imported chunk (the loader table lives in lib/lazyViews.ts, which also explains
+// why). Only the views that are actually reachable at first paint are bundled
+// eagerly here:
+//   - connect / EquipmentView, because store.view starts at "connect" on every
+//     cold start, so splitting it would buy nothing and cost a Suspense flash.
+//   - Login (imported above) for the same reason on an auth-enabled box.
+// Non-eager destinations render through <ViewBoundary>, and lib/lazyViews warms
+// ALL of them in the background right after first paint — see the effect below.
+// The rest of this table's routing notes are unchanged:
+//   - "tonight" is an informational shell (like Atlas/Monitor), deliberately NOT
+//     in GATED below: "what's up tonight?" is exactly the question a user asks
+//     BEFORE any equipment is connected.
+//   - "report" is NOT a primary-nav entry (Batch-4b §2.5 / report viewer spec
+//     §1.4): reached from the run-complete "View session report →" link
+//     (SequenceView) + the mobile overflow sheet (NavMoreSheet).
+//   - "help" is likewise NOT a primary-nav entry — reached from NavMoreSheet, the
+//     log drawer footer, and error deep-links (store.openHelp) (NOV-9).
+const EAGER_VIEWS: Partial<Record<ViewName, () => JSX.Element>> = {
   connect: EquipmentView,
-  capture: CaptureView,
-  focus: FocusView,
-  mount: MountView,
-  polar: PolarView,
-  guide: GuideView,
-  sequence: SequenceView,
-  power: PowerView,
-  monitor: MonitorView,
-  settings: SettingsView,
-  atlas: AtlasView,
-  // Informational shell (like Atlas/Monitor) — deliberately NOT in GATED below:
-  // "what's up tonight?" is exactly the question a user asks BEFORE any equipment
-  // is connected.
-  tonight: TonightView,
-  // "report" is NOT a primary-nav entry (Batch-4b §2.5 / report viewer spec §1.4):
-  // ReportView has landed, reached from the run-complete "View session report →"
-  // link (SequenceView) + the mobile overflow sheet (NavMoreSheet), never from
-  // primary nav.
-  report: ReportView,
-  // "help" is likewise NOT a primary-nav entry (mirrors "report" above) —
-  // reached from NavMoreSheet, the log drawer footer, and error deep-links
-  // (store.openHelp), never from primary nav (NOV-9).
-  help: HelpView,
 };
 
 // Nav gating (onboarding §3b/§7b): equipment-dependent views show the
@@ -197,7 +181,25 @@ export default function App() {
     connectWs();
   }, []);
 
-  const Active = VIEWS[view];
+  // Re-whole the app immediately after first paint. The views are code-split for
+  // first-paint cost (the tablet is often on weak field WiFi or a phone hotspot),
+  // but a chunk that is still missing when the user taps "Guide" at 2am is a far
+  // worse outcome than a slightly slower start — so every split chunk is pulled in
+  // the background on idle, one at a time, before anything is tapped. From then on
+  // view switching is a pure cache hit and the app behaves exactly like the
+  // single-bundle build.
+  //
+  // The link probe is not cosmetic: a browser permanently caches a FAILED dynamic
+  // import for the life of the document, so each chunk gets exactly one attempt.
+  // Spending it before the websocket is even up would poison that view for the
+  // whole session. lazyViews holds the sweep until this reports healthy (with its
+  // own fail-open timeout). Read via getState() inside a callback so App does not
+  // re-subscribe or re-run this effect on link churn. See lib/lazyViews.ts.
+  useEffect(() => {
+    preloadAllViews(() => useStore.getState().wsPhase === "up");
+  }, []);
+
+  const Active = EAGER_VIEWS[view];
   const camConnected = !!status?.connected?.camera?.connected;
   const mountConnected = !!status?.connected?.telescope?.connected;
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
@@ -406,6 +408,12 @@ export default function App() {
                 <button
                   key={n.id}
                   onClick={() => setView(n.id)}
+                  // Belt-and-braces warm-up for the seconds between first paint and
+                  // preloadAllViews() finishing: a hovered/pressed tab starts its
+                  // own chunk immediately. No-op once the chunk is in the registry,
+                  // and a no-op entirely for eagerly bundled views.
+                  onPointerEnter={() => preloadView(n.id)}
+                  onPointerDown={() => preloadView(n.id)}
                   aria-current={view === n.id ? "page" : undefined}
                   title={gated ? "Connect equipment to use this" : undefined}
                   className={`flex flex-col items-center gap-1 py-3 transition-colors relative cursor-pointer
@@ -447,7 +455,13 @@ export default function App() {
             key={view}
           >
             <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">
-              {gatedOut ? <NotConnectedInterstitial view={view} /> : <Active />}
+              {gatedOut ? (
+                <NotConnectedInterstitial view={view} />
+              ) : Active ? (
+                <Active />
+              ) : (
+                <ViewBoundary view={view} />
+              )}
             </div>
           </main>
 
