@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { listReports, getReport, getBundlePreview, materializeBundle } from "../api/reports";
 import { useStore, useLastReportId } from "../store";
-import { Panel, EmptyState, Stat, Toggle } from "../components/ui";
+import { Panel, EmptyState, Stat, Toggle, Disclosure, InfoDot, LockedChip } from "../components/ui";
 import { Icon } from "../components/icons";
 import { TrendLine } from "../components/graphs";
 import { fmtDuration } from "../lib/eta";
@@ -141,11 +141,16 @@ function BundleAdvanced(p: {
     }
   }
 
+  // The house disclosure, not <details>/<summary>: the app's other disclosures
+  // are aria-expanded buttons with a >=44px hit area and the ▸/▾ caret, and a
+  // native <summary> renders the UA's own marker at whatever height it likes
+  // (this one was 32px — under the touch floor).
   return (
-    <details className="border border-line/50 px-2.5 py-1.5">
-      <summary className="text-xs text-dim cursor-pointer select-none min-h-[32px] flex items-center">
-        Advanced (layout, weighting, materialize)
-      </summary>
+    <Disclosure
+      className="border border-line/50 px-2.5 py-1.5"
+      summary="Advanced (layout, weighting, materialize)"
+      label="advanced bundle options"
+    >
       <div className="flex flex-col gap-3 pt-2.5">
         {/* ---------------------------------------------------------- layout */}
         <label className="flex flex-col gap-1 text-xs text-dim">
@@ -173,17 +178,22 @@ function BundleAdvanced(p: {
         {/* ------------------------------------------------------ weight alt.
             Toggle, not a bare <input type=checkbox>: the UA checkbox renders a
             white box that turns system-blue, which on :root.night is the only
-            non-red thing on screen. */}
-        <div
-          className="flex items-center gap-2 text-xs text-dim"
-          title="Fold a sin(altitude) transparency term into each sub's weight — higher subs (less airmass) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
-        >
+            non-red thing on screen.
+
+            The explanation is an InfoDot, not `title=` on the row: "sin(altitude)
+            transparency term" is exactly the kind of jargon a user has to be able
+            to look up, and title never fires on touch. */}
+        <div className="flex items-center gap-2 text-xs text-dim">
           <Toggle
             checked={p.weightAlt}
             onChange={p.setWeightAlt}
             label="Weight subs by altitude"
           />
           <span>Weight subs by altitude</span>
+          <InfoDot
+            label="About weighting subs by altitude"
+            content="Folds a sin(altitude) transparency term into each sub's weight — higher subs (less air to shoot through) score higher. Off by default: the weight is sharpness (HFR) + roundness (ecc) + guide RMS."
+          />
         </div>
 
         {/* -------------------------------------------------- keep_threshold */}
@@ -244,13 +254,14 @@ function BundleAdvanced(p: {
           </p>
           <div className="flex justify-end">
             {matReason ? (
-              <span
-                aria-disabled="true"
-                title={matReason}
-                className="btn inline-flex items-center gap-1.5 min-h-[44px] opacity-50 cursor-not-allowed"
-              >
-                <Icon name="lock" size={12} /> Make a folder of tonight&apos;s photos here
-              </span>
+              // LockedChip, not a hand-dimmed <span>: it carries the one app-wide
+              // dimming token plus tabIndex={0} + aria-disabled + a Tooltip, so a
+              // keyboard user lands on it and hears WHY instead of tabbing past a
+              // greyed shape, and a touch user can tap for the same reason (the
+              // old `title=` never fired on touch at all).
+              <LockedChip reason={matReason} className="btn">
+                Make a folder of tonight&apos;s photos here
+              </LockedChip>
             ) : (
               <button
                 type="button"
@@ -280,7 +291,7 @@ function BundleAdvanced(p: {
           )}
         </div>
       </div>
-    </details>
+    </Disclosure>
   );
 }
 
@@ -599,13 +610,9 @@ export default function ReportView() {
                   )}
                   <div className="flex justify-end">
                     {reason ? (
-                      <span
-                        aria-disabled="true"
-                        title={reason}
-                        className="btn inline-flex items-center gap-1.5 min-h-[44px] opacity-50 cursor-not-allowed"
-                      >
-                        <Icon name="lock" size={12} /> Download bundle.zip
-                      </span>
+                      <LockedChip reason={reason} className="btn">
+                        Download bundle.zip
+                      </LockedChip>
                     ) : (
                       <a
                         href={`${BASE}/api/reports/${encodeURIComponent(sel ?? "")}/bundle.zip${bundleQuery({ layout, weightAlt, keepThreshold: keepParam })}`}

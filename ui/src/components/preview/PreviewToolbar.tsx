@@ -4,16 +4,30 @@
 //  - Always-visible (>=44px): −, zoom %, +, Fit, 100%. Never collapsed (§ rejected
 //    C3 — Fit/100% never go in the overflow sheet).
 //  - Toggles (Stars / Clip / Reticle / Center): filled-background active state +
-//    a check glyph (NOT color-only — §11.1). Disabled honestly when the data
-//    can't support them (no stars / NINA clip) with an inline reason via title.
-//  - Download ▾: FITS only if saved_local (else disabled + lock glyph + reason);
+//    a check glyph (NOT color-only — §11.1). Locked honestly when the data can't
+//    support them (no stars / NINA clip) via the house `LockedChip`.
+//  - Download ▾: FITS only if saved_local (else locked + lock glyph + reason);
 //    stretched PNG; raw/lossless PNG (when has_lossless). §12.5 — never a 404.
+//
+// EVERY locked surface in this file goes through `LockedChip` (components/ui):
+// one dimming token app-wide, tabIndex={0} so a keyboard user lands on it rather
+// than tabbing straight past, aria-disabled (never the native `disabled`, which
+// strips the element AND its reason out of the a11y tree), an aria-label bearing
+// the reason, and a Tooltip so the reason has a TAP path. Before this the reason
+// lived only in `title=`, which never fires on touch — on the tablet at the
+// scope, which is the primary field device, a locked control was simply dead
+// with no stated cause.
 import { useEffect, useRef, useState } from "react";
 import type { OverlayToggles, PreviewInfo, StretchParams } from "../../types";
 import { Icon, type IconName } from "../icons";
+import { LockedChip } from "../ui";
 import { u } from "../../lib/base";
 import { shareQuery } from "../../lib/share";
 import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
+
+/** Shared chrome for a locked toolbar affordance (LockedChip draws its own lock
+ *  glyph, so callers pass only the label). */
+const LOCKED_BTN = "btn !px-2.5 text-[11px]";
 
 function Toggle({
   on,
@@ -27,24 +41,28 @@ function Toggle({
   disabled?: boolean;
   icon: IconName;
   label: string;
+  /** doubles as the LOCKED REASON when `disabled` — so always state one */
   title?: string;
   onClick: () => void;
 }) {
-  // Honest disabled (spec §11.8): a defined dim token (--text-dim is AA, >=4.5:1)
-  // + a lock glyph + aria-disabled — NOT the native `disabled` attribute (whose
-  // .btn:disabled is opacity:0.35, which the spec rejects). We swallow the click.
+  if (disabled) {
+    return (
+      <LockedChip reason={title ?? "Not available for this frame"} className={LOCKED_BTN}>
+        {label}
+      </LockedChip>
+    );
+  }
   return (
     <button
       type="button"
-      aria-pressed={disabled ? undefined : on}
-      aria-disabled={disabled}
+      aria-pressed={on}
       title={title}
-      onClick={disabled ? undefined : onClick}
+      onClick={onClick}
       className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px] ${
-        on && !disabled ? "btn-accent" : ""
-      } ${disabled ? "!text-dim cursor-not-allowed" : ""}`}
+        on ? "btn-accent" : ""
+      }`}
     >
-      {disabled ? <Icon name="lock" size={12} /> : on ? <Icon name="check" size={12} /> : <Icon name={icon} size={12} />}
+      {on ? <Icon name="check" size={12} /> : <Icon name={icon} size={12} />}
       {label}
     </button>
   );
@@ -224,25 +242,24 @@ export function PreviewToolbar({
 
       {/* download */}
       <div className="relative" ref={dlRef}>
-        <button
-          type="button"
-          className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px] ${
-            dlDisabled ? "!text-dim cursor-not-allowed" : ""
-          }`}
-          aria-haspopup="menu"
-          aria-expanded={dlDisabled ? undefined : dlOpen}
-          aria-disabled={dlDisabled}
-          title={
-            dlDisabled
-              ? linkDown
-                ? "Link down — downloads unavailable"
-                : "No frame to download yet"
-              : undefined
-          }
-          onClick={dlDisabled ? undefined : () => setDlOpen((v) => !v)}
-        >
-          <Icon name={dlDisabled ? "lock" : "arrow-down"} size={12} /> Download ▾
-        </button>
+        {dlDisabled ? (
+          <LockedChip
+            reason={linkDown ? "Link down — downloads unavailable" : "No frame to download yet"}
+            className={LOCKED_BTN}
+          >
+            Download
+          </LockedChip>
+        ) : (
+          <button
+            type="button"
+            className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px]"
+            aria-haspopup="menu"
+            aria-expanded={dlOpen}
+            onClick={() => setDlOpen((v) => !v)}
+          >
+            <Icon name="arrow-down" size={12} /> Download ▾
+          </button>
+        )}
         {dlOpen && id != null && (
           <div role="menu" className="panel absolute right-0 top-full mt-1 z-50 p-1 w-48 flex flex-col gap-0.5">
             {/* The primary "give me the picture" export: full NATIVE resolution,
@@ -260,15 +277,12 @@ export function PreviewToolbar({
                 <Icon name="download" size={11} /> Full-res PNG
               </a>
             ) : (
-              <span
-                role="menuitem"
-                aria-disabled
-                tabIndex={0}
-                className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
-                title="Full-res export needs linear data — this frame came from NINA already stretched."
+              <LockedChip
+                reason="Full-res export needs linear data — this frame came from NINA already stretched."
+                className="btn !justify-start !px-2 text-[11px] w-full"
               >
-                <Icon name="lock" size={11} /> Full-res PNG
-              </span>
+                Full-res PNG
+              </LockedChip>
             )}
             <a
               role="menuitem"
@@ -290,15 +304,12 @@ export function PreviewToolbar({
                 Stretched PNG
               </a>
             ) : (
-              <span
-                role="menuitem"
-                aria-disabled
-                tabIndex={0}
-                className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
-                title="This frame is JPEG-only — no lossless source to export a PNG from."
+              <LockedChip
+                reason="This frame is JPEG-only — no lossless source to export a PNG from."
+                className="btn !justify-start !px-2 text-[11px] w-full"
               >
-                <Icon name="lock" size={11} /> Stretched PNG
-              </span>
+                Stretched PNG
+              </LockedChip>
             )}
             {hasLossless && (
               <a
@@ -322,14 +333,12 @@ export function PreviewToolbar({
                 FITS
               </a>
             ) : (
-              <span
-                className="btn !justify-start !px-2 !py-1.5 text-[11px] !text-dim cursor-not-allowed inline-flex items-center gap-1"
-                aria-disabled
-                tabIndex={0}
-                title="FITS saved on the NINA host — not downloadable here"
+              <LockedChip
+                reason="FITS saved on the NINA host — not downloadable here"
+                className="btn !justify-start !px-2 text-[11px] w-full"
               >
-                <Icon name="lock" size={11} /> FITS (on host)
-              </span>
+                FITS (on host)
+              </LockedChip>
             )}
           </div>
         )}
