@@ -8,7 +8,7 @@ import { api, ApiError } from "../../api";
 import type { CatalogEntry, TonightPick, TonightResponse } from "../../types";
 import { useStore } from "../../store";
 import { Icon } from "../icons";
-import { EmptyState, SegmentedControl } from "../ui";
+import { EmptyState, InfoDot, SegmentedControl } from "../ui";
 import {
   difficultyLabel, difficultyGlyph, difficultyTone, isBeginnerFriendly,
 } from "../../lib/difficulty";
@@ -64,7 +64,28 @@ export function TonightPicker({
   return (
     <div className="flex flex-col gap-2 w-full text-left">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <span className="panel-title">What can I image tonight?</span>
+        <span className="panel-title inline-flex items-center gap-1.5">
+          What can I image tonight?
+          {/* The two chips on every row are the jargon here. Their explanation
+              used to live ONLY in `title=`, which never fires on touch — and this
+              list's audience is a first-timer on a phone. Tooltip/InfoDot has a
+              tap path, a keyboard path, and an Escape. */}
+          <InfoDot
+            label="How these targets are rated and ranked"
+            content={
+              <>
+                <strong>Difficulty</strong> comes from how bright the object is
+                spread over its size: ● Easy, ◐ Moderate, ○ Hard. Beginner shows
+                only Easy + Moderate.
+                <br />
+                <strong>Ranking and the ↑ number</strong> are the highest the
+                object gets tonight. Higher means less air to shoot through, so
+                the list is ordered by that peak altitude. “low” means it never
+                clears your {Math.round(altLimit)}° horizon limit tonight.
+              </>
+            }
+          />
+        </span>
         {/* Scope filter (not a disable). The house SegmentedControl already is a
             real radiogroup with roving tabindex, arrow keys and a 44px floor —
             the hand-rolled aria-pressed pair it replaces was ~24px tall. */}
@@ -111,11 +132,15 @@ export function TonightPicker({
                   <span className="text-dim"> · {p.type}</span>
                 </span>
                 <span className="flex items-center gap-2 shrink-0">
-                  {/* difficulty badge — glyph is primary, tone secondary (§8) */}
+                  {/* Difficulty badge — glyph is primary, tone secondary (§8).
+                      The per-target detail rides in aria-label (screen readers
+                      + the row's accessible name); the SCALE it belongs to is
+                      explained by the header InfoDot, which has a tap path. No
+                      `title=` — it never fires on touch. */}
                   <span className={`inline-flex items-center gap-1 ${
                     difficultyTone(p.difficulty) === "good" ? "text-good"
                     : difficultyTone(p.difficulty) === "warn" ? "text-warn" : "text-bad"}`}
-                    title={`${difficultyLabel(p.difficulty)} · surface brightness ${p.surface_brightness} mag/arcmin²${p.difficulty_source === "curated" ? " (curated)" : ""}`}>
+                    aria-label={`${difficultyLabel(p.difficulty)} — surface brightness ${p.surface_brightness} mag/arcmin²${p.difficulty_source === "curated" ? ", curated" : ""}`}>
                     <span aria-hidden>{difficultyGlyph(p.difficulty)}</span>
                     {difficultyLabel(p.difficulty)}
                   </span>
@@ -123,9 +148,9 @@ export function TonightPicker({
                   <span className={`mono ${
                     p.never_rises_above_limit ? "text-warn"
                     : p.max_alt > 40 ? "text-good" : p.max_alt < 20 ? "text-warn" : "text-dim"}`}
-                    title={p.never_rises_above_limit
-                      ? `Never rises above ${Math.round(altLimit)}° tonight`
-                      : "Peak altitude tonight"}>
+                    aria-label={p.never_rises_above_limit
+                      ? `Never rises above your ${Math.round(altLimit)}° horizon limit tonight — peaks at ${p.max_alt.toFixed(0)}°`
+                      : `Peak altitude tonight ${p.max_alt.toFixed(0)}°`}>
                     {p.never_rises_above_limit ? "low " : "↑"}{p.max_alt.toFixed(0)}°
                   </span>
                 </span>

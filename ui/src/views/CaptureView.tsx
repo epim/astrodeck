@@ -759,45 +759,75 @@ export default function CaptureView() {
           </Panel>
         )}
 
-        {/* ------------------------------------- camera Advanced (e-/ADU learn)
-             Novice default: nothing to do — EGAIN "just works" when the driver
-             reports it and is simply absent when it doesn't. This disclosure is
-             the expert path for Alpaca/NINA rigs that report nothing. Honest-
-             disabled (§11.8): dimmed + aria-disabled + title, never hidden. */}
-        {cam && (
-          <Panel title="Camera" right={!canCapture && <ReadOnlyBadge />}>
-            <button
-              className="btn !px-2 !py-1 text-[11px]"
-              aria-expanded={camAdvanced}
-              onClick={() => setCamAdvanced((v) => !v)}>
-              {camAdvanced ? "▾ Advanced" : "▸ Advanced"}
-            </button>
-            {camAdvanced && (() => {
-              const measuring = egainLearn?.state === "running";
-              const reason = !canCapture
-                ? "this is a read-only session"
-                : captureBlocked
-                  ? "a sequence or polar alignment owns the camera"
-                  : looping
-                    ? "a capture loop is running"
-                    : measuring
-                      ? "a measurement is already running"
-                      : null;
-              const learned = cam.egain_learned ?? {};
-              const gainKey = String(Math.round(Number(gain) || 0));
-              const learnedHere = learned[gainKey];
-              const shown = cam.egain || learnedHere;
-              return (
+        {/* ------------------------------------- Sensor gain (e-/ADU + learn)
+             WAS titled "Camera" and rendered NOTHING but an "▸ Advanced" button
+             when collapsed — a titled container with no content, which is worse
+             than no container: it claims a whole panel of a novice's screen and
+             answers no question. Renamed to what it actually holds, and the ONE
+             value it exists for (e-/ADU + where that number came from) is now
+             stated inline in the collapsed state.
+
+             It is NOT folded into Exposure (the reviewer's other option) on
+             purpose: measuring gain is an expert path for Alpaca/NINA rigs whose
+             driver reports nothing, and hoisting it into the primary capture
+             form would regress a novice-safe default into an advanced one
+             (progressive-disclosure rule). The value is now visible with zero
+             configuration; only the measurement flow stays behind the disclosure.
+             Honest-disabled (§11.8): dimmed + aria-disabled + a STATED reason. */}
+        {cam && (() => {
+          const measuring = egainLearn?.state === "running";
+          const reason = !canCapture
+            ? "this is a read-only session"
+            : captureBlocked
+              ? "a sequence or polar alignment owns the camera"
+              : looping
+                ? "a capture loop is running"
+                : measuring
+                  ? "a measurement is already running"
+                  : null;
+          const learned = cam.egain_learned ?? {};
+          const gainKey = String(Math.round(Number(gain) || 0));
+          const learnedHere = learned[gainKey];
+          const shown = cam.egain || learnedHere;
+          // Provenance is a WORD, never a colour or a bare number (house rule:
+          // status is never colour-only) — and "not measured yet" is stated
+          // rather than left as a lone em dash.
+          const provenance = cam.egain
+            ? "from driver"
+            : learnedHere
+              ? `measured at gain ${gainKey}`
+              : "not known yet — measure it below";
+          return (
+            <Panel title="Sensor gain" right={!canCapture && <ReadOnlyBadge />}>
+              {/* Collapsed-state content: the value + its provenance, inline. */}
+              <div className="flex flex-wrap gap-3 items-end">
+                <Stat label="e-/ADU" value={shown ? shown.toFixed(3) : "—"} />
+                <span className="text-[11px] text-dim mb-0.5 inline-flex items-center gap-1.5">
+                  <Icon name="info" size={11} className="shrink-0" aria-hidden />
+                  {provenance}
+                </span>
+              </div>
+              <p className="text-[11px] text-dim leading-snug mt-2">
+                How many electrons one ADU is worth. AstroDeck uses it for the
+                noise and SNR readouts; most drivers report it and there is
+                nothing to do here.
+              </p>
+              <button
+                className="btn !px-2 !py-1 text-[11px] mt-3"
+                aria-expanded={camAdvanced}
+                onClick={() => setCamAdvanced((v) => !v)}>
+                {camAdvanced ? "▾ Advanced" : "▸ Advanced"}
+              </button>
+              {camAdvanced && (
                 <div className="mt-3 flex flex-col gap-2">
                   <p className="text-[11px] text-dim leading-snug">
                     Measures your camera's true gain (e-/ADU) from a few flat and
-                    dark frames — it improves the noise and SNR readouts. Point at
+                    dark frames — for rigs whose driver reports nothing. Point at
                     an evenly lit surface first; takes about a minute.
                   </p>
                   <button
                     className={`btn tap min-h-[44px] self-start ${reason ? "opacity-50 cursor-default" : ""}`}
                     aria-disabled={reason ? true : undefined}
-                    title={reason ? `Unavailable — ${reason}` : undefined}
                     onClick={reason ? undefined : () => act(async () => {
                       await api.post("/api/camera/egain/learn", { gain: Number(gainKey) });
                       showToast("info", `Measuring gain at ${gainKey}…`);
@@ -806,12 +836,12 @@ export default function CaptureView() {
                       ? `Measuring… ${egainLearn?.step ?? 0}/${egainLearn?.of ?? 0}`
                       : `Measure gain (e-/ADU) at gain ${gainKey}`}
                   </button>
-                  <div className="flex flex-wrap gap-3 items-end">
-                    <Stat label="e-/ADU" value={shown ? shown.toFixed(3) : "—"} />
-                    <span className="text-[11px] text-dim mb-0.5">
-                      {cam.egain ? "from driver" : learnedHere ? `measured at gain ${gainKey}` : "unknown"}
-                    </span>
-                  </div>
+                  {/* The reason as visible text, not title= (never fires on touch). */}
+                  {reason && (
+                    <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
+                      <Icon name="lock" size={11} aria-hidden /> Unavailable — {reason}.
+                    </p>
+                  )}
                   {Object.keys(learned).length > 0 && (
                     <p className="mono text-[11px] text-dim">
                       measured: {Object.entries(learned)
@@ -822,10 +852,10 @@ export default function CaptureView() {
                     A gain reported by the driver always overrides a measured one.
                   </p>
                 </div>
-              );
-            })()}
-          </Panel>
-        )}
+              )}
+            </Panel>
+          );
+        })()}
       </div>
     </div>
   );

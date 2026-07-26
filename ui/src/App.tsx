@@ -54,10 +54,23 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   { id: "power", label: "Power", icon: "power" },
   { id: "monitor", label: "Monitor", icon: "monitor" },
   // APPENDED (polish grab-bag (c), same Risk-10 precedent as Monitor): "what can I
-  // image tonight?" gets a first-class destination instead of living one tab deep
-  // inside Atlas. No reorder, no eviction. On mobile it lands in the More sheet —
-  // the 5-slot primary bar is full and reordering it would break the append-only
-  // rule (Decision C).
+  // image tonight?" gets its own destination on this rail instead of being
+  // reachable only from inside Atlas. No reorder, no eviction.
+  //
+  // MOBILE, stated honestly (review finding F): on a phone Tonight is in the More
+  // sheet, i.e. TWO taps (More -> Tonight), which is one MORE than reaching it
+  // from Atlas used to be. That is a real cost and it is accepted deliberately:
+  //   - Risk-10 ("land the order once, append entries thereafter") forbids the
+  //     reorder, and BottomNav's five primary slots are the setup-critical tabs
+  //     (Rig/Align/Mount/Focus/Capture, touch spec R14). Tonight is pre-session
+  //     planning, not setup-critical, so evicting one of those to promote it
+  //     would cost a nightly-used tab to save a tap on an occasional one.
+  //   - So this entry does NOT claim to fix a mobile depth problem. What it fixes
+  //     is DISCOVERABILITY: on the desktop/tablet rail (the app's primary field
+  //     surface) it is a named destination rather than a panel a first-timer has
+  //     to already know lives inside Atlas.
+  // If mobile depth is ever judged the bigger cost, the additive fix is a link
+  // from NotConnectedInterstitial — not a primary-bar reorder.
   { id: "tonight", label: "Tonight", icon: "moon" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
