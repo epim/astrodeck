@@ -131,6 +131,63 @@ when applicable, an **ignore weather tonight** toggle to proceed anyway.
 
 ---
 
+## Getting your frames out (the stacking bundle)
+
+When a run ends, the Plan view offers **View session report →**; the report is
+also reachable any time from **More → Reports** on a phone, and its own picker
+browses every past report. The report's **Stacking bundle** panel is how you
+hand a night to your stacking software.
+
+It lists what it found, one line per group — target, filter, exposure, gain,
+binning, how many lights (and how many were accepted), and whether a matching
+master **dark / flat / bias** was found. **Download bundle.zip** is the whole
+novice path: one click, no options needed.
+
+**What's in the .zip.** Not your photos. The bundle is a *description* of how
+to lay them out: `manifest.json` (every sub with its metrics and weight),
+`weights.csv` (one row per sub, ready for PixInsight's SubframeSelector or
+Siril), a `README.txt`, and `build.sh` / `build.ps1`. Run the build script from
+an empty folder on the machine holding your captures and it copies them into a
+clean tree with the masters in place.
+
+One column deserves a warning, and the README repeats it: **`fwhm_est` is an
+estimate**, computed as 2 × HFR. AstroDeck measures HFR, not a fitted PSF FWHM,
+and the real factor depends on your optics and sampling. Use `hfr` as the
+primary sharpness column and treat `fwhm_est` as a convenience for tools that
+want an FWHM-ish number.
+
+### Advanced bundle options
+
+The panel's **Advanced (layout, weighting, materialize)** disclosure holds:
+
+- **Folder layout** — **Grouped** (the default: lights under each group, one
+  shared `masters/` folder), **Siril** (`lights/ darks/ flats/ biases/` side by
+  side inside each group), or **APP** (`Light/ Dark/ Flat/ Bias/` inside each
+  group). The choice only changes the folder names the build script writes.
+- **Weight subs by altitude** — off by default. Each sub's weight is otherwise
+  sharpness (HFR), roundness, and guide RMS; turning this on folds in a
+  sin(altitude) transparency term, so subs taken higher score higher.
+- **Flag the weakest subs** — set a **weight cutoff** between 0 and 1 and any
+  sub scoring below it is marked `keep=false` in the manifest and
+  `weights.csv`. Weights are normalised within each group, so the best sub is
+  always 1.0. **This is advisory only**: nothing is deleted, and every sub is
+  still in the download and still laid out by the build script. Filter on the
+  column in your stacker if you want the tail gone.
+- **Make a folder of tonight's photos here** — does the sorting for you, on the
+  capture machine, under `captures/exports/`. **The files it puts there are the
+  same files as your originals**, not copies: deleting or editing one in the
+  export folder deletes or edits your capture. Stack from that folder, don't
+  tidy up inside it. (Where the filesystem can't share a file that way, a real
+  copy is made instead, and the result line tells you how many.) This one
+  writes to disk, so it needs `control.capture`, and it's offered only when the
+  FITS are actually on this machine — if they live on your NINA host you're
+  told to download the .zip and run `build.sh` over there instead.
+
+A **Download frames.csv** button at the bottom of the report gives you the
+per-frame table on its own.
+
+---
+
 ## What survives a reboot
 
 **Closing your browser tab, losing Wi-Fi, or your sign-in session expiring

@@ -78,6 +78,91 @@ safe at frame boundaries, and progress is persisted for resume.
 
 ---
 
+## Instructions (when-this-then-that rules)
+
+Everything above is a fixed plan. **Instructions** are optional rules laid on
+top of it — *when this happens, do that*. A plan with no rules runs exactly as
+it always did.
+
+The **Instructions** panel sits with the plan builder; **+ Add rule** adds one.
+A rule is a single line: a **trigger**, its value, and an **action**.
+
+Triggers:
+
+- **Stars look bloated (HFR above)** — an HFR threshold (typical good focus is
+  2–3 px).
+- **Guiding is wandering (guide error above)** — a guide-RMS threshold (under 1
+  is good guiding). The unit follows the guider — arcseconds when the guide
+  scope's focal length is known, pixels otherwise — and the rule text says
+  which.
+- **A frame is rejected** — the quality gates rejected the frame just taken.
+- **A target finishes**.
+- **The clock reaches** — a local `HH:MM` time. It fires once, at the first
+  frame boundary at or after that time.
+
+Actions come in two groups. *Keep imaging*: **Notify me** (with your message
+and a severity), **Pause**, **Refocus**, **Dither**. *Give up on something*:
+**Drop a target from tonight**, **Stop this target and switch to…**, **Stop the
+whole session**. The second group changes what actually gets shot, so choosing
+one prints a sentence saying what it costs you.
+
+Rules are evaluated at **frame boundaries**, never mid-exposure. The two
+threshold triggers are *edge*-triggered: a rule fires on the crossing and won't
+fire again until the value comes back down to or below its threshold, so a
+stuck-high HFR can't fire the same rule on every sub.
+
+Each rule's **advanced** toggle adds **once per run**, a **cooldown** in seconds
+(minimum gap between fires), and **only target** — a gate, so the rule is live
+only while that target is the one being shot.
+
+Editing rules needs `control.mount` (operator or admin); a viewer sees the
+panel read-only with a note saying so.
+
+### Preview what these rules do
+
+**Preview what these rules do** opens a dry run. Set a pretend HFR, guide error,
+frame-rejected / target-complete state, clock and active target, and every rule
+says whether it *would fire* on such a frame or what it's waiting for; a rule
+that ends or abandons work is flagged as such rather than reading like a
+harmless notification. It writes nothing and is open to every role. It's honest
+about its limits, too: it assumes each rule is ready to fire, while a real run
+also applies the edge, once and cooldown timing, so the live result can differ.
+
+### Jumping between targets
+
+Two actions change the running order. Both need at least **two** targets in the
+plan — with fewer they aren't offered at all, and the panel says why.
+
+- **Drop a target from tonight** — pick the target to drop. Aimed at a target
+  *later* in the night, it's simply removed when its turn comes and **the target
+  you're shooting now keeps shooting**. Aimed at the target being shot right
+  now, that one is abandoned.
+- **Stop this target and switch to…** — pick where to go. The target being shot
+  is abandoned and the named one moves to the front of the queue. If the name
+  doesn't match a target in this plan, or names the target that's already
+  running, **nothing happens** — the run carries on exactly where it was (a
+  typo can't cost you the target you're shooting).
+
+Picking either action switches **once per run** on for you so a rule can't
+loop; you can turn that off under advanced. There's also a hard ceiling of 64
+executed jumps per run: past that, further jumps are logged as a warning and
+the night continues with normal scheduling — so two rules that jump at each
+other degrade rather than hang. Frame counts are kept per step for the whole
+run, so a target that comes round again resumes where it left off rather than
+starting over.
+
+### Combining conditions
+
+Under **advanced**, **+ Combine conditions (AND/OR)** turns a rule's single
+trigger into an **all** (AND) or **any** (OR) over 2 to 8 conditions drawn from
+the same list. There's exactly one level — no nesting inside nesting. The
+combined expression is edge-triggered as a whole: it fires when it becomes
+true and re-arms once it's decisively false. If one of its terms can't be read
+on a given frame and it's still needed to decide the answer, the rule doesn't
+fire and stays armed — an unreadable metric never counts as "false".
+
+---
+
 ## Count modes and quotas (multi-night)
 
 By default a plan runs in **attempts** mode: `count` = frames to shoot. Toggle
@@ -187,8 +272,9 @@ saved, and what else is saved?" reads as one system:
 Plans: `GET/POST /api/plans`, `GET /api/plans/{id}`, `DELETE /api/plans/{id}`,
 `GET /api/plans/{id}/export`, `POST /api/plans/import`. Sequence:
 `POST /api/sequence/start`, `/pause`, `/resume`, `/abort`, `/recover`,
-`GET /api/sequence/state`, `GET`/`POST /api/sequence/preflight`. Scheduling is
-embedded per target in the plan (there is no separate schedule route);
+`GET /api/sequence/state`, `GET`/`POST /api/sequence/preflight`. Scheduling and
+instructions are embedded in the plan itself (there is no separate schedule or
+instructions route);
 visibility comes from `GET /api/visibility`. Plan-library writes (save/
 delete/import) require `control.capture`; sequence control
 (start/pause/resume/abort/recover) requires `control.mount` — see the

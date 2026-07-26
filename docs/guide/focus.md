@@ -41,6 +41,30 @@ only"*. Those cadences are set in the [plan](plan-and-sequences.md), not here.
 
 ---
 
+## Bahtinov mask focusing
+
+If you focus with a **Bahtinov mask** — the slotted cover that turns a bright
+star into three diffraction spikes — the **Bahtinov Focus** panel reads the
+spikes for you. Fit the mask, point at a bright star, and press **Bahtinov
+focus**; press **Stop Bahtinov aid** when you're done.
+
+The panel talks you in: **"Line up the star"** until it can fit the spikes, then
+**"Not yet — turn IN/OUT a little"** with how far the middle spike sits from the
+crossing, in pixels, and **"PERFECT — locked"** once it's centred.
+
+On the live preview AstroDeck also draws what it fitted: the two outer spikes
+dashed, the central one — the one you're steering — thicker, and a ring on the
+crossing point. At focus the ring gains a second tight "locked" ring and the
+crosshairs go solid, so the state reads by shape and not only by colour (which
+matters under a red night filter, where the two colours look almost identical).
+
+The drawing is on by default. **Spikes on preview**, next to the arm button,
+turns it off if you'd rather have a clean image; the same toggle appears as
+**Spikes** on the [Capture](capture.md#reading-the-live-preview) preview
+toolbar while the aid is armed and fitting.
+
+---
+
 ## Reading the V-curve
 
 The **V-Curve · HFR vs Position** panel plots measured **HFR (y)** against
