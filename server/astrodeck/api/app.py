@@ -3902,10 +3902,13 @@ def create_app() -> FastAPI:
         object with a beginner difficulty rating (NOV-3). Mirrors post_order's
         throttled fan-out of compute_night (visibility.py)."""
         from ..catalog.objects import CATALOG, _TYPE_NAMES
-        from ..catalog.visibility import compute_night
+        from ..catalog.visibility import check_night_date, compute_night
         from ..catalog.tonight import tonight_score, rank_picks
         from ..catalog.difficulty import difficulty_for
 
+        # A bad date otherwise falls back to TONIGHT inside the anchor parser,
+        # answering for the wrong night with no sign anything went wrong.
+        date = check_night_date(date)
         sem = asyncio.Semaphore(8)
 
         async def _night(o):

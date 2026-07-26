@@ -216,3 +216,44 @@ def test_tonight_anchor_morning_resolves_to_just_passed_midnight(monkeypatch):
     # 21h ahead. Assert we got the former.
     assert anchor == pytest.approx(now_0300 - 3 * 3600.0, abs=1.0)
     assert anchor < now_0300
+
+
+@pytest.mark.parametrize("bad", [
+    "not-a-date",        # not remotely a date
+    "2026-13-45",        # well-formed shape, impossible month/day
+    "2026-02-30",        # impossible day for a real month
+    "20260724",          # fromisoformat would accept this; the wire format is dashed
+    "2026-7-4",          # unpadded — not the YYYY-MM-DD the UI's date input emits
+])
+def test_bad_date_is_422_not_a_silent_answer_for_tonight(client, bad):
+    """A malformed date used to be SWALLOWED by _night_anchor_unix's
+    try/except, which fell through to the "tonight" branch — so
+    ?date=2026-13-45 returned tonight's sky presented as the caller's
+    requested night. An off-by-one month in any client produced entirely
+    plausible numbers for the wrong date, which is worse than an error.
+
+    Covers both surfaces this router owns: the GET query param and the POST
+    body (validated by pydantic there). /api/catalog/tonight is the third
+    caller-supplied-date surface and lives on the full app, so it is gated in
+    test_tonight_route.py instead — this fixture mounts the visibility router
+    only."""
+    r = client.get("/api/visibility",
+                   params={"ra": 0.71, "dec": 41.27, "date": bad})
+    assert r.status_code == 422, r.text
+
+    r = client.post("/api/visibility/order", json={
+        "date": bad,
+        "targets": [{"name": "ok", "ra_hours": 0.71, "dec_deg": 41.27}]})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.parametrize("good", [None, "", "2026-01-15", "2026-12-31"])
+def test_absent_or_valid_date_still_works(client, good):
+    """The other half of the rule: omitted and empty both mean "tonight" (a
+    cleared date input posts ""), and a real date is accepted unchanged. Without
+    this, a stricter check could 422 the ordinary no-date request."""
+    params = {"ra": 0.71, "dec": 41.27}
+    if good is not None:
+        params["date"] = good
+    r = client.get("/api/visibility", params=params)
+    assert r.status_code == 200, r.text

@@ -37,3 +37,15 @@ def test_tonight_ranks_and_tags(client):
     # a curated override survives to the wire.
     horse = next(x for x in data["picks"] if x["id"] == "IC 434")
     assert horse["difficulty"] == "hard" and horse["difficulty_source"] == "curated"
+
+
+@pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45", "20260724"])
+def test_tonight_bad_date_is_422_not_a_silent_answer_for_tonight(client, bad):
+    """Third caller-supplied-date surface (siblings gated in test_visibility.py).
+
+    A malformed date was swallowed by _night_anchor_unix's try/except and fell
+    through to the "tonight" branch, so the whole ranked catalog came back for
+    TONIGHT while `data["date"]` echoed the caller's requested night — a silent
+    wrong answer across every pick."""
+    r = client.get("/api/catalog/tonight", params={"date": bad})
+    assert r.status_code == 422, r.text

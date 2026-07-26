@@ -29,8 +29,8 @@ import time
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 import astropy.units as u
 import warnings
@@ -101,6 +101,41 @@ class OrderBody(BaseModel):
     # threads (CPU/thread-pool DoS on the Pi; throttled further in post_order).
     targets: list[OrderTarget] = Field(max_length=200)
     date: str | None = None
+
+    @field_validator("date")
+    @classmethod
+    def _check_date(cls, v: str | None) -> str | None:
+        return check_night_date(v)
+
+
+def check_night_date(date: str | None) -> str | None:
+    """Validate a ``YYYY-MM-DD`` night date, or return None for "tonight".
+
+    Constrained at the boundary for the same reason the coords above are: the
+    parser underneath (``_night_anchor_unix``) swallows a bad date and falls
+    back to TONIGHT, so ``?date=2026-13-45`` used to return tonight's sky
+    labelled as the caller's requested night — a silent wrong answer, which is
+    worse than an error. An off-by-one month in any client produced plausible
+    numbers for the wrong date. Empty string means "unset" (a cleared date
+    input posts ``""``), which is the tonight case, not a malformed one.
+
+    Raises ``HTTPException(422)`` so the GET handlers can call it inline;
+    pydantic turns the same failure into a 422 for the POST body above.
+    """
+    if date is None or date == "":
+        return None
+    # fromisoformat alone would accept "20260724"; the shape check keeps the
+    # wire format to the one the docs and the UI's date input both use.
+    ok = len(date) == 10 and date[4] == "-" and date[7] == "-"
+    if ok:
+        try:
+            _dt.date.fromisoformat(date)
+        except ValueError:
+            ok = False
+    if not ok:
+        raise HTTPException(
+            422, f"date must be a real calendar date as YYYY-MM-DD, got {date!r}")
+    return date
 
 
 # ----------------------------------------------------------------- time helpers
@@ -522,9 +557,12 @@ async def get_visibility(
 
     Coords are constrained at the boundary so astropy never raises a bare
     ValueError (which would 500 with a stack-trace leak) — pydantic 422s first.
+    ``date`` is checked for the same reason (see ``check_night_date``: an
+    unchecked bad date silently answers for TONIGHT instead).
     Heavy astropy vectorised transforms run off the event loop.
     """
     import asyncio
+    date = check_night_date(date)
     return await asyncio.to_thread(
         compute_night, ra, dec, date=date, step_min=step_min,
         alt_limit=alt_limit)
