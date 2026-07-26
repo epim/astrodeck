@@ -43,8 +43,8 @@ scale/binning within tolerance, RA known at both stop and start) — so you
 don't re-walk a ~20+ second calibration dance every time you start guiding. A
 trained **Predictive PEC** model is persisted alongside it (per profile) and
 restored on the same calibration-reuse path, subject to a stop/start downtime
-gate (see the Guide Algorithm panel, below). **Clear Calibration** (in the
-Guide Algorithm panel, below) discards both the calibration and the persisted
+gate (see the Guide Tuning panel, below). **Clear Calibration** (in the
+Guide Tuning panel, below) discards both the calibration and the persisted
 PPEC model explicitly.
 
 All controls require `control.guide` (operator or admin); a viewer sees the
@@ -52,7 +52,76 @@ graph and RMS numbers live but every button is disabled.
 
 ---
 
-## Guide Algorithm
+## Guiding Assistant
+
+If you don't know what your guide settings should be, run this first. The
+**Guiding Assistant** panel measures your mount for a few minutes, then
+recommends settings in plain language and can apply them for you.
+
+**It drives the mount.** Press **Run Guiding Assistant** and the first phase
+watches a guide star drift; the second phase deliberately pulses the mount
+north and south a number of times to measure how much slack (Dec **backlash** —
+the dead play in the gears before a direction reversal actually moves the
+scope) it has. The whole run takes **2–4 minutes** and the scope really does
+move, so check first that it can move freely and nothing will snag. The
+progress bar names the phase it's in, and **Stop** cancels at any point.
+
+If you'd rather it didn't move the scope, turn off **Also measure mount slack
+(moves the scope)** before pressing Run. That leaves the watching phase only
+(about two minutes, mount tracking normally, never driven) — the backlash
+figure is then simply not measured.
+
+**What has to be true first.** The assistant needs the AstroDeck native guider
+(it needs raw pulse and star access the PHD2/NINA bridges don't expose), a
+connected guider, `control.guide`, and **guiding stopped**. Whichever of those
+is missing is stated on the panel where the Run button is. It also refuses
+while the mount is parked or slewing, and it holds the mount for its whole run:
+a sequence that tries to start guiding meanwhile is refused rather than
+calibrating on top of the assistant's pulses.
+
+**Reading the result.** You get one sentence: how fast the mount drifts (with a
+polar-alignment verdict — *excellent*, *good*, *fair — a quick polar tweak
+would help*, or *consider re-doing polar alignment*), how much Dec backlash it
+found, and that recommended settings are ready. **Apply recommended settings**
+saves them; like every other guide setting they take effect at the **next**
+guiding start. **Start over** discards the measurements and returns you to the
+Run screen — it does not re-measure.
+
+**Applying never discards your calibration on its own.** If the recommendation
+changes a guide algorithm the panel says so above the button, and your saved
+calibration is kept so guiding still starts straight away. Only the advanced
+per-setting path offers to clear it, in a dialog — and dismissing that dialog
+**keeps** the calibration.
+
+**If the slack measurement didn't happen** — the star was lost, the run was cut
+short, or the walk stopped early to keep the star on the sensor — the panel
+says so and the recommendation is your **current** backlash pulse, so Apply
+changes nothing. A value you tuned by hand is never zeroed off a measurement
+that never happened.
+
+If a run fails outright (no guide star, a device error, you cancelled it) the
+panel says what stopped it, confirms nothing was changed, and offers **Try
+again**.
+
+### Advanced — measurements and per-setting apply
+
+The **Advanced · measurements and per-setting apply** disclosure holds the raw
+drift graph and scatter plot, the numbers behind the verdict (RMS RA/Dec/total,
+drift per minute, periodic-error peak-to-peak and its period, seeing jitter,
+and the backlash figure ± its spread), and a table of every recommendation as
+*current → recommended* with the reason for it.
+
+Each row has a tick and **Apply selected** writes only what's ticked. Two rows
+can target the same setting — *RA algorithm → Hysteresis* versus *RA algorithm →
+Predictive PEC* — and those are either/or: ticking one unticks the other.
+Suggestions marked *advanced* (Predictive PEC, Lowpass2) are never part of the
+one-tap set; the default recommendations stay deliberately conservative.
+**Open in tuning editor** scrolls to the Guide Tuning panel below and fills it
+in without saving anything — you still press **Save** there.
+
+---
+
+## Guide Tuning
 
 An **Edit** toggle exposes the per-axis algorithm selection:
 
@@ -62,9 +131,16 @@ An **Edit** toggle exposes the per-axis algorithm selection:
   or Z Filter. (PPEC is RA-only — periodic error lives in the worm gear that
   drives RA tracking, so a Dec predictor has nothing periodic to learn.)
 
-Each algorithm's dossier-default parameters are shown read-only for reference;
-only the algorithm *kind* is editable today. The pick applies on the next
-guiding start. **Predictive PEC** learns your mount's periodic error over a
+Each algorithm's parameters start at its PHD2-default set and are editable
+underneath the picker (swapping the algorithm resets them to that default). The
+panel also carries **Dec guide direction** — *Auto (both directions)*, *North
+only*, *South only*, or *Off (no Dec guiding)* — and a **Dec backlash pulse
+(ms)**, the fixed seed pulse added on a Dec direction reversal (0 = off; the
+[Guiding Assistant](#guiding-assistant) can measure a value for it). **Save**
+writes the lot, and everything here applies on the next guiding start. A viewer
+sees the same fields read-only.
+
+**Predictive PEC** learns your mount's periodic error over a
 few worm cycles and blends in a feed-forward prediction once it has enough
 data — it converges faster and holds tighter than reactive Hysteresis on a
 mount with real periodic error, at the cost of a warm-up window before the
@@ -81,11 +157,11 @@ algorithm; Hysteresis remains the default.
 above) — do this after a real backlash/optics change, or if a fresh
 calibration would help isolate a guiding problem.
 
-Static Dec backlash compensation (a fixed seed pulse added on a Dec direction
-reversal) is engine-level, not per-axis; it defaults to disabled and has no
-editor yet (the *adaptive* backlash controller — which measures and adjusts
-the pulse automatically — is not implemented; see
-[native-guider.md](../native-parity/native-guider.md#known-deferred-items)).
+The Dec backlash pulse above is *static*: it's a fixed number you (or the
+Guiding Assistant) set, engine-level rather than per-axis, and off by default.
+The *adaptive* backlash controller — one that measures and re-adjusts the pulse
+by itself while guiding — is not implemented; see
+[native-guider.md](../native-parity/native-guider.md#known-deferred-items).
 
 ---
 
@@ -146,8 +222,12 @@ history across different nights.
 `POST /api/guide/start`, `/api/guide/stop`, `/api/guide/dither`,
 `/api/guide/calibrate` (force-recalibrate), `DELETE /api/guide/calibration`
 (clear persisted calibration) — all `control.guide`-gated. `GET`/`PUT
-/api/guide/settings` reads/writes the per-axis algorithm selection
-(`control.guide`). `GET /api/guide/frame.png` serves the guide-camera preview
+/api/guide/settings` reads/writes the per-axis tuning (`control.guide`), and is
+also what the Guiding Assistant's Apply uses. The assistant itself is
+`POST /api/guide/assistant/start` and `/stop` (`control.guide`) plus
+`GET /api/guide/assistant/report` (`view.status`), which returns the last run's
+measurements and recommendations — or `null` when it hasn't run this session.
+`GET /api/guide/frame.png` serves the guide-camera preview
 (`view.preview`). The provider override rides the same
 `POST /api/config/providers` route the Equipment tab's Tasks panel uses
 (`config.backend`) — see

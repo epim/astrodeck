@@ -33,12 +33,12 @@ New to AstroDeck? Follow this path:
 |-------|----------------|
 | [Getting started](getting-started.md) | Install, first launch, simulator rig, first image |
 | [Equipment & profiles](equipment-and-profiles.md) | Drivers, device assignment, task providers, rotator, profiles |
-| [Capture](capture.md) | Exposure, live preview, histogram/stretch, cooler, filter wheel |
-| [Focus](focus.md) | Manual focus, autofocus, reading the V-curve, HFR |
-| [Guiding](guiding.md) | Native autoguider, calibration, algorithm selection, PHD2 fallback, same-night RMS compare |
-| [Sky Atlas](sky-atlas.md) | Search, framing, mosaics, visibility, offline survey pack |
-| [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, scheduling, plan library |
-| [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume |
+| [Capture](capture.md) | Exposure, live preview, pixel-peeping, histogram/stretch, sensor gain, WCS tagging, cooler, filter wheel |
+| [Focus](focus.md) | Manual focus, autofocus, reading the V-curve, HFR, Bahtinov mask |
+| [Guiding](guiding.md) | Native autoguider, Guiding Assistant, calibration, tuning, PHD2 fallback, same-night RMS compare |
+| [Sky Atlas](sky-atlas.md) | What's up tonight, search, framing, mosaics, visibility, offline survey pack |
+| [Plan & sequences](plan-and-sequences.md) | Targets, steps, automation, instructions, scheduling, plan library |
+| [Sessions & multi-night](sessions-multi-night.md) | Sessions, accepted-frame quotas, review/regrade, resume, stacking bundle |
 | [Monitor](monitor.md) | Live dashboard, stall detection, pause/recovery, weather panels (operator + admin) |
 | [Weather](weather.md) | Cloud forecast, night warning, auto-resume veto, radar map, Astrospheric |
 | [Remote access & roles](remote-access-and-roles.md) | Relay, sign-in, viewer/operator/admin, site privacy |
@@ -75,6 +75,16 @@ New to AstroDeck? Follow this path:
   [Monitor](monitor.md#recovering-an-interrupted-run)
 - **"Can I search for a planet in the Atlas?"** → Not yet — see
   [Sky Atlas](sky-atlas.md#searching-for-a-target)
+- **"What should my guide settings be?"** →
+  [Guiding](guiding.md#guiding-assistant) — the Guiding Assistant measures your
+  mount (it does move it) and recommends settings.
+- **"What can I image tonight?"** →
+  [Sky Atlas](sky-atlas.md#what-can-i-image-tonight) — the **Tonight** view;
+  it works with the rig switched off.
+- **"How do I get my night into PixInsight / Siril / APP?"** →
+  [Sessions](sessions-multi-night.md#getting-your-frames-out-the-stacking-bundle)
+- **"Can it save where each photo was pointing?"** →
+  [Capture](capture.md#recording-where-each-photo-points-plate-solving-into-the-file)
 - **"How do I switch guiding back to PHD2 / NINA?"** →
   [Guiding](guiding.md#provider--phd2-fallback)
 - **"Is native guiding actually better than PHD2 on my rig?"** →

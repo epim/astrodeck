@@ -92,9 +92,35 @@ tonight's limit → Add anyway"*), but it's never blocked.
 
 ---
 
-## Tonight (visibility planner)
+## "What can I image tonight?"
 
-The **Tonight** panel computes tonight's visibility for the framed target:
+If you don't have a target in mind, **Tonight** answers the beginner's question
+directly. It's its own destination — in the left rail on a tablet or desktop,
+and under **More → Tonight** on a phone — and it needs no equipment at all: it's
+pure sky maths for your saved site, so it works with the rig switched off.
+(That's why the *"Equipment not connected"* screen offers a **See what's up
+tonight** shortcut.) The same list also appears on the Atlas when you haven't
+framed anything yet.
+
+The list is ranked by how high each object climbs tonight — higher means less
+air to shoot through — and each row carries the peak altitude (`↑42°`, or `low`
+when it never clears your horizon limit) and a difficulty rating: **● Easy**,
+**◐ Moderate**, **○ Hard**, from how bright the object is spread over its size.
+The filter starts on **Beginner**, which shows Easy and Moderate only; switch it
+to **All** to see everything. Tap a row and the target is framed, exactly as if
+you'd searched for it.
+
+If your site is still the default one you're warned to set it in Settings — the
+whole ranking depends on where you are. While a sequence is running the view
+also shows what you're imaging right now at the top, so opening Tonight mid-run
+never looks like nothing is happening.
+
+---
+
+## Tonight's visibility for the framed target
+
+The **Tonight** panel on the Atlas computes tonight's visibility for the framed
+target:
 
 - An **altitude curve** for the target across the night, with the **moon's**
   altitude, an astronomical-**dark** band, and a **NOW** marker.
