@@ -146,8 +146,18 @@ export function PreviewToolbar({
 
   return (
     <div className="preview-toolbar">
-      {/* zoom cluster — always visible */}
-      <div className="flex items-center gap-1">
+      {/* zoom cluster — always visible.
+          `flex-wrap` is load-bearing, not cosmetic. `.preview-toolbar` itself
+          wraps, but a non-wrapping child is ONE unbreakable flex item whose
+          min-content is the SUM of its buttons (372px here). That became the
+          Live Preview panel's min-content, and since the view's grid track is
+          `1fr` — i.e. `minmax(auto, 1fr)`, whose floor is min-content — the
+          single mobile column was forced to 406px inside a 348px space. `main`
+          is `overflow-x-hidden`, so the excess was CLIPPED rather than
+          scrollable: on a 380px phone the Magnifier toggle, Center and
+          Download simply could not be reached, and every sibling panel
+          (Exposure, Cooler, Filter Wheel) inherited the blown-out track. */}
+      <div className="flex flex-wrap items-center gap-1">
         <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom out" onClick={onZoomOut}>
           −
         </button>
