@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CalibrationReport } from "../types";
 import { api, ApiError } from "../api";
 import { setProvidersConfig } from "../api/backends";
@@ -9,12 +9,15 @@ import {
 import {
   summarize, formatRecommendations, buildApplyBody, applyChangesAlgorithm,
   toggleRecommendationKey, backlashResultSentence,
+  applyActionReason, EMPTY_SELECTION_REASON,
   type AssistantReport, type GuideSettingsPutBody,
 } from "../lib/guideAssistant";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Icon } from "../components/icons";
-import { Panel, Stat, Led, Toggle } from "../components/ui";
+import {
+  Panel, Stat, Led, Toggle, Disclosure, LockedNote, lockedProps, LOCKED_CLASS,
+} from "../components/ui";
 import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
@@ -449,6 +452,16 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
   const [decMode, setDecMode] = useState<DecGuideMode>(defaultGuideSettings().decGuideMode);
   const [blcMs, setBlcMs] = useState<string>("0");
 
+  // "Open in tuning editor" lands here, but this panel sits two panels BELOW
+  // the fold on a tablet — seeding it silently looked like the button did
+  // nothing. `jump` is armed by the seed effect and consumed by the effect
+  // after it (one commit later, so the drawer's controls are mounted by then):
+  // scroll the panel into view AND move real keyboard focus into it, so
+  // keyboard and screen-reader users make the same trip sighted users do.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const firstControlRef = useRef<HTMLSelectElement | null>(null);
+  const [jump, setJump] = useState(false);
+
   const chooseRa = (kind: GuideAlgorithmKind) => {
     setRa(kind);
     setRaParams({ ...GUIDE_ALGORITHM_DEFAULTS[kind] });
@@ -500,8 +513,22 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
     if (isValidDecGuideMode(seed.dec_guide_mode)) setDecMode(seed.dec_guide_mode);
     setBlcMs(String(seed.blc_pulse_ms));
     setLoaded(true);
-    setOpen(true);
+    setOpen(true); // the drawer must be OPEN before there is anything to focus
+    setJump(true);
   }, [seed]);
+
+  useEffect(() => {
+    if (!jump || !open) return;
+    setJump(false);
+    panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    // preventScroll: the smooth scroll above owns the movement — focus()'s own
+    // instant jump would fight it. A viewer's selects are natively disabled and
+    // so unfocusable; fall back to the panel itself (tabIndex={-1}) so the jump
+    // is never silent for a screen reader.
+    const first = firstControlRef.current;
+    if (first && !first.disabled) first.focus({ preventScroll: true });
+    else panelRef.current?.focus({ preventScroll: true });
+  }, [jump, open]);
 
   const save = async () => {
     setBusy(true);
@@ -535,6 +562,7 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
   };
 
   return (
+    <div ref={panelRef} tabIndex={-1} className="outline-none">
     <Panel title="Guide Tuning"
       right={
         <button className="btn text-[11px] !py-0.5 !px-2" onClick={toggle}
@@ -551,7 +579,8 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="label">RA algorithm</span>
-            <select className="field" value={ra} disabled={!canGuide || busy}
+            <select ref={firstControlRef} className="field" value={ra}
+              disabled={!canGuide || busy}
               onChange={(e) => chooseRa(e.target.value as GuideAlgorithmKind)}>
               {RA_GUIDE_ALGORITHMS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -615,6 +644,7 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
         </div>
       )}
     </Panel>
+    </div>
   );
 }
 
@@ -811,6 +841,23 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
     .replace(/^Guiding Assistant\s*/i, "");
   const changesAlgoAll = report ? applyChangesAlgorithm(report) : false;
 
+  // Honest-disabled (§11.8) reasons for the RESULT-CARD actions — same rule the
+  // Run button above already follows. These three used the native `disabled`
+  // attribute, which drops the control out of the accessibility tree together
+  // with the reason, and on the tablet left a grey rectangle that did nothing
+  // under a fingertip and said nothing about why. Precedence lives in the pure
+  // helper; the permission phrase is the only view-side input.
+  const noPermission = !canGuide
+    ? `${accessPhrase("control.guide")} required to apply guide settings`
+    : null;
+  const explain = (msg: string) => onToast("info", msg);
+  const applyReason = applyActionReason({ noPermissionReason: noPermission, busy });
+  // Start over only discards the local result — no permission needed for that.
+  const startOverReason = applyActionReason({ busy });
+  const applySelectedReason = applyActionReason({
+    noPermissionReason: noPermission, busy, selectedCount: selected.size,
+  });
+
   return (
     <Panel title="Guiding Assistant" right={<ProviderBadge cap="guide" />}>
       {/* Novice: one Run button (honest-disabled), progress, then a summary. */}
@@ -838,9 +885,10 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
         </div>
       ) : !report ? (
         <div className="flex flex-col gap-2">
-          <div aria-disabled={blocked || undefined}
-            title={reason ?? undefined}
-            className={blocked ? "opacity-50 pointer-events-none select-none" : ""}>
+          {/* Same honest-disabled rule, via the shared token now that this file
+              uses it below — the reason is stated in the paragraph underneath,
+              which is why the redundant (and touch-invisible) title= is gone. */}
+          <div {...lockedProps(reason)}>
             <button className="btn btn-accent w-full" onClick={() => void run()}>
               <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />
               Run Guiding Assistant
@@ -881,21 +929,27 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
             </p>
           )}
           <div className="flex gap-2">
-            <button className="btn btn-accent flex-1" disabled={!canGuide || busy}
-              onClick={() => void apply()}>
-              Apply recommended settings
-            </button>
-            <button className="btn" disabled={busy} onClick={() => setReport(null)}>
-              Redo
-            </button>
+            <HonestButton className="btn btn-accent flex-1" reason={applyReason}
+              onExplain={explain} onClick={() => void apply()}>
+              {busy ? "Applying…" : "Apply recommended settings"}
+            </HonestButton>
+            {/* "Redo" was a lie: this discards the measurements, it does not
+                re-measure. Pressing it returns to the Run screen. */}
+            <HonestButton className="btn" reason={startOverReason}
+              onExplain={explain} onClick={() => setReport(null)}>
+              Start over
+            </HonestButton>
           </div>
+          {noPermission && <LockedNote reason={noPermission} />}
 
-          {/* Advanced disclosure — collapsed by default, zero novice clutter. */}
-          <details className="border-t border-line pt-2">
-            <summary className="text-[11px] text-dim cursor-pointer select-none">
-              Advanced · show measurements
-            </summary>
-            <div className="flex flex-col gap-3 mt-3">
+          {/* Advanced disclosure — collapsed by default, zero novice clutter.
+              The house aria-expanded/44px/caret row (ui.tsx Disclosure), not a
+              native <details>: that rendered a different caret and ignored the
+              44px tap floor. */}
+          <Disclosure className="border-t border-line pt-2"
+            summary="Advanced · measurements and per-setting apply"
+            label="the advanced measurements, raw curves, and per-setting apply">
+            <div className="flex flex-col gap-3 mt-2">
               <div className="flex justify-center">
                 <GuideScatter samples={report.samples} />
               </div>
@@ -962,22 +1016,65 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
                 ))}
               </div>
 
-              <div className="flex gap-2">
-                <button className="btn flex-1" disabled={!canGuide || busy || selected.size === 0}
-                  onClick={() => void apply([...selected])}>
-                  Apply selected
-                </button>
-                <button className="btn"
-                  onClick={() => onOpenInTuning(buildApplyBody(report,
-                    selected.size ? [...selected] : undefined))}>
-                  Open in tuning editor
-                </button>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex gap-2">
+                  <HonestButton className="btn flex-1" reason={applySelectedReason}
+                    onExplain={explain} onClick={() => void apply([...selected])}>
+                    Apply selected
+                  </HonestButton>
+                  <button type="button" className="btn"
+                    onClick={() => onOpenInTuning(buildApplyBody(report,
+                      selected.size ? [...selected] : undefined))}>
+                    Open in tuning editor
+                  </button>
+                </div>
+                {/* The empty-selection case had NO stated reason at all — the
+                    button was simply grey. Say it in words, on screen, so it
+                    reaches touch as well as keyboard. */}
+                {!noPermission && !busy && selected.size === 0 && (
+                  <p className="flex items-start gap-1.5 text-[11px] text-dim leading-snug">
+                    <Icon name="info" size={12} className="mt-0.5 shrink-0" aria-hidden />
+                    <span>{EMPTY_SELECTION_REASON}</span>
+                  </p>
+                )}
+                <p className="text-[11px] text-faint leading-snug">
+                  Open in tuning editor jumps to Guide Tuning below and fills it
+                  in — nothing is saved until you press Save there.
+                </p>
               </div>
             </div>
-          </details>
+          </Disclosure>
         </div>
       )}
     </Panel>
+  );
+}
+
+/** A button that is honest about being inert (house rule §11.8). The native
+ *  `disabled` attribute is never used for a control the user could plausibly
+ *  want to press: it removes the element from the accessibility tree, taking
+ *  the reason with it, and leaves a grey rectangle that does nothing on tap and
+ *  cannot even be focused to ask why. Instead this dims (the one shared
+ *  LOCKED_CLASS token), carries `aria-disabled`, stays focusable AND tappable
+ *  (`!pointer-events-auto`, the same escape LockedChip uses), and its press
+ *  STATES the reason instead of acting. Callers pair it with a visible reason
+ *  line so the reason also reaches a sighted user who never presses it. */
+function HonestButton({ reason, onClick, onExplain, className = "btn", children }: {
+  reason: string | null;
+  onClick: () => void;
+  onExplain: (reason: string) => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${className} ${reason ? `${LOCKED_CLASS} !pointer-events-auto` : ""}`}
+      aria-disabled={reason ? true : undefined}
+      onClick={() => (reason ? onExplain(reason) : onClick())}
+    >
+      {children}
+    </button>
   );
 }
 

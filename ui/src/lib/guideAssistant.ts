@@ -138,6 +138,41 @@ export function backlashResultSentence(code: string): string {
   }
 }
 
+// ------------------------------------------------- honest-disabled reasons
+// The result card's Apply / Apply-selected / Start-over buttons are never
+// natively `disabled` (house rule §11.8 — that strips the control out of the
+// accessibility tree along with the reason, and leaves a dead grey rectangle
+// under a fingertip). They dim, carry `aria-disabled`, and explain on press.
+// The precedence between the blocking conditions is the only real logic, so it
+// lives here, pure and pinned by a test, rather than in the render shell. The
+// permission phrase is passed IN (it comes from lib/caps, which is React-bound
+// and must not be imported into this module).
+
+/** Shown while an apply PUT is in flight. Honest about the wait. */
+export const APPLYING_REASON = "Applying the settings — this takes a moment.";
+
+/** Shown when the advanced table has nothing ticked, so "Apply selected" has
+ *  nothing to do. Before this the button was natively disabled with NO stated
+ *  cause at all. */
+export const EMPTY_SELECTION_REASON =
+  "Nothing is ticked, so there is nothing to apply. Tick at least one row "
+  + "above, or use Apply recommended settings to take the whole set.";
+
+/** The reason an assistant apply-style button is inert right now, or `null`
+ *  when it is live. First blocking condition wins: no permission beats an
+ *  in-flight apply beats an empty selection. Omit `selectedCount` for the
+ *  buttons that have no selection (novice Apply, Start over). */
+export function applyActionReason(opts: {
+  noPermissionReason?: string | null;
+  busy: boolean;
+  selectedCount?: number;
+}): string | null {
+  if (opts.noPermissionReason) return opts.noPermissionReason;
+  if (opts.busy) return APPLYING_REASON;
+  if (opts.selectedCount === 0) return EMPTY_SELECTION_REASON;
+  return null;
+}
+
 function _backlashPhrase(b: AssistantBacklash): string {
   // Same gate as the server's recommend(): believe bl_ms ONLY when the run
   // derived it and was not cut short by the edge guard.
