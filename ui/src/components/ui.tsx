@@ -15,6 +15,15 @@ import { placeTooltip, type Placement } from "../lib/tooltipPlace";
 // it joins the rest of the UI primitives at `../components/ui`.
 export { SegmentedControl, type SegmentedControlProps } from "./ui/SegmentedControl";
 
+// THE overlay primitive. Every dialog / sheet / drawer in the app goes through
+// this — do not hand-roll another `fixed inset-0` panel. Review S1 found five
+// separate findings that were all one bug (an overlay rendered inside a view
+// tree lands wherever an ancestor's filter / backdrop-filter / residual
+// animation transform says it does, not where the eye is), and the fix is
+// structural: Overlay portals to a body-level host that IS the viewport.
+// See components/Overlay.tsx for the measurements and the full contract.
+export { Overlay, useMediaQuery, useIsLg, type OverlayProps, type OverlayVariant } from "./Overlay";
+
 export function Panel({ title, right, children, className = "" }: {
   title?: string; right?: ReactNode; children: ReactNode; className?: string;
 }) {

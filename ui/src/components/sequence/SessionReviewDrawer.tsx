@@ -1,9 +1,20 @@
 // SessionReviewDrawer.tsx — frame-grid review for one session (sessions spec
 // §7). LogDrawer pattern: lg+ docked right column, bottom sheet below lg;
-// role="dialog" aria-modal="false", Escape, focus trap, focus return.
-// Thumbs + metrics only (no full-size preview — out of scope v1).
-import { useEffect, useRef, useState } from "react";
+// role="dialog" aria-modal="false", Escape, focus trap, focus return — all of
+// which now come from the shared <Overlay/> primitive.
+//
+// REVIEW #38: the drawer was `bg-raise/95 backdrop-blur` (lg+: `bg-raise/60`),
+// so the AUTOMATION labels and toggles of the panel behind it read straight
+// through the frame metadata, and its right column of cards was clipped
+// mid-line ("HFR 2.51 · ★20 ·"). Both are primitive-level: `.overlay-surface`
+// is opaque, and the surface is a clamped flex column whose BODY is the only
+// scroll region, so the card grid can no longer run past the surface edge.
+// The lg+ variant was additionally `fixed right-0 top-0 bottom-0` authored
+// INSIDE SessionsPanel — i.e. inside a `.panel`, whose `backdrop-filter` is a
+// containing block — so "fixed to the right of the screen" was never true.
+import { useEffect, useState } from "react";
 import { Icon } from "../icons";
+import { Overlay } from "../Overlay";
 import { BASE } from "../../lib/base";
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
@@ -52,9 +63,6 @@ export default function SessionReviewDrawer({ id, onClose }: {
   // (same cap as SessionsPanel's resume/delete/update-from-plan controls),
   // NOT control.capture — an operator can run captures but not regrade.
   const canRegrade = useCanControlMount();
-  const deskRef = useRef<HTMLDivElement>(null);
-  const sheetRef = useRef<HTMLDivElement>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!id) {
@@ -66,47 +74,6 @@ export default function SessionReviewDrawer({ id, onClose }: {
     }
     void getSession(id).then(setSession).catch(() => setSession(null));
   }, [id]);
-
-  useEffect(() => {
-    if (!id) return;
-    returnFocusRef.current = (document.activeElement as HTMLElement) ?? null;
-    const isVisible = (el: HTMLElement | null) => !!el && el.getClientRects().length > 0;
-    const node = isVisible(deskRef.current) ? deskRef.current : sheetRef.current;
-    const focusables = () =>
-      node
-        ? Array.from(
-            node.querySelectorAll<HTMLElement>(
-              'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-            ),
-          ).filter((el) => !el.hasAttribute("disabled"))
-        : [];
-    focusables()[0]?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const items = focusables();
-      if (items.length === 0) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      returnFocusRef.current?.focus?.();
-    };
-  }, [id, onClose]);
 
   if (!id || !session) return null;
 
@@ -160,8 +127,18 @@ export default function SessionReviewDrawer({ id, onClose }: {
     setBusy(false);
   };
 
+  // #24: a bulk-regrade button the user might well want to press must state why
+  // it won't fire. Native `disabled` says nothing on a touch device.
+  const regradeReason = !canRegrade
+    ? `Regrading frames needs ${accessPhrase("control.mount")}.`
+    : busy
+      ? "Applying the last regrade…"
+      : sel.length === 0
+        ? "Select one or more frames first."
+        : null;
+
   const header = (
-    <div className="flex items-center gap-2 pb-2 flex-wrap">
+    <div className="flex items-center gap-2 p-3 flex-wrap">
       <span className="font-display font-semibold text-accent tracking-wider">
         Review · {session.name}
       </span>
@@ -201,23 +178,29 @@ export default function SessionReviewDrawer({ id, onClose }: {
           <option value="overridden">overridden</option>
         </select>
         <div className="flex-1" />
-        <button className="btn tap min-h-[44px] !px-3 !text-[11px]"
-          disabled={!canRegrade || busy || sel.length === 0} onClick={() => void bulk("accept")}>
+        <button className={`btn tap min-h-[44px] !px-3 !text-[11px] ${regradeReason ? "opacity-50 cursor-not-allowed" : ""}`}
+          aria-disabled={!!regradeReason || undefined}
+          aria-label={regradeReason ? `Mark accepted — ${regradeReason}` : undefined}
+          aria-describedby={regradeReason ? "regrade-reason" : undefined}
+          onClick={() => { if (!regradeReason) void bulk("accept"); }}>
           <Icon name="check" size={12} /> mark accepted ({sel.length})
         </button>
         <button
-          className="tap min-h-[44px] !px-3 !text-[11px] border border-bad/60 text-bad hover:bg-bad/10 disabled:opacity-40"
-          disabled={!canRegrade || busy || sel.length === 0} onClick={() => void bulk("reject")}>
+          className={`tap min-h-[44px] !px-3 !text-[11px] border border-bad/60 text-bad hover:bg-bad/10 ${regradeReason ? "opacity-50 cursor-not-allowed" : ""}`}
+          aria-disabled={!!regradeReason || undefined}
+          aria-label={regradeReason ? `Mark rejected — ${regradeReason}` : undefined}
+          aria-describedby={regradeReason ? "regrade-reason" : undefined}
+          onClick={() => { if (!regradeReason) void bulk("reject"); }}>
           <Icon name="x" size={12} /> mark rejected
         </button>
       </div>
-      {!canRegrade && (
-        <p className="text-[11px] text-dim pb-2 inline-flex items-center gap-1.5">
-          <Icon name="lock" size={11} />
-          Read-only — regrading frames needs {accessPhrase("control.mount")}.
+      {regradeReason && (
+        <p id="regrade-reason" className="text-[11px] text-dim pb-2 inline-flex items-center gap-1.5">
+          <Icon name="lock" size={11} aria-hidden />
+          {regradeReason}
         </p>
       )}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 overflow-y-auto flex-1">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {frames.map((f) => {
           const v = verdictOf(f);
           const selected = sel.includes(f.id);
@@ -249,25 +232,20 @@ export default function SessionReviewDrawer({ id, onClose }: {
   );
 
   return (
-    <>
-      {/* lg+ docked right column (LogDrawer precedent) */}
-      <aside ref={deskRef} role="dialog" aria-modal="false" aria-label="Session review"
-        className="hidden lg:flex flex-col w-[420px] border-l border-line bg-raise/60
-          backdrop-blur p-3 overflow-y-auto shrink-0 fixed right-0 top-0 bottom-0 z-40">
-        {header}
-        {body}
-      </aside>
-      {/* below lg: bottom sheet; tap-catcher above only, no scrim */}
-      <div className="lg:hidden">
-        <div className="fixed inset-x-0 top-0 bottom-[60vh] z-30" onClick={onClose}
-          aria-hidden="true" />
-        <div ref={sheetRef} role="dialog" aria-modal="false" aria-label="Session review"
-          className="fixed inset-x-0 bottom-0 z-40 h-[60vh] flex flex-col
-            border-t border-line2 bg-raise/95 backdrop-blur p-3 sheet-enter">
-          {header}
-          {body}
-        </div>
-      </div>
-    </>
+    <Overlay
+      open
+      label="Session review"
+      variant="dock"
+      modal={false}
+      scrim={false}
+      dismissOnOutside
+      trapFocus
+      autoFocus
+      onClose={onClose}
+      head={header}
+      bodyClassName="px-3 pb-3"
+    >
+      {body}
+    </Overlay>
   );
 }

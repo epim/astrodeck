@@ -62,6 +62,20 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   // from NotConnectedInterstitial — not a primary-bar reorder.
   { id: "tonight", label: "Tonight", icon: "moon" },
   { id: "settings", label: "Settings", icon: "settings" },
+  // APPENDED (review #13, same Risk-10 precedent as Monitor and Tonight above —
+  // the rule permits appending, and appending is exactly what this is; no
+  // reorder, no eviction).
+  //
+  // Reports had a route, a working ReportView with its own /api/reports picker,
+  // AND a NavMoreSheet entry — and enumerating the rendered nav gave
+  // desktop 1440 -> Reports visible: FALSE; tablet 820 -> FALSE; phone 390 ->
+  // inside the MORE sheet. So the entire PixInsight hand-off (bundle.zip,
+  // frames.csv, per-filter hours, the rejected-frame list) was behind a
+  // phone-only door, for the one task in this product that is performed at a
+  // desk on a big screen every morning of the year. Two personas hit it; one
+  // concluded the feature did not exist. It stays in the MORE sheet too — that
+  // is the phone's copy of this rail, not a duplicate.
+  { id: "report", label: "Reports", icon: "download" },
 ];
 
 // ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
@@ -77,9 +91,10 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
 //   - "tonight" is an informational shell (like Atlas/Monitor), deliberately NOT
 //     in GATED below: "what's up tonight?" is exactly the question a user asks
 //     BEFORE any equipment is connected.
-//   - "report" is NOT a primary-nav entry (Batch-4b §2.5 / report viewer spec
-//     §1.4): reached from the run-complete "View session report →" link
-//     (SequenceView) + the mobile overflow sheet (NavMoreSheet).
+//   - "report" IS a primary-nav entry as of review #13 (it was previously
+//     phone-overflow-only, which measured as "invisible on tablet AND desktop").
+//     Still also reachable from the run-complete "View session report →" link
+//     (SequenceView) and the mobile overflow sheet (NavMoreSheet).
 //   - "help" is likewise NOT a primary-nav entry — reached from NavMoreSheet, the
 //     log drawer footer, and error deep-links (store.openHelp) (NOV-9).
 const EAGER_VIEWS: Partial<Record<ViewName, () => JSX.Element>> = {
@@ -283,7 +298,13 @@ export default function App() {
         {/* UX-33: first focusable element — lets keyboard users skip the nav. */}
         <a href="#main-content" className="skip-link">Skip to content</a>
         {/* ---------------------------------------------- top status strip */}
-        <header className="relative z-20 flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
+        {/* `app-header` is the hook for CSS-HEADERSET in index.css (review #47):
+            the three icon buttons in the right-hand cluster measured 44x44 r0 /
+            36x44 r10 / 36x44 r10 — an obviously-a-set that wasn't one, with two
+            of the three below the 44px touch minimum. The class is deliberately
+            narrow so the rule cannot reach the <header> elements inside Panel or
+            the overlay heads, which are text rows rather than icon clusters. */}
+        <header className="app-header relative z-20 flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
           <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
             ASTRO<span className="text-ink">DECK</span>
           </h1>
@@ -415,6 +436,13 @@ export default function App() {
                   onPointerEnter={() => preloadView(n.id)}
                   onPointerDown={() => preloadView(n.id)}
                   aria-current={view === n.id ? "page" : undefined}
+                  // #24: `title` never fires on touch, and this rail lives on a
+                  // tablet. The reason rides in the accessible NAME (the lock
+                  // glyph below is the visible half of the same cue); title is
+                  // kept as the mouse convenience it always was, never the only
+                  // channel. The tab still navigates — to the interstitial,
+                  // which states the same thing at full size.
+                  aria-label={gated ? `${n.label} — connect equipment to use this` : undefined}
                   title={gated ? "Connect equipment to use this" : undefined}
                   className={`flex flex-col items-center gap-1 py-3 transition-colors relative cursor-pointer
                     ${view === n.id ? "text-accent" : gated ? "text-dim/60 hover:text-ink" : "text-dim hover:text-ink"}`}
@@ -451,7 +479,12 @@ export default function App() {
           <main
             id="main-content"
             tabIndex={-1}
-            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 pb-20 sm:pb-4 outline-none ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
+            // `main-safe-pad` replaces `pb-20 sm:pb-4` (review #46): the bottom
+            // padding has to clear the fixed bottom nav AND the home-indicator
+            // inset, or the last row of a view is unreachable on a notched
+            // phone. It is authored CSS on purpose — a Tailwind `pb-*` utility
+            // would be indistinguishable from the `p-4` on the same element.
+            className={`flex-1 overflow-y-auto overflow-x-hidden p-4 main-safe-pad outline-none ${dim ? "opacity-60 transition-opacity" : "transition-opacity"}`}
             key={view}
           >
             <div className="view-enter max-w-[1500px] mx-auto w-full min-h-full flex flex-col">
@@ -466,7 +499,13 @@ export default function App() {
           </main>
 
           {/* Log drawer: docked column lg+, bottom sheet below — self-manages via
-              store.logOpen; renders nothing when closed. */}
+              store.logOpen; renders nothing when closed. It now renders through
+              the shared <Overlay/> primitive, so it PORTALS to the body-level
+              overlay host rather than occupying a flex slot here. It stays
+              mounted at this point in the tree only because that is where its
+              store subscription belongs; the DOM position is no longer load-
+              bearing (and, being outside .view-enter and every .panel, is no
+              longer a containing-block hazard). */}
           <LogDrawer />
         </div>
 
@@ -493,7 +532,7 @@ export default function App() {
             same source HeaderControls writes — so it stays correct as it adjusts. */}
         {brightness < 0.95 && (
           <button
-            className="fixed bottom-3 left-1/2 -translate-x-1/2 sm:left-auto sm:right-3 sm:translate-x-0
+            className="fixed float-safe-b left-1/2 -translate-x-1/2 sm:left-auto sm:right-3 sm:translate-x-0
               btn btn-accent !py-1.5 !px-3 text-[10px] min-h-[44px] inline-flex items-center gap-1.5 z-50"
             onClick={resetBrightness}
             title="Reset screen brightness to 100% (Shift+B)"

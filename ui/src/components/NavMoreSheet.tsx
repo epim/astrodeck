@@ -13,11 +13,11 @@
 // Dismiss on selection / backdrop / Esc. Fixed grid icon always (R15).
 // Narrow store selectors throughout (R27).
 
-import { useEffect, useRef } from "react";
 import type { ViewName } from "../types";
 import { useStore } from "../store";
 import { Icon, type IconName } from "./icons";
 import { Toggle } from "./ui";
+import { Overlay, useMediaQuery } from "./Overlay";
 import { haptics } from "../lib/haptics";
 import { handleRadioKeyDown, rovingTabIndex } from "../lib/radiogroup";
 import {
@@ -61,19 +61,6 @@ const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [
   { id: "off", label: "Off" },
 ];
 
-// Tab-reachable controls inside `panel`. A roving radiogroup (UX-20) marks its
-// inactive options tabIndex=-1; those still match the button/[tabindex] selectors,
-// so the focus trap must drop them (keep el.tabIndex >= 0). Otherwise firstEl/
-// lastEl land on an unreachable element and forward-Tab escapes the modal.
-function tabbablesIn(panel: HTMLElement | null): HTMLElement[] {
-  if (!panel) return [];
-  return Array.from(
-    panel.querySelectorAll<HTMLElement>(
-      "button:not([disabled]), a[href], input, select, textarea, [tabindex]",
-    ),
-  ).filter((el) => el.tabIndex >= 0);
-}
-
 function OverflowRow({ id, label, icon, onPick }: {
   id: ViewName; label: string; icon: IconName; onPick: (v: ViewName) => void;
 }) {
@@ -112,47 +99,18 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
   const monitorAwake = useMonitorAwake();
   const setMonitorAwake = useSetMonitorAwake();
 
-  // Focus management (F-focus-trap, mirrors the ConfirmHost primitive): capture the
-  // opener, focus the first control inside the sheet on open, trap Tab within it,
-  // and restore focus to the opener on close. Escape closes.
-  const panelRef = useRef<HTMLDivElement>(null);
-  const openerRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    openerRef.current = (document.activeElement as HTMLElement) ?? null;
-    // initial focus: the first tab-reachable control inside the sheet panel.
-    tabbablesIn(panelRef.current)[0]?.focus();
-    return () => {
-      openerRef.current?.focus?.();
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const focusables = tabbablesIn(panelRef.current);
-      if (focusables.length === 0) return;
-      const firstEl = focusables[0];
-      const lastEl = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === firstEl) {
-        e.preventDefault();
-        lastEl.focus();
-      } else if (!e.shiftKey && document.activeElement === lastEl) {
-        e.preventDefault();
-        firstEl.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
-  }, [open, onClose]);
-
-  if (!open) return null;
+  // Focus trap / initial focus / Escape / focus-restore + the portal + the
+  // OPAQUE surface all come from <Overlay/>. Review #44: this sheet used
+  // `.panel` (`--bg-panel` = rgba(12,14,22,0.85)) so an open event-log drawer
+  // read straight through the nav rows underneath it — two translucent overlays
+  // stacked. `.overlay-surface` has no alpha, which fixes it at the primitive.
+  //
+  // The sheet used to carry `sm:hidden` on its root. It now renders through a
+  // portal, so the breakpoint has to be a real query rather than a utility on a
+  // node that no longer wraps the scrim: a phone-width-only sheet must not
+  // survive a rotate/resize past `sm` with its scrim covering the desktop rail.
+  const wideScreen = useMediaQuery("(min-width: 640px)");
+  if (!open || wideScreen) return null;
 
   const pick = (v: ViewName) => {
     setView(v);
@@ -160,20 +118,13 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
   };
 
   return (
-    <div
-      className="fixed inset-0 z-40 sm:hidden flex flex-col justify-end"
-      role="dialog"
-      aria-modal="true"
-      aria-label="More"
-    >
-      {/* backdrop dismiss */}
-      <button
-        aria-label="Close menu"
-        className="absolute inset-0 bg-bg/60"
-        onClick={onClose}
-      />
-      <div ref={panelRef} className="relative panel bg-panel rounded-t-xl border-t border-line2 max-h-[80vh] overflow-y-auto more-sheet-in">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+    <Overlay
+      open
+      label="More"
+      variant="sheet"
+      onClose={onClose}
+      head={
+        <div className="flex items-center justify-between px-4 py-3">
           <span className="font-display tracking-[0.2em] text-dim text-xs">MORE</span>
           <button
             onClick={onClose}
@@ -183,7 +134,8 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
             <Icon name="x" size={18} />
           </button>
         </div>
-
+      }
+    >
         {/* overflow views */}
         <div>
           {OVERFLOW_VIEWS.map((v) => (
@@ -211,7 +163,12 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
             )}
           </button>
 
-          {/* Lock Screen — gated on lockAvailable with tooltip-as-title */}
+          {/* Lock Screen. Review #24 + house rule §11.8: this used the NATIVE
+              `disabled` attribute with the reason living only in `title=` — the
+              one channel that never fires on the touch device this sheet exists
+              for, and `disabled` strips the control (and therefore the reason)
+              out of the a11y tree entirely. Now: dim + aria-disabled + a VISIBLE
+              stated reason, matching LockedNote's shape. */}
           <button
             onClick={() => {
               if (!lockAvailable) return;
@@ -219,19 +176,26 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
               setLocked(true);
               onClose();
             }}
-            disabled={!lockAvailable}
+            aria-disabled={!lockAvailable || undefined}
+            aria-label={lockAvailable ? undefined : "Lock Screen — unavailable on this display"}
             title={
               lockAvailable
                 ? "Lock the screen (monitor-safe)"
                 : "Screen lock unavailable"
             }
             className={`flex items-center gap-3 w-full min-h-[56px] px-1 ${
-              lockAvailable ? "" : "opacity-40 cursor-not-allowed"
+              lockAvailable ? "" : "opacity-50 cursor-not-allowed"
             }`}
           >
             <Icon name="lock" size={24} />
             <span className="font-display tracking-wide text-sm flex-1 text-left">Lock Screen</span>
           </button>
+          {!lockAvailable && (
+            <p className="flex items-center gap-1.5 text-[11px] text-dim px-1 pb-1">
+              <Icon name="lock" size={12} aria-hidden />
+              <span>Screen lock is unavailable on this display.</span>
+            </p>
+          )}
 
           {/* Monitor-awake (keep screen on while watching) — decoupled from lock */}
           <label className="flex items-center gap-3 w-full min-h-[56px] px-1">
@@ -305,7 +269,6 @@ export default function NavMoreSheet({ open, onClose }: { open: boolean; onClose
             </div>
           </div>
         </div>
-      </div>
-    </div>
+    </Overlay>
   );
 }
