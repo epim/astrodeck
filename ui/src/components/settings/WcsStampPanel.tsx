@@ -6,9 +6,11 @@
 // aria-expanded button idiom, FilterNamesModal precedent).
 //
 // Honest-disabled (idiom §11.8): without config.site_optics the controls stay
-// visible and focusable with aria-disabled + a title naming the missing
-// capability — never the native `disabled` attribute, which would hide the
-// reason from assistive tech.
+// visible with aria-disabled + a VISIBLE reason — never the native `disabled`
+// attribute, which would hide the reason from assistive tech, and never `title=`
+// alone, which never fires on touch. Both the dimming and the reason come from
+// the shared UI-LOCKED primitives (`lockedProps` / `LockedNote`) so this panel
+// reads at the same opacity as every other read-only surface.
 //
 // All logic worth testing lives in lib/wcsStamp.ts; this file is a thin shell.
 import { useEffect, useState, type JSX } from "react";
@@ -16,8 +18,7 @@ import { setWcsStampConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useProviders, useStore } from "../../store";
 import { accessPhrase, useCan } from "../../lib/caps";
-import { Panel, Field, SegmentedControl, Toggle } from "../ui";
-import { Icon } from "../icons";
+import { Panel, Field, LockedNote, SegmentedControl, Toggle, lockedProps } from "../ui";
 import {
   DOWNSAMPLE_CHOICES, downsampleLabel, wcsStampAdvisory, wcsStampOrDefault,
   wcsStampSummary,
@@ -66,19 +67,23 @@ export default function WcsStampPanel(): JSX.Element {
     if (n !== stamp.min_stars) patch({ min_stars: n });
   };
 
-  // Honest-disabled wrapper: aria-disabled + a title naming the missing cap,
-  // dimmed but never natively `disabled`.
-  const lockProps = canEdit
-    ? {}
-    : { "aria-disabled": true as const, title: LOCK };
-  const lockClass = canEdit ? "" : "opacity-50";
+  // Honest-disabled wrapper (§11.8), routed through the shared primitive so the
+  // dimming token matches the rest of the app. `reason` is null when editable,
+  // so lockedProps() returns {} and the markup is untouched for an admin.
+  const reason = canEdit ? null : LOCK;
+  /** lockedProps + this call site's own layout classes, merged. */
+  const lockWrap = (extra = ""): Record<string, unknown> => {
+    const p = lockedProps(reason);
+    const className = [extra, p.className].filter(Boolean).join(" ");
+    return { ...p, className: className || undefined };
+  };
 
   return (
     <Panel title="Record where each photo points">
       <div className="flex flex-col gap-3">
         {/* ---------------------------------------------------------- novice */}
         <div className="flex items-start gap-3">
-          <span {...lockProps} className={lockClass}>
+          <span {...lockWrap()}>
             <Toggle
               checked={enabled}
               onChange={canEdit ? (v) => void save(v, stamp) : () => {}}
@@ -122,7 +127,7 @@ export default function WcsStampPanel(): JSX.Element {
           {open && (
             <div className="mt-2 flex flex-col gap-3">
               <Field label="Solver">
-                <span {...lockProps} className={`inline-block ${lockClass}`}>
+                <span {...lockWrap("inline-block")}>
                   <SegmentedControl
                     ariaLabel="WCS solver"
                     value={stamp.solver}
@@ -139,7 +144,7 @@ export default function WcsStampPanel(): JSX.Element {
               </p>
 
               <Field label="Downsample">
-                <span {...lockProps} className={`inline-block ${lockClass}`}>
+                <span {...lockWrap("inline-block")}>
                   <SegmentedControl
                     ariaLabel="Solver downsample"
                     value={String(stamp.downsample)}
@@ -184,12 +189,9 @@ export default function WcsStampPanel(): JSX.Element {
           tagged.
         </p>
 
-        {!canEdit && (
-          <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
-            <Icon name="lock" size={11} /> Read-only — changing this needs{" "}
-            {accessPhrase("config.site_optics")}.
-          </p>
-        )}
+        {/* The reason as VISIBLE text (never dimming alone, never title= alone):
+            rendered OUTSIDE every dimmed wrapper so it stays at full contrast. */}
+        {reason && <LockedNote reason={`Read-only — ${reason.toLowerCase()}`} />}
       </div>
     </Panel>
   );

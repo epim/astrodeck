@@ -5,8 +5,9 @@
 // only authors the plan.instructions list. Empty list === byte-identical run.
 //
 // Honest-disabled (§11.8): a viewer without control.mount sees the editor but it
-// is dimmed + inert (pointer-events-none) + aria-disabled + a title explaining
-// what access is needed — NEVER the native `disabled` attribute.
+// is dimmed + inert (pointer-events-none) + aria-disabled via the shared
+// `lockedProps`, with the reason as VISIBLE text via `LockedNote` — NEVER the
+// native `disabled` attribute, and never `title=` alone (it never fires on touch).
 
 import { useMemo, useState } from "react";
 import type {
@@ -28,12 +29,31 @@ import {
 import { accessPhrase } from "../../lib/caps";
 import { useGuideRms } from "../../store";
 import { Icon } from "../icons";
-import { IconButton, InfoDot, Panel, Toggle } from "../ui";
+import { IconButton, InfoDot, LockedNote, Panel, Toggle, lockedProps } from "../ui";
 
 const TRIGGERS = Object.keys(TRIGGER_LABELS) as TriggerKind[];
 const PREDICATES = Object.keys(PREDICATE_LABELS) as PredicateKind[];
 const LEVELS = ["info", "warning", "error"] as const;
 const JUMP_HINT = "Target jumps need 2 or more targets.";
+
+/** Copy for the collapsed row when the plan has no rules at all. */
+export const NO_INSTRUCTIONS_SUMMARY = "Add conditional rules (optional)";
+
+/** Collapsed summary of the rule list: the FIRST rule in full plus a "+N more"
+ *  count. The previous summary joined EVERY rule with " · " into one string that
+ *  CSS then truncated, so a 4-rule plan rendered as half of rule 1 and no hint
+ *  that three others existed — the count was invisible and the visible text was a
+ *  sentence fragment. First-plus-count keeps one complete, readable rule and
+ *  states the remainder honestly; the full list is one tap away (this row is the
+ *  disclosure's own trigger, so expanding it shows every rule unchanged).
+ *
+ *  Pure: takes the already-rendered descriptions, so it is testable without
+ *  React, a store, or a plan fixture. */
+export function instructionsSummary(descriptions: readonly string[]): string {
+  if (descriptions.length === 0) return NO_INSTRUCTIONS_SUMMARY;
+  const [first, ...rest] = descriptions;
+  return rest.length === 0 ? first : `${first}  ·  +${rest.length} more`;
+}
 
 /** Threshold placeholder/hint for whichever metric this trigger reads. */
 function thresholdHint(t: TriggerKind): string | null {
@@ -578,7 +598,15 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
   const add = () =>
     setPlan({ ...plan, instructions: [...instructions, defaultInstruction()] });
 
-  const lockTitle = canWrite ? undefined : `Editing instructions needs ${accessPhrase("control.mount")}.`;
+  const lockReason = canWrite
+    ? null
+    : `Editing instructions needs ${accessPhrase("control.mount")}.`;
+  const lock = lockedProps(lockReason);
+
+  // Collapsed row text — first rule + "+N more" (never a truncated run-on).
+  const summary = instructionsSummary(
+    instructions.map((i) => describeInstruction(i, targetNames, descOpts)),
+  );
 
   return (
     <Panel
@@ -598,21 +626,19 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
         className="w-full tap min-h-[44px] flex items-center gap-2 text-left text-[11px] text-dim hover:text-accent transition-colors cursor-pointer"
       >
         <span aria-hidden className="text-accent">⚙</span>
-        <span className="truncate">
-          {instructions.length === 0
-            ? "Add conditional rules (optional)"
-            : instructions.map((i) => describeInstruction(i, targetNames, descOpts))
-                .join("  ·  ")}
-        </span>
+        <span className="truncate">{summary}</span>
         <span className="flex-1" />
         <span aria-hidden className="text-sm leading-none">{open ? "▾" : "▸"}</span>
       </button>
 
+      {/* The reason rides OUTSIDE the dimmed block so it stays at full contrast
+          and is readable on a tablet, where `title=` never fires at all. */}
+      {open && lockReason && <LockedNote reason={lockReason} className="mt-2" />}
+
       {open && (
         <div
-          className={`mt-2 flex flex-col gap-3 ${canWrite ? "" : "opacity-40 pointer-events-none select-none"}`}
-          aria-disabled={canWrite ? undefined : true}
-          title={lockTitle}
+          {...lock}
+          className={`mt-2 flex flex-col gap-3 ${lock.className ?? ""}`}
           data-readonly={canWrite ? undefined : "viewer"}
         >
           {instructions.map((ins, idx) => (
