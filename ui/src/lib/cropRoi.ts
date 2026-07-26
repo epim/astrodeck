@@ -143,6 +143,45 @@ export function centerSensorRoi(g: RoiGeom, size: number): CropRoi | null {
   };
 }
 
+/* ------------------------------------------------------------------ loupe fit
+ * How big the 1:1 loupe box may be on a stage this wide.
+ *
+ * The loupe is a fixed-size panel pinned to the stage's bottom-right. At its
+ * original 160px box (172px with chrome) it ate ~48% of a 360px phone stage and
+ * ran straight into the bottom-left chip stack. The stage is NOT the viewport —
+ * it is a panel inside a scrolling column, and `compact` is smaller again — so a
+ * CSS media query keyed to viewport width is the wrong instrument. This is a
+ * pure function of the MEASURED stage width (PreviewStage already runs a
+ * ResizeObserver for `fitScale`; we reuse that measurement).
+ *
+ * SCALE FIRST, SUPPRESS ONLY AT THE FLOOR. "1:1" is a pixel RATIO, not a size:
+ * a 108px window still shows 108 real sensor pixels, ~20x a typical star's FWHM
+ * and plenty for the focus/noise check the loupe exists for. Silently rendering
+ * nothing would leave the user staring at a Magnifier toggle they just pressed
+ * that does nothing (house rule §11.8). Below `LOUPE_BOX_MIN` the crosshair, the
+ * 1px border and the ROI caption stop framing anything useful, so we return 0
+ * and the stage says WHY out loud instead of shrinking to a peephole.
+ */
+/** Full-size loupe box, CSS px (== sensor px at 1:1). */
+export const LOUPE_BOX_MAX = 160;
+/** Below this a 1:1 window is a peephole, not an inspection tool. */
+export const LOUPE_BOX_MIN = 96;
+/** Panel padding + border around the box. */
+export const LOUPE_CHROME_PX = 12;
+/** Widest share of the stage the whole loupe panel may occupy. */
+export const LOUPE_STAGE_FRACTION = 0.34;
+
+export function loupeBoxSize(stageW: number): number {
+  // Unmeasured (ResizeObserver has not fired yet): assume it fits. Returning 0
+  // here would flash the "too narrow" note for one commit on every mount.
+  if (!(stageW > 0)) return LOUPE_BOX_MAX;
+  const budget = Math.floor(stageW * LOUPE_STAGE_FRACTION) - LOUPE_CHROME_PX;
+  if (budget >= LOUPE_BOX_MAX) return LOUPE_BOX_MAX;
+  if (budget < LOUPE_BOX_MIN) return 0;
+  // 4px lattice so the centre crosshair always lands on a whole pixel.
+  return Math.floor(budget / 4) * 4;
+}
+
 /**
  * Snap an ROI outward onto a `grid` lattice and re-clamp inside the sensor.
  *

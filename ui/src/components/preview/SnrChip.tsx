@@ -4,16 +4,22 @@
 // Progressive disclosure (Decision E):
 //   - novice default: ONE plain line — a verdict WORD, the number, and what
 //     stacking buys ("Star signal strong — SNR ~38 in this photo").
-//   - NOT aria-live: this is ambient per-frame telemetry, and announcing it on
-//     every new sub all night is screen-reader spam, not information.
-//   - on tap: the tapped star's own measured value rides in the same chip, so
-//     one glance answers both "how is this frame doing" and "what did I tap".
+//   - NOT aria-live, and it must stay that way: this is ambient per-frame
+//     telemetry, and announcing it on every new sub all night is screen-reader
+//     spam that talks over everything else for the whole session.
 //   - advanced: the decomposition (signal e-, sky e-, read e-, read-noise share
-//     of the noise variance) lives in the title tooltip — auditable, off the
-//     novice's path.
+//     of the noise variance) lives in a `Tooltip` — reachable on demand by tap,
+//     hover AND keyboard focus, off the novice's path. It was a raw `title=`,
+//     which never fires on touch and is invisible to AT.
 //   - when no photometry profile is set the chip renders NOTHING at all (not an
 //     error, not a disabled shell): with no e-/ADU there is no honest number,
 //     and a novice who never asked for SNR sees zero clutter.
+//
+// The tapped star's HFR used to ride along at the end of this line. It was a
+// straight duplicate of the selected-star readout PreviewStage already pins to
+// the bottom-left (which additionally gives it in arcsec), and it was the single
+// biggest contributor to this chip running the full width of a phone stage and
+// under the loupe. Dropped — one fact, one place.
 //
 // "this sub" is load-bearing copy — a per-sub SNR must never be read as the
 // final stacked-image SNR. (Stacking N subs multiplies it by sqrt(N):
@@ -22,10 +28,11 @@
 // HONESTY NOTE: the wire carries ONE flux number per frame — the median over the
 // trusted mid-bright stars (`star_flux_median`). `StarMark` deliberately stays
 // compact (x/y/hfr[, ecc, theta]), so a *per-star* SNR for the tapped star is not
-// computable client-side; we show its measured HFR rather than inventing an SNR
-// for it.
-import type { PreviewInfo, StarMark } from "../../types";
+// computable client-side. That is why this chip is frame-wide only and says
+// nothing at all about whichever star you tapped.
+import type { PreviewInfo } from "../../types";
 import { usePhotometry } from "../../store";
+import { Tooltip } from "../ui";
 import { perSubSnrFromFlux, starSnrWord } from "../../lib/photometry";
 
 function fmtSnr(v: number): string {
@@ -33,10 +40,9 @@ function fmtSnr(v: number): string {
 }
 
 export function SnrChip({
-  preview, star, className = "",
+  preview, className = "",
 }: {
   preview: PreviewInfo;
-  star: StarMark | null;
   className?: string;
 }) {
   const photometry = usePhotometry();
@@ -66,12 +72,13 @@ export function SnrChip({
   // number, and say what stacking buys — the whole point of a per-sub figure is
   // that it is not the final one (SNR grows as sqrt(N), so 4x the subs = 2x).
   return (
-    <div className={`preview-chip mono ${className}`} title={detail}>
-      Star signal {starSnrWord(res.snr)} — SNR ~{fmtSnr(res.snr)} in this photo
-      <span className="text-dim"> · 4× as many photos ≈ 2× better</span>
-      {star && (
-        <span className="text-dim"> · tapped star HFR {star.hfr.toFixed(2)} px</span>
-      )}
+    <div className={className}>
+      <Tooltip content={detail}>
+        <span className="preview-chip mono">
+          Star signal {starSnrWord(res.snr)} — SNR ~{fmtSnr(res.snr)} in this photo
+          <span className="text-dim"> · 4× as many photos ≈ 2× better</span>
+        </span>
+      </Tooltip>
     </div>
   );
 }

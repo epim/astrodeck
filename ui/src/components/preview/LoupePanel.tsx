@@ -11,10 +11,12 @@
 //
 // DUMB RENDER SHELL: it positions an <img> and prints numbers. No fetching, no
 // geometry — that all lives in lib/cropRoi.ts + useCropZoom.
+//
+// SIZE IS NOT FIXED: the box is whatever `lib/cropRoi.loupeBoxSize()` says the
+// MEASURED stage width can afford (a 172px panel was ~48% of a 360px phone
+// stage). The caller passes it; this file just lays it out.
 import { useState } from "react";
-import type { CropRoi } from "../../lib/cropRoi";
-
-const LOUPE = 160; // CSS px; at 1:1 that is 160 real sensor pixels
+import { LOUPE_BOX_MAX, LOUPE_CHROME_PX, type CropRoi } from "../../lib/cropRoi";
 
 export function LoupePanel({
   url,
@@ -23,6 +25,7 @@ export function LoupePanel({
   centerY,
   previewId,
   loading,
+  size = LOUPE_BOX_MAX,
 }: {
   url: string | null;
   roi: CropRoi | null;
@@ -31,7 +34,10 @@ export function LoupePanel({
   centerY: number;
   previewId: number;
   loading: boolean;
+  /** 1:1 box edge in CSS px — from `loupeBoxSize(stageWidth)` */
+  size?: number;
 }) {
+  const LOUPE = size;
   const [copied, setCopied] = useState(false);
 
   const roiText = roi ? `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}` : "";
@@ -50,7 +56,7 @@ export function LoupePanel({
   };
 
   return (
-    <div className="panel p-1.5 flex flex-col gap-1" style={{ width: LOUPE + 12 }}>
+    <div className="panel p-1.5 flex flex-col gap-1" style={{ width: LOUPE + LOUPE_CHROME_PX }}>
       <div
         className="relative overflow-hidden bg-black/60 border border-line"
         style={{ width: LOUPE, height: LOUPE }}
@@ -88,8 +94,13 @@ export function LoupePanel({
       <button
         type="button"
         onClick={copy}
+        // The visible content is the ROI numbers, so the only clue that this
+        // COPIES is the label — put it in aria-label (read by AT, unlike title)
+        // as well as title. The action is harmless, so a touch user discovering
+        // it by tapping loses nothing.
+        aria-label={roiText ? `Copy the sensor region ${roiText} to the clipboard` : "No sensor region yet"}
         title={roiText ? "Copy the sensor ROI to the clipboard" : "No ROI yet"}
-        className="mono text-[10px] text-dim tabular-nums text-left leading-tight hover:text-ink"
+        className="mono text-[10px] text-dim tabular-nums text-left leading-tight hover:text-ink break-all"
       >
         {roi ? (
           <>
