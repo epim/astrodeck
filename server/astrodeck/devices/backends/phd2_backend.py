@@ -12,12 +12,30 @@ PHD2 is guider-only: ``roles = ("guider",)``. It exposes no native plate solver
 It is not auto-discovered over the network (``discoverable = False``): the PHD2
 socket is a fixed local endpoint, not a UDP-discoverable Alpaca/NINA service.
 
-TODO (FOLLOW-ON build, NOT Stage A): a managed/supervised PHD2 lifecycle --
-auto-launch a headless phd2 process, sync its equipment profile from the device
-config (mount/camera selection, pixel scale), and auto-restart it on crash --
-belongs to a later stage. Stage A only WRAPS the already-running guider and the
-existing in-client reconnect loop; ``open()`` here assumes PHD2 is already up and
-listening, exactly as ``hub.connect_phd2`` does today.
+NOT BUILDING the managed/supervised PHD2 lifecycle (decided 2026-07-26). The
+Stage-A note here used to carry it as a follow-on: auto-launch a headless phd2
+process, sync its equipment profile from the device config, auto-restart on
+crash. That is now deliberately closed as won't-do, because the premise it was
+written under has been inverted:
+
+* The native Rust guider SHIPPED and is the DEFAULT wherever it can run. In
+  ``providers._resolve_guide`` PHD2 is the last-resort *degradation* path --
+  "anything else degrades to the PHD2 bridge" -- not the normal one. A sim rig
+  and an Alpaca/native rig both run the native engine.
+* The project's direction is explicitly vendor-neutral, no external software to
+  install or babysit. Supervising a third-party GUI process is the opposite of
+  that, and it is a real surface: process launch, profile sync, crash detection,
+  restart backoff, and version skew against whatever phd2 the user happens to
+  have.
+* So the work would add that surface to the ONE path we are retiring, and buy
+  nothing for the path everyone actually uses.
+
+If PHD2 supervision is ever genuinely wanted (say a user insists on PHD2 for a
+mount the native engine cannot calibrate), the cheap version is a documented
+external supervisor -- systemd unit / Task Scheduler entry -- not code in here.
+Stage A's behaviour stands unchanged: this WRAPS an already-running guider plus
+the existing in-client reconnect loop, and ``open()`` assumes PHD2 is up and
+listening, exactly as ``hub.connect_phd2`` does.
 
 The ``PHD2Guider`` import is deferred into ``open()`` so merely importing this
 module (to populate the registry) does not drag in the guide/event stack.
