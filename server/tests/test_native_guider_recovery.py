@@ -166,8 +166,29 @@ async def test_star_lost_recovery_reacquires_and_resumes():
     await g.disconnect()
 
 
+@pytest.fixture
+def _real_guide_dwell(_fast_sim_delays, monkeypatch):
+    """Opt a test OUT of the suite-wide ``ASTRODECK_FAST_TEST`` fast path
+    (conftest's ``_fast_sim_delays``).
+
+    The guide camera's exposure dwell (``sim.py`` ``_sim_delay`` at the
+    ``expose`` deadline) is the guide loop's ONLY pacing, and ``pulse_guide``'s
+    dwell is the mount's. Zeroing both makes the loop issue corrections as fast
+    as the event loop will schedule them, while the sim's star still drifts at
+    REAL wall clock — i.e. a control loop running ~1000x its design rate
+    against an unchanged plant. Any test that sleeps real seconds and then
+    asserts on the loop's accumulated state (rms, still-guiding) is then
+    measuring a regime the contract was never stated for, and its verdict turns
+    on how many iterations the CPU happened to grant. Depends on
+    ``_fast_sim_delays`` so the suite-wide setenv runs FIRST and this delenv
+    then wins for the test."""
+    monkeypatch.delenv("ASTRODECK_FAST_TEST", raising=False)
+    yield
+
+
 @pytest.mark.asyncio
-async def test_flip_calibration_mid_session_keeps_guiding_bounded():
+async def test_flip_calibration_mid_session_keeps_guiding_bounded(
+        _real_guide_dwell):
     """Scenario 2: after start_guiding, flip the calibration mid-session
     (the guider-level contract hub.meridian_flip calls, hub.py:1853-1863) and
     assert guiding resumes without a runaway — the sim doesn't physically
