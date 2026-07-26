@@ -69,6 +69,24 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
           then this view comes alive.
         </p>
       )}
+      {/* Tonight needs NO hardware — it is pure sky maths for the configured
+          site. So it is the one useful thing to offer someone who is stuck on
+          this interstitial, whatever their role: they can still plan the night
+          while the rig is off. This is also the additive answer to Tonight's
+          mobile depth (it sits in the More sheet behind the append-only nav
+          rule in App.tsx) — a shortcut costs no primary-bar slot and evicts
+          nothing, where a reorder would. */}
+      <button
+        type="button"
+        className="btn min-h-11 mt-2"
+        onClick={() => setView("tonight")}
+      >
+        <Icon name="moon" size={14} className="inline -mt-0.5 mr-1.5" />
+        See what's up tonight
+      </button>
+      <p className="text-[11px] text-faint max-w-[40ch]">
+        Planning works with the rig switched off.
+      </p>
     </div>
   );
 }

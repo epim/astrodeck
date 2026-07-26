@@ -658,33 +658,51 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
 // component does not re-implement aggression/hysteresis/min-move bounds.
 //
 // `disabled` (viewer without `control.guide`) uses the honest-disabled idiom
-// (spec §11.8, e.g. SafetyPanel.tsx:376-384): a wrapper with `aria-disabled` +
-// `title` + dim/`pointer-events-none`, never the native `disabled` attribute,
-// so the reason stays visible/announced instead of a plain greyed-out input.
+// (spec §11.8): the reason stays visible and announced instead of a plain
+// greyed-out input, so NEVER the native `disabled` attribute — it strips the
+// element from the a11y tree along with the reason.
+//
+// The inputs are `readOnly`, not merely wrapped. `pointer-events-none` on the
+// wrapper is a MOUSE-only guard: a keyboard user could Tab straight into these
+// fields and type, `onChange` fired, and the draft mutated. Save is unreachable
+// for a viewer so nothing ever persisted — which is the worst shape of all, an
+// editor that accepts your edits and silently discards them. `readOnly` is the
+// right primitive and does not conflict with §11.8: unlike `disabled` it keeps
+// the field focusable and in the a11y tree (announced "read only"), which is
+// the exact property that rule exists to protect. Pointer events stay ON so the
+// field can be focused and its reason heard.
 function AlgoParams({ kind, params, onChange, disabled }: {
   kind: GuideAlgorithmKind;
   params: GuideAlgorithmParamDefaults;
   onChange: (next: GuideAlgorithmParamDefaults) => void;
   disabled: boolean;
 }) {
+  const reason = disabled
+    ? `${accessPhrase("control.guide")} required to edit ${kind} parameters`
+    : null;
   return (
-    <div
-      className={`flex flex-wrap gap-x-3 gap-y-1 mt-1 ${disabled ? "opacity-50 pointer-events-none select-none" : ""}`}
-      aria-disabled={disabled || undefined}
-      title={disabled ? `${accessPhrase("control.guide")} required to edit ${kind} parameters` : undefined}
-    >
-      {Object.entries(params).map(([k, v]) => (
-        <label key={k} className="flex flex-col gap-0.5">
-          <span className="label !text-[9px]">{k}</span>
-          <input
-            className="field !py-1 !text-[11px] w-20"
-            inputMode="decimal"
-            value={v}
-            onChange={(e) => onChange({ ...params, [k]: Number(e.target.value) || 0 })}
-          />
-        </label>
-      ))}
-    </div>
+    <>
+      <div
+        className={`flex flex-wrap gap-x-3 gap-y-1 mt-1 ${disabled ? "opacity-50" : ""}`}
+        aria-disabled={disabled || undefined}
+      >
+        {Object.entries(params).map(([k, v]) => (
+          <label key={k} className="flex flex-col gap-0.5">
+            <span className="label !text-[9px]">{k}</span>
+            <input
+              className="field !py-1 !text-[11px] w-20"
+              inputMode="decimal"
+              value={v}
+              readOnly={disabled}
+              aria-readonly={disabled || undefined}
+              aria-label={reason ? `${kind} ${k} — ${reason}` : undefined}
+              onChange={(e) => onChange({ ...params, [k]: Number(e.target.value) || 0 })}
+            />
+          </label>
+        ))}
+      </div>
+      {reason && <LockedNote reason={reason} className="mt-1" />}
+    </>
   );
 }
 
