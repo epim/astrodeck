@@ -36,6 +36,10 @@ export const ROLE_LABEL: Record<string, string> = {
   safety: "Safety monitor",
   rotator: "Rotator",
   covercalibrator: "Flat panel",
+  // UX review #41: the dome row rendered its raw role id, so it was the one
+  // Equipment slot labelled in lower case ("dome link") among ten Title-Case
+  // siblings.
+  dome: "Roof / dome",
 };
 
 // What addressing a backend needs in the picker:

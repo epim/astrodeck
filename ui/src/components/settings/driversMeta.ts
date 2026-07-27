@@ -26,6 +26,20 @@ export const DRIVER_DEFAULT_PORT: Record<string, number> = {
   phd2: 4400,
 };
 
+/** The type chip rendered beside a driver's label — or "" when it would just
+ *  repeat the label.
+ *
+ *  UX review #42: built-in rows printed "Simulator  Simulator", "ASTAP  ASTAP",
+ *  "ASCOM (local)  ASCOM (local)" because `DriverInfo.label` and the type label
+ *  are the same string for every implicit driver, in two typefaces. Compared
+ *  case- and space-insensitively so "AstroDeck native" vs "AstroDeck  native"
+ *  still collapses. */
+export function driverTypeChip(label: string, type: string): string {
+  const chip = DRIVER_TYPE_LABEL[type] ?? type;
+  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+  return norm(chip) === norm(label) ? "" : chip;
+}
+
 /** One-line human summary of what a driver offers right now — the Settings
  *  "offers" readout ("camera: ASI2600MM · telescope: EQ6-R · tasks: autofocus"). */
 export function offersSummary(d: DriverInfo): string {

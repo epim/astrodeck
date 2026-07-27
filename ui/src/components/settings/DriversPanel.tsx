@@ -32,6 +32,7 @@ import type { DiscoveredAlpaca, DiscoveredNina } from "./backendMeta";
 import {
   DRIVER_DEFAULT_PORT,
   DRIVER_TYPE_LABEL,
+  driverTypeChip,
   offersSummary,
   validateDriverForm,
 } from "./driversMeta";
@@ -419,7 +420,10 @@ export default function DriversPanel(): JSX.Element {
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-sm text-ink">{d.label}</span>
-                <span className="mono text-[10px] text-dim">{DRIVER_TYPE_LABEL[d.type] ?? d.type}</span>
+                {/* #42: only when it adds information — see driverTypeChip */}
+                {driverTypeChip(d.label, d.type) && (
+                  <span className="mono text-[10px] text-dim">{driverTypeChip(d.label, d.type)}</span>
+                )}
                 {d.status.detail && (
                   <span className="mono text-[10px] text-dim truncate">{d.status.detail}</span>
                 )}
@@ -473,23 +477,28 @@ function DriverRow({
         <Led state={led} label={`${d.label} status`} />
         <div className="min-w-0">
           <span className="text-sm text-ink">{d.label}</span>{" "}
+          {/* host truthy => real network endpoint; host===null/undefined =>
+              RBAC-redacted (viewer without config.backend, see redact.py
+              _redact_drivers_for) => "endpoint hidden"; host==="" => a native
+              serial/local hardware driver, which has no network endpoint —
+              show its COM port (serial) or SDK unit index (USB camera)
+              instead of leaving it blank. Joined rather than concatenated so
+              a suppressed type chip (#42) doesn't leave a dangling " · ". */}
           <span className="mono text-[10px] text-dim">
-            {DRIVER_TYPE_LABEL[d.type] ?? d.type}
-            {/* host truthy => real network endpoint; host===null/undefined =>
-                RBAC-redacted (viewer without config.backend, see redact.py
-                _redact_drivers_for) => "endpoint hidden"; host==="" => a
-                native serial/local hardware driver, which has no network
-                endpoint — show its COM port (serial) or SDK unit index (USB
-                camera) instead of leaving it blank. */}
-            {d.host
-              ? ` · ${d.host}:${d.port}`
-              : d.host == null
-                ? " · endpoint hidden"
-                : d.port_path
-                  ? ` · ${d.port_path}`
-                  : d.index != null
-                    ? ` · #${d.index}`
-                    : ""}
+            {[
+              driverTypeChip(d.label, d.type),
+              d.host
+                ? `${d.host}:${d.port}`
+                : d.host == null
+                  ? "endpoint hidden"
+                  : d.port_path
+                    ? d.port_path
+                    : d.index != null
+                      ? `#${d.index}`
+                      : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </span>
         </div>
         <div className="flex-1" />

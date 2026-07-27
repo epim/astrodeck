@@ -19,7 +19,7 @@ import {
   saveSite,
   updateLocation,
 } from "../../api/site";
-import { ApiError } from "../../api";
+import { api, ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { useCan, useCanViewSitePrecise } from "../../lib/caps";
 import {
@@ -35,6 +35,7 @@ import {
   type SiteDraft,
 } from "../../lib/site";
 import { confirmDialog } from "../ConfirmDialog";
+import { Segmented } from "../Segmented";
 import { Field, Panel } from "../ui";
 import { Icon } from "../icons";
 
@@ -164,6 +165,54 @@ export default function SitePanel(): JSX.Element {
     validateLon(toNum(lonMag)) ||
     validateElevation(toNum(elev));
 
+  // --------------------------------------------- "…which is where?" read-back
+  // UX review #12 (the S4 pattern: the system knows and shows something else).
+  // GET /api/site/sky already computes the ONE string that catches a flipped
+  // sign in half a second — place_hint, e.g. "N hemisphere · W longitude ·
+  // ~N. America" — and nothing rendered it. This reads it for the values
+  // CURRENTLY IN THE FORM, not for the saved site: a US longitude typed as
+  // 110.3 with the hemisphere left at its E default reads "~Asia" while the
+  // user is still looking at the field, instead of silently reaching SITELONG /
+  // OBJCTALT / AIRMASS in every delivered FITS. sun_alt_deg comes free in the
+  // same response and is the second, independent check (the Sun lands on the
+  // wrong continent when the sign is wrong).
+  const latSigned = toSigned(toNum(latMag), latHemi);
+  const lonSigned = toSigned(toNum(lonMag), lonHemi);
+  const coordsEntered =
+    validateLat(toNum(latMag)) === null && validateLon(toNum(lonMag)) === null;
+  const [hint, setHint] = useState<string | null>(null);
+  const [hintSunAlt, setHintSunAlt] = useState<number | null>(null);
+  useEffect(() => {
+    if (!canSeePrecise || !coordsEntered) {
+      setHint(null);
+      setHintSunAlt(null);
+      return;
+    }
+    let dead = false;
+    // debounced: this would otherwise fire once per keystroke while typing a
+    // coordinate. 350ms still lands well inside "half a second".
+    const timer = setTimeout(() => {
+      api
+        .get<{ place_hint?: string; sun_alt_deg?: number }>(
+          `/api/site/sky?lat=${latSigned}&lon=${lonSigned}`,
+        )
+        .then((s) => {
+          if (dead) return;
+          setHint(s.place_hint ?? null);
+          setHintSunAlt(typeof s.sun_alt_deg === "number" ? s.sun_alt_deg : null);
+        })
+        .catch(() => {
+          if (dead) return;
+          setHint(null);
+          setHintSunAlt(null);
+        });
+    }, 350);
+    return () => {
+      dead = true;
+      clearTimeout(timer);
+    };
+  }, [latSigned, lonSigned, coordsEntered, canSeePrecise]);
+
   // The converted (signed) draft — comparison basis for locationEquals and the
   // payload basis for "Save current…".
   const draft = (): SiteDraft => ({
@@ -199,7 +248,9 @@ export default function SitePanel(): JSX.Element {
       await saveSite(buildSite(), config?.version ?? null, horizon);
       await loadConfig();
       setJustLoaded(false); // R3-SITE-02: Set site pressed — the loaded preset is now active
-      showToast("success", "Site saved");
+      // #12: never a bare cheerful "Site saved" — say WHERE it saved to, so a
+      // wrong hemisphere is still catchable one second after the press.
+      showToast("success", hint ? `Site saved — ${hint}` : "Site saved");
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         await loadConfig();
@@ -425,6 +476,11 @@ export default function SitePanel(): JSX.Element {
           />
         </Field>
 
+        {/* #12: the hemisphere was a chevron-less 40×40 <select> defaulting to
+            N/E — on a tablet in the dark it read as decoration, and a US
+            longitude typed as 110.3 saved as +110.3 EAST. A Segmented shows
+            BOTH options and which one is armed, at the 44px touch minimum,
+            with selection encoded by fill + weight (never hue alone). */}
         <Field label="Latitude">
           <div className="flex items-center gap-2">
             <input
@@ -436,16 +492,22 @@ export default function SitePanel(): JSX.Element {
               placeholder={coordPlaceholder}
               aria-label="Latitude magnitude (0–90)"
             />
-            <select
-              className="field !w-auto"
+            {/* Segmented collapses to 28px tall above the `sm` breakpoint,
+                which would make this a SMALLER target than the 40×40 select it
+                replaces. The hemisphere is a field-device decision made with
+                gloves on — hold it at the 44px minimum on every width. */}
+            <div className="[&_[role=radio]]:min-h-11 [&_[role=radio]]:min-w-11">
+            <Segmented
+              options={[
+                { value: "N" as const, label: "N" },
+                { value: "S" as const, label: "S" },
+              ]}
               value={latHemi}
+              onChange={setLatHemi}
+              ariaLabel="Latitude hemisphere — north or south"
               disabled={!canEdit}
-              onChange={(e) => setLatHemi(e.target.value as "N" | "S")}
-              aria-label="Latitude hemisphere"
-            >
-              <option value="N">N</option>
-              <option value="S">S</option>
-            </select>
+            />
+            </div>
           </div>
         </Field>
 
@@ -460,18 +522,57 @@ export default function SitePanel(): JSX.Element {
               placeholder={coordPlaceholder}
               aria-label="Longitude magnitude (0–180)"
             />
-            <select
-              className="field !w-auto"
+            <div className="[&_[role=radio]]:min-h-11 [&_[role=radio]]:min-w-11">
+            <Segmented
+              options={[
+                { value: "E" as const, label: "E" },
+                { value: "W" as const, label: "W" },
+              ]}
               value={lonHemi}
+              onChange={setLonHemi}
+              ariaLabel="Longitude hemisphere — east or west"
               disabled={!canEdit}
-              onChange={(e) => setLonHemi(e.target.value as "E" | "W")}
-              aria-label="Longitude hemisphere"
-            >
-              <option value="E">E</option>
-              <option value="W">W</option>
-            </select>
+            />
+            </div>
           </div>
         </Field>
+
+        {/* the read-back. Rendered for the DRAFT values, so it contradicts a
+            wrong hemisphere while the field still has focus. */}
+        {canSeePrecise && (
+          <div className="border border-line2 bg-raise/40 px-3 py-2 flex items-start gap-2">
+            <Icon
+              name="atlas"
+              size={14}
+              className="text-dim shrink-0 mt-[3px]"
+            />
+            <div className="min-w-0">
+              <div className="label">These coordinates point at</div>
+              {hint ? (
+                <p className="text-[13px] text-ink leading-snug">{hint}</p>
+              ) : (
+                <p className="text-[12px] text-dim leading-snug">
+                  {coordsEntered
+                    ? "checking…"
+                    : "Enter a latitude and longitude to check the hemisphere."}
+                </p>
+              )}
+              {hint && hintSunAlt !== null && (
+                <p className="text-[11px] text-dim leading-snug mt-0.5">
+                  The Sun is {hintSunAlt.toFixed(0)}° above the horizon there
+                  right now
+                  {hintSunAlt < -18
+                    ? " (astronomical dark)"
+                    : hintSunAlt < 0
+                      ? " (twilight)"
+                      : " (daylight)"}
+                  . If that doesn&apos;t match the sky you are standing under,
+                  the hemisphere is wrong.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         <Field label="Elevation (m)">
           <input
