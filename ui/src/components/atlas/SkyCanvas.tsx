@@ -136,6 +136,37 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [boxPx, setBoxPx] = useState(360); // CSS px size of the square canvas
+
+  // ---- touch scroll-trap escape (phone feedback, 2026-07) -----------------
+  // The box used to carry `touch-none` (touch-action: none) unconditionally, so
+  // EVERY finger gesture that landed on it was consumed as a sky pan. On a phone
+  // the canvas is ~45% of the viewport and sits mid-page, so once a thumb landed
+  // on it the page could not be scrolled at all: measured on the real build, two
+  // 260px upward swipes on the canvas left `main.scrollTop` at 0 with 1648px of
+  // page still below. The user was stranded on the Atlas.
+  //
+  // Resolution (mirrors the precedent in preview/usePreviewGestures.ts, where
+  // touch-action is `none` only when zoomed in): on a TOUCH device the canvas
+  // defaults to `touch-action: pan-y`, so a one-finger swipe always scrolls the
+  // page — the browser owns it, no handler can eat it, and the escape needs no
+  // knowledge of any trick. Dragging the sky with a finger becomes an explicit,
+  // labelled mode: the chip pinned inside the canvas states what a swipe will do
+  // right now and toggles it. The chip lives INSIDE the canvas, so it is on
+  // screen whenever the surface that could trap you is on screen.
+  //
+  // Rejected: direction-sniffing a one-finger drag (hand-rolled scrolling has no
+  // fling/rubber-band and still costs vertical panning); two-finger pan (needs
+  // touch-action:none, which is the trap itself, and hides the escape behind a
+  // multipoint gesture). Mouse/pen drag is untouched — touch-action does not
+  // apply to them, so desktop panning behaves exactly as before.
+  const touchDevice = useMemo(
+    () => typeof navigator !== "undefined" && navigator.maxTouchPoints > 0,
+    [],
+  );
+  const [dragSky, setDragSky] = useState(false);
+  // Non-touch pointers are unaffected by touch-action; keep `none` there so the
+  // wheel/drag path is byte-for-byte the old behaviour.
+  const touchAction = touchDevice && !dragSky ? "pan-y" : "none";
   const [slowLoad, setSlowLoad] = useState(false);   // settled fetch in flight > 300 ms
   const [everLoaded, setEverLoaded] = useState(false);
 
@@ -365,6 +396,12 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     // Real element hit-test on the drawn stalk handle (wave-2 §1) — correct at
     // any rotation/zoom, no duplicated geometry math.
     const onHandle = !!(e.target as Element | null)?.closest?.('[data-role="rotate-handle"]');
+    // Scroll mode: a finger on the sky is a page scroll, not a pan. Start no
+    // drag at all so the sky cannot creep before the browser takes the gesture.
+    // The rotate handle is exempt — it is a small deliberate target, never the
+    // surface a scrolling thumb lands on, and gating it would strand the only
+    // touch affordance for rotation.
+    if (e.pointerType === "touch" && !dragSky && !onHandle) return;
     try {
       el.setPointerCapture(e.pointerId);
     } catch {
@@ -474,15 +511,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       <div
         ref={boxRef}
         role="application"
-        aria-label="Sky framing canvas. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom."
+        aria-label="Sky framing canvas. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
         tabIndex={0}
-        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] max-w-[720px] mx-auto select-none touch-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] max-w-[720px] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onKeyDown={onKeyDown}
-        style={{ cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab" }}
+        style={{
+          cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab",
+          touchAction,
+        }}
       >
         {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
               maps and WebGL is available; else the <img> pipeline below. */}
@@ -628,15 +668,34 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               Your camera · {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}
             </span>
           )}
-          {/* object-size legend, pinned to the right of the ellipse */}
-          {semiMajorDeg && (
-            <span
-              className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45 text-dim"
-              style={{ left: ccx + semiMajorDeg * cssPerDeg + 6, top: ccy, transform: "translateY(-50%)" }}
-            >
-              Object size
-            </span>
-          )}
+          {/* object-size legend, pinned to the right of the ellipse — CLAMPED to
+              the canvas. When the object is larger than the view (Andromeda at
+              its default framing is 6.4x the frame) the ellipse's semi-major
+              axis runs far past the canvas edge, and this label went with it:
+              measured at 390px it sat at x=774 inside a 390px column and dragged
+              `main.scrollWidth` out to 861px, so the whole Atlas could be
+              scrolled sideways into empty space. Off the right edge it is also
+              simply invisible. Clamped, it parks on the edge it points past and
+              flips its anchor so the text stays inside. */}
+          {semiMajorDeg && (() => {
+            const want = ccx + semiMajorDeg * cssPerDeg + 6;
+            const clamped = want > boxPx - 6;
+            return (
+              <span
+                className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45 text-dim"
+                style={{
+                  // Parked on the right edge it would land exactly on the "E"
+                  // compass letter (also right-1, vertically centred), so the
+                  // clamped position steps down clear of it.
+                  left: clamped ? boxPx - 6 : want,
+                  top: clamped ? ccy + 22 : ccy,
+                  transform: clamped ? "translate(-100%, -50%)" : "translateY(-50%)",
+                }}
+              >
+                Object size
+              </span>
+            );
+          })()}
           {/* pixel-scale plausibility hint (top-left, real px) */}
           {haveOptics && (
             <span className="absolute left-1 bottom-1 text-[12px] mono bg-black/45 px-1">
@@ -664,6 +723,31 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             rows={mosaic.rows}
             overlap={mosaic.overlap}
           />
+        )}
+
+        {/* 6. touch gesture-mode chip — mounted LAST so nothing can paint over
+              the one control that guarantees an exit. It states the CURRENT
+              effect of a swipe (word + glyph, never colour alone) rather than
+              naming a mode, because the question a thumb is about to ask is
+              "what happens if I swipe here?". Touch pointers only: on a mouse
+              it would be dead chrome, since touch-action never applies to one.
+              stopPropagation keeps the tap from being read as a pan start. */}
+        {touchDevice && (
+          <button
+            type="button"
+            aria-pressed={dragSky}
+            aria-label={dragSky
+              ? "Finger drag moves the sky. Activate to swipe-scroll the page instead."
+              : "Swiping scrolls the page. Activate to drag the sky with one finger."}
+            className={`absolute left-1 top-1 z-20 tap min-h-[44px] px-2 inline-flex items-center gap-1.5
+              rounded-[10px] border bg-black/75 text-[12px] mono uppercase tracking-wider
+              ${dragSky ? "border-accent text-accent" : "border-line2 text-dim"}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => setDragSky((v) => !v)}
+          >
+            <span aria-hidden>{dragSky ? "✥" : "⇕"}</span>
+            <span>{dragSky ? "Swipe moves sky" : "Swipe scrolls page"}</span>
+          </button>
         )}
 
       </div>
