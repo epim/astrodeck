@@ -213,6 +213,20 @@ class SequencePlan(BaseModel):
         """Light frames only — excludes calibration targets (darks/bias/flats)."""
         return sum(s.count for t in self.targets for s in t.steps if not t.calibration)
 
+    def light_seconds(self) -> float:
+        """INTEGRATION — exposure summed over LIGHT steps only (UX #39).
+
+        ``total_seconds`` counts every step's shutter time, calibration included,
+        so adding a Flat 120s x10 to a plan moved the header from "5h 0m" to
+        "5h 20m" of "integration". Twenty minutes of flat panel is not twenty
+        minutes on the target; the finished stack's SNR does not move. The report
+        already scores it this way (``report._Totals.add`` adds integration for
+        accepted LIGHT frames only) — this is the plan-side twin of that rule."""
+        return sum(s.count * s.exposure_s
+                   for t in self.targets if not t.calibration
+                   for s in t.steps
+                   if (s.frame_type or "Light").strip().lower() == "light")
+
 
 def quota_unbounded(plan: SequencePlan) -> bool:
     """True when starting ``plan`` in accepted-frame quota mode could run

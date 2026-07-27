@@ -43,6 +43,43 @@ class GuideStats:
     phase: str = ""
 
 
+def rms_total_arcsec(stats: "GuideStats | None") -> float | None:
+    """``stats.rms_total`` expressed in ARCSEC, or ``None`` when it cannot be.
+
+    The guide RMS is reported in arcsec only when an image scale is known;
+    otherwise it is raw guide-camera PIXELS (``is_arcsec=False``) — and the
+    native guider's default ``optics.guide_focal_length_mm`` is unset, so pixels
+    is the common case. Every consumer that compares against an ARCSEC threshold
+    (the sequencer's ``max_guide_rms`` frame-reject gate, the ``on_guide_rms_above``
+    instruction trigger) must go through here: comparing 1.5 "arcsec" against a
+    pixel number is a gate ~3x looser than the one the user typed on a typical
+    240 mm / 3.76 um guide scope (UX #11).
+
+    Conversion uses ``image_scale`` (arcsec/pixel) when the guider published one;
+    with neither flag nor scale the answer is genuinely unknown and ``None`` is
+    the honest return — callers SKIP the gate rather than judge in the wrong
+    unit. Pure; mirrors ``InstructionsPanel``'s client-side unit handling."""
+    if stats is None:
+        return None
+    rms = getattr(stats, "rms_total", None)
+    if rms is None:
+        return None
+    try:
+        rms = float(rms)
+    except (TypeError, ValueError):
+        return None
+    if rms != rms:                                   # NaN
+        return None
+    if getattr(stats, "is_arcsec", False):
+        return rms
+    scale = getattr(stats, "image_scale", 0.0) or 0.0
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        return None
+    return rms * scale if scale > 0 else None
+
+
 class Guider(ABC):
     name: str = "guider"
     connected: bool = False

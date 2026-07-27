@@ -36,6 +36,7 @@ from ..config import config_store
 from ..devices.base import DeviceError, DomeShutterState, PierSide
 from ..events import bus
 from ..focus import run_autofocus
+from ..guide.base import rms_total_arcsec
 from ..hub import Hub
 from ..imaging.processing import to_jpeg
 from . import schedule
@@ -214,6 +215,8 @@ class SequenceEngine:
         self._recent_hfr: list[float] = []
         self._rejected = 0
         self._night_rejects = 0   # per-night consecutive-reject counter (spec §3)
+        # one-shot latch for the "guide RMS gate can't be judged in arcsec" notice
+        self._rms_unit_warned = False
         # Meridian-flip arming latch. A GEM flip is owed only when a target is
         # tracked from EAST across the meridian; a target acquired already-west
         # was slewed counterweight-down on the correct side and needs no flip.
@@ -311,6 +314,7 @@ class SequenceEngine:
         self._recent_hfr = []
         self._rejected = 0
         self._night_rejects = 0
+        self._rms_unit_warned = False
         self._flip_armed = False
         self._paused.set()
         self._started_at = time.time()
@@ -663,8 +667,10 @@ class SequenceEngine:
         try:
             self._set_state(state="running", detail=f"starting plan '{plan.name}'",
                             _first_running=True)
+            # "integration" = LIGHT exposure only (UX #39); calibration steps are
+            # shutter time, not signal on the target.
             bus.log("info", f"sequence '{plan.name}' started: {plan.total_frames()} frames, "
-                            f"{plan.total_seconds() / 60:.0f} min integration", "sequence")
+                            f"{plan.light_seconds() / 60:.0f} min integration", "sequence")
             self._start_watchdog()
 
             if plan.cool_to is not None:
@@ -1379,6 +1385,23 @@ class SequenceEngine:
                 self._record_frame(key, i, target, step, info, accepted=False)
             i += 1
 
+    @staticmethod
+    def _effective_filter(step, info: dict) -> str | None:
+        """The filter this frame was ACTUALLY taken through (UX #1).
+
+        ``info["filter"]`` is the wheel's physical position, resolved by
+        ``hub.capture`` at exposure time — the exact string it wrote into the FITS
+        ``FILTER`` card and the ``$$FILTER$$`` filename token. Preferring it here
+        is what makes the report, the ``by_filter`` headline, the stacking-bundle
+        folder and ``frames.csv`` agree with the file on disk. Falls back to the
+        plan's step text when there is no wheel (or it couldn't be read), and to
+        ``None`` when there is genuinely no filter — never to a stale plan value
+        that contradicts the header."""
+        resolved = info.get("filter") if isinstance(info, dict) else None
+        if resolved:
+            return str(resolved)
+        return (step.filter or None)
+
     def _reporter_record(self, target: Target, step, info: dict, *, accepted: bool) -> None:
         """Record one frame to the session report (every frame, with its accepted
         flag). Best-effort; never lets a report-write hiccup break the run."""
@@ -1399,7 +1422,8 @@ class SequenceEngine:
         saved = info.get("saved_path") if isinstance(info, dict) else None
         try:
             self.reporter.record_frame(FrameRecord(
-                ts=time.time(), target=target.name, filter=step.filter,
+                ts=time.time(), target=target.name,
+                filter=self._effective_filter(step, info),
                 frame_type=step.frame_type, exposure_s=step.exposure_s,
                 accepted=accepted, hfr=hfr, sensor_temp_c=temp,
                 guide_rms_total=rms, saved_path=saved,
@@ -1618,23 +1642,36 @@ class SequenceEngine:
         * ``abort_park_warm`` / ``park`` → raise SafetyAbort (the run's except
           chain does the shielded wind-down).
         * ``warn`` → log + alert, continue.
+
+        UX #8: the action RECORDED is the action we are about to TAKE. This used
+        to stamp ``cfg.safety.on_unsafe`` into the report before the dome branch
+        below escalated, so a night that aborted, parked the mount and shut the
+        roof was filed as ``{"action": "pause"}`` with no roof event at all — the
+        morning-after artefact actively misinformed. The escalation is now
+        resolved FIRST (``_escalated_action``) and the roof outcome is recorded as
+        its own event where it actually happens.
         """
         cfg = self._cfg
         act = action or (cfg.safety.on_unsafe if cfg else "pause")
-        if self.reporter is not None:
-            try:
-                self.reporter.record_safety(reason, act)
-            except Exception:
-                pass
-        bus.publish("safety", is_safe=False, reason=reason, action=act, stale=stale)
-        bus.log("error", f"UNSAFE: {reason} → {act}", "safety")
-
         # PRO-4: a CLOSEABLE roof must CLOSE over the gear, not pause-hold under
         # open sky. When close_dome_on_unsafe is set and a dome is connected we do
         # NOT fall through to the warn/pause/abort branches below.
         dome = self.hub.devices.get("dome")
-        if (cfg and cfg.safety.close_dome_on_unsafe
-                and dome is not None and getattr(dome, "connected", False)):
+        closing = bool(cfg and cfg.safety.close_dome_on_unsafe
+                       and dome is not None and getattr(dome, "connected", False))
+        act = self._escalated_action(act, closing=closing, cfg=cfg)
+        self._record_safety(reason, act)
+        # ONE producer per verdict edge (UX #33): the hub's own-cadence poller has
+        # usually already announced this exact reason, and a second identical
+        # event raised a second sticky UNSAFE toast while overwriting the UI's
+        # safety state with a partial payload. publish_safety merges the cached
+        # reading and suppresses the repeat; a genuinely new reason (the
+        # no-progress watchdog) still publishes.
+        self.hub.publish_safety({"is_safe": False, "reason": reason,
+                                 "action": act, "stale": stale})
+        bus.log("error", f"UNSAFE: {reason} → {act}", "safety")
+
+        if closing:
             if not cfg.safety.reopen_dome_when_safe:
                 # Reopen OPT-IN OFF (default) ⇒ BYTE-IDENTICAL to before: ESCALATE
                 # every on_unsafe action (INCLUDING pause) to the shielded
@@ -1646,6 +1683,11 @@ class SequenceEngine:
             # over the parked gear (park-first, never-crush via close_observatory),
             # wait for safe-again (debounced), REOPEN, re-acquire, and RESUME.
             if await self._close_for_reopen(dome, reason):
+                # UX #8: the roof MOVING is its own event in the report timeline —
+                # the artefact used to say "we paused for cloud" and never mention
+                # that the observatory shut.
+                self._record_safety(f"roof closed over parked gear: {reason}",
+                                    "close_roof")
                 await self._await_safe_and_reopen(dome, reason, target=target)
                 return
             # INVARIANT 2: the never-crush close REFUSED / failed (couldn't confirm a
@@ -1654,6 +1696,8 @@ class SequenceEngine:
             # never left in a bad state (the roof was never actuated → still OPEN).
             bus.log("warning", "auto-reopen: roof close refused/failed — holding "
                                "under open sky (park-hold pause)", "safety")
+            self._record_safety("roof close refused/failed — gear still under "
+                                "open sky", "close_roof_failed")
             await self._park_hold_pause(reason, target)
             return
 
@@ -1664,6 +1708,34 @@ class SequenceEngine:
 
         # act == "pause": stop tracking / park-hold and wait for safe-again.
         await self._park_hold_pause(reason, target)
+
+    @staticmethod
+    def _escalated_action(act: str, *, closing: bool, cfg) -> str:
+        """The action actually TAKEN for an unsafe verdict, after the dome branch
+        escalates (UX #8). Pure — the report, the bus event and the log line all
+        stamp THIS, so none of them can claim a pause that was really a
+        park-and-close.
+
+        * closeable roof + reopen OFF  → ``abort_park_close`` (the run ENDS, the
+          shielded wind-down parks then closes the roof), whatever ``on_unsafe``
+          said — including ``pause`` and ``warn``.
+        * closeable roof + reopen ON   → ``close_roof_wait`` (close over parked
+          gear, wait for safe-again, reopen, resume).
+        * otherwise                    → the configured action, unchanged."""
+        if not closing:
+            return act
+        return ("close_roof_wait" if (cfg and cfg.safety.reopen_dome_when_safe)
+                else "abort_park_close")
+
+    def _record_safety(self, reason: str, action: str) -> None:
+        """Append one safety event to the session report. Best-effort — a report
+        hiccup must never break the safety path."""
+        if self.reporter is None:
+            return
+        try:
+            self.reporter.record_safety(reason, action)
+        except Exception:
+            pass
 
     async def _park_hold_pause(self, reason: str, target: Target | None) -> None:
         """The open-sky safety pause (§1.9-A): stop tracking / park-hold, then loop
@@ -1694,8 +1766,10 @@ class SequenceEngine:
                     if target is not None:
                         await self._enforce_mount_floor(projected=True, target=target)
                     bus.log("info", "conditions safe again — resuming", "safety")
-                    bus.publish("safety", is_safe=True, reason="safe again",
-                                action="resume", stale=False)
+                    self._record_safety("conditions safe again", "resume")
+                    self.hub.publish_safety({"is_safe": True,
+                                             "reason": "safe again",
+                                             "action": "resume", "stale": False})
                     self._unsafe_streak = 0
                     # CRITICAL: _park_hold turned TRACKING OFF (and stopped
                     # guiding) when we paused, and the sky kept moving while the
@@ -1814,8 +1888,11 @@ class SequenceEngine:
                     if st is not DomeShutterState.OPEN:
                         raise SafetyAbort(
                             "roof reopen did not confirm OPEN — gear left parked")
-                    bus.publish("safety", is_safe=True, reason="safe again",
-                                action="reopen", stale=False)
+                    self._record_safety("roof reopened — conditions safe again",
+                                        "reopen_roof")
+                    self.hub.publish_safety({"is_safe": True,
+                                             "reason": "safe again",
+                                             "action": "reopen", "stale": False})
                     # Roof is OPEN again: re-check the mount floor+pier, then re-run
                     # the full target setup (unpark + tracking on, re-center/re-slew,
                     # restart guiding) — the mount was PARKED while we waited, so we
@@ -1981,14 +2058,11 @@ class SequenceEngine:
                 bus.log("error",
                         f"no frame in {idle / 60:.0f} min — possible stall",
                         "safety")
-                bus.publish("safety", is_safe=False,
-                            reason=f"no progress in {idle / 60:.0f} min",
-                            action="warn", stale=False)
-                if self.reporter is not None:
-                    try:
-                        self.reporter.record_safety("no-progress watchdog", "warn")
-                    except Exception:
-                        pass
+                self.hub.publish_safety(
+                    {"is_safe": False,
+                     "reason": f"no progress in {idle / 60:.0f} min",
+                     "action": "warn", "stale": False})
+                self._record_safety("no-progress watchdog", "warn")
             return True
         return False
 
@@ -2424,14 +2498,45 @@ class SequenceEngine:
                         "sequence")
 
     def _guide_rms(self) -> float | None:
-        """Current total guide RMS (arcsec) or None when unguided/unreadable."""
+        """Current total guide RMS in ARCSEC, or None when unguided/unreadable
+        **or when the guider is reporting pixels with no known image scale**.
+
+        UX #11: this used to return ``stats().rms_total`` raw, which is arcsec
+        only when ``GuideStats.is_arcsec`` — and with no guide-scope focal length
+        configured (the default) the native guider reports guide-camera PIXELS.
+        Every caller here compares against an arcsec-labelled threshold, so the
+        raw value silently loosened the gate by the image scale. Returning None
+        makes an unjudgeable frame un-gated (never wrongly rejected) and makes
+        the ``on_guide_rms_above`` predicate indeterminate, which the instruction
+        evaluator already handles as "don't fire"."""
         try:
             if self.hub.guider and self.hub.guider.connected:
-                rms = getattr(self.hub.guider.stats(), "rms_total", None)
-                return None if rms is None else float(rms)
+                return rms_total_arcsec(self.hub.guider.stats())
         except Exception:
             pass
         return None
+
+    def _guiding_now(self) -> bool:
+        """True when a guider is connected and actually guiding (so an unreadable
+        RMS is a UNIT problem worth reporting, not simply 'unguided')."""
+        try:
+            g = self.hub.guider
+            return bool(g and g.connected and getattr(g.stats(), "guiding", False))
+        except Exception:
+            return False
+
+    def _warn_rms_unit_once(self) -> None:
+        """Say ONCE per run why an armed max-guide-RMS gate isn't judging frames,
+        instead of silently passing everything (the failure mode that made #11
+        invisible). Idempotent; never raises."""
+        if getattr(self, "_rms_unit_warned", False):
+            return
+        self._rms_unit_warned = True
+        bus.log("warning",
+                "max guide RMS is set in arcsec, but the guider is reporting "
+                "guide-camera pixels with no image scale — set the guide scope's "
+                "focal length in Settings so this gate can be judged. Frames are "
+                "NOT being rejected on guide RMS.", "sequence")
 
     def _check_quality(self, info: dict, *, record: bool = True,
                        calibration: bool = False) -> bool:
@@ -2468,6 +2573,8 @@ class SequenceEngine:
                 accepted = False
         if accepted and not calibration and plan.max_guide_rms > 0:
             rms = self._guide_rms()
+            if rms is None and self._guiding_now():
+                self._warn_rms_unit_once()
             if rms is not None and rms > plan.max_guide_rms:
                 self._rejected += 1
                 bus.log("warning", f'guide RMS {rms:.2f}" above ceiling '
@@ -2610,6 +2717,14 @@ class SequenceEngine:
                 from .roof import close_observatory
                 tel = self.hub.devices.get("telescope")
                 ok = await close_observatory(dome, tel, log=bus.log)
+                # UX #8: the roof state at the END of the night belongs in the
+                # report. Without this the only artefact of a run that shut the
+                # observatory was a "pause" line — a billing and facility-safety
+                # question for a hosted remote rig.
+                self._record_safety(
+                    "roof closed over parked gear (wind-down)" if ok
+                    else "AUTOMATED ROOF CLOSE FAILED — gear may be exposed",
+                    "close_roof" if ok else "close_roof_failed")
                 if not ok:
                     # An error-level bus.log IS the loud page: the AlertDispatcher
                     # routes warning/error logs to every configured sink

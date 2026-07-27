@@ -69,6 +69,17 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
     # designator (UTC implied); isoformat() on a tz-aware datetime would append
     # '+00:00', which strict FITS parsers reject.
     hdr["DATE-OBS"] = datetime.fromtimestamp(frame.timestamp, tz=timezone.utc).replace(tzinfo=None).isoformat()
+    # DATE-LOC (the NINA/ACP convention): the SAME instant in the observer's local
+    # civil time. The filename's $$DATE$$/$$TIME$$ tokens are local while DATE-OBS
+    # is UTC — up to a whole day apart in the filename's date, with nothing in the
+    # file saying so (UX #50). Writing both makes the pairing self-evident in the
+    # data itself instead of only in the docs.
+    try:
+        hdr["DATE-LOC"] = (
+            datetime.fromtimestamp(frame.timestamp).isoformat(timespec="seconds"),
+            "Local civil time of DATE-OBS")
+    except (ValueError, OSError, OverflowError):
+        pass
     if frame.temperature_c is not None:
         hdr["CCD-TEMP"] = (frame.temperature_c, "Sensor temperature (C)")
     if frame.bayer_pattern:

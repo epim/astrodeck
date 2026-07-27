@@ -22,7 +22,11 @@ KNOWN_TOKENS: dict[str, str] = {
     # Capture-settings tokens. All opt-in: a template that doesn't mention them
     # is byte-for-byte unchanged, and an unknown/absent value renders empty, so
     # the token simply drops out (existing engine behavior).
+    # SENSORTEMP completes the set (UX #48): without it a dark library is
+    # undistinguishable by filename — 300s g100 -10C and 600s g0 -20C both land
+    # as ``Dark_<target>_0001.fits`` and only the header tells them apart.
     "GAIN": "loose", "EXPOSURE": "loose", "BINNING": "loose",
+    "SENSORTEMP": "loose",
 }
 
 _TOKEN_RE = re.compile(r"\$\$([A-Z0-9_]+)\$\$")
@@ -99,9 +103,29 @@ def format_exposure_token(exposure_s: float | None) -> str:
     return f"{v:g}".replace(".", "p")
 
 
+def format_sensor_temp_token(temp_c: float | None) -> str:
+    """``$$SENSORTEMP$$`` value: signed integer Celsius with a ``C`` suffix and
+    ``-`` for below zero (``-10.2`` -> ``"-10C"``, ``0.4`` -> ``"0C"``).
+
+    Rounded to whole degrees on purpose: a cooled camera dithers by tenths, and
+    ``-10p1C`` / ``-9p9C`` in the same dark set would split one library into two.
+    ``-`` is legal in both sanitize modes, so the sign survives. ``None``/
+    non-numeric renders empty so the token drops out of the filename."""
+    if temp_c is None:
+        return ""
+    try:
+        v = float(temp_c)
+    except (TypeError, ValueError):
+        return ""
+    if v != v or v in (float("inf"), float("-inf")):    # NaN / inf
+        return ""
+    return f"{int(round(v))}C"
+
+
 def capture_tokens(gain: int | None = None, exposure_s: float | None = None,
-                   binning: int | None = None) -> dict[str, str]:
-    """The three capture-settings token values, formatted per the design (D4).
+                   binning: int | None = None,
+                   sensor_temp_c: float | None = None) -> dict[str, str]:
+    """The capture-settings token values, formatted per the design (D4).
     ``None`` -> ``""`` so the token drops out and old templates are unaffected.
 
     Kept here (not at the capture seam) so the formatting is unit-testable
@@ -110,6 +134,7 @@ def capture_tokens(gain: int | None = None, exposure_s: float | None = None,
         "GAIN": "" if gain is None else str(int(gain)),
         "EXPOSURE": format_exposure_token(exposure_s),
         "BINNING": "" if binning is None else str(int(binning)),
+        "SENSORTEMP": format_sensor_temp_token(sensor_temp_c),
     }
 
 
@@ -118,7 +143,8 @@ _SAMPLE = {"TARGET": "M42", "FRAMETYPE": "Light", "FILTER": "Ha",
            "DATE": "2026-07-23", "TIME": "213045",
            "DATETIME": "2026-07-23_213045", "NIGHT": "2026-07-23",
            "FRAMENR": "0001",
-           **capture_tokens(gain=100, exposure_s=300.0, binning=1)}
+           **capture_tokens(gain=100, exposure_s=300.0, binning=1,
+                            sensor_temp_c=-10.0)}
 
 
 def validate_template(template: str) -> None:

@@ -49,8 +49,12 @@ class LibraryFull(ValueError):
 def _summarize(plan: SequencePlan) -> dict:
     """Lightweight headline numbers for a list row (no full target arrays)."""
     frames = plan.total_frames()
-    integration_min = round(plan.total_seconds() / 60.0, 1)
+    # UX #39: INTEGRATION means light-frame exposure. Calibration steps (a
+    # 120s x10 flat set) used to inflate this figure, which is the one number a
+    # user compares between plans.
+    integration_min = round(plan.light_seconds() / 60.0, 1)
     return {"frames": frames, "integration_min": integration_min,
+            "shutter_min": round(plan.total_seconds() / 60.0, 1),
             "targets": len(plan.targets)}
 
 
