@@ -381,8 +381,21 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
    while open so it stays glued to the trigger. The outside-pointerdown check
    still uses the trigger ref — the bubble is pointer-events-none and can never
    be an event target, so it never registers as "inside". */
-export function Tooltip({ content, children, side = "top" }: {
+export function Tooltip({ content, children, side = "top", label, triggerClassName = "", ariaDisabled }: {
   content: ReactNode; children: ReactNode; side?: "top" | "bottom" | "left" | "right";
+  /** Accessible name for the TRIGGER (UX review #25/#26). The trigger is the
+   *  `role="button"` span below — an `aria-label` on the children lands on a
+   *  descendant, which is not what an a11y audit (or a screen reader's control
+   *  list) reads. Optional so existing call sites whose children carry their own
+   *  text keep compiling and keep their name-from-content. */
+  label?: string;
+  /** Extra classes for the TRIGGER, so a caller can grow the hit area to the
+   *  44px floor on the element that is actually interactive. */
+  triggerClassName?: string;
+  /** `aria-disabled` on the TRIGGER (never the native attribute — house rule
+   *  §11.8). Used by LockedChip, whose whole job is a read-only control that
+   *  still announces itself and its reason. */
+  ariaDisabled?: boolean;
 }) {
   const [st, dispatch] = useReducer(tooltipNext, TOOLTIP_IDLE);
   const id = useId();
@@ -447,9 +460,11 @@ export function Tooltip({ content, children, side = "top" }: {
       <span
         tabIndex={0}
         role="button"
+        aria-label={label}
+        aria-disabled={ariaDisabled || undefined}
         aria-describedby={st.open ? id : undefined}
         aria-expanded={st.open}
-        className="inline-flex items-center cursor-help min-w-0"
+        className={`inline-flex items-center cursor-help min-w-0 ${triggerClassName}`}
         onPointerEnter={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("enter-mouse"); }}
         onPointerLeave={(e: RPointerEvent<HTMLSpanElement>) => { if (e.pointerType === "mouse") dispatch("leave-mouse"); }}
         onPointerDown={() => { pointerDownAtRef.current = Date.now(); }}
@@ -480,17 +495,29 @@ export function Tooltip({ content, children, side = "top" }: {
 }
 
 /* ============================================================ UI-EMPTY (InfoDot)
-   14px info Icon inside a Tooltip; focusable span padded to a >=44px hit area
-   (icon stays 14px visually). Drop next to jargon labels. */
+   14px info Icon inside a Tooltip. Drop next to jargon labels.
+
+   UX review #25/#26: the twelve (i)s on Plan measured 9-14px with no accessible
+   name, and the tablet audit still counted them as `unnamed` after the label and
+   the 15px padding were added HERE — because neither was on the element the
+   audit (and the a11y tree, and the finger) actually sees. The interactive
+   element is Tooltip's own `role="button" tabIndex=0` trigger span; the label sat
+   on a DESCENDANT of it, and the negative margin collapsed the trigger's box back
+   to the icon's 14px. Both now ride on the trigger via Tooltip's `label` /
+   `triggerClassName`, so every call site is fixed at once and none of them
+   change: `label` keeps its default, so no call site is required to pass one.
+
+   The 44px hit area is bought with `-m-[15px] p-[15px]` (14 + 2x15 = 44) — the
+   negative margin means the trigger's LAYOUT footprint is still 14px, so no row
+   reflows; `shrink-0` stops a crowded flex row squeezing it back under 44. */
 export function InfoDot({ label = "More information", content }: { label?: string; content: ReactNode }) {
   return (
-    <Tooltip content={content}>
-      <span
-        aria-label={label}
-        className="inline-flex items-center justify-center text-dim hover:text-accent -m-[15px] p-[15px]"
-      >
-        <Icon name="info" size={14} />
-      </span>
+    <Tooltip
+      content={content}
+      label={label}
+      triggerClassName="justify-center shrink-0 text-dim hover:text-accent -m-[15px] p-[15px]"
+    >
+      <Icon name="info" size={14} />
     </Tooltip>
   );
 }
@@ -539,23 +566,24 @@ export function LockedNote({ reason, className = "" }: {
 /** Inline read-only stand-in for a control the user cannot operate. Focusable
  *  on purpose: `aria-disabled` keeps it in the tab order (unlike `disabled`),
  *  and the reason rides in `aria-label` AND in a tooltip, so it is reachable
- *  by keyboard, by screen reader, and by tap. */
+ *  by keyboard, by screen reader, and by tap.
+ *
+ *  The name and the 44px floor go on Tooltip's TRIGGER, not on an inner span:
+ *  the trigger is already `role="button" tabIndex=0`, so a second focusable
+ *  inside it was a duplicate tab stop whose outer half was unnamed (UX #26). */
 export function LockedChip({ reason, children, className = "" }: {
   reason: string; children: ReactNode; className?: string;
 }) {
   return (
-    <Tooltip content={reason}>
-      <span
-        tabIndex={0}
-        role="button"
-        aria-disabled
-        aria-label={`Unavailable — ${reason}`}
-        className={`inline-flex items-center gap-1.5 tap min-h-[44px] ${LOCKED_CLASS}
-          !pointer-events-auto cursor-default ${className}`}
-      >
-        <Icon name="lock" size={12} aria-hidden />
-        {children}
-      </span>
+    <Tooltip
+      content={reason}
+      label={`Unavailable — ${reason}`}
+      ariaDisabled
+      triggerClassName={`gap-1.5 tap min-h-[44px] ${LOCKED_CLASS}
+        !pointer-events-auto cursor-default ${className}`}
+    >
+      <Icon name="lock" size={12} aria-hidden />
+      {children}
     </Tooltip>
   );
 }
