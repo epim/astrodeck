@@ -588,6 +588,51 @@ export function LockedChip({ reason, children, className = "" }: {
   );
 }
 
+/** A BUTTON that is honest about being inert (house rule §11.8) — the third
+ *  member of the locked family, next to `lockedProps` (containers) and
+ *  `LockedChip` (inline read-only stand-ins). Reach for this one when the
+ *  surface must stay a real, pressable button: a primary action that is
+ *  temporarily blocked (Start guiding, Save, Apply, Calibrate).
+ *
+ *  The native `disabled` attribute is never used for a control the user could
+ *  plausibly want to press: it removes the element from the accessibility tree,
+ *  taking the reason with it, and leaves a grey rectangle that does nothing on
+ *  tap and cannot even be focused to ask why. Instead this dims (the one shared
+ *  LOCKED_CLASS token), carries `aria-disabled`, stays focusable AND tappable
+ *  (`!pointer-events-auto`, the same escape LockedChip uses), and its press
+ *  STATES the reason instead of acting. Callers pair it with a visible reason
+ *  line so the reason also reaches a sighted user who never presses it.
+ *
+ *  `onExplain` is REQUIRED on purpose. An "honest" button whose blocked press
+ *  did nothing would be exactly the defect this primitive exists to remove, so
+ *  the type system makes the caller nominate a channel (a toast, an inline
+ *  note, a focus move) rather than letting one be forgotten.
+ *
+ *  It lived privately inside GuideView until it was being copied by hand into
+ *  other views — which is how an idiom drifts into four slightly different
+ *  opacities again. Same props, same rendered element; hoisting it is a move,
+ *  not a redesign. */
+export function HonestButton({ reason, onClick, onExplain, className = "btn", children }: {
+  /** null / "" => the control is live. A sentence => it is blocked, for THIS. */
+  reason: string | null;
+  onClick: () => void;
+  /** How the reason reaches the user when a blocked button is pressed. */
+  onExplain: (reason: string) => void;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={`${className} ${reason ? `${LOCKED_CLASS} !pointer-events-auto` : ""}`}
+      aria-disabled={reason ? true : undefined}
+      onClick={() => (reason ? onExplain(reason) : onClick())}
+    >
+      {children}
+    </button>
+  );
+}
+
 /* ============================================================ UI-DISCLOSURE
    The house progressive-disclosure row, extracted. Fourteen call sites hand-rolled
    this same shape (aria-expanded button, >=44px tap target, ▸/▾ caret); two later

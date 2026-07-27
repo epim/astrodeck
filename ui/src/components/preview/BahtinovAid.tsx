@@ -15,6 +15,7 @@ import type { BahtinovGeom, PreviewInfo } from "../../types";
 import { bahtinovAid, type BahtTone } from "../../lib/bahtinov";
 import { bahtinovSpikeSegments } from "../../lib/bahtinovOverlay";
 import { useOverlays, useStore } from "../../store";
+import { InfoDot } from "../ui";
 
 const TONE: Record<BahtTone, string> = {
   good: "text-good",
@@ -43,18 +44,33 @@ export function BahtinovAid({ preview }: { preview: PreviewInfo | null }) {
       {/* expert opt-out — only offered once there is something to hide, so an
           idle panel stays a two-line verdict (no dead control). */}
       {b?.geom && (
-        <button
-          type="button"
-          aria-pressed={overlayOn}
-          onClick={() => setOverlays({ bahtinov: !overlayOn })}
-          title="Draw the fitted spike lines and their crossing on the preview"
-          className={`mt-2 text-[11px] inline-flex items-center gap-1.5 ${
-            overlayOn ? "text-accent" : "text-dim"
-          }`}
-        >
-          <span aria-hidden>{overlayOn ? "✦" : "○"}</span>
-          Spikes on preview
-        </button>
+        // It was an 11px text row 104x16.5 CSS px tall — a third of the touch
+        // floor, sitting directly above a 56px hero button, and its only
+        // description lived in `title=`, which never fires on a fingertip. The
+        // row now carries the house `tap` 44px floor and an InfoDot so the
+        // description has a path that survives touch. `mx-4` on the InfoDot
+        // wrapper keeps its 44px hit box (bought with -m-[15px] p-[15px]) from
+        // overhanging the toggle it sits beside.
+        <div className="mt-2 flex items-center">
+          <button
+            type="button"
+            aria-pressed={overlayOn}
+            onClick={() => setOverlays({ bahtinov: !overlayOn })}
+            title="Draw the fitted spike lines and their crossing on the preview"
+            className={`tap min-h-[44px] text-[11px] inline-flex items-center gap-1.5 pr-1 ${
+              overlayOn ? "text-accent" : "text-dim"
+            }`}
+          >
+            <span aria-hidden>{overlayOn ? "✦" : "○"}</span>
+            Spikes on preview
+          </button>
+          <span className="mx-4 inline-flex items-center">
+            <InfoDot
+              label="About the spike overlay"
+              content="Draws the three fitted Bahtinov spikes and their crossing over the live preview, so you can see what the number above is measuring. Turn it off for a clean image."
+            />
+          </span>
+        </div>
       )}
     </div>
   );

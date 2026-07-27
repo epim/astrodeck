@@ -17,6 +17,7 @@
 // stage). The caller passes it; this file just lays it out.
 import { useState } from "react";
 import { LOUPE_BOX_MAX, LOUPE_CHROME_PX, type CropRoi } from "../../lib/cropRoi";
+import { LockedChip } from "../ui";
 
 export function LoupePanel({
   url,
@@ -38,21 +39,33 @@ export function LoupePanel({
   size?: number;
 }) {
   const LOUPE = size;
-  const [copied, setCopied] = useState(false);
+  /** null = idle · "ok" = copied · "fail" = the browser refused. */
+  const [outcome, setOutcome] = useState<null | "ok" | "fail">(null);
 
   const roiText = roi ? `x=${roi.x} y=${roi.y} w=${roi.w} h=${roi.h}` : "";
 
   const copy = () => {
     if (!roiText) return;
-    void navigator.clipboard?.writeText(roiText).then(
-      () => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1200);
-      },
-      () => {
-        /* clipboard denied — the numbers are on screen either way */
-      },
-    );
+    const settle = (r: "ok" | "fail") => {
+      setOutcome(r);
+      window.setTimeout(() => setOutcome(null), r === "ok" ? 1600 : 3500);
+    };
+    // `navigator.clipboard` is undefined in a NON-SECURE CONTEXT, and AstroDeck's
+    // normal deployment is exactly that: plain http to a box on the LAN. The old
+    // `navigator.clipboard?.writeText(...)` optional-chained straight to
+    // `undefined` there, so the whole press evaluated to nothing — no copy, no
+    // error, no feedback, on every field install that isn't localhost. Try the
+    // async API, fall back to the legacy selection copy (which DOES work over
+    // http), and if both refuse, SAY SO rather than pretending it worked.
+    const nav = navigator.clipboard;
+    if (nav?.writeText) {
+      void nav.writeText(roiText).then(
+        () => settle("ok"),
+        () => settle(legacyCopy(roiText) ? "ok" : "fail"),
+      );
+      return;
+    }
+    settle(legacyCopy(roiText) ? "ok" : "fail");
   };
 
   return (
@@ -91,27 +104,86 @@ export function LoupePanel({
           <div className="absolute top-1/2 left-0 right-0 h-px bg-accent/40" />
         </div>
       </div>
-      <button
-        type="button"
-        onClick={copy}
-        // The visible content is the ROI numbers, so the only clue that this
-        // COPIES is the label — put it in aria-label (read by AT, unlike title)
-        // as well as title. The action is harmless, so a touch user discovering
-        // it by tapping loses nothing.
-        aria-label={roiText ? `Copy the sensor region ${roiText} to the clipboard` : "No sensor region yet"}
-        title={roiText ? "Copy the sensor ROI to the clipboard" : "No ROI yet"}
-        className="mono text-[10px] text-dim tabular-nums text-left leading-tight hover:text-ink break-all"
-      >
-        {roi ? (
-          <>
-            {roi.x},{roi.y} {roi.w}×{roi.h} @1:1
-          </>
-        ) : (
-          "— @1:1"
-        )}
-        <span className="text-dim"> · #{previewId}</span>
-        {copied && <span className="text-accent"> copied</span>}
-      </button>
+      {/* The ROI line. Three things were wrong with it as one control:
+          (1) it was 94x25 CSS px — well under the 44px floor, on the smallest
+              text in the app (10px), in the dark, with gloves;
+          (2) its PURPOSE ("this copies") and its blocked reason ("No ROI yet")
+              both lived only in `aria-label`/`title`, neither of which a
+              fingertip can reach — so a sighted touch user saw an unexplained
+              row of numbers;
+          (3) with no ROI it was still a live <button> that silently did
+              nothing when pressed. A control that no-ops with no feedback is
+              the defect; the honest form is the house LockedChip (dim +
+              aria-disabled + a stated reason).
+          Every state now says what it is in WORDS on screen. A tooltip is a
+          second channel here, not the only one — the LockedChip's bubble opens
+          on hover and focus, but a TAP inside PreviewStage does not reach it
+          (the stage's `touch-action: pan-y` swallows the pointerup the Tooltip
+          machine listens for), so no state may depend on the bubble alone. */}
+      {roi ? (
+        <button
+          type="button"
+          onClick={copy}
+          aria-label={`Copy the sensor region ${roiText} to the clipboard`}
+          title="Copy the sensor ROI to the clipboard"
+          className="tap min-h-[44px] w-full flex flex-col justify-center gap-0.5
+            text-left text-dim hover:text-ink"
+        >
+          <span
+            className={`text-[10px] leading-tight uppercase tracking-wide ${
+              outcome === "ok" ? "text-accent" : outcome === "fail" ? "text-warn" : ""
+            }`}
+          >
+            {outcome === "ok" ? "✓ Copied" : outcome === "fail" ? "✕ Copy blocked" : "Copy region"}
+          </span>
+          <span className="mono text-[10px] tabular-nums leading-tight break-all">
+            {roi.x},{roi.y} {roi.w}×{roi.h} @1:1 · #{previewId}
+          </span>
+        </button>
+      ) : (
+        <LockedChip
+          reason={
+            loading
+              ? "Nothing to copy yet — still fetching the sensor crop for this frame."
+              : "Nothing to copy — no sensor crop is available for this frame."
+          }
+          className="!px-1 w-full text-[10px] leading-tight"
+        >
+          <span>{loading ? "Fetching…" : "Nothing to copy"} · #{previewId}</span>
+        </LockedChip>
+      )}
+      <span className="sr-only" aria-live="polite">
+        {outcome === "ok"
+          ? `Copied sensor region ${roiText}`
+          : outcome === "fail"
+            ? "This browser refused the clipboard. The region is printed above — copy it by hand."
+            : ""}
+      </span>
     </div>
   );
+}
+
+/** Pre-async-clipboard copy path. `document.execCommand("copy")` is deprecated
+ *  but it is the ONLY clipboard route that works in a non-secure context, which
+ *  is how AstroDeck is normally reached (plain http to the box at the scope).
+ *  Returns whether the copy actually happened, so the caller can be honest
+ *  either way. Guarded end-to-end: an exception must never take the loupe down
+ *  over a convenience feature. */
+function legacyCopy(text: string): boolean {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.setAttribute("aria-hidden", "true");
+    // Off-screen but still selectable; `display:none` would break execCommand.
+    ta.style.cssText = "position:fixed;top:-1000px;left:-1000px;opacity:0;";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
