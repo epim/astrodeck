@@ -26,6 +26,14 @@ import { effectiveLevels, transfer } from "./lut";
 const W = 256;
 const H = 72;
 
+/** The ONE sentence for "these levels cannot be moved on a NINA frame". It is
+ *  rendered as visible text under the histogram AND carried in the locked
+ *  handles' accessible name, so the reason reaches a sighted touch user and an
+ *  assistive-tech user from the same string — never from a `title=`, which does
+ *  not fire on the tablet this rig is driven from (UX #24). */
+const NINA_LOCK_REASON =
+  "Black, mid and white are fixed at the source — NINA pre-stretched this frame, so only the display can be adjusted.";
+
 export function StretchHistogram({
   preview,
   stretch,
@@ -157,8 +165,19 @@ export function StretchHistogram({
     return (
       <div
         role="slider"
-        tabIndex={isNina ? -1 : 0}
-        aria-label={`${which} point`}
+        // UX #24 (the remainder). `tabIndex={-1}` on the NINA-locked handle was
+        // the native `disabled` defect wearing a different hat: it took the
+        // control OUT of the tab order, so the one user who cannot see the
+        // dimming — a keyboard/screen-reader user — could never land on it and
+        // hear why it does nothing. `aria-disabled` alone is the house idiom
+        // (ui.tsx UI-LOCKED): stay reachable, and SAY the reason. The reason
+        // rides in the accessible name because there is no `title=` here on
+        // purpose — title never fires on touch, and the tablet at the scope is
+        // the primary field device. `handleKey`/`onTrackPointerDown` already
+        // return early on `isNina`, so being focusable changes nothing about
+        // what the handle can DO.
+        tabIndex={0}
+        aria-label={isNina ? `${which} point — unavailable. ${NINA_LOCK_REASON}` : `${which} point`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct)}
@@ -246,7 +265,7 @@ export function StretchHistogram({
       {isNina && (
         <p className="text-[11px] text-dim flex items-start gap-1.5 leading-snug">
           <Icon name="lock" size={12} className="mt-0.5 shrink-0" />
-          Frame pre-stretched by NINA — display-only adjust. Black/mid/white are fixed at the source.
+          {NINA_LOCK_REASON}
         </p>
       )}
 
