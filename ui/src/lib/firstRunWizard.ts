@@ -18,35 +18,69 @@ export interface WizardSnapshot {
   coolerActive: boolean;
   frameCount: number;
 }
-export interface WizardStepDef { id: WizardStepId; title: string; body: string; cta: string; view: ViewName; }
+export interface WizardStepDef {
+  id: WizardStepId;
+  title: string;
+  /** WHERE to go and WHAT to press. Every body names the view AND the place on
+   *  it (top / bottom / behind MORE), because the phone feedback that produced
+   *  this file was "I need to scroll to the bottom of the page, which is not
+   *  easy for a user to know about unless we tell them to scroll." */
+  body: string;
+  /** The STATED REASON the docked bar's Next is inert, phrased to complete
+   *  "Next unlocks once …". Never the native `disabled` attribute: the bar dims
+   *  Next, sets aria-disabled, and prints this. One per step so the reason
+   *  names the specific thing still missing rather than a generic "not yet". */
+  need: string;
+  cta: string;
+  view: ViewName;
+}
 export interface WizardStep extends WizardStepDef { applicable: true; done: boolean; index: number; }
 export interface WizardView {
   steps: WizardStep[]; activeId: WizardStepId; activeIndex: number;
   doneCount: number; total: number; complete: boolean;
 }
 
-// Copy: novice-plain, no jargon. Location references ONLY the default (0,0)/"My Observatory".
+// Copy: novice-plain, no jargon, and SPATIAL. Each body says which view and
+// where on it — on a phone the bottom bar only carries Equipment / Align /
+// Mount / Focus / Capture, so Settings, Atlas and Plan live behind MORE, and
+// the Cooler panel is at the very bottom of a long Capture page. A user cannot
+// guess either of those, so the copy states them.
+//
+// Only the "location" step may mention the default (0, 0) site — it is the one
+// step whose whole point is that the default is not a real sky. `cta` is the
+// bar's deep-link button and shares a cramped 390px row with Back/Skip/Next,
+// so it is the destination's NAME; the accessible name says "Open <name>".
 export const WIZARD_STEPS: readonly WizardStepDef[] = [
   { id: "location", title: "Set your location",
-    body: "AstroDeck needs your observing site to know what's up tonight. The default is (0, 0) “My Observatory” — not a real sky. Set your real location in Settings.",
-    cta: "Set location", view: "settings" },
+    body: "Open Settings — on a phone it's behind MORE in the bottom bar. Observing Site is the first panel. The default (0, 0) is not a real sky.",
+    need: "your real location is saved",
+    cta: "Settings", view: "settings" },
   { id: "connect", title: "Connect a rig",
-    body: "Detect the gear plugged into this machine — or start the Simulator rig to explore with no hardware.",
-    cta: "Go to Equipment", view: "connect" },
+    body: "Open Equipment — on a phone it's the first tab in the bottom bar. Scroll down to Rig Actions, then Detect hardware rig or Simulator rig.",
+    need: "a rig is connected",
+    cta: "Equipment", view: "connect" },
   { id: "profile", title: "Save a profile",
-    body: "Save this rig as a profile so it reconnects with one tap next time.",
-    cta: "Save a profile", view: "connect" },
+    body: "Back on Equipment, keep scrolling past Rig Actions to the Profiles panel. Save this rig and it reconnects with one tap.",
+    need: "a profile is saved",
+    cta: "Equipment", view: "connect" },
   { id: "target", title: "Pick a target",
-    body: "Find something in the Atlas and send it to your plan.",
-    cta: "Open Atlas", view: "atlas" },
+    body: "Open Atlas — on a phone it's behind MORE in the bottom bar. Search or tap the sky, then press Add target to Plan.",
+    need: "a target is in your plan",
+    cta: "Atlas", view: "atlas" },
   { id: "cool", title: "Cool the camera",
-    body: "Cool the sensor to your setpoint before lights — colder means less thermal noise.",
-    cta: "Open Capture", view: "capture" },
+    body: "Open Capture and scroll all the way to the BOTTOM — the Cooler panel is down there. Type a Target °C, then press Cool.",
+    need: "the cooler is running",
+    cta: "Capture", view: "capture" },
   { id: "frame", title: "Take your first frame",
-    body: "Shoot one frame and watch it land in the live preview. That's first light.",
-    cta: "Open Capture", view: "capture" },
+    body: "Back to the TOP of Capture: the Exposure panel. Set the seconds, press Single, and watch it land in the preview.",
+    need: "one frame has landed",
+    cta: "Capture", view: "capture" },
 ] as const;
 
+/** Per-step completion. THE single source of truth for "is this step actually
+ *  finished" — the docked bar's Next button is wired to the `done` flag this
+ *  produces (via `computeWizard`), never to a second guess of its own, so Next
+ *  ungreys the instant the real signal flips. */
 function isDone(id: WizardStepId, s: WizardSnapshot): boolean {
   switch (id) {
     case "location": return !s.siteIsDefault;
