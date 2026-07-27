@@ -262,28 +262,68 @@ class UX:
             return {"ok": False, "error": str(e)[:200],
                     "new_console": self.console[before:]}
 
-    async def swipe(self, x1, y1, x2, y2, steps=12):
-        """A finger drag. Use it to scroll, and to test whether a canvas or map
-        swallows the gesture."""
-        await self.page.touchscreen.tap(x1, y1)  # ensure touch is the active input
-        await self.page.mouse.move(x1, y1)
-        await self.page.mouse.down()
+    async def _cdp(self):
+        if getattr(self, "_cdp_session", None) is None:
+            self._cdp_session = await self.page.context.new_cdp_session(self.page)
+        return self._cdp_session
+
+    async def swipe(self, x1, y1, x2, y2, steps=16, hold=16):
+        """A REAL finger drag, dispatched through CDP Input.dispatchTouchEvent.
+
+        This used to drive page.mouse. In this Playwright/Chromium build mouse
+        events are NOT synthesised into touch even with has_touch/is_mobile, so a
+        520->180 drag left scrollTop at 0 on a plainly scrollable view — and
+        can_scroll_from() therefore reported "stranded" on EVERY view, including
+        ones that scroll perfectly. A scroll-trap test that always fails is worse
+        than no test: it manufactures the exact blocker it exists to catch."""
+        cdp = await self._cdp()
+        await cdp.send("Input.dispatchTouchEvent",
+                       {"type": "touchStart", "touchPoints": [{"x": x1, "y": y1}]})
         for i in range(1, steps + 1):
-            await self.page.mouse.move(x1 + (x2 - x1) * i / steps,
-                                       y1 + (y2 - y1) * i / steps)
-        await self.page.mouse.up()
-        await self.page.wait_for_timeout(500)
+            await cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [
+                {"x": x1 + (x2 - x1) * i / steps, "y": y1 + (y2 - y1) * i / steps}]})
+            await self.page.wait_for_timeout(hold)
+        await cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        await self.page.wait_for_timeout(450)
+        await self.settle()
+
+    async def settle(self, tries=25):
+        """A touch drag FLINGS — momentum keeps scrolling after touchEnd, so a
+        box measured too early is stale by the time a tap lands, and a tap during
+        momentum cancels the fling instead of activating the control (exactly as
+        on a real phone). Wait for the scroller to stop."""
+        js = "() => (document.querySelector('main')||document.body).scrollTop"
+        last = await self.page.evaluate(js)
+        same = 0
+        for _ in range(tries):
+            await self.page.wait_for_timeout(140)
+            cur = await self.page.evaluate(js)
+            same = same + 1 if cur == last else 0
+            last = cur
+            if same >= 2:
+                break
+        return last
 
     async def can_scroll_from(self, x, y) -> dict:
-        """THE scroll-trap test. Put a finger at (x,y), drag upward, and report
-        whether the PAGE moved. If it did not, the user is stranded there."""
-        before = await self.page.evaluate(
-            "() => (document.querySelector('main')||document.body).scrollTop")
-        h = (await self.page.evaluate("() => innerHeight"))
+        """THE scroll-trap test (protocol rule 7). Put a finger at (x, y), drag
+        upward, and report whether the PAGE moved.
+
+        Reports `trapped` rather than a bare boolean, because "the page did not
+        move" has TWO causes and only one is a defect:
+          * the view fits the viewport, so there is nothing to scroll - fine;
+          * the view is longer than the viewport and the element under the finger
+            swallowed the gesture - the user is stranded, which is a blocker.
+        A test that conflates them manufactures a blocker on every short view."""
+        js = ("() => {const e=document.querySelector('main')||document.body;"
+              "return {top:e.scrollTop, room:e.scrollHeight-e.clientHeight};}")
+        m0 = await self.page.evaluate(js)
+        h = await self.page.evaluate("() => innerHeight")
         await self.swipe(x, y, x, max(20, y - int(h * 0.45)))
-        after = await self.page.evaluate(
-            "() => (document.querySelector('main')||document.body).scrollTop")
-        return {"scrolled": after != before, "from": before, "to": after}
+        m1 = await self.page.evaluate(js)
+        moved = m1["top"] != m0["top"]
+        return {"scrolled": moved, "from": m0["top"], "to": m1["top"],
+                "scrollable": m0["room"],
+                "trapped": (not moved) and m0["room"] > 4}
 
     async def rotate(self):
         """Landscape <-> portrait. Phones and tablets rotate; layouts that only
@@ -304,8 +344,24 @@ class UX:
             if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
             if (cs.visibility === 'hidden' || cs.display === 'none') continue;
             if (parseFloat(cs.opacity) < 0.05) continue;
-            if (e.parentElement && ['fixed','sticky'].includes(
-                  getComputedStyle(e.parentElement).position)) continue; // outermost only
+            // Outermost-only, EXCEPT through transparent pass-through hosts.
+            // Everything portalled through Overlay lives inside `.overlay-host`
+            // (fixed, inset:0, pointer-events:none). Treating that as the
+            // outermost chrome made every reading ~100% whether a dialog was
+            // open, collapsed or absent — so the metric could not measure the one
+            // thing it was built for. Walk up; a host that paints nothing and
+            // takes no pointer events does not occlude, so keep descending past it.
+            let anc = e.parentElement, nested = false;
+            while (anc && anc !== document.body) {
+              const acs = getComputedStyle(anc);
+              if (acs.position === 'fixed' || acs.position === 'sticky') {
+                const abg = acs.backgroundColor || '';
+                const aPaints = !(abg === 'transparent' || abg.startsWith('rgba(0, 0, 0, 0)'));
+                if (aPaints && acs.pointerEvents !== 'none') { nested = true; break; }
+              }
+              anc = anc.parentElement;
+            }
+            if (nested) continue;
             const r = e.getBoundingClientRect();
             const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
             const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
