@@ -65,7 +65,7 @@ from ..update.service import UpdateError, get_service as get_update_service
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
-from ..events import bus
+from ..events import LOG_READ_MAX, bus, night_key
 from ..focus import run_autofocus
 from .. import hub as hub_module
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
@@ -447,6 +447,20 @@ def _get_master_library():
     if lib:
         return CalibrationLibraryAdapter(lib)
     return NullMasterLibrary()
+
+
+def _iso_utc(ts) -> str:
+    """Epoch seconds -> ``YYYY-MM-DDThh:mm:ssZ`` (UTC), '' when unusable.
+
+    Exports paired a raw float epoch with nothing human-readable (UX #49/#50);
+    the explicit ``Z`` also states the zone, which is the piece missing when a
+    local filename timestamp sits beside a UTC ``DATE-OBS``."""
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return ""
 
 
 def _export_root(report_id: str) -> Path:
@@ -1651,7 +1665,15 @@ def create_app() -> FastAPI:
         view.site_precise. Redaction now happens HERE, once, so no call site can
         forget it."""
         cfg = config_store.cfg()
-        payload = redacted(cfg) | {"optics_computed": hub.effective_optics()}
+        payload = redacted(cfg) | {
+            "optics_computed": hub.effective_optics(),
+            # UX #32: the capture root is an ASTRODECK_CAPTURE_DIR env var with no
+            # readout anywhere in the product, so the naming preview showed a
+            # relative path and "88 GB free" named no volume. Read-only for now
+            # (the report store, the frame counters and any in-flight run all hang
+            # off this path — retargeting it live is not a settings toggle).
+            "capture_dir": str(hub_module.CAPTURE_DIR),
+        }
         return _redact_site_for(payload, principal)
 
     # ---------------------------------------------------- site-precision redaction
@@ -2209,18 +2231,26 @@ def create_app() -> FastAPI:
     @app.get("/api/reports/{report_id}/frames.csv", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
     async def report_frames_csv(report_id: str):
-        """Append-only frame list as CSV (power-user export). 404 if missing."""
+        """Append-only frame list as CSV (power-user export). 404 if missing.
+
+        Carries EVERY field the JSON record carries (UX #49: gain / offset /
+        binning / ecc / altitude were silently dropped, so the CSV could not be
+        used to sort subs the report viewer could already rank), and pairs the
+        raw epoch ``ts`` with a readable UTC stamp instead of shipping
+        ``1785084747.5023835`` alone."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
         buf = io.StringIO()
-        cols = ["ts", "target", "filter", "frame_type", "exposure_s", "accepted",
-                "hfr", "sensor_temp_c", "guide_rms_total", "saved_path"]
+        cols = ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
+                "gain", "offset", "binning", "accepted", "hfr", "ecc",
+                "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path"]
         import csv
         w = csv.writer(buf)
         w.writerow(cols)
         for fr in report.frames:
             d = fr.model_dump()
+            d["ts_utc"] = _iso_utc(d.get("ts"))
             w.writerow(["" if d.get(c) is None else d.get(c) for c in cols])
         # Use the sanitized slug (not the raw path param) so the response header
         # can never carry CR/LF/quotes from attacker-controlled input.
@@ -3760,7 +3790,18 @@ def create_app() -> FastAPI:
         Floor = ``max(per-target start gate, site horizon_min, safety floor)`` —
         the realistic altitude the target must clear to be worth slewing to. A
         default (un-configured) site yields no warnings: we don't trust an un-set
-        location to call a target un-observable."""
+        location to call a target un-observable.
+
+        Two BLOCKING checks were added (``"blocking": true`` on the warning, and
+        they are the only ones that can set it):
+
+        * ``unsafe`` (UX #2) — the safety monitor reads unsafe/stale. A go/no-go
+          screen that omits the go/no-go input is worse than no screen: preflight
+          reported a green READY while ``/api/safety/state`` said "rain detected".
+        * ``no_filter`` (UX #1) — a Light step with no filter on a rig whose wheel
+          IS connected. Those frames are recorded under whatever slot the wheel
+          happens to sit on, which is how a night of SII landed in the stacking
+          bundle beside L flats."""
         import time as _time
         site = hub.site
         cfg = config_store.cfg()
@@ -3772,6 +3813,53 @@ def create_app() -> FastAPI:
         lon = float(site["longitude"])
         now = _time.time()
         warnings: list[dict] = []
+        # --- safety (UX #2) — the go/no-go input, first, because it is the one
+        # that ends a night. Fail-CLOSED exactly like the engine gate: a stale or
+        # unreadable monitor is unsafe, not "probably fine". Only checked when the
+        # run would actually honor it (cfg.safety.enabled and plan.safety_check),
+        # so a user who deliberately turned safety off is not nagged.
+        if cfg.safety.enabled and plan.safety_check:
+            mon = hub.devices.get("safety")
+            if mon is not None and getattr(mon, "connected", False):
+                reading = await hub.safety_reading()
+                if reading is None or reading.stale:
+                    warnings.append({
+                        "target": "", "kind": "unsafe", "blocking": True,
+                        "message": ("safety monitor is not reporting — treated as "
+                                    "UNSAFE (fail-closed)")})
+                elif not reading.is_safe:
+                    warnings.append({
+                        "target": "", "kind": "unsafe", "blocking": True,
+                        "message": (f"conditions are UNSAFE: "
+                                    f"{reading.reason or reading.source or 'unsafe'}")})
+        # --- filter identity (UX #1) — a Light step with no filter while a wheel
+        # is connected. The frames are NOT unfiltered: they come out through
+        # whatever slot the wheel is parked on, get that name in FILTER/report/
+        # bundle, and are then calibrated with that slot's flats.
+        wheel_names: list[str] = []
+        fw = hub.devices.get("filterwheel")
+        if fw is not None and getattr(fw, "connected", False):
+            wheel_names = [n for n in (getattr(fw, "filter_names", []) or []) if n]
+        if wheel_names:
+            current = await hub._active_filter_name()
+            unset = sorted({t.name for t in plan.targets if not t.calibration
+                            for s in t.steps
+                            if (s.frame_type or "Light").strip().lower() == "light"
+                            and not s.filter})
+            if unset:
+                one = len(unset) == 1
+                subject = "a Light step" if one else "Light steps"
+                verb = "has" if one else "have"
+                pronoun = "it" if one else "they"
+                where = (f"the wheel is on {current}, so {pronoun} would be "
+                         f"recorded as {current}" if current
+                         else f"{pronoun} would be recorded under whatever slot "
+                              "the wheel is parked on")
+                warnings.append({
+                    "target": unset[0] if one else "",
+                    "kind": "no_filter", "blocking": True,
+                    "message": (f"{subject} in {', '.join(unset)} {verb} no "
+                                f"filter set — {where}")})
         if not is_default:
             for t in plan.targets:
                 if t.calibration:
@@ -3808,7 +3896,11 @@ def create_app() -> FastAPI:
                             f"{g.exposure_s:g}s · gain {g.gain} · bin {g.binning}"
                             + (f" · {g.filter}" if g.filter else "")),
             })
-        return {"ok": not warnings, "warnings": warnings}
+        # ``blocked`` is additive: ``ok`` keeps its old meaning (nothing at all to
+        # say), so no existing client changes behaviour, while a client that
+        # understands the flag can hard-fail instead of offering "Run anyway".
+        return {"ok": not warnings, "warnings": warnings,
+                "blocked": any(w.get("blocking") for w in warnings)}
 
     @app.get("/api/sequence/recoverable", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
@@ -3943,8 +4035,58 @@ def create_app() -> FastAPI:
 
     @app.get("/api/logs", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def logs():
-        return bus.log_history
+    async def logs(level: str | None = None, night: str | None = None,
+                   limit: int = 0):
+        """Event log rows, oldest first.
+
+        Default (no params) = the in-memory ring, byte-identical to before.
+        ``night=YYYY-MM-DD`` reads that night's PERSISTED file instead (UX #9 —
+        the ring is only the last ~40 minutes of a ten-hour run), and ``level``
+        filters either source. ``limit`` keeps the newest N rows."""
+        if night:
+            store = bus.night_log
+            rows = (await asyncio.to_thread(
+                store.read, _slug(night), level=level,
+                limit=(limit or LOG_READ_MAX))) if store is not None else []
+            return rows
+        rows = bus.log_history
+        if level:
+            rows = [r for r in rows if (r.get("data") or {}).get("level") == level]
+        if limit and limit > 0:
+            rows = rows[-limit:]
+        return rows
+
+    @app.get("/api/logs/nights", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def log_nights():
+        """``{current, nights:[{night,bytes}]}`` — which nights are on disk, so
+        the log drawer can offer more than the live tail."""
+        store = bus.night_log
+        nights = await asyncio.to_thread(store.nights) if store is not None else []
+        return {"current": night_key(), "persisted": store is not None,
+                "nights": nights}
+
+    @app.get("/api/logs/export", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def log_export(night: str | None = None, format: str = "txt"):
+        """Download one night's log. ``format=txt`` (default) is the readable
+        transcript; ``jsonl`` is the raw rows. The filename is built from the
+        SANITIZED night (never the raw param), like every other export route."""
+        store = bus.night_log
+        n = _slug(night or night_key())
+        if store is None:
+            raise HTTPException(404, "log persistence is disabled")
+        if format == "jsonl":
+            rows = await asyncio.to_thread(store.read, n)
+            body = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows)
+            media, ext = "application/x-ndjson", "jsonl"
+        else:
+            body = await asyncio.to_thread(store.export_text, n)
+            media, ext = "text/plain; charset=utf-8", "txt"
+        if not body:
+            raise HTTPException(404, f"no persisted log for {n}")
+        return Response(body, media_type=media, headers={
+            "Content-Disposition": f'attachment; filename="astrodeck-{n}.log.{ext}"'})
 
     # ----------------------------------------------------- identity / auth admin
     # W2.5 client seam + the admin.users-gated auth/remote/revoke surface. These
