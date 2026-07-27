@@ -16,7 +16,8 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import { GuideGraph, GuideScatter } from "../components/graphs";
 import { Icon } from "../components/icons";
 import {
-  Panel, Stat, Led, Toggle, Disclosure, LockedNote, lockedProps, LOCKED_CLASS,
+  Panel, Stat, Led, Toggle, Disclosure, LockedChip, LockedNote, lockedProps,
+  LOCKED_CLASS,
 } from "../components/ui";
 import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
@@ -130,6 +131,12 @@ export default function GuideView() {
   const ditherReason =
     guideReadOnlyReason ?? noGuiderReason
     ?? (!stats?.guiding ? "Start guiding first — a dither nudges the star and re-settles" : null);
+  // The blocker they all share is stated ONCE at the top of the panel; a
+  // per-button line only earns its space when that button's reason DIFFERS
+  // (Stop when idle, Dither when not guiding). Four identical lines under four
+  // buttons is noise, and noise is how a reason stops being read.
+  const sharedGuideReason = guideReadOnlyReason ?? noGuiderReason;
+  const distinct = (r: string | null) => (r && r !== sharedGuideReason ? r : null);
   const explain = (r: string) => showToast("info", r);
 
   useEffect(() => {
@@ -204,6 +211,7 @@ export default function GuideView() {
               no guider — connect the simulator rig, an Alpaca guide camera, or PHD2 on the Rig page
             </p>
           )}
+          {guideReadOnlyReason && <LockedNote reason={guideReadOnlyReason} className="mb-3" />}
           <div className="flex flex-col gap-2">
             {/* min-h-11: these measured 34px tall, under the 44px touch floor. */}
             <HonestButton className="btn btn-accent min-h-11" reason={startReason}
@@ -211,13 +219,13 @@ export default function GuideView() {
               onClick={() => act(() => api.post("/api/guide/start"))}>
               <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />Start Guiding
             </HonestButton>
-            {startReason && <LockedNote reason={startReason} className="-mt-1" />}
+            {distinct(startReason) && <LockedNote reason={distinct(startReason)!} className="-mt-1" />}
             <HonestButton className="btn min-h-11" reason={stopReason}
               onExplain={explain}
               onClick={() => act(() => api.post("/api/guide/stop"))}>
               Stop
             </HonestButton>
-            {stopReason && <LockedNote reason={stopReason} className="-mt-1" />}
+            {distinct(stopReason) && <LockedNote reason={distinct(stopReason)!} className="-mt-1" />}
             <HonestButton className="btn min-h-11" reason={calibrateReason}
               onExplain={explain}
               onClick={() => act(async () => {
@@ -226,7 +234,7 @@ export default function GuideView() {
               })}>
               Force Recalibrate
             </HonestButton>
-            {calibrateReason && <LockedNote reason={calibrateReason} className="-mt-1" />}
+            {distinct(calibrateReason) && <LockedNote reason={distinct(calibrateReason)!} className="-mt-1" />}
             <div className="grid grid-cols-[1fr_auto] gap-2 items-end mt-2">
               <label className="flex flex-col gap-1">
                 <span className="label">Dither (px)</span>
@@ -253,7 +261,7 @@ export default function GuideView() {
                 Dither
               </HonestButton>
             </div>
-            {ditherReason && <LockedNote reason={ditherReason} />}
+            {distinct(ditherReason) && <LockedNote reason={distinct(ditherReason)!} />}
             <div className="grid grid-cols-3 gap-2 mt-1">
               <label className="flex flex-col gap-1">
                 <span className="label !text-[9px]">settle px</span>
@@ -439,24 +447,37 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
       <div className="flex flex-col gap-2.5">
         <label className="flex flex-col gap-1">
           <span className="label">Provider override</span>
-          <select
-            className="field"
-            value={draft}
-            disabled={!canConfig || busy}
-            onChange={(e) => void persist(e.target.value)}
-            aria-label="Guide provider override"
-          >
-            {options.map((v) => (
-              <option key={v} value={v}>
-                {guideProviderLabel(v)}
-              </option>
-            ))}
-            {/* sticky: a stored value not currently eligible (e.g. a
-                disconnected rig) stays listed rather than vanishing */}
-            {!draftInList && (
-              <option value={draft}>{guideProviderLabel(draft)}</option>
-            )}
-          </select>
+          {/* UX #24: a <select> has no `readOnly`, and the native `disabled`
+              attribute would drop the control and its reason out of the a11y
+              tree. Without the capability, show the value through the house
+              locked stand-in instead. (`busy` keeps the native attribute: it
+              lasts one round-trip and has no reason worth reading.) */}
+          {canConfig ? (
+            <select
+              className="field"
+              value={draft}
+              disabled={busy}
+              onChange={(e) => void persist(e.target.value)}
+              aria-label="Guide provider override"
+            >
+              {options.map((v) => (
+                <option key={v} value={v}>
+                  {guideProviderLabel(v)}
+                </option>
+              ))}
+              {/* sticky: a stored value not currently eligible (e.g. a
+                  disconnected rig) stays listed rather than vanishing */}
+              {!draftInList && (
+                <option value={draft}>{guideProviderLabel(draft)}</option>
+              )}
+            </select>
+          ) : (
+            <LockedChip
+              reason={`Guide provider override — ${accessPhrase("config.backend")} required`}
+              className="btn w-full">
+              {guideProviderLabel(draft)}
+            </LockedChip>
+          )}
         </label>
         {choice?.reason && <p className="text-[11px] text-dim leading-snug">{choice.reason}</p>}
         <p className="text-[11px] text-dim leading-snug">
@@ -682,7 +703,13 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
 
           <label className="flex flex-col gap-1">
             <span className="label">Dec backlash pulse (ms)</span>
-            <input className="field" value={blcMs} disabled={!canGuide || busy}
+            {/* The one text input in this drawer still carrying the native
+                attribute. Same rule as every sibling field: `readOnly` blocks
+                the edit just as hard but keeps the box focusable and announced
+                ("read only"), instead of deleting it — and the reason stated at
+                the top of the editor — from the accessibility tree (UX #24). */}
+            <input className="field" value={blcMs}
+              readOnly={!canGuide || busy} aria-readonly={!canGuide || busy || undefined}
               inputMode="numeric" placeholder="0"
               onChange={(e) => setBlcMs(e.target.value)} />
           </label>
