@@ -167,8 +167,18 @@ exists. Use `ux.screenfuls()` on every long view. A button wrapping badly at the
 panel is still a defect.
 
 **7. Escape must always be possible.** After landing on any view containing a map, canvas or
-chart, run `ux.can_scroll_from()` with the finger starting **on** that element. If the page does
-not move, that is a **blocker** — the user is stranded and does not know a trick to get out.
+chart, run `ux.can_scroll_from()` with the finger starting **on** that element. Read
+`trapped`, not `scrolled`: a page that does not move because the view *fits* is fine; a page
+that does not move while there is room below is a **blocker** — the user is stranded and does
+not know a trick to get out.
+
+> This test was itself broken on first release, and the failure is instructive. `swipe()`
+> drove `page.mouse`, and this Chromium build does not synthesise mouse into touch even with
+> `has_touch` — so a drag moved nothing on a plainly scrollable view and `can_scroll_from()`
+> reported "stranded" **everywhere**, manufacturing the exact blocker it exists to catch. It
+> now dispatches CDP `Input.dispatchTouchEvent`. **Always run a control first:** a view you
+> know scrolls must come back `scrolled: True`. An instrument that cannot fail its own control
+> is not evidence.
 
 **8. Rotate.** Phones and tablets rotate. A layout tested only in portrait is half-tested.
 
