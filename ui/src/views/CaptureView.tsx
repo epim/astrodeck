@@ -6,8 +6,10 @@ import {
 } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
 import GuideFramePreview from "../components/GuideFramePreview";
-import { Field, Led, Panel, SegmentedControl, Stat, Toggle } from "../components/ui";
-import { useCanControlCapture } from "../lib/caps";
+import {
+  Field, Led, LockedChip, LockedNote, Panel, SegmentedControl, Stat, Toggle,
+} from "../components/ui";
+import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import { isExposureInvalid } from "../lib/exposure";
 import { CAPTURE_PRESETS } from "../lib/capturePresets";
 import { suggestSubLength } from "../lib/photometry";
@@ -341,6 +343,36 @@ export default function CaptureView() {
     : 100;
   const remaining = Math.max(0, expLenRef.current - elapsed);
 
+  // ------------------------------------------------- UX #24: stated reasons
+  // A blocked control has to say WHY on a channel that survives a fingertip.
+  // `title=` does not fire on touch, and the native `disabled` attribute takes
+  // the control AND its reason out of the accessibility tree — so every gate on
+  // this screen resolves to a REASON STRING here and is rendered through the
+  // house `LockedChip` (dim + lock glyph + aria-disabled + aria-label + a
+  // tap-reachable tooltip) instead of `disabled`. A null reason means "usable".
+  const readOnlyReason = canCapture
+    ? null
+    : `Read-only session — ${accessPhrase("control.capture")} required`;
+  const settingsReason =
+    exposureInvalid ? "Fix the exposure above first"
+      : gainInvalid ? "Fix the gain above first"
+        : null;
+  // Shared by every control that starts an exposure.
+  const exposeReason =
+    readOnlyReason
+    ?? (polarBusy ? "Polar alignment owns the camera right now"
+      : seqOwnsCamera ? "A sequence owns the camera — stop it first"
+        : settingsReason);
+  const singleReason =
+    exposeReason ?? (looping ? "A capture loop is running — press Stop first" : null);
+  const loopReason = exposeReason;
+  const coolReason =
+    readOnlyReason ?? (coolerTargetInvalid
+      ? `Target must be a number between ${COOLER_MIN_C} and ${COOLER_MAX_C} °C`
+      : null);
+  const warmReason =
+    readOnlyReason ?? (cooler != null && !cooler.on ? "The cooler is already off" : null);
+
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_320px] xl:grid-cols-[1fr_360px]">
       {/* live-preview overhaul: stage + zoom/pan + stretch + overlays + filmstrip */}
@@ -349,12 +381,18 @@ export default function CaptureView() {
       <div className="flex flex-col gap-4">
         {/* ------------------------------------------------- exposure ctl */}
         <Panel title="Exposure" right={!canCapture && <ReadOnlyBadge />}>
+          {/* UX #24: the header pill says "VIEW ONLY" but keeps the WHY in a
+              `title=`, which a fingertip never fires. State it as text. */}
+          {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Exposure (s)" hint={HELP.exposure}>
+              {/* `readOnly`, not `disabled` (§11.8): it blocks the edit exactly as
+                  hard, but keeps the field focusable and announced. */}
               <input
                 className={`field ${exposureInvalid ? "border-bad" : ""}`}
                 value={exposure}
-                disabled={!canCapture}
+                readOnly={!canCapture}
+                aria-readonly={!canCapture || undefined}
                 aria-invalid={exposureInvalid}
                 onChange={(e) => setExposure(e.target.value)}
               />
@@ -366,7 +404,8 @@ export default function CaptureView() {
               <input
                 className={`field ${gainInvalid ? "border-bad" : ""}`}
                 value={gain}
-                disabled={!canCapture}
+                readOnly={!canCapture}
+                aria-readonly={!canCapture || undefined}
                 aria-invalid={gainInvalid}
                 onChange={(e) => setGain(e.target.value)}
               />
@@ -377,12 +416,23 @@ export default function CaptureView() {
               )}
             </Field>
             <Field label="Offset" hint={HELP.offset}>
-              <input className="field" value={offset} disabled={!canCapture} onChange={(e) => setOffset(e.target.value)} />
+              <input className="field" value={offset} readOnly={!canCapture}
+                aria-readonly={!canCapture || undefined}
+                onChange={(e) => setOffset(e.target.value)} />
             </Field>
             <Field label="Binning" hint={HELP.binning}>
-              <select className="field" value={binning} disabled={!canCapture} onChange={(e) => setBinning(e.target.value)}>
-                {binOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
-              </select>
+              {/* A <select> has no `readOnly`, so the locked state swaps in the
+                  house locked stand-in showing the current value rather than a
+                  native `disabled` select the a11y tree cannot explain. */}
+              {readOnlyReason ? (
+                <LockedChip reason={readOnlyReason} className="btn w-full">
+                  {binning}×{binning}
+                </LockedChip>
+              ) : (
+                <select className="field" value={binning} onChange={(e) => setBinning(e.target.value)}>
+                  {binOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
+                </select>
+              )}
             </Field>
           </div>
 
@@ -390,11 +440,15 @@ export default function CaptureView() {
                one-tap exposure/gain/offset/binning fill via the same setter path as
                "Match last lights" below. Pure data from lib/capturePresets. ---- */}
           <div className="flex flex-wrap gap-2 mt-3">
-            {CAPTURE_PRESETS.map((p) => (
+            {CAPTURE_PRESETS.map((p) => (readOnlyReason ? (
+              <LockedChip key={p.id} reason={`${p.blurb} — ${readOnlyReason}`}
+                className="btn tap min-h-[44px] !px-3">
+                {p.label}
+              </LockedChip>
+            ) : (
               <button
                 key={p.id}
                 className="btn tap min-h-[44px] !px-3"
-                disabled={!canCapture}
                 title={p.blurb}
                 onClick={() => {
                   setExposure(String(p.exposure_s));
@@ -405,7 +459,7 @@ export default function CaptureView() {
                 }}>
                 {p.label}
               </button>
-            ))}
+            )))}
           </div>
 
           {/* ---- Camera photometry profile (NOV-4/PRO-6 shared input, §1.3): a small
@@ -420,12 +474,18 @@ export default function CaptureView() {
                 hint="Your camera's sensor gain in electrons/ADU at the gain setting above — from the read-noise harness or the camera datasheet.">
                 {usingCameraEgain ? (
                   <div className="flex items-center gap-1.5">
-                    <input className="field" value={camEgain!.toFixed(3)} disabled title="From camera" />
+                    {/* Was `disabled title="From camera"` — the reason lived only in
+                        a tooltip that never fires on touch, AND the field was gone
+                        from the a11y tree. `readOnly` keeps both. */}
+                    <input className="field" value={camEgain!.toFixed(3)}
+                      readOnly aria-readonly
+                      aria-label="Gain in electrons per ADU — reported by the camera, not editable" />
                   </div>
                 ) : (
                   <input className="field" inputMode="decimal"
                     value={photometryProfile.egain || ""}
-                    disabled={!canCapture}
+                    readOnly={!canCapture}
+                    aria-readonly={!canCapture || undefined}
                     placeholder="0.25"
                     onChange={(e) => setPhotometry({ egain: Number(e.target.value) || 0 })} />
                 )}
@@ -437,7 +497,8 @@ export default function CaptureView() {
                 hint="Your camera's read noise in electrons at this gain — from the read-noise harness or datasheet.">
                 <input className="field" inputMode="decimal"
                   value={photometryProfile.readNoiseE || ""}
-                  disabled={!canCapture}
+                  readOnly={!canCapture}
+                  aria-readonly={!canCapture || undefined}
                   placeholder="2.0"
                   onChange={(e) => setPhotometry({ readNoiseE: Number(e.target.value) || 0 })} />
               </Field>
@@ -445,7 +506,8 @@ export default function CaptureView() {
                 hint="Median of a Bias frame (offset pedestal). Defaults to 0 — slightly overestimates sky, which is safe.">
                 <input className="field" inputMode="decimal"
                   value={photometryProfile.biasAdu || ""}
-                  disabled={!canCapture}
+                  readOnly={!canCapture}
+                  aria-readonly={!canCapture || undefined}
                   placeholder="0"
                   onChange={(e) => setPhotometry({ biasAdu: Number(e.target.value) || 0 })} />
               </Field>
@@ -455,18 +517,18 @@ export default function CaptureView() {
                 Suggest settings
               </button>
             ) : (
-              // Honest-disabled idiom (§11.8): dim + lock glyph + aria-disabled +
-              // title, never native `disabled` — matches "Match last lights" below.
-              <span
-                className="btn tap min-h-[44px] mt-3 opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
-                aria-disabled
-                title={
+              // UX #24: was a hand-dimmed span whose reason lived only in `title=`.
+              // LockedChip carries the same words in aria-label AND in a tooltip
+              // with a TAP path, which is the only channel a tablet has.
+              <LockedChip
+                className="btn tap min-h-[44px] mt-3"
+                reason={
                   effectiveEgain <= 0 || photometryProfile.readNoiseE <= 0
                     ? "Add camera gain + read noise above to enable Suggest"
                     : "Take a light frame first — Suggest needs a linear preview"
                 }>
-                <Icon name="lock" size={12} /> Suggest settings
-              </span>
+                Suggest settings
+              </LockedChip>
             )}
           </div>
 
@@ -476,9 +538,20 @@ export default function CaptureView() {
               prose instead of being left to be discovered the next morning. */}
           <div className="mt-3 border-t border-line pt-3">
             <div className="flex items-center gap-3">
-              <Toggle checked={save} onChange={setSave} disabled={!canCapture}
-                label="Save FITS to library" showState />
-              <span className="text-xs text-dim">save FITS to library</span>
+              {/* `Toggle` uses the native `disabled` attribute internally, so the
+                  locked state swaps the switch for the house locked stand-in
+                  rather than a dead switch with no announced reason (UX #24). */}
+              {readOnlyReason ? (
+                <LockedChip reason={readOnlyReason} className="text-xs">
+                  Save FITS to library · {save ? "ON" : "OFF"}
+                </LockedChip>
+              ) : (
+                <>
+                  <Toggle checked={save} onChange={setSave}
+                    label="Save FITS to library" showState />
+                  <span className="text-xs text-dim">save FITS to library</span>
+                </>
+              )}
             </div>
             <p className="text-[11px] text-dim mt-1.5 leading-snug">
               {save
@@ -490,7 +563,8 @@ export default function CaptureView() {
             <div className="mt-2">
               <Field label="Target name"
                 hint="Names the folder and the files on disk. Leave it blank and the frames still save, just without a target name.">
-                <input className="field" placeholder="M42" value={target} disabled={!canCapture}
+                <input className="field" placeholder="M42" value={target}
+                  readOnly={!canCapture} aria-readonly={!canCapture || undefined}
                   onChange={(e) => setTarget(e.target.value)} />
               </Field>
             </div>
@@ -507,6 +581,9 @@ export default function CaptureView() {
               onChange={setFrameType}
               disabled={!canCapture}
             />
+            {/* SegmentedControl disables its own buttons internally; the reason is
+                ours to state, and it has to be TEXT (UX #24). */}
+            {readOnlyReason && <LockedNote reason={readOnlyReason} className="mt-2" />}
             {frameType !== "Light" && (
               <p className="text-[11px] text-dim mt-2 leading-snug">{FRAME_COACH[frameType]}</p>
             )}
@@ -526,14 +603,12 @@ export default function CaptureView() {
                   Match last lights
                 </button>
               ) : (
-                // Honest-disabled idiom (§11.8): dim + lock glyph + aria-disabled +
-                // title, never native `disabled` — matches PreviewToolbar's Toggle.
-                <span
-                  className="btn tap min-h-[44px] mt-2 opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
-                  aria-disabled
-                  title="Shoot some lights first">
-                  <Icon name="lock" size={12} /> Match last lights
-                </span>
+                // UX #24: the reason used to be `title=` only. LockedChip states it
+                // in aria-label and in a tooltip a tap can open.
+                <LockedChip reason="Shoot some lights first — there is nothing to match yet"
+                  className="btn tap min-h-[44px] mt-2">
+                  Match last lights
+                </LockedChip>
               )
             )}
           </div>
@@ -541,22 +616,47 @@ export default function CaptureView() {
           {/* ---- capture buttons. Single/Loop show an active state in flight and are
                BLOCKED during polar alignment; Stop flashes pressed + stays 1-tap. ---- */}
           <div className="grid grid-cols-3 gap-2 mt-4">
-            <button
-              className={`btn tap-lg min-h-[56px] ${phase === "exposing" || phase === "downloading" ? "btn-accent border-accent" : "btn-accent"}`}
-              aria-pressed={inFlight && !looping}
-              disabled={!canCapture || looping || captureBlocked || exposureInvalid || gainInvalid || inFlight}
-              onClick={onSingle}>
-              {inFlight && !looping
-                ? (phase === "downloading" ? "Reading…" : "Exposing…")
-                : "Single"}
-            </button>
-            <button
-              className={`btn tap-lg min-h-[56px] ${looping ? "btn-accent border-accent" : ""}`}
-              aria-pressed={looping}
-              disabled={!canCapture || looping || captureBlocked || exposureInvalid || gainInvalid}
-              onClick={onLoop}>
-              {looping ? "Looping…" : "Loop"}
-            </button>
+            {/* UX #24: Single/Loop collapsed FIVE separate blocking conditions into
+                one native `disabled`, which greys the button and says nothing — and
+                on a tablet there is no hover with which to ask. Each condition now
+                resolves to a sentence.
+                The IN-FLIGHT states are deliberately NOT locked stand-ins: their
+                label ("Exposing…", "Looping…") already IS the reason, and a lock
+                glyph on a running exposure would read as "blocked", the opposite of
+                the truth. They keep the accented running chrome, drop the native
+                `disabled`, and carry aria-disabled + a spoken reason. */}
+            {inFlight && !looping ? (
+              <button
+                className="btn btn-accent border-accent tap-lg min-h-[56px]"
+                aria-disabled aria-pressed
+                aria-label={`${phase === "downloading" ? "Reading out" : "Exposing"} — a frame is already in progress`}>
+                {phase === "downloading" ? "Reading…" : "Exposing…"}
+              </button>
+            ) : singleReason ? (
+              <LockedChip reason={singleReason} className="btn tap-lg min-h-[56px] justify-center">
+                Single
+              </LockedChip>
+            ) : (
+              <button className="btn btn-accent tap-lg min-h-[56px]" onClick={onSingle}>
+                Single
+              </button>
+            )}
+            {looping ? (
+              <button
+                className="btn btn-accent border-accent tap-lg min-h-[56px]"
+                aria-disabled aria-pressed
+                aria-label="Looping — the capture loop is already running; press Stop to end it">
+                Looping…
+              </button>
+            ) : loopReason ? (
+              <LockedChip reason={loopReason} className="btn tap-lg min-h-[56px] justify-center">
+                Loop
+              </LockedChip>
+            ) : (
+              <button className="btn tap-lg min-h-[56px]" onClick={onLoop}>
+                Loop
+              </button>
+            )}
             {/* Stop is urgent -> stays 1-tap (R9), enlarged for touch. Disabled for
                 viewers (no capture to stop — they can't have started one).
 
@@ -573,38 +673,50 @@ export default function CaptureView() {
                 bright solid: Mount's full-width solid STOP is the object the
                 novice measured as the brightest thing on a dark-adapted screen,
                 which is the same failure from the other side. */}
-            <button
-              className={`btn btn-danger tap-lg min-h-[56px] !border-2 inline-flex items-center justify-center gap-1.5 ${stopPressed ? "scale-95 brightness-110" : ""}`}
-              style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
-              aria-pressed={stopPressed}
-              disabled={!canCapture}
-              onClick={onStop}>
-              {/* fill-current makes it a SOLID square — `.led-bad`'s shape,
-                  which is the app's existing "this one is the bad one" mark. */}
-              <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
-              Stop
-            </button>
+            {readOnlyReason ? (
+              <LockedChip reason={readOnlyReason}
+                className="btn btn-danger tap-lg min-h-[56px] !border-2 justify-center">
+                Stop
+              </LockedChip>
+            ) : (
+              <button
+                className={`btn btn-danger tap-lg min-h-[56px] !border-2 inline-flex items-center justify-center gap-1.5 ${stopPressed ? "scale-95 brightness-110" : ""}`}
+                style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
+                aria-pressed={stopPressed}
+                onClick={onStop}>
+                {/* fill-current makes it a SOLID square — `.led-bad`'s shape,
+                    which is the app's existing "this one is the bad one" mark. */}
+                <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
+                Stop
+              </button>
+            )}
           </div>
 
           {/* ---- Live View (NOV-1): server-side running-mean EAA stack. The toggle
                reflects server truth (status.live_stack_active), so a reload mid-stack
                stays lit. Reset is honest-disabled (§11.8) until armed. ---- */}
           <div className="grid grid-cols-2 gap-2 mt-2">
-            <button
-              className={`btn tap min-h-[44px] ${liveStackOn ? "btn-accent border-accent" : ""}`}
-              aria-pressed={liveStackOn}
-              disabled={!canCapture || captureBlocked || exposureInvalid || gainInvalid}
-              title="Stack subs into one continuously brightening image"
-              onClick={onLiveView}>
-              {liveStackOn ? "Live View · on" : "Live View"}
-            </button>
+            {exposeReason && !liveStackOn ? (
+              <LockedChip reason={exposeReason} className="btn tap min-h-[44px] justify-center">
+                Live View
+              </LockedChip>
+            ) : (
+              <button
+                className={`btn tap min-h-[44px] ${liveStackOn ? "btn-accent border-accent" : ""}`}
+                aria-pressed={liveStackOn}
+                title="Stack subs into one continuously brightening image"
+                onClick={onLiveView}>
+                {liveStackOn ? "Live View · on" : "Live View"}
+              </button>
+            )}
             {liveStackOn ? (
               <button className="btn tap min-h-[44px]" onClick={onResetStack}>Reset stack</button>
             ) : (
-              <span className="btn tap min-h-[44px] opacity-40 inline-flex items-center gap-1.5 cursor-not-allowed"
-                aria-disabled title="Start Live View to reset the stack">
-                <Icon name="lock" size={12} /> Reset stack
-              </span>
+              // UX #24: the reason was `title=` only — invisible to a fingertip.
+              <LockedChip reason="Start Live View first — there is no stack to reset yet"
+                className="btn tap min-h-[44px]">
+                Reset stack
+              </LockedChip>
             )}
           </div>
 
@@ -689,14 +801,18 @@ export default function CaptureView() {
               </span>
             }>
             <div className="flex flex-wrap gap-2">
-              {status.filterwheel.names.map((name, i) => (
+              {status.filterwheel.names.map((name, i) => (readOnlyReason ? (
+                <LockedChip key={`${i}-${name}`} reason={`Move to ${name} — ${readOnlyReason}`}
+                  className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}>
+                  {name}
+                </LockedChip>
+              ) : (
                 <button key={`${i}-${name}`}
-                  disabled={!canCapture}
                   className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}
                   onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
                   {name}
                 </button>
-              ))}
+              )))}
             </div>
           </Panel>
         )}
@@ -759,24 +875,44 @@ export default function CaptureView() {
               )}
               <Field label="Target °C" hint={HELP.coolTo}>
                 <input className={`field !w-20 ${coolerTargetInvalid ? "border-bad" : ""}`}
-                  value={coolerTarget} disabled={!canCapture}
+                  value={coolerTarget}
+                  readOnly={!canCapture} aria-readonly={!canCapture || undefined}
                   aria-invalid={coolerTargetInvalid}
                   onChange={(e) => setCoolerTarget(e.target.value)} />
               </Field>
-              <button
-                className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
-                aria-pressed={!!cooler?.on}
-                disabled={!canCapture || coolerTargetInvalid}
-                onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum }))}>
-                {cooler?.on ? "Set" : "Cool"}
-              </button>
-              <button
-                className="btn tap min-h-[44px]"
-                disabled={!canCapture || (cooler != null && !cooler.on)}
-                onClick={() => act(() => api.post("/api/camera/cooler", { on: false }))}>
-                Warm
-              </button>
+              {/* UX #24 — WARM was the finding's named example: natively disabled
+                  whenever the cooler is already off, with no aria-label, no title
+                  and no visible note. On the tablet it was a dim, dead, silent
+                  box. Both cooler buttons now state their blocker. */}
+              {coolReason ? (
+                <LockedChip reason={coolReason} className="btn tap min-h-[44px]">
+                  {cooler?.on ? "Set" : "Cool"}
+                </LockedChip>
+              ) : (
+                <button
+                  className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
+                  aria-pressed={!!cooler?.on}
+                  onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum }))}>
+                  {cooler?.on ? "Set" : "Cool"}
+                </button>
+              )}
+              {warmReason ? (
+                <LockedChip reason={warmReason} className="btn tap min-h-[44px]">
+                  Warm
+                </LockedChip>
+              ) : (
+                <button
+                  className="btn tap min-h-[44px]"
+                  onClick={() => act(() => api.post("/api/camera/cooler", { on: false }))}>
+                  Warm
+                </button>
+              )}
             </div>
+            {coolerTargetInvalid && (
+              <p className="text-[11px] text-bad mt-2">
+                Target must be a number between {COOLER_MIN_C} and {COOLER_MAX_C} °C
+              </p>
+            )}
 
             {cam.has_dew_heater && (
               <div className="mt-4 border-t border-line pt-3">
@@ -784,13 +920,18 @@ export default function CaptureView() {
                   <span className="label">dew heater</span>
                   <span className="mono text-xs text-accent">{dew}%</span>
                 </div>
+                {/* A range input has no `readOnly`, and native `disabled` would
+                    drop it (and its reason) out of the a11y tree. Keep it
+                    reachable, announce it as disabled, inert its handlers, and
+                    state the reason underneath (UX #24). */}
                 <input type="range" min={0} max={100} value={dew}
                   aria-label="dew heater power"
-                  disabled={!canCapture}
+                  aria-disabled={!canCapture || undefined}
                   className={`w-full h-11 accent-(--accent) touch-none ${canCapture ? "cursor-pointer" : "opacity-50 cursor-default"}`}
-                  onChange={(e) => { setDew(Number(e.target.value)); }}
-                  onMouseUp={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))}
-                  onTouchEnd={() => act(() => api.post("/api/camera/dew-heater", { power: dew }))} />
+                  onChange={(e) => { if (canCapture) setDew(Number(e.target.value)); }}
+                  onMouseUp={() => { if (canCapture) act(() => api.post("/api/camera/dew-heater", { power: dew })); }}
+                  onTouchEnd={() => { if (canCapture) act(() => api.post("/api/camera/dew-heater", { power: dew })); }} />
+                {readOnlyReason && <LockedNote reason={readOnlyReason} className="mt-1" />}
               </div>
             )}
           </Panel>
