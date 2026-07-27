@@ -73,7 +73,7 @@ import {
   stallLevel,
   THUMB_BRIGHTNESS_NIGHT_DEFAULT,
 } from "../lib/eta";
-import { diagnoseFailure } from "../lib/troubleshoot";
+import { diagnoseFailure, runFailureLog } from "../lib/troubleshoot";
 import type { MonitorSnapshot, PreviewInfo } from "../types";
 
 // ---------------------------------------------------------------- thumb dimmer
@@ -301,6 +301,37 @@ export default function MonitorView() {
     if (state === "running" || state === "idle") vibratedError.current = false;
   }, [state]);
 
+  // ----- when did THIS run start? (UX-2026-07-26 #23) -----
+  // The failure card quotes the tail of the error/warning log, and unfiltered
+  // that tail reached back into a DIFFERENT run — a card inventing a weather
+  // event that never happened. There is no run-start field on the wire, but
+  // `progress.elapsed_s` is server-computed, so while the run is live the start
+  // instant is `now - elapsed`. Recompute it while running and FREEZE it at the
+  // terminal state (elapsed stops advancing there, so `now - elapsed` would
+  // drift later and later after the fact). Null until a run is observed live:
+  // a page opened after the run ended can attribute nothing, and runFailureLog
+  // then shows no excerpt rather than someone else's lines.
+  //
+  // Caveat, stated: elapsed_s EXCLUDES paused time, so on a run that was paused
+  // the anchor lands late by the pause duration and a few early lines can drop
+  // out of the excerpt. That errs toward showing less, never toward fabricating.
+  const runStartedAtRef = useRef<number | null>(null);
+  if (state === "idle") runStartedAtRef.current = null;
+  else if (runActive && progress) {
+    runStartedAtRef.current = Date.now() / 1000 - progress.elapsed_s;
+  }
+
+  // ----- how did this run END? (UX-2026-07-26 #23) -----
+  // One diagnosis, computed once: the failure card renders it, and the health
+  // strip below needs to know whether this was a fault at all.
+  const endDiag = diagnoseFailure(seq.detail, {
+    state,
+    endReason: seq.end_reason,
+    framesDone: progress?.frames_done,
+    framesTotal: progress?.frames_total,
+  });
+  const stoppedByUser = state === "aborted" && !!endDiag.userInitiated;
+
   // ----- stall detection (resolves A5; gated to running-only — R3-MON-01) -----
   const curExp = progress?.current_exposure_s ?? 0;
   const stallLvl = stallLevel(state, frameAgeS, curExp);
@@ -391,12 +422,18 @@ export default function MonitorView() {
         backendLinks,
         bootConnectFailed,
         providers,
-        seqState: state,
-        endReason: seq.end_reason,
+        // UX-2026-07-26 #23: the strip raises a red ✗ "Sequence aborted" for
+        // ANY aborted state, so holding ABORT lit the "is my night OK?" verdict
+        // red for the one event that is not a problem — the operator's own
+        // decision. Same idiom as the `meridian` line above: feed the helper
+        // only what actually applies. The abort itself is still stated (the
+        // ABORTED badge and the "You stopped the run" card), just not alarmed.
+        seqState: stoppedByUser ? undefined : state,
+        endReason: stoppedByUser ? undefined : seq.end_reason,
         wsConnected,
         telemetryStale,
       }),
-    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale, runActive],
+    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale, runActive, stoppedByUser],
   );
 
   // ====================================================================== render
@@ -565,43 +602,53 @@ export default function MonitorView() {
               />
             ) : (
               <div className="data-dim flex flex-col gap-3">
-                {/* failure renders inline (resolves E3) — no drawer punt */}
-                {failed && (
-                  <div className="flex items-start gap-2 border border-bad/50 bg-bad/5 px-3 py-2">
-                    <Icon name={state === "error" ? "x" : "stop"} size={16} className="text-bad mt-0.5 shrink-0" />
+                {/* Failure renders inline (resolves E3) — no drawer punt.
+                    UX-2026-07-26 #23: a run the operator held ABORT to stop is
+                    NOT a fault. It gets a neutral card, its own headline, no
+                    advisory and no Help deep-link; only a genuine fault keeps
+                    the red border + alarm glyph. The log excerpt is scoped to
+                    THIS run (runFailureLog) so the card can never quote a
+                    previous run's lines back as if they explained this one. */}
+                {failed && (() => {
+                  const diag = endDiag;
+                  const lines = stoppedByUser
+                    ? []
+                    : runFailureLog(logs, runStartedAtRef.current);
+                  return (
+                  <div className={`flex items-start gap-2 border px-3 py-2 ${
+                    stoppedByUser ? "border-line bg-line2/20" : "border-bad/50 bg-bad/5"}`}>
+                    <Icon name={state === "error" ? "x" : "stop"} size={16}
+                      className={`mt-0.5 shrink-0 ${stoppedByUser ? "text-dim" : "text-bad"}`} />
                     <div className="min-w-0">
                       <p className="text-sm text-ink">
-                        {state === "error" ? "Sequence failed" : "Sequence aborted"}
+                        {stoppedByUser
+                          ? diag.title
+                          : state === "error" ? "Sequence failed" : "Sequence aborted"}
                       </p>
-                      {(() => {
-                        const diag = diagnoseFailure(seq.detail);
-                        return (
-                          <>
-                            <p className="text-xs text-ink/85 mt-0.5">{diag.cause} {diag.fix}</p>
-                            {diag.topic && (
-                              <button type="button" onClick={() => openHelp(diag.topic!)}
-                                className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
-                            )}
-                          </>
-                        );
-                      })()}
-                      {/* last error/warning log lines, inline */}
-                      <div className="mt-1.5 flex flex-col gap-0.5">
-                        {logs
-                          .filter((l) => l.data.level === "error" || l.data.level === "warning")
-                          .slice(-5)
-                          .map((l, i) => (
+                      <p className="text-xs text-ink/85 mt-0.5">
+                        {diag.cause}{diag.fix ? ` ${diag.fix}` : ""}
+                      </p>
+                      {diag.topic && (
+                        <button type="button" onClick={() => openHelp(diag.topic!)}
+                          className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
+                      )}
+                      {/* this run's error/warning log lines, inline */}
+                      {lines.length > 0 && (
+                        <div className="mt-1.5 flex flex-col gap-0.5">
+                          {lines.map((l, i) => (
                             <p key={i} className="text-[10px] mono text-dim break-words leading-snug">
                               {l.data.message}
                             </p>
                           ))}
-                      </div>
+                        </div>
+                      )}
                       <button className="btn !py-1 mt-2 min-h-[44px]" onClick={() => setView("sequence")}>
                         Plan →
                       </button>
                     </div>
                   </div>
-                )}
+                  );
+                })()}
 
                 {progress && (
                   <>

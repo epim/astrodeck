@@ -77,7 +77,6 @@ export default function SessionReviewDrawer({ id, onClose }: {
 
   if (!id || !session) return null;
 
-  const frames = filterFrames(session.frames, flt);
   const nights = [...new Set(session.frames.map((f) => f.night))];
   const targets = session.plan.targets;
   const filterOf = (stepId: string): string => {
@@ -86,6 +85,14 @@ export default function SessionReviewDrawer({ id, onClose }: {
     }
     return "—";
   };
+  // UX-2026-07-26 #37: every card already prints its filter band, but there was
+  // no way to SEE one band at a time — a three-night SHO project was 180
+  // thumbnails scrolled by eye. The band list comes from the frames actually in
+  // this session (not the whole plan), so it never offers an empty filter.
+  const bands = [...new Set(session.frames.map((f) => filterOf(f.step_id)))]
+    .filter((b) => b !== "—")
+    .sort();
+  const frames = filterFrames(session.frames, flt, filterOf);
   const targetName = (tid: string): string =>
     targets.find((t) => t.id === tid)?.name ?? tid.slice(0, 8);
   const remainingTotal = remaining
@@ -96,7 +103,7 @@ export default function SessionReviewDrawer({ id, onClose }: {
   // hidden-but-selected frame can never be regraded invisibly by a bulk action.
   const applyFlt = (next: FrameFilters) => {
     setFlt(next);
-    setSel((s) => pruneSelection(s, filterFrames(session.frames, next)));
+    setSel((s) => pruneSelection(s, filterFrames(session.frames, next, filterOf)));
   };
 
   const bulk = async (override: "accept" | "reject") => {
@@ -157,19 +164,27 @@ export default function SessionReviewDrawer({ id, onClose }: {
   const body = (
     <>
       <div className="flex items-center gap-2 pb-2 flex-wrap text-[11px]">
-        <select className="field !py-1 !w-28" value={flt.target_id ?? ""}
+        <select className="field tap min-h-[44px] !py-1 !w-28" value={flt.target_id ?? ""}
           aria-label="Filter by target"
           onChange={(e) => applyFlt({ ...flt, target_id: e.target.value || undefined })}>
           <option value="">all targets</option>
           {targets.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
-        <select className="field !py-1 !w-32" value={flt.night ?? ""}
+        <select className="field tap min-h-[44px] !py-1 !w-32" value={flt.night ?? ""}
           aria-label="Filter by night"
           onChange={(e) => applyFlt({ ...flt, night: e.target.value || undefined })}>
           <option value="">all nights</option>
           {nights.map((nx) => <option key={nx} value={nx}>{nx}</option>)}
         </select>
-        <select className="field !py-1 !w-28" value={flt.verdict ?? ""}
+        {bands.length > 0 && (
+          <select className="field tap min-h-[44px] !py-1 !w-24" value={flt.filter ?? ""}
+            aria-label="Filter by filter band"
+            onChange={(e) => applyFlt({ ...flt, filter: e.target.value || undefined })}>
+            <option value="">all filters</option>
+            {bands.map((b) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        )}
+        <select className="field tap min-h-[44px] !py-1 !w-28" value={flt.verdict ?? ""}
           aria-label="Filter by verdict"
           onChange={(e) => applyFlt({ ...flt, verdict: (e.target.value || undefined) as FrameFilters["verdict"] })}>
           <option value="">all verdicts</option>
@@ -200,6 +215,14 @@ export default function SessionReviewDrawer({ id, onClose }: {
           {regradeReason}
         </p>
       )}
+      {/* what the filters are actually showing — with a band filter on, an
+          empty grid must say so rather than look like a load failure (#37). */}
+      <p className="mono text-[11px] text-dim pb-2">
+        {frames.length === session.frames.length
+          ? `${frames.length} frames`
+          : `${frames.length} of ${session.frames.length} frames`}
+        {frames.length === 0 && session.frames.length > 0 && " — no frame matches these filters"}
+      </p>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
         {frames.map((f) => {
           const v = verdictOf(f);
