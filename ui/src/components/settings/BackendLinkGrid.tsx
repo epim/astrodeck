@@ -11,6 +11,11 @@
 //   attempted=true,  connected=true  → "connected"      → led "on"
 //   attempted=true,  ok=true, !conn  → "degraded"       → led "warn" (attached, link dropped)
 //   attempted=true,  ok=false        → "failed"         → led "bad"  (+ inline error)
+//
+// `connected` is the role's LIVE state from the hub, and a role can be served by
+// an ENGINE rather than a device object (the guider: AstroDeck native / NINA /
+// PHD2) — hub._role_live_connected covers that. This grid additionally
+// guarantees an alarm word NEVER renders alone: see linkReason (UX #52).
 
 import type { JSX } from "react";
 import type { BackendLink, LedState } from "../../types";
@@ -38,11 +43,32 @@ const TRI_META: Record<
   skipped: { led: "off", word: "NOT REQUESTED", tone: "text-faint" },
 };
 
-/** One tri-state row. `dense` drops the description column for tight side panels. */
+/** An alarm word with NO reason attached is the bug, not the fix (UX #52): the
+ *  backend can report `ok` with a null `error`, and the grid used to render a
+ *  bare orange DEGRADED with nothing under it. So every alarm state gets a
+ *  stated reason — the backend's when it has one, an honest "we don't know"
+ *  sentence when it doesn't. `null` only for the two calm states. */
+export function linkReason(link: BackendLink): string | null {
+  if (link.error) return link.error;
+  switch (linkTriState(link)) {
+    case "degraded":
+      return "Came up at connect, but this role is not reporting a live link " +
+        "now and the backend gave no reason. Reconnect it from Equipment.";
+    case "failed":
+      return "The backend reported no reason. Check the log for this role.";
+    default:
+      return null;
+  }
+}
+
+/** One tri-state row. `dense` drops the reason line for tight side panels —
+ *  EXCEPT on an alarm state, which must never show a bare word (UX #52). */
 function LinkRow({ link, dense }: { link: BackendLink; dense?: boolean }): JSX.Element {
   const tri = linkTriState(link);
   const meta = TRI_META[tri];
   const label = ROLE_LABEL[link.role] ?? link.role;
+  const alarm = tri === "degraded" || tri === "failed";
+  const reason = !dense || alarm ? linkReason(link) : null;
   return (
     <div className="flex items-center gap-3 border border-line bg-bg/60 px-3 py-2.5">
       <Led state={meta.led} label={`${label}: ${meta.word.toLowerCase()}`} />
@@ -50,12 +76,10 @@ function LinkRow({ link, dense }: { link: BackendLink; dense?: boolean }): JSX.E
       <div className="min-w-0 flex-1">
         <span className={`mono text-[11px] tracking-wider ${meta.tone}`}>{meta.word}</span>
         {/* The inline failure/degraded reason — the WHOLE point of the tri-state:
-            a viewer can see WHY a role didn't come up without opening the log. */}
-        {!dense && link.error && (
-          <div className="text-[10px] text-dim truncate mt-0.5" title={link.error}>
-            {link.error}
-          </div>
-        )}
+            a viewer can see WHY a role didn't come up without opening the log.
+            Wraps rather than truncating: a `title=` tooltip never fires on a
+            tablet in the field, so a clipped reason would be no reason. */}
+        {reason && <div className="text-[10px] text-dim mt-0.5">{reason}</div>}
       </div>
     </div>
   );

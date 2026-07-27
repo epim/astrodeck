@@ -719,9 +719,34 @@ class Hub:
                 return pref
         return names[0] if names else "sim"
 
+    #: Roles served by an ENGINE handle on the hub instead of a ``self.devices``
+    #: device object: role -> hub attribute holding that engine. ``guider`` is the
+    #: only one today — the orchestrator sources it from the guider-role session's
+    #: ``native_guider()`` (AstroDeck native / NinaGuider / PHD2) and it is NEVER
+    #: entered in ``self.devices`` (``devices/sim.py`` has no "guider" key at all).
+    #: The engine still answers ``connected`` exactly like a device does.
+    _ROLE_ENGINE_ATTR: dict[str, str] = {"guider": "guider"}
+
+    def _role_live_connected(self, role: str) -> bool:
+        """Is ``role`` LIVE right now?
+
+        A device role reads its device's ``connected``. A role served by an
+        ENGINE (``_ROLE_ENGINE_ATTR``: ``guider`` -> ``self.guider``) reads the
+        engine, because it has no ``self.devices`` entry to read — a device-only
+        join reported a perfectly healthy DEFAULT native guider as a dropped link
+        on every sim/native rig (UX #52: an orange GUIDING · DEGRADED with a null
+        ``error``, so no cause was even shown)."""
+        dev = self.devices.get(role)
+        if dev is not None:
+            return bool(getattr(dev, "connected", False))
+        attr = self._ROLE_ENGINE_ATTR.get(role)
+        engine = getattr(self, attr, None) if attr else None
+        return bool(engine is not None and getattr(engine, "connected", False))
+
     def backend_links(self) -> list[dict]:
         """The per-role boot-LED surface (W1.6): the retained ConnectResult's
-        tri-state ``RoleResult`` joined with each role's LIVE ``connected`` state.
+        tri-state ``RoleResult`` joined with each role's LIVE ``connected`` state
+        (:meth:`_role_live_connected` — device OR engine, see UX #52).
 
         ``[]`` when no RigSpec connect has happened (the legacy connect_* paths
         don't populate ``last_connect_result``)."""
@@ -730,13 +755,12 @@ class Hub:
             return []
         out: list[dict] = []
         for rr in res.results:
-            dev = self.devices.get(rr.role)
             out.append({
                 "role": rr.role,
                 "ok": rr.ok,
                 "error": rr.error,
                 "attempted": rr.attempted,
-                "connected": bool(dev is not None and getattr(dev, "connected", False)),
+                "connected": self._role_live_connected(rr.role),
             })
         return out
 
