@@ -1,6 +1,6 @@
 // preflight.ts — single source of truth for run-readiness derivation
-// (onboarding spec §3). Pure + unit-testable; reused by the inline strip, the
-// modal, and (later) the safety monitor.
+// (onboarding spec §3). Pure + unit-testable; reused by the inline strip and
+// the modal. Includes the safety-monitor row (UX review #2) — see below.
 
 import type {
   CheckItem,
@@ -57,6 +57,47 @@ export function buildPreflight(
     status_: CheckStatus,
     extra?: Partial<CheckItem>,
   ) => items.push({ id, label, status: status_, word: WORD[status_], ...extra });
+
+  // --- safety (UX REVIEW #2) -------------------------------------------------
+  // FIRST row, because it is the go/no-go input: preflight used to report a
+  // green READY while `/api/safety/state` said `is_safe:false, "rain detected"`,
+  // and the run it green-lit produced two frames under rain before the engine's
+  // 3-poll debounce paused it. A go/no-go screen that omits the go/no-go input
+  // is worse than no screen.
+  //
+  // `status.safety` is the FLAT server SafetyReading forwarded on every 2s poll
+  // (types.ts:113) — the same reading the engine's own gate reads, so the row
+  // and the engine can never disagree. Fail-CLOSED exactly like that gate: a
+  // stale/non-reporting monitor is UNSAFE, not "probably fine". Mirrors the
+  // server's `unsafe` blocking warning in POST /api/sequence/preflight.
+  //
+  // Escape hatch (house rule: a block must always be defeatable by an explicit,
+  // honest action, never by pretending): the row is gated on `plan.safety_check`,
+  // so a user who deliberately runs without the safety gate turns THAT off and
+  // the row reads NOT NEEDED instead of blocking. No monitor connected = no row
+  // opinion (skipped) — most rigs have no safety device and must not be nagged.
+  const safety = status?.safety;
+  if (!plan.safety_check)
+    push("safety", "Safety", "skipped", {
+      detail: { value: "safety gate off in this plan" },
+    });
+  else if (checking) push("safety", "Safety", "checking");
+  else if (safety == null)
+    push("safety", "Safety", "skipped", { detail: { value: "no safety monitor" } });
+  else if (safety.stale)
+    push("safety", "Safety", "blocked", {
+      detail: { value: "monitor not reporting — treated as UNSAFE" },
+      fix: { label: "Safety settings", view: "settings" },
+    });
+  else if (!safety.is_safe)
+    push("safety", "Safety", "blocked", {
+      detail: { value: `UNSAFE — ${safety.reason || safety.source || "unsafe condition"}` },
+      fix: { label: "Safety settings", view: "settings" },
+    });
+  else
+    push("safety", "Safety", "ok", {
+      detail: { value: safety.source ? `${safety.source} reports safe` : "conditions safe" },
+    });
 
   // --- camera ---
   if (checking) push("camera", "Camera", "checking");

@@ -90,6 +90,10 @@ export interface ProvidersStatus {
 
 // ---------------------------------------------------------------- toast policy
 const TOAST_MAX = 3; // hard cap; on phone effectively 1-2
+// Minimum coalescing window for an identical generic toast. Sticky toasts (ttl
+// 0) coalesce for as long as they are on screen, which is forever — see
+// enqueueToast (UX review #33).
+const TOAST_DEDUPE_MS = 5000;
 const TTL: Record<ToastLevel, number> = {
   success: 3000,
   info: 4000,
@@ -166,8 +170,32 @@ function defaultPlan(): SequencePlan {
     park_when_done: false,
     warm_cooler_when_done: false,
     // multi-night quota (sessions spec §3) — MUST mirror models.SequencePlan
-    // defaults or a UI-started run silently changes quota/guard behavior.
-    count_mode: "attempts",
+    // defaults or a UI-started run silently changes quota/guard behavior, with
+    // ONE deliberate divergence:
+    //
+    // count_mode (UX REVIEW #30). The server's pydantic default is "attempts"
+    // (models.py:187) and this line used to mirror it — which is also why the
+    // UI's `?? "attempts"` fallbacks never fired: the field is always present.
+    // "attempts" means a REJECTED frame still consumes its count, so the moment
+    // any quality gate is armed (min_stars / max_guide_rms / max_eccentricity /
+    // hfr_reject_factor — see stepDefaults.armedQualityGates) "20 × 300s" quietly
+    // becomes "at most 20 × 300s", and nothing reports the shortfall.
+    //
+    // "accepted" is the safe default because with every gate at 0 (which is the
+    // novice default, right below) NO frame can ever be rejected, so the two
+    // modes are behaviourally identical — engine._run_step's quota branch and
+    // its attempts branch both terminate after `count` accepted frames. The
+    // difference only appears once the user arms a gate, and at that moment the
+    // count means what they asked for instead of silently shrinking.
+    //
+    // Safe against engine unboundedness: models.quota_unbounded() only refuses a
+    // start when accepted-mode runs with BOTH reject guards at 0 and no stop
+    // boundary — and the two guards below default to 10/20, so the default plan
+    // is bounded. (Zeroing both is still possible; the server refuses that start
+    // with a message naming the four ways out, rather than looping forever.)
+    // The plan is POSTed whole to /api/sequence/start, so this value — not the
+    // pydantic default — is what every UI-started run uses.
+    count_mode: "accepted",
     min_stars: 0,
     max_guide_rms: 0,
     max_consecutive_rejects: 10,
@@ -1052,12 +1080,22 @@ export const useStore = create<AppState>((set, get) => ({
         // exactly one focal sequence toast — replace any prior
         toasts = toasts.filter((t) => t.kind !== "sequence");
       } else {
+        // Coalesce onto an identical toast that is STILL ON SCREEN (UX review
+        // #33: "two identical toasts sometimes, zero other times"). The window
+        // used to be a flat 5s, which is wrong for a STICKY toast (ttl 0, the
+        // safety UNSAFE notice): it never auto-dismisses, so at +6s the identical
+        // re-trip failed the age test and enqueued a SECOND identical sticky card
+        // that sat there next to the first. A toast that is still visible is by
+        // definition a duplicate of itself, whatever its age — so sticky toasts
+        // coalesce forever and timed ones coalesce for as long as they are up
+        // (floor of TOAST_DEDUPE_MS so rapid repeats of a short success toast
+        // still merge). The ×N chip is exactly the channel for this.
         const dupe = toasts.find(
           (t) =>
             t.kind === "generic" &&
             t.title === input.title &&
             t.level === level &&
-            now - t.createdAt < 5000,
+            (t.ttl === 0 || now - t.createdAt < Math.max(TOAST_DEDUPE_MS, t.ttl)),
         );
         if (dupe) {
           // coalesce: bump count, leave createdAt UNCHANGED so it still ages out
@@ -1080,8 +1118,24 @@ export const useStore = create<AppState>((set, get) => ({
       };
       let next = [...toasts, toast];
       if (next.length > TOAST_MAX) {
-        // drop oldest dismissible generic first; never drop the focal sequence toast
-        const victim = next.find((t) => t.ttl > 0 && t.kind === "generic")?.id ?? next[0].id;
+        // Overflow eviction, other half of UX #33 ("zero other times"). The old
+        // rule was `find(t => t.ttl > 0 && t.kind === "generic") ?? next[0]`,
+        // which had two ways to throw away the one toast that matters: with the
+        // queue full of sticky notices there is no dismissible generic, so it
+        // fell through to next[0] — the OLDEST — i.e. the sticky UNSAFE toast,
+        // which then existed nowhere in the DOM while the rig sat in the rain;
+        // and the find could also select the toast being enqueued right now.
+        // Replaced with an explicit severity ladder, oldest-first inside each
+        // rung, never the focal sequence toast and never the new arrival: a
+        // sticky error (UNSAFE) is the last thing in the queue to be dropped.
+        const oldest = (pred: (t: Toast) => boolean) =>
+          next.find((t) => t.id !== toast.id && t.kind !== "sequence" && pred(t))?.id;
+        const victim =
+          oldest((t) => t.ttl > 0 && t.level !== "error") ??   // ordinary transient
+          oldest((t) => t.ttl > 0) ??                          // transient error
+          oldest((t) => t.level !== "error") ??                // sticky, not an error
+          oldest(() => true) ??                                // sticky error
+          next[0].id;
         next = next.filter((t) => t.id !== victim);
       }
       return { toasts: next };
