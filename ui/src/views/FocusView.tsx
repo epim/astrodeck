@@ -28,8 +28,8 @@ import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
-import { Field, Panel, Stat } from "../components/ui";
-import { useCanControlCapture } from "../lib/caps";
+import { Field, LockedChip, LockedNote, Panel, Stat } from "../components/ui";
+import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 
@@ -119,6 +119,27 @@ export default function FocusView() {
   const absTargetNum = Number(absTarget);
   const absTargetInvalid = absTarget.trim() === "" || !Number.isFinite(absTargetNum);
 
+  // ------------------------------------------------- UX #24: stated reasons
+  // Every blocked focuser control resolves to a sentence here and is rendered
+  // through the house `LockedChip` — dim + lock glyph + aria-disabled +
+  // aria-label + a tooltip that opens on TAP. The native `disabled` attribute
+  // is not used: it removes the control and its reason from the a11y tree, and
+  // `title=` never fires on the tablet this rig is driven from.
+  const readOnlyReason = canFocus
+    ? null
+    : `Read-only session — ${accessPhrase("control.capture")} required`;
+  // Shared by every control that commands the focuser.
+  const focuserReason =
+    readOnlyReason
+    ?? (!foc ? "No focuser is connected — connect one on the Equipment page"
+      : running ? "Autofocus is running — let the sweep finish first"
+        : null);
+  const goReason =
+    focuserReason ?? (absTargetInvalid
+      ? "Type a position number in the box first"
+      : null);
+  const haltReason = readOnlyReason;
+
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
@@ -155,11 +176,15 @@ export default function FocusView() {
             go/stop verdict, sitting under the live preview it reads from. */}
         <Panel title="Bahtinov Focus" right={!canFocus && <ReadOnlyBadge />}>
           <BahtinovAid preview={shown} />
+          {/* UX #24: the read-only reason was `title=` only — on a tablet the
+              button was simply dim and mute. LockedChip speaks it. */}
           <button
             className={`btn w-full tap min-h-11 mt-3 ${!canFocus ? "opacity-40" : ""} ${bahtOn ? "btn-accent" : ""}`}
             aria-disabled={!canFocus || undefined}
             aria-pressed={bahtOn}
-            title={!canFocus ? "Read-only — focusing needs operator access" : undefined}
+            aria-label={readOnlyReason
+              ? `${bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"} — ${readOnlyReason}`
+              : undefined}
             onClick={
               !canFocus
                 ? undefined
@@ -174,6 +199,7 @@ export default function FocusView() {
           >
             {bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"}
           </button>
+          {readOnlyReason && <LockedNote reason={readOnlyReason} className="mt-2" />}
           <p className="text-[11px] text-dim mt-2 leading-relaxed">
             Put a Bahtinov mask on the scope and point at a bright star, then watch
             the middle spike offset drop to zero.
@@ -239,26 +265,43 @@ export default function FocusView() {
         </Panel>
 
         <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
+          {/* The header pill keeps its WHY in a `title=`; say it out loud here. */}
+          {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
           <div className="flex items-end justify-between mb-4">
             <Stat label="position" value={foc ? pos : "—"} />
             <Stat label="max" value={foc?.max ?? "—"} />
             <Stat label="temp" value={foc?.temperature?.toFixed(1) ?? "—"} unit="°C" />
           </div>
           <div className="grid grid-cols-3 gap-2 mb-3">
-            {[-1000, -100, -10, 10, 100, 1000].map((d) => (
-              <button key={d} className="btn tap min-h-[44px] mono !normal-case" disabled={!canFocus || !foc || running}
+            {[-1000, -100, -10, 10, 100, 1000].map((d) => (focuserReason ? (
+              <LockedChip key={d} reason={`Move ${d > 0 ? `+${d}` : d} steps — ${focuserReason}`}
+                className="btn tap min-h-[44px] mono !normal-case justify-center">
+                {d > 0 ? `+${d}` : d}
+              </LockedChip>
+            ) : (
+              <button key={d} className="btn tap min-h-[44px] mono !normal-case"
                 onClick={() => moveTo(pos + d)}>
                 {d > 0 ? `+${d}` : d}
               </button>
-            ))}
+            )))}
           </div>
           <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
             <Field label="Go to position">
-              <input className="field" placeholder={String(pos)} value={absTarget} disabled={!canFocus}
+              <input className="field" placeholder={String(pos)} value={absTarget}
+                readOnly={!canFocus} aria-readonly={!canFocus || undefined}
                 onChange={(e) => setAbsTarget(e.target.value)} />
             </Field>
-            <button className="btn tap min-h-[44px]" disabled={!canFocus || !foc || absTargetInvalid || running}
-              onClick={() => moveTo(absTargetNum)}>Go</button>
+            {/* UX #24 — GO was the finding's named example: four different
+                blockers collapsed into one native `disabled`, with no title, no
+                aria-label and no note. It now names the one that applies. */}
+            {goReason ? (
+              <LockedChip reason={goReason} className="btn tap min-h-[44px] justify-center">
+                Go
+              </LockedChip>
+            ) : (
+              <button className="btn tap min-h-[44px]"
+                onClick={() => moveTo(absTargetNum)}>Go</button>
+            )}
             {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
                 (they can't have a focuser move in flight to halt).
 
@@ -266,14 +309,20 @@ export default function FocusView() {
                 carries (filled-square glyph + 2px border + a capped-luminance
                 fill), so "stop the thing" has one silhouette across the app
                 instead of a different red outline per view. */}
-            <button
-              className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
-              style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
-              disabled={!canFocus}
-              onClick={() => act(() => api.post("/api/focuser/halt"))}>
-              <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
-              Halt
-            </button>
+            {haltReason ? (
+              <LockedChip reason={haltReason}
+                className="btn btn-danger tap min-h-[44px] !border-2 justify-center">
+                Halt
+              </LockedChip>
+            ) : (
+              <button
+                className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
+                style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
+                onClick={() => act(() => api.post("/api/focuser/halt"))}>
+                <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
+                Halt
+              </button>
+            )}
           </div>
         </Panel>
 
@@ -295,17 +344,24 @@ export default function FocusView() {
                 steps_each_side: d.steps_each_side, binning: d.binning,
               }));
             };
+            // UX #24: `focusButtonState` already computes excellent gating copy —
+            // it was just handed to `title=`, which a fingertip never fires. The
+            // hero keeps its own chrome (a lock-glyph 56px button, not a chip) and
+            // the reason is now spoken by aria-label AND printed underneath.
             return (
-              <button
-                className={`btn btn-accent w-full tap-lg min-h-[56px] mb-3 ${bs.disabled ? "opacity-40" : ""}`}
-                aria-disabled={bs.disabled || undefined}
-                title={bs.reason ?? undefined}
-                onClick={bs.disabled ? undefined : onTap}
-              >
-                {bs.locked && <Icon name="lock" size={13} className="inline -mt-0.5 mr-1.5" />}
-                {!bs.locked && <Icon name="focus" size={14} className="inline -mt-0.5 mr-1.5" />}
-                {bs.label}
-              </button>
+              <>
+                <button
+                  className={`btn btn-accent w-full tap-lg min-h-[56px] ${bs.disabled ? "opacity-40 mb-1.5" : "mb-3"}`}
+                  aria-disabled={bs.disabled || undefined}
+                  aria-label={bs.reason ? `${bs.label} — ${bs.reason}` : undefined}
+                  onClick={bs.disabled ? undefined : onTap}
+                >
+                  {bs.locked && <Icon name="lock" size={13} className="inline -mt-0.5 mr-1.5" />}
+                  {!bs.locked && <Icon name="focus" size={14} className="inline -mt-0.5 mr-1.5" />}
+                  {bs.label}
+                </button>
+                {bs.reason && <LockedNote reason={bs.reason} className="mb-3" />}
+              </>
             );
           })()}
 
@@ -321,36 +377,62 @@ export default function FocusView() {
             <>
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <Field label="Exposure (s)">
-                  <input className="field" value={afExposure} disabled={!canFocus} onChange={(e) => setAfExposure(e.target.value)} />
+                  <input className="field" value={afExposure}
+                    readOnly={!canFocus} aria-readonly={!canFocus || undefined}
+                    onChange={(e) => setAfExposure(e.target.value)} />
                 </Field>
                 <Field label="Step size" hint={HELP.stepSize}>
-                  <input className="field" value={afStep} disabled={!canFocus} onChange={(e) => setAfStep(e.target.value)} />
+                  <input className="field" value={afStep}
+                    readOnly={!canFocus} aria-readonly={!canFocus || undefined}
+                    onChange={(e) => setAfStep(e.target.value)} />
                 </Field>
                 {filterNames.length > 0 && (
                   <Field label="Filter">
-                    <select className="field" value={afFilter} disabled={!canFocus}
-                      onChange={(e) => setAfFilter(e.target.value)}>
-                      <option value="">current</option>
-                      {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
-                    </select>
+                    {/* <select> has no `readOnly`; the locked state shows the value
+                        through the house locked stand-in instead of a native
+                        `disabled` select with no reachable reason. */}
+                    {readOnlyReason ? (
+                      <LockedChip reason={readOnlyReason} className="btn w-full">
+                        {afFilter === "" ? "current" : filterNames[Number(afFilter)] ?? "current"}
+                      </LockedChip>
+                    ) : (
+                      <select className="field" value={afFilter}
+                        onChange={(e) => setAfFilter(e.target.value)}>
+                        <option value="">current</option>
+                        {filterNames.map((name, i) => <option key={`${i}-${name}`} value={i}>{name}</option>)}
+                      </select>
+                    )}
                   </Field>
                 )}
                 <Field label="Binning">
-                  <select className="field" value={afBin} disabled={!canFocus}
-                    onChange={(e) => setAfBin(e.target.value)}>
-                    {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
-                  </select>
+                  {readOnlyReason ? (
+                    <LockedChip reason={readOnlyReason} className="btn w-full">
+                      {afBin}×{afBin}
+                    </LockedChip>
+                  ) : (
+                    <select className="field" value={afBin}
+                      onChange={(e) => setAfBin(e.target.value)}>
+                      {afBinOptions.map((b) => <option key={b} value={b}>{b}×{b}</option>)}
+                    </select>
+                  )}
                 </Field>
               </div>
-              <button className="btn btn-accent w-full tap-lg min-h-[56px]" disabled={!canFocus || !foc || running}
-                onClick={() => act(() => api.post("/api/focuser/autofocus", {
-                  exposure_s: Number(afExposure) || 2,
-                  step: Number(afStep) || 350,
-                  binning: Number(afBin) || 2,
-                  ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
-                }))}>
-                {running ? "Running…" : <><Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus</>}
-              </button>
+              {focuserReason ? (
+                <LockedChip reason={focuserReason}
+                  className="btn btn-accent w-full tap-lg min-h-[56px] justify-center">
+                  {running ? "Running…" : "Run Autofocus"}
+                </LockedChip>
+              ) : (
+                <button className="btn btn-accent w-full tap-lg min-h-[56px]"
+                  onClick={() => act(() => api.post("/api/focuser/autofocus", {
+                    exposure_s: Number(afExposure) || 2,
+                    step: Number(afStep) || 350,
+                    binning: Number(afBin) || 2,
+                    ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
+                  }))}>
+                  <Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus
+                </button>
+              )}
             </>
           )}
           <p className="text-[11px] text-dim mt-3 leading-relaxed">
