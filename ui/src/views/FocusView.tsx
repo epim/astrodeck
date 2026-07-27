@@ -260,9 +260,20 @@ export default function FocusView() {
             <button className="btn tap min-h-[44px]" disabled={!canFocus || !foc || absTargetInvalid || running}
               onClick={() => moveTo(absTargetNum)}>Go</button>
             {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
-                (they can't have a focuser move in flight to halt). */}
-            <button className="btn btn-danger tap min-h-[44px]" disabled={!canFocus}
-              onClick={() => act(() => api.post("/api/focuser/halt"))}>Halt</button>
+                (they can't have a focuser move in flight to halt).
+
+                UX #14 / S3: the SAME non-hue danger encoding Capture's Stop now
+                carries (filled-square glyph + 2px border + a capped-luminance
+                fill), so "stop the thing" has one silhouette across the app
+                instead of a different red outline per view. */}
+            <button
+              className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
+              style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
+              disabled={!canFocus}
+              onClick={() => act(() => api.post("/api/focuser/halt"))}>
+              <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
+              Halt
+            </button>
           </div>
         </Panel>
 

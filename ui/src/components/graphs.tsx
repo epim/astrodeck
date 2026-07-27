@@ -141,11 +141,22 @@ export const VCurve = memo(function VCurve({ points, best, fit = null, running =
           </g>
         );
       })}
-      <text x={12} y={padT + 4} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">HFR</text>
+      {/* UX #43: the y-axis TITLE used to sit at (12, padT+4) — the same baseline
+          as the TOPMOST tick label, which is right-anchored at padL-6 and so
+          reaches back to x≈26. The two overstruck each other ("HFR2.8", 40px² of
+          overlap, both 11px). A y-axis title belongs rotated in the gutter, not
+          on a tick's row: rotated -90° and centred on the plot it clears the
+          tick column (which ends at x≈26) entirely and reads as an axis title
+          rather than a stray datum. */}
+      <text transform={`translate(14 ${padT + plotH / 2}) rotate(-90)`} textAnchor="middle"
+        fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono" letterSpacing="1.5">HFR</text>
 
-      {/* empty frame hint — the grid stays put so points land into it (F6) */}
+      {/* empty frame hint — the grid stays put so points land into it (F6).
+          UX #43: offset off the plot's vertical centre, because the f=0.5
+          gridline runs exactly through padT + plotH/2 and was striking the
+          text through. Sits in the clear band between the 0.25 and 0.5 lines. */}
       {!hasData && (
-        <text x={padL + plotW / 2} y={padT + plotH / 2} textAnchor="middle"
+        <text x={padL + plotW / 2} y={padT + plotH * 0.38} textAnchor="middle"
           fill="var(--text-faint)" fontSize={11} fontFamily="IBM Plex Mono" letterSpacing="2">
           {running ? "MEASURING…" : "RUN AUTOFOCUS"}
         </text>
@@ -192,13 +203,36 @@ export const VCurve = memo(function VCurve({ points, best, fit = null, running =
         </g>
       )}
 
-      {/* x-axis position extents */}
-      <text x={padL} y={h - 6} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">{x0}</text>
-      <text x={w - padR} y={h - 6} textAnchor="end" fill="var(--text-dim)" fontSize={11}
-        fontFamily="IBM Plex Mono">{x1}</text>
+      {/* x-axis. UX #43: with no data the extents were the 0..1 FALLBACK domain
+          printed as if they were focuser positions — two placeholder numbers a
+          reader has no way to tell from real ones. Print the extents only when
+          they are measured; otherwise name the axis instead. */}
+      {hasData ? (
+        <>
+          <text x={padL} y={h - 6} fill="var(--text-dim)" fontSize={11} fontFamily="IBM Plex Mono">{x0}</text>
+          <text x={w - padR} y={h - 6} textAnchor="end" fill="var(--text-dim)" fontSize={11}
+            fontFamily="IBM Plex Mono">{x1}</text>
+        </>
+      ) : (
+        <text x={padL + plotW / 2} y={h - 6} textAnchor="middle" fill="var(--text-faint)"
+          fontSize={11} fontFamily="IBM Plex Mono" letterSpacing="1.5">FOCUSER POSITION</text>
+      )}
     </svg>
   );
 });
+
+// UX #15 / S3. RA and DEC were separated by HUE ALONE — `--accent` vs `--warn`,
+// both `stroke-width: 1.5` with `stroke-dasharray: none`. In night mode the red
+// LUT collapses those two hues to ~1.2:1 of each other, and telling RA drift
+// (periodic error, wind) from a DEC excursion (backlash, polar misalignment) is
+// the only reason this chart exists. So each series now carries a SECOND,
+// non-hue channel that survives a monochrome palette: RA is the solid trace,
+// DEC is dashed. The legend stops being two coloured words and draws the actual
+// stroke beside each word, so the key is legible without perceiving colour at
+// all — the same shape-over-hue rule `.led-on`/`.led-off`/`.led-bad` already
+// follow.
+const RA_DASH: string | undefined = undefined; // solid
+const DEC_DASH = "7 4";
 
 export const GuideGraph = memo(function GuideGraph({ samples }: { samples: { t: number; ra: number; dec: number }[] }) {
   const w = 420, h = 140, mid = h / 2;
@@ -216,12 +250,25 @@ export const GuideGraph = memo(function GuideGraph({ samples }: { samples: { t: 
       <line x1={0} x2={w} y1={mid} y2={mid} stroke="var(--line-bright)" vectorEffect="non-scaling-stroke" />
       {samples.length > 1 && (
         <>
-          <path d={line("ra")} fill="none" stroke="var(--accent)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
-          <path d={line("dec")} fill="none" stroke="var(--warn)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+          <path d={line("ra")} fill="none" stroke="var(--accent)" strokeWidth={1.4}
+            strokeDasharray={RA_DASH} vectorEffect="non-scaling-stroke" />
+          <path d={line("dec")} fill="none" stroke="var(--warn)" strokeWidth={1.4}
+            strokeDasharray={DEC_DASH} vectorEffect="non-scaling-stroke" />
         </>
       )}
-      <text x={4} y={14} fill="var(--accent)" fontSize={12} fontFamily="IBM Plex Mono">RA</text>
-      <text x={30} y={14} fill="var(--warn)" fontSize={12} fontFamily="IBM Plex Mono">DEC</text>
+      {/* Chart had no empty state at all — a bare grid reads as "guiding, dead
+          flat" rather than "no data". Say which it is. */}
+      {samples.length < 2 && (
+        <text x={w / 2} y={mid + 16} textAnchor="middle" fill="var(--text-faint)"
+          fontSize={11} fontFamily="IBM Plex Mono" letterSpacing="2">NO GUIDE DATA YET</text>
+      )}
+      {/* legend — each entry draws its OWN stroke pattern, not just its hue */}
+      <line x1={4} x2={22} y1={10} y2={10} stroke="var(--accent)" strokeWidth={1.8}
+        strokeDasharray={RA_DASH} vectorEffect="non-scaling-stroke" />
+      <text x={26} y={14} fill="var(--accent)" fontSize={12} fontFamily="IBM Plex Mono">RA</text>
+      <line x1={54} x2={72} y1={10} y2={10} stroke="var(--warn)" strokeWidth={1.8}
+        strokeDasharray={DEC_DASH} vectorEffect="non-scaling-stroke" />
+      <text x={76} y={14} fill="var(--warn)" fontSize={12} fontFamily="IBM Plex Mono">DEC</text>
       <text x={w - 4} y={mid - 2 * scale - 3} textAnchor="end" fill="var(--text-dim)" fontSize={11}
         fontFamily="IBM Plex Mono">+2"</text>
     </svg>
