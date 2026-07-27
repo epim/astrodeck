@@ -21,7 +21,8 @@
 // J2000 invariant: center is always J2000; never mix live JNow mount RA in.
 
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type JSX, type PointerEvent as RPointerEvent,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX,
+  type PointerEvent as RPointerEvent,
   type KeyboardEvent as RKeyboardEvent, type CSSProperties,
 } from "react";
 import type { CatalogEntry } from "../../types";
@@ -506,6 +507,47 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   const ccx = boxPx / 2;
   const ccy = boxPx / 2;
 
+  // "Your camera · WxH" geometry. Two hard constraints, and they used to fight:
+  //
+  //   RIGHT edge = ccx - 16. The 16px clearance from dead-centre is the wave-2
+  //     G3 guard: the rotate handle's stalk and ring live in the central column
+  //     and touch the frame's top edge — the exact spot this label is pinned to.
+  //     That clearance is preserved EXACTLY, at every width, below.
+  //   LEFT edge >= 0. It wasn't: measured on the real build at 390px the label
+  //     started at x=-9 and read "our camera"; at 412px it started 14px outside
+  //     the canvas box. Its natural width (188px) is simply wider than the
+  //     163px of canvas that exists to the left of the guard.
+  //
+  // Both cannot hold on one line, so the label gets a second line instead of
+  // being slid off the screen. `maxWidth` is the clamp — the BROWSER measures
+  // the glyphs, which is the one measurement that is never a guess (a hardcoded
+  // character width is exactly what the previous pass rightly refused to ship).
+  const camGuardRight = ccx - 16;
+  const camMaxW = Math.max(40, camGuardRight);
+  // Wrapping means the label's height is no longer a constant, and it has to
+  // grow UP (away from the frame edge and the handle), not down over the frame.
+  // That needs the RENDERED height — hence the ref + ResizeObserver below, not
+  // an assumed line-height. On one line it reproduces the old position to ~1px:
+  // old top was ccy - frameHalfHcss - 18, and a measured one-line box is 16.5px
+  // tall, so the new top lands at ccy - frameHalfHcss - 19.5.
+  const camLabelRef = useRef<HTMLSpanElement | null>(null);
+  const [camLabelH, setCamLabelH] = useState(0);
+  useLayoutEffect(() => {
+    const el = camLabelRef.current;
+    if (!el) {
+      setCamLabelH(0);
+      return;
+    }
+    const read = () => setCamLabelH(el.getBoundingClientRect().height);
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [haveOptics]);
+  // Bottom edge parks 3px above the frame's top edge; clamped so a tall frame
+  // (zoomed in) can't push the label off the TOP of the canvas either.
+  const camTop = Math.max(2, ccy - frameHalfHcss - 3 - camLabelH);
+
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -513,7 +555,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         role="application"
         aria-label="Sky framing canvas. Arrow keys nudge center, square-bracket keys rotate, plus and minus zoom. On touch, swiping scrolls the page until you turn on finger drag."
         tabIndex={0}
-        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] max-w-[720px] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        className="astro-surface relative aspect-square w-full min-w-[min(320px,calc(100vw-2rem))] mx-auto select-none outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -522,6 +564,17 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         style={{
           cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab",
           touchAction,
+          // The 720px cap, plus a viewport-height cap the square never had.
+          // The canvas is square and width-driven, so in LANDSCAPE it grew to
+          // the column width and became TALLER than the screen: measured on a
+          // rotated phone, a 720x720 canvas against a 342px scrollport — one
+          // whole screenful with no chip, no labels, no controls on it (see
+          // shots/before-phone-landscape-full-screen3.png). 85svh keeps the
+          // whole map, and its escape chip, inside one screen. Inline rather
+          // than a Tailwind arbitrary value so the cap cannot silently vanish
+          // if the class fails to generate — losing it would blow the 720px
+          // cap too, on every viewport.
+          maxWidth: "min(720px, 85svh)",
         }}
       >
         {/* 1a. WebGL tile engine (spec §5): mounts for survey mode when a slug
@@ -659,13 +712,30 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               collision behind the invisible-handle bug). A fixed 16px clearance
               is width-independent and comfortably exceeds the handle's widest
               visible reach (10 viewBox-unit ring radius = 1% of canvas width,
-              <=7.2px even at the 720px canvas cap). */}
+              <=7.2px even at the 720px canvas cap).
+              The outer span is the positioned box (maxWidth clamps the left
+              edge to the canvas; see camGuardRight/camTop above); the inner one
+              is INLINE so its plate hugs each line instead of painting one wide
+              slab, and the size half is nowrap so a wrap can only ever fall
+              between "Your camera" and the numbers. */}
           {haveOptics && (
             <span
-              className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45"
-              style={{ left: ccx - 16, top: ccy - frameHalfHcss - 18, transform: "translateX(-100%)" }}
+              ref={camLabelRef}
+              className="absolute text-[12px] mono text-right leading-snug"
+              style={{
+                left: camGuardRight,
+                top: camTop,
+                maxWidth: camMaxW,
+                transform: "translateX(-100%)",
+                overflowWrap: "anywhere",
+              }}
             >
-              Your camera · {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}
+              <span
+                className="px-1 bg-black/45"
+                style={{ boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" } as CSSProperties}
+              >
+                Your camera <span className="whitespace-nowrap">· {fmtAngle(fov.fov_x_deg)}×{fmtAngle(fov.fov_y_deg)}</span>
+              </span>
             </span>
           )}
           {/* object-size legend, pinned to the right of the ellipse — CLAMPED to
@@ -731,23 +801,42 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               naming a mode, because the question a thumb is about to ask is
               "what happens if I swipe here?". Touch pointers only: on a mouse
               it would be dead chrome, since touch-action never applies to one.
-              stopPropagation keeps the tap from being read as a pan start. */}
+              stopPropagation keeps the tap from being read as a pan start.
+
+              STICKY, not merely absolute (the residual the scroll-trap fix
+              left behind). Pinned to the canvas's top-left it rode the canvas:
+              armed, scroll the sky up and the chip leaves with it while the
+              surface that eats your swipes stays under your thumb. Measured
+              before this change, phone 390 portrait: canvas still on screen
+              (bottom y=141) with the chip at y=-212 — the only control that
+              can give the page back was gone. In landscape it is worse: the
+              square canvas is a whole screenful on its own (measured 720px
+              tall against a 342px scrollport), so an armed user could face a
+              screen that is nothing but trap.
+              `position: sticky` inside a canvas-sized box is exactly the
+              invariant we want — the chip is on screen whenever ANY pixel of
+              the canvas is, and gone once none is (no canvas, nothing to
+              escape). The wrapper is inert; only the button takes taps. */}
         {touchDevice && (
-          <button
-            type="button"
-            aria-pressed={dragSky}
-            aria-label={dragSky
-              ? "Finger drag moves the sky. Activate to swipe-scroll the page instead."
-              : "Swiping scrolls the page. Activate to drag the sky with one finger."}
-            className={`absolute left-1 top-1 z-20 tap min-h-[44px] px-2 inline-flex items-center gap-1.5
-              rounded-[10px] border bg-black/75 text-[12px] mono uppercase tracking-wider
-              ${dragSky ? "border-accent text-accent" : "border-line2 text-dim"}`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={() => setDragSky((v) => !v)}
-          >
-            <span aria-hidden>{dragSky ? "✥" : "⇕"}</span>
-            <span>{dragSky ? "Swipe moves sky" : "Swipe scrolls page"}</span>
-          </button>
+          <div className="absolute inset-0 z-20 pointer-events-none">
+            <div className="sticky top-1 p-1">
+              <button
+                type="button"
+                aria-pressed={dragSky}
+                aria-label={dragSky
+                  ? "Finger drag moves the sky. Activate to swipe-scroll the page instead."
+                  : "Swiping scrolls the page. Activate to drag the sky with one finger."}
+                className={`pointer-events-auto tap min-h-[44px] px-2 inline-flex items-center gap-1.5
+                  rounded-[10px] border bg-black/75 text-[12px] mono uppercase tracking-wider
+                  ${dragSky ? "border-accent text-accent" : "border-line2 text-dim"}`}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={() => setDragSky((v) => !v)}
+              >
+                <span aria-hidden>{dragSky ? "✥" : "⇕"}</span>
+                <span>{dragSky ? "Swipe moves sky" : "Swipe scrolls page"}</span>
+              </button>
+            </div>
+          </div>
         )}
 
       </div>
