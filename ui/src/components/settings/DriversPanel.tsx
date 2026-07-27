@@ -428,7 +428,18 @@ export default function DriversPanel(): JSX.Element {
                   <span className="mono text-[10px] text-dim truncate">{d.status.detail}</span>
                 )}
               </div>
-              <p className="text-[11px] text-dim mt-0.5 leading-snug truncate">
+              {/* `truncate` is one hard-cut line, and offersSummary() joins
+                  EVERY device a driver offers. On the simulator that is 11
+                  entries / ~1805px of text in a 325px column, so a phone user
+                  saw "camera: Simulated " and nothing else — 82% of the line
+                  gone with no affordance to reach it, and no title fallback
+                  (which would not fire on touch anyway).
+
+                  line-clamp-2 gives two real lines on a phone and still clamps
+                  on a narrow desktop column; an error string stays on one line
+                  because it is short and should not push the row around. */}
+              <p className={`text-[11px] text-dim mt-0.5 leading-snug ${
+                d.status.reachable ? "line-clamp-2" : "truncate"}`}>
                 {d.status.reachable ? offersSummary(d) : d.status.error}
               </p>
             </div>
