@@ -70,7 +70,13 @@ export default function CaptureView() {
   const [gain, setGain] = useState("120");
   const [offset, setOffset] = useState("30");
   const [binning, setBinning] = useState("1");
-  const [save, setSave] = useState(false);
+  // UX #5: this defaulted to OFF, so a beginner could press FIRST LIGHT then
+  // LOOP, watch pictures appear all night, and find nothing on disk in the
+  // morning — the switch carried no help text, no (i), and no mention in the
+  // setup checklist. The novice-safe default is to KEEP what you shot; the
+  // expert case (framing/test frames you don't want to keep) is one tap away
+  // and is now the thing that's explained, rather than the other way round.
+  const [save, setSave] = useState(true);
   const [target, setTarget] = useState("");
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
@@ -464,13 +470,26 @@ export default function CaptureView() {
             )}
           </div>
 
-          <div className="flex items-center gap-3 mt-3">
-            <Toggle checked={save} onChange={setSave} disabled={!canCapture} label="Save FITS to library" />
-            <span className="text-xs text-dim">save FITS to library</span>
+          {/* UX #5: the switch is now ON by default AND says what each state
+              means — the state is a WORD (showState) as well as a position, so
+              it survives the night palette, and the consequence is stated in
+              prose instead of being left to be discovered the next morning. */}
+          <div className="mt-3 border-t border-line pt-3">
+            <div className="flex items-center gap-3">
+              <Toggle checked={save} onChange={setSave} disabled={!canCapture}
+                label="Save FITS to library" showState />
+              <span className="text-xs text-dim">save FITS to library</span>
+            </div>
+            <p className="text-[11px] text-dim mt-1.5 leading-snug">
+              {save
+                ? "Every frame you shoot here is written to the library on disk. Turn this off for framing and test shots you don't want to keep."
+                : "Frames are shown on screen only — nothing is written to disk. Turn this on before a session you want to keep."}
+            </p>
           </div>
           {save && (
             <div className="mt-2">
-              <Field label="Target name">
+              <Field label="Target name"
+                hint="Names the folder and the files on disk. Leave it blank and the frames still save, just without a target name.">
                 <input className="field" placeholder="M42" value={target} disabled={!canCapture}
                   onChange={(e) => setTarget(e.target.value)} />
               </Field>
@@ -539,12 +558,30 @@ export default function CaptureView() {
               {looping ? "Looping…" : "Loop"}
             </button>
             {/* Stop is urgent -> stays 1-tap (R9), enlarged for touch. Disabled for
-                viewers (no capture to stop — they can't have started one). */}
+                viewers (no capture to stop — they can't have started one).
+
+                UX #14 / S3. STOP and LOOP were the same 90×56 ghost box with the
+                same fill and borders 0.05 alpha apart; in night mode their text
+                colours measure ~1.26:1 of each other, so the abort control was
+                separated from the control next to it by HUE ALONE. Three
+                NON-HUE channels now carry it, so it is findable by silhouette:
+                  · GLYPH  — the filled square, the same shape `.led-bad` uses
+                             for "bad" so the vocabulary is already learned
+                  · WEIGHT — a 2px border where every neighbour is 1px
+                  · FILL   — the only FILLED box in the row
+                The fill is deliberately a capped-luminance wash rather than a
+                bright solid: Mount's full-width solid STOP is the object the
+                novice measured as the brightest thing on a dark-adapted screen,
+                which is the same failure from the other side. */}
             <button
-              className={`btn btn-danger tap-lg min-h-[56px] ${stopPressed ? "scale-95 brightness-110" : ""}`}
+              className={`btn btn-danger tap-lg min-h-[56px] !border-2 inline-flex items-center justify-center gap-1.5 ${stopPressed ? "scale-95 brightness-110" : ""}`}
+              style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
               aria-pressed={stopPressed}
               disabled={!canCapture}
               onClick={onStop}>
+              {/* fill-current makes it a SOLID square — `.led-bad`'s shape,
+                  which is the app's existing "this one is the bad one" mark. */}
+              <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
               Stop
             </button>
           </div>
