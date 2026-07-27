@@ -105,6 +105,33 @@ export default function GuideView() {
   // seeds the existing GuideSettingsDrawer with recommended params for hand
   // tuning, reusing the AlgoParams editor rather than building a new one.
   const [tuningSeed, setTuningSeed] = useState<GuideSettingsPutBody | null>(null);
+  // ------------------------------------------------- UX #24: stated reasons
+  // Start / Stop / Force Recalibrate / Dither were natively `disabled` with no
+  // title, no aria-label and no note: on the tablet, four dim silent boxes.
+  // Each blocker is now a sentence, rendered through this file's `HonestButton`
+  // (dim + aria-disabled + focusable + tap-to-explain) with the same sentence
+  // printed underneath for anyone who never presses it.
+  const guideReadOnlyReason = canGuide
+    ? null
+    : `Read-only session — ${accessPhrase("control.guide")} required`;
+  const noGuiderReason = connected
+    ? null
+    : "No guider is connected — set one up on the Equipment page";
+  const startReason =
+    guideReadOnlyReason ?? noGuiderReason
+    ?? (stats?.guiding ? "Guiding is already running"
+      : acting ? "Still working on the last command" : null);
+  const stopReason =
+    guideReadOnlyReason ?? noGuiderReason
+    ?? (!stats?.guiding ? "Guiding isn't running — there is nothing to stop" : null);
+  const calibrateReason =
+    guideReadOnlyReason ?? noGuiderReason
+    ?? (acting ? "Still working on the last command" : null);
+  const ditherReason =
+    guideReadOnlyReason ?? noGuiderReason
+    ?? (!stats?.guiding ? "Start guiding first — a dither nudges the star and re-settles" : null);
+  const explain = (r: string) => showToast("info", r);
+
   useEffect(() => {
     let cancelled = false;
     if (!connected) { setCalReport(null); return; }
@@ -178,28 +205,37 @@ export default function GuideView() {
             </p>
           )}
           <div className="flex flex-col gap-2">
-            <button className="btn btn-accent" disabled={!canGuide || !connected || stats?.guiding || acting}
+            {/* min-h-11: these measured 34px tall, under the 44px touch floor. */}
+            <HonestButton className="btn btn-accent min-h-11" reason={startReason}
+              onExplain={explain}
               onClick={() => act(() => api.post("/api/guide/start"))}>
               <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />Start Guiding
-            </button>
-            <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
+            </HonestButton>
+            {startReason && <LockedNote reason={startReason} className="-mt-1" />}
+            <HonestButton className="btn min-h-11" reason={stopReason}
+              onExplain={explain}
               onClick={() => act(() => api.post("/api/guide/stop"))}>
               Stop
-            </button>
-            <button className="btn" disabled={!canGuide || !connected || acting}
+            </HonestButton>
+            {stopReason && <LockedNote reason={stopReason} className="-mt-1" />}
+            <HonestButton className="btn min-h-11" reason={calibrateReason}
+              onExplain={explain}
               onClick={() => act(async () => {
                 await api.post("/api/guide/calibrate");
                 showToast("info", "Recalibrating — a fresh calibration is running");
               })}>
               Force Recalibrate
-            </button>
+            </HonestButton>
+            {calibrateReason && <LockedNote reason={calibrateReason} className="-mt-1" />}
             <div className="grid grid-cols-[1fr_auto] gap-2 items-end mt-2">
               <label className="flex flex-col gap-1">
                 <span className="label">Dither (px)</span>
-                <input className="field" value={ditherPx} disabled={!canGuide}
+                <input className="field" value={ditherPx}
+                  readOnly={!canGuide} aria-readonly={!canGuide || undefined}
                   onChange={(e) => setDitherPx(e.target.value)} />
               </label>
-              <button className="btn" disabled={!canGuide || !connected || !stats?.guiding}
+              <HonestButton className="btn min-h-11" reason={ditherReason}
+                onExplain={explain}
                 onClick={() => act(() => {
                   // UX-24: send only the settle fields the user set; blanks keep
                   // the guider's default. (Bridge honors all; native → timeout.)
@@ -215,25 +251,26 @@ export default function GuideView() {
                   });
                 })}>
                 Dither
-              </button>
+              </HonestButton>
             </div>
+            {ditherReason && <LockedNote reason={ditherReason} />}
             <div className="grid grid-cols-3 gap-2 mt-1">
               <label className="flex flex-col gap-1">
                 <span className="label !text-[9px]">settle px</span>
                 <input className="field !py-1" placeholder="1.5" value={settlePixels}
-                  disabled={!canGuide} inputMode="decimal"
+                  readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
                   onChange={(e) => setSettlePixels(e.target.value)} />
               </label>
               <label className="flex flex-col gap-1">
                 <span className="label !text-[9px]">settle s</span>
                 <input className="field !py-1" placeholder="8" value={settleTime}
-                  disabled={!canGuide} inputMode="decimal"
+                  readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
                   onChange={(e) => setSettleTime(e.target.value)} />
               </label>
               <label className="flex flex-col gap-1">
                 <span className="label !text-[9px]">timeout s</span>
                 <input className="field !py-1" placeholder="60" value={settleTimeout}
-                  disabled={!canGuide} inputMode="decimal"
+                  readOnly={!canGuide} aria-readonly={!canGuide || undefined} inputMode="decimal"
                   onChange={(e) => setSettleTimeout(e.target.value)} />
               </label>
             </div>
@@ -549,6 +586,19 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
     else panelRef.current?.focus({ preventScroll: true });
   }, [jump, open]);
 
+  // UX #24: same treatment for the tuning drawer's own gates. The <select>s
+  // below keep the native attribute (there is no `readOnly` for a select and
+  // the substitute belongs in ui.tsx as a primitive), so the drawer states its
+  // read-only reason ONCE, as text, at the top of the open editor.
+  const tuningReadOnlyReason = canGuide
+    ? null
+    : `Read-only session — ${accessPhrase("control.guide")} required to change guide tuning`;
+  const saveReason = tuningReadOnlyReason ?? (busy ? "Saving the last change…" : null);
+  const clearCalReason =
+    tuningReadOnlyReason
+    ?? (!connected ? "No guider is connected"
+      : busy ? "Saving the last change…" : null);
+
   const save = async () => {
     setBusy(true);
     try {
@@ -596,6 +646,7 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
         </p>
       ) : (
         <div className="flex flex-col gap-3">
+          {tuningReadOnlyReason && <LockedNote reason={tuningReadOnlyReason} />}
           <label className="flex flex-col gap-1">
             <span className="label">RA algorithm</span>
             <select ref={firstControlRef} className="field" value={ra}
@@ -637,23 +688,30 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
           </label>
 
           <div className="flex gap-2 mt-1">
-            <button className="btn btn-accent flex-1" disabled={!canGuide || busy}
+            <HonestButton className="btn btn-accent flex-1 min-h-11" reason={saveReason}
+              onExplain={(r) => onToast("info", r)}
               onClick={() => void save()}>
               Save
-            </button>
-            <button className="btn" disabled={!canGuide || !connected || busy}
-              title="Discard the saved calibration so the next start recalibrates"
-              onClick={async () => {
+            </HonestButton>
+            <HonestButton className="btn min-h-11" reason={clearCalReason}
+              onExplain={(r) => onToast("info", r)}
+              onClick={() => void (async () => {
                 try {
                   await api.del("/api/guide/calibration");
                   onToast("info", "Cleared saved calibration");
                 } catch (e) {
                   onToast("error", (e as Error).message);
                 }
-              }}>
+              })()}>
               Clear Calibration
-            </button>
+            </HonestButton>
           </div>
+          {/* Was `title=` on the button — moved to text, which a tablet can read. */}
+          <p className="text-[11px] text-dim leading-snug">
+            Clear Calibration discards the saved calibration so the next start
+            recalibrates.
+          </p>
+          {clearCalReason && <LockedNote reason={clearCalReason} />}
           <p className="text-[11px] text-faint leading-snug">
             Per-axis parameters start at the PHD2-default set (dossier §15) and
             are editable above — swapping an algorithm resets its params back
