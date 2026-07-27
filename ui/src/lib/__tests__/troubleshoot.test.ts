@@ -106,11 +106,15 @@ test("abort: user abort with no progress block still reads as deliberate", () =>
   assert(d.userInitiated === true, "flagged");
   assert(!/\d+\s*\/\s*\d+|\bafter \d+\b/.test(d.cause), `no fabricated counts: ${d.cause}`);
 });
-test("abort: empty detail on an aborted run is still the user's abort", () =>
-  assert(diagnoseFailure(undefined, { state: "aborted" }).userInitiated === true, "flagged"));
+test("abort: an unknown detail on an aborted run is NOT claimed as the user's", () =>
+  assert(!diagnoseFailure(undefined, { state: "aborted" }).userInitiated, "no claim"));
+// The engine's own SafetyAbort teardown writes the safety message into detail
+// (`_set_state(state="aborted", detail=str(e), end_reason="unsafe")`), so the
+// DETAIL is what separates it from the operator's abort — verified live: an
+// `end_reason: "unsafe"` from an EARLIER run was still sitting on the next
+// run's deliberate abort, because the engine merges state and never clears it.
 test("abort: UNSAFE teardown is a fault, not a user abort", () => {
-  const d = diagnoseFailure("clouds: safety monitor unsafe",
-    { state: "aborted", endReason: "unsafe" });
+  const d = diagnoseFailure("clouds: safety monitor unsafe", { state: "aborted" });
   assert(!d.userInitiated, "not user-initiated");
   assert(d.fix.length > 0, "keeps an advisory");
 });
@@ -118,18 +122,6 @@ test("abort: a fault detail on an aborted run keeps its diagnosis", () => {
   const d = diagnoseFailure("guiding lost", { state: "aborted" });
   assert(!d.userInitiated, "not user-initiated");
   eq(d.topic, "guiding-lost");
-});
-// The engine never CLEARS end_reason at run start, so last night's terminal
-// reason can still be sitting on tonight's abort. Only a reason that describes
-// an ENGINE-initiated abort may veto; dawn_cutoff/cooling_skip/quality all end
-// state="complete" and are therefore always stale here.
-test("abort: a stale non-fault end_reason does not un-do a user abort", () => {
-  for (const stale of ["dawn_cutoff", "cooling_skip", "quality", "complete"]) {
-    const d = diagnoseFailure("sequence aborted", {
-      state: "aborted", endReason: stale, framesDone: 4, framesTotal: 9 });
-    assert(d.userInitiated === true, `stale ${stale} must not invent a fault`);
-    assert(d.cause.includes("4/9 frames"), `frame counts kept for ${stale}`);
-  }
 });
 test("abort: state error is never a user abort", () =>
   assert(!diagnoseFailure("sequence aborted", { state: "error" }).userInitiated, "error"));
