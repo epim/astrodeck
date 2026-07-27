@@ -11,6 +11,7 @@ import { Panel, Toggle } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
 import SessionReviewDrawer from "./SessionReviewDrawer";
+import { sessionDates } from "./sessionDates";
 import { useCanControlCapture, useCanControlMount } from "../../lib/caps";
 import { setIgnoreTonight } from "../../api/weather";
 import { ensurePlanIds } from "../../lib/ids";
@@ -151,6 +152,10 @@ export default function SessionsPanel() {
                 <StatusChip status={r.status} />
                 <span className="mono text-[11px] text-dim">
                   {r.accepted}/{r.total} · {r.nights} night{r.nights === 1 ? "" : "s"}
+                </span>
+                {/* #35 — which "Tonight" is this one? */}
+                <span className="mono text-[11px] text-dim whitespace-nowrap">
+                  {sessionDates(r.created_ts, r.updated_ts)}
                 </span>
                 <div className="flex-1" />
                 {canControl && r.status === "dormant" && (
