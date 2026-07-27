@@ -867,6 +867,16 @@ export default function CaptureView() {
               </span>
             </div>
 
+            {/* Phone-feedback fix: readouts + set-point on their own line, the two
+                actions on a DELIBERATE two-up grid underneath. These five controls
+                measure ~409px of content (54+60+91+67+89 plus four 12px gaps) and
+                the panel is only 324px wide at 390 and 346 at 412 — so a single
+                `flex-wrap` row could never hold them and always spat WARM out onto
+                a line of its own, hard left, orphaned from COOL. It is not a
+                shrink-the-buttons problem: 409 > 346 at every phone width, and the
+                44px floor is not negotiable. Two rows is the honest layout, and
+                pairing the buttons in a grid means they move together or not at
+                all — flex can never orphan one again. */}
             <div className="flex items-end flex-wrap gap-3">
               <Stat label="sensor" value={cam.temperature?.toFixed(1) ?? "—"} unit="°C"
                 tone={cam.temperature != null && cam.temperature < 0 ? "good" : undefined} />
@@ -880,29 +890,31 @@ export default function CaptureView() {
                   aria-invalid={coolerTargetInvalid}
                   onChange={(e) => setCoolerTarget(e.target.value)} />
               </Field>
-              {/* UX #24 — WARM was the finding's named example: natively disabled
-                  whenever the cooler is already off, with no aria-label, no title
-                  and no visible note. On the tablet it was a dim, dead, silent
-                  box. Both cooler buttons now state their blocker. */}
+            </div>
+            {/* UX #24 — WARM was the finding's named example: natively disabled
+                whenever the cooler is already off, with no aria-label, no title
+                and no visible note. On the tablet it was a dim, dead, silent
+                box. Both cooler buttons still state their blocker. */}
+            <div className="grid grid-cols-2 gap-3 mt-3">
               {coolReason ? (
-                <LockedChip reason={coolReason} className="btn tap min-h-[44px]">
+                <LockedChip reason={coolReason} className="btn tap min-h-[44px] w-full justify-center">
                   {cooler?.on ? "Set" : "Cool"}
                 </LockedChip>
               ) : (
                 <button
-                  className={`btn tap min-h-[44px] ${cooler?.on ? "btn-accent border-accent" : ""}`}
+                  className={`btn tap min-h-[44px] w-full ${cooler?.on ? "btn-accent border-accent" : ""}`}
                   aria-pressed={!!cooler?.on}
                   onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum }))}>
                   {cooler?.on ? "Set" : "Cool"}
                 </button>
               )}
               {warmReason ? (
-                <LockedChip reason={warmReason} className="btn tap min-h-[44px]">
+                <LockedChip reason={warmReason} className="btn tap min-h-[44px] w-full justify-center">
                   Warm
                 </LockedChip>
               ) : (
                 <button
-                  className="btn tap min-h-[44px]"
+                  className="btn tap min-h-[44px] w-full"
                   onClick={() => act(() => api.post("/api/camera/cooler", { on: false }))}>
                   Warm
                 </button>
