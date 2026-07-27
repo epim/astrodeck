@@ -55,8 +55,18 @@ export const WIZARD_STEPS: readonly WizardStepDef[] = [
     body: "Open Settings — on a phone it's behind MORE in the bottom bar. Observing Site is the first panel. The default (0, 0) is not a real sky.",
     need: "your real location is saved",
     cta: "Settings", view: "settings" },
+  // The nav hint here is DELIBERATELY the short form. Every other step needs
+  // "on a phone it's behind MORE in the bottom bar", because Settings/Atlas/Plan
+  // really are hidden behind MORE and a novice cannot guess that. Equipment is
+  // not hidden: it is the first item of the phone's bottom bar AND of the sm+
+  // left rail, so "it's the first tab" is both shorter and true on every device,
+  // where "in the bottom bar" was only true on a phone and had to be hedged.
+  // Measured: the long form wrapped to a THIRD line at 390px and made this the
+  // one step whose bar was 181px instead of 164px (21.4% of an iPhone 14 vs
+  // 19.4%). The hint that actually gets people unstuck — scroll down to Rig
+  // Actions — is the one the user needed and is kept verbatim.
   { id: "connect", title: "Connect a rig",
-    body: "Open Equipment — on a phone it's the first tab in the bottom bar. Scroll down to Rig Actions, then Detect hardware rig or Simulator rig.",
+    body: "Open Equipment — it's the first tab. Scroll down to Rig Actions, then Detect hardware rig or Simulator rig.",
     need: "a rig is connected",
     cta: "Equipment", view: "connect" },
   { id: "profile", title: "Save a profile",
