@@ -244,6 +244,15 @@ export default function SequenceView() {
   const finished = ["complete", "error", "aborted"].includes(sequence.state);
   const failed = sequence.state === "error" || sequence.state === "aborted";
   const showPanel = running || finished;        // NOT gated on progress
+  // UX-2026-07-26 #23: one diagnosis for the whole panel — the banner renders
+  // it, and the panel border must not go red-alarm for a run the operator
+  // stopped on purpose.
+  const endDiag = diagnoseFailure(sequence.detail, {
+    state: sequence.state,
+    framesDone: sequence.progress?.frames_done,
+    framesTotal: sequence.progress?.frames_total,
+  });
+  const stoppedByUser = !!endDiag.userInitiated;
 
   // Resume-from-N is offered whenever the BACKEND says the run is recoverable
   // (session_store.recoverable() = the most recent dormant session that actually
@@ -463,7 +472,7 @@ export default function SequenceView() {
         {/* ------------------------------------------- run / status panel */}
         {showPanel && (
           <Panel title={`Sequence · ${sequence.plan_name ?? plan.name ?? ""}`}
-            className={failed ? "!border-bad/60" : ""}
+            className={failed && !stoppedByUser ? "!border-bad/60" : ""}
             right={<SeqStateBadge state={sequence.state} />}>
 
             {/* Failure banner — decoupled from progress so an early (pre-first-frame)
@@ -474,13 +483,7 @@ export default function SequenceView() {
                 echo underneath — that echo was the engine's own wording for the
                 very action the user just took. */}
             {failed && (() => {
-              const diag = diagnoseFailure(sequence.detail, {
-                state: sequence.state,
-                endReason: sequence.end_reason,
-                framesDone: sequence.progress?.frames_done,
-                framesTotal: sequence.progress?.frames_total,
-              });
-              const stoppedByUser = !!diag.userInitiated;
+              const diag = endDiag;
               return (
               <div className={`flex items-start gap-2 border px-3 py-2 mb-3 ${
                 stoppedByUser ? "border-line bg-line2/20" : "border-bad/50 bg-bad/5"}`}>

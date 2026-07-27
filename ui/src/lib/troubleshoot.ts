@@ -82,28 +82,27 @@ const GENERIC: Diagnosis = {
 // non-existent failure at 3am. The engine gives us enough to tell the two
 // apart WITHOUT guessing:
 //   * user abort   -> state "aborted", detail exactly "sequence aborted"
-//                     (SequenceEngine.abort), no fault end_reason
-//   * unsafe abort -> state "aborted", end_reason "unsafe", detail = the
-//                     safety message (SafetyAbort)
+//                     (SequenceEngine.abort)
+//   * unsafe abort -> state "aborted", detail = the safety message (SafetyAbort)
 //   * failure      -> state "error", detail = the exception text
 // The test is deliberately conservative: anything that does not match this
 // exact shape falls through to the normal keyword diagnosis, so a real fault
 // can never be mislabelled "you stopped it".
+//
+// `detail` is the discriminator and `end_reason` deliberately is NOT, which is
+// the opposite of the obvious design. Measured on a live rig: the engine merges
+// state (`self.state = {**self.state, **kw}`) and never clears `end_reason` at
+// run start, so an "unsafe" left behind by an EARLIER run was still sitting on
+// the next run's deliberate abort — vetoing on it put the invented-fault copy
+// straight back. `detail` has no such problem: every terminal path rewrites it,
+// and all four callers of SequenceEngine.abort() (POST /api/sequence/abort,
+// POST /api/disconnect, and forced profile apply/activate) are explicit
+// operator actions, so "sequence aborted" means a human stopped this run.
 const USER_ABORT_DETAIL = "sequence aborted";
-
-// `end_reason` values that mean the ENGINE stopped the run on its own. It is
-// the ONLY veto, because the engine never CLEARS end_reason at run start
-// (`self.state = {**self.state, **kw}`) — a "dawn_cutoff"/"cooling_skip"/
-// "quality" left over from last night's run would otherwise outlive it and
-// turn tonight's deliberate abort back into an invented fault. Those three all
-// terminate state="complete", so they can never describe an abort anyway.
-const FAULT_END_REASONS: readonly string[] = ["unsafe", "error"];
 
 export interface FailureContext {
   /** Terminal sequence state (`SequenceState.state`). */
   state?: string;
-  /** Engine `end_reason` when the run finalized with one. */
-  endReason?: string;
   /** Frames captured / planned — "You stopped the run at 15/18 frames". */
   framesDone?: number;
   framesTotal?: number;
@@ -129,10 +128,7 @@ function userAbortDiagnosis(ctx: FailureContext): Diagnosis {
 /** True when this terminal state is the operator's own hold-to-abort. Pure. */
 export function isUserAbort(raw: string | undefined, ctx?: FailureContext): boolean {
   if (!ctx || ctx.state !== "aborted") return false;
-  // a fault-abort always names its fault in end_reason (e.g. "unsafe")
-  if (ctx.endReason != null && FAULT_END_REASONS.includes(ctx.endReason)) return false;
-  const detail = (raw ?? "").trim().toLowerCase();
-  return detail === "" || detail === USER_ABORT_DETAIL;
+  return (raw ?? "").trim().toLowerCase() === USER_ABORT_DETAIL;
 }
 
 /**
@@ -140,9 +136,9 @@ export function isUserAbort(raw: string | undefined, ctx?: FailureContext): bool
  * cause + first fix + in-app topic. Case-insensitive; first matching rule wins;
  * unknown/empty input returns a safe generic diagnosis. Never throws.
  *
- * Pass `ctx` (the terminal state + end_reason + frame counts) when you have it:
- * it is the only way to tell a deliberate abort from a fault, and without it a
- * user abort reads as an unexplained failure (UX #23).
+ * Pass `ctx` (the terminal state + frame counts) when you have it: it is the
+ * only way to tell a deliberate abort from a fault, and without it a user abort
+ * reads as an unexplained failure (UX #23).
  */
 export function diagnoseFailure(raw: string | undefined, ctx?: FailureContext): Diagnosis {
   if (isUserAbort(raw, ctx)) return userAbortDiagnosis(ctx!);
