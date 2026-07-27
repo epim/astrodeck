@@ -48,6 +48,51 @@ test("WIZARD_STEPS never leaks the real backyard label", () => {
   assert(!blob.includes("Backyard") && !blob.includes("[SITE-LAT]"), "no private site data in copy");
 });
 
+// --- copy contract for the DOCKED BAR (phone feedback) -------------------
+// The bar shows one step at a time, so each step's own text has to carry the
+// whole answer to "what now?": WHERE to go and WHY Next is still grey. These
+// assert the two properties a reviewer cannot eyeball across six strings.
+
+test("every step names the view it sends you to, and where on it", () => {
+  // The view name a novice reads on the nav, per step id.
+  const WHERE: Record<string, string> = {
+    location: "Settings", connect: "Equipment", profile: "Equipment",
+    target: "Atlas", cool: "Capture", frame: "Capture",
+  };
+  for (const s of WIZARD_STEPS) {
+    assert(s.body.includes(WHERE[s.id]), `${s.id} body must name ${WHERE[s.id]}`);
+  }
+  // The step that produced the complaint ("I need to scroll to the bottom of
+  // the page, which is not easy for a user to know about unless we tell them")
+  // must say so out loud.
+  const cool = WIZARD_STEPS.find((s) => s.id === "cool")!;
+  assert(/scroll/i.test(cool.body) && /bottom/i.test(cool.body),
+    "cool step must tell the user to scroll to the BOTTOM of Capture");
+});
+
+test("every step states what Next is waiting for, and only 'location' mentions the default site", () => {
+  for (const s of WIZARD_STEPS) {
+    assert(s.need.trim().length > 0, `${s.id} needs a stated reason for a locked Next`);
+    // Rendered as "Next unlocks once <need>." — so it must not start a sentence.
+    assert(s.need[0] === s.need[0].toLowerCase(), `${s.id} need must be a lowercase clause`);
+    if (s.id !== "location") {
+      assert(!/\(0,\s*0\)|My Observatory/.test(s.body + s.need),
+        `${s.id} must not reference the default site`);
+    }
+  }
+  const loc = WIZARD_STEPS.find((s) => s.id === "location")!;
+  assert(/\(0,\s*0\)/.test(loc.body), "location step should still name the default (0, 0) site");
+});
+
+test("Next's gate is the step's own `done` flag, not a second source of truth", () => {
+  // The bar wires Next to view.steps[activeIndex].done. Flipping ONLY the
+  // signal for the active step must be what ungreys it.
+  const v0 = computeWizard({ ...BLANK, targetCount: 0 }, "target");
+  assert(!v0.steps[v0.activeIndex].done, "target not done with an empty plan");
+  const v1 = computeWizard({ ...BLANK, targetCount: 1 }, "target");
+  assert(v1.steps[v1.activeIndex].done, "target done the moment a target lands in the plan");
+});
+
 const total = passed + failed;
 console.log(`\nfirstRunWizard.test: ${passed}/${total} passed`);
 if (failures.length) console.error(failures.join("\n"));
