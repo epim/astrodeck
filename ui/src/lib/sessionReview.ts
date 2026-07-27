@@ -19,14 +19,26 @@ export interface FrameFilters {
   target_id?: string;
   night?: string;
   verdict?: Verdict;
+  /** Filter BAND (UX #37) — "Ha", "OIII", … A frame carries only its
+   *  `step_id`, so matching needs the plan-side resolver below. */
+  filter?: string;
 }
 
+/** Resolve a frame's filter band from its plan step ("—" when the step has
+ *  none / can't be found — the same string the review cards already print). */
+export type FilterOfStep = (stepId: string) => string;
+
 /** Filter semantics: accepted/rejected filter by EFFECTIVE acceptance;
- *  overridden = any frame carrying an override. */
-export function filterFrames(frames: SessionFrame[], flt: FrameFilters): SessionFrame[] {
+ *  overridden = any frame carrying an override. `filterOf` is required only
+ *  when `flt.filter` is set (UX #37); without it the band filter is inert
+ *  rather than silently hiding everything. */
+export function filterFrames(
+  frames: SessionFrame[], flt: FrameFilters, filterOf?: FilterOfStep,
+): SessionFrame[] {
   return frames.filter((f) => {
     if (flt.target_id && f.target_id !== flt.target_id) return false;
     if (flt.night && f.night !== flt.night) return false;
+    if (flt.filter && filterOf && filterOf(f.step_id) !== flt.filter) return false;
     if (flt.verdict === "accepted" && !effectiveAccepted(f)) return false;
     if (flt.verdict === "rejected" && effectiveAccepted(f)) return false;
     if (flt.verdict === "overridden" && f.override == null) return false;

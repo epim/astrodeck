@@ -67,6 +67,34 @@ test("withOverride touches only the matching frame", () => {
   assert(fs[0].override === null, "input not mutated");
 });
 
+// ---------------------------------------------- filter band (UX #37)
+test("filterFrames: filters by filter band via the step resolver", () => {
+  const fs = [frame({ step_id: "ha" }), frame({ step_id: "oiii" }), frame({ step_id: "ha" })];
+  const bandOf = (id: string) => (id === "ha" ? "Ha" : "OIII");
+  const out = filterFrames(fs, { filter: "Ha" }, bandOf);
+  assert(out.length === 2, `2 Ha frames, got ${out.length}`);
+  assert(filterFrames(fs, { filter: "OIII" }, bandOf).length === 1, "1 OIII frame");
+  assert(filterFrames(fs, { filter: "SII" }, bandOf).length === 0, "no SII frames");
+});
+test("filterFrames: band filter combines with the existing keys", () => {
+  const fs = [frame({ step_id: "ha", night: "n1", auto_accepted: false }),
+              frame({ step_id: "ha", night: "n2" }),
+              frame({ step_id: "oiii", night: "n1" })];
+  const bandOf = (id: string) => (id === "ha" ? "Ha" : "OIII");
+  const out = filterFrames(fs, { filter: "Ha", night: "n1" }, bandOf);
+  assert(out.length === 1 && out[0].night === "n1", "band AND night");
+  assert(filterFrames(fs, { filter: "Ha", verdict: "accepted" }, bandOf).length === 1,
+    "band AND verdict");
+});
+test("filterFrames: band filter is inert without a resolver (never hides all)", () => {
+  const fs = [frame({ step_id: "ha" }), frame({ step_id: "oiii" })];
+  assert(filterFrames(fs, { filter: "Ha" }).length === 2, "inert, not empty");
+});
+test("filterFrames: no band filter → resolver never narrows anything", () => {
+  const fs = [frame({ step_id: "ha" }), frame({ step_id: "oiii" })];
+  assert(filterFrames(fs, {}, () => "Ha").length === 2, "unfiltered");
+});
+
 console.log(`sessionReview.test.ts: ${passed} passed, ${failed} failed`);
 if (failed) {
   failures.forEach((f) => console.error(f));
