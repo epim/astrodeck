@@ -3,7 +3,25 @@ name: ci
 on:
   push:
     branches: [main]
+    # A docs- or scratch-only push should not spend five jobs (one of them
+    # Windows, which bills at 2x). Code paths only.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.remember/**'
+      - 'tools/ux/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.remember/**'
+      - 'tools/ux/**'
+
+# Supersede in-flight runs for the same ref. Pushing a follow-up commit thirty
+# seconds later used to pay for BOTH runs; now the first is cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   server:
@@ -17,6 +35,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          # setup-python's pip cache defaults to globbing **/requirements.txt and
+          # ERRORS when nothing matches. Deps here live in pyproject.toml, so the
+          # path is explicit -- an over-clever cache that fails the build is worse
+          # than no cache at all.
+          cache-dependency-path: '**/pyproject.toml'
       - run: pip install -e ".[dev]"
       # -n auto overrides the repo addopts' -n 12 (tuned for the multi-core dev
       # box): hosted runners have 2-4 cores, and 12 workers oversubscribes them
@@ -34,6 +58,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          # setup-python's pip cache defaults to globbing **/requirements.txt and
+          # ERRORS when nothing matches. Deps here live in pyproject.toml, so the
+          # path is explicit -- an over-clever cache that fails the build is worse
+          # than no cache at all.
+          cache-dependency-path: '**/pyproject.toml'
       # install the relay package + dev extras (pytest, pytest-asyncio, httpx --
       # Starlette's TestClient needs httpx, which requirements.txt omits)
       - run: pip install -e ".[dev]"
@@ -50,6 +80,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
       - run: npm ci
       - run: npm run build
 
@@ -64,6 +96,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # native/ was ~4 of the ~14 billed minutes per run, almost all of it
+      # recompiling unchanged crates. This is the single biggest saving.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native
         with:
           components: clippy, rustfmt
       - name: cargo fmt
@@ -80,6 +117,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          # setup-python's pip cache defaults to globbing **/requirements.txt and
+          # ERRORS when nothing matches. Deps here live in pyproject.toml, so the
+          # path is explicit -- an over-clever cache that fails the build is worse
+          # than no cache at all.
+          cache-dependency-path: '**/pyproject.toml'
       - name: Build the astrodeck_native wheel (maturin)
         run: |
           pip install "maturin>=1.5,<2.0"
@@ -104,6 +147,10 @@ jobs:
   # Windows. The true end-to-end simulator proof is the operator's on-ASCOM-box run
   # documented in docs/comhost.md (the astrotown validation checklist).
   windows-com:
+    # Windows bills at 2x, and this job was 21% of the total spend for 10% of the
+    # wall clock. It guards the COM/ASCOM host, which only Windows can exercise --
+    # valuable, but not on every branch push. Runs on main and on tags.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -114,6 +161,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
+          # setup-python's pip cache defaults to globbing **/requirements.txt and
+          # ERRORS when nothing matches. Deps here live in pyproject.toml, so the
+          # path is explicit -- an over-clever cache that fails the build is worse
+          # than no cache at all.
+          cache-dependency-path: '**/pyproject.toml'
       # Best-effort ASCOM Platform install (registers the Simulators). Hosted
       # runners usually cannot (no admin/GUI installer), so this is allowed to fail
       # and the gate + simulator tests then SKIP — acceptable, documented degradation.
