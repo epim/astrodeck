@@ -27,12 +27,35 @@
 //     configured) so it stays reachable behind the progress chip — but it is no
 //     longer the default state, and nothing is a selectable row until the user
 //     deliberately opens it.
+//   * AND THE OPT-IN LIST IS CAPPED. Opt-in was not enough: opening it handed
+//     the user back the very thing they complained about — 393px of an 844px
+//     iPhone (46.6%) on five steps and 437px (51.8%) on the six-step cooler
+//     rig, growing with every step ever added. It is now a fixed WINDOW of
+//     two-and-a-half rows with its own scroll region, so the expanded height no
+//     longer depends on the step count at all. Re-measured on a live rig,
+//     collapsed / expanded, five-step and six-step:
+//       390x844   164px 19.4%  ->  276px 32.7%   (was 393/46.6 and 437/51.8)
+//       412x915   164px 17.9%  ->  276px 30.2%
+//       440x956   164px 17.2%  ->  276px 28.9%
+//     Collapsed — the state the user is expected to operate the screen
+//     underneath in — is unchanged and inside the protocol's ~25% budget. The
+//     expanded state cannot also fit inside 25%: the step detail alone is 164px
+//     (19.4%), which leaves 47px, one row, for the list. That is a deliberate
+//     trade and the reason the window is a HALF row: the cut edge is the scroll
+//     affordance, and the active row is scrolled into view on open so a
+//     part-configured rig never opens the list on rows it has already finished.
+//     Verified with a real finger (CDP touch drag): the list scrolls 25 -> 98
+//     -> 161 of 161, and tapping a row scrolled into view selects that step and
+//     collapses the list.
 //   * THREE SHORT LINES: title row (with progress + close), instruction + the
 //     gate, button row. Measured after the change, walking ALL SIX steps on all
-//     three phones (the tallest step is whichever body wraps to a third line):
-//       390x844   164px on five steps, 181px on "Connect a rig"  -> 19.4-21.4%
-//       412x915   164px on every step                            -> 17.9%
-//       440x956   164px on every step                            -> 17.2%
+//     three phones. "Connect a rig" was the one step that wrapped to a third
+//     line at 390px and stood 181px (21.4%) instead of 164px; its nav hint is
+//     now the short form (lib/firstRunWizard.ts) and every step measures the
+//     same, with the "scroll down to Rig Actions" hint kept verbatim:
+//       390x844   164px on every step  -> 19.4%   (was 181px / 21.4% on connect)
+//       412x915   164px on every step  -> 17.9%
+//       440x956   164px on every step  -> 17.2%
 //     Against 386px / 45.7% / 42.1% / 40.3% before. The bar's bottom edge
 //     measures 788 against a nav top of 787 on the 390 phone (859/858 and
 //     900/899 on the other two): docked ON the nav, not over it.
@@ -120,16 +143,40 @@ export default function FirstRunWizard(): JSX.Element | null {
   // The full checklist is OPT-IN. This is the single line that encodes the
   // headline fix: a first-time user gets one step, not six selectable rows.
   const [listOpen, setListOpen] = useState(false);
+  const listRef = useRef<HTMLOListElement>(null);
 
+  // Profiles are the ONE step whose signal is not in the store: it is a fetch.
+  // Fetching it only on [open, equipConnected] left the step permanently
+  // unticked — MEASURED on a live rig: POST /api/profiles/capture returned 200
+  // and the bar sat on "Save a profile · 3/6" with Next locked for the rest of
+  // the session, while the cooler and first-frame steps ticked within seconds
+  // of their real signals. The user does exactly what the step says and the bar
+  // calls them a liar; nothing about "keep scrolling to Profiles" tells them a
+  // reload is what unsticks it. So poll — but ONLY inside the window where it
+  // can change anything: the guide is open and no profile exists yet. The
+  // moment one does, `noProfileYet` flips, this effect re-runs and clears the
+  // interval, so a configured rig makes exactly one request.
   const [profileCount, setProfileCount] = useState(0);
+  const noProfileYet = profileCount === 0;
   useEffect(() => {
     if (!open) return;
-    void listProfiles()
-      .then((r) => setProfileCount(r.length))
-      .catch(() => {
-        /* best-effort; leave prior count */
-      });
-  }, [open, equipConnected]);
+    let alive = true;
+    const load = () =>
+      void listProfiles()
+        .then((r) => {
+          if (alive) setProfileCount(r.length);
+        })
+        .catch(() => {
+          /* best-effort; leave prior count */
+        });
+    load();
+    if (!noProfileYet) return () => { alive = false; };
+    const id = window.setInterval(load, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [open, equipConnected, noProfileYet]);
 
   const siteIsDefault = site?.is_default ?? config?.site?.is_default ?? true;
 
@@ -146,6 +193,19 @@ export default function FirstRunWizard(): JSX.Element | null {
     if (view.doneCount > prevDone.current && manualId) setWizardStep(null);
     prevDone.current = view.doneCount;
   }, [view.doneCount, manualId, setWizardStep]);
+
+  // The checklist is a WINDOW now (see the <ol>), so on a part-configured rig
+  // the row marked "now" can start below its fold — the user would open the
+  // list and see only steps they had already finished. Pull the active row into
+  // the window whenever the list opens or the active step moves.
+  // `block: "nearest"` is the non-destructive form: shortest scroll, and no
+  // movement at all when the row is already in view.
+  useEffect(() => {
+    if (!listOpen) return;
+    listRef.current
+      ?.querySelector<HTMLElement>('[aria-current="step"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [listOpen, view.activeId]);
 
   // Auto-open: genuine blank slate only (never-seen + default site + no rig),
   // so a returning/already-set-up user (or astrotown) is never interrupted.
@@ -217,7 +277,26 @@ export default function FirstRunWizard(): JSX.Element | null {
               the only place step rows are selectable — which is now a thing the
               user asked for rather than a thing that happened to them. ---- */}
       {listOpen && (
-        <ol className="flex flex-col border-b border-line px-1 py-1">
+        <ol
+          ref={listRef}
+          // CAPPED + INTERNALLY SCROLLED. The list is opt-in, but opening it
+          // used to hand the user back the thing they complained about: 393px
+          // of an 844px iPhone (46.6%) on five steps, 437px (51.8%) on the
+          // six-step cooler rig, and growing with every step ever added. The
+          // cap is a WINDOW of two-and-a-half 44px rows: the half row is the
+          // scroll affordance (a flush cut looks like the end of the list), and
+          // the 26dvh arm takes over in landscape, where 7rem would be a third
+          // of the screen. Because the window is fixed, the bar's expanded
+          // height no longer depends on how many steps exist.
+          //
+          // This has to be the <ol>'s own scroll region, not the Overlay body's:
+          // .overlay-body already scrolls at 70dvh, so without this the list
+          // pushes the instruction and the Skip/Next row out of the clamped
+          // surface and the user has to scroll the bar to reach its buttons —
+          // worst in landscape, where 70dvh is 273px and the buttons fall off.
+          className="flex flex-col border-b border-line px-1 py-1
+            max-h-[min(7rem,26dvh)] overflow-y-auto overscroll-contain"
+        >
           {view.steps.map((st) => {
             const isActive = st.id === view.activeId;
             return (
@@ -310,8 +389,16 @@ export default function FirstRunWizard(): JSX.Element | null {
         <div className="flex items-center gap-1.5">
           {/* Back is OMITTED at the first step rather than dimmed: a control
               that can never do anything on this screen is noise, and omitting
-              it buys ~44px of width back on a 390px row. */}
-          {!atFirst && (
+              it buys ~44px of width back on a 390px row.
+              The complete branch is the same case, MEASURED: with every step
+              done, this whole card renders off `view.complete` and ignores
+              `activeIndex`, so pressing Back walked its own aria-label back a
+              step ("Back to Cool the camera" -> "Back to Pick a target") and
+              changed NOTHING else on screen — same title, same body, same
+              height, same list. A control whose only effect is to relabel
+              itself is worse than absent: the user presses it expecting to
+              review a step and concludes the bar is broken. */}
+          {!atFirst && !view.complete && (
             <button
               type="button"
               className="btn btn-touch inline-flex items-center justify-center p-0 shrink-0"
