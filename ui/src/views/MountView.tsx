@@ -16,6 +16,19 @@ function AltGlyph({ alt }: { alt: number }) {
   return null;
 }
 
+/** Catalog columns. `cls` carries the narrow-width collapse: Type and Mag are
+ *  lg-only so the table fits the tablet-portrait catalog column without a
+ *  sideways scroll (review #6). Header + body cells share this list so they can
+ *  never disagree. */
+const COLUMNS: { key: string; cls: string }[] = [
+  { key: "ID", cls: "" },
+  { key: "Name", cls: "" },
+  { key: "Type", cls: "hidden lg:table-cell" },
+  { key: "Mag", cls: "hidden lg:table-cell" },
+  { key: "Alt", cls: "" },
+  { key: "", cls: "" },
+];
+
 const TRACKING_RATE_OPTIONS: { value: "sidereal" | "lunar" | "solar"; label: string }[] = [
   { value: "sidereal", label: "Sidereal" },
   { value: "lunar", label: "Lunar" },
@@ -107,19 +120,25 @@ export default function MountView() {
     }));
   };
 
-  // `grid-cols-[minmax(0,1fr)]` at the base breakpoint is load-bearing on a
-  // phone. An implicit/`1fr` grid track floors at the item's MIN-CONTENT, and
-  // the target-catalog table below is legitimately ~423px wide (six columns).
-  // That forced the single mobile column to 456px inside 348px, and `main` is
-  // overflow-x-hidden, so the excess was CLIPPED rather than scrollable — the
-  // Alt column, the GOTO buttons and the right-hand edge of every panel on
-  // this view were unreachable at 380px. `minmax(0,1fr)` lets the track shrink
-  // to the space available; the table then scrolls inside its own
-  // overflow-auto wrapper, which is where wide content belongs. The md+
-  // two-column template is unchanged.
+  // BOTH tracks must be `minmax(0,…)`. An implicit/`1fr` grid track floors at
+  // its item's MIN-CONTENT, and the target-catalog table below is legitimately
+  // ~423px wide (six columns), so a `1fr` track can never shrink below that.
+  //
+  // The base track was fixed first (phone: the column was forced to 456px
+  // inside 348px). The md+ track was NOT, and three reviewers then measured the
+  // identical failure one breakpoint up on the primary field device: at 820
+  // portrait `main` is 732 wide but this grid rendered 763, every GOTO landed
+  // at x=787→850 (a 33px sliver reading "GO…") and CENTER AFTER SLEW was cut in
+  // half. `main` is overflow-x-hidden and the document does not scroll
+  // horizontally, so that content was unreachable by any finger gesture.
+  // `minmax(0,1fr)` on the second track lets the catalog column shrink to the
+  // space that actually exists (376px at 820), and the narrow-width column
+  // collapse below (Type/Mag are lg-only) keeps the table itself inside it.
   return (
-    <div className="grid gap-4 grid-cols-[minmax(0,1fr)] md:grid-cols-[minmax(290px,340px)_1fr]">
-      <div className="flex flex-col gap-4">
+    <div className="grid gap-4 grid-cols-[minmax(0,1fr)]
+      md:grid-cols-[minmax(240px,300px)_minmax(0,1fr)]
+      lg:grid-cols-[minmax(290px,340px)_minmax(0,1fr)]">
+      <div className="flex flex-col gap-4 min-w-0">
         <Panel title="Pointing" right={!canMount && <ReadOnlyBadge />}>
           <div className="grid grid-cols-2 gap-x-4 gap-y-3">
             <Stat label="RA (J2000)" value={m?.ra_str ?? "—"} />
@@ -179,10 +198,13 @@ export default function MountView() {
         </Panel>
       </div>
 
-      <Panel title="Target Catalog"
+      {/* `min-w-0` belt-and-braces with the `minmax(0,1fr)` track: a grid item's
+          `min-width: auto` resolves to its content-based minimum, which would
+          let the panel overflow a track that is legitimately narrower. */}
+      <Panel title="Target Catalog" className="min-w-0"
         right={
-          <label className="flex items-center gap-2">
-            <span className="label">center after slew</span>
+          <label className="flex items-center gap-2 shrink-0">
+            <span className="label whitespace-nowrap">center after slew</span>
             <Toggle checked={center} onChange={setCenter} label="Center after slew" />
           </label>
         }>
@@ -201,8 +223,13 @@ export default function MountView() {
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left">
-                {["ID", "Name", "Type", "Mag", "Alt", ""].map((h) => (
-                  <th key={h} className="label pb-2 pr-3 font-medium">{h}</th>
+                {/* Narrow-width column collapse: below lg the catalog column is
+                    ~376px, and Type/Mag are the two cells a user does not need
+                    to press GOTO. Hiding them (rather than letting the table
+                    force a sideways scroll) is what keeps ID / Name / Alt /
+                    GOTO all on screen at 820 portrait. */}
+                {COLUMNS.map((c) => (
+                  <th key={c.key} className={`label pb-2 pr-3 font-medium ${c.cls}`}>{c.key}</th>
                 ))}
               </tr>
             </thead>
@@ -210,9 +237,17 @@ export default function MountView() {
               {results.map((r) => (
                 <tr key={r.id} className="border-t border-line/60 hover:bg-raise/80 transition-colors">
                   <td className="mono py-2 pr-3 text-accent whitespace-nowrap">{r.id}</td>
-                  <td className="pr-3">{r.name}</td>
-                  <td className="pr-3 text-dim">{r.type}</td>
-                  <td className="mono pr-3">{r.mag.toFixed(1)}</td>
+                  {/* Type + Mag fold into the Name cell below lg so the
+                      information is not LOST by the column collapse — it just
+                      stops occupying two columns the GOTO button needs. */}
+                  <td className="pr-3">
+                    {r.name}
+                    <span className="lg:hidden block text-[10px] text-dim">
+                      {r.type} · mag {r.mag.toFixed(1)}
+                    </span>
+                  </td>
+                  <td className="pr-3 text-dim hidden lg:table-cell">{r.type}</td>
+                  <td className="mono pr-3 hidden lg:table-cell">{r.mag.toFixed(1)}</td>
                   <td className={`mono pr-3 whitespace-nowrap ${r.alt < 20 ? "text-warn" : r.alt > 40 ? "text-good" : ""}`}>
                     <span className="inline-flex items-center gap-1">
                       {r.alt.toFixed(0)}°<AltGlyph alt={r.alt} />
