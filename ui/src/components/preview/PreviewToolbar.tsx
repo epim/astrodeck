@@ -17,10 +17,17 @@
 // lived only in `title=`, which never fires on touch — on the tablet at the
 // scope, which is the primary field device, a locked control was simply dead
 // with no stated cause.
-import { useEffect, useRef, useState } from "react";
+//
+// The ENABLED controls had the same touch gap for a different reason: they act
+// fine, but their `title=` copy ("Magnifier — real sensor pixels at the centre
+// of the view … 1:1") was the ONLY place their meaning was written, and a
+// fingertip cannot open a title. Two `InfoDot`s — one per group — now give that
+// copy a tap-reachable home without adding seven more 44px targets to a
+// three-row phone toolbar. See `GroupHelp` for why they carry `mx-4`.
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { OverlayToggles, PreviewInfo, StretchParams } from "../../types";
 import { Icon, type IconName } from "../icons";
-import { LockedChip } from "../ui";
+import { InfoDot, LockedChip } from "../ui";
 import { u } from "../../lib/base";
 import { shareQuery } from "../../lib/share";
 import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
@@ -28,6 +35,42 @@ import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
 /** Shared chrome for a locked toolbar affordance (LockedChip draws its own lock
  *  glyph, so callers pass only the label). */
 const LOCKED_BTN = "btn !px-2.5 text-[11px]";
+
+/* The ENABLED controls had the same touch gap the locked ones had. Every
+   `title=` below is still there for a mouse, but a fingertip never fires it —
+   so on the tablet at the scope "Magnifier" was a word with no explanation
+   anywhere, and "100%" and "1:1" are adjacent homographs to a novice. These two
+   InfoDots (the house tap-reachable help affordance: 14px icon, 44px trigger,
+   opens on TAP as well as hover and focus) give each group's copy a home that
+   survives a finger.
+
+   ONE per group, not one per control: the phone toolbar already wraps to five
+   rows at 390px, and seven more 44px triggers would have added rows of pure
+   help to a bar whose job is the primaries. Two ride inside the existing rows
+   and the row count is unchanged: the before/after phone captures break at the
+   same five rows, and the bar measures 5 rows / 242px at 390px and 2 rows at
+   1440px. The `mx-4` wrapper is load-bearing —
+   InfoDot buys its 44px
+   with `-m-[15px] p-[15px]`, so its HIT box overhangs its 14px layout box by
+   15px on each side and would otherwise steal the right-hand edge of the
+   neighbouring toggle. 16px of margin puts the whole trigger back inside its
+   own lane. */
+function GroupHelp({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="mx-4 inline-flex items-center">
+      <InfoDot label={label} content={children} />
+    </span>
+  );
+}
+
+/** One line of a group-help tooltip: the control's own word, then what it does. */
+function HelpLine({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <span className="block mb-1 last:mb-0">
+      <b className="text-ink">{name}</b> — {children}
+    </span>
+  );
+}
 
 function Toggle({
   on,
@@ -167,7 +210,10 @@ export function PreviewToolbar({
         <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom in" onClick={onZoomIn}>
           +
         </button>
-        <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={onFit}>
+        {/* min-w-11: at 43.3x44 this was the one primary in the cluster under the
+            44px floor on a 390px phone — a rounding miss, but the floor is a
+            floor. */}
+        <button className="btn !px-2.5 min-w-11 min-h-11 text-[11px]" onClick={onFit}>
           Fit
         </button>
         <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={onHundred} title="100% of the preview image">
@@ -190,6 +236,11 @@ export function PreviewToolbar({
           }
           onClick={() => onLoupe?.(!loupeOn)}
         />
+        <GroupHelp label="About the zoom and magnifier controls">
+          <HelpLine name="Fit">scales the whole frame into the panel.</HelpLine>
+          <HelpLine name="100%">100% of the PREVIEW image, which is downscaled to 1400px on its long edge.</HelpLine>
+          <HelpLine name="Magnifier">real sensor pixels at the centre of the view — the true focus/noise check (1:1). Needs linear data.</HelpLine>
+        </GroupHelp>
       </div>
 
       <span className="w-px h-6 bg-line mx-1 hidden sm:block" aria-hidden />
@@ -247,6 +298,16 @@ export function PreviewToolbar({
           onClick={() => setOverlays({ bahtinov: overlays.bahtinov === false })}
         />
       )}
+      <GroupHelp label="About the overlay toggles">
+        <HelpLine name="Stars">a ring per detected star, sized by its HFR.</HelpLine>
+        <HelpLine name="Clip">a mask over pixels that hit full well — blown highlights.</HelpLine>
+        <HelpLine name="Reticle">a full crosshair across the frame.</HelpLine>
+        <HelpLine name="Center">a small mark at the exact frame centre.</HelpLine>
+        <HelpLine name="Tilt">a corner-to-corner heatmap of star shape — sensor tilt.</HelpLine>
+        {preview?.bahtinov?.geom && (
+          <HelpLine name="Spikes">the fitted Bahtinov spike lines and their crossing.</HelpLine>
+        )}
+      </GroupHelp>
 
       <span className="flex-1" />
 
