@@ -326,7 +326,6 @@ export default function MonitorView() {
   // strip below needs to know whether this was a fault at all.
   const endDiag = diagnoseFailure(seq.detail, {
     state,
-    endReason: seq.end_reason,
     framesDone: progress?.frames_done,
     framesTotal: progress?.frames_total,
   });
