@@ -145,10 +145,23 @@ export default function PowerView() {
                     <span className="text-xs">{p.name}</span>
                     <span className="mono text-xs text-accent">{shown.toFixed(0)}{p.unit}</span>
                   </div>
+                  {/* The port name beside it is a sibling <span>, not a <label>,
+                      so the accname algorithm gave this slider NOTHING — a
+                      screen-reader user heard an unnamed range. Phone sweep
+                      (S25 Ultra / iPhone Pro Max / 390) reported both dimmers
+                      unnamed on every device.
+
+                      `aria-disabled` rather than the native attribute (house
+                      rule §11.8): `disabled` strips the control AND its reason
+                      from the a11y tree, and a range has no `readOnly` to fall
+                      back on, so the handlers are made inert instead. */}
                   <input type="range" min={p.min} max={p.max} value={shown}
-                    disabled={!canControl}
+                    aria-label={`${p.name} level`}
+                    aria-valuetext={`${shown.toFixed(0)}${p.unit}`}
+                    aria-disabled={!canControl || undefined}
                     className={`w-full accent-(--accent) ${canControl ? "cursor-pointer" : "opacity-50 cursor-default"}`}
                     onChange={(e) => {
+                      if (!canControl) return;
                       // Drag/keyboard tick: update the local draft only — no POST.
                       draggingRef.current = p.id;
                       const v = Number(e.target.value);
