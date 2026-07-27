@@ -5,7 +5,9 @@
 // Run directly with a TS-aware runner:
 //   npx tsx src/lib/__tests__/troubleshoot.test.ts
 
-import { diagnoseFailure, TROUBLESHOOTING, getTroubleshootEntry } from "../troubleshoot";
+import {
+  diagnoseFailure, isUserAbort, runFailureLog, TROUBLESHOOTING, getTroubleshootEntry,
+} from "../troubleshoot";
 import { HELP, helpText } from "../../help";
 
 // ---------------------------------------------------------------- harness
@@ -87,6 +89,85 @@ test("entries: seeAlso keys all resolve in HELP", () => {
 test("getTroubleshootEntry: null/undefined → undefined", () => {
   eq(getTroubleshootEntry(null), undefined); eq(getTroubleshootEntry(undefined), undefined);
 });
+// ==================================================== UX-2026-07-26 #23
+// A run the operator held ABORT to stop is not a fault, and the failure card
+// must not quote a PREVIOUS run's log lines back as if they explained it.
+test("abort: user hold-to-abort → no fault, no advisory, no topic", () => {
+  const d = diagnoseFailure("sequence aborted", {
+    state: "aborted", framesDone: 15, framesTotal: 18 });
+  assert(d.userInitiated === true, "flagged user-initiated");
+  assert(d.cause.includes("15/18 frames"), `frame counts in copy: ${d.cause}`);
+  eq(d.fix, "");            // nothing to fix
+  eq(d.topic, null);        // no wild-goose Help deep-link
+  assert(!/interrupted|couldn't continue/i.test(d.cause), "no invented fault");
+});
+test("abort: user abort with no progress block still reads as deliberate", () => {
+  const d = diagnoseFailure("sequence aborted", { state: "aborted" });
+  assert(d.userInitiated === true, "flagged");
+  assert(!/\d+\s*\/\s*\d+|\bafter \d+\b/.test(d.cause), `no fabricated counts: ${d.cause}`);
+});
+test("abort: empty detail on an aborted run is still the user's abort", () =>
+  assert(diagnoseFailure(undefined, { state: "aborted" }).userInitiated === true, "flagged"));
+test("abort: UNSAFE teardown is a fault, not a user abort", () => {
+  const d = diagnoseFailure("clouds: safety monitor unsafe",
+    { state: "aborted", endReason: "unsafe" });
+  assert(!d.userInitiated, "not user-initiated");
+  assert(d.fix.length > 0, "keeps an advisory");
+});
+test("abort: a fault detail on an aborted run keeps its diagnosis", () => {
+  const d = diagnoseFailure("guiding lost", { state: "aborted" });
+  assert(!d.userInitiated, "not user-initiated");
+  eq(d.topic, "guiding-lost");
+});
+// The engine never CLEARS end_reason at run start, so last night's terminal
+// reason can still be sitting on tonight's abort. Only a reason that describes
+// an ENGINE-initiated abort may veto; dawn_cutoff/cooling_skip/quality all end
+// state="complete" and are therefore always stale here.
+test("abort: a stale non-fault end_reason does not un-do a user abort", () => {
+  for (const stale of ["dawn_cutoff", "cooling_skip", "quality", "complete"]) {
+    const d = diagnoseFailure("sequence aborted", {
+      state: "aborted", endReason: stale, framesDone: 4, framesTotal: 9 });
+    assert(d.userInitiated === true, `stale ${stale} must not invent a fault`);
+    assert(d.cause.includes("4/9 frames"), `frame counts kept for ${stale}`);
+  }
+});
+test("abort: state error is never a user abort", () =>
+  assert(!diagnoseFailure("sequence aborted", { state: "error" }).userInitiated, "error"));
+test("abort: no context → unchanged legacy behaviour (generic)", () => {
+  const d = diagnoseFailure("sequence aborted");
+  assert(!d.userInitiated, "no ctx, no claim");
+  assert(d.fix.length > 0, "generic advisory kept");
+});
+test("isUserAbort: exported predicate agrees with the diagnosis", () => {
+  assert(isUserAbort("sequence aborted", { state: "aborted" }), "user");
+  assert(!isUserAbort("sequence aborted", {}), "no state");
+  assert(!isUserAbort("disk full", { state: "aborted" }), "fault detail");
+});
+
+// --- runFailureLog: only THIS run's lines, only error/warning
+const line = (ts: number, level: string, message: string) =>
+  ({ type: "log", ts, data: { level, message, source: "sequence" } });
+test("runFailureLog: drops lines from before the run started", () => {
+  const logs = [line(100, "error", "old run cloud alert"),
+                line(150, "warning", "old run guide loss"),
+                line(210, "error", "this run: camera dropped")];
+  const out = runFailureLog(logs, 200);
+  eq(out.length, 1); eq(out[0].data.message, "this run: camera dropped");
+});
+test("runFailureLog: unknown run start → no excerpt at all", () =>
+  eq(runFailureLog([line(100, "error", "whose line is this?")], null).length, 0));
+test("runFailureLog: info lines never quoted; tail capped", () => {
+  const logs = [line(210, "info", "frame 1 saved"),
+                ...[1, 2, 3, 4, 5, 6].map((i) => line(210 + i, "warning", `w${i}`))];
+  const out = runFailureLog(logs, 200);
+  eq(out.length, 5); eq(out[0].data.message, "w2"); eq(out[4].data.message, "w6");
+});
+test("runFailureLog: boundary ts == started_at is IN this run", () =>
+  eq(runFailureLog([line(200, "error", "at the boundary")], 200).length, 1));
+test("runFailureLog: empty/absent logs are safe", () => {
+  eq(runFailureLog([], 200).length, 0); eq(runFailureLog(undefined, 200).length, 0);
+});
+
 // --- privacy guard (Global Constraints)
 test("privacy: no real coords/label in help content", () => {
   const blob = JSON.stringify(HELP) + JSON.stringify(TROUBLESHOOTING);

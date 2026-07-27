@@ -467,35 +467,47 @@ export default function SequenceView() {
             right={<SeqStateBadge state={sequence.state} />}>
 
             {/* Failure banner — decoupled from progress so an early (pre-first-frame)
-                failure still shows a clear, human reason. */}
-            {failed && (
-              <div className="flex items-start gap-2 border border-bad/50 bg-bad/5 px-3 py-2 mb-3">
+                failure still shows a clear, human reason.
+                UX-2026-07-26 #23: a run the operator held ABORT to stop is not a
+                failure. It reads as itself ("You stopped the run at 4/9 frames"),
+                on a neutral card, with no advisory and no raw `sequence aborted`
+                echo underneath — that echo was the engine's own wording for the
+                very action the user just took. */}
+            {failed && (() => {
+              const diag = diagnoseFailure(sequence.detail, {
+                state: sequence.state,
+                endReason: sequence.end_reason,
+                framesDone: sequence.progress?.frames_done,
+                framesTotal: sequence.progress?.frames_total,
+              });
+              const stoppedByUser = !!diag.userInitiated;
+              return (
+              <div className={`flex items-start gap-2 border px-3 py-2 mb-3 ${
+                stoppedByUser ? "border-line bg-line2/20" : "border-bad/50 bg-bad/5"}`}>
                 <Icon name={sequence.state === "error" ? "x" : "stop"} size={16}
-                  className="text-bad mt-0.5 shrink-0" />
+                  className={`mt-0.5 shrink-0 ${stoppedByUser ? "text-dim" : "text-bad"}`} />
                 <div className="min-w-0">
                   <p className="text-sm text-ink leading-snug">
-                    {sequence.state === "error" ? "Sequence failed" : "Sequence aborted"}
+                    {stoppedByUser
+                      ? diag.title
+                      : sequence.state === "error" ? "Sequence failed" : "Sequence aborted"}
                   </p>
-                  {(() => {
-                    const diag = diagnoseFailure(sequence.detail);
-                    return (
-                      <>
-                        <p className="text-xs text-ink/85 leading-snug mt-0.5">{diag.cause} {diag.fix}</p>
-                        {diag.topic && (
-                          <button type="button" onClick={() => openHelp(diag.topic!)}
-                            className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
-                        )}
-                      </>
-                    );
-                  })()}
-                  {sequence.detail && (
+                  <p className="text-xs text-ink/85 leading-snug mt-0.5">
+                    {diag.cause}{diag.fix ? ` ${diag.fix}` : ""}
+                  </p>
+                  {diag.topic && (
+                    <button type="button" onClick={() => openHelp(diag.topic!)}
+                      className="text-[11px] text-accent hover:underline mt-1">How to fix →</button>
+                  )}
+                  {sequence.detail && !stoppedByUser && (
                     <p className="text-[10px] mono text-dim leading-snug mt-1 break-words">
                       {sequence.detail}
                     </p>
                   )}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* Runtime autorun-schedule chip (wave-3 §2/§4) — pure render of the
                 engine's sequence.schedule block; absent entirely when the engine
