@@ -75,6 +75,13 @@ test("every step names the view it sends you to, and where on it", () => {
   const cool = WIZARD_STEPS.find((s) => s.id === "cool")!;
   assert(/scroll/i.test(cool.body) && /bottom/i.test(cool.body),
     "cool step must tell the user to scroll to the BOTTOM of Capture");
+  // Same class of hint, and the one that had to survive a copy trim: "Connect
+  // a rig" wrapped to a THIRD line at 390px (181px of bar vs 164px on every
+  // other step), and the fix shortened the nav half — never the scroll hint,
+  // which is the part that gets people unstuck.
+  const connect = WIZARD_STEPS.find((s) => s.id === "connect")!;
+  assert(/scroll/i.test(connect.body) && /Rig Actions/.test(connect.body),
+    "connect step must keep 'Scroll down to Rig Actions'");
 });
 
 test("every step states what Next is waiting for, and only 'location' mentions the default site", () => {
