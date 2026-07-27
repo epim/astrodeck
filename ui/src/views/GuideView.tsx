@@ -670,35 +670,58 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
           {tuningReadOnlyReason && <LockedNote reason={tuningReadOnlyReason} />}
           <label className="flex flex-col gap-1">
             <span className="label">RA algorithm</span>
-            <select ref={firstControlRef} className="field" value={ra}
-              disabled={!canGuide || busy}
-              onChange={(e) => chooseRa(e.target.value as GuideAlgorithmKind)}>
-              {RA_GUIDE_ALGORITHMS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+            {/* Same rule as the provider override: no `readOnly` exists for a
+                <select>, so the locked state shows its value through the house
+                stand-in instead of a greyed control with no reachable reason.
+                `firstControlRef` is then null and the focus-jump effect falls
+                back to the panel, which is what its comment already expects. */}
+            {tuningReadOnlyReason ? (
+              <LockedChip reason={tuningReadOnlyReason} className="btn w-full">
+                {RA_GUIDE_ALGORITHMS.find((o) => o.value === ra)?.label ?? ra}
+              </LockedChip>
+            ) : (
+              <select ref={firstControlRef} className="field" value={ra}
+                disabled={busy}
+                onChange={(e) => chooseRa(e.target.value as GuideAlgorithmKind)}>
+                {RA_GUIDE_ALGORITHMS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            )}
             <AlgoParams kind={ra} params={raParams} onChange={setRaParams} disabled={!canGuide} />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="label">Dec algorithm</span>
-            <select className="field" value={dec} disabled={!canGuide || busy}
-              onChange={(e) => chooseDec(e.target.value as GuideAlgorithmKind)}>
-              {DEC_GUIDE_ALGORITHMS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+            {tuningReadOnlyReason ? (
+              <LockedChip reason={tuningReadOnlyReason} className="btn w-full">
+                {DEC_GUIDE_ALGORITHMS.find((o) => o.value === dec)?.label ?? dec}
+              </LockedChip>
+            ) : (
+              <select className="field" value={dec} disabled={busy}
+                onChange={(e) => chooseDec(e.target.value as GuideAlgorithmKind)}>
+                {DEC_GUIDE_ALGORITHMS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            )}
             <AlgoParams kind={dec} params={decParams} onChange={setDecParams} disabled={!canGuide} />
           </label>
 
           <label className="flex flex-col gap-1">
             <span className="label">Dec guide direction</span>
-            <select className="field" value={decMode} disabled={!canGuide || busy}
-              onChange={(e) => setDecMode(e.target.value as DecGuideMode)}>
-              {DEC_GUIDE_MODES.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+            {tuningReadOnlyReason ? (
+              <LockedChip reason={tuningReadOnlyReason} className="btn w-full">
+                {DEC_GUIDE_MODES.find((o) => o.value === decMode)?.label ?? decMode}
+              </LockedChip>
+            ) : (
+              <select className="field" value={decMode} disabled={busy}
+                onChange={(e) => setDecMode(e.target.value as DecGuideMode)}>
+                {DEC_GUIDE_MODES.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            )}
           </label>
 
           <label className="flex flex-col gap-1">
@@ -738,7 +761,11 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
             Clear Calibration discards the saved calibration so the next start
             recalibrates.
           </p>
-          {clearCalReason && <LockedNote reason={clearCalReason} />}
+          {/* The drawer already states the read-only blocker once at the top; a
+              second identical line here would be noise (see `distinct` above). */}
+          {clearCalReason && clearCalReason !== tuningReadOnlyReason && (
+            <LockedNote reason={clearCalReason} />
+          )}
           <p className="text-[11px] text-faint leading-snug">
             Per-axis parameters start at the PHD2-default set (dossier §15) and
             are editable above — swapping an algorithm resets its params back
