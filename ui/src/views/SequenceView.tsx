@@ -16,6 +16,9 @@ import { diagnoseFailure } from "../lib/troubleshoot";
 import { uid } from "../lib/ids";
 import { applyStepsToGroup } from "../lib/planGroups";
 import { SEQUENCE_TEMPLATES, templateSteps, type SequenceTemplate } from "../lib/sequenceTemplates";
+import {
+  FLAT_ADU_TARGET, armedQualityGates, countShrinksSilently, frameTypeDefaults, nextStep,
+} from "../components/sequence/stepDefaults";
 import { HELP } from "../help";
 import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
@@ -31,10 +34,6 @@ import { formatScheduleStatus } from "../lib/scheduleStatus";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
 } from "../types";
-
-const DEFAULT_STEP: ExposureStep = {
-  filter: null, exposure_s: 120, gain: 100, offset: 30, binning: 1, count: 10, frame_type: "Light",
-};
 
 // UX-22: frame types the step editor can script (backend IMAGETYP + shutter
 // wiring already honor these — hub.capture / imaging/fitsio.py).
@@ -246,9 +245,19 @@ export default function SequenceView() {
   const failed = sequence.state === "error" || sequence.state === "aborted";
   const showPanel = running || finished;        // NOT gated on progress
 
-  // Resume-from-N is offered only when the backend says the run is recoverable;
-  // a pre-first-frame failure has no resume file, so the button is simply absent.
-  const resumable = !!recoverable && failed && sequence.state === "error";
+  // Resume-from-N is offered whenever the BACKEND says the run is recoverable
+  // (session_store.recoverable() = the most recent dormant session that actually
+  // has frames); a pre-first-frame failure has no resume file, so the button is
+  // simply absent.
+  //
+  // REVIEW #10: this used to additionally require `sequence.state === "error"`,
+  // which silently excluded the far more common `aborted` — so on night 2 the
+  // banner read "NGC7000 SHO — ABORTED · 15/18 frames" and offered RE-RUN PLAN /
+  // EDIT PLAN / VIEW LOG with no resume anywhere, while the working RESUME sat
+  // at y=1413 of a 2027px page. On 300s narrowband, re-shooting those 15 subs is
+  // 75 minutes of clear sky. The backend flag is the authority for BOTH terminal
+  // states; the client gate was the bug.
+  const resumable = !!recoverable && failed;
 
   useEffect(() => {
     if (running) return;
@@ -260,6 +269,9 @@ export default function SequenceView() {
   }, [running]);
 
   const filters = status?.filterwheel?.names ?? [];
+  // Where the wheel is physically parked — the filter a NEW step should start
+  // on when there is no previous step to inherit from (#1's editor half).
+  const wheelPosition = status?.filterwheel?.position;
   // Per-target frame/minute rollup (the same reducer the plan totals use, scoped
   // to one target) — reused for mosaic-group headers.
   const targetFrames = (t: Target) => t.steps.reduce((b, s) => b + s.count, 0);
@@ -355,7 +367,9 @@ export default function SequenceView() {
           id: uid(),
           name: e.id, ra_hours: e.ra_hours, dec_deg: e.dec_deg,
           center: true, autofocus_first: true, calibration: false,
-          steps: [{ ...DEFAULT_STEP, id: uid() }],
+          // A brand-new target's first step starts on the filter the wheel is
+          // physically parked on, not "no filter" — the plan-editor half of #1.
+          steps: [{ ...nextStep([], filters, wheelPosition), id: uid() }],
           schedule: defaultSchedule(),
         }],
       });
@@ -394,9 +408,23 @@ export default function SequenceView() {
     return Number.isFinite(n) && v !== "" ? n : fallback;
   };
 
+  // REVIEW #7 (systemic S2 — tablet portrait is the primary field device):
+  // `md:grid-cols-[1fr_300px]` split at 768, so an 820 tablet got a 416px plan
+  // editor beside a 300px sidebar. A bare `1fr` track floors at its item's
+  // MIN-CONTENT, and the step editor below carried a fixed 454px column
+  // template, so the grid rendered 916px inside a 732px `main` that is
+  // `overflow-x: hidden` — with the document unable to scroll horizontally,
+  // "meridian flip (German mount)" sat at x=957→993 in an 820px window and
+  // dither / refocus cadence / cool-to-temp / count=accepted were unsettable by
+  // any finger gesture. Empty plan was fine; a loaded target was the trigger.
+  //
+  // Two changes, both required: `minmax(0,1fr)` so the track may shrink at all,
+  // and the split moved to `lg` so tablet portrait gets ONE full-width column
+  // (700px for the step editor rather than 416px). `min-w-0` on both children
+  // stops a grid item's automatic minimum size re-inflating the track.
   return (
-    <div className="grid gap-4 md:grid-cols-[1fr_300px]">
-      <div className="flex flex-col gap-4">
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="flex flex-col gap-4 min-w-0">
         {/* ----------- one-shot Atlas hand-off banner (panels added from Atlas) */}
         {atlasBannerPending != null && (
           <div
@@ -547,25 +575,44 @@ export default function SequenceView() {
               )}
               {failed && (
                 <>
+                  {/* REVIEW #10 — hierarchy. When the run IS resumable, Resume is
+                      the primary and Re-run is demoted, because the two differ by
+                      an hour of clear sky and only one of them was prominent.
+                      Both are always present; only the emphasis moves. */}
+                  {canRun && resumable && recoverable && (
+                    <button className="btn btn-accent tap min-h-[44px]" onClick={() =>
+                      act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
+                      <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
+                      Resume from frame {recoverable.frames_done}/{recoverable.frames_total}
+                    </button>
+                  )}
                   {canRun && (
-                    <button className="btn btn-accent" disabled={totalFrames === 0}
+                    <button
+                      className={`${resumable ? "btn" : "btn btn-accent"} tap min-h-[44px]`}
+                      disabled={totalFrames === 0}
+                      title={resumable
+                        ? "Starts over at frame 1 — the frames already on disk are not reused"
+                        : undefined}
                       onClick={() => setPreflightOpen(true)}>
                       <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Re-run plan
                     </button>
                   )}
-                  <button className="btn" onClick={() => {
+                  <button className="btn tap min-h-[44px]" onClick={() => {
                     document.getElementById("seq-targets")?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }}>
                     {canRun ? "Edit plan" : "View plan"}
                   </button>
-                  <button className="btn" onClick={openLog}>View log</button>
-                  {canRun && resumable && recoverable && (
-                    <button className="btn" onClick={() =>
-                      act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
-                      Resume from frame {recoverable.frames_done}
-                    </button>
-                  )}
+                  <button className="btn tap min-h-[44px]" onClick={openLog}>View log</button>
                 </>
+              )}
+              {/* Said in words, not by button order alone — the distinction that
+                  costs 75 minutes has to survive a glance in the dark. */}
+              {canRun && failed && resumable && recoverable && (
+                <p className="basis-full text-[11px] text-dim leading-snug">
+                  Resume picks up at frame {recoverable.frames_done} of{" "}
+                  {recoverable.frames_total}. Re-run starts over from frame 1 and
+                  re-shoots what you already have.
+                </p>
               )}
               {/* Deep-link to the end-of-night report (report viewer spec §3
                   Task 4) — the engine publishes `report` on every terminal path
@@ -666,7 +713,11 @@ export default function SequenceView() {
                     <Toggle checked={t.calibration} onChange={(v) => patchTarget(ti, { calibration: v })}
                       label={`Calibration frames for ${t.name}`} /> Cal
                   </label>
-                  <div className="flex-1" />
+                  {/* The trailing actions wrap as ONE right-aligned unit. With a
+                      `flex-1` spacer instead, a narrow card put `+ step` alone on
+                      line 1 and the frame/delete pair alone on line 2 flush LEFT,
+                      which read as a broken layout. */}
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
                   {/* Mosaic "apply to all panels" (spec: mosaic-apply-steps): visible
                       on EVERY member (any panel can be the source), only once the
                       group actually has >1 panel — a lone panel has nothing to fan
@@ -684,8 +735,19 @@ export default function SequenceView() {
                       <Icon name="grid" size={14} /> apply to all panels
                     </button>
                   )}
+                  {/* REVIEW #29: `+ step` used to append a hard-coded
+                      Light/no-filter/120s/g100/1×/×10 row, so building Ha+OIII+SII
+                      at 300s×20 meant re-typing five fields three times — ~15 edits
+                      on a tablet in the dark. It now CLONES the last step, which
+                      makes the common case ("same again, different filter") one
+                      interaction. */}
                   <button className="btn tap min-h-[44px] !px-3 !text-[11px]" disabled={running}
-                    onClick={() => patchTarget(ti, { steps: [...t.steps, { ...DEFAULT_STEP, id: uid() }] })}>
+                    title={t.steps.length > 0
+                      ? "Add a step — copies the last step's exposure, gain, binning and count"
+                      : "Add a step"}
+                    onClick={() => patchTarget(ti, {
+                      steps: [...t.steps, { ...nextStep(t.steps, filters, wheelPosition), id: uid() }],
+                    })}>
                     + step
                   </button>
                   <div className="inline-flex items-center gap-1.5">
@@ -711,6 +773,7 @@ export default function SequenceView() {
                       )}>
                       <Icon name="x" size={18} />
                     </button>
+                  </div>
                   </div>
                 </div>
                 {/* PRO-6 per-filter projected integration (photometry/SNR design §3
@@ -769,30 +832,70 @@ export default function SequenceView() {
                       : "unknown";
                     return (
                     <div key={s.id ?? si} className="flex flex-col gap-0.5">
-                    <div className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 items-center">
-                      <select className="field !py-1" title="frame type"
-                        value={s.frame_type ?? "Light"}
-                        onChange={(e) => patchStep(ti, si, { frame_type: e.target.value })}>
-                        {FRAME_TYPES.map((ft) => <option key={ft} value={ft}>{ft}</option>)}
-                      </select>
-                      <select className="field !py-1" value={s.filter ?? ""}
-                        onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
-                        <option value="">no filter</option>
-                        {filters.map((f) => <option key={f} value={f}>{f}</option>)}
-                      </select>
-                      <input className={`field !py-1 ${stepExposureInvalid ? "border-bad" : ""}`}
-                        title={stepExposureInvalid ? `Exposure must be 0–${EXPOSURE_MAX_S}s` : "exposure seconds"}
-                        aria-invalid={stepExposureInvalid} value={s.exposure_s}
-                        onChange={(e) => patchStep(ti, si, { exposure_s: num(e.target.value, s.exposure_s) })} />
-                      <input className="field !py-1" title="gain" value={s.gain}
-                        onChange={(e) => patchStep(ti, si, { gain: num(e.target.value, s.gain) })} />
-                      <select className="field !py-1" title="binning" value={s.binning}
-                        onChange={(e) => patchStep(ti, si, { binning: Number(e.target.value) })}>
-                        {[1, 2, 4].map((b) => <option key={b} value={b}>{b}×</option>)}
-                      </select>
-                      <input className="field !py-1" title="frame count" value={s.count}
-                        onChange={(e) => patchStep(ti, si, { count: Math.max(1, Math.round(num(e.target.value, s.count))) })} />
-                      <div className="flex items-center gap-2">
+                    {/* REVIEW #26 + S2. This row was a `grid-cols-[76px_90px_70px_
+                        60px_50px_60px_auto]` — 454px of FIXED tracks, which is
+                        what floored the whole left column's min-content and
+                        pushed Plan's right column off an 820px tablet. Its six
+                        controls also returned `aria-label ''`, with the column
+                        captions rendered as one row UNDERNEATH the last step, so
+                        both screen-reader users and sighted users on a narrow
+                        width lost the association (mono counted columns to find
+                        COUNT).
+                        A wrapping row of individually-labelled fields fixes all
+                        of it at once: every control carries its own visible
+                        caption AND an aria-label naming the step and target, the
+                        caption can no longer scroll away from its input, and the
+                        row reflows instead of overflowing at any width. */}
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="flex flex-col gap-0.5 w-[86px]">
+                        <span className="label">type</span>
+                        <select className="field !py-1"
+                          aria-label={`Frame type — step ${si + 1} of ${t.name}`}
+                          value={s.frame_type ?? "Light"}
+                          onChange={(e) => patchStep(ti, si, frameTypeDefaults(s, e.target.value))}>
+                          {FRAME_TYPES.map((ft) => <option key={ft} value={ft}>{ft}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-0.5 w-[96px]">
+                        <span className="label">filter</span>
+                        <select className="field !py-1"
+                          aria-label={`Filter — step ${si + 1} of ${t.name}`}
+                          value={s.filter ?? ""}
+                          onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
+                          <option value="">no filter</option>
+                          {filters.map((f) => <option key={f} value={f}>{f}</option>)}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-0.5 w-[78px]">
+                        <span className="label">exp s</span>
+                        <input className={`field !py-1 ${stepExposureInvalid ? "border-bad" : ""}`}
+                          inputMode="decimal"
+                          aria-label={`Exposure seconds — step ${si + 1} of ${t.name}`}
+                          title={stepExposureInvalid ? `Exposure must be 0–${EXPOSURE_MAX_S}s` : undefined}
+                          aria-invalid={stepExposureInvalid} value={s.exposure_s}
+                          onChange={(e) => patchStep(ti, si, { exposure_s: num(e.target.value, s.exposure_s) })} />
+                      </label>
+                      <label className="flex flex-col gap-0.5 w-[70px]">
+                        <span className="label">gain</span>
+                        <input className="field !py-1" inputMode="numeric"
+                          aria-label={`Gain — step ${si + 1} of ${t.name}`} value={s.gain}
+                          onChange={(e) => patchStep(ti, si, { gain: num(e.target.value, s.gain) })} />
+                      </label>
+                      <label className="flex flex-col gap-0.5 w-[64px]">
+                        <span className="label">bin</span>
+                        <select className="field !py-1"
+                          aria-label={`Binning — step ${si + 1} of ${t.name}`} value={s.binning}
+                          onChange={(e) => patchStep(ti, si, { binning: Number(e.target.value) })}>
+                          {[1, 2, 4].map((b) => <option key={b} value={b}>{b}×</option>)}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-0.5 w-[70px]">
+                        <span className="label">count</span>
+                        <input className="field !py-1" inputMode="numeric"
+                          aria-label={`Frame count — step ${si + 1} of ${t.name}`} value={s.count}
+                          onChange={(e) => patchStep(ti, si, { count: Math.max(1, Math.round(num(e.target.value, s.count))) })} />
+                      </label>
+                      <div className="flex items-center gap-2 self-end pb-0.5">
                         <span className="mono text-[10px] text-dim whitespace-nowrap">
                           {((s.count * s.exposure_s) / 60).toFixed(0)}m
                         </span>
@@ -801,7 +904,7 @@ export default function SequenceView() {
                           className="tap min-h-[44px] min-w-[44px] inline-flex items-center justify-center
                             text-dim hover:text-bad disabled:opacity-40"
                           disabled={running}
-                          aria-label="Remove step"
+                          aria-label={`Remove step ${si + 1} of ${t.name}`}
                           title="Remove step"
                           onClick={() => setPlanWithUndo(
                             "Removed step",
@@ -816,16 +919,37 @@ export default function SequenceView() {
                         only. 0 = today's fixed-exposure behavior; >0 solves the
                         exposure to that median ADU against the flat panel.
                         Honest-disabled while running (§11.8): dim + lock +
-                        aria-disabled + title, never the native disabled attr. */}
+                        aria-disabled + title, never the native disabled attr.
+
+                        REVIEW #40: this read "target ADU [0]" with no unit, no
+                        placeholder and no statement of what 0 meant — on the one
+                        field that decides whether auto-exposure runs at all, next
+                        to a 120s exposure that saturates against a panel. The
+                        exposure clamp + the 25000 ADU default now live in
+                        frameTypeDefaults(); the reason is stated here in words. */}
                     {(s.frame_type === "Flat") && (
-                      <div className="flex items-center gap-2 pl-1">
-                        <span className="label !text-[9px]">target ADU</span>
-                        <input
-                          className={`field !py-1 w-[90px] ${running ? "opacity-50 cursor-not-allowed" : ""}`}
-                          title="target ADU for auto-exposure (0 = fixed exposure)"
-                          aria-disabled={running || undefined}
-                          value={s.adu_target ?? 0}
-                          onChange={(e) => !running && patchStep(ti, si, { adu_target: num(e.target.value, s.adu_target ?? 0) })} />
+                      <div className="flex flex-wrap items-end gap-2">
+                        {/* Width lives on the LABEL, not the input: `.field` sets
+                            width:100% from an unlayered rule that a Tailwind width
+                            utility on the input does not reliably beat (the same
+                            trap `!w-16` hits in the Automation panel). Sizing the
+                            wrapper makes the 100% resolve to the size we want. */}
+                        <label className="flex flex-col gap-0.5 w-[110px]">
+                          <span className="label">target ADU</span>
+                          <input
+                            className={`field !py-1 ${running ? "opacity-50 cursor-not-allowed" : ""}`}
+                            inputMode="numeric"
+                            placeholder={String(FLAT_ADU_TARGET)}
+                            aria-label={`Target ADU for flat auto-exposure — step ${si + 1} of ${t.name}`}
+                            aria-disabled={running || undefined}
+                            value={s.adu_target ?? 0}
+                            onChange={(e) => !running && patchStep(ti, si, { adu_target: num(e.target.value, s.adu_target ?? 0) })} />
+                        </label>
+                        <span className="text-[11px] text-dim pb-1.5 min-w-0">
+                          {(s.adu_target ?? 0) > 0
+                            ? `ADU — the exposure above is solved to hit this level (${FLAT_ADU_TARGET} ≈ 38% of a 16-bit well)`
+                            : `ADU — 0 means auto-exposure is OFF: the ${s.exposure_s}s above is used as-is`}
+                        </span>
                       </div>
                     )}
                     {stepVerdict === "too_short" && (
@@ -842,9 +966,9 @@ export default function SequenceView() {
                     </div>
                     );
                   })}
-                  <div className="grid grid-cols-[76px_90px_70px_60px_50px_60px_auto] gap-2 label !text-[9px]">
-                    <span>type</span><span>filter</span><span>exp s</span><span>gain</span><span>bin</span><span>count</span><span />
-                  </div>
+                  {/* (the column-caption row that used to live HERE — below the
+                      last step — is gone: every field now carries its own
+                      caption inline, which is what fixes #26 at narrow widths.) */}
                   {t.steps.some((s) => isExposureValueInvalid(s.exposure_s)) && (
                     <p className="text-[11px] text-bad">
                       Exposure must be 0–{EXPOSURE_MAX_S}s — fix the highlighted step(s) before running.
@@ -917,7 +1041,7 @@ export default function SequenceView() {
       </div>
 
       {/* ------------------------------------------------------ options */}
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 min-w-0">
         {/* Unified Plan panel (G2): plan identity (name + saved/unsaved cue +
             frames/integration) merged with the plan library (save/load/export/
             import) into one harmonious surface. Sessions stays its own region
@@ -1037,6 +1161,32 @@ export default function SequenceView() {
                   onChange={(v) => setPlan({ ...plan, count_mode: v ? "accepted" : "attempts" })}
                   label="Count accepted frames instead of attempts" />
               </label>
+              {/* REVIEW #30. `count_mode: "attempts"` is the default, and with
+                  every gate off it is harmless — an attempt IS a keeper. The
+                  moment any gate is armed it stops being harmless: you ask for
+                  20 × 300s and you get 20 ATTEMPTS, of which an unknown number
+                  are rejected, and nothing on the screen ever says so. So the
+                  warning is gate-driven, states which gates made it true, and
+                  carries the one-tap fix rather than pointing at a toggle. */}
+              {countShrinksSilently(plan) && (
+                <div className="flex flex-col gap-2 border border-warn/50 bg-warn/5 px-2.5 py-2">
+                  <p className="text-[11px] text-ink leading-snug inline-flex items-start gap-1.5">
+                    <Icon name="alert" size={13} className="text-warn mt-px shrink-0" aria-hidden />
+                    <span>
+                      <span className="text-warn">Counting attempts</span> with{" "}
+                      {armedQualityGates(plan).join(" + ")} armed: a rejected frame
+                      still uses up its count, so {totalFrames} requested frames can
+                      deliver fewer keepers — and nothing reports the shortfall.
+                    </span>
+                  </p>
+                  <button
+                    className="btn tap min-h-[44px] !py-1 !text-[11px] self-start"
+                    onClick={() => setPlan({ ...plan, count_mode: "accepted" })}
+                  >
+                    Count accepted frames instead
+                  </button>
+                </div>
+              )}
               <label className="flex items-center justify-between gap-2">
                 <span className="text-dim">min stars per frame</span>
                 <span className="inline-flex items-center gap-2">
