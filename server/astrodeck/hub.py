@@ -226,6 +226,10 @@ class Hub:
         # loop and the engine gate read it for free. None until the first poll.
         self._safety_task: asyncio.Task | None = None
         self._safety_reading: SafetyReading | None = None
+        # last (is_safe, stale, reason) actually PUBLISHED on the bus, so the two
+        # producers of a safety verdict (this poller + the engine's debounced
+        # _on_unsafe) can't announce the same trip twice (UX #33).
+        self._last_safety_key: tuple | None = None
         # connection-replay map: role -> dict the reconnect path needs to rebuild
         # an Alpaca device (host/port/dev_type/dev_num/name). Populated in every
         # connect path; consumed by reconnect_role() (escalation/reconnect_resume).
@@ -937,6 +941,39 @@ class Hub:
         return {"is_safe": r.is_safe, "reason": r.reason, "source": r.source,
                 "detail": r.detail, "stale": r.stale, "ts": r.ts}
 
+    def publish_safety(self, payload: dict) -> bool:
+        """THE single seam for publishing a ``safety`` verdict edge (UX #33).
+
+        Two producers used to publish the same trip: the hub's own-cadence poller
+        (on the verdict edge) and the engine's ``_on_unsafe`` (after its debounce).
+        Each event raises a sticky UNSAFE toast, so one rain trip produced two
+        identical notices — and the engine's payload carried only
+        ``{is_safe, reason, action, stale}``, so applying it CLOBBERED the sensor
+        name and detail readouts the poller's payload had put in the UI's safety
+        state.
+
+        This method fixes both: the cached reading fills in any field the caller
+        omitted (never a partial overwrite), and a payload whose
+        ``(is_safe, stale, reason)`` matches the last published one is SUPPRESSED
+        — the second announcement of a verdict nobody's changed. A genuinely new
+        reason (e.g. the engine's no-progress watchdog) always publishes.
+
+        Returns True when the event was published."""
+        sr = self._safety_reading
+        base = self._safety_reading_dict(sr) if sr is not None else {}
+        merged = {**base, **{k: v for k, v in payload.items() if v is not None}}
+        merged.setdefault("is_safe", payload.get("is_safe"))
+        merged.setdefault("reason", "")
+        merged.setdefault("stale", False)
+        merged.setdefault("ts", time.time())
+        key = (bool(merged.get("is_safe")), bool(merged.get("stale")),
+               str(merged.get("reason") or ""))
+        if key == self._last_safety_key:
+            return False
+        self._last_safety_key = key
+        bus.publish("safety", **merged)
+        return True
+
     # ------------------------------------------------------------ site & optics
 
     @property
@@ -1544,6 +1581,27 @@ class Hub:
             meta.star_count = int(frame.stars)
         return meta
 
+    async def _active_filter_name(self) -> str:
+        """The name of the filter the wheel is PHYSICALLY on right now, or ``""``
+        when there is no connected wheel (or it can't be read).
+
+        THE single source of filter identity (UX #1). ``capture`` stamps this into
+        the FITS ``FILTER`` card, the ``$$FILTER$$`` filename token and the
+        ``info["filter"]`` the sequence engine records — so the header, the
+        filename, the session report, the stacking-bundle folder and the CSV can
+        never disagree again. Never raises."""
+        fw = self.devices.get("filterwheel")
+        if not fw or not getattr(fw, "connected", False):
+            return ""
+        try:
+            names = list(getattr(fw, "filter_names", []) or [])
+            pos = await fw.get_position()
+            if pos is None or pos < 0 or pos >= len(names):
+                return ""
+            return str(names[pos] or "")
+        except Exception:
+            return ""
+
     async def capture(self, exposure_s: float, gain: int, offset: int,
                       binning: int = 1, save: bool = False, target: str = "",
                       frame_type: str = "Light") -> dict:
@@ -1559,25 +1617,26 @@ class Hub:
                                      light=(frame_type.upper() not in ("DARK", "BIAS")),
                                      save=save, target=target)
         self.last_frame = frame
+        # UX #1 (filter identity): resolve the WHEEL'S ACTUAL POSITION once, here,
+        # and let it feed EVERY consumer — the FITS FILTER card, the filename
+        # token, and (returned on ``info``) the session report / bundle grouping /
+        # frames.csv. Those used to key off the PLAN's step.filter text, so a wheel
+        # sitting at L while the step said "no filter" wrote FILTER=L into the file
+        # and ``filter: null`` into the report, and the stacking bundle grouped the
+        # night under ``NoFilter/`` — silently handing the stacker the wrong flats.
+        # One source, one answer. Only resolved when we're SAVING (the live loop's
+        # throw-away frames must not pay a wheel read per exposure).
+        filt = await self._active_filter_name() if save else ""
         # For local (sim/Alpaca) saves, write the FITS BEFORE publishing the
         # preview so the first `preview` event already carries the correct
         # saved_path/saved_local (P2-2). NINA saves on the imaging host during
         # expose() and the frame already carries its saved_path.
         local_save_path: Path | None = None
         if save and frame.rendered_bytes is None:
-            # Resolve the active filter BEFORE building the path so the filename
-            # can carry a NINA-style filter token (UX-05), in addition to the FITS
-            # FILTER header below.
-            fw = self.devices.get("filterwheel")
-            filt = ""
-            if fw and fw.connected:
-                try:
-                    filt = fw.filter_names[await fw.get_position()]
-                except Exception:
-                    pass
             local_save_path = self._capture_path(
                 target or "untargeted", frame_type, filt,
-                gain=gain, exposure_s=exposure_s, binning=binning)
+                gain=gain, exposure_s=exposure_s, binning=binning,
+                sensor_temp_c=getattr(frame, "temperature_c", None))
             ra = dec = None
             tel = self.devices.get("telescope")
             if tel and tel.connected:
@@ -1615,6 +1674,12 @@ class Hub:
             frame.saved_path = str(local_save_path)
 
         info = await self._publish_preview(frame)
+        if save and isinstance(info, dict):
+            # UX #1: hand the RESOLVED filter (same value the FITS card carries)
+            # back to the caller. The sequence engine records THIS, not the plan's
+            # step text, so report/bundle/CSV agree with the header. "" means "no
+            # wheel / unreadable", which the engine falls back from.
+            info["filter"] = filt
 
         if save and frame.rendered_bytes is not None:
             # The backend (NINA) already saved the file on the imaging machine.
@@ -2246,7 +2311,8 @@ class Hub:
 
     def _capture_path(self, target: str, frame_type: str, filter_name: str = "",
                       *, gain: int | None = None, exposure_s: float | None = None,
-                      binning: int | None = None) -> Path:
+                      binning: int | None = None,
+                      sensor_temp_c: float | None = None) -> Path:
         from .naming import capture_tokens, render_relative_path, sanitize_component
         # "untargeted" fallback keyed off the SANITIZED target (legacy parity,
         # hub.py old :1681); sanitize is idempotent so the engine re-sanitize is a
@@ -2264,11 +2330,13 @@ class Hub:
             "DATETIME": time.strftime("%Y-%m-%d_%H%M%S", t),
             "NIGHT": time.strftime("%Y-%m-%d", night),
             "FRAMENR": f"{n:04d}",
-            # Capture-settings tokens ($$GAIN$$/$$EXPOSURE$$/$$BINNING$$). Passed
-            # in from capture() rather than re-read off the camera so the name
-            # always describes THIS frame. Omitted (None) -> empty -> the token
-            # drops out, which is what every non-capture caller gets.
-            **capture_tokens(gain=gain, exposure_s=exposure_s, binning=binning),
+            # Capture-settings tokens ($$GAIN$$/$$EXPOSURE$$/$$BINNING$$/
+            # $$SENSORTEMP$$). Passed in from capture() rather than re-read off
+            # the camera so the name always describes THIS frame. Omitted (None)
+            # -> empty -> the token drops out, which is what every non-capture
+            # caller gets.
+            **capture_tokens(gain=gain, exposure_s=exposure_s, binning=binning,
+                             sensor_temp_c=sensor_temp_c),
         }
         template = config_store.cfg().naming.template
         return CAPTURE_DIR / render_relative_path(template, fields)
@@ -2761,7 +2829,7 @@ class Hub:
                 # so consumers (engine/UI/alerts) react without polling.
                 if (prev is None or prev.is_safe != reading.is_safe
                         or prev.stale != reading.stale):
-                    bus.publish("safety", **self._safety_reading_dict(reading))
+                    self.publish_safety(self._safety_reading_dict(reading))
             await asyncio.sleep(SAFETY_POLL_INTERVAL_S)
 
     # ----------------------------------------------------------- monitor telemetry
@@ -2890,8 +2958,13 @@ class Hub:
         try:
             du = shutil.disk_usage(CAPTURE_DIR)
             free_gb = du.free / 1e9
+            # UX #32: NAME the volume. "88 GB free" of what, on a box with an SD
+            # card and a USB disk, is not an answer — and the capture root is an
+            # env var (ASTRODECK_CAPTURE_DIR) with no other readout in the product.
             out["disk"] = {"free_gb": round(free_gb, 1),
-                           "low": free_gb < 10, "critical": free_gb < 1}
+                           "low": free_gb < 10, "critical": free_gb < 1,
+                           "capture_dir": str(CAPTURE_DIR),
+                           "total_gb": round(du.total / 1e9, 1)}
         except OSError:
             pass
         # CHEAP safety block: the cached reading from the own-cadence poller (no
@@ -2948,10 +3021,35 @@ class Hub:
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
             try:
+                pos = await fw.get_position()
+                names = list(fw.filter_names or [])
                 out["filterwheel"] = {
-                    "position": await fw.get_position(),
-                    "names": fw.filter_names,
+                    "position": pos,
+                    "names": names,
                     "offsets": fw.filter_offsets,
+                    # UX #1: the RESOLVED name of the slot the wheel is on — the
+                    # same string the FITS FILTER card and the report get. Preflight
+                    # reads this to fail an unfiltered Light step on a rig that
+                    # HAS a wheel, instead of reporting "Filters — NOT NEEDED".
+                    "current": (str(names[pos] or "")
+                                if pos is not None and 0 <= pos < len(names) else ""),
+                }
+            except Exception:
+                pass
+        # UX #27: roof/dome state on the status surface. The roof closing was
+        # visible only in Settings -> Safety, so the dashboard said nothing while
+        # the observatory shut itself. Cheap: one cached-ish shutter read, fully
+        # guarded like every other block here.
+        dome = self.devices.get("dome")
+        if dome is not None and getattr(dome, "connected", False):
+            try:
+                st = await dome.shutter_state()
+                out["dome"] = {
+                    "name": dome.name,
+                    "shutter": st.value,
+                    "requires_park_before_close": bool(
+                        getattr(dome, "requires_park_before_close", True)),
+                    "can_slave": bool(getattr(dome, "can_slave", False)),
                 }
             except Exception:
                 pass

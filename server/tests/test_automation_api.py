@@ -225,7 +225,9 @@ def test_post_preflight_no_warnings_on_default_site(client):
     # default (un-configured) site => never warn (we don't trust the location).
     r = c.post("/api/sequence/preflight", json=_below_floor_plan())
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "warnings": []}
+    # ``blocked`` is the additive UX-review flag (a blocking warning is present);
+    # nothing to warn about here, so it is False alongside the original shape.
+    assert r.json() == {"ok": True, "warnings": [], "blocked": False}
 
 
 def test_get_and_post_preflight_coexist(client):
@@ -239,4 +241,4 @@ def test_get_and_post_preflight_coexist(client):
 
     p = c.post("/api/sequence/preflight", json={"name": "x", "targets": []})
     assert p.status_code == 200
-    assert p.json() == {"ok": True, "warnings": []}
+    assert p.json() == {"ok": True, "warnings": [], "blocked": False}
