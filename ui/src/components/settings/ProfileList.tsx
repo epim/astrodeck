@@ -10,7 +10,13 @@
 //               existing calls (capture the live rig under a scratch name, copy
 //               its device data onto THIS profile's id/name, upsert, then
 //               delete the scratch record) — see onUpdateFromRig below.
-//   Delete    → DELETE /api/profiles/{id} (hold-confirm)
+//   Delete    → DELETE /api/profiles/{id}. Irreversible, so it goes through
+//               the app's confirmDialog (danger tone, Cancel focused, the
+//               affirmative never the default) with copy that states what is
+//               and is NOT lost — see lib/profileDelete.ts, where that
+//               judgement lives and is tested. Deleting the ACTIVE profile is
+//               allowed but escalates to a HOLD-confirm and says the boot
+//               consequence out loud.
 //   Export/Import (F7 #5b) → client-side JSON download / file-picker upload,
 //               PlanLibraryPanel precedent (commit de2839a). Profiles have no
 //               server export route, so export is a Blob download of the full
@@ -37,9 +43,11 @@ import {
 import { ApiError } from "../../api";
 import { useStore } from "../../store";
 import { confirmDialog } from "../ConfirmDialog";
-import { Panel, Led, HoldButton, EmptyState, Field } from "../ui";
+import { Panel, Led, HoldButton, EmptyState, Field, LockedChip } from "../ui";
 import { Icon } from "../icons";
 import { parseProfileFile, profileExportFilename } from "../../lib/profileFile";
+import { profileDeleteConfirm, profileDeleteLock } from "../../lib/profileDelete";
+import { useCanConfigBackend } from "../../lib/caps";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   alpaca: "Native / Alpaca",
@@ -74,6 +82,11 @@ function resolvesRealMotion(p: Profile): boolean {
 
 export default function ProfileList(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
+  // Every write on this panel is CAP_CONFIG_BACKEND server-side. SettingsView
+  // already hides the whole panel from a principal without it, so this is
+  // defence in depth — but it is also what keeps Delete honest if the panel is
+  // ever mounted elsewhere, or a session is downgraded while it is open.
+  const canConfig = useCanConfigBackend();
   const [rows, setRows] = useState<ProfileRow[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -164,14 +177,74 @@ export default function ProfileList(): JSX.Element {
     }
   };
 
+  // Delete — the only irreversible action on the row. Same shape as onActivate
+  // (await confirmDialog, bail on anything but an explicit yes), but the copy
+  // and the friction level come from lib/profileDelete so they can be tested
+  // and so no future edit can quietly drop the "what is NOT lost" sentence.
+  //
+  // Dismissal can never delete: ConfirmHost focuses Cancel, and Escape /
+  // backdrop / Cancel all resolve false — we only proceed on `ok === true`.
   const onDelete = async (row: ProfileRow) => {
+    if (busyId === row.id) {
+      // aria-disabled, not `disabled` — so the tap still lands and still gets
+      // an answer instead of silently doing nothing.
+      showToast("warning", `"${row.name}" is busy — wait for the current action to finish`);
+      return;
+    }
+    const locked = profileDeleteLock(canConfig);
+    if (locked) {
+      // Unreachable while SettingsView gates this whole panel on config.backend,
+      // but a token can be downgraded mid-session, and this component must not
+      // depend on a caller to stay honest. Say the reason; never fire the call.
+      showToast("error", locked);
+      return;
+    }
+    // Re-list BEFORE deciding how scary this dialog is. `row.active` is the
+    // flag from the last render, and it can be a whole activation stale:
+    // activation is async server-side ({started} returns immediately, the
+    // active pointer is set inside connect_profile_id only after the connect
+    // succeeds), so onActivate's follow-up refresh routinely re-lists before
+    // the pointer has moved. MEASURED: activate profile B, and the card still
+    // shows profile A as ACTIVE while GET /api/profiles already reports B —
+    // so deleting B took the plain tap-confirm and said nothing about boot.
+    // Same instinct as onActivate pulling the full profile before it decides:
+    // on the one irreversible action, ask the server, don't trust the render.
+    let fresh = row;
+    try {
+      const live = await listProfiles();
+      setRows(live);
+      const mine = live.find((r) => r.id === row.id);
+      if (!mine) {
+        showToast("warning", `"${row.name}" is already gone — list refreshed`);
+        return;
+      }
+      fresh = mine;
+    } catch {
+      // Offline / server hiccup: fall through on the last-known row rather
+      // than blocking the delete. The dialog still names the profile and
+      // still states what is lost; only the active-profile escalation may be
+      // missed, and the server is the one that enforces anything real.
+    }
+    const ok = await confirmDialog(profileDeleteConfirm(fresh));
+    if (!ok) return;
     setBusyId(row.id);
     try {
       await deleteProfile(row.id);
-      showToast("success", `Deleted "${row.name}"`);
+      showToast("success", `Deleted "${row.name}" — the profile only; the rig is untouched`);
       await refresh();
     } catch (e) {
-      showToast("error", e instanceof Error ? e.message : "delete failed");
+      // 404 = someone/something already removed it. The action the user wanted
+      // has happened, so report it truthfully and still re-list, rather than
+      // showing a scary failure beside a row that is about to disappear.
+      if (e instanceof ApiError && e.status === 404) {
+        showToast("warning", `"${row.name}" was already gone — list refreshed`);
+        await refresh();
+      } else {
+        showToast("error", e instanceof Error ? e.message : "delete failed");
+        // The list may or may not still contain the row; re-list so what is on
+        // screen matches the server either way (F7 #5: never leave a stale row).
+        await refresh();
+      }
     } finally {
       setBusyId(null);
     }
@@ -358,6 +431,7 @@ export default function ProfileList(): JSX.Element {
                 onUpdateFromRig={() => onUpdateFromRig(row)}
                 onExport={() => exportRow(row)}
                 onDelete={() => onDelete(row)}
+                deleteLock={profileDeleteLock(canConfig)}
               />
             ))}
           </div>
@@ -405,6 +479,7 @@ function ProfileCard({
   onUpdateFromRig,
   onExport,
   onDelete,
+  deleteLock,
 }: {
   row: ProfileRow;
   busy: boolean;
@@ -416,6 +491,8 @@ function ProfileCard({
   onUpdateFromRig: () => void;
   onExport: () => void;
   onDelete: () => void;
+  /** Why this principal cannot delete, or null when they can (lib/profileDelete). */
+  deleteLock: string | null;
 }): JSX.Element {
   return (
     <div
@@ -526,39 +603,79 @@ function ProfileCard({
         >
           <Icon name="download" size={12} />
         </button>
-        {/* Delete is irreversible → hold-to-confirm (the danger primitive),
-            but now a proper danger BUTTON (icon + label), not a bare X. */}
-        <HoldButton label={`Delete ${row.name}`} onConfirm={onDelete}>
-          {(bind) => (
+        {/* ------------------------------------------------------------ DELETE
+            The one irreversible action on a row of otherwise-safe ones, on a
+            phone, in the dark, possibly with gloves. Three deliberate choices:
+
+            1. PLACEMENT. `ml-auto` pushes it to the far right of whichever
+               line it wraps onto, and a divider separates it from the safe
+               set. Before this it sat second-from-left on the wrapped second
+               line — measured at x=96 on a 390px phone, i.e. directly under a
+               right thumb, 6px from Export. Now it is the furthest control
+               from the safe group instead of embedded in it.
+
+            2. WEIGHT. It is no longer `btn-danger`. A red-outlined, red-glowing
+               control was the loudest thing in the card and pulled both eye and
+               thumb toward the one action you cannot undo — and in night mode,
+               where the palette collapses toward red, that outline stops
+               distinguishing anything at all. Quiet chrome at rest; the danger
+               tone appears in the confirm dialog, where it means something.
+               Meaning is never carried by colour here: trash glyph + the word
+               DELETE (house rule: glyph + word).
+
+            3. FRICTION. A single tap opens the confirm — it does NOT delete.
+               This replaces a hold-to-confirm that, when tapped, did nothing
+               whatsoever and explained nothing (its only cue was `title="Hold
+               to delete"`, which never fires on touch — measured: tap, no
+               dialog, no toast, list unchanged). Silent inertia is worse than
+               a dialog: the user cannot tell a blocked action from a broken
+               one. The friction now lives where it can also explain itself.
+
+            The 44px floor is kept by `btn-touch` (+ the coarse-pointer .btn
+            rule); nothing here shrinks the target. */}
+        <div className="ml-auto flex items-center pl-2 border-l border-line/60">
+          {deleteLock ? (
+            // No config.backend: dim + aria-disabled + the stated reason, via
+            // the house primitive. NEVER the native `disabled` attribute — that
+            // strips the element from the a11y tree along with the reason
+            // (house rule §11.8), and a bare grey box on touch is exactly the
+            // dead end this is meant to prevent. LockedChip's reason is
+            // reachable by tap, by keyboard and by screen reader.
+            <LockedChip reason={deleteLock} className="text-[11px]">
+              <span className="inline-flex items-center gap-1">
+                <Icon name="trash" size={12} />
+                Delete
+              </span>
+            </LockedChip>
+          ) : (
             <button
               type="button"
-              className="btn btn-danger btn-touch !py-1 !px-3 text-[11px] relative overflow-hidden select-none"
-              style={{ touchAction: "none" }}
-              disabled={busy}
-              aria-label={bind["aria-label"]}
-              title="Hold to delete"
-              onPointerDown={bind.onPointerDown}
-              onPointerUp={bind.onPointerUp}
-              onPointerCancel={bind.onPointerUp}
-              onKeyDown={bind.onKeyDown}
-              onKeyUp={bind.onKeyUp}
+              className={`btn btn-touch !py-1 !px-3 text-[11px] ${busy ? "opacity-50" : ""}`}
+              // INLINE, not a `text-dim` utility: `.btn { color: var(--text) }`
+              // in index.css is UNLAYERED, so it beats any Tailwind colour
+              // utility regardless of class order (the tooltip-portal war
+              // story) — a `text-dim` class here would silently do nothing.
+              // The recession is deliberate: this is the one control on the
+              // row that must not attract a thumb. Measured on the card
+              // background: 7.53:1 day / 6.59:1 night, against 15.56:1 for its
+              // siblings — visibly quieter, still far past AA, so "recessive"
+              // never becomes "hard to read at 2am".
+              style={{ color: "var(--text-dim)" }}
+              // Busy is transient (an op is in flight on THIS row) and is not a
+              // permission — so it gets aria-disabled, not `disabled`, and the
+              // handler states the reason if a finger lands on it anyway.
+              aria-disabled={busy || undefined}
+              onClick={onDelete}
+              aria-label={`Delete ${row.name}`}
+              title="Delete this profile"
             >
-              <span
-                aria-hidden
-                className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{
-                  width: `${Math.round(bind.progress * 100)}%`,
-                  background: "color-mix(in srgb, var(--text) 60%, transparent)",
-                  transition: "width 80ms linear",
-                }}
-              />
-              <span className="relative inline-flex items-center gap-1">
+              <span className="inline-flex items-center gap-1">
                 <Icon name="trash" size={12} />
                 Delete
               </span>
             </button>
           )}
-        </HoldButton>
+        </div>
       </div>
     </div>
   );
