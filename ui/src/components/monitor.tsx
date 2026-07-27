@@ -719,12 +719,46 @@ export function RmsVerdict({ rms, stale }: { rms: number | null | undefined; sta
 /** Renders `deriveHealthIssues` output: Tier-2 as sticky red banners (one per
  *  issue, never auto-dismissed — doc 03 §5), Tier-1 as a row of amber chips,
  *  Tier-0 (empty) as one calm ambient line. Shape+word carry every verdict
- *  (never color alone). */
-export function HealthStrip({ issues }: { issues: HealthIssue[] }) {
+ *  (never color alone).
+ *
+ *  `weatherMonitored` (UX-2026-07-26 #28): the calm line used to read
+ *  "✓ Night looks OK" unconditionally. With `weather.enabled === false` nothing
+ *  polls the sky, so `deriveHealthIssues` CANNOT raise a weather issue — the
+ *  reassurance was manufactured out of the absence of a check. When monitoring
+ *  is off the line says what it is actually calm about, and offers the fix. It
+ *  stays a Tier-0 ambient line (dim + info glyph), not a new alarm: an
+ *  unmonitored sky is a normal, deliberate configuration for someone standing
+ *  next to the scope. */
+export function HealthStrip({
+  issues,
+  weatherMonitored = true,
+  onEnableWeather,
+}: {
+  issues: HealthIssue[];
+  weatherMonitored?: boolean;
+  onEnableWeather?: () => void;
+}) {
   const acts = issues.filter((i) => i.tier === 2);
   const notices = issues.filter((i) => i.tier === 1);
 
   if (acts.length === 0 && notices.length === 0) {
+    if (!weatherMonitored) {
+      return (
+        <div className="flex items-center gap-1.5 flex-wrap text-xs text-dim" role="status">
+          <Icon name="info" size={13} className="shrink-0" />
+          <span>No faults reported — but weather monitoring is off, so nothing is watching the sky.</span>
+          {onEnableWeather && (
+            <button
+              type="button"
+              onClick={onEnableWeather}
+              className="tap min-h-[44px] text-accent hover:underline"
+            >
+              Turn it on →
+            </button>
+          )}
+        </div>
+      );
+    }
     return (
       <div className="flex items-center gap-1.5 text-xs text-dim" role="status">
         <Icon name="check" size={13} className="text-good shrink-0" />

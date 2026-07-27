@@ -34,7 +34,9 @@ import {
   useNight,
 } from "../store";
 import { useShallow } from "zustand/react/shallow";
-import type { CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, Target, VisibilityNight } from "../types";
+import type {
+  CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, PreflightAlt, Target, VisibilityNight,
+} from "../types";
 import { getPackStatus } from "../api/backends";
 import { ARCSEC_PER_RAD, fmtMicron } from "../lib/optics";
 import {
@@ -54,9 +56,10 @@ import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
 import { CatalogSearch } from "../components/atlas/CatalogSearch";
 import { TonightPicker } from "../components/atlas/TonightPicker";
-import { Panel, Stat, Stepper, EmptyState } from "../components/ui";
+import { Panel, Stat, Stepper, EmptyState, LockedChip } from "../components/ui";
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
+import { accessPhrase, useCanControlMount } from "../lib/caps";
 import { api } from "../api";
 
 // Per-image survey brightness (night-adaptation memory, spec §6) persists across
@@ -139,6 +142,10 @@ export default function AtlasView(): JSX.Element {
   // Rotator sub-status for the PA-honesty note (CAA §5.3). Narrow + shallow so a
   // 2 s status poll that leaves the rotator unchanged doesn't re-render the page.
   const statusRotator = useStore(useShallow((s) => s.status?.rotator ?? null));
+  // UX-2026-07-26 #18: framing has to be able to hand off to the mount. One
+  // boolean is all this page needs — is there a mount at all.
+  const mountConnected = useStore((s) => s.status?.mount != null);
+  const canMount = useCanControlMount();
 
   const setFraming = useStore((s) => s.setFraming);
   const openFraming = useStore((s) => s.openFraming);
@@ -226,6 +233,8 @@ export default function AtlasView(): JSX.Element {
   // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
   // single target (the server round-trip is async).
   const [sending, setSending] = useState(false);
+  // In-flight guard for the Atlas → mount handoff (#18), same idiom as `sending`.
+  const [slewing, setSlewing] = useState(false);
 
   // Seed/refresh the focal draft whenever config optics changes.
   useEffect(() => {
@@ -577,6 +586,88 @@ export default function AtlasView(): JSX.Element {
     }
   };
 
+  // ---- Atlas → mount handoff (UX-2026-07-26 #18) ----
+  // The novice's flow dead-ended here: the app says "Tap one to frame it", and
+  // then the ONLY forward control on the framed page was ADD TARGET TO PLAN —
+  // a 20-row automation wall. The capability existed the whole time (Mount's
+  // search box does it), it was the handoff that was missing.
+  //
+  // Deliberately the SAME guard MountView.doGoto uses — live altitude re-queried
+  // at the tap (never the stale catalog row), below-horizon refused outright,
+  // low-horizon confirmed with the actual number, unknown site confirmed — so
+  // "GOTO from Atlas" and "GOTO from Mount" cannot diverge in safety.
+  // Slews to the framed CENTRE, which is what the overlay on screen shows; for
+  // a freshly picked target that is the target's own J2000 position.
+  const gotoFraming = async () => {
+    if (!canMount || !mountConnected || slewing) return;
+    const name = target?.name ?? target?.id ?? "This position";
+    let pf: PreflightAlt | null = null;
+    try {
+      pf = await api.get<PreflightAlt>(
+        `/api/sequence/preflight?ra_hours=${center.ra_hours}&dec_deg=${center.dec_deg}`,
+      );
+    } catch {
+      pf = null; // the server horizon guard is still the net
+    }
+    if (!pf || pf.verdict === "unknown") {
+      const ok = await confirmDialog({
+        title: "Location not set",
+        body: "Altitude can't be checked until you set your location in Settings. Slew anyway?",
+        tone: "warn",
+        mode: "confirm",
+        confirmLabel: "Slew anyway",
+      });
+      if (!ok) return;
+    } else if (pf.verdict === "below") {
+      await confirmDialog({
+        title: "Below the visible horizon",
+        body: pf.alt != null
+          ? `${name} is at ${pf.alt}° — below the horizon, so it isn't visible now.`
+          : `${name} is below the horizon, so it isn't visible now.`,
+        tone: "danger",
+        mode: "ok", // single dismiss, no slew
+      });
+      return;
+    } else if (pf.verdict === "low") {
+      const ok = await confirmDialog({
+        title: "Low on the horizon",
+        body: pf.alt != null
+          ? `${name} is only ${pf.alt}° up — expect heavy atmosphere and possible obstructions. Slew anyway?`
+          : `${name} is low on the horizon — expect heavy atmosphere and possible obstructions. Slew anyway?`,
+        tone: "warn",
+        mode: "confirm",
+        confirmLabel: "Slew anyway",
+      });
+      if (!ok) return;
+    }
+    setSlewing(true);
+    try {
+      await api.post("/api/mount/goto", {
+        ra_hours: center.ra_hours,
+        dec_deg: center.dec_deg,
+        center: true,
+        force: pf?.verdict === "low",
+      });
+      enqueueToast({
+        level: "success",
+        title: `Slewing to ${name}`,
+        detail: "It will plate-solve and re-centre when it arrives.",
+      });
+    } catch (e) {
+      enqueueToast({ level: "error", title: "Couldn't slew", detail: (e as Error).message });
+    } finally {
+      setSlewing(false);
+    }
+  };
+
+  // Honest-disabled reason (§11.8) — dim + aria-disabled + a STATED reason, never
+  // the native `disabled` attribute and never `title=` as the only channel.
+  const gotoReason = !mountConnected
+    ? "No mount connected — connect your rig on Equipment first."
+    : !canMount
+      ? `Slewing the mount needs ${accessPhrase("control.mount")}.`
+      : null;
+
   // crosses-the-meridian-ish hint: a wide mosaic near transit. We don't have a
   // per-panel ephemeris here, so this stays advisory text only when a rotation is
   // set on a multi-panel grid (the honest "expect a stitch seam" note, spec §6).
@@ -584,8 +675,15 @@ export default function AtlasView(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* ----------------------------------------------------------- header */}
-      <header className="flex flex-wrap items-end gap-x-4 gap-y-2">
+      {/* ----------------------------------------------------------- header
+          UX-2026-07-26 #55: this whole cluster (title, focal length, pixel
+          size, sensor W/H, guide-scope FL, CALIBRATE) used to sit DIRECTLY on
+          the photographic wallpaper — dim grey labels and thin field borders
+          over a bright nebula, with per-pixel contrast wherever the nebula
+          happened to be. It is a control surface, so it gets the app's own
+          control surface: the same `.panel` every other cluster on this page
+          already sits on. */}
+      <header className="panel p-3 sm:p-4 flex flex-wrap items-end gap-x-4 gap-y-2">
         <div className="min-w-0">
           <h1 className="font-display text-lg text-accent tracking-wide truncate">
             {headerName}
@@ -755,26 +853,66 @@ export default function AtlasView(): JSX.Element {
             </span>
           </span>
         </label>
-        <button
-          type="button"
-          className="btn btn-touch"
-          onClick={calibrateFromSolve}
-          disabled={!canCalibrate}
-          title={
-            canCalibrate
-              ? "Back-compute focal length from the last plate solve's pixel scale"
-              : "Plate-solve a frame first (Mount → Solve & Sync)"
-          }
-        >
-          <Icon name="refresh" size={14} />
-          <span className="ml-1">Calibrate from last solve</span>
-        </button>
+        {/* House rule §11.8: a control a user could want to press is never
+            natively `disabled` with its reason only in `title=` — that attribute
+            never fires on the tablet this product is designed around. */}
+        {canCalibrate ? (
+          <button
+            type="button"
+            className="btn btn-touch"
+            onClick={calibrateFromSolve}
+          >
+            <Icon name="refresh" size={14} />
+            <span className="ml-1">Calibrate from last solve</span>
+          </button>
+        ) : (
+          <LockedChip
+            reason="Plate-solve a frame first (Mount → Solve & Sync), then this back-computes the focal length from the solved pixel scale."
+            className="btn btn-touch"
+          >
+            <Icon name="refresh" size={14} />
+            <span className="ml-1">Calibrate from last solve</span>
+          </LockedChip>
+        )}
         </div>
       </header>
 
+      {/* ------------------------------------------- point the scope at it (#18)
+          The forward exit from framing. Sits directly under the header, above
+          the mosaic/plan machinery, because "show me this now" is the question a
+          first-timer arrives on this page with. */}
+      <div className="panel p-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+        {gotoReason ? (
+          <LockedChip reason={gotoReason} className="btn btn-touch">
+            <Icon name="mount" size={14} />
+            <span className="ml-1">Go to this target</span>
+          </LockedChip>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-accent btn-touch"
+            onClick={() => void gotoFraming()}
+            aria-busy={slewing}
+          >
+            <Icon name="mount" size={14} />
+            <span className="ml-1">{slewing ? "Slewing…" : "Go to this target"}</span>
+          </button>
+        )}
+        <p className="text-[12px] text-dim leading-snug min-w-0 flex-1">
+          {gotoReason ?? (
+            <>
+              Points the scope at the framed centre and plate-solves to re-centre
+              when it arrives. Altitude is re-checked at the tap.
+            </>
+          )}
+        </p>
+      </div>
+
       {/* default-site nudge (ties to the hardcoded-SF P0; alt still computes) */}
       {site?.is_default && (
-        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-black/20 px-2 py-1">
+        /* `bg-black/20` let the wallpaper read straight through an advisory
+           (same legibility cause as #55) — the app's raised surface is opaque. */
+        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-raise px-2 py-1">
           <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
           <span>
             Using a default location — set yours in Settings for accurate
@@ -785,7 +923,9 @@ export default function AtlasView(): JSX.Element {
 
       {/* no-optics CTA banner — names the ACTUAL missing fields (wave-1 §3.2) */}
       {!haveOptics && (
-        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-black/20 px-2 py-1">
+        /* `bg-black/20` let the wallpaper read straight through an advisory
+           (same legibility cause as #55) — the app's raised surface is opaque. */
+        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-line2 bg-raise px-2 py-1">
           <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
           <span>
             Framing needs your optics — missing{" "}

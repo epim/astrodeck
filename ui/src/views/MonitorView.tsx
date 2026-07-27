@@ -32,6 +32,7 @@ import {
   useBootConnectFailed,
   useProviders,
   useWeather,
+  useSite,
   useStore,
   usePhotometry,
 } from "../store";
@@ -44,6 +45,8 @@ import {
 import { formatScheduleStatus } from "../lib/scheduleStatus";
 import SkyConditionsPanel from "../components/weather/SkyConditionsPanel";
 import RadarMap from "../components/weather/RadarMap";
+import { getDomeState, type DomeState } from "../api/backends";
+import { domeStatusLabel } from "../lib/dome";
 import { accessPhrase, useCanControlMount, useCanViewWeather } from "../lib/caps";
 import {
   CountdownTile,
@@ -214,6 +217,14 @@ export default function MonitorView() {
   const liveHfr = pickSeries(liveRing.current, "hfr");
 
   // ----- cold-load hydration (one shot, non-fatal, §8) -----
+  // UX-2026-07-26 #22: reopening the dashboard mid-run showed LAST FRAME as an
+  // empty black box captioned NO FRAME YET with dozens of frames already on
+  // disk, because `preview` only ever arrives over the WS on the NEXT frame —
+  // so the 3am first read was "the camera has died" for a whole exposure. The
+  // snapshot already carries `preview_id`; hold it here and hand it to the tile
+  // (as STALE, which is the truth: it is the last frame, not a live one) until
+  // a real preview event lands.
+  const [coldPreviewId, setColdPreviewId] = useState<number | null>(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -231,6 +242,7 @@ export default function MonitorView() {
         const ts = Date.now() / 1000;
         if (snap.status) h({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
         if (snap.sequence) h({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+        if (snap.preview_id != null) setColdPreviewId(snap.preview_id);
       } catch {
         /* WS catches up within ~2s — non-fatal */
       }
@@ -238,6 +250,24 @@ export default function MonitorView() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // ----- observatory roof / dome (UX-2026-07-26 #27) -----
+  // The roof state existed ONLY as a badge in Settings → Safety, so a run that
+  // ended with the roof shut said nothing on the dashboard. /api/dome/state is
+  // the same route that badge reads; it is outside the WS status frame, so it
+  // gets its own slow poll (15s — a shutter takes tens of seconds to move).
+  const [dome, setDome] = useState<DomeState | null>(null);
+  useEffect(() => {
+    let live = true;
+    const tick = () => {
+      getDomeState()
+        .then((d) => { if (live) setDome(d); })
+        .catch(() => { /* no dome route / offline — the row simply stays hidden */ });
+    };
+    tick();
+    const id = window.setInterval(tick, 15000);
+    return () => { live = false; window.clearInterval(id); };
   }, []);
 
   // ----- derived liveness -----
@@ -324,13 +354,39 @@ export default function MonitorView() {
   // view.weather (2026-07-17 decisions wave I2): split off view.site_precise
   // so an operator sees Sky Conditions + Radar too, not just admin.
   const canSeeWeather = useCanViewWeather();
+
+  // ----- is anything actually watching the sky? (UX-2026-07-26 #28) -----
+  // Mirrors the server's own gate (weather.py tick: `wcfg.enabled and not
+  // site.is_default`) — an enabled monitor on a default (0,0) site fetches
+  // nothing, so it is just as unwatched. Config is the SSOT here rather than
+  // the `weather` store slice, because a DISABLED monitor never publishes a
+  // weather event at all, so that slice stays null and can't be distinguished
+  // from "not hydrated yet".
+  const site = useSite();
+  const weatherCfgEnabled = useStore((s) => s.config?.weather?.enabled);
+  const weatherMonitored =
+    (weatherCfgEnabled ?? weather?.enabled ?? true) && !(site?.is_default ?? false);
+
+  // ----- roof, derived (UX-2026-07-26 #27) -----
+  // Only rendered when a dome actually exists: a rig with no roof must not grow
+  // a permanent "no roof" row. `roofAlarm` is the case the pro hit — the run is
+  // live and the shutter is anything but open.
+  const roofConnected = !!dome?.connected;
+  const roofShutter = dome?.shutter ?? "unknown";
+  const roofAlarm = roofConnected && runActive && roofShutter !== "open";
+
   const healthIssues = useMemo(
     () =>
       deriveHealthIssues({
         safety,
         weather,
         disk: status?.disk,
-        meridian: status?.meridian,
+        // UX-2026-07-26 #21 (alarm fatigue): the meridian block is a property of
+        // a RUN. With no plan loaded the hub reports `flip_disabled` simply
+        // because there is no plan to enable it on, and the strip then shouted
+        // "Meridian flip disabled — pier risk near meridian" at an idle rig,
+        // forever. Feed it only while a run is actually in flight.
+        meridian: runActive ? status?.meridian : null,
         ninaLink: status?.nina_link,
         backendLinks,
         bootConnectFailed,
@@ -340,15 +396,39 @@ export default function MonitorView() {
         wsConnected,
         telemetryStale,
       }),
-    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale],
+    [safety, weather, status, backendLinks, bootConnectFailed, providers, state, seq.end_reason, wsConnected, telemetryStale, runActive],
   );
 
   // ====================================================================== render
   return (
     <div className="px-3 pb-20 sm:px-0 sm:pb-4">
       <div className="mb-3">
-        <HealthStrip issues={healthIssues} />
+        {/* UX-2026-07-26 #28: with `weather.enabled === false` nothing is polling
+            the sky, so lib/health.ts can never raise a weather issue and the
+            empty-issues branch printed an unconditional "✓ Night looks OK".
+            Pass the monitoring state so the calm line can say what it is
+            actually calm ABOUT. */}
+        <HealthStrip
+          issues={healthIssues}
+          weatherMonitored={weatherMonitored}
+          onEnableWeather={canSeeWeather ? () => setView("settings") : undefined}
+        />
       </div>
+
+      {/* Roof/dome alarm (UX-2026-07-26 #27) — the run is live and the shutter
+          is not open. Rendered above the grid so it is impossible to miss; the
+          steady-state readout is the header chip below. */}
+      {roofAlarm && (
+        <div
+          role="alert"
+          className="mb-3 flex items-center gap-2 border border-bad/60 bg-bad/10 px-3 py-2 text-xs text-bad"
+        >
+          <Icon name="alert" size={14} className="shrink-0" />
+          <span className="font-semibold">
+            {domeStatusLabel(roofShutter)} — a run is in progress.
+          </span>
+        </div>
+      )}
 
       <div
         className={`grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 auto-rows-min
@@ -373,6 +453,22 @@ export default function MonitorView() {
                 {status?.filterwheel && (
                   <span className="mono text-dim shrink-0">
                     {status.filterwheel.names[status.filterwheel.position] ?? "—"}
+                  </span>
+                )}
+                {/* roof state (UX-2026-07-26 #27) — glyph + the WORD, never a
+                    colour alone; "open" is only GOOD while a run is in flight,
+                    so the neutral info glyph is the resting case. */}
+                {roofConnected && (
+                  <span
+                    className={`inline-flex items-center gap-1 shrink-0 ${
+                      roofAlarm ? "text-bad font-semibold" : roofShutter === "error" ? "text-warn" : "text-dim"
+                    }`}
+                  >
+                    <Icon
+                      name={roofAlarm || roofShutter === "error" ? "alert" : roofShutter === "open" ? "check" : "info"}
+                      size={12}
+                    />
+                    {domeStatusLabel(roofShutter)}
                   </span>
                 )}
               </div>
@@ -582,7 +678,7 @@ export default function MonitorView() {
         {/* ================================================== COUNTDOWNS */}
         <Panel className="col-span-full sm:col-span-1 lg:col-span-4" title="Countdowns">
           <div className="data-dim flex flex-col gap-3">
-            <MeridianCountdown reducedMotion={reducedMotion} />
+            <MeridianCountdown reducedMotion={reducedMotion} runActive={runActive} />
             <CoolingCountdown detail={seq.detail} />
           </div>
         </Panel>
@@ -590,9 +686,9 @@ export default function MonitorView() {
         {/* ================================================== THUMBNAIL */}
         <Panel className="col-span-full sm:col-span-2 lg:col-span-6" title="Last frame">
           <PreviewTile
-            previewId={preview?.id ?? null}
+            previewId={preview?.id ?? coldPreviewId}
             live={live}
-            stale={!live && preview != null}
+            stale={!live && (preview != null || coldPreviewId != null)}
             hfr={preview?.hfr}
             stars={preview?.stars}
             meta={previewMeta}
@@ -812,7 +908,16 @@ function SubFrameBar({
 }
 
 // ---------------------------------------------------------------- meridian cell
-function MeridianCountdown({ reducedMotion }: { reducedMotion?: boolean }) {
+/** Window after the crossing in which a flip really can still be in flight. */
+const FLIP_IN_FLIGHT_S = 300;
+
+function MeridianCountdown({
+  reducedMotion,
+  runActive,
+}: {
+  reducedMotion?: boolean;
+  runActive?: boolean;
+}) {
   const meridian = useMeridian();
   if (!meridian) {
     return (
@@ -826,8 +931,8 @@ function MeridianCountdown({ reducedMotion }: { reducedMotion?: boolean }) {
       />
     );
   }
-  const { status, hours_to_flip } = meridian;
-  if (status === "counting" || status === "due") {
+  const { status, hours_to_flip, pier_side } = meridian;
+  if (status === "counting") {
     const secs = hours_to_flip != null ? Math.max(0, hours_to_flip * 3600) : null;
     return (
       <CountdownTile
@@ -843,8 +948,63 @@ function MeridianCountdown({ reducedMotion }: { reducedMotion?: boolean }) {
       />
     );
   }
+  // UX-2026-07-26 #21. `status: "due"` is RAW HOUR-ANGLE GEOMETRY: it says the
+  // meridian crossing is behind us (hours_to_flip <= 0), not that the sequencer
+  // owes a flip. The engine arms `_flip_armed` only for a target ACQUIRED EAST
+  // of the meridian and disarms it the moment it flips, so a negative countdown
+  // means either "we already flipped" or "this target was acquired west and was
+  // never armed" — nothing is owed either way. The old tile clamped the
+  // countdown at zero, which drove CountdownTile's `due` branch, so a target
+  // sitting west rendered a red blinking "⚠ FLIP DUE" for the whole ~12 h it
+  // stayed there — a permanent alarm on the one indicator that must never cry
+  // wolf (pro + designer, three runs, ~90 frames of log with no flip in them).
+  //
+  // Trade-off, stated: if a flip were genuinely armed and the mount then FAILED
+  // to execute it, this tile would read calm. That failure is loud elsewhere
+  // (the engine logs it and the run state moves), and a real alarm you can't
+  // trust is worth less than no alarm at all.
+  if (status === "due") {
+    const agoS = hours_to_flip != null ? Math.abs(hours_to_flip) * 3600 : null;
+    const inFlight = !!runActive && agoS != null && agoS <= FLIP_IN_FLIGHT_S;
+    return (
+      <div className="flex items-center gap-3 min-w-0">
+        <Icon
+          name={inFlight ? "alert" : "info"}
+          size={22}
+          className={`shrink-0 ${inFlight ? "text-warn" : "text-dim"}`}
+        />
+        <div className="leading-tight min-w-0">
+          <div className="label !text-[10px]">meridian flip</div>
+          <div className={`text-xs ${inFlight ? "text-warn font-semibold" : "text-dim"}`}>
+            {inFlight ? "CROSSING NOW — flip if armed" : "no flip owed — meridian passed"}
+          </div>
+          {!inFlight && agoS != null && (
+            <div className="label !text-[9px] text-dim truncate">
+              {fmtDuration(agoS)} ago{pier_side !== "unknown" ? ` · pier ${pier_side}` : ""}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
   // non-counting variants: render the static label + word (no ring tick).
+  // UX-2026-07-26 #21: `flip_disabled` is emitted whenever the ACTIVE PLAN
+  // doesn't ask for a flip — and `hub._plan_flip_enabled()` returns False when
+  // there is no plan at all, so an idle rig with nothing loaded rendered an
+  // amber "FLIP DISABLED — risk near meridian" permanently. The risk it names is
+  // real only while something is driving the mount across the meridian.
   if (status === "flip_disabled") {
+    if (!runActive) {
+      return (
+        <div className="flex items-center gap-3">
+          <Icon name="info" size={22} className="text-dim shrink-0" />
+          <div className="leading-tight">
+            <div className="label !text-[10px]">meridian flip</div>
+            <div className="text-xs text-dim">no run — flip not scheduled</div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex items-center gap-3">
         <Icon name="alert" size={22} className="text-warn shrink-0" />

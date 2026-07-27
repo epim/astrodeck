@@ -2,6 +2,14 @@
 // difficulty-tagged catalog (GET /api/catalog/tonight) and lets a first-timer pick
 // a slam-dunk. A pick calls onPick(entry) -> AtlasView passes openFraming, exactly
 // like CatalogSearch. Beginner filter (Easy+Moderate) defaults ON.
+//
+// UX-2026-07-26 (the one place two personas openly disagreed): the novice called
+// this "the single best thing in the app"; the pro called it under-informative
+// and wanted transit time, best-window span and moon separation — all three of
+// which `/api/catalog/tonight` ALREADY returns and this component dropped on the
+// floor. The BEGINNER/ALL toggle is the seam that settles it: BEGINNER is byte
+// for byte the row the novice praised, ALL becomes the dense pro row. The choice
+// is remembered, because a pro who picks ALL every night is telling us something.
 
 import { useEffect, useMemo, useState, type JSX } from "react";
 import { api, ApiError } from "../../api";
@@ -12,6 +20,20 @@ import { EmptyState, InfoDot, SegmentedControl } from "../ui";
 import {
   difficultyLabel, difficultyGlyph, difficultyTone, isBeginnerFriendly,
 } from "../../lib/difficulty";
+import { fmtTime, fmtWindow, moonSepGlyph, moonSepTone } from "../../lib/visibility";
+
+// Remembered scope (master §A.2 persistence rules — a plain localStorage pref,
+// no store slice). Unset / unreadable => "beginner", so the novice default is
+// what a fresh install still gets.
+const SCOPE_KEY = "astrodeck-tonight-scope";
+
+function loadScope(): "beginner" | "all" {
+  try {
+    return localStorage.getItem(SCOPE_KEY) === "all" ? "all" : "beginner";
+  } catch {
+    return "beginner";
+  }
+}
 
 type Load =
   | { kind: "loading" }
@@ -39,7 +61,16 @@ export function TonightPicker({
 }): JSX.Element {
   const altLimit = useStore((s) => s.site?.horizon_min_deg ?? 30);
   const [state, setState] = useState<Load>({ kind: "loading" });
-  const [beginnerOnly, setBeginnerOnly] = useState(true);
+  const [scope, setScope] = useState<"beginner" | "all">(loadScope);
+  const beginnerOnly = scope === "beginner";
+  const setScopePersisted = (v: "beginner" | "all") => {
+    setScope(v);
+    try {
+      localStorage.setItem(SCOPE_KEY, v);
+    } catch {
+      /* quota / unavailable — in-memory only for this session */
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -82,6 +113,11 @@ export function TonightPicker({
                 object gets tonight. Higher means less air to shoot through, so
                 the list is ordered by that peak altitude. “low” means it never
                 clears your {Math.round(altLimit)}° horizon limit tonight.
+                <br />
+                <strong>All</strong> adds three more per row: the time it
+                transits (↑), the best window to shoot it ([ ]), and how many
+                degrees it sits from the Moon (☾ / ⚠ under 30° / ✕ under 15°).
+                Your choice of Beginner or All is remembered.
               </>
             }
           />
@@ -91,8 +127,8 @@ export function TonightPicker({
             the hand-rolled aria-pressed pair it replaces was ~24px tall. */}
         <SegmentedControl
           ariaLabel="Difficulty filter"
-          value={beginnerOnly ? "beginner" : "all"}
-          onChange={(v) => setBeginnerOnly(v === "beginner")}
+          value={scope}
+          onChange={(v) => setScopePersisted(v === "all" ? "all" : "beginner")}
           options={[
             { value: "beginner", label: "Beginner" },
             { value: "all", label: "All" },
@@ -120,13 +156,18 @@ export function TonightPicker({
       )}
 
       {state.kind === "ok" && shown.length > 0 && (
-        <ul className="flex flex-col max-h-72 overflow-y-auto border border-line2 divide-y divide-line2">
+        /* The 288px clamp put six of twenty suggestions in a nested scroll
+           region with ~700px of empty wallpaper underneath it, on the tablet,
+           with gloves on. Keep a clamp (the list must not shove the rest of the
+           page off-screen) but let it use the height that is actually there. */
+        <ul className="flex flex-col max-h-72 sm:max-h-[55vh] overflow-y-auto border border-line2 divide-y divide-line2">
           {shown.slice(0, 20).map((p) => (
             <li key={p.id}>
               {/* Tapping a target IS this view, and its audience is a first-timer
                   on a phone in the dark — the house floor is 44px (§8). */}
               <button type="button" onClick={() => onPick(toEntry(p))}
-                className="tap min-h-[44px] w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex items-center justify-between gap-2 cursor-pointer">
+                className="tap min-h-[44px] w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex flex-col gap-0.5 cursor-pointer">
+                <span className="flex items-center justify-between gap-2 w-full">
                 <span className="min-w-0 truncate">
                   <span className="mono text-accent">{p.id}</span> {p.name}
                   <span className="text-dim"> · {p.type}</span>
@@ -154,6 +195,39 @@ export function TonightPicker({
                     {p.never_rises_above_limit ? "low " : "↑"}{p.max_alt.toFixed(0)}°
                   </span>
                 </span>
+                </span>
+                {/* ALL = the dense row. Three numbers the server already sends
+                    and the UI used to drop: when it's highest, the span worth
+                    shooting, and how far the Moon is. Each keeps its non-hue
+                    glyph (↑ / [ ] / ☾⚠✕) so it survives the red night palette,
+                    and carries its own aria-label because the glyphs alone are
+                    not a name. BEGINNER never renders this. */}
+                {!beginnerOnly && (
+                  <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] mono text-dim">
+                    <span aria-label={`Transits at ${fmtTime(p.transit_unix)}`}>
+                      <span aria-hidden>↑</span> {fmtTime(p.transit_unix)}
+                    </span>
+                    <span
+                      aria-label={
+                        p.best_window
+                          ? `Best window ${fmtWindow(p.best_window)}`
+                          : "No best window tonight"
+                      }
+                    >
+                      <span aria-hidden>[ ]</span> {fmtWindow(p.best_window)}
+                    </span>
+                    <span
+                      className={
+                        moonSepTone(p.moon_sep_deg) === "good" ? "text-dim"
+                        : moonSepTone(p.moon_sep_deg) === "warn" ? "text-warn" : "text-bad"
+                      }
+                      aria-label={`Moon separation ${Math.round(p.moon_sep_deg)} degrees`}
+                    >
+                      <span aria-hidden>{moonSepGlyph(p.moon_sep_deg)}</span>{" "}
+                      {Math.round(p.moon_sep_deg)}°
+                    </span>
+                  </span>
+                )}
               </button>
             </li>
           ))}
