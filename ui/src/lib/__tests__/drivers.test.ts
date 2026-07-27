@@ -2,6 +2,7 @@
 // Inline-assert harness (no vitest in this repo); runs via `npx tsx`.
 import {
   DRIVER_DEFAULT_PORT,
+  driverTypeChip,
   offersSummary,
   validateDriverForm,
 } from "../../components/settings/driversMeta";
@@ -65,6 +66,27 @@ test("default ports match the server table", () => {
   eq(DRIVER_DEFAULT_PORT.nina, 1888);
   eq(DRIVER_DEFAULT_PORT.alpaca, 11111);
   eq(DRIVER_DEFAULT_PORT.phd2, 4400);
+});
+
+// UX review #42: built-in rows printed the driver's name twice, in two
+// typefaces ("Simulator  Simulator", "ASTAP  ASTAP"), because label === the
+// type label for every implicit driver.
+test("driverTypeChip suppresses a chip that just repeats the label", () => {
+  eq(driverTypeChip("Simulator", "sim"), "");
+  eq(driverTypeChip("ASTAP", "astap"), "");
+  eq(driverTypeChip("AstroDeck native", "astrodeck"), "");
+  eq(driverTypeChip("ASCOM (local)", "ascom-local"), "");
+  // case- and whitespace-insensitive
+  eq(driverTypeChip("simulator", "sim"), "");
+  eq(driverTypeChip("AstroDeck  native", "astrodeck"), "");
+});
+
+test("driverTypeChip keeps a chip that adds information", () => {
+  eq(driverTypeChip("Rig PC", "nina"), "NINA");
+  eq(driverTypeChip("Roof box", "alpaca"), "Alpaca server");
+  eq(driverTypeChip("AM5N", "zwo-am5"), "ZWO AM5 (native serial)");
+  // unknown type falls back to the raw id rather than vanishing
+  eq(driverTypeChip("Whatever", "brand-new"), "brand-new");
 });
 
 console.log(`drivers.test.ts: ${passed} passed, ${failed} failed`);

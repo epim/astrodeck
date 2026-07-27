@@ -11,11 +11,11 @@
 // banner and route them to the status grid instead of hiding Settings entirely
 // (they can still SEE the rig + sign in).
 
-import { useState, type JSX } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { Segmented } from "../Segmented";
 import { Panel } from "../ui";
 import { Icon } from "../icons";
-import { useBackendLinks, useBootConnectFailed, useUpdate } from "../../store";
+import { useBackendLinks, useBootConnectFailed, useConfig, useUpdate } from "../../store";
 import {
   accessPhrase,
   useCan,
@@ -52,6 +52,61 @@ type Tab =
   | "users"
   | "auth";
 
+/** The Settings tab strip. UX review #42: at tablet width the strip is 712px of
+ *  content squeezed into a 698px flex slot by `Segmented`'s own
+ *  `overflow-hidden`, so AUTH is amputated at the right edge with no fade, no
+ *  chevron and no scrollbar — nothing on screen says there is more. Fix: give
+ *  the strip its own full-width row, let it scroll horizontally (the inner
+ *  `w-max` box keeps `Segmented` at its intrinsic width instead of being
+ *  shrunk-and-clipped), and paint an edge fade on whichever side still has
+ *  hidden tabs. */
+function TabStrip({ children }: { children: JSX.Element }): JSX.Element {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const measure = () => {
+    const el = ref.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({ left: el.scrollLeft > 2, right: max - el.scrollLeft > 2 });
+  };
+  useLayoutEffect(measure, []);
+  useEffect(() => {
+    // the strip's own width changes with the viewport AND with the tab set
+    // (Alerts/Updates/Users/Auth are capability-gated), so watch both.
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    for (const c of Array.from(el.children)) ro.observe(c);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div className="relative min-w-0 max-w-full">
+      <div
+        ref={ref}
+        onScroll={measure}
+        className="overflow-x-auto overscroll-x-contain"
+      >
+        <div className="w-max">{children}</div>
+      </div>
+      {edges.left && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-bg to-transparent"
+        />
+      )}
+      {edges.right && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-bg to-transparent flex items-center justify-end"
+        >
+          <Icon name="arrow-right" size={14} className="text-dim mr-0.5" />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function SettingsView(): JSX.Element {
   const [tab, setTab] = useState<Tab>("connect");
   const links = useBackendLinks();
@@ -63,6 +118,16 @@ export default function SettingsView(): JSX.Element {
   const update = useUpdate();
   const isViewer = useIsViewer();
   const canSeePrecise = useCanViewSitePrecise();
+  const config = useConfig();
+
+  // UX review #31: an unattended rig with no outbound channel is the default,
+  // and nothing ever asks. Mark the tab the way an available update is marked,
+  // so the gap is visible from anywhere in Settings rather than only to
+  // somebody who already went looking for Alerts.
+  const noAlertChannel =
+    !!config &&
+    (config.alerts ?? []).filter((s) => s.enabled).length === 0 &&
+    !config.deadman_configured;
 
   // Admin-only tabs (W2.6) appear ONLY for the `admin.users` capability. Under the
   // open `none`/no-method default every caller is admin, so an offline LAN admin
@@ -72,7 +137,12 @@ export default function SettingsView(): JSX.Element {
     { value: "profiles", label: "Profiles" },
     { value: "calibration", label: "Calibration" },
     { value: "safety", label: "Safety" },
-    ...(canAlerts ? ([{ value: "alerts", label: "Alerts" }] as { value: Tab; label: string }[]) : []),
+    ...(canAlerts
+      ? ([{ value: "alerts", label: noAlertChannel ? "Alerts •" : "Alerts" }] as {
+          value: Tab;
+          label: string;
+        }[])
+      : []),
     ...(canSystemUpdate
       ? ([
           {
@@ -100,17 +170,22 @@ export default function SettingsView(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-4 w-full">
-      {/* ----------------------------------------------------------- header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      {/* ----------------------------------------------------------- header
+          #42: the strip gets its OWN row rather than sharing one with the title
+          — on the 820px tablet that alone recovers the ~90px the heading was
+          taking, and TabStrip makes whatever still doesn't fit reachable. */}
+      <div className="flex flex-col gap-3">
         <h1 className="font-display text-lg tracking-[0.2em] text-ink uppercase">
           Settings
         </h1>
-        <Segmented
-          options={TABS}
-          value={activeTab}
-          onChange={(t) => setTab(t)}
-          ariaLabel="Settings section"
-        />
+        <TabStrip>
+          <Segmented
+            options={TABS}
+            value={activeTab}
+            onChange={(t) => setTab(t)}
+            ariaLabel="Settings section"
+          />
+        </TabStrip>
       </div>
 
       {/* boot-connect-failed banner — the active profile tried to auto-connect on
@@ -165,15 +240,27 @@ export default function SettingsView(): JSX.Element {
       {/* ------------------------------------------------------------ CONNECT */}
       {activeTab === "connect" && (
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
-          <div className="order-2 lg:order-1 min-w-0 flex flex-col gap-4">
-            <DriversPanel />
+          {/* #12 cont.: on a narrow viewport the settings column used to be
+              `order-2`, so Connection Status — a ~400px empty state before a
+              rig exists — was pushed above everything and Observing Site
+              started 426px down even as the first panel. The link readout is
+              still on this tab (below), on Equipment's own Link Status panel,
+              and in the header LED; the site is not reachable anywhere else.
+              Profiles keeps the original order. */}
+          <div className="order-1 min-w-0 flex flex-col gap-4">
+            {/* #12: OBSERVING SITE used to sit at scroll offset 1485 of a
+                3168px page, BELOW the driver plumbing — so the one setting
+                that poisons twilight times, meridian timing, horizon gating
+                and every delivered FITS header was the last thing a first-run
+                user would ever find. It is now the first panel on the tab. */}
             <SitePanel />
+            <DriversPanel />
             {canSeePrecise && <WeatherPanel />}
             <SkyAtlasPanel />
             <NamingPanel />
             <WcsStampPanel />
           </div>
-          <div className="order-1 lg:order-2 flex flex-col gap-4">
+          <div className="order-2 flex flex-col gap-4">
             <Panel title="Connection Status">
               <BackendLinkGrid links={links} />
             </Panel>

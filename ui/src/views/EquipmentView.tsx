@@ -46,6 +46,7 @@ import {
   type AssignmentMap,
 } from "../lib/equipment";
 import { confirmDialog } from "../components/ConfirmDialog";
+import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import TasksPanel, { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
 import RotatorCard from "../components/equipment/RotatorCard";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
@@ -116,6 +117,14 @@ export default function EquipmentView(): JSX.Element {
   );
 
   const assignedCount = roles.filter((r) => assignments[r]).length;
+  const connectedCount = Object.values(status?.connected ?? {}).filter(
+    (c) => c?.connected,
+  ).length;
+  // Roles the server reports as LIVE while this screen holds no assignment for
+  // them — the #41 mismatch (a rig connected from anywhere but here).
+  const liveUnassignedRoles = roles.filter(
+    (r) => status?.connected?.[r]?.connected && !assignments[r],
+  );
 
   // The one connect-rig implementation, parameterized on the AssignmentMap to
   // drive (root-cause fix, sim-connect desync EQ-01 ×3 rounds): both the
@@ -170,12 +179,54 @@ export default function EquipmentView(): JSX.Element {
 
   const doConnect = () => connectAssignments(assignments);
 
+  // UX review #17, both halves.
+  //
+  // (a) DISCONNECT was a one-tap `btn-danger` with no dialog — on a touch
+  //     device, next to Connect Rig, mid-run. It now confirms, and names what
+  //     it will actually do (aborting a running sequence is not obvious from
+  //     the word "disconnect").
+  //
+  // (b) After the POST the UI kept reporting every device CONNECTED. Root
+  //     cause: `status` only ever arrives on the WS "status" frame, and
+  //     `hub.disconnect_all()` cancels the status-poll task as its first step —
+  //     so the last frame the client ever sees is the one from BEFORE the
+  //     teardown, and it sticks until a page reload. RIG ACTIONS looked right
+  //     only because it reads local state we cleared ourselves. The client
+  //     therefore re-reads /api/status for the action it initiated and feeds it
+  //     through the SAME store reducer a WS frame would take, so nothing is
+  //     re-derived here.
   const doDisconnect = () =>
     void (async () => {
+      const live = Object.values(status?.connected ?? {}).filter(
+        (c) => c?.connected,
+      ).length;
+      const seqState = useStore.getState().sequence?.state;
+      const running = seqState === "running" || seqState === "paused";
+      const ok = await confirmDialog({
+        title: "Disconnect the whole rig?",
+        body: running
+          ? "A sequence is running. Disconnecting aborts it and drops every device, including the mount and the guider."
+          : `This drops ${live || "every"} connected device${live === 1 ? "" : "s"} — camera, mount, guider and the rest. You can reconnect from this screen.`,
+        tone: "danger",
+        confirmLabel: "Disconnect",
+        cancelLabel: "Stay connected",
+      });
+      if (!ok) return;
       setBusy(true);
       try {
         await api.post("/api/disconnect");
         setResults({});
+        // (b): authoritative re-read, dispatched exactly as a WS status frame.
+        try {
+          const fresh = await api.get<Record<string, unknown>>("/api/status");
+          useStore.getState().handleEvent({
+            type: "status",
+            data: fresh,
+            ts: Date.now() / 1000,
+          });
+        } catch {
+          /* the POST already succeeded; the next WS frame will correct us */
+        }
         showToast("success", "Disconnected");
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "disconnect failed");
@@ -347,6 +398,17 @@ export default function EquipmentView(): JSX.Element {
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_minmax(260px,340px)]">
+      {/* UX review #51: the nav calls this EQUIPMENT and every button on it
+          calls the same thing a "rig", with nothing on screen saying they are
+          the same word. One heading settles it. */}
+      <div className="lg:col-span-2 flex items-baseline gap-3 flex-wrap">
+        <h1 className="font-display text-lg tracking-[0.2em] text-ink uppercase">
+          Equipment
+        </h1>
+        <span className="text-[11px] text-dim">
+          your rig — one row per device
+        </span>
+      </div>
       {/* Background-refresh failure (data already loaded): a non-destructive
           inline banner + retry, spanning both columns — never the full-panel
           blank the first-load EmptyState above uses. */}
@@ -369,6 +431,20 @@ export default function EquipmentView(): JSX.Element {
             />
           }
         >
+          {/* #41 cont.: the explanation belongs ONCE at panel level — ten
+              identical sub-lines under ten rows is noise, not an explanation. */}
+          {liveUnassignedRoles.length > 0 && (
+            <p className="text-[11px] text-dim mb-3 inline-flex items-start gap-1.5 leading-snug">
+              <Icon name="info" size={12} className="shrink-0 mt-0.5" />
+              <span>
+                {liveUnassignedRoles.length} device
+                {liveUnassignedRoles.length === 1 ? " is" : "s are"} connected
+                but not assigned here — this rig was started somewhere else (the
+                one-tap simulator, a boot profile, or Profiles → Activate). Pick
+                a driver on those rows to save them into a profile.
+              </span>
+            </p>
+          )}
           {downDrivers.length > 0 && (
             <p className="text-[11px] text-warn mb-3 inline-flex items-center gap-1.5">
               <Icon name="alert" size={12} />
@@ -410,15 +486,28 @@ export default function EquipmentView(): JSX.Element {
             </p>
           )}
           <div className="flex flex-wrap items-center gap-3">
+            {/* House rule: never the native `disabled` attribute on a control
+                a user could want to press. With nothing assigned this used to
+                render at opacity 0.35 with no reachable reason (#16's
+                screenshot evidence). It is now dim + aria-disabled, with the
+                reason stated in the paragraph above and again beside it. */}
             <button
               type="button"
-              className={`btn min-h-11 ${assignedCount > 0 ? "btn-accent" : ""}`}
-              disabled={busy || !canConfig || assignedCount === 0}
-              onClick={() => void doConnect()}
+              className={`btn min-h-11 ${
+                assignedCount > 0 && canConfig && !busy ? "btn-accent" : ""
+              } ${assignedCount === 0 ? "!text-dim" : ""}`}
+              disabled={busy || !canConfig}
+              aria-disabled={assignedCount === 0 || undefined}
+              onClick={assignedCount === 0 ? undefined : () => void doConnect()}
             >
               <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
               {busy ? "Working…" : `Connect Rig (${assignedCount})`}
             </button>
+            {assignedCount === 0 && canConfig && (
+              <span className="text-[11px] text-dim">
+                nothing assigned yet — pick a driver above, or use one of these
+              </span>
+            )}
             <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doSimRig}>
               ▶ Simulator rig
             </button>
@@ -434,6 +523,26 @@ export default function EquipmentView(): JSX.Element {
               </span>
             )}
           </div>
+          {/* UX review #16. The reviewer's measurement — "11 rows ASSIGNED,
+              page reload, all back to unassigned" — did NOT reproduce here:
+              lib/equipment persists the map to localStorage on every pick and
+              it survives a reload (verified, 3 rows in and out). What IS true
+              is the half of the finding nobody can see: these picks live in
+              ONE browser's localStorage. Open the rig from the desk laptop
+              instead of the field tablet, or clear site data, and they are
+              gone — with nothing on screen ever having said so. A profile is
+              the durable store; say that while the picks are still unsaved. */}
+          {assignedCount > 0 && connectedCount === 0 && canConfig && (
+            <p className="text-[11px] text-dim mt-3 inline-flex items-start gap-1.5 leading-snug">
+              <Icon name="info" size={11} className="shrink-0 mt-0.5" />
+              <span>
+                {assignedCount} slot{assignedCount === 1 ? "" : "s"} picked but
+                not connected. Picks are remembered in{" "}
+                <span className="text-ink">this browser only</span> — save them
+                as a profile below to keep them on every device.
+              </span>
+            </p>
+          )}
           {!canConfig && (
             <p className="text-[11px] text-dim mt-2 inline-flex items-center gap-1.5">
               <Icon name="lock" size={11} />
@@ -526,13 +635,25 @@ function RoleSlot({
   // surfaced in the side Link Status grid.
   const eligible = eligibleDrivers(role, drivers);
   const state = slotState(role, assignment, drivers);
-  const meta = SLOT_WORD[state];
   const chosen = assignment ? drivers.find((d) => d.id === assignment.driverId) : undefined;
   const choices = chosen ? deviceChoices(role, chosen) : [];
   const connectedName = status?.connected?.[role]?.connected
     ? status.connected[role].name
     : null;
   const led = connectedName ? "on" : result && result.attempted && !result.ok ? "bad" : "off";
+
+  // UX review #41: a rig connected from ANYWHERE other than this screen (the
+  // one-tap sim connect, a boot profile, Profiles → Activate) leaves the row's
+  // ASSIGNMENT empty while the DEVICE is genuinely live — so ten of eleven rows
+  // rendered a green ✓ LED next to "— unassigned —" and a faint "UNASSIGNED".
+  // The LED was never the liar: it reports the link, and the link is up. The
+  // word was, because it described a different axis. When the two disagree the
+  // row now says what is actually true — CONNECTED — and explains, once, why
+  // the dropdown is still empty.
+  const liveButUnassigned = !!connectedName && state === "unassigned";
+  const meta = liveButUnassigned
+    ? { word: "CONNECTED", tone: "text-good" }
+    : SLOT_WORD[state];
 
   const pickDriver = (driverId: string) => {
     if (!driverId) return onAssign(null);
@@ -606,12 +727,31 @@ function RoleSlot({
           {connectedName ?? <span className="text-dim">—</span>}
         </span>
       </div>
-      {/* honest per-row failure: connect result error, else live link error */}
+      {/* honest per-row failure: connect result error, else live link error.
+          Sub-lines are indented to 23px — LED (11px) + gap-3 (12px) — so they
+          start on the same column as the role label above them, instead of the
+          old 41.6px that put the guider's second line 19px off the grid (#41). */}
       {result && result.attempted && !result.ok && result.error && (
-        <p className="mt-1.5 pl-[2.6rem] text-[10px] text-bad">{result.error}</p>
+        <p className="mt-1.5 pl-[23px] text-[10px] text-bad">{result.error}</p>
+      )}
+      {/* UX review #36: per-filter focus offsets — the single most important
+          setting on a mono rig, with a working learn-offsets routine behind it
+          — were reachable ONLY from a 24px unlabelled slider glyph on Capture
+          whose only description ("Edit filter slot names") never mentions
+          focus at all. A mono convert spent an evening believing the feature
+          didn't exist. Same modal, second entrance, on the screen where you
+          configure the wheel, named for what it does. */}
+      {role === "filterwheel" && status?.filterwheel && (
+        <FilterSlotsEditor
+          names={status.filterwheel.names}
+          offsets={status.filterwheel.offsets ?? []}
+          position={status.filterwheel.position}
+          hasFocuser={!!status.focuser}
+          disabled={disabled}
+        />
       )}
       {role === "guider" && (
-        <div className="mt-2 pl-[2.6rem] flex items-center gap-2 text-[11px]">
+        <div className="mt-2 pl-[23px] flex items-center gap-2 text-[11px]">
           <span className="label">guide cam</span>
           <span className="mono text-dim truncate">
             {(() => {
@@ -623,6 +763,68 @@ function RoleSlot({
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// The filter-wheel row's slot-names + per-filter-focus-offsets entrance (#36).
+// Wiring is deliberately identical to CaptureView's — same modal, same two
+// endpoints — so there is exactly one implementation of the behaviour and two
+// places to reach it.
+function FilterSlotsEditor({
+  names,
+  offsets,
+  position,
+  hasFocuser,
+  disabled,
+}: {
+  names: string[];
+  offsets: number[];
+  position: number;
+  hasFocuser: boolean;
+  disabled: boolean;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const showToast = useStore((s) => s.showToast);
+  const offsetsSet = offsets.some((o) => o !== 0);
+  return (
+    <div className="mt-2 pl-[23px] flex items-center gap-2 flex-wrap text-[11px]">
+      <button
+        type="button"
+        className="btn min-h-11 !py-1 !px-3 text-[10px]"
+        // honest-disabled: a read-only session still gets to LOOK at the slots
+        aria-disabled={disabled || undefined}
+        onClick={() => setOpen(true)}
+      >
+        Filter slots &amp; focus offsets…
+      </button>
+      <span className="text-dim truncate">
+        {names.length ? names.join(" · ") : "no slots reported"} —{" "}
+        {offsetsSet ? "focus offsets set" : "focus offsets not set"}
+      </span>
+      <FilterNamesModal
+        open={open}
+        onClose={() => setOpen(false)}
+        names={names}
+        offsets={offsets}
+        position={position}
+        canLearn={hasFocuser}
+        learnDisabledReason={
+          disabled
+            ? "this session can't change equipment"
+            : !hasFocuser
+              ? "no focuser is connected"
+              : null
+        }
+        onLearn={async (refSlot) => {
+          await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
+          showToast("info", "Learning filter offsets…");
+        }}
+        onSave={async (n, o) => {
+          await api.post("/api/filterwheel/names", { names: n, offsets: o });
+          showToast("success", "Filter slots saved");
+        }}
+      />
     </div>
   );
 }

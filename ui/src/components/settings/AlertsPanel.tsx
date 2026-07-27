@@ -547,10 +547,22 @@ export default function AlertsPanel(): JSX.Element {
           transitions, reconnects, and warning/error logs.
         </p>
 
+        {/* UX review #31: the default state is `alerts: []` + `deadman_url: ""`
+            — nothing is watching an unattended rig, and the old copy stated
+            that as a neutral fact ("No alert sinks configured yet."). The rain
+            abort in the review produced a beautiful red banner on a browser tab
+            nobody was looking at. State the consequence, not the state. */}
         {sinks.length === 0 && (
-          <p className="text-xs text-dim border border-line bg-bg/60 px-3 py-2.5">
-            No alert sinks configured yet.
-          </p>
+          <div className="flex items-start gap-2 border border-warn/50 bg-warn/10 px-3 py-2.5">
+            <Icon name="alert" size={14} className="text-warn shrink-0 mt-0.5" />
+            <p className="text-xs text-ink leading-relaxed">
+              <span className="text-warn">Nothing is watching this rig.</span>{" "}
+              With no channel here, a cloud pause at 01:15 or a mount that stops
+              tracking reaches a browser tab and nowhere else — you find out in
+              the morning. Add one channel (ntfy is two taps and needs no
+              account) and the rig can wake you.
+            </p>
+          </div>
         )}
 
         <div className="flex flex-col gap-2">
