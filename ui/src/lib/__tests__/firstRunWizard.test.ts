@@ -43,9 +43,15 @@ test("no-cooler rig can complete without cooling", () => {
     targetCount: 1, hasCooler: false, coolerActive: false, frameCount: 1 });
   eq(v.complete, true, "complete on 5 steps"); eq(v.total, 5, "total");
 });
-test("WIZARD_STEPS never leaks the real backyard label", () => {
+test("WIZARD_STEPS never carries a site coordinate", () => {
+  // A SHAPE check, not a list of the owner's values. The values themselves must
+  // never be written into this public repo in any form, assembled or not: a
+  // split literal still publishes them, it only hides them from a literal grep
+  // (#19). Wizard copy has no business holding a coordinate of any site, so any
+  // decimal with three or more places, or a degrees-and-minutes figure, fails.
   const blob = JSON.stringify(WIZARD_STEPS);
-  assert(!blob.includes("Backyard") && !blob.includes("[SITE-LAT]"), "no private site data in copy");
+  const coordinate = /\d{1,3}\.\d{3,}|\d{1,3}\s*°\s*\d{1,2}\s*['′]/;
+  assert(!coordinate.test(blob), "a coordinate-shaped figure is in the wizard copy");
 });
 
 // --- copy contract for the DOCKED BAR (phone feedback) -------------------
