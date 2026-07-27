@@ -208,7 +208,12 @@ export default function MountView() {
             <Toggle checked={center} onChange={setCenter} label="Center after slew" />
           </label>
         }>
+        {/* A placeholder is NOT an accessible name — it is not exposed by the
+            accname algorithm in every AT, and it disappears as soon as the user
+            types. The other of the two controls still reported unnamed after the
+            UX-review sweep (#26). */}
         <input className="field mb-3" placeholder="Search — M42, Andromeda, nebula, galaxy…"
+          aria-label="Search the catalog by name, catalogue id or object type"
           value={query} onChange={(e) => setQuery(e.target.value)} />
         {/* `overflow-x-auto` is load-bearing on a phone. The catalog table has
             six columns and a min-content of ~423px, and a container that only

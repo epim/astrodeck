@@ -660,7 +660,12 @@ export default function SequenceView() {
                 {ordering ? "Ordering…" : "Order by tonight"}
               </button>
               <div className="relative w-56 max-w-full min-w-0">
+                {/* A placeholder is NOT an accessible name: it is not exposed by
+                    the accname algorithm in every AT, and it vanishes the moment
+                    the user types. This was one of the two controls still
+                    reported unnamed after the UX-review sweep (#26). */}
                 <input className="field" placeholder="+ add target — search catalog"
+                  aria-label="Search the catalog to add a target"
                   value={search} onChange={(e) => setSearch(e.target.value)} />
                 {results.length > 0 && (
                 <div className="absolute right-0 top-full mt-1 w-72 panel z-10 max-h-60 overflow-y-auto">
