@@ -9,6 +9,14 @@
 // with a scope hint (planet-specific when the query looks like Sun/Moon/a
 // planet — those aren't in the catalog, see catalogHint.ts — general
 // otherwise). Previously an empty result set rendered nothing at all.
+//
+// The examples in the placeholder and in the zero-state hint are load-bearing:
+// whatever they show, a beginner will type. Both "M 31" and "M31" now find the
+// object — server-side, `search_catalog` strips separators from the query and
+// the id before comparing (server/astrodeck/catalog/objects.py,
+// `squash_designation`), so spacing and case are irrelevant for designations.
+// Until that landed the placeholder's own example, "M 31", returned
+// "No matches", which is why the default placeholder below carries it too.
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../api";
@@ -39,7 +47,7 @@ export function outsideTapDismisses(
 
 export function CatalogSearch({
   onPick,
-  placeholder = "Search catalog — frame a target",
+  placeholder = "Search catalog — e.g. M 31",
 }: {
   onPick: (e: CatalogEntry) => void;
   placeholder?: string;
