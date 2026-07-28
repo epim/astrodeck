@@ -35,9 +35,25 @@ function loadScope(): "beginner" | "all" {
   }
 }
 
+// UX-2026-07-28: this panel used to present a bare, unbounded "Ranking tonight…"
+// and — if the request died — a dead-end sentence with no way to try again. The
+// endpoint really is the app's most expensive GET (it ephemeris-ranks the whole
+// catalog), so on a Pi-class rig or a busy box the beginner's single best path
+// ended on a spinner that never resolved into anything they could act on.
+//
+// Two honest bounds now: after SLOW_AFTER_S the wait says how long it has been
+// waiting and when it will stop; when it does stop, it says so and offers a
+// retry. The invariant is that this panel always reaches an answer or an
+// explanation — never an open-ended spinner.
+const SLOW_AFTER_S = 3;
+// The budget api.ts's timeoutFor() applies to this path. It is the only number
+// we PROMISE the user here, so it has to track that default — if the client
+// budget moves, this sentence stops being true.
+const GIVE_UP_S = 15;
+
 type Load =
   | { kind: "loading" }
-  | { kind: "error"; message: string }
+  | { kind: "error"; message: string; timedOut: boolean }
   | { kind: "ok"; res: TonightResponse };
 
 // A TonightPick is CatalogEntry-shaped except alt/az (the framer seeds altaz
@@ -72,19 +88,35 @@ export function TonightPicker({
     }
   };
 
+  // `attempt` is the retry seam: bumping it re-runs the effect, which is the
+  // whole fetch. `waited` is the honest progress readout — a wait a user can
+  // see the length of is a wait they can decide about.
+  const [attempt, setAttempt] = useState(0);
+  const [waited, setWaited] = useState(0);
+
   useEffect(() => {
     let alive = true;
     setState({ kind: "loading" });
+    setWaited(0);
+    const t0 = Date.now();
+    const tick = setInterval(() => {
+      if (alive) setWaited(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    const stop = () => clearInterval(tick);
     api
       .get<TonightResponse>(`/api/catalog/tonight?alt_limit=${encodeURIComponent(altLimit)}`)
-      .then((res) => { if (alive) setState({ kind: "ok", res }); })
+      .then((res) => { stop(); if (alive) setState({ kind: "ok", res }); })
       .catch((e) => {
+        stop();
         if (!alive) return;
-        setState({ kind: "error",
-          message: e instanceof ApiError ? e.message : "couldn't rank tonight" });
+        setState({
+          kind: "error",
+          message: e instanceof ApiError ? e.message : "couldn't rank tonight",
+          timedOut: e instanceof ApiError && e.timedOut,
+        });
       });
-    return () => { alive = false; };
-  }, [altLimit]);
+    return () => { alive = false; stop(); };
+  }, [altLimit, attempt]);
 
   const picks = state.kind === "ok" ? state.res.picks : [];
   const shown = useMemo(
@@ -143,13 +175,48 @@ export function TonightPicker({
         </div>
       )}
 
+      {/* Bounded wait. Under SLOW_AFTER_S this is byte for byte the old line —
+          a fast rig should not be made to look like it is struggling. Past it,
+          the wait states its own length and its own deadline. The seconds are
+          aria-hidden so a screen reader isn't read a new number every second;
+          the sentence beside them carries the same meaning, once. */}
       {state.kind === "loading" && (
-        <p className="text-xs text-dim px-1 py-2">Ranking tonight…</p>
-      )}
-      {state.kind === "error" && (
-        <p className="text-xs text-warn px-1 py-2">
-          Couldn&apos;t rank tonight — {state.message}
+        <p role="status" className="flex flex-col gap-1 text-xs text-dim px-1 py-2">
+          <span>
+            Ranking tonight…
+            {waited >= SLOW_AFTER_S && (
+              <span className="mono ml-1.5" aria-hidden>{waited}s</span>
+            )}
+          </span>
+          {waited >= SLOW_AFTER_S && (
+            <span className="text-[11px]">
+              Still working — this works out where every catalog object will be
+              tonight, which is the slow part on a small rig. It stops after{" "}
+              {GIVE_UP_S}s and offers a retry rather than spinning forever.
+            </span>
+          )}
         </p>
+      )}
+      {/* Dead end no longer. It says what happened, distinguishes "no answer"
+          from "nothing is up", and hands back a control. The icon keeps the
+          state off hue alone for the red night palette. */}
+      {state.kind === "error" && (
+        <div role="alert" className="flex flex-col items-start gap-2 px-1 py-2">
+          <p className="flex items-start gap-1.5 text-xs text-warn">
+            <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+            <span>
+              {state.timedOut
+                ? `No answer in ${GIVE_UP_S}s, so tonight wasn't ranked.`
+                : `Couldn't rank tonight — ${state.message}.`}{" "}
+              <span className="text-dim">
+                This list is empty for that reason, not because nothing is up.
+              </span>
+            </span>
+          </p>
+          <button type="button" className="btn" onClick={() => setAttempt((a) => a + 1)}>
+            Try again
+          </button>
+        </div>
       )}
       {state.kind === "ok" && shown.length === 0 && (
         <EmptyState size="inline" icon="atlas" title="No beginner targets up tonight — try All." />

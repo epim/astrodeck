@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -313,6 +315,27 @@ def _moon_info(
     }
 
 
+def _moon_info_at(sc: dict, i: int, sep_deg: float) -> dict[str, Any]:
+    """The same ``MoonInfo`` as ``_moon_info``, read out of a cached night
+    scaffold at sample ``i`` instead of recomputed from scratch.
+
+    Every field is target-independent except the separation, which the caller
+    passes in from its own (already vectorised) moon-separation series. Sample
+    ``i`` is the target's transit sample, i.e. the identical instant the scalar
+    path evaluated at — so this is a lookup, not an approximation.
+    """
+    illum = float(sc["illum"][i])
+    return {
+        "illumination": round(illum, 3),
+        "phase_name": _moon_phase_name(illum, bool(sc["waxing"][i])),
+        "alt": round(float(sc["moon_alt"][i]), 1),
+        "az": round(float(sc["moon_az"][i]), 1),
+        "separation_deg": round(sep_deg, 1),
+        "rise_unix": sc["moon_rise_unix"],
+        "set_unix": sc["moon_set_unix"],
+    }
+
+
 def _moon_rise_set(
     loc: EarthLocation, dark_start: float | None, dark_end: float | None,
 ) -> tuple[float | None, float | None]:
@@ -417,6 +440,106 @@ def _best_window(
     return best
 
 
+# ----------------------------------------------------------------- night scaffold
+#
+# Everything a night needs that does NOT depend on which target you point at:
+# the twilight scan, the sample grid, the sun-altitude series, the moon's
+# alt/az/illumination track and its rise/set. That is ~85% of compute_night's
+# cost, and /api/catalog/tonight used to pay it 64 times over — once per catalog
+# object — for one identical night. On a fast desktop that made the endpoint a
+# 4.9 s call; a Pi-class rig (the actual deployment target) is several times
+# slower, past the client's 15 s budget, and the beginner's "what can I image
+# tonight?" panel died on a spinner. Compute it once per (site, night, step) and
+# hand every target the same scaffold.
+#
+# NOT a correctness shortcut: the per-target answer is unchanged. The moon
+# readout is still taken at that target's own transit sample — the moon arrays
+# are evaluated on the very grid the transit index points into, so the inputs are
+# the same instant they always were.
+
+_SCAFFOLD_MAX = 4          # a couple of sites × tonight/next-night is plenty
+_scaffold_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+_scaffold_lock = threading.Lock()
+
+
+def _build_scaffold(loc: EarthLocation, anchor: float, lon: float,
+                    step_min: int) -> dict:
+    dark_start, dark_end, darkness_kind = _find_dark_window(loc, anchor, lon)
+
+    # Sample from local sunset→sunrise. We bracket the dark window by ±2.5h so the
+    # altitude curve shows the object rising into / setting out of the dark, but
+    # only mark in-dark samples for the window math.
+    if dark_start is not None and dark_end is not None:
+        pad = 2.5 * 3600.0
+        t0, t1 = dark_start - pad, dark_end + pad
+    else:  # pragma: no cover - _find_dark_window always returns a window
+        t0, t1 = anchor - 6 * 3600.0, anchor + 6 * 3600.0
+    step = step_min * 60.0
+    n = int((t1 - t0) / step) + 1
+    unix = t0 + np.arange(n) * step
+    times = Time(unix, format="unix")
+    frame = AltAz(obstime=times, location=loc)
+
+    sun = get_sun(times)
+    sun_alt = np.asarray(sun.transform_to(frame).alt.to_value(u.deg))
+
+    moon_body = get_body("moon", times, loc)
+    moon_altaz = moon_body.transform_to(frame)
+    moon_alt = np.asarray(moon_altaz.alt.to_value(u.deg))
+    moon_az = np.asarray(moon_altaz.az.to_value(u.deg))
+
+    # Illumination + waxing sign along the whole night, so the per-target readout
+    # can be *indexed* at that target's transit instead of recomputed there. Same
+    # formulae as _moon_info (see there for the elongation rationale).
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NonRotationTransformationWarning)
+        elong = np.asarray(moon_body.separation(sun).to_value(u.rad))
+        # Hoisted out of the per-target separation: the GCRS→ICRS transform is
+        # the expensive half, and it does not depend on the target at all.
+        moon_icrs = moon_body.transform_to("icrs")
+    illum = np.clip((1.0 + np.cos(math.pi - elong)) / 2.0, 0.0, 1.0)
+    delta = (np.asarray(moon_body.geocentrictrueecliptic.lon.to_value(u.deg))
+             - np.asarray(sun.geocentrictrueecliptic.lon.to_value(u.deg))) % 360.0
+    waxing = delta < 180.0
+
+    rise_unix, set_unix = _moon_rise_set(loc, dark_start, dark_end)
+
+    return {
+        "anchor": anchor, "unix": unix, "n": n, "frame": frame,
+        "dark_start": dark_start, "dark_end": dark_end,
+        "darkness_kind": darkness_kind,
+        "sun_alt": sun_alt, "moon_alt": moon_alt, "moon_az": moon_az,
+        "moon_icrs": moon_icrs, "illum": illum, "waxing": waxing,
+        "moon_rise_unix": rise_unix, "moon_set_unix": set_unix,
+    }
+
+
+def _night_scaffold(site: dict, loc: EarthLocation, anchor: float, lon: float,
+                    step_min: int) -> dict:
+    """Cached ``_build_scaffold``. Keyed on the things that change the answer —
+    site, the night's solar-midnight anchor, and the sample step. A site edit or
+    a new night simply misses and rebuilds; nothing is ever served for the wrong
+    place or date.
+
+    The lock is held across the build so a burst of concurrent targets (the
+    catalog fan-out runs 8 wide) computes the night ONCE rather than eight times,
+    and so every reader sees fully-materialised arrays.
+    """
+    key = (round(float(site["latitude"]), 9), round(lon, 9),
+           round(float(site.get("elevation_m", 0.0)), 6),
+           round(anchor, 3), step_min)
+    with _scaffold_lock:
+        hit = _scaffold_cache.get(key)
+        if hit is not None:
+            _scaffold_cache.move_to_end(key)
+            return hit
+        built = _build_scaffold(loc, anchor, lon, step_min)
+        _scaffold_cache[key] = built
+        while len(_scaffold_cache) > _SCAFFOLD_MAX:
+            _scaffold_cache.popitem(last=False)
+        return built
+
+
 # ----------------------------------------------------------------- core compute
 
 def compute_night(
@@ -438,27 +561,14 @@ def compute_night(
         ra=ra_hours * 15.0 * u.deg, dec=dec_deg * u.deg, frame="icrs")
 
     anchor = _night_anchor_unix(date, lon)
-    dark_start, dark_end, darkness_kind = _find_dark_window(loc, anchor, lon)
-
-    # Sample from local sunset→sunrise. We bracket the dark window by ±2.5h so the
-    # altitude curve shows the object rising into / setting out of the dark, but
-    # only mark in-dark samples for the window math.
-    if dark_start is not None and dark_end is not None:
-        pad = 2.5 * 3600.0
-        t0, t1 = dark_start - pad, dark_end + pad
-    else:  # pragma: no cover - _find_dark_window always returns a window
-        t0, t1 = anchor - 6 * 3600.0, anchor + 6 * 3600.0
-    step = step_min * 60.0
-    n = int((t1 - t0) / step) + 1
-    unix = t0 + np.arange(n) * step
-    times = Time(unix, format="unix")
-    frame = AltAz(obstime=times, location=loc)
+    sc = _night_scaffold(site, loc, anchor, lon, step_min)
+    dark_start, dark_end = sc["dark_start"], sc["dark_end"]
+    darkness_kind = sc["darkness_kind"]
+    unix, n, frame = sc["unix"], sc["n"], sc["frame"]
+    sun_alt, moon_alt = sc["sun_alt"], sc["moon_alt"]
 
     tgt_alt = np.asarray(target.transform_to(frame).alt.to_value(u.deg))
-    sun_alt = _sun_alt_series(loc, times)
-    moon_body = get_body("moon", times, loc)
-    moon_alt = np.asarray(moon_body.transform_to(frame).alt.to_value(u.deg))
-    moon_sep = np.asarray(_moon_target_sep_deg(moon_body, target))
+    moon_sep = np.asarray(sc["moon_icrs"].separation(target).to_value(u.deg))
 
     samples: list[dict] = []
     for i in range(n):
@@ -505,8 +615,13 @@ def compute_night(
 
     # session time = the dark-window transit (a representative "now" for the moon
     # readout); falls back to the anchor when there is no window.
-    session_t = transit_unix if dark_start is not None else anchor
-    moon = _moon_info(loc, session_t, target, dark_start, dark_end, lon)
+    if dark_start is not None:
+        # transit_unix IS unix[transit_i], a grid point, so the scaffold's moon
+        # arrays hold the values for exactly the instant this used to evaluate
+        # scalar-wise — same answer, none of the per-target astropy work.
+        moon = _moon_info_at(sc, transit_i, float(moon_sep[transit_i]))
+    else:  # pragma: no cover - _find_dark_window always returns a window
+        moon = _moon_info(loc, anchor, target, dark_start, dark_end, lon)
 
     best = _best_window(
         samples, dark_start, dark_end, alt_limit, moon["illumination"])
