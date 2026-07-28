@@ -765,6 +765,20 @@ class ConfigStore:
         self._cfg = self._load()
         return self._cfg
 
+    def replace(self, cfg: AppConfig) -> AppConfig:
+        """Swap the WHOLE in-memory config for ``cfg``, then bump + persist.
+
+        The wholesale counterpart to the typed ``set_*`` helpers, and deliberately
+        the only one: it exists for factory reset (``factory_reset.py``), where
+        the point is that every block returns to its default at once. It is NOT a
+        general write path — a partial update must still go through the typed
+        setter that validates it, because this one validates nothing beyond the
+        model itself. Version handling stays with ``bump_and_save``, so a caller
+        that carries the old ``version`` forward keeps the counter monotonic and
+        an open client's stale token still loses its concurrency race."""
+        self._cfg = cfg
+        return self.bump_and_save()
+
     # -- mutation --------------------------------------------------------------
 
     def _check_version(self, expected_version: int | None) -> None:

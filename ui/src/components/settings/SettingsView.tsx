@@ -40,6 +40,7 @@ import AuthMethodPanel from "./AuthMethodPanel";
 import SafetyPanel from "./SafetyPanel";
 import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
+import FactoryResetPanel from "./FactoryResetPanel";
 
 type Tab =
   | "connect"
@@ -239,6 +240,7 @@ export default function SettingsView(): JSX.Element {
 
       {/* ------------------------------------------------------------ CONNECT */}
       {activeTab === "connect" && (
+        <>
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           {/* #12 cont.: on a narrow viewport the settings column used to be
               `order-2`, so Connection Status — a ~400px empty state before a
@@ -266,6 +268,23 @@ export default function SettingsView(): JSX.Element {
             </Panel>
           </div>
         </div>
+
+        {/* ------------------------------------------------------ DANGER ZONE
+            Last thing on the tab, full width, behind a rule and a heading — so
+            it is findable when it is wanted (Settings opens on Connect; you
+            reach this by scrolling to the end) and never brushed against (it
+            sits below six panels and a whole phone screen of content). This is
+            the ONLY place it appears. Rendered for every role: a non-admin sees
+            it dimmed with the reason stated, rather than a feature that
+            silently does not exist. */}
+        <div className="mt-6 pt-5 border-t border-line2 flex flex-col gap-3">
+          <h2 className="font-display text-xs tracking-[0.2em] text-bad uppercase flex items-center gap-2">
+            <Icon name="alert" size={13} aria-hidden />
+            Danger zone
+          </h2>
+          <FactoryResetPanel />
+        </div>
+        </>
       )}
 
       {/* -------------------------------------------------------- CALIBRATION */}
