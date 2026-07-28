@@ -76,6 +76,16 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   // concluded the feature did not exist. It stays in the MORE sheet too — that
   // is the phone's copy of this rail, not a duplicate.
   { id: "report", label: "Reports", icon: "download" },
+  // APPENDED (QA re-entry blocker — same Risk-10 precedent again: append, no
+  // reorder, no eviction). Help now hosts the setup guide's permanent door
+  // (views/HelpView.tsx), and that door is worthless if the page itself is only
+  // reachable from a phone's MORE sheet, the log-drawer footer, or a diagnosed
+  // error's deep link. Enumerating the rendered nav before this entry gave the
+  // same shape review #13 measured for Reports: desktop 1440 -> Help visible:
+  // FALSE; tablet 820 -> FALSE; phone 390 -> inside the MORE sheet only. A lost
+  // tester on the propped-up tablet had no "Help" to press at all. It stays in
+  // the MORE sheet too — that is the phone's copy of this rail, not a duplicate.
+  { id: "help", label: "Help", icon: "info" },
 ];
 
 // ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
@@ -95,8 +105,11 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
 //     phone-overflow-only, which measured as "invisible on tablet AND desktop").
 //     Still also reachable from the run-complete "View session report →" link
 //     (SequenceView) and the mobile overflow sheet (NavMoreSheet).
-//   - "help" is likewise NOT a primary-nav entry — reached from NavMoreSheet, the
-//     log drawer footer, and error deep-links (store.openHelp) (NOV-9).
+//   - "help" IS a primary-nav entry as of the QA re-entry fix (it was previously
+//     phone-overflow-only, i.e. invisible on tablet AND desktop, and it is now
+//     the home of the setup guide's only durable re-entry point). Still also
+//     reached from NavMoreSheet, the log drawer footer, and error deep-links
+//     (store.openHelp) (NOV-9).
 const EAGER_VIEWS: Partial<Record<ViewName, () => JSX.Element>> = {
   connect: EquipmentView,
 };
@@ -444,7 +457,20 @@ export default function App() {
                   // which states the same thing at full size.
                   aria-label={gated ? `${n.label} — connect equipment to use this` : undefined}
                   title={gated ? "Connect equipment to use this" : undefined}
-                  className={`flex flex-col items-center gap-1 py-3 transition-colors relative cursor-pointer
+                  // py-2, not py-3. MEASURED on this tree at 1440x900 — the
+                  // "morning-after machine", the shortest viewport this rail
+                  // renders on: 13 entries at py-3 came to scrollHeight 815
+                  // against clientHeight 818, i.e. the rail was already one
+                  // entry from overflowing, and appending Help pushed it to 877
+                  // — the last item (HELP) sat BELOW the rail's own fold, on a
+                  // scroll region with no visible affordance. A nav entry a user
+                  // has to discover by scrolling the nav is not reachable, which
+                  // would have re-created the exact defect this change exists to
+                  // fix. py-2 brings 14 entries to 765 < 818 and every item
+                  // still stands ~53px tall, above the 44px floor. (A rotated
+                  // tablet, 1180x820, is tighter still and scrolls — it did
+                  // before this change too, at 13 entries.)
+                  className={`flex flex-col items-center gap-1 py-2 transition-colors relative cursor-pointer
                     ${view === n.id ? "text-accent" : gated ? "text-dim/60 hover:text-ink" : "text-dim hover:text-ink"}`}
                 >
                   {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}

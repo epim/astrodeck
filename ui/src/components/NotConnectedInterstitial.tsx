@@ -54,7 +54,16 @@ export function NotConnectedInterstitial({ view }: { view: ViewName }): JSX.Elem
           </button>
           {/* NOV-2 re-entry: the lost-first-timer anchor. A user who dismissed
               the first-run wizard (or never triggered its blank-slate
-              auto-open) can reopen it from here. */}
+              auto-open) can reopen it from here.
+              NOT the only door any more, and it could never have been the
+              durable one: this interstitial renders ONLY while nothing is
+              connected, so it disappeared exactly when a tester connected a rig
+              and then dismissed the bar — the state that left steps 3-6
+              unreachable without disconnecting. The always-available re-entry is
+              the Setup guide panel on Help (views/HelpView.tsx); this stays as
+              the in-context shortcut for the user who is already stuck here.
+              Both call the same openWizard(), so both resume at the first
+              incomplete step. */}
           <button
             type="button"
             className="btn min-h-11"
