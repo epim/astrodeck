@@ -40,25 +40,36 @@ a cloudy night.
 
 ---
 
-## Two ways to use it
+## It fits around what you already have
 
-**Alongside NINA.** If you already have a NINA rig you like, AstroDeck can fly
-it through NINA's Advanced API without you re-pointing a single driver. Your
-profiles, your equipment setup, your plate solver all stay exactly as they are.
-What you gain is the touch UI, the multi-night session ledger, the Sky Atlas
-planner, remote access, and a phone dashboard for checking a run at 3am. Install
-the **Advanced API** plugin in NINA (default port `1888`) and add it under
-**Settings, Connect, Backend Drivers**.
+AstroDeck is not trying to win an argument with the software you already use. It
+is a control surface for your rig, and there is more than one sensible way to
+point it at one.
 
-**On its own.** AstroDeck also talks directly to hardware over **ASCOM Alpaca**,
-which ZWO, Pegasus Astro, QHY, PrimaLuceLab and anything with an ASCOM driver
-support (through ASCOM Remote). It brings its own autofocus, star detection,
-plate solving, polar alignment and autoguiding, so it can run a rig with nothing
+**Already running NINA?** Keep it. AstroDeck can fly your existing rig through
+NINA's Advanced API, with no drivers re-pointed and no profiles rebuilt. Your
+equipment setup, your plate solver, your sequences: untouched. What you add is
+the touch UI, the multi-night session ledger, the Sky Atlas planner, remote
+access, and a phone dashboard for checking a run at 3am. Install the **Advanced
+API** plugin in NINA (default port `1888`) and add it under **Settings, Connect,
+Backend Drivers**.
+
+**Coming from an ASIAIR?** The gear you already own is what AstroDeck drives.
+Native drivers ship for ZWO AM-series mounts, EAF focusers, EFW filter wheels
+and ASI cameras (plus Player One cameras and Wanderer accessories), so you can
+point AstroDeck at the same rig without buying anything or replacing a driver.
+To be clear about what this is: AstroDeck does not talk to the ASIAIR unit
+itself, which has no open interface. It talks to your hardware.
+
+**Or run it on its own.** AstroDeck speaks **ASCOM Alpaca** directly, which ZWO,
+Pegasus Astro, QHY, PrimaLuceLab and anything with an ASCOM driver support
+(through ASCOM Remote), and brings its own autofocus, star detection, plate
+solving, polar alignment and guiding. That is enough to run a rig with nothing
 else installed.
 
-Both are first-class. Neither is a stepping stone to the other, and there is no
-migration you are expected to perform. Pick whichever suits the rig in front of
-you, and change your mind later.
+All three are supported, permanently. None is a stage on the way to another, and
+there is no migration anyone is expected to perform. Use AstroDeck for the parts
+where it helps and keep using whatever already works for you.
 
 ---
 
