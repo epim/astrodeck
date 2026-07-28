@@ -1,10 +1,10 @@
 # AstroDeck — Overview
 
 AstroDeck is an open, vendor-neutral, web-based controller for an
-astrophotography rig. It is a full replacement for the ASIAIR ecosystem: it runs
-your camera, mount, focuser, filter wheel, guiding, power box, plate solving,
-polar alignment, and a complete autonomous sequencing engine — all from a single
-web UI that works on any tablet, phone, or desktop on your network.
+astrophotography rig. It runs your camera, mount, focuser, filter wheel,
+guiding, power box, plate solving, polar alignment, and a complete autonomous
+sequencing engine from a single web UI that works on any tablet, phone, or
+desktop on your network.
 
 This document goes deeper than the README: it explains *why* AstroDeck is built
 the way it is, the architecture that makes vendor neutrality real, and where the
@@ -16,10 +16,10 @@ project is honestly at today.
 
 ### Vendor neutrality is the whole point
 
-The ASIAIR proved that a single "control my whole rig from a tablet" surface is
-the right product. Its problem is the closed garden: one vendor's hardware, one
-vendor's app, one vendor's pace. AstroDeck keeps the experience and removes the
-walls.
+A single "control my whole rig from a tablet" surface is the right shape for
+this job. AstroDeck aims at that experience while staying open: any vendor's
+hardware, any device protocol we can speak, and a codebase you can read and
+change.
 
 That principle is not a slogan — it is enforced in the code. Every part of
 AstroDeck above the wire talks only to a small set of abstract device interfaces
@@ -42,11 +42,22 @@ AstroDeck ships three backends today:
    offline practice. It renders a coherent star field so the full pipeline
    genuinely runs with no hardware.
 
-The strategic direction is to operate **without** NINA — direct Alpaca plus
-native drivers — and, over time, to reimplement the genuinely useful NINA
-engines (autofocus, plate solving, three-point polar alignment) in Rust with a
-friendlier surface. Frame the NINA bridge as the gangway people walk across,
-device by device, not the ship.
+AstroDeck supports two equally valid setups, and neither is a stage on the way
+to the other.
+
+Running **alongside NINA** flies an existing rig through NINA's Advanced API,
+with no drivers re-pointed and no profiles rebuilt. Someone who likes their NINA
+setup should be able to keep it and still get the touch UI, the multi-night
+session ledger, the Atlas planner, remote access and the phone dashboard.
+
+Running **standalone** talks straight to hardware over Alpaca and native
+drivers, using AstroDeck's own engines for autofocus, star detection, plate
+solving, polar alignment and guiding (implemented in Rust from audited algorithm
+dossiers, not ported code). This is what lets a rig run with no other software
+installed.
+
+Both are maintained. Which one suits you depends on the rig in front of you, and
+you can change your mind later.
 
 ### Honest software for a technical audience
 
