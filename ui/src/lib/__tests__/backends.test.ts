@@ -81,6 +81,16 @@ test("meta: phd2 is host-only, default 4400", () => {
   eq(defaultPortFor("phd2"), 4400);
 });
 
+test("meta: asiair is host-only (its ports are fixed), default 4700", () => {
+  eq(addrKind("asiair"), "host");
+  eq(defaultPortFor("asiair"), 4700);
+  // no per-role dev_type/dev_num: one box serves every role it fills
+  const cs = buildConnSpec("camera", "asiair", { host: "asiair.example", dev_type: "camera", dev_num: 3 });
+  eq(cs.host, "asiair.example");
+  assert(cs.dev_type === undefined, "asiair takes no dev_type");
+  assert(cs.dev_num === undefined, "asiair takes no dev_num");
+});
+
 test("meta: unknown backend falls back to generic alpaca", () => {
   eq(addrKind("some-future-backend"), "alpaca");
 });

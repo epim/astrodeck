@@ -54,12 +54,27 @@ access, and a phone dashboard for checking a run at 3am. Install the **Advanced
 API** plugin in NINA (default port `1888`) and add it under **Settings, Connect,
 Backend Drivers**.
 
-**Coming from an ASIAIR?** The gear you already own is what AstroDeck drives.
-Native drivers ship for ZWO AM-series mounts, EAF focusers, EFW filter wheels
-and ASI cameras (plus Player One cameras and Wanderer accessories), so you can
-point AstroDeck at the same rig without buying anything or replacing a driver.
-To be clear about what this is: AstroDeck does not talk to the ASIAIR unit
-itself, which has no open interface. It talks to your hardware.
+**Own an ASIAIR?** Keep using it. AstroDeck can now talk to the ASIAIR unit
+itself over the network: add its IP under **Settings, Connect, Backend Drivers**
+and the box keeps driving the hardware while AstroDeck adds the touch UI, the
+multi-night session ledger, the Sky Atlas planner, remote access and the phone
+dashboard. Say precisely which parts work: **camera** (exposures download as
+real linear FITS, plus cooler, temperature and the anti-dew heater), **mount**
+(position, slew, sync, tracking and drive rate, park/unpark, manual jog),
+**focuser** (position, absolute moves, temperature) and the four **DC power
+ports**. Guiding stays in the ASIAIR, where it already works — AstroDeck reads
+that the box is guiding and refuses to fight it rather than pretending to take
+over. The rotator (CAA) and filter wheel are not driven yet; those two commands
+could not be mapped to certainty without an ASIAIR on the bench, and a guess
+there would silently rotate to the wrong angle or image through the wrong
+filter. This backend needs one extra install step (`pip install -e .[asiair]`,
+which pulls in the MIT-licensed [libasi](https://github.com/jewzaam/libasi)) and
+is simply absent if you skip it.
+
+If you would rather drive the gear directly, you can: native drivers ship for
+ZWO AM-series mounts, EAF focusers, EFW filter wheels and ASI cameras, plus
+Player One cameras and Wanderer accessories. Nothing to buy, no driver to
+replace, and both routes are supported.
 
 **Or run it on its own.** AstroDeck speaks **ASCOM Alpaca** directly, which ZWO,
 Pegasus Astro, QHY, PrimaLuceLab and anything with an ASCOM driver support

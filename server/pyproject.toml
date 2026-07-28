@@ -24,6 +24,13 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-xdist>=3.6"]
 # `.[comhost]`. Absent comtypes -> the host/registry modules degrade (import
 # guards) and ascom-local is simply not offered.
 comhost = ["comtypes>=1.4.0; sys_platform == 'win32'"]
+# ZWO ASIAIR backend (astrodeck.devices.backends.asiair_backend). libasi is MIT
+# and stdlib-only, but it is NOT ON PyPI — so this extra names it by VCS URL and
+# `pip install -e .` without the extra is unaffected. Absent libasi the backend
+# module still imports, `register_all()` registers nothing, and `asiair` is
+# simply not an offered backend or driver type (import guards, same idiom as
+# comhost/comtypes above).
+asiair = ["libasi @ git+https://github.com/jewzaam/libasi"]
 
 [project.entry-points."astrodeck.backends"]
 # Native drivers register through the SAME entry-point path an external plugin
@@ -33,6 +40,9 @@ zwo_usb = "astrodeck.devices.backends.zwo_usb:register_all"
 wanderer_snowflake = "astrodeck.devices.backends.wanderer_snowflake:register_all"
 zwo_asi = "astrodeck.devices.backends.zwo_asi:register_all"
 player_one = "astrodeck.devices.backends.player_one:register_all"
+# Registers ONLY when libasi is importable — a user without an ASIAIR sees no
+# change at all (no backend row, no `asiair` driver type).
+asiair = "astrodeck.devices.backends.asiair_backend:register_all"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

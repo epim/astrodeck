@@ -77,6 +77,14 @@ const META: Record<string, BackendMeta> = {
     defaultPort: 4400,
     blurb: "PHD2 guiding only — pair it with Native or NINA devices for a mixed rig.",
   },
+  asiair: {
+    // Host only: the ASIAIR's ports are fixed (4700/4400/4801) and the client
+    // opens them itself, so there is nothing per-role to address.
+    addr: "host",
+    defaultPort: 4700,
+    blurb:
+      "Your ASIAIR keeps running the rig; AstroDeck adds its camera, mount, focuser and power ports. Guiding stays in the ASIAIR.",
+  },
 };
 
 const GENERIC: BackendMeta = {

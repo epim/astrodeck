@@ -29,6 +29,8 @@ def test_add_driver_defaults_port_per_type(store):
     assert store.add_driver("nina", "h1").port == 1888
     assert store.add_driver("alpaca", "h2").port == 11111
     assert store.add_driver("phd2", "h3").port == 4400
+    # The ASIAIR's MAIN JSON-RPC port; the backend opens 4400/4801 itself.
+    assert store.add_driver("asiair", "h4").port == 4700
 
 
 def test_add_driver_default_label_names_type_and_host(store):
@@ -37,8 +39,10 @@ def test_add_driver_default_label_names_type_and_host(store):
 
 
 def test_add_driver_rejects_unknown_type_and_blank_host(store):
+    # A network driver type with no entry in DRIVER_DEFAULT_PORTS must be given
+    # an explicit port. ("asiair" used to stand in here; it has a default now.)
     with pytest.raises(ValueError):
-        store.add_driver("asiair", "h")
+        store.add_driver("no-such-driver-type", "h")
     with pytest.raises(ValueError):
         store.add_driver("nina", "   ")
 

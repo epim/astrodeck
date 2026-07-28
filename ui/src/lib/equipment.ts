@@ -37,6 +37,11 @@ export const DRIVER_TYPE_TO_BACKEND: Record<string, string> = {
   alpaca: "native",
   phd2: "phd2",
   sim: "sim",
+  // ZWO ASIAIR bridge — registry name matches the driver type (server:
+  // AsiairBackend.name / .driver_type). Present in this map only so
+  // buildRigSpec's placeholder backend is right; the server re-derives it
+  // authoritatively in resolve_driver_ids either way.
+  asiair: "asiair",
 };
 
 /** THE ONE RULE (spec §2): a driver appears as an option on a role's row only
