@@ -126,14 +126,14 @@ NINA's own plate solver instead.)
 
 ## 4. Running alongside NINA
 
-Already imaging with NINA? Connect your existing rig with no drivers re-pointed
-and no profiles rebuilt: your equipment setup and plate solver stay exactly as
-they are, and AstroDeck adds the touch UI, the multi-night session ledger, the
-Atlas planner, remote access and the phone dashboard on top.
+Already imaging with NINA? Keep it. Connect your existing rig with no drivers
+re-pointed and no profiles rebuilt: your equipment setup and plate solver stay
+exactly as they are, and AstroDeck adds the touch UI, the multi-night session
+ledger, the Atlas planner, remote access and the phone dashboard on top.
 
-This is a supported way to run AstroDeck, not a waiting room. If you would
-rather AstroDeck talk to the hardware directly, it can do that too (section 3),
-and you can switch either way whenever it suits you.
+This is a supported way to run AstroDeck for as long as it suits you, not a
+waiting room. If you would rather AstroDeck talk to the hardware directly it can
+do that too (section 3), and nothing stops you using both on different nights.
 
 1. In **NINA**, install the **Advanced API** plugin and enable it (default port
    **1888**).
