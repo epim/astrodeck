@@ -186,7 +186,15 @@ not know a trick to get out.
 by hue alone — two things that must be told apart need a second channel (shape, dash pattern,
 fill, a word).
 
-**10. Measure the work area.** For any persistent bar, sheet or overlay, run `ux.occlusion()`.
+**10. Every string must earn its place.** For each label, subtitle, caption and hint, ask what
+the reader learns from it that the pixels do not already tell them. A heading subtitle reading
+"one row per device", above a list with one row per device, is slop even though every word in
+it is ordinary. Delete it. Note that this is invisible to a vocabulary scan for AI writing,
+which is why it needs its own pass. The opposite case is copy that states a reason the screen
+cannot show ("a sequence owns the camera", "Next unlocks once a target is in your plan") --
+that is the most valuable text in the app, so do not cull it by the same rule.
+
+**11. Measure the work area.** For any persistent bar, sheet or overlay, run `ux.occlusion()`.
 On a phone, **anything over ~25% while the user is expected to operate the screen underneath is
 a finding.** Report the number.
 

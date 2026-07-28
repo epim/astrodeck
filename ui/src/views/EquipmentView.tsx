@@ -406,7 +406,7 @@ export default function EquipmentView(): JSX.Element {
           Equipment
         </h1>
         <span className="text-[11px] text-dim">
-          your rig — one row per device
+          your rig
         </span>
       </div>
       {/* Background-refresh failure (data already loaded): a non-destructive
