@@ -731,6 +731,9 @@ export interface ProvidersConfig {
 export type DriverType =
   | "nina" | "alpaca" | "phd2" | "sim" | "astrodeck" | "astap" | "ascom-local"
   | "zwo-am5" | "wanderer-snowflake" | "zwo-usb" | "zwo-asi" | "player-one"
+  // ZWO ASIAIR network bridge — offered only when the server registered the
+  // backend (it needs the optional `libasi` dependency).
+  | "asiair"
   | (string & {});
 
 export interface DriverEntry {

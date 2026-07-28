@@ -139,9 +139,25 @@ async def _probe_phd2(host: str, port: int) -> dict:
     return _ok([{"role": "guider", "name": f"PHD2 @ {host}:{port}"}], [])
 
 
+async def _probe_asiair(host: str, port: int) -> dict:
+    """ASIAIR probe: connect to the box and offer ONLY the roles whose device is
+    actually open on it right now, so the Equipment UI never lists a camera row
+    for an ASIAIR with no camera connected.
+
+    Deferred import (and a guarded one): the backend module is import-light, but
+    the probe itself needs libasi, and this file must stay importable for the
+    overwhelming majority of users who have no ASIAIR."""
+    try:
+        from .devices.backends.asiair_backend import probe_asiair
+    except Exception as e:  # noqa: BLE001 — a probe must never raise
+        return _down(f"asiair backend unavailable: {e}"[:200])
+    return await probe_asiair(host, port)
+
+
 #: type -> probe coroutine. A dict (not if/elif) so tests can monkeypatch one
 #: probe without touching the others.
-_PROBES = {"nina": _probe_nina, "alpaca": _probe_alpaca, "phd2": _probe_phd2}
+_PROBES = {"nina": _probe_nina, "alpaca": _probe_alpaca, "phd2": _probe_phd2,
+           "asiair": _probe_asiair}
 
 
 # ------------------------------------------------------------------ implicit

@@ -55,7 +55,9 @@ test("validateDriverForm accepts blank port (server defaults it)", () => {
 });
 
 test("validateDriverForm rejects bad type / blank host / bad port", () => {
-  eq(validateDriverForm("asiair", "h", "") !== null, true);
+  // A type with no DRIVER_DEFAULT_PORT entry. ("asiair" used to stand in here;
+  // it is a real ASIAIR driver type now, so it needs a genuinely unknown one.)
+  eq(validateDriverForm("no-such-driver-type", "h", "") !== null, true);
   eq(validateDriverForm("nina", "  ", "") !== null, true);
   eq(validateDriverForm("nina", "h", "0") !== null, true);
   eq(validateDriverForm("nina", "h", "99999") !== null, true);
@@ -66,6 +68,16 @@ test("default ports match the server table", () => {
   eq(DRIVER_DEFAULT_PORT.nina, 1888);
   eq(DRIVER_DEFAULT_PORT.alpaca, 11111);
   eq(DRIVER_DEFAULT_PORT.phd2, 4400);
+  // ASIAIR main JSON-RPC port (server config.py DRIVER_DEFAULT_PORTS).
+  eq(DRIVER_DEFAULT_PORT.asiair, 4700);
+});
+
+// The ASIAIR bridge is a network driver like the others: a host is required,
+// the port defaults server-side, and it must be a KNOWN type so "Add" cannot
+// be submitted for a backend the server never registered.
+test("validateDriverForm accepts an ASIAIR with just a host", () => {
+  eq(validateDriverForm("asiair", "10.0.0.1", ""), null);
+  eq(validateDriverForm("asiair", "  ", "") !== null, true);
 });
 
 // UX review #42: built-in rows printed the driver's name twice, in two
