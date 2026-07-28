@@ -68,6 +68,11 @@ from ..devices.nina import discover_nina
 from ..events import LOG_READ_MAX, bus, night_key
 from ..focus import run_autofocus
 from .. import hub as hub_module
+# Imported as a MODULE (not `from ..config import CONFIG_DIR`) so the factory-
+# reset routes read the live `CONFIG_DIR`, honouring a test monkeypatch exactly
+# the way `hub_module.CAPTURE_DIR` already is.
+from .. import config as config_module
+from .. import factory_reset as factory_reset_module
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
@@ -724,6 +729,20 @@ class AssistantStartBody(BaseModel):
     duration_s: int | None = None
 
 
+class FactoryResetBody(BaseModel):
+    """Factory-reset options. BOTH extras default to False, at every layer.
+
+    ``confirm`` is a typed-word interlock, not decoration: the panel makes the
+    admin type RESET, and the server refuses anything else, so a stray curl or a
+    replayed request can never wipe a rig by accident. The two destructive
+    extras are SEPARATE fields (not one "everything" flag) because captured
+    frames and sign-in accounts are different kinds of loss and each must be
+    chosen on its own — see ``factory_reset.py`` for the tier contract."""
+    confirm: str = ""
+    delete_captures: bool = False
+    reset_auth: bool = False
+
+
 class SiteSaveBody(BaseModel):
     site: Site
     version: int | None = None
@@ -1105,6 +1124,78 @@ def create_app() -> FastAPI:
         # redacted() so the github_token (and any other secret) is never returned
         # in the HTTP response body either (only a *_configured boolean).
         return redacted(cfg)
+
+    # ---------------------------------------------------------- factory reset
+    # Return the controller to the state a FRESH INSTALL has, so the box can be
+    # handed to the next QA tester with no trace of the last one. Sits with the
+    # self-update routes above because it is the same family: a whole-system
+    # lifecycle operation, not a settings write.
+    #
+    # Gated on ``admin.users`` — the strictest cap in the table (admin-only, and
+    # in DESTRUCTIVE_CAPS), and the right one specifically: the reset can clear
+    # the local sign-in accounts and the auth block, which is exactly what
+    # admin.users governs on /api/auth/config. config.site_optics or
+    # config.backend would each cover only a slice of what this wipes.
+    #
+    # Idle gate: reuses ``hub.restart_blocker`` — the same predicate that stops a
+    # self-update from interrupting an exposure, slew or running sequence. A
+    # factory reset mid-capture would strand a run against a config that no
+    # longer describes the rig.
+
+    @app.get("/api/system/factory-reset",
+             dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def factory_reset_preview():
+        """MEASURED scope for the confirm copy — how many profiles, plans,
+        drivers, accounts and captured frames actually exist right now.
+
+        The panel quotes these numbers on screen before the user commits, so the
+        statement of what is about to be destroyed is counted rather than
+        guessed. Pure read; ``blocked_reason`` mirrors the POST's idle gate so
+        the button can explain itself instead of failing on press."""
+        blocker = hub.restart_blocker
+        snap = await asyncio.to_thread(
+            factory_reset_module.preview, config_store,
+            config_module.CONFIG_DIR, hub_module.CAPTURE_DIR)
+        return snap | {"can_reset": not blocker,
+                       "blocked_reason": blocker or ""}
+
+    @app.post("/api/system/factory-reset",
+              dependencies=[Depends(require(CAP_ADMIN_USERS))])
+    @declare(CAP_ADMIN_USERS)
+    async def factory_reset_apply(body: FactoryResetBody):
+        """Restore defaults. IRREVERSIBLE.
+
+        Three interlocks, deliberately: the admin.users capability, the typed
+        ``confirm`` word, and the rig-idle gate. Captured frames and sign-in
+        accounts are each behind their own explicit opt-in and are NOT touched
+        otherwise — see ``factory_reset.py`` for the full tier contract."""
+        if (body.confirm or "").strip().upper() != "RESET":
+            raise HTTPException(400, detail={
+                "detail": "type RESET to confirm a factory reset",
+                "code": "confirm_required"})
+        blocker = hub.restart_blocker
+        if blocker:
+            raise HTTPException(409, detail={"detail": blocker,
+                                             "code": "rig_busy"})
+        # Drop the rig FIRST. A fresh install has nothing connected, and leaving
+        # a live rig up would leave the first-run wizard's "connect" step already
+        # satisfied against equipment the reset config no longer knows about.
+        try:
+            await hub.disconnect_all()
+        except Exception as e:  # never let a flaky teardown block the reset
+            bus.log("warning", f"factory reset: disconnect failed: {e}", "config")
+        report = await asyncio.to_thread(
+            factory_reset_module.factory_reset, config_store,
+            config_module.CONFIG_DIR, hub_module.CAPTURE_DIR,
+            delete_captures=body.delete_captures,
+            reset_auth=body.reset_auth)
+        if body.reset_auth:
+            # Rebuild the auth provider off the now-default block, so the change
+            # takes effect without a restart (the /api/auth/config idiom).
+            _reconfigure_provider()
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return report
 
     # ---------------------------------------------------- capability providers
     # Global per-capability routing override (native parity — Settings → Connect
