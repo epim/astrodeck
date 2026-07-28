@@ -30,7 +30,7 @@ interfaces; adding one changes nothing else.
 
 ### The open path is the default; NINA is the on-ramp
 
-AstroDeck ships three backends today:
+The headline backends are:
 
 1. **ASCOM Alpaca** — the open path. Network-discoverable over UDP, vendor-broad
    (ZWO, Pegasus, QHY, PrimaLuceLab, and anything reachable through ASCOM
@@ -38,9 +38,17 @@ AstroDeck ships three backends today:
 2. **NINA Advanced API bridge** — the transition. It flies an *existing* NINA
    rig with no driver reconfiguration, delegating the smart operations to NINA's
    own engines. It is explicitly temporary.
-3. **Simulator** — a deterministic virtual rig for development, demos, and
+3. **ZWO ASIAIR** — a network bridge to an ASIAIR box, so an owner can keep the
+   ASIAIR running the rig and put AstroDeck's surfaces around it. Optional
+   install (see below). Permanent, and not a stage on the way to anything.
+4. **Simulator** — a deterministic virtual rig for development, demos, and
    offline practice. It renders a coherent star field so the full pipeline
    genuinely runs with no hardware.
+
+Alongside these sit the native USB/serial hardware drivers (ZWO AM-series
+mounts, EAF/CAA accessories, ASI and Player One cameras, Wanderer accessories),
+the PHD2 guider bridge, and a bundled Windows COM host — each registered through
+the same backend registry.
 
 AstroDeck is a control surface for a rig, not a bid to displace the software
 someone already relies on. It is meant to fit around an existing workflow, and
@@ -51,12 +59,36 @@ Advanced API, with no drivers re-pointed and no profiles rebuilt. Someone who
 likes their NINA setup keeps it and adds the touch UI, the multi-night session
 ledger, the Atlas planner, remote access and the phone dashboard.
 
-**With hardware an ASIAIR owner already has.** Native drivers cover ZWO
-AM-series mounts, EAF focusers, EFW filter wheels and ASI cameras, plus Player
-One cameras and Wanderer accessories, so that gear can be driven directly with
-nothing bought and no driver swapped. Note the limit precisely: there is no
-integration with the ASIAIR unit itself, which exposes no open interface.
-AstroDeck talks to the hardware, not to the box.
+**Alongside an ASIAIR.** The `asiair` backend talks to the ASIAIR unit itself
+over its own network protocol, so the box goes on driving the rig and AstroDeck
+adds the touch UI, the multi-night session ledger, the Atlas planner, remote
+access and the phone dashboard around it. The limit stated precisely, role by
+role, because a partial backend that implies completeness is worse than no
+backend:
+
+| Role | State |
+|---|---|
+| `camera` | Exposures download as real linear FITS over the ASIAIR's binary image port, plus cooler, sensor temperature and the (on/off) anti-dew heater. |
+| `telescope` | Position, blind slew with a real settle check, sync, tracking and drive rate, park/unpark, timed manual jog, pier side, guide rates. Capabilities read from the box's own `caps` list, so a mount that cannot park says so. |
+| `focuser` | Position, absolute move with a settle check, halt, temperature. AstroDeck runs its own V-curve autofocus through it. |
+| `switch` | The four DC output ports (dew heaters), with every write read back and verified. |
+| `guider` | **Not driven.** The ASIAIR's guider speaks its own dialect, not PHD2's, and AstroDeck has no read path into its guide star. Guiding stays in the ASIAIR. AstroDeck detects that the box is guiding and declines conflicting commands with a stated reason instead of fighting it. |
+| `rotator` (CAA) | **Not driven.** The box reports a plate-solve-derived *sky* angle, not the mechanical position the rotator contract needs; mapping one to the other would double-apply the sync offset and silently rotate to the wrong angle. |
+| `filterwheel` | **Not driven.** The position commands are decompiled rather than wire-captured, and the slot base is unconfirmed — an off-by-one would image through the wrong filter and report success. |
+
+Closing AstroDeck never touches ASIAIR-owned equipment: it drops its own
+sockets and leaves the camera open, the cooler running and the heaters powered.
+
+The backend needs the MIT-licensed [libasi](https://github.com/jewzaam/libasi),
+which is not on PyPI — install it with `pip install -e .[asiair]` from
+`server/`. Without it the backend registers nothing at all: no `asiair` row in
+the backend registry, no `asiair` driver type, no change anywhere in the UI for
+the many users who do not own one.
+
+**Or drive ASIAIR-class hardware directly.** Native drivers cover ZWO AM-series
+mounts, EAF focusers, EFW filter wheels and ASI cameras, plus Player One cameras
+and Wanderer accessories, so that gear can also be driven with nothing bought
+and no driver swapped. Both routes are supported; neither supersedes the other.
 
 **Standalone.** Direct Alpaca plus native drivers, using AstroDeck's own engines
 for autofocus, star detection, plate solving, polar alignment and guiding

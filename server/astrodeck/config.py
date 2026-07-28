@@ -482,7 +482,11 @@ IMPLICIT_DRIVER_IDS: tuple[str, ...] = (
 DriverType = str
 
 #: Default port per configurable driver type (NINA Advanced API / Alpaca / PHD2).
-DRIVER_DEFAULT_PORTS: dict[str, int] = {"nina": 1888, "alpaca": 11111, "phd2": 4400}
+#: ``asiair`` is the ASIAIR's MAIN JSON-RPC port. The client opens 4700/4400/4801
+#: itself from the host — this entry only lets an ASIAIR driver be added with a
+#: bare IP and gives the driver row an honest number to display.
+DRIVER_DEFAULT_PORTS: dict[str, int] = {"nina": 1888, "alpaca": 11111,
+                                        "phd2": 4400, "asiair": 4700}
 
 
 class DriverEntry(BaseModel):

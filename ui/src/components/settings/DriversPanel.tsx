@@ -17,6 +17,7 @@ import {
   discoverBackend,
   discoverHardware,
   hwAlreadyConfigured,
+  listBackends,
   listDrivers,
   probeDriver,
   updateDriver,
@@ -37,7 +38,7 @@ import {
   validateDriverForm,
 } from "./driversMeta";
 
-type AddForm = { type: "nina" | "alpaca" | "phd2"; host: string; port: string; label: string };
+type AddForm = { type: "nina" | "alpaca" | "phd2" | "asiair"; host: string; port: string; label: string };
 const emptyForm = (): AddForm => ({ type: "nina", host: "", port: "", label: "" });
 
 export default function DriversPanel(): JSX.Element {
@@ -55,6 +56,11 @@ export default function DriversPanel(): JSX.Element {
   // discovery substate for "Scan for USB / serial hardware" (native backends)
   const [hwScanning, setHwScanning] = useState(false);
   const [hwFound, setHwFound] = useState<HwFound[] | null>(null);
+  // Registry names the SERVER actually registered. Optional backends (asiair,
+  // which needs libasi installed) are only OFFERED in the add form when the
+  // server has them — otherwise "Add" would 422 on an unknown driver type.
+  // Fails soft to [] so a fetch problem just hides the optional entries.
+  const [backendNames, setBackendNames] = useState<string[]>([]);
 
   const reload = async () => {
     try {
@@ -66,6 +72,13 @@ export default function DriversPanel(): JSX.Element {
   };
   useEffect(() => {
     void reload();
+    void (async () => {
+      try {
+        setBackendNames((await listBackends()).map((b) => b.name));
+      } catch {
+        setBackendNames([]);
+      }
+    })();
   }, []);
 
   const run = async (fn: () => Promise<unknown>, okMsg?: string) => {
@@ -258,6 +271,9 @@ export default function DriversPanel(): JSX.Element {
                   <option value="nina">NINA</option>
                   <option value="alpaca">Alpaca server</option>
                   <option value="phd2">PHD2</option>
+                  {backendNames.includes("asiair") && (
+                    <option value="asiair">ZWO ASIAIR</option>
+                  )}
                 </select>
               </Field>
               <Field label="Host">
@@ -287,7 +303,9 @@ export default function DriversPanel(): JSX.Element {
                 <Icon name="plus" size={12} className="inline -mt-0.5 mr-1" />
                 Add
               </button>
-              {form.type !== "phd2" && (
+              {/* asiair has no discovery protocol libasi implements — the user
+                  types the box's IP (ASIAIR app connection screen / router). */}
+              {form.type !== "phd2" && form.type !== "asiair" && (
                 <button type="button" className="btn !py-1.5" disabled={scanning} onClick={() => void scan()}>
                   {scanning ? "Scanning…" : <><Icon name="refresh" size={12} className="inline -mt-0.5 mr-1" />Scan network</>}
                 </button>

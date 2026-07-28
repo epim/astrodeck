@@ -18,12 +18,17 @@ export const DRIVER_TYPE_LABEL: Record<string, string> = {
   "zwo-usb": "ZWO USB accessories",
   "zwo-asi": "ZWO ASI camera",
   "player-one": "Player One camera",
+  // Network bridge to a ZWO ASIAIR box (server: devices/backends/asiair_backend.py).
+  // Only listed when the server registered the backend, i.e. libasi is installed.
+  asiair: "ZWO ASIAIR",
 };
 
 export const DRIVER_DEFAULT_PORT: Record<string, number> = {
   nina: 1888,
   alpaca: 11111,
   phd2: 4400,
+  // The ASIAIR's MAIN JSON-RPC port; the server opens 4400/4801 itself.
+  asiair: 4700,
 };
 
 /** The type chip rendered beside a driver's label — or "" when it would just
