@@ -6,6 +6,7 @@ you'd actually point a rig at.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .difficulty import difficulty_for
@@ -98,12 +99,46 @@ _TYPE_NAMES = {
 
 CATALOG: list[DSO] = [DSO(*row) for row in _RAW]
 
+_SEPARATORS = re.compile(r"[^a-z0-9]+")
+
+
+def squash_designation(text: str) -> str:
+    """Lowercase `text` and drop every separator, so a catalog designation
+    matches however the user chose to write it.
+
+    Designations are conventionally written with a space — "M 31", "NGC 3372",
+    "Sh2-155" — which is how a beginner copying a name off a website or out of
+    a book will type it, and it is what the Atlas placeholder itself suggests.
+    The ids in this file are stored inconsistently ("M31" unspaced, "NGC 3372"
+    spaced), so a plain substring test failed one convention or the other in
+    BOTH directions: "M 31" and "ngc3372" each found nothing.
+    """
+    return _SEPARATORS.sub("", text.lower())
+
+
+# (object, squashed id, lowercase name, lowercase type name), built once.
+_INDEX: list[tuple[DSO, str, str, str]] = [
+    (o, squash_designation(o.id), o.name.lower(), _TYPE_NAMES[o.type].lower())
+    for o in CATALOG
+]
+
 
 def search_catalog(query: str, limit: int = 25) -> list[dict]:
     q = query.strip().lower()
+    # The DESIGNATION is matched with separators removed from both sides, so
+    # spacing and case are irrelevant. That only ever widens the id match:
+    # if the raw query was a substring of the raw id, it is still a substring
+    # once the same separators are dropped from both, so "m3" -> M3/M31/M33
+    # is untouched. `qs` is empty for a punctuation-only query, which must not
+    # match everything, hence the explicit guard.
+    #
+    # NAMES and TYPE NAMES keep the plain substring test on purpose: those are
+    # prose ("Andromeda Galaxy", "Emission Nebula") where a space is a real
+    # word boundary, and squashing them would let a query straddle two words.
+    qs = squash_designation(q)
     results = []
-    for o in CATALOG:
-        if not q or q in o.id.lower() or q in o.name.lower() or q in _TYPE_NAMES[o.type].lower():
+    for o, sid, name, type_name in _INDEX:
+        if not q or (qs and qs in sid) or q in name or q in type_name:
             d = difficulty_for(o.id, o.mag, o.size_arcmin)
             results.append({
                 "id": o.id, "name": o.name,
