@@ -15,6 +15,28 @@ import { api } from "../../api";
 import type { CatalogEntry } from "../../types";
 import { catalogScopeHint } from "../../lib/catalogHint";
 
+/** Movement (CSS px) allowed between pointerdown and pointerup before the
+ *  gesture stops being a tap. A finger never lands perfectly still; a scroll
+ *  travels far more than this within the first frames. */
+export const TAP_SLOP_PX = 10;
+
+/** Was an outside pointer gesture a genuine TAP (a dismissal) or a
+ *  scroll/drag that merely started outside the widget (not a dismissal)?
+ *
+ *  This predicate is the whole fix for the phone regression below, so it is
+ *  pure and pinned by a test. `down` is null when the gesture did not start
+ *  outside the widget, or when the browser claimed it (`pointercancel`, which
+ *  is what fires when a touch turns into a scroll). */
+export function outsideTapDismisses(
+  down: { x: number; y: number } | null,
+  up: { x: number; y: number },
+  upIsOutside: boolean,
+  slop: number = TAP_SLOP_PX,
+): boolean {
+  if (!down || !upIsOutside) return false;
+  return Math.hypot(up.x - down.x, up.y - down.y) <= slop;
+}
+
 export function CatalogSearch({
   onPick,
   placeholder = "Search catalog — frame a target",
@@ -30,24 +52,36 @@ export function CatalogSearch({
   // result (which clears search directly). Mirrors ui.tsx's Tooltip.
   const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  // Monotonic query id. `clearTimeout` only cancels a debounce that has not
+  // fired yet — a request already ON THE WIRE still lands and still writes.
+  // On a phone talking to a Pi over patchy WiFi that is routine, and the
+  // observed failure is not merely "stale results": the older request FAILING
+  // wrote its catch-branch `[]` over a good newer answer, so a correct
+  // "M31 Andromeda Galaxy" was replaced, seconds later, by
+  // `No matches for "m31" — try a name or ID (e.g. M31)`. Only the newest
+  // query may write results.
+  const queryId = useRef(0);
 
   useEffect(() => {
     setDismissed(false);
   }, [search]);
 
   useEffect(() => {
+    const id = ++queryId.current; // supersedes anything still in flight
     if (!search.trim()) { setResults([]); setSearching(false); return; }
     setSearching(true);
     const t = setTimeout(async () => {
+      let next: CatalogEntry[];
       try {
-        setResults((await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6));
+        next = (await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6);
       } catch {
         // transient search errors read the same as "no matches" below — the
         // zero-state still gives the user a next step instead of dead air.
-        setResults([]);
-      } finally {
-        setSearching(false);
+        next = [];
       }
+      if (queryId.current !== id) return; // a newer query owns the field now
+      setResults(next);
+      setSearching(false);
     }, 250);
     return () => clearTimeout(t);
   }, [search]);
@@ -60,19 +94,50 @@ export function CatalogSearch({
 
   const showDropdown = search.trim().length > 0 && !dismissed;
 
-  // Outside-pointerdown + Escape dismissal (ui.tsx Tooltip precedent) so the
-  // dropdown doesn't float over the page forever once the user has looked
-  // away without picking a result.
+  // Outside-TAP + Escape dismissal (ui.tsx Tooltip precedent) so the dropdown
+  // doesn't float over the page forever once the user has looked away without
+  // picking a result.
+  //
+  // This used to dismiss on outside `pointerdown`, and that is a desktop
+  // assumption: a mouse only presses where it means to, but a touch screen
+  // dispatches `pointerdown` at the start of EVERY finger gesture — including
+  // the swipe that scrolls the page. So one scroll (the natural move when the
+  // suggestion list sits under the docked wizard bar or the soft keyboard)
+  // latched the dropdown shut while the caret was still in the field and the
+  // query still typed, and nothing but EDITING the query brought it back.
+  // Measured on s25ultra: type "m31" -> M31 listed; one swipe outside ->
+  // dropdown gone; re-tapping the input does NOT restore it; backspace to
+  // "m3" restores it. That is the field report verbatim ("typed m31, nothing
+  // happened … deleted the 1 and it showed m31"), and it is the SECOND time
+  // this latch has shut on a phone user — UX-06 was the same defect through
+  // onBlur. So dismissal now needs a real tap: down and up both outside, with
+  // no travel in between. A scroll moves; a gesture the browser claims for
+  // scrolling fires `pointercancel`. Neither is a dismissal.
   useEffect(() => {
     if (!showDropdown) return;
-    const onDoc = (e: Event) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setDismissed(true);
+    const outside = (t: EventTarget | null) =>
+      !!rootRef.current && !rootRef.current.contains(t as Node);
+    let down: { x: number; y: number } | null = null;
+    const onDown = (e: PointerEvent) => {
+      down = outside(e.target) ? { x: e.clientX, y: e.clientY } : null;
     };
+    const onUp = (e: PointerEvent) => {
+      const from = down;
+      down = null;
+      if (outsideTapDismisses(from, { x: e.clientX, y: e.clientY }, outside(e.target))) {
+        setDismissed(true);
+      }
+    };
+    const onCancel = () => { down = null; };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDismissed(true); };
-    document.addEventListener("pointerdown", onDoc);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
       document.removeEventListener("keydown", onKey);
     };
   }, [showDropdown]);
