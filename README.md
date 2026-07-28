@@ -1,253 +1,213 @@
 # AstroDeck
 
-**An open, vendor-neutral astrophotography controller — a full replacement for
-the ASIAIR ecosystem with zero lock-in.**
+**Run your whole imaging rig from a phone, tablet, or laptop. Open, vendor
+neutral, and yours to modify.**
 
-AstroDeck drives your whole imaging rig — camera, mount, focuser, filter wheel,
-guiding, power box, plate solving, polar alignment, and autonomous multi-target
-sequencing — from one clean web UI that runs on any tablet, phone, or desktop.
-It speaks **ASCOM Alpaca**, the open device protocol supported by ZWO, Pegasus
-Astro, QHY, PrimaLuceLab, and every vendor with ASCOM drivers (via ASCOM
-Remote). No proprietary box. No app-store gatekeeper. Your gear, your network,
-your rules.
+AstroDeck controls the camera, mount, focuser, filter wheel, guider, rotator and
+power box from one web UI, and runs the night for you: slew, centre, focus,
+guide, shoot, dither, flip the meridian, park at dawn. It runs on a small
+computer at the scope. You open a browser.
 
-![status](https://img.shields.io/badge/status-v0.1-blue)
+![status](https://img.shields.io/badge/status-v0.2-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![tests](https://img.shields.io/badge/tests-1000%2B%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-2000%2B%20passing-brightgreen)
 
-> **Validated on sky.** AstroDeck has been run end-to-end against a live rig —
-> a Player One Poseidon-M PRO mono camera, a ZWO AM-series harmonic mount, a ZWO
-> EAF, a Wanderer filter wheel, and PHD2 — with capture, site/optics, goto/slew,
-> native autofocus, and TPPA polar alignment all working under the stars.
-
----
-
-## Why AstroDeck
-
-The ASIAIR is a wonderful idea trapped in a closed garden: one vendor's
-hardware, one vendor's app, one vendor's roadmap. AstroDeck keeps the
-"one tap, whole rig" experience and throws away the walls.
-
-- **Vendor neutral by construction.** Everything above the wire talks to a small
-  device abstraction (`Camera`, `Telescope`, `Focuser`, `FilterWheel`, `Switch`,
-  `SafetyMonitor`, plus a `Guider`). Backends plug in underneath. Adding INDI or
-  a native SDK is implementing a handful of async methods — nothing else changes.
-- **The open path is the default.** ASCOM Alpaca is a first-class backend with
-  UDP network discovery. Point AstroDeck at your Alpaca server (or ASCOM Remote)
-  and assign devices to roles.
-- **A real on-ramp for NINA users.** Already imaging with NINA? The NINA bridge
-  flies your existing rig through NINA's Advanced API with no driver
-  reconfiguration — then you migrate to direct Alpaca device by device. The
-  bridge is explicitly a *transition*, not the destination (see below).
-- **Works with no hardware at all.** A full deterministic simulator renders a
-  real star field that responds to pointing, focus, and filters — so autofocus,
-  plate solving, guiding, and sequencing genuinely work offline.
-
-### A note on the NINA bridge
-
-The NINA bridge is a **transition tool**, not where AstroDeck is going. It exists
-so people with working NINA rigs can adopt AstroDeck *today* without re-pointing
-a single driver. The roadmap is to operate **without** NINA — direct Alpaca plus
-native drivers — and, longer term, to reimplement the genuinely useful NINA
-engines (autofocus, plate solving, TPPA) in Rust and make them far friendlier.
-Think of NINA as the gangway, not the ship.
+> **Validated on sky.** AstroDeck has been run end to end against a live rig: a
+> Player One Poseidon-M PRO mono camera, a ZWO AM-series harmonic mount, a ZWO
+> EAF, a Wanderer filter wheel, and PHD2, with capture, site and optics,
+> goto/slew, native autofocus and TPPA polar alignment all working under the
+> stars.
 
 ---
 
-## Features
-
-- **Equipment / Connect** — Alpaca UDP network discovery, role-based device
-  assignment, a one-tap **▶ Simulator rig** that assigns and connects every
-  role at once, NINA bridge with subnet discovery, and PHD2.
-- **Capture** — an overhauled live preview (zoom / pan / fit / 100%, adjustable
-  MTF stretch with an interactive histogram, star overlay, clip/saturation mask,
-  a frame filmstrip, and a no-flash double-buffered stage), full exposure
-  controls, cooler control (on/off + power% + at-target badge), camera dew
-  heater, a live guide-camera preview, and single / loop / stop with separate
-  exposure and download progress.
-- **Focus** — manual jog and absolute goto plus V-curve autofocus (HFR star
-  measurement). AstroDeck's own native Rust engine and NINA's own routine both
-  fit a real **hyperbola** with trendlines and an R² goodness-of-fit; the
-  legacy/simulator path fits a local parabola near the minimum.
-- **Mount** — a touch slew pad with fixed-rate control and a move dead-man's
-  switch, catalog goto with live altitude and a below-horizon guard,
-  sidereal tracking, park/unpark, and plate-solve **Solve & Sync** /
-  goto-and-center.
-- **Polar alignment** — NINA TPPA over a WebSocket, rendered as a concentric-ring
-  bullseye reticle with explicit azimuth/altitude error in arcminutes and a
-  live guide-cam view (simulator fallback when NINA isn't present).
-- **Guide** — PHD2 (and the NINA guider) with a live RA/Dec error graph, an
-  RA-vs-Dec scatter, RMS stats, and dithering.
-- **Native engine** — star detection, HFR/PSF measurement, autofocus, and
-  three-point polar alignment math run through a Rust extension (PyO3)
-  instead of NINA, reimplemented from audited algorithm dossiers rather than
-  ported code. See [`native/README.md`](native/README.md).
-- **Plan / Sequence** — an autonomous multi-target engine (slew → center →
-  autofocus → guide → per-filter exposure loops, with dither, thermal refocus,
-  meridian-flip handling, and park/warm when done), plus the automation surface:
-  `SafetyMonitor` gating with named presets, autorun scheduling (dusk/dawn/min-alt
-  windows with skip-ahead), end-of-night session reports, and
-  ntfy / webhook / Telegram alerting with a dead-man's-switch heartbeat.
-- **Sessions** — targets accrue frames across as many nights (and reboots) as
-  it takes: a per-frame accept/reject ledger tracks quality gates (HFR, star
-  count, guide RMS), a manual regrade UI lets you override any call, and a
-  dormant session auto-resumes at the next dusk when its target's window
-  reopens. Full surface at `/api/sessions`.
-- **Sky Atlas** — a pan/zoomable WebGL survey tile map (classic `<img>` cutout
-  as fallback) framing assistant with a draggable/rotatable FOV overlay, a
-  mosaic planner (server-canonical panels), and an astropy visibility planner
-  (altitude curve, transit, twilight, moon separation, best window).
-- **Monitor** — a glanceable live dashboard: ETA, progress, mount state, cooler,
-  guiding RMS, meridian countdown, an HFR trend sparkline, a live thumbnail,
-  and stall/recovery signals for an unattended run. See
-  [`docs/guide/monitor.md`](docs/guide/monitor.md).
-- **Weather** — an optional cloud forecast (Open-Meteo, plus optional
-  Astrospheric seeing/transparency) that warns of a cloudy night, holds
-  auto-resume before it starts imaging into clouds, and draws a live
-  radar/satellite map with your telescope's line of sight projected onto it.
-  Visible to admins only. See [`docs/guide/weather.md`](docs/guide/weather.md).
-- **Power** — Alpaca `Switch` (Pegasus UPB-style): outputs, dew-heater PWM, and
-  voltage/current telemetry.
-- **Rotator** — mechanical range-of-motion modeling (full/half/quarter sweeps)
-  and shortest-path rotate-to-position-angle convergence, alongside camera,
-  mount, focuser, and filter wheel in the Equipment view.
-- **Night mode & touch** — one tap flips the whole UI to dark-adaptation red
-  (including a red survey filter over previews), a store-owned brightness dimmer
-  with day/night memory, large touch targets, a slide-to-unlock screen guard,
-  and reliability chrome (toasts, a reconnect banner, and a log drawer).
-- **Auth & access** — open by default on the LAN; turn it on and three roles
-  (viewer / operator / admin) gate every capability, with Google OIDC or local
-  accounts and share links for read-only remote viewers. Precise site
-  coordinates are visible to admins only.
-- **Remote access** — the scope dials one outbound WSS to an untrusted,
-  forward-only relay so you get a remote front door with no port-forwarding or
-  NAT config; every tunnelled request is re-authenticated and redacted at the
-  home, never trusted from the relay. See [`relay/README.md`](relay/README.md).
-- **Self-update** — Ed25519-signed releases verify fail-closed (no pinned key,
-  no update), a supervisor applies them and auto-rolls-back a bad release, and
-  updates never interrupt a running sequence or a slewing/exposing mount. See
-  [`docs/infrastructure/README.md`](docs/infrastructure/README.md).
-
-> **Rough edges, honestly.** Guiding and plate solving work but still have
-> sharp corners; the **Settings** view is real, with tabs for **Connect**
-> (backend drivers, observing site, weather, Sky Atlas offline pack),
-> **Profiles**, **Safety** (sun avoidance — the safety-monitor presets and
-> altitude floors are still config-file/API only), **Account**, and, for
-> admins, **Updates**, **Users**, and **Auth**; live-stacking and a flats
-> wizard are not built yet; and there's no Docker or Raspberry-Pi packaging
-> yet. See [`docs/overview.md`](docs/overview.md) for the full status.
-
----
-
-## Quick start
+## Try it in two minutes, with no hardware
 
 ```powershell
-# 1. Server (Python 3.11+)
 cd server
 python -m venv .venv
 .venv\Scripts\pip install -e .
-.venv\Scripts\python -m astrodeck            # serves on http://localhost:8800
-
-# 2. UI — only if you change it; a built copy in ui/dist is served by the server
-cd ui
-npm install
-npm run build
+.venv\Scripts\python -m astrodeck            # http://localhost:8800
 ```
 
-Open `http://localhost:8800`, go to the **Equipment** view and hit
-**▶ Simulator rig**, and explore. The sim camera renders a star field that
-responds to mount pointing, focus position, and filters, so autofocus, plate
-solving, and sequencing all genuinely work with no hardware attached.
+Open the page, go to **Equipment**, and press **Simulator rig**. Eleven devices
+connect in about three seconds.
 
-For real gear: declare your backends under **Settings → Connect → Backend
-Drivers** (run your vendor's Alpaca server, or ASCOM Remote on the machine
-with the drivers, and use **⟳ Scan network** to auto-discover them), then on
-the **Equipment** view assign each device slot to a driver and press
-**Connect Rig**. For guiding, start PHD2 with its event server enabled and
-connect it.
-
-**NINA transition mode:** install the **Advanced API** plugin in NINA (default
-port `1888`), then declare it as a driver under **Settings → Connect →
-Backend Drivers** — use **⟳ Scan network** to auto-discover instances, or
-enter the host/IP manually. To try it without a NINA install, run the bundled
-mock:
-
-```powershell
-cd server
-.venv\Scripts\python -m tools.mock_nina       # mock NINA on :1888
-```
-
-Full walkthrough: [`docs/quickstart.md`](docs/quickstart.md).
+The simulator is not a stub. It renders a real star field that responds to where
+the mount is pointing, where the focuser is, and which filter is in the way, so
+autofocus finds a genuine V curve, plate solving solves, guiding guides, and a
+multi-target sequence runs to completion. You can learn the whole app indoors on
+a cloudy night.
 
 ---
 
-## Slippy-sky Atlas
+## Two ways to use it
 
-The Atlas renders survey imagery as a smoothly pan/zoomable WebGL tile map:
-the browser fetches raw HiPS tiles through the server tile route
-(`/api/survey/tile/...`), warps them through the exact TAN projection, and
-upsamples from parent tiles so the view never blanks while you drag. Online
-deep-zooms grow the offline pack on disk as a side effect. Where WebGL is
-unavailable the Atlas falls back to the classic `<img>` cutout pipeline (the
-`/api/survey/cutout.jpg` route), which is otherwise unchanged. Drag is
-grab-the-sky on both axes (drag right pulls the sky right).
+**Alongside NINA.** If you already have a NINA rig you like, AstroDeck can fly
+it through NINA's Advanced API without you re-pointing a single driver. Your
+profiles, your equipment setup, your plate solver all stay exactly as they are.
+What you gain is the touch UI, the multi-night session ledger, the Sky Atlas
+planner, remote access, and a phone dashboard for checking a run at 3am. Install
+the **Advanced API** plugin in NINA (default port `1888`) and add it under
+**Settings, Connect, Backend Drivers**.
 
-No internet needed at the scope: download the pack once (~250 MB) from
-**Settings → Connect → Sky Atlas → Download offline sky pack**, or via CLI:
+**On its own.** AstroDeck also talks directly to hardware over **ASCOM Alpaca**,
+which ZWO, Pegasus Astro, QHY, PrimaLuceLab and anything with an ASCOM driver
+support (through ASCOM Remote). It brings its own autofocus, star detection,
+plate solving, polar alignment and autoguiding, so it can run a rig with nothing
+else installed.
 
-    cd server && python -m astrodeck.catalog.survey_pack fetch
-
-The pack remains the automatic fallback whenever the CDS service is
-unreachable. DSS2 imagery © AAO/STScI, fetched from public CDS/ESA HiPS
-mirrors.
+Both are first-class. Neither is a stepping stone to the other, and there is no
+migration you are expected to perform. Pick whichever suits the rig in front of
+you, and change your mind later.
 
 ---
 
-## Architecture
+## What it does
+
+**Capture.** Live preview with zoom, pan and a 1:1 magnifier, an adjustable
+stretch with an interactive histogram, star overlay, clip mask, and a frame
+filmstrip. Full exposure control, cooler with an at-target badge, dew heater,
+and a live guide-camera view.
+
+**Focus.** Manual jog, absolute goto, and V-curve autofocus with real HFR star
+measurement. The native Rust engine fits a hyperbola with an R² goodness of fit.
+There is also a Bahtinov mask aid with a live spike overlay.
+
+**Mount.** Touch slew pad with a dead-man's switch, catalog goto with live
+altitude and a below-horizon guard, tracking rates, park and unpark, and plate
+solve and sync.
+
+**Guiding.** A native guide engine, or PHD2, or NINA's guider, with an RA/Dec
+error graph, RA-vs-Dec scatter, RMS stats and dithering. A Guiding Assistant
+measures your seeing and Dec backlash and recommends settings you can apply or
+ignore.
+
+**Planning a night.** The Sky Atlas is a pan and zoom survey map with a
+draggable, rotatable field-of-view overlay, a mosaic planner, and a visibility
+planner that draws the altitude curve, transit, twilight and moon separation.
+Tonight ranks what is actually up right now, tagged by difficulty, so a beginner
+has somewhere to start.
+
+**Running a night unattended.** The sequencer handles slew, centre, autofocus,
+guide, per-filter exposure loops, dithering, thermal refocus, meridian flip, and
+park and warm at the end. Conditional rules can refocus, skip a target or abort
+on a trigger you choose. Safety-monitor gating, dusk-to-dawn autorun scheduling,
+weather holds, and ntfy, webhook or Telegram alerts with a dead-man's-switch
+heartbeat.
+
+**Coming back the next night.** Targets accrue frames across as many nights and
+reboots as it takes. A per-frame accept/reject ledger tracks HFR, star count and
+guide RMS, you can override any call by hand, and a dormant session resumes
+itself at dusk when the target's window reopens.
+
+**Getting your data out.** Full FITS headers, per-frame WCS written back after a
+plate solve, an end-of-night report, and a stacking bundle: one zip pre-sorted
+into PixInsight, Siril or APP layouts with matching calibration masters and a
+per-frame quality score.
+
+**Watching from bed.** The Monitor dashboard shows ETA, progress, mount state,
+cooler, guiding RMS, meridian countdown, an HFR trend and a live thumbnail. One
+tap flips the whole interface to dark-adaptation red, with a brightness dimmer
+that remembers day and night separately.
+
+**Sharing the rig.** Three roles (viewer, operator, admin) gate every
+capability, with Google sign-in or local accounts and read-only share links.
+Precise site coordinates are admin-only. For remote access the scope dials one
+outbound connection to a forward-only relay, so there is no port forwarding and
+no NAT configuration, and every tunnelled request is re-authenticated at home
+rather than trusted from the relay.
+
+**Keeping it current.** Releases are Ed25519 signed and verify fail-closed. A
+supervisor applies them, rolls back automatically if one is bad, and never
+interrupts a running sequence or a moving mount.
+
+---
+
+## The sky map works without internet
+
+The Atlas renders survey imagery as a smoothly pan and zoomable WebGL tile map,
+warped through the exact TAN projection and upsampled from parent tiles so the
+view never blanks while you drag. Where WebGL is unavailable it falls back to a
+plain image cutout pipeline.
+
+Observing somewhere with no signal is the normal case, so download the offline
+pack once (about 250 MB) from **Settings, Connect, Sky Atlas** or on the command
+line:
 
 ```
-server/  Python · FastAPI · :8800        ui/  React 18 · TypeScript · Tailwind v4 · Zustand
-  devices/   Alpaca + NINA + sim backends behind one device abstraction (base.py)
-  imaging/   MTF stretch · histogram · star detection / HFR · clip mask · FITS
-  focus/     V-curve autofocus (delegates to native AF when a backend has one)
-  solve/     ASTAP plugin · sim solver (NINA solves via its own API)
-  guide/     PHD2 client · NINA guider · sim guider · dithering
-  sequence/  autonomous engine + schedule (autorun) + report (session) + models
-  catalog/   coords · objects · survey (hips2fits) · framing (mosaic) · visibility
-  polar/     NINA TPPA over a WebSocket (sim fallback)
-  config.py  persisted site / optics / safety / alerts (ConfigStore)
-  hub.py     the device orchestrator
-  api/       FastAPI REST + a WebSocket event bus, and it serves the built UI
+cd server && python -m astrodeck.catalog.survey_pack fetch
 ```
 
-Everything above `devices/base.py` is vendor-agnostic. The NINA backend
-additionally delegates the *smart* operations (autofocus, plate solve, guiding,
-TPPA) to NINA through two clean seams: a `supports_native_autofocus` capability
-flag and a pre-rendered-frame path on `CameraFrame`. More detail in
-[`docs/overview.md`](docs/overview.md) and [`docs/development.md`](docs/development.md).
+The pack is also the automatic fallback whenever the online service is
+unreachable. Online deep-zooms grow it on disk as a side effect. DSS2 imagery
+© AAO/STScI, from public CDS/ESA HiPS mirrors.
+
+---
+
+## Hardware
+
+Anything with an **ASCOM Alpaca** endpoint works directly. Anything with a
+Windows ASCOM driver works through ASCOM Remote or the bundled COM host. Native
+drivers ship for ZWO AM-series mounts (LX200 over serial), ZWO EAF focusers, ZWO
+filter wheels and rotators, Wanderer accessories, and ZWO ASI and Player One
+cameras, so a common rig can run with no vendor software installed at all.
+
+Guiding can use the built-in engine or PHD2. Plate solving uses ASTAP, which is
+auto-detected.
+
+---
+
+## Honest status
+
+v0.2, used on a real rig, and not finished. Live stacking and a flats wizard are
+not built. There is no Docker or Raspberry Pi packaging yet. Some settings
+(safety-monitor presets, altitude floors) are still config file and API only.
+Guiding and plate solving work and still have sharp corners.
+
+[`docs/overview.md`](docs/overview.md) tracks the full status.
+
+---
+
+## Documentation
+
+- [**`docs/guide/`**](docs/guide/README.md) is the user guide: task-focused
+  how-tos for getting started, equipment, capture, focus, the Sky Atlas, plans,
+  multi-night sessions, the Monitor dashboard, weather, remote access and roles,
+  site and locations, safety, and troubleshooting.
+- [`docs/quickstart.md`](docs/quickstart.md) covers install, a first simulator
+  session, real gear, and connecting NINA.
+- [`docs/overview.md`](docs/overview.md) covers purpose, philosophy and
+  architecture in depth.
+- [`docs/development.md`](docs/development.md) covers dev setup, repo structure,
+  testing, and adding a device backend.
+- [`docs/ux-review-protocol.md`](docs/ux-review-protocol.md) is how UI reviews
+  are run here.
 
 ---
 
 ## Development
 
-```powershell
-cd server
-.venv\Scripts\python -m pytest -q             # ~1,000 tests
-
-cd ui
-npm run dev                                   # Vite dev server, proxies to :8800
+```
+server/  Python · FastAPI · :8800     ui/  React 18 · TypeScript · Tailwind v4 · Zustand
+  devices/   Alpaca, NINA, native and sim backends behind one device abstraction
+  imaging/   stretch · histogram · star detection / HFR · clip mask · FITS
+  focus/     V-curve autofocus            solve/  ASTAP · sim solver
+  guide/     native engine · PHD2 · NINA guider · dithering
+  sequence/  autonomous engine · scheduling · session reports · instructions
+  catalog/   coords · objects · survey · framing · visibility
+  hub.py     the device orchestrator     api/  REST + WebSocket, serves the UI
+native/      Rust extension (PyO3): star detection, HFR/PSF, autofocus, TPPA
+relay/       the forward-only remote-access relay
 ```
 
-ASTAP is auto-detected for plate solving (set `ASTAP_PATH` to override). Adding a
-new device backend means implementing the small async interfaces in
-`server/astrodeck/devices/base.py` — see [`docs/development.md`](docs/development.md).
+```powershell
+cd server
+.venv\Scripts\python -m pytest -q      # 2,000+ tests
 
-## Documentation
+cd ui
+npm run dev                            # Vite dev server, proxies to :8800
+```
 
-- [**`docs/guide/`**](docs/guide/README.md) — **the user guide**: task-focused how-tos for
-  getting started, equipment, capture, focus, the Sky Atlas, plans, multi-night sessions,
-  the Monitor dashboard, weather, remote access & roles, site & locations, safety, and
-  troubleshooting.
-- [`docs/overview.md`](docs/overview.md) — purpose, philosophy, and architecture in depth.
-- [`docs/quickstart.md`](docs/quickstart.md) — install, first simulator session, real gear, the NINA bridge.
-- [`docs/development.md`](docs/development.md) — dev setup, repo structure, testing, adding a backend.
+Everything above `devices/base.py` is vendor agnostic. Adding a backend means
+implementing a handful of small async methods, and nothing else changes. See
+[`docs/development.md`](docs/development.md).
