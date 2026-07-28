@@ -1,6 +1,12 @@
 """Catalog search and coordinate math."""
-from astrodeck.catalog import (altaz, format_dec, format_ra, parse_dec,
-                               parse_ra, search_catalog)
+import pytest
+
+from astrodeck.catalog import (CATALOG, altaz, format_dec, format_ra,
+                               parse_dec, parse_ra, search_catalog)
+
+
+def _ids(query):
+    return [r["id"] for r in search_catalog(query)]
 
 
 def test_search_by_id_and_name():
@@ -8,6 +14,48 @@ def test_search_by_id_and_name():
     hits = search_catalog("andromeda")
     assert hits and hits[0]["id"] == "M31"
     assert search_catalog("galaxy")  # type search works
+
+
+# A designation is conventionally written spaced ("M 31", "NGC 3372") but the
+# ids here are stored inconsistently, so a plain substring test used to fail one
+# convention or the other in BOTH directions — including the exact example the
+# Atlas placeholder offers. Spacing and case must be irrelevant.
+@pytest.mark.parametrize("query,expected", [
+    ("M 31", "M31"), ("m 31", "M31"), ("m31", "M31"), ("M31", "M31"),
+    ("NGC 3372", "NGC 3372"), ("ngc3372", "NGC 3372"),
+    ("ngc 3372", "NGC 3372"), ("NGC3372", "NGC 3372"),
+    ("IC 434", "IC 434"), ("ic434", "IC 434"),
+    ("Sh2-155", "Sh2-155"), ("sh2 155", "Sh2-155"), ("sh2155", "Sh2-155"),
+])
+def test_designation_search_ignores_spacing_and_case(query, expected):
+    assert _ids(query) == [expected]
+
+
+def test_every_catalog_id_is_findable_spaced_and_unspaced():
+    """Neither storage convention may be privileged: every id must be found
+    both as it is written here and with its separators removed."""
+    for o in CATALOG:
+        assert o.id in _ids(o.id), o.id
+        assert o.id in _ids(o.id.replace(" ", "").replace("-", "")), o.id
+
+
+def test_name_and_type_search_still_substring():
+    # Prose fields keep the plain substring test — a space there is a real word
+    # boundary, so squashing them would let a query straddle two words.
+    assert _ids("andromeda") == ["M31"]
+    assert _ids("orion nebula") == ["M42"]
+    assert "M42" in _ids("emission nebula")
+    assert _ids("orionnebula") == []
+
+
+def test_short_and_punctuation_queries_do_not_match_everything():
+    # "m3" is a genuine prefix of three ids and must keep matching all three;
+    # a punctuation-only query squashes to "" and must NOT match every object.
+    assert set(_ids("m3")) == {"M3", "M31", "M33"}
+    assert _ids("-") == []
+    assert _ids("/") == ["NGC 2264"]  # matches the NAME "Cone Nebula / Xmas Tree"
+    # An empty query still browses the whole catalog (unchanged).
+    assert len(search_catalog("", limit=99)) == len(CATALOG)
 
 
 def test_parse_ra_formats():
