@@ -178,6 +178,17 @@ export default function FirstRunWizard(): JSX.Element | null {
     };
   }, [open, equipConnected, noProfileYet]);
 
+  // `site` is the live/status mirror, `config.site` the persisted record — the
+  // same six fields from one stored truth, which is why either answers this.
+  // The mirrors are kept in lock-step by store.loadConfig(), and that is
+  // load-bearing here: SitePanel's save calls loadConfig(), and before it also
+  // refreshed `site` this line kept reading the stale bootstrap value and left
+  // "Set your location" un-ticked with Next locked after a genuine save (a
+  // phone user hit it: "I just set my location manually annnnd... it doesn't
+  // show as having been set. However when I skipped ahead then it showed it" —
+  // skipping ahead to connect a rig is what restarted the `status` stream that
+  // refreshed the other mirror). If a future writer adds a THIRD way to persist
+  // the site, it has to funnel through loadConfig() too, or this un-ticks again.
   const siteIsDefault = site?.is_default ?? config?.site?.is_default ?? true;
 
   const view = computeWizard(
