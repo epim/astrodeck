@@ -266,6 +266,25 @@ function seedFovZoomDeg(config: AppConfig | null): number {
   return FRAMING_DEFAULT_FOV_DEG;
 }
 
+// ------------------------------------------------------------------ site mirror
+// `site` (the live/status view) and `config.site` (the persisted record) carry
+// the same six fields from the same stored truth. loadConfig() keeps them in
+// lock-step; this compares them field-by-field so an unchanged site keeps its
+// object identity and useSite() consumers don't re-render on every unrelated
+// config bump. Field-wise, not JSON.stringify: absent-vs-undefined coordinates
+// (stripped for principals without view.site_precise) must compare equal.
+function siteEquals(a: SiteInfo | null, b: SiteInfo | null | undefined): boolean {
+  if (!a || !b) return a == null && b == null;
+  return (
+    a.name === b.name &&
+    a.latitude === b.latitude &&
+    a.longitude === b.longitude &&
+    a.elevation_m === b.elevation_m &&
+    a.is_default === b.is_default &&
+    a.horizon_min_deg === b.horizon_min_deg
+  );
+}
+
 // ----------------------------------------------------------- live-preview state
 // Ring buffer + view state for the live-preview overhaul (live-preview spec §4.2).
 // Persistence (`astrodeck-preview` key): ONLY `overlays`, `stretch.auto`,
@@ -886,10 +905,35 @@ export const useStore = create<AppState>((set, get) => ({
   clearGuideAssistant: () => set({ guideAssistant: null }),
 
   // --------------------------------------------------------- config/plan/site
+  // The ONE refresh path for the persisted config — and therefore for the site.
+  //
+  // `site` and `config.site` are two mirrors of a single stored truth. Before
+  // this, only ONE of them was refreshed by a save: SitePanel POSTs the site and
+  // calls loadConfig(), which updated `config` and left `site` holding whatever
+  // the WS `hello` bootstrap put there at boot (hub.summary() carries the site,
+  // so it is non-null from the first frame). Everything that reads useSite() —
+  // FirstRunWizard's "Set your location" step, PreflightStrip, AtlasView,
+  // MonitorView, SequenceView, TonightPicker's altitude limit — therefore kept
+  // the PRE-SAVE site until a `status` event happened to overwrite it, which
+  // needs a connected rig and never arrives on a cold first run. MEASURED on a
+  // phone (412x915, real touch): manual save returned is_default:false, the
+  // panel's own header flipped to "Active site: … · manual", and 20s later the
+  // wizard still read "Set your location · 1/5 · Next unlocks once your real
+  // location is saved" with Next locked. Reported verbatim from the field as
+  // "I just set my location manually annnnd... it doesn't show as having been
+  // set. However when I skipped ahead then it showed it" — skipping to "Connect
+  // a rig" and connecting is exactly what restarts the status stream that
+  // refreshes the OTHER mirror.
+  //
+  // The fix is the cause, not a second poll: the successful save already funnels
+  // through here, so refresh both mirrors from the one authoritative GET and
+  // every consumer sees it in the same commit. Identity is preserved when
+  // nothing changed, so unrelated config bumps (drivers/optics/safety) don't
+  // re-render the site consumers.
   loadConfig: async () => {
     try {
       const config = await api.get<AppConfig>("/api/config");
-      set({ config });
+      set((s) => (siteEquals(s.site, config.site) ? { config } : { config, site: config.site }));
     } catch {
       /* leave config as-is; UI shows loading/defaults */
     }

@@ -246,6 +246,12 @@ export default function SitePanel(): JSX.Element {
     setBusy(true);
     try {
       await saveSite(buildSite(), config?.version ?? null, horizon);
+      // The ONE post-save refresh — and it must stay this call, not a local
+      // setState: loadConfig() refreshes BOTH the persisted `config` this panel
+      // seeds from AND the `site` slice every other consumer reads (the
+      // first-run wizard's location step, PreflightStrip, Atlas, Monitor,
+      // Sequence, the Tonight altitude limit). Until it did, a real save left
+      // all of them on the pre-save site until a rig connected.
       await loadConfig();
       setJustLoaded(false); // R3-SITE-02: Set site pressed — the loaded preset is now active
       // #12: never a bare cheerful "Site saved" — say WHERE it saved to, so a
