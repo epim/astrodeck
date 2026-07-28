@@ -42,22 +42,29 @@ AstroDeck ships three backends today:
    offline practice. It renders a coherent star field so the full pipeline
    genuinely runs with no hardware.
 
-AstroDeck supports two equally valid setups, and neither is a stage on the way
-to the other.
+AstroDeck is a control surface for a rig, not a bid to displace the software
+someone already relies on. It is meant to fit around an existing workflow, and
+there is more than one sensible way to point it at a telescope.
 
-Running **alongside NINA** flies an existing rig through NINA's Advanced API,
-with no drivers re-pointed and no profiles rebuilt. Someone who likes their NINA
-setup should be able to keep it and still get the touch UI, the multi-night
-session ledger, the Atlas planner, remote access and the phone dashboard.
+**Alongside NINA.** The NINA backend flies an existing rig through NINA's
+Advanced API, with no drivers re-pointed and no profiles rebuilt. Someone who
+likes their NINA setup keeps it and adds the touch UI, the multi-night session
+ledger, the Atlas planner, remote access and the phone dashboard.
 
-Running **standalone** talks straight to hardware over Alpaca and native
-drivers, using AstroDeck's own engines for autofocus, star detection, plate
-solving, polar alignment and guiding (implemented in Rust from audited algorithm
-dossiers, not ported code). This is what lets a rig run with no other software
-installed.
+**With hardware an ASIAIR owner already has.** Native drivers cover ZWO
+AM-series mounts, EAF focusers, EFW filter wheels and ASI cameras, plus Player
+One cameras and Wanderer accessories, so that gear can be driven directly with
+nothing bought and no driver swapped. Note the limit precisely: there is no
+integration with the ASIAIR unit itself, which exposes no open interface.
+AstroDeck talks to the hardware, not to the box.
 
-Both are maintained. Which one suits you depends on the rig in front of you, and
-you can change your mind later.
+**Standalone.** Direct Alpaca plus native drivers, using AstroDeck's own engines
+for autofocus, star detection, plate solving, polar alignment and guiding
+(written in Rust from audited algorithm dossiers rather than ported code). This
+is what lets a rig run with nothing else installed.
+
+All of these are maintained, and none is a stage on the way to another. Nobody
+is expected to migrate off anything.
 
 ### Honest software for a technical audience
 
