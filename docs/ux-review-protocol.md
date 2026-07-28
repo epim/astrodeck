@@ -260,6 +260,50 @@ break layouts, and empty sim data hides that.
 
 ---
 
+### Flow G — The rig changes *(professional · desktop and tablet)*
+
+Working astrophotographers reconfigure constantly. This flow is about what the software does
+when the hardware underneath it moves, and it is the flow most likely to expose a lie: state
+that survives when it should not, or a setting that quietly keeps applying to gear that is no
+longer there.
+
+**G1. Swap mono + filter wheel for a one-shot-colour camera.** Pull the mono camera and the
+wheel off; put an OSC on. Then look at everything the wheel used to touch. Does the filter UI
+disappear cleanly, or leave orphaned controls? What happens to a saved plan whose steps name
+Ha/OIII/SII? To a multi-night session mid-project? To the per-filter focus offsets and the
+profile that referenced them: are they destroyed, or kept for when the wheel comes back? Does
+the optics config follow the new sensor (pixel size, dimensions, Bayer pattern), or keep
+reporting the old camera's geometry? A plan that cannot run must SAY which step is impossible
+and why, not fail at 2am on the first exposure.
+
+**G2. Install a different brand of filters in the wheel.** Same wheel, new glass, so every
+slot name is wrong and every focus offset is stale. Rename the slots. Re-run the learn-offsets
+routine. The questions: does anything warn that the stored offsets no longer describe the
+filters in the wheel, or do they keep silently applying? How many interactions does renaming
+seven slots cost? If a plan or a calibration library references the OLD filter names, what
+happens to that history? Stale offsets are the dangerous case here, because a wrong offset
+does not error, it just makes every frame slightly soft.
+
+**G3. Shoot a calibration set: flats, then bias, then darks.** Run the actual acquisition, not
+just the settings screens. Per-filter flats if a wheel is fitted. Watch for: whether the flat
+exposure solver reaches the target ADU or saturates; whether calibration frames are correctly
+excluded from an integration total; whether each frame is stored with the filter, gain,
+binning and temperature needed to match it to lights later; and whether the library then
+matches those masters to the right lights.
+
+Weight G3 heavily. A previous review found the stacking bundle grouping frames under
+`NoFilter` while the FITS header said otherwise, which silently hands a stacker the wrong
+flats and puts gradients into a finished image. It also found flat steps defaulting to no
+filter, 120 s (saturated against a panel) and a target ADU of 0. Both were fixed; this flow is
+how we find out whether they stayed fixed, and whether the same class exists elsewhere.
+
+**Also check the empty-slot case if you can arrange it.** A wheel connected with no filter
+physically installed in a slot is different from having no wheel at all, and the simulator
+cannot represent it. A slot that reports a name while empty images through nothing and reports
+success.
+
+---
+
 ## 6. Reporting
 
 **The journey is the deliverable.** Lead with the narrative from Pass 1. Then findings, each
@@ -330,7 +374,9 @@ So you can recognise yourself doing it:
   finding, and require pathspec-limited commits — a bare `git commit` commits the whole index
   and will sweep a concurrent agent's staged files into your commit.
 - **Personas need the right device.** Novice → phone. Mono convert → tablet. Professional →
-  desktop plus phone. Designer → all five.
+  desktop plus phone, and a tablet for Flow G. Designer → all five. The professional carries
+  three flows (D, E, G) because reconfiguring hardware is as much a part of that job as
+  running a night, and it is the part software usually handles worst.
 - **Instrumented review and embodied use are complements, not substitutes.** Ten minutes of a
   human with a phone found what 130 screenshots could not; the reverse is equally true, and the
   contrast and data-integrity defects would never have surfaced from casual use. Run both.
