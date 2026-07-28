@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
 import { Panel, Stat, Toggle, IconButton, SegmentedControl } from "../components/ui";
@@ -56,10 +56,22 @@ export default function MountView() {
     finally { setBusy(false); }
   };
 
+  // Same debounce as the Atlas's CatalogSearch, and it had the same race:
+  // `clearTimeout` cancels a debounce that has not fired, but a request already
+  // ON THE WIRE still lands and still calls setResults. Over a phone's link to
+  // the Pi an earlier, slower answer can therefore arrive after a later one and
+  // repaint the table with results for a query the user has already moved past
+  // — a target list that does not match the box you typed in, which on this
+  // view is one tap away from a GOTO. Only the newest query may write.
+  const queryId = useRef(0);
   useEffect(() => {
+    const id = ++queryId.current;
     const t = setTimeout(async () => {
-      try { setResults(await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(query)}`)); }
-      catch { /* server not up yet */ }
+      try {
+        const rows = await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(query)}`);
+        if (queryId.current === id) setResults(rows);
+      }
+      catch { /* server not up yet — keep the last good list rather than blanking it */ }
     }, 250);
     return () => clearTimeout(t);
   }, [query]);
