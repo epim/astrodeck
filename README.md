@@ -183,14 +183,37 @@ auto-detected.
 
 ---
 
-## Honest status
+## Project state
 
-v0.2, used on a real rig, and not finished. Live stacking and a flats wizard are
-not built. There is no Docker or Raspberry Pi packaging yet. Some settings
-(safety-monitor presets, altitude floors) are still config file and API only.
-Guiding and plate solving work and still have sharp corners.
+v0.2, used on a real rig, and not finished.
+
+Working and used under the stars: capture and sequencing, native autofocus,
+plate solving, TPPA polar alignment, guiding (built-in engine or PHD2), the sky
+atlas, multi-night sessions, and live stacking with constellation registration
+and satellite rejection.
+
+Rough edges worth knowing about before you rely on them:
+
+- **Guiding and plate solving work and still have sharp corners.** Both are used
+  every session; both can still fail in ways whose message could be clearer.
+- **A flats wizard is not built.** Flats are shootable — there is flat
+  auto-exposure and a calibration library — but there is no guided walkthrough.
+- **The ASIAIR integration has never touched real hardware.** It is written
+  against the protocol and tested against a fake.
+- **The binaries are not code-signed**, so Windows and macOS will both warn on
+  first run.
 
 [`docs/overview.md`](docs/overview.md) tracks the full status.
+
+---
+
+## Installing
+
+| | |
+|---|---|
+| **A file you run** | [`docs/guide/install-binary.md`](docs/guide/install-binary.md) — download one file for Windows, Linux or Mac. No Python, no Node. |
+| **Docker, including a Raspberry Pi** | [`docs/guide/install-docker.md`](docs/guide/install-docker.md) — `docker compose up -d`. Multi-arch, so the same setup runs on a mini-PC or a Pi 4/5. |
+| **From source** | the two-minute simulator recipe above. |
 
 ---
 
