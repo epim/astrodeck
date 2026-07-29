@@ -47,6 +47,12 @@ import { Panel, Led, HoldButton, EmptyState, Field, LockedChip } from "../ui";
 import { Icon } from "../icons";
 import { parseProfileFile, profileExportFilename } from "../../lib/profileFile";
 import { profileDeleteConfirm, profileDeleteLock } from "../../lib/profileDelete";
+import {
+  liveRoleCount,
+  profileActivateConfirm,
+  profileConnectsNothing,
+  profileResolvesRealMotion,
+} from "../../lib/equipment";
 import { useCanConfigBackend } from "../../lib/caps";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
@@ -55,30 +61,6 @@ const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   mixed: "Mixed backends",
   empty: "Empty",
 };
-
-// Does a full profile resolve a real (non-sim) mount or focuser? Used to gate the
-// activation hold-confirm — activating could attach + command real hardware.
-// Intent (explicit, no dead clauses): prompt when EITHER an explicit telescope/
-// focuser device row points at a non-sim backend, OR a NINA-host-only legacy
-// profile (real rig), OR a non-sim primary with no explicit motion rows — because
-// the server may resolve a real mount/focuser from that primary. The last case is
-// a deliberate over-prompt (we can't know what the primary resolves without
-// connecting); we fail SAFE toward asking.
-function resolvesRealMotion(p: Profile): boolean {
-  const MOTION = ["telescope", "focuser"];
-  // An explicit, non-sim mount/focuser device row.
-  const deviceMotion = p.devices.some(
-    (d) => MOTION.includes(d.role) && d.backend !== "sim",
-  );
-  // A nina_host-only legacy profile is a real rig too.
-  const ninaRig = !!p.nina_host && p.devices.length === 0;
-  // A non-sim primary with NO explicit motion rows could still resolve a real
-  // mount/focuser server-side, so we prompt to be safe.
-  const primaryMayResolveMotion =
-    p.primary_backend !== "sim" &&
-    !p.devices.some((d) => MOTION.includes(d.role));
-  return deviceMotion || ninaRig || primaryMayResolveMotion;
-}
 
 export default function ProfileList(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
@@ -108,25 +90,35 @@ export default function ProfileList(): JSX.Element {
     void refresh();
   }, []);
 
+  // UX review S1. The dialog was gated on the wrong predicate: it asked what
+  // the profile would ATTACH (`profileResolvesRealMotion`), so a simulator or
+  // assignments-only profile correctly skipped it — and silently tore down
+  // whatever rig was running. Every activate calls `hub._teardown()` FIRST
+  // (`hub.py::_connect_rigspec_unlocked`), so the cost is the rig being
+  // DROPPED, and that is now the primary question. The real-motion check
+  // survives as one of three escalations inside `profileActivateConfirm`.
   const onActivate = async (row: ProfileRow) => {
-    // Pull the full profile to decide whether the connect is destructive.
-    let real = row.mode !== "empty" && row.mode !== "alpaca" ? true : false;
+    // Pull the full profile: it is the only way to know whether anything
+    // reconnects afterwards, and "ask the server, don't trust the render" is
+    // already this panel's rule for the actions that can hurt.
+    let full: Profile | null = null;
     try {
-      const full = await getProfile(row.id);
-      real = resolvesRealMotion(full);
+      full = await getProfile(row.id);
     } catch {
-      /* fall back to the mode heuristic above */
+      /* fall back to the row's mode heuristic below */
     }
-    if (real) {
-      const ok = await confirmDialog({
-        title: `Activate "${row.name}"?`,
-        body: "This profile drives a real mount or focuser. Activating sets it as the boot rig and connects now — the hardware will attach and may move. Hold to confirm.",
-        mode: "hold",
-        tone: "danger",
-        confirmLabel: "Activate & connect",
-      });
-      if (!ok) return;
-    }
+    const live = liveRoleCount(useStore.getState().status);
+    const seqState = useStore.getState().sequence?.state;
+    const spec = profileActivateConfirm({
+      name: row.name,
+      connectsNothing: full ? profileConnectsNothing(full) : false,
+      realMotion: full
+        ? profileResolvesRealMotion(full)
+        : row.mode !== "empty" && row.mode !== "alpaca",
+      liveDevices: live,
+      sequenceRunning: seqState === "running" || seqState === "paused",
+    });
+    if (spec && !(await confirmDialog(spec))) return;
     setBusyId(row.id);
     try {
       await activateProfile(row.id);

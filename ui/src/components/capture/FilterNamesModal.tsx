@@ -70,16 +70,48 @@ export function FilterNamesModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, learn?.state]);
 
+  // The parent's `onClose` reaches the focus trap through a ref, NOT through
+  // the effect's dependency array. This is the whole of UX review #4, and it
+  // corrupted the FITS `FILTER` header.
+  //
+  // MEASURED before the fix, on a live sim rig, s25ultra, real touch: tap Slot
+  // 3's name field, type "Ha 3nm" one character at a time at human cadence, and
+  // every keystroke lands in SLOT 1 — final state `Slot 1 = "LHa 3nm"`, Slot 3
+  // still "G". Focus was already gone 200 ms after the tap, before the first
+  // character.
+  //
+  // Root cause: the effect's deps were `[open, onClose]`, and both call sites
+  // pass an arrow (`onClose={() => setOpen(false)}`) that is a NEW identity on
+  // every parent render. The Equipment and Capture views re-render on every
+  // device-status frame, so the effect re-ran a few times a second; its cleanup
+  // yanked focus to the opener and its body then focused the panel's first
+  // input — Slot 1's name. Typing a whole name between two frames misses it
+  // entirely, which is why one reviewer hit it on every keystroke and another
+  // never saw it at all. A race, not a contradiction.
+  //
+  // Fixing it in the parents alone (useCallback) would leave the landmine armed
+  // for the next caller, so the component is made correct on its own terms:
+  // the trap mounts ONCE per open, and the live `onClose` is read at call time.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+
   // Focus trap + initial focus + Escape + restore (same shell as PreflightModal).
   useEffect(() => {
     if (!open) return;
     openerRef.current = (document.activeElement as HTMLElement) ?? null;
     const panel = panelRef.current;
-    panel?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
+    // Belt and braces for the same class of bug: never steal focus from a
+    // field the user is already inside. Even if some future effect re-arms
+    // this, it cannot move a caret mid-word.
+    if (!panel?.contains(document.activeElement)) {
+      panel?.querySelector<HTMLElement>("input, button:not([disabled])")?.focus();
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !panel) return;
@@ -102,7 +134,7 @@ export function FilterNamesModal({
       document.removeEventListener("keydown", onKey, true);
       openerRef.current?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
