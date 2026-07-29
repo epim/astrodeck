@@ -577,16 +577,23 @@ def load_filter_config(profile_id: str | None) -> dict:
 
 
 def save_filter_config(profile_id: str | None, names: list[str],
-                       offsets: list[int]) -> None:
-    """Persist filter slot names + offsets for a profile (best-effort merge into
-    the shared store; other profiles' entries are preserved)."""
+                       offsets: list[int],
+                       opaque: list[bool] | None = None) -> None:
+    """Persist filter slot names + offsets (+ blackout flags) for a profile
+    (best-effort merge into the shared store; other profiles' entries are
+    preserved). ``opaque`` is optional so an older caller keeps working; when it
+    is None the key is omitted and ``load_filter_config`` reports no blackout
+    slot, exactly as before the flag existed."""
     data = read_json_or(FILTER_CONFIG_FILE, {})
     if not isinstance(data, dict):
         data = {}
-    data[profile_id or _FILTER_DEFAULT_KEY] = {
+    entry = {
         "names": [str(n) for n in names],
         "offsets": [int(o) for o in offsets],
     }
+    if opaque is not None:
+        entry["opaque"] = [bool(o) for o in opaque]
+    data[profile_id or _FILTER_DEFAULT_KEY] = entry
     write_json_atomic(FILTER_CONFIG_FILE, data)
 
 

@@ -269,6 +269,12 @@ export default function SequenceView() {
   }, [running]);
 
   const filters = status?.filterwheel?.names ?? [];
+  const filterOpaque = status?.filterwheel?.opaque ?? [];
+  // The slots you can actually image THROUGH. A blackout slot is a carrier with
+  // no glass — a light block, not a filter — so it is never a filter choice.
+  // `filters` keeps the full list because `wheelPosition` indexes into it.
+  const lightFilters = filters.filter((_, i) => !filterOpaque[i]);
+  const darkSlotName = filters.find((_, i) => filterOpaque[i]) ?? null;
   // Where the wheel is physically parked — the filter a NEW step should start
   // on when there is no previous step to inherit from (#1's editor half).
   const wheelPosition = status?.filterwheel?.position;
@@ -345,7 +351,7 @@ export default function SequenceView() {
       {
         ...plan,
         targets: plan.targets.map((t, i) =>
-          i === ti ? { ...t, steps: templateSteps(tpl, filters) } : t),
+          i === ti ? { ...t, steps: templateSteps(tpl, lightFilters) } : t),
       },
     );
   };
@@ -406,7 +412,7 @@ export default function SequenceView() {
           center: true, autofocus_first: true, calibration: false,
           // A brand-new target's first step starts on the filter the wheel is
           // physically parked on, not "no filter" — the plan-editor half of #1.
-          steps: [{ ...nextStep([], filters, wheelPosition), id: uid() }],
+          steps: [{ ...nextStep([], filters, wheelPosition, filterOpaque), id: uid() }],
           schedule: defaultSchedule(),
         }],
       });
@@ -807,7 +813,7 @@ export default function SequenceView() {
                       ? "Add a step — copies the last step's exposure, gain, binning and count"
                       : "Add a step"}
                     onClick={() => patchTarget(ti, {
-                      steps: [...t.steps, { ...nextStep(t.steps, filters, wheelPosition), id: uid() }],
+                      steps: [...t.steps, { ...nextStep(t.steps, filters, wheelPosition, filterOpaque), id: uid() }],
                     })}>
                     + step
                   </button>
@@ -919,12 +925,21 @@ export default function SequenceView() {
                       </label>
                       <label className="flex flex-col gap-0.5 w-[96px]">
                         <span className="label">filter</span>
+                        {/* Blackout slots never appear as a filter choice. For a
+                            dark or a bias the empty option is not "no filter" at
+                            all — the wheel drives to the blackout slot — so it
+                            says what will actually happen. */}
                         <select className="field !py-1"
                           aria-label={`Filter — step ${si + 1} of ${t.name}`}
                           value={s.filter ?? ""}
                           onChange={(e) => patchStep(ti, si, { filter: e.target.value || null })}>
-                          <option value="">no filter</option>
-                          {filters.map((f) => <option key={f} value={f}>{f}</option>)}
+                          <option value="">
+                            {darkSlotName &&
+                             ["Dark", "Bias"].includes(s.frame_type ?? "Light")
+                              ? darkSlotName
+                              : "no filter"}
+                          </option>
+                          {lightFilters.map((f) => <option key={f} value={f}>{f}</option>)}
                         </select>
                       </label>
                       <label className="flex flex-col gap-0.5 w-[78px]">

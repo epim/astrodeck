@@ -1004,6 +1004,7 @@ function RoleSlot({
         <FilterSlotsEditor
           names={status.filterwheel.names}
           offsets={status.filterwheel.offsets ?? []}
+          opaque={status.filterwheel.opaque ?? []}
           position={status.filterwheel.position}
           hasFocuser={!!status.focuser}
           disabled={disabled}
@@ -1033,19 +1034,24 @@ function RoleSlot({
 function FilterSlotsEditor({
   names,
   offsets,
+  opaque = [],
   position,
   hasFocuser,
   disabled,
 }: {
   names: string[];
   offsets: number[];
+  opaque?: boolean[];
   position: number;
   hasFocuser: boolean;
   disabled: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const showToast = useStore((s) => s.showToast);
-  const offsetsSet = offsets.some((o) => o !== 0);
+  // A blackout slot's offset is a placeholder zero, so it must not count as
+  // evidence that offsets were measured — nor as evidence they were not.
+  const offsetsSet = offsets.some((o, i) => o !== 0 && !opaque[i]);
+  const darkSlot = opaque.findIndex(Boolean);
   // UX review #4, the parent half. An inline `onClose={() => setOpen(false)}`
   // is a new function identity on every render of this component — and this
   // component re-renders on every device-status frame, several times a second.
@@ -1067,12 +1073,15 @@ function FilterSlotsEditor({
       <span className="text-dim truncate">
         {names.length ? names.join(" · ") : "no slots reported"} —{" "}
         {offsetsSet ? "focus offsets set" : "focus offsets not set"}
+        {darkSlot >= 0 &&
+          ` — darks via ${names[darkSlot] || `slot ${darkSlot + 1}`}`}
       </span>
       <FilterNamesModal
         open={open}
         onClose={close}
         names={names}
         offsets={offsets}
+        opaque={opaque}
         position={position}
         canLearn={hasFocuser}
         learnDisabledReason={
@@ -1086,8 +1095,9 @@ function FilterSlotsEditor({
           await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
           showToast("info", "Learning filter offsets…");
         }}
-        onSave={async (n, o) => {
-          await api.post("/api/filterwheel/names", { names: n, offsets: o });
+        onSave={async (n, o, op) => {
+          await api.post("/api/filterwheel/names",
+                         { names: n, offsets: o, opaque: op });
           showToast("success", "Filter slots saved");
         }}
       />

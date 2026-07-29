@@ -10,11 +10,18 @@ import { useFilterOffsetsLearn } from "../../store";
 /** Slot to pre-select as the offset reference: an L/Lum/Clear slot when the
  *  wheel has one (case-insensitive), else the wheel's current position. Mirrors
  *  the server's `focus.filter_offsets.default_ref_slot` so the picker shows the
- *  same slot the API would choose on its own. */
-function defaultRefSlot(names: string[], current: number): number {
+ *  same slot the API would choose on its own. A blackout slot can never be the
+ *  reference — it passes no light, and the server rejects it — so if the wheel
+ *  is sitting on one we fall through to the first slot that does pass light. */
+function defaultRefSlot(names: string[], current: number,
+                        opaque: boolean[] = []): number {
   const lum = ["l", "lum", "luminance", "clear", "lp", "uv/ir cut", "uvir"];
-  const i = names.findIndex((n) => lum.includes(n.trim().toLowerCase()));
-  return i >= 0 ? i : current;
+  const i = names.findIndex(
+    (n, j) => !opaque[j] && lum.includes(n.trim().toLowerCase()));
+  if (i >= 0) return i;
+  if (!opaque[current]) return current;
+  const first = names.findIndex((_, j) => !opaque[j]);
+  return first >= 0 ? first : current;
 }
 
 export function FilterNamesModal({
@@ -22,6 +29,7 @@ export function FilterNamesModal({
   onClose,
   names,
   offsets,
+  opaque = [],
   position = 0,
   canLearn = false,
   learnDisabledReason = null,
@@ -32,6 +40,8 @@ export function FilterNamesModal({
   onClose: () => void;
   names: string[];
   offsets: number[];
+  /** per-slot blackout flags, parallel to `names` */
+  opaque?: boolean[];
   /** current wheel slot — the reference-picker fallback */
   position?: number;
   /** show the auto-learn disclosure at all (a focuser is present) */
@@ -39,12 +49,13 @@ export function FilterNamesModal({
   /** non-null => Start is honest-disabled with this reason in its title */
   learnDisabledReason?: string | null;
   onLearn?: (refSlot: number) => Promise<void>;
-  onSave: (names: string[], offsets: number[]) => Promise<void>;
+  onSave: (names: string[], offsets: number[], opaque: boolean[]) => Promise<void>;
 }): JSX.Element | null {
   const panelRef = useRef<HTMLDivElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const [draftNames, setDraftNames] = useState<string[]>(names);
   const [draftOffsets, setDraftOffsets] = useState<string[]>(offsets.map(String));
+  const [draftOpaque, setDraftOpaque] = useState<boolean[]>(names.map((_, i) => !!opaque[i]));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [learnOpen, setLearnOpen] = useState(false);
@@ -56,7 +67,8 @@ export function FilterNamesModal({
     if (!open) return;
     setDraftNames(names);
     setDraftOffsets(names.map((_, i) => String(offsets[i] ?? 0)));
-    setRefSlot(defaultRefSlot(names, position));
+    setDraftOpaque(names.map((_, i) => !!opaque[i]));
+    setRefSlot(defaultRefSlot(names, position, opaque));
     setErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -142,16 +154,27 @@ export function FilterNamesModal({
     setDraftNames((p) => p.map((n, j) => (j === i ? v : n)));
   const setOffset = (i: number, v: string) =>
     setDraftOffsets((p) => p.map((n, j) => (j === i ? v : n)));
+  const toggleOpaque = (i: number) =>
+    setDraftOpaque((p) => p.map((b, j) => (j === i ? !b : b)));
+
+  const anyOpaque = draftOpaque.some(Boolean);
+  // The reference must stay on a slot that passes light; marking the current
+  // reference as blackout moves it rather than letting Start 400.
+  const effectiveRef = draftOpaque[refSlot]
+    ? draftOpaque.findIndex((b) => !b)
+    : refSlot;
 
   const save = async () => {
     setBusy(true);
     setErr(null);
     try {
-      const cleanOffsets = draftOffsets.map((o) => {
+      const cleanOffsets = draftOffsets.map((o, i) => {
+        if (draftOpaque[i]) return 0;   // no light path, so no offset to apply
         const n = Number(o);
         return Number.isFinite(n) ? Math.round(n) : 0;
       });
-      await onSave(draftNames.map((n) => n.trim()), cleanOffsets);
+      await onSave(draftNames.map((n) => n.trim()), cleanOffsets,
+                   [...draftOpaque]);
       onClose();
     } catch (e) {
       setErr((e as Error).message);
@@ -181,13 +204,14 @@ export function FilterNamesModal({
         </header>
 
         <div className="overflow-y-auto p-4 grow flex flex-col gap-2">
-          <div className="grid grid-cols-[2rem_1fr_5rem] gap-2 label !text-[9px]">
+          <div className="grid grid-cols-[1.5rem_1fr_4rem_2.75rem] gap-2 label !text-[9px]">
             <span>#</span>
             <span>name</span>
             <span>offset</span>
+            <span className="text-center">dark</span>
           </div>
           {draftNames.map((name, i) => (
-            <div key={i} className="grid grid-cols-[2rem_1fr_5rem] gap-2 items-center">
+            <div key={i} className="grid grid-cols-[1.5rem_1fr_4rem_2.75rem] gap-2 items-center">
               <span className="mono text-xs text-dim">{i + 1}</span>
               <input
                 className="field"
@@ -195,18 +219,47 @@ export function FilterNamesModal({
                 aria-label={`Slot ${i + 1} name`}
                 onChange={(e) => setName(i, e.target.value)}
               />
-              <input
-                className="field"
-                value={draftOffsets[i] ?? "0"}
-                inputMode="numeric"
-                aria-label={`Slot ${i + 1} focuser offset`}
-                onChange={(e) => setOffset(i, e.target.value)}
-              />
+              {draftOpaque[i] ? (
+                /* Honest-disabled: an offset through a slot with no light path
+                   is not a measurement. Shown as an em dash rather than a greyed
+                   input so it reads as "not applicable", not "type here". The
+                   reason is stated once below the grid — never title-only. */
+                <span
+                  className="mono text-xs text-dim opacity-60 text-center"
+                  aria-label={`Slot ${i + 1} focuser offset — not applicable, blackout slot`}
+                >
+                  —
+                </span>
+              ) : (
+                <input
+                  className="field"
+                  value={draftOffsets[i] ?? "0"}
+                  inputMode="numeric"
+                  aria-label={`Slot ${i + 1} focuser offset`}
+                  onChange={(e) => setOffset(i, e.target.value)}
+                />
+              )}
+              <label className="flex min-h-11 items-center justify-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="h-5 w-5 accent-accent"
+                  checked={draftOpaque[i] ?? false}
+                  aria-label={`Slot ${i + 1} is a blackout slot`}
+                  onChange={() => toggleOpaque(i)}
+                />
+              </label>
             </div>
           ))}
           <p className="text-[11px] text-dim leading-snug mt-1">
             Names appear in FITS headers and saved filenames. Offsets are the
             per-filter focuser step delta autofocus applies when switching filters.
+          </p>
+          <p className="text-[11px] text-dim leading-snug">
+            Tick <span className="text-ink">dark</span> for a blackout slot — a
+            carrier with no glass that blocks the light path.
+            {anyOpaque
+              ? " Darks and bias will be shot through it, it takes no focus offset, and it is not offered as a filter for lights or flats."
+              : " Most wheels do not have one."}
           </p>
 
           {/* --- Advanced: learn the offsets automatically. Collapsed by
@@ -226,17 +279,23 @@ export function FilterNamesModal({
                   <p className="text-[11px] text-dim leading-snug">
                     Focuses each filter for you and fills in the offsets. Point at
                     a star field first. Takes a few minutes.
+                    {anyOpaque && " Blackout slots are skipped."}
                   </p>
                   <label className="flex items-center gap-2 text-[11px] text-dim">
                     <span>Reference</span>
                     <select
                       className="field !w-32"
-                      value={refSlot}
+                      value={effectiveRef}
                       aria-label="Reference filter"
                       onChange={(e) => setRefSlot(Number(e.target.value))}>
-                      {draftNames.map((n, i) => (
-                        <option key={i} value={i}>{n || `Slot ${i + 1}`}</option>
-                      ))}
+                      {/* blackout slots are absent, not disabled: the server
+                          rejects them outright, so offering one would only
+                          produce a 400 the user cannot act on. */}
+                      {draftNames.map((n, i) =>
+                        draftOpaque[i] ? null : (
+                          <option key={i} value={i}>{n || `Slot ${i + 1}`}</option>
+                        ),
+                      )}
                     </select>
                   </label>
                   <p className="text-[10px] text-dim">
@@ -249,7 +308,7 @@ export function FilterNamesModal({
                     title={learnDisabledReason ? `Unavailable — ${learnDisabledReason}` : undefined}
                     onClick={learnDisabledReason || !onLearn ? undefined : () => {
                       setErr(null);
-                      onLearn(refSlot).catch((e) => setErr((e as Error).message));
+                      onLearn(effectiveRef).catch((e) => setErr((e as Error).message));
                     }}>
                     Start
                   </button>

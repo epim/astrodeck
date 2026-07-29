@@ -46,6 +46,32 @@ test("defaultFilter: out-of-range position falls back to slot 0, never null", ()
   eq(defaultFilter(["L", "R"], 9), "L", "position past the end");
 });
 
+// A blackout slot is a carrier with no glass. The wheel sits parked on one for
+// the whole of a dark run, so without this a step added straight afterwards
+// would default to "shoot lights through the light block".
+test("defaultFilter: never returns a blackout slot", () => {
+  const names = ["Dark", "L", "R"];
+  const opaque = [true, false, false];
+  eq(defaultFilter(names, 0, opaque), "L", "parked ON the blackout slot");
+  eq(defaultFilter(names, 2, opaque), "R", "parked elsewhere => unchanged");
+  eq(defaultFilter(names, undefined, opaque), "L", "no position");
+});
+
+test("defaultFilter: an all-blackout wheel yields null, not a blackout name", () => {
+  eq(defaultFilter(["A", "B"], 0, [true, true]), null, "nothing passes light");
+});
+
+test("defaultFilter: omitting opaque keeps the old answer exactly", () => {
+  eq(defaultFilter(["Dark", "L"], 0), "Dark", "no flags => slot 0 as before");
+});
+
+test("nextStep: a first step skips a blackout slot the wheel is parked on", () => {
+  eq(nextStep([], ["Dark", "L"], 0, [true, false]).filter, "L", "first step");
+  // inheriting from a previous step is untouched — the user's own choice wins
+  eq(nextStep([step({ filter: "Ha" })], ["Dark", "L"], 0, [true, false]).filter,
+     "Ha", "inherited");
+});
+
 // ---------------------------------------------------------------- nextStep
 test("#29 nextStep inherits every field of the last step", () => {
   const last = step({
