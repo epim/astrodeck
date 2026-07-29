@@ -244,6 +244,232 @@ export function hardwareAssignments(drivers: DriverInfo[], roles: string[]): Ass
   return map;
 }
 
+// ============================================================ PROFILES
+// The decision layer behind "what is a profile made of" and "what does
+// activating one cost me" (UX review round 4, S1). It lives here, pure and
+// tested, for the same reason lib/profileDelete.ts exists: the judgement was
+// wrong in the JSX and nothing pinned it.
+//
+// THE STRUCTURAL BUG. Two state models were presented as one screen. The rig
+// you DRIVE is the server's connected device set; the rig the app could SAVE
+// was this browser's AssignmentMap. Profiles were built out of the second one,
+// and every persona hit a different edge of that:
+//
+//   * Connect through the setup guide (or a boot profile, or another browser)
+//     and the map is empty, so Save was gated off — with the native `disabled`
+//     attribute and no reason — while eleven devices sat there connected.
+//   * Save an all-simulator rig and `doSaveProfile` skipped every sim row and
+//     wrote `primary_backend: "none"`, i.e. the ONE profile shape that resolves
+//     to `RigSpec(primary="none", roles={})`. Activating it ran the teardown
+//     that precedes every activate and then connected nothing. MEASURED on a
+//     live instance: 10 devices before the tap, 0 after, no confirmation.
+//
+// So the authority moves: a profile captures the CONNECTED rig (the server's
+// own snapshot, POST /api/profiles/capture), and the AssignmentMap is only the
+// fallback for a rig that has been PICKED but not yet connected.
+
+/** How many roles are LIVE right now — the ONE count for "how big is this rig",
+ *  so no two sentences on one screen can quote different sizes for it (the
+ *  Disconnect dialog said "drops 10 connected devices" three inches under "save
+ *  the 11 connected devices", because each counted a different thing).
+ *
+ *  It joins the two surfaces the server publishes, because neither alone is the
+ *  whole rig: `status.connected` is the DEVICE map, and `backend_links` is the
+ *  per-role live grid — the only one of the two that carries the GUIDER, which
+ *  is an engine rather than a device. Both are recomputed per status frame
+ *  (hub.backend_links → _role_live_connected), so neither is a stale echo. */
+export function liveRoleCount(
+  status:
+    | {
+        connected?: Record<string, { connected?: boolean } | null | undefined> | null;
+        backend_links?: { role: string; connected: boolean }[] | null;
+      }
+    | null
+    | undefined,
+): number {
+  const roles = new Set<string>();
+  for (const [role, c] of Object.entries(status?.connected ?? {})) {
+    if (c?.connected) roles.add(role);
+  }
+  for (const l of status?.backend_links ?? []) if (l.connected) roles.add(l.role);
+  return roles.size;
+}
+
+/** The RigSpec primary the SERVER will derive for this profile.
+ *
+ *  Mirrors `profiles.py::Profile.to_rigspec` + `_derived_primary` (read
+ *  2026-07-28), including the order that matters: a legacy nina_host-only
+ *  profile forces "nina" AFTER the explicit primary is read, and an EMPTY
+ *  `primary_backend` still resolves to a working rig ("native" with device
+ *  rows, else "sim"). Only an explicit "none" asks the server for no roles. */
+export function profilePrimary(p: {
+  primary_backend?: string | null;
+  devices?: { role: string }[] | null;
+  nina_host?: string | null;
+}): string {
+  const devices = p.devices ?? [];
+  if (p.nina_host && devices.length === 0) return "nina";
+  const explicit = (p.primary_backend ?? "").trim();
+  if (explicit) return explicit;
+  return devices.length > 0 ? "native" : "sim";
+}
+
+/** True when activating this profile connects NOTHING — the teardown that
+ *  precedes every activate is the whole of what happens. This is not a
+ *  hypothetical: it is the exact shape the old assignments-only Save wrote for
+ *  a simulator rig, which is how one tap destroyed a live 11-device rig. */
+export function profileConnectsNothing(p: {
+  primary_backend?: string | null;
+  devices?: { role: string }[] | null;
+  nina_host?: string | null;
+}): boolean {
+  return (p.devices ?? []).length === 0 && profilePrimary(p) === "none";
+}
+
+/** Does a full profile resolve a real (non-sim) mount or focuser? The older of
+ *  the two activation gates — it asks what the profile will ATTACH, and it is
+ *  kept because that is a genuine escalation. It is no longer the only gate:
+ *  see `profileActivateConfirm`, which asks the question this one never could
+ *  (what the activate DROPS).
+ *
+ *  Intent (explicit, no dead clauses): prompt when EITHER an explicit
+ *  telescope/focuser device row points at a non-sim backend, OR a
+ *  NINA-host-only legacy profile (real rig), OR a non-sim primary with no
+ *  explicit motion rows — because the server may resolve a real mount/focuser
+ *  from that primary. The last case is a deliberate over-prompt (we can't know
+ *  what the primary resolves without connecting); we fail SAFE toward asking.
+ *
+ *  Lived in ProfileList.tsx until EquipmentView's own Activate needed the same
+ *  judgement; hoisting it is a move, not a redesign. */
+export function profileResolvesRealMotion(p: {
+  primary_backend?: string | null;
+  devices?: { role: string; backend?: string | null }[] | null;
+  nina_host?: string | null;
+}): boolean {
+  // A profile that asks the server for zero roles cannot attach anything, so
+  // the over-prompt below must not fire on it. Without this the confirm dialog
+  // printed both halves at once — "stores no devices, so nothing reconnects"
+  // immediately followed by "the hardware will attach and may move" — which is
+  // the same class of defect the whole review is about, in the dialog written
+  // to prevent it. Measured in the rendered dialog before this line existed.
+  if (profileConnectsNothing(p)) return false;
+  const MOTION = ["telescope", "focuser"];
+  const devices = p.devices ?? [];
+  const deviceMotion = devices.some(
+    (d) => MOTION.includes(d.role) && d.backend !== "sim",
+  );
+  const ninaRig = !!p.nina_host && devices.length === 0;
+  const primaryMayResolveMotion =
+    p.primary_backend !== "sim" && !devices.some((d) => MOTION.includes(d.role));
+  return deviceMotion || ninaRig || primaryMayResolveMotion;
+}
+
+/** Confirm-dialog spec — the subset of `ConfirmOpts` this decision produces.
+ *  Structural (not an import) so this module stays React-free. */
+export interface ActivateConfirmSpec {
+  title: string;
+  body: string;
+  mode: "confirm" | "hold";
+  tone: "danger";
+  confirmLabel: string;
+  cancelLabel: string;
+}
+
+/**
+ * Confirm copy + friction for activating a profile, or `null` when activating
+ * costs nothing and should just happen.
+ *
+ * The old gate asked the wrong question. It prompted when the PROFILE resolved
+ * a real mount or focuser — so a simulator rig, or an assignments-only profile,
+ * correctly skipped the dialog and silently tore down whatever was running.
+ * What makes an activate expensive is not only what it attaches: every activate
+ * calls `hub._teardown()` FIRST (`hub.py::_connect_rigspec_unlocked`), so the
+ * cost is the rig you are DROPPING. That is what this asks about.
+ *
+ * Three escalations, any of which promotes a tap-confirm to a hold:
+ *   - the profile puts nothing back (you end with no rig),
+ *   - a sequence is running (the teardown aborts it),
+ *   - the profile drives real hardware (it will attach and may move).
+ */
+export function profileActivateConfirm(opts: {
+  name: string;
+  /** `profileConnectsNothing(fullProfile)` — pass false when unknown. */
+  connectsNothing: boolean;
+  /** the profile resolves a real (non-sim) mount or focuser */
+  realMotion: boolean;
+  /** devices the server reports connected RIGHT NOW */
+  liveDevices: number;
+  sequenceRunning: boolean;
+}): ActivateConfirmSpec | null {
+  const { name, connectsNothing, realMotion, liveDevices, sequenceRunning } = opts;
+  if (liveDevices === 0 && !realMotion) return null;
+
+  const parts: string[] = [];
+  if (liveDevices > 0) {
+    parts.push(
+      `Activating disconnects the ${liveDevices} device${liveDevices === 1 ? "" : "s"} ` +
+        `running now — every activate tears the current rig down first.`,
+    );
+  }
+  if (sequenceRunning) parts.push("A sequence is running, and that teardown aborts it.");
+  parts.push(
+    connectsNothing
+      ? `"${name}" stores no devices, so nothing reconnects: you end up with no rig.`
+      : `"${name}" then connects the devices it stores.`,
+  );
+  if (realMotion) {
+    parts.push("It drives a real mount or focuser — the hardware will attach and may move.");
+  }
+  const hold = connectsNothing || realMotion || sequenceRunning;
+  return {
+    title: `Activate "${name}"?`,
+    body: parts.join(" ") + (hold ? " Hold to confirm." : ""),
+    mode: hold ? "hold" : "confirm",
+    tone: "danger",
+    confirmLabel: connectsNothing ? "Activate anyway" : "Activate & connect",
+    cancelLabel: liveDevices > 0 ? "Keep this rig" : "Cancel",
+  };
+}
+
+/** Where a Save on the Equipment screen takes its contents from.
+ *  "connected-rig" = the server's snapshot of what is live (the authority);
+ *  "assignments"   = this browser's dropdown picks, for a rig that has been
+ *                    chosen but not yet connected. */
+export type ProfileSaveSource = "connected-rig" | "assignments";
+
+export function profileSaveSource(live: number, assigned: number): ProfileSaveSource | null {
+  if (live > 0) return "connected-rig";
+  if (assigned > 0) return "assignments";
+  return null;
+}
+
+/**
+ * Why Save cannot run, or `null` when it can.
+ *
+ * Returns the SENTENCE, never a boolean, so no call site can ship the dead grey
+ * rectangle this replaces (measured: `disabled=true`, opacity 0.35, no title,
+ * no aria-label, no aria-disabled — a designer typed a name, pressed Enter,
+ * tapped it, and got silence, with a live 11-device rig on screen).
+ *
+ * `permission` is passed in rather than derived so this module stays free of
+ * the caps/store graph and runs under a bare `tsx` test.
+ */
+export function profileSaveLock(opts: {
+  /** null when this principal may write backend config, else the reason. */
+  permission: string | null;
+  name: string;
+  live: number;
+  assigned: number;
+  busy: boolean;
+}): string | null {
+  if (opts.permission) return opts.permission;
+  if (opts.busy) return "Another rig action is still running.";
+  if (profileSaveSource(opts.live, opts.assigned) === null)
+    return "Nothing to save yet — connect a rig, or pick drivers on the rows above.";
+  if (!opts.name.trim()) return "Name it first — the profile is stored under this name.";
+  return null;
+}
+
 // ------------------------------------------------------------- persistence
 // Pre-profile stickiness across reloads. Profiles are the durable store; this
 // is just "don't lose my dropdowns on F5". Any parse error degrades to {}.

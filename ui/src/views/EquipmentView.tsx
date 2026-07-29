@@ -7,7 +7,7 @@
 // failure honesty: sticky assignments, per-row RoleResult errors, an
 // unreachable-driver banner, and a /api/drivers refetch after a failed
 // connect (probe-cache honesty, spec §3.2/§5).
-import { useEffect, useMemo, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
 import type {
   ConnectRigResult,
   DriverInfo,
@@ -21,10 +21,12 @@ import { api, ApiError } from "../api";
 import {
   activateProfile,
   addDriverForHardware,
+  captureProfile,
   connectRig,
   discoverHardware,
   getProfile,
   hwAlreadyConfigured,
+  listBackends,
   listDrivers,
   listProfiles,
   saveProfile,
@@ -38,7 +40,13 @@ import {
   eligibleDrivers,
   hardwareAssignments,
   hasRealMotion,
+  liveRoleCount,
   loadAssignments,
+  profileActivateConfirm,
+  profileConnectsNothing,
+  profileResolvesRealMotion,
+  profileSaveLock,
+  profileSaveSource,
   saveAssignments,
   simAssignments,
   slotState,
@@ -51,7 +59,7 @@ import TasksPanel, { DEFAULT_PROVIDERS } from "../components/equipment/TasksPane
 import RotatorCard from "../components/equipment/RotatorCard";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
-import { EmptyState, Field, InfoDot, Led, Panel } from "../components/ui";
+import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
 
 const SLOT_WORD: Record<string, { word: string; tone: string }> = {
@@ -75,7 +83,17 @@ export default function EquipmentView(): JSX.Element {
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [assignments, setAssignments] = useState<AssignmentMap>(() => loadAssignments());
   const [results, setResults] = useState<Record<string, RoleResult>>({});
-  const [busy, setBusy] = useState(false);
+  // UX review #18: the busy flag used to be a bare boolean, so the ONLY
+  // in-progress label in Rig Actions — "Working…" — always rendered on the
+  // Connect Rig button, whichever button you had actually pressed. MEASURED:
+  // tap "▶ Detect hardware rig" and the progress appears three controls away
+  // while the button you touched looks untouched. Naming the action fixes the
+  // label without changing what gets disabled (`busy` is still every one of
+  // them; two rig actions must never overlap).
+  const [busyWhat, setBusyWhat] = useState<
+    null | "connect" | "scan" | "disconnect" | "save"
+  >(null);
+  const busy = busyWhat !== null;
   const [profiles, setProfiles] = useState<ProfileRow[] | null>(null);
   const [profileName, setProfileName] = useState("");
 
@@ -117,14 +135,20 @@ export default function EquipmentView(): JSX.Element {
   );
 
   const assignedCount = roles.filter((r) => assignments[r]).length;
-  const connectedCount = Object.values(status?.connected ?? {}).filter(
-    (c) => c?.connected,
-  ).length;
+  // ONE definition of "this role is live" for the whole page — the rows, the
+  // counts in the copy, and what Save decides to capture. It joins the two
+  // things the server publishes, because neither alone is the whole truth:
+  // `status.connected` is the DEVICE map (no entry for the guider, which is an
+  // engine), and `backend_links[].connected` is the per-role live state the
+  // Link Status grid renders (hub._role_live_connected — device OR engine).
+  // Reading only the first is what put "GUIDING · UNASSIGNED" three inches from
+  // "GUIDING · CONNECTED ✓".
+  const isRoleLive = (r: string) =>
+    !!status?.connected?.[r]?.connected || !!linkByRole[r]?.connected;
+  const connectedCount = liveRoleCount(status);
   // Roles the server reports as LIVE while this screen holds no assignment for
   // them — the #41 mismatch (a rig connected from anywhere but here).
-  const liveUnassignedRoles = roles.filter(
-    (r) => status?.connected?.[r]?.connected && !assignments[r],
-  );
+  const liveUnassignedRoles = roles.filter((r) => isRoleLive(r) && !assignments[r]);
 
   // The one connect-rig implementation, parameterized on the AssignmentMap to
   // drive (root-cause fix, sim-connect desync EQ-01 ×3 rounds): both the
@@ -145,7 +169,7 @@ export default function EquipmentView(): JSX.Element {
       });
       if (!ok) return;
     }
-    setBusy(true);
+    setBusyWhat("connect");
     setResults({});
     try {
       const res: ConnectRigResult = await connectRig(buildRigSpec(map));
@@ -173,7 +197,7 @@ export default function EquipmentView(): JSX.Element {
       showToast("error", msg);
       void reloadDrivers();
     } finally {
-      setBusy(false);
+      setBusyWhat(null);
     }
   };
 
@@ -197,9 +221,10 @@ export default function EquipmentView(): JSX.Element {
   //     re-derived here.
   const doDisconnect = () =>
     void (async () => {
-      const live = Object.values(status?.connected ?? {}).filter(
-        (c) => c?.connected,
-      ).length;
+      // Same `isRoleLive` authority the rows and the Profiles copy use, so the
+      // page never quotes two different sizes for one rig (it read "drops 10
+      // connected devices" three inches under "save the 11 connected devices").
+      const live = connectedCount;
       const seqState = useStore.getState().sequence?.state;
       const running = seqState === "running" || seqState === "paused";
       const ok = await confirmDialog({
@@ -212,7 +237,7 @@ export default function EquipmentView(): JSX.Element {
         cancelLabel: "Stay connected",
       });
       if (!ok) return;
-      setBusy(true);
+      setBusyWhat("disconnect");
       try {
         await api.post("/api/disconnect");
         setResults({});
@@ -231,7 +256,7 @@ export default function EquipmentView(): JSX.Element {
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "disconnect failed");
       } finally {
-        setBusy(false);
+        setBusyWhat(null);
       }
     })();
 
@@ -252,11 +277,34 @@ export default function EquipmentView(): JSX.Element {
   // then auto-fill the AssignmentMap with the hardwareAssignments() heuristic
   // — mirrors doSimRig in every way except it does NOT connect; the user
   // reviews the picks and presses Connect Rig themselves.
+  //
+  // UX review #18, the other half: an empty scan reported SUCCESS. A beginner
+  // with nothing plugged in tapped this, seven real probes went out and all
+  // returned 200 with no devices, and the app said "Detected 0 device(s) — 0
+  // role(s) assigned, review and Connect Rig" in the success tone — which reads
+  // as "it worked" and names an action that cannot work. An empty scan is now
+  // reported as what it is, with the one number that is genuinely invisible
+  // (how many hardware backends were actually asked) and the two things a user
+  // can do about it.
   const doDetectHardware = () =>
     void (async () => {
-      setBusy(true);
+      setBusyWhat("scan");
       try {
+        // Same predicate discoverHardware() scans on, so the count reported is
+        // the number of probes that really went out — never a guess.
+        const scanned = (await listBackends()).filter(
+          (b) => b.hardware && b.discoverable && b.driver_type,
+        ).length;
         const found = await discoverHardware();
+        if (found.length === 0) {
+          showToast(
+            "warning",
+            `No hardware answered — ${scanned} USB/serial backend${scanned === 1 ? "" : "s"} ` +
+              `scanned, none reported a device. Check power and cables, or add a driver by ` +
+              `hand under Settings → Backend Drivers.`,
+          );
+          return;
+        }
         const toAdd = found.filter((f) => !hwAlreadyConfigured(f, drivers));
         for (const f of toAdd) {
           // Sequential (see DriversPanel.addAllHw): each add mints a
@@ -269,6 +317,17 @@ export default function EquipmentView(): JSX.Element {
         setAssignments(map);
         saveAssignments(map);
         const assignedRoles = Object.values(map).filter(Boolean).length;
+        if (assignedRoles === 0) {
+          // Devices exist but nothing matched a role: still not a success.
+          showToast(
+            "warning",
+            `Found ${found.length} device(s)` +
+              (toAdd.length ? `, added ${toAdd.length} driver(s)` : "") +
+              ` — but none offered a device slot, so no row was filled in. Pick a driver` +
+              ` on the rows above.`,
+          );
+          return;
+        }
         showToast(
           "success",
           `Detected ${found.length} device(s)` +
@@ -278,61 +337,154 @@ export default function EquipmentView(): JSX.Element {
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "hardware detection failed");
       } finally {
-        setBusy(false);
+        setBusyWhat(null);
       }
     })();
 
   // ------------------------------------------------------------- profiles
+  //
+  // UX review S1, the structural finding — the one authority moves.
+  //
+  // A profile now captures the CONNECTED rig: POST /api/profiles/capture, the
+  // same server-side snapshot Settings → Save Current Rig takes, so there is
+  // ONE implementation of "what a profile is made of". This browser's
+  // AssignmentMap is the FALLBACK, and only for a rig that has been picked from
+  // the dropdowns but not yet connected.
+  //
+  // Both halves of the old behaviour were measured on a live instance first:
+  //
+  //   * THE DEAD END. Connect the way the setup guide tells you to and this
+  //     browser's map is empty, so Save sat at `disabled=true`, opacity 0.35,
+  //     no title, no aria-label — beside eleven live devices. Typing a name,
+  //     pressing Enter and tapping it produced nothing at all.
+  //   * THE RIG-KILLER. The old path dropped every sim row and wrote
+  //     `primary_backend: "none"`, so a saved simulator rig persisted as
+  //     `devices: [] · mode: "empty"` — the one profile shape that resolves to
+  //     `RigSpec(primary="none", roles={})` and connects NOTHING. Capturing the
+  //     same rig writes `primary_backend: "sim"`: disconnect → activate → 10
+  //     devices back, verified against /api/status.
+  const saveSource = profileSaveSource(connectedCount, assignedCount);
+  const saveLock = profileSaveLock({
+    permission: canConfig
+      ? null
+      : `Saving a profile needs ${accessPhrase("config.backend")}.`,
+    name: profileName,
+    live: connectedCount,
+    assigned: assignedCount,
+    busy,
+  });
+
   const doSaveProfile = () =>
     void (async () => {
-      const name = profileName.trim();
-      if (!name) return;
-      // Build device rows directly (the guard narrows `a` to Assignment, so no
-      // cast is needed); sim assignments are the implicit built-in and carry no
-      // persistable driver_id, so they're excluded from the saved profile.
-      // `driver_id` is now a typed optional field on ProfileDevice (Task 5).
-      const devices: ProfileDevice[] = [];
-      for (const [role, a] of Object.entries(assignments)) {
-        if (!a || a.driverId === "sim") continue;
-        devices.push({
-          role,
-          backend: "native", // placeholder; the server resolves via driver_id
-          driver_id: a.driverId,
-          dev_type: a.devType ?? "",
-          dev_num: a.devNum ?? 0,
-          name: a.name ?? "",
-          host: "",
-          port: 0,
-          extra: {},
-        });
+      if (saveLock) {
+        showToast("warning", saveLock);
+        return;
       }
-      // Build a fully-typed Profile (real Profile has 10 required fields) rather
-      // than an `as unknown as Profile` double-cast — that would silently disable
-      // type-checking on `devices`. `id: ""` matches no stored file, so the server
-      // mints a fresh id (saveProfile contract); legacy nina/phd2/optics/site
-      // fields default to null/0 for an assignments-only profile.
-      const profile: Profile = {
-        id: "",
-        name,
-        primary_backend: "none",
-        devices,
-        nina_host: null,
-        nina_port: 0,
-        phd2_host: null,
-        phd2_port: 0,
-        optics: null,
-        site_name: null,
-        // Task-override snapshot (spec §4.4): the profile carries the CURRENT
-        // global task routing so Activate restores it (server-side precedence).
-        providers: config?.providers ? { ...config.providers } : null,
-      };
+      const name = profileName.trim();
+      setBusyWhat("save");
       try {
-        await saveProfile(profile);
+        if (saveSource === "connected-rig") {
+          const row = await captureProfile(name);
+          // The capture can only describe devices by ADDRESS (host/port/
+          // dev_type/dev_num) — that is all the server can see. Where THIS
+          // browser also knows which configured driver fills a role, stamp the
+          // driver_id on as well: the registry then re-resolves the address at
+          // connect time (a USB serial path moves between sessions) and Load
+          // can restore the dropdowns. Strictly additive and best-effort — the
+          // captured profile is already saved and already activates without it.
+          //
+          // Re-read the full record first: `captureProfile` is typed
+          // `Promise<ProfileRow>` (the list shape, no device rows), same as
+          // ProfileList's update-from-rig path does before merging.
+          let partial: string | null = null;
+          try {
+            const captured = await getProfile(row.id);
+            let enriched = false;
+            const devices = captured.devices.map((d) => {
+              const a = assignments[d.role];
+              if (!a || a.driverId === "sim" || d.driver_id) return d;
+              enriched = true;
+              return { ...d, driver_id: a.driverId };
+            });
+            if (enriched) await saveProfile({ ...captured, devices });
+          } catch {
+            partial =
+              "but which driver fills each role wasn't recorded, so Load won't " +
+              "restore the dropdowns";
+          }
+          const n = connectedCount;
+          showToast(
+            partial ? "warning" : "success",
+            `Profile "${name}" saved — the ${n} device${n === 1 ? "" : "s"} connected now` +
+              (partial ? `, ${partial}.` : ". Activate it to bring this rig back."),
+          );
+        } else {
+          // Nothing is connected: store the picks, and SAY that is what this is.
+          // Build device rows directly (the guard narrows `a` to Assignment, so
+          // no cast is needed); sim assignments are the implicit built-in and
+          // carry no persistable driver_id. `driver_id` is a typed optional
+          // field on ProfileDevice (Task 5).
+          const devices: ProfileDevice[] = [];
+          for (const [role, a] of Object.entries(assignments)) {
+            if (!a || a.driverId === "sim") continue;
+            devices.push({
+              role,
+              backend: "native", // placeholder; the server resolves via driver_id
+              driver_id: a.driverId,
+              dev_type: a.devType ?? "",
+              dev_num: a.devNum ?? 0,
+              name: a.name ?? "",
+              host: "",
+              port: 0,
+              extra: {},
+            });
+          }
+          // Build a fully-typed Profile (real Profile has 10 required fields)
+          // rather than an `as unknown as Profile` double-cast — that would
+          // silently disable type-checking on `devices`. `id: ""` matches no
+          // stored file, so the server mints a fresh id (saveProfile contract).
+          const profile: Profile = {
+            id: "",
+            name,
+            // "none" = explicit-only. Honest here (these ARE the only roles the
+            // profile knows) and no longer a trap, because Activate now states
+            // out loud when a profile puts nothing back.
+            primary_backend: "none",
+            devices,
+            nina_host: null,
+            nina_port: 0,
+            phd2_host: null,
+            phd2_port: 0,
+            optics: null,
+            site_name: null,
+            // Task-override snapshot (spec §4.4): the profile carries the
+            // CURRENT global task routing so Activate restores it.
+            providers: config?.providers ? { ...config.providers } : null,
+          };
+          await saveProfile(profile);
+          showToast(
+            devices.length > 0 ? "success" : "warning",
+            devices.length > 0
+              ? `Profile "${name}" saved — ${devices.length} picked slot` +
+                  `${devices.length === 1 ? "" : "s"}, not yet proven. Connect the rig, ` +
+                  `then save again to store what actually came up.`
+              : `Profile "${name}" saved, but every pick is the built-in simulator, ` +
+                  `which a profile can't address — it will connect nothing. Connect the ` +
+                  `rig first, then save.`,
+          );
+        }
         setProfileName("");
         void reloadProfiles();
-        showToast("success", `Profile "${name}" saved`);
       } catch (e) {
-        showToast("error", e instanceof Error ? e.message : "profile save failed");
+        const msg =
+          e instanceof ApiError && e.status === 409
+            ? "The rig disconnected before the snapshot — reconnect, then save."
+            : e instanceof Error
+              ? e.message
+              : "profile save failed";
+        showToast("error", msg);
+      } finally {
+        setBusyWhat(null);
       }
     })();
 
@@ -369,6 +521,49 @@ export default function EquipmentView(): JSX.Element {
         showToast("success", `Loaded assignments from "${p.name}" — review, then Connect`);
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "profile load failed");
+      }
+    })();
+
+  // ACTIVATE, gated on what it DROPS (UX review S1, the novice's catastrophe).
+  //
+  // This button had NO confirmation at all — not even the `resolvesRealMotion`
+  // one Settings → Profiles carries. Every activate runs `hub._teardown()`
+  // first (`hub.py::_connect_rigspec_unlocked`), so on a live rig it is a
+  // destructive action wearing a play glyph. MEASURED: 10 devices connected,
+  // one tap, no dialog, 0 devices — and the profile it activated stored
+  // nothing, so there was nothing to come back. On the step the setup guide had
+  // just described as how you get your rig back.
+  //
+  // The predicate is now the live rig, not the profile's hardware. The full
+  // profile is fetched first so the dialog can say whether anything reconnects
+  // (`profileConnectsNothing`) — the same "ask the server, don't trust the
+  // render" instinct ProfileList's delete path already uses.
+  const doActivateProfile = (row: ProfileRow) =>
+    void (async () => {
+      let full: Profile | null = null;
+      try {
+        full = await getProfile(row.id);
+      } catch {
+        /* fall through: still confirm on the teardown, just without the
+           "puts nothing back" escalation we could not verify */
+      }
+      const seqState = useStore.getState().sequence?.state;
+      const spec = profileActivateConfirm({
+        name: row.name,
+        connectsNothing: full ? profileConnectsNothing(full) : false,
+        realMotion: full
+          ? profileResolvesRealMotion(full)
+          : row.mode !== "empty" && row.mode !== "alpaca",
+        liveDevices: connectedCount,
+        sequenceRunning: seqState === "running" || seqState === "paused",
+      });
+      if (spec && !(await confirmDialog(spec))) return;
+      try {
+        await activateProfile(row.id);
+        showToast("success", "Profile activating — watch the link grid");
+        void reloadProfiles();
+      } catch (e) {
+        showToast("error", e instanceof Error ? e.message : "activate failed");
       }
     })();
 
@@ -501,7 +696,10 @@ export default function EquipmentView(): JSX.Element {
               onClick={assignedCount === 0 ? undefined : () => void doConnect()}
             >
               <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
-              {busy ? "Working…" : `Connect Rig (${assignedCount})`}
+              {/* #18: the progress label belongs on the button that is doing the
+                  work. It used to read "Working…" here for a scan started three
+                  controls away. */}
+              {busyWhat === "connect" ? "Connecting…" : `Connect Rig (${assignedCount})`}
             </button>
             {assignedCount === 0 && canConfig && (
               <span className="text-[11px] text-dim">
@@ -512,10 +710,10 @@ export default function EquipmentView(): JSX.Element {
               ▶ Simulator rig
             </button>
             <button type="button" className={`btn ${assignedCount === 0 ? "btn-accent" : ""}`} disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
-              ▶ Detect hardware rig
+              {busyWhat === "scan" ? "Scanning USB & serial…" : "▶ Detect hardware rig"}
             </button>
             <button type="button" className="btn btn-danger" disabled={busy || !canConfig} onClick={doDisconnect}>
-              Disconnect
+              {busyWhat === "disconnect" ? "Disconnecting…" : "Disconnect"}
             </button>
             {hasRealMotion(assignments, drivers) && (
               <span className="text-[11px] text-warn inline-flex items-center gap-1">
@@ -551,9 +749,23 @@ export default function EquipmentView(): JSX.Element {
           )}
         </Panel>
 
-        <Panel title="Profiles" right={<span className="label text-dim">assignments, saved</span>}>
+        {/* The panel chip states the ONE thing the list cannot show and the
+            whole of S1 turns on: a profile lives on the controller, the
+            dropdown picks live in this browser. */}
+        <Panel title="Profiles" right={<span className="label text-dim">kept on the controller</span>}>
           <div className="flex flex-wrap items-end gap-2">
-            <Field label="Save current assignments as">
+            {/* The field label names what will actually be stored, because the
+                two sources describe different rigs and the old label named the
+                wrong one whenever a rig was connected from anywhere else. */}
+            <Field
+              label={
+                saveSource === "connected-rig"
+                  ? `Save the ${connectedCount} connected device${connectedCount === 1 ? "" : "s"} as`
+                  : saveSource === "assignments"
+                    ? "Save the picks above as"
+                    : "Save this rig as"
+              }
+            >
               <input
                 className="field !py-1 w-[180px]"
                 placeholder="Backyard rig"
@@ -561,15 +773,26 @@ export default function EquipmentView(): JSX.Element {
                 onChange={(e) => setProfileName(e.target.value)}
               />
             </Field>
-            <button
-              type="button"
-              className="btn !py-1.5"
-              disabled={!canConfig || !profileName.trim() || assignedCount === 0 || busy}
+            {/* House rule §11.8: never the native `disabled` attribute here.
+                This was the review's clearest dead end — `disabled=true`,
+                opacity 0.35, no title, no aria-label, no reason anywhere on
+                screen, next to a live eleven-device rig. HonestButton stays
+                pressable and ANSWERS. */}
+            <HonestButton
+              className="btn !py-1.5 min-h-11"
+              reason={saveLock}
               onClick={doSaveProfile}
+              onExplain={(r) => showToast("warning", r)}
             >
-              Save
-            </button>
+              {busyWhat === "save" ? "Saving…" : "Save"}
+            </HonestButton>
           </div>
+          {saveLock && (
+            <p className="text-[11px] text-dim mt-2 inline-flex items-start gap-1.5 leading-snug">
+              <Icon name="lock" size={11} className="shrink-0 mt-0.5" />
+              <span>{saveLock}</span>
+            </p>
+          )}
           {profiles && profiles.length > 0 && (
             <div className="mt-3 flex flex-col gap-1.5">
               {profiles.map((p) => (
@@ -578,25 +801,39 @@ export default function EquipmentView(): JSX.Element {
                     {p.name}
                     {p.active && <span className="label text-accent ml-2">ACTIVE</span>}
                   </span>
-                  <button type="button" className="btn !py-1 !px-2 text-[10px]" disabled={busy} onClick={() => doLoadProfile(p.id)}>
+                  <button type="button" className="btn min-h-11 !py-1 !px-2 text-[10px]" disabled={busy} onClick={() => doLoadProfile(p.id)}>
                     Load
                   </button>
-                  <button
-                    type="button"
-                    className="btn !py-1 !px-2 text-[10px]"
-                    disabled={busy || !canConfig}
-                    onClick={() =>
-                      void activateProfile(p.id).then(
-                        () => showToast("success", "Profile activating — watch the link grid"),
-                        (e: unknown) => showToast("error", e instanceof Error ? e.message : "activate failed"),
-                      )
+                  {/* House rule §11.8 again: this one carried a PERMISSION in
+                      a native `disabled`, so a viewer got a grey rectangle
+                      that did nothing and could not be focused to ask why. */}
+                  <HonestButton
+                    className="btn min-h-11 !py-1 !px-2 text-[10px]"
+                    reason={
+                      !canConfig
+                        ? `Activating a profile needs ${accessPhrase("config.backend")}.`
+                        : busy
+                          ? "A rig action is already running — wait for it to finish."
+                          : null
                     }
+                    onClick={() => doActivateProfile(p)}
+                    onExplain={(r) => showToast("warning", r)}
                   >
                     Activate
-                  </button>
+                  </HonestButton>
                 </div>
               ))}
             </div>
+          )}
+          {connectedCount > 0 && (
+            <p className="text-[11px] text-dim mt-3 inline-flex items-start gap-1.5 leading-snug">
+              <Icon name="alert" size={11} className="shrink-0 mt-0.5" />
+              <span>
+                Activating drops the {connectedCount} device
+                {connectedCount === 1 ? "" : "s"} running now before it connects
+                anything — it is a swap, not an addition.
+              </span>
+            </p>
           )}
         </Panel>
       </div>
@@ -631,16 +868,31 @@ function RoleSlot({
   disabled: boolean;
   onAssign: (a: Assignment | null) => void;
 }): JSX.Element {
-  void link; // live truth reflected via status.connected + result LED; link is
-  // surfaced in the side Link Status grid.
   const eligible = eligibleDrivers(role, drivers);
   const state = slotState(role, assignment, drivers);
   const chosen = assignment ? drivers.find((d) => d.id === assignment.driverId) : undefined;
   const choices = chosen ? deviceChoices(role, chosen) : [];
-  const connectedName = status?.connected?.[role]?.connected
+  // UX review S1, the two-panels-disagree half. This row used to `void link`
+  // and read liveness ONLY from `status.connected`, while the Link Status grid
+  // three inches away read `backend_links`. For every device those agree — but
+  // the GUIDER has no `connected` entry at all (the guiding engine is not a
+  // device in that map), so the row printed "GUIDING · UNASSIGNED" beside a
+  // green ✓ "GUIDING · CONNECTED" in the grid, on the night's load-bearing
+  // question. MEASURED on /api/status: `connected` has no `guider` key while
+  // `backend_links` carries `{role:"guider", ok:true, connected:true}`.
+  //
+  // `backend_links[].connected` is NOT a stale echo of the last connect — the
+  // server recomputes it per status frame from `_role_live_connected` (device
+  // OR engine, hub.py::backend_links), which is exactly the authority the grid
+  // trusts. Both surfaces now read it, so they cannot disagree.
+  const deviceName = status?.connected?.[role]?.connected
     ? status.connected[role].name
     : null;
-  const led = connectedName ? "on" : result && result.attempted && !result.ok ? "bad" : "off";
+  const linkUp = !!link?.connected;
+  const live = !!deviceName || linkUp;
+  const connectedName =
+    deviceName ?? (linkUp && role === "guider" ? status?.guider?.name ?? null : null);
+  const led = live ? "on" : result && result.attempted && !result.ok ? "bad" : "off";
 
   // UX review #41: a rig connected from ANYWHERE other than this screen (the
   // one-tap sim connect, a boot profile, Profiles → Activate) leaves the row's
@@ -650,7 +902,7 @@ function RoleSlot({
   // word was, because it described a different axis. When the two disagree the
   // row now says what is actually true — CONNECTED — and explains, once, why
   // the dropdown is still empty.
-  const liveButUnassigned = !!connectedName && state === "unassigned";
+  const liveButUnassigned = live && state === "unassigned";
   const meta = liveButUnassigned
     ? { word: "CONNECTED", tone: "text-good" }
     : SLOT_WORD[state];
@@ -787,6 +1039,13 @@ function FilterSlotsEditor({
   const [open, setOpen] = useState(false);
   const showToast = useStore((s) => s.showToast);
   const offsetsSet = offsets.some((o) => o !== 0);
+  // UX review #4, the parent half. An inline `onClose={() => setOpen(false)}`
+  // is a new function identity on every render of this component — and this
+  // component re-renders on every device-status frame, several times a second.
+  // FilterNamesModal is now immune to that on its own terms, but a modal's
+  // close handler is genuinely a stable thing and passing a fresh one down
+  // every frame is what armed the trap in the first place.
+  const close = useCallback(() => setOpen(false), []);
   return (
     <div className="mt-2 pl-[23px] flex items-center gap-2 flex-wrap text-[11px]">
       <button
@@ -804,7 +1063,7 @@ function FilterSlotsEditor({
       </span>
       <FilterNamesModal
         open={open}
-        onClose={() => setOpen(false)}
+        onClose={close}
         names={names}
         offsets={offsets}
         position={position}
