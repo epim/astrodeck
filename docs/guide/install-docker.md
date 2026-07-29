@@ -75,9 +75,15 @@ docker buildx build --platform linux/arm64 -t astrodeck:arm64 .
 ```
 
 **Verified so far:** the amd64 image is built, run and checked end-to-end
-(health, UI, assets). The arm64 image has not yet been run on real Pi hardware —
-if you get there first, the failure mode worth reporting is anything at build
-time, since the runtime is identical Python.
+(health, UI, assets). The arm64 image has not yet been run on Pi hardware — if
+you get there first, the failure worth reporting is anything at *build* time,
+since the runtime is identical Python either way.
+
+On an Apple-silicon Mac the arm64 build is worth doing even without a Pi to hand:
+Docker runs arm64 Linux natively there rather than under emulation, so
+`docker buildx build --platform linux/arm64 .` both builds and *runs* the real
+Pi image at full speed. That is a genuine check; QEMU on an x86 machine often is
+not, and on some setups cannot execute arm64 binaries at all.
 
 ## Notes
 
