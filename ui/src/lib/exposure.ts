@@ -19,6 +19,20 @@ export function isExposureValueInvalid(n: number): boolean {
   return !Number.isFinite(n) || n <= 0 || n > EXPOSURE_MAX_S;
 }
 
+/** A BIAS frame is the shortest read the sensor can do, so 0 is its correct
+ *  exposure, not a mistake — `calibrationLibrary` already drops the exposure
+ *  from a bias master's summary for the same reason. The plain bounds check
+ *  above rejected it, which blocked the whole RUN on a legitimate calibration
+ *  plan and 422'd only at the end. Every other frame type still needs a real
+ *  exposure: a 0-second dark or flat IS a mistake. Callers holding a step
+ *  should use this rather than the bare numeric check. */
+export function isStepExposureInvalid(n: number, frameType?: string): boolean {
+  if ((frameType ?? "Light") === "Bias") {
+    return !Number.isFinite(n) || n < 0 || n > EXPOSURE_MAX_S;
+  }
+  return isExposureValueInvalid(n);
+}
+
 export function isExposureInvalid(raw: string): boolean {
   return raw.trim() === "" || isExposureValueInvalid(Number(raw));
 }

@@ -28,7 +28,7 @@ import { PreflightStrip, usePreflight } from "../components/PreflightStrip";
 import { PreflightModal } from "../components/PreflightModal";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
-import { EXPOSURE_MAX_S, isExposureValueInvalid } from "../lib/exposure";
+import { EXPOSURE_MAX_S, isStepExposureInvalid } from "../lib/exposure";
 import {
   integrationByFilter, skyElectronsPerSub, skyRateEPerSec, skyLimitedSubSeconds,
   subLengthVerdict, type SubVerdict,
@@ -878,7 +878,7 @@ export default function SequenceView() {
                     // and only 422'd at Run (CaptureView's manual field has had this
                     // guard since CAP-02-gemini/R3-CAP-02; the step editor didn't).
                     // Same bounds as CaptureView, via the shared lib/exposure.ts helper.
-                    const stepExposureInvalid = isExposureValueInvalid(s.exposure_s);
+                    const stepExposureInvalid = isStepExposureInvalid(s.exposure_s, s.frame_type);
                     // PRO-6 sky-limited advisory (photometry/SNR design §3 Task 5):
                     // compares THIS step's own exposure_s against the single
                     // preview-derived sky-limited length (stepSkyLimitedS, computed
@@ -1029,11 +1029,26 @@ export default function SequenceView() {
                   {/* (the column-caption row that used to live HERE — below the
                       last step — is gone: every field now carries its own
                       caption inline, which is what fixes #26 at narrow widths.) */}
-                  {t.steps.some((s) => isExposureValueInvalid(s.exposure_s)) && (
-                    <p className="text-[11px] text-bad">
-                      Exposure must be 0–{EXPOSURE_MAX_S}s — fix the highlighted step(s) before running.
-                    </p>
-                  )}
+                  {(() => {
+                    // Name the offending steps. "fix the highlighted step(s)" is
+                    // a fine instruction on a 3-step plan and useless on a 12-step
+                    // one, where finding the red border means scrolling the grid
+                    // hunting for it. The rule is also frame-type aware now: a
+                    // BIAS step is legitimately 0s.
+                    const bad = t.steps
+                      .map((s, i) => ({ s, i }))
+                      .filter(({ s }) => isStepExposureInvalid(s.exposure_s, s.frame_type));
+                    if (!bad.length) return null;
+                    const named = bad
+                      .map(({ s, i }) =>
+                        `step ${i + 1} (${s.frame_type || "Light"}${s.filter ? ` ${s.filter}` : ""})`)
+                      .join(", ");
+                    return (
+                      <p className="text-[11px] text-bad">
+                        Exposure must be 1–{EXPOSURE_MAX_S}s, or 0 for a Bias frame. Fix {named}.
+                      </p>
+                    );
+                  })()}
                 </div>
                 {/* Per-target autorun schedule (wave-3 §1,6) — collapsed below the
                     steps grid; tolerates a legacy target with no schedule via the

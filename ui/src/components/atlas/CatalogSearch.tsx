@@ -22,6 +22,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../api";
 import type { CatalogEntry } from "../../types";
 import { catalogScopeHint } from "../../lib/catalogHint";
+import { Icon } from "../icons";
 
 /** Movement (CSS px) allowed between pointerdown and pointerup before the
  *  gesture stops being a tap. A finger never lands perfectly still; a scroll
@@ -106,6 +107,11 @@ export function CatalogSearch({
   // `No matches for "m31" — try a name or ID (e.g. M31)`. Only the newest
   // query may write results.
   const queryId = useRef(0);
+  // A failed FETCH is not an empty RESULT. Flattening the catch branch into []
+  // made a dead catalog endpoint read as `No matches for "m31"` — a confident,
+  // plausible, wrong answer that sends the user off rechecking their spelling
+  // while the real problem is the link to the box. Track it and say so.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setDismissed(false);
@@ -117,15 +123,16 @@ export function CatalogSearch({
     setSearching(true);
     const t = setTimeout(async () => {
       let next: CatalogEntry[];
+      let broke = false;
       try {
         next = (await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6);
       } catch {
-        // transient search errors read the same as "no matches" below — the
-        // zero-state still gives the user a next step instead of dead air.
         next = [];
+        broke = true;
       }
       if (queryId.current !== id) return; // a newer query owns the field now
       setResults(next);
+      setFailed(broke);
       setSearching(false);
     }, 250);
     return () => clearTimeout(t);
@@ -247,8 +254,23 @@ export function CatalogSearch({
             ))
           ) : (
             <div className="px-3 py-2 text-xs flex flex-col gap-1">
-              <p className="text-ink">No matches for &quot;{search.trim()}&quot;.</p>
-              <p className="text-dim">{catalogScopeHint(search)}</p>
+              {failed ? (
+                <>
+                  <p className="text-warn inline-flex items-center gap-1.5">
+                    <Icon name="alert" size={12} aria-hidden />
+                    Couldn&apos;t reach the catalog.
+                  </p>
+                  <p className="text-dim">
+                    That is the connection to the telescope, not your spelling. Keep typing to
+                    retry.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-ink">No matches for &quot;{search.trim()}&quot;.</p>
+                  <p className="text-dim">{catalogScopeHint(search)}</p>
+                </>
+              )}
             </div>
           )}
         </div>

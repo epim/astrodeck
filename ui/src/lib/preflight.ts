@@ -11,7 +11,7 @@ import type {
   SiteInfo,
   Target,
 } from "../types";
-import { isExposureValueInvalid } from "./exposure";
+import { isStepExposureInvalid } from "./exposure";
 import { planCalibrationGaps, type MasterRow } from "./calibrationLibrary";
 
 /** In-place fix callbacks the readiness rows can invoke without leaving the view. */
@@ -294,11 +294,12 @@ export function buildPreflight(
   // sailed through the step editor with zero validation — unlike CaptureView's
   // manual field — and only 422'd at Run, surfacing as a raw error blob
   // (apiError.ts). Block Run here instead, before the request is even built;
-  // reuses CaptureView's own bounds (isExposureValueInvalid/EXPOSURE_MAX_S)
+  // reuses the shared bounds (isStepExposureInvalid/EXPOSURE_MAX_S), which
+  // are frame-type aware so a legitimate 0s BIAS step never blocks a run
   // so the two surfaces can never silently disagree on what's valid.
   const badExposureSteps = plan.targets.flatMap((t) =>
     t.steps
-      .filter((s) => isExposureValueInvalid(s.exposure_s))
+      .filter((s) => isStepExposureInvalid(s.exposure_s, s.frame_type))
       .map((s) => `${t.name}${s.filter ? ` (${s.filter})` : ""}: ${s.exposure_s}s`),
   );
   if (badExposureSteps.length > 0)
