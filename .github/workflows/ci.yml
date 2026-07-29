@@ -100,13 +100,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       # native/ was ~4 of the ~14 billed minutes per run, almost all of it
       # recompiling unchanged crates. This is the single biggest saving.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native
-        with:
-          components: clippy, rustfmt
       - name: cargo fmt
         working-directory: native
         run: cargo fmt --all -- --check
