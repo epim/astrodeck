@@ -95,7 +95,10 @@ async def nina_hub(monkeypatch, tmp_path):
 async def test_nina_filter_offsets_loaded(nina_hub):
     h, _ = nina_hub
     fw = h.devices["filterwheel"]
-    assert fw.filter_offsets == [0, 12, 10, 15, 120, 110, 115]
+    # The mock NINA rig serves the sim wheel's slots verbatim, so it carries the
+    # sim's 8th (blackout) slot too. A blackout slot's offset is a placeholder
+    # zero — it passes no light, so there is nothing to focus through.
+    assert fw.filter_offsets == [0, 12, 10, 15, 120, 110, 115, 0]
 
 
 async def test_meridian_flip_mechanism(nina_hub):

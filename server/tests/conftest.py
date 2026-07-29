@@ -60,6 +60,41 @@ def _fast_sim_delays(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _never_touch_the_real_config():
+    """Point the process-wide ``config_store`` at a throwaway file for the WHOLE
+    session, so no test can read or write the developer's real
+    ``server/config/astrodeck.json``.
+
+    This closed two problems at once, both observed for real on 2026-07-29:
+
+    1. A route test whose isolation helper patched only ``config.config_store``
+       left ``api.app`` (which did ``from ..config import config_store`` at
+       import time) writing to the REAL store. The suite went green while
+       quietly persisting its fixtures — a 17.5 degree altitude floor, a -18
+       degree twilight, an invented focal length — into the developer's config.
+    2. Because a dozen session/resume tests read that same real store, the
+       injected floor then made ~25 unrelated tests fail. The failures pointed
+       at sequencing code that was completely innocent, and reproduced only on
+       that one machine.
+
+    A per-test store would be better still, but the singleton is bound by name
+    in several modules; redirecting the PATH is the one move that is correct no
+    matter which module a test reaches it through. Tests that want their own
+    isolated store keep building one (``ConfigStore(path=tmp_path/...)``) — this
+    only guarantees the shared fallback is never the real file."""
+    import tempfile
+    import astrodeck.config as config_mod
+    real = config_mod.config_store._path
+    with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
+        config_mod.config_store._path = Path(d) / "astrodeck.json"
+        config_mod.config_store._cfg = None      # drop anything already loaded
+        assert config_mod.config_store._path != real
+        yield
+    config_mod.config_store._path = real
+    config_mod.config_store._cfg = None
+
+
 @pytest.fixture(autouse=True)
 def _reset_hub_singleton_locks():
     """Test-isolation seam: ``astrodeck.hub.hub`` is a process-wide singleton, but

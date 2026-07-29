@@ -183,11 +183,50 @@ def interp_wrap(horizon: list[tuple[float, float]] | None, az: float) -> float:
     return pts[0][1]
 
 
+def nogo_floor(nogo_box: list[dict] | None, az: float) -> float:
+    """The floor imposed by no-go wedges at azimuth ``az``; 0.0 outside them all.
+
+    A wedge is ``{"az_min", "az_max", "alt_max"}``: inside the azimuth range, the
+    mount must stay ABOVE ``alt_max``. This is a HARD-EDGED obstruction (a pier,
+    a wall, the neighbour's roof) — distinct from ``horizon``, whose control
+    points interpolate, so a pier at az 180 would bleed a sloping floor across
+    the whole southern sky. Overlapping wedges take the highest floor.
+
+    Wraps the 0↔360 seam: ``az_min=350, az_max=10`` is the 20° wedge through
+    due north, not the 340° complement.
+    """
+    if not nogo_box:
+        return 0.0
+    az = float(az) % 360.0
+    floor = 0.0
+    for box in nogo_box:
+        try:
+            a0 = float(box["az_min"]) % 360.0
+            a1 = float(box["az_max"]) % 360.0
+            alt = float(box["alt_max"])
+        except (KeyError, TypeError, ValueError):
+            continue        # a malformed wedge is ignored, never a crash mid-run
+        span = (a1 - a0) % 360.0
+        # A zero span is a degenerate wedge (az_min == az_max). Treat it as the
+        # FULL circle rather than an empty one: the alternative silently drops a
+        # guard the user believes is armed.
+        if span == 0.0 or (az - a0) % 360.0 <= span:
+            floor = max(floor, alt)
+    return floor
+
+
 def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | None,
-                    az: float) -> float:
-    """``max(min_alt_deg, interp_wrap(horizon, az))`` — the floor a target must
-    clear at azimuth ``az`` (C2-3)."""
-    return max(float(min_alt_deg), interp_wrap(horizon, az))
+                    az: float, nogo_box: list[dict] | None = None) -> float:
+    """``max(min_alt_deg, interp_wrap(horizon, az), nogo_floor(nogo_box, az))`` —
+    the floor a target must clear at azimuth ``az`` (C2-3).
+
+    The ``nogo_box`` term was specified with the rest of the safety block but
+    never wired: the field persisted, the UI never showed it, and nothing read
+    it, so a user who configured a pier guard had none. It defaults to None so
+    every existing caller keeps its exact previous answer.
+    """
+    return max(float(min_alt_deg), interp_wrap(horizon, az),
+               nogo_floor(nogo_box, az))
 
 
 # --------------------------------------------------------------------- windows
