@@ -10,7 +10,11 @@ From the [latest release](https://github.com/epim/astrodeck/releases/latest):
 |---|---|
 | Windows | `astrodeck-windows-x86_64.exe` |
 | Linux (Intel/AMD) | `astrodeck-linux-x86_64` |
+| Linux on ARM — Raspberry Pi 4/5, 64-bit OS | `astrodeck-linux-arm64` |
 | Mac (Apple silicon) | `astrodeck-macos-arm64` |
+
+On a Pi, check you are on a 64-bit OS first — `uname -m` must say `aarch64`. A
+32-bit Raspberry Pi OS reports `armv7l` and none of these will run on it.
 
 Each has a `.sha256` beside it. Checking it takes a second and tells you the
 download is intact:
@@ -131,5 +135,29 @@ python packaging/build_binary.py
 
 Builds the UI, installs the server, produces `dist/astrodeck`, then starts it and
 checks that it serves — because a binary that builds and does not run is the
-normal failure here. PyInstaller cannot cross-compile, so you get a binary for
-the machine you built on.
+normal failure here.
+
+**PyInstaller cannot cross-compile.** You get a binary for the OS *and*
+architecture you built on, and there is no flag that changes that. In particular
+an Apple-silicon Mac produces a macOS arm64 binary, not a Linux arm64 one: same
+instruction set, different OS, libc and bootloader. Testing one says nothing
+about the other.
+
+### Building the Raspberry Pi binary without a Pi
+
+On an Apple-silicon Mac, Docker runs arm64 Linux *natively* in its VM rather than
+under emulation, so an arm64 Linux container builds this at full speed:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src --platform linux/arm64 python:3.12-slim \
+  sh -c "apt-get update -qq && apt-get install -y -qq curl binutils \
+         && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+         && apt-get install -y -qq nodejs \
+         && python packaging/build_binary.py"
+```
+
+`dist/astrodeck` is then a Linux arm64 binary. Copy it to the Pi and run it.
+
+The same command works on an Intel machine but goes through QEMU, which is slow
+enough (tens of minutes) that building on the Pi itself is usually the better
+trade.
