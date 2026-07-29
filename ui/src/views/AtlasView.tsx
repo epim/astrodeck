@@ -56,7 +56,7 @@ import { SurveyControls } from "../components/atlas/SurveyControls";
 import { VisibilityPanel } from "../components/atlas/VisibilityPanel";
 import { CatalogSearch } from "../components/atlas/CatalogSearch";
 import { TonightPicker } from "../components/atlas/TonightPicker";
-import { Panel, Stat, Stepper, EmptyState, LockedChip } from "../components/ui";
+import { Panel, Stat, Stepper, EmptyState, HonestButton, LockedChip } from "../components/ui";
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
@@ -97,6 +97,27 @@ function fmtAngle(deg: number): string {
 // Empty-state shell when the Atlas is reached with no active session (e.g. direct
 // nav before picking an object). Search opens a fresh session; free-roam opens
 // centered on the mount/0,0.
+//
+// UX-2026-07-28 S5 (measured 606px wide on 390/412/440 phones, `main` is
+// overflow-x-hidden so the right 216px was UNREACHABLE by any gesture): this card
+// had NO definite width, and two separate shrink-to-fit chains then sized it from
+// its own content instead of from the screen.
+//
+//   1. the wrapper was `grid place-items-center`. An implicit grid track is
+//      auto-sized to its item's MAX-CONTENT, so the track grew past the 390px
+//      column and `max-w-xl` merely capped the damage at 576. (`w-full` alone
+//      does not help — 100% then resolves against that 576px track. Measured:
+//      still 606.)
+//   2. `.empty-state` (ui.tsx) is a column flex with `align-items: center`, so
+//      whatever is passed as `action` is shrink-to-fit too — and the picker
+//      rows' `truncate` (white-space: nowrap) gives that subtree a 472px
+//      MIN-content, which a shrink-to-fit parent must honour. Measured: fixing
+//      only the wrapper still left main.scrollWidth 431 on a 390px phone.
+//
+// So the actions are a plain block child of the card, not EmptyState's `action`
+// slot: a block inherits the card's DEFINITE width, and inside a definite width
+// flex shrinking does its job and the rows ellipsise instead of pushing.
+// EmptyState keeps what it is for — icon, title, hint.
 function AtlasEmpty({
   onFreeRoam,
   onPick,
@@ -105,24 +126,26 @@ function AtlasEmpty({
   onPick: (e: CatalogEntry) => void;
 }): JSX.Element {
   return (
-    <div className="grid place-items-center min-h-[60vh] p-4">
-      <div className="panel p-8 max-w-xl text-center">
+    <div className="flex items-center justify-center min-h-[60vh] p-4">
+      <div className="panel w-full max-w-xl p-4 sm:p-8 text-center">
         <EmptyState
           icon="atlas"
           title="Frame a target"
           hint="Search a target right here, pick one from the Mount catalog, or free-roam the sky. Overlay your camera's field, plan a mosaic, and check tonight's visibility."
-          action={
-            <div className="flex flex-col items-center gap-3 mt-2">
-              <CatalogSearch onPick={onPick} placeholder="Search catalog — e.g. M 31" />
-              <button type="button" className="btn btn-accent btn-touch" onClick={onFreeRoam}>
-                Free-roam the sky
-              </button>
-              <div className="w-full mt-2 pt-3 border-t border-line2">
-                <TonightPicker onPick={onPick} />
-              </div>
-            </div>
-          }
         />
+        <div className="flex flex-col gap-3 mt-1">
+          <CatalogSearch
+            onPick={onPick}
+            placeholder="Search catalog — e.g. M 31"
+            className="w-full"
+          />
+          <button type="button" className="btn btn-accent btn-touch w-full" onClick={onFreeRoam}>
+            Free-roam the sky
+          </button>
+          <div className="mt-2 pt-3 border-t border-line2">
+            <TonightPicker onPick={onPick} />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -660,6 +683,17 @@ export default function AtlasView(): JSX.Element {
     }
   };
 
+  // Why "add to plan" is locked, as a sentence a finger can be told. Ordered by
+  // what the user has to do about it: a run in progress is a wait, missing optics
+  // is a field to fill. Null = the control is live.
+  const sendLock = seqRunning
+    ? "A run is in progress. It fixed its target list when it started, so anything added now would sit in the plan unshot — stop the run, then add this."
+    : !haveOptics
+      ? `No frame size yet, so there is nothing to place on the sky. Still missing: ${missingOpticsFields(
+          mergedOptics,
+        ).join(", ")} — fill those in at the top of this page, or connect the camera and it fills them for you.`
+      : null;
+
   // Honest-disabled reason (§11.8) — dim + aria-disabled + a STATED reason, never
   // the native `disabled` attribute and never `title=` as the only channel.
   const gotoReason = !mountConnected
@@ -1081,16 +1115,18 @@ export default function AtlasView(): JSX.Element {
                 </div>
               )}
 
-              <button
-                type="button"
+              {/* House rule §11.8: the one forward control on this panel used the
+                  native `disabled` attribute with its reason only in `title=` —
+                  which never fires on the phone and tablet this page is used
+                  from, so a finger got a dead button and no sentence. It stays
+                  pressable and ANSWERS now; the two static banners on this page
+                  already carry the standing explanation, so pressing it adds the
+                  one thing they don't — that THIS tap did nothing, and why. */}
+              <HonestButton
                 className="btn btn-accent btn-touch w-full"
-                disabled={!haveOptics || seqRunning || sending}
-                title={
-                  seqRunning
-                    ? "Stop the running sequence before adding targets"
-                    : !haveOptics
-                      ? "Set a focal length first"
-                      : undefined
+                reason={sendLock}
+                onExplain={(r) =>
+                  enqueueToast({ level: "warning", title: "Not added to the plan", detail: r })
                 }
                 onClick={() => void sendToPlan()}
               >
@@ -1099,7 +1135,7 @@ export default function AtlasView(): JSX.Element {
                   : panelCount > 1
                     ? `Send ${panelCount} panels to Plan`
                     : "Add target to Plan"}
-              </button>
+              </HonestButton>
               {seqRunning && (
                 <p className="text-[12px] text-warn leading-snug">
                   A sequence is running — the engine snapshots its plan at start,
