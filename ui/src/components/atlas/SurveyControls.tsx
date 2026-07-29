@@ -114,10 +114,11 @@ export function SurveyControls(props: SurveyControlsProps): JSX.Element {
         <button type="button" className="btn btn-touch" onClick={fitObject}>
           Fit object
         </button>
-        <div
-          className="flex items-center gap-2"
-          title="Zooms the sky view to what your camera will capture (with a little margin). Turn off to go back to your previous zoom."
-        >
+        {/* No `title=` on this row: it carried the same sentence as the InfoDot
+            beside it, and a native tooltip never fires on the phone or tablet
+            this page is driven from — so it was a duplicate that only desktop
+            could see. The InfoDot has a tap path, a keyboard path and Escape. */}
+        <div className="flex items-center gap-2">
           <span className="label inline-flex items-center gap-1">
             Match camera
             <InfoDot

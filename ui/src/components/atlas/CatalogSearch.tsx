@@ -18,7 +18,7 @@
 // Until that landed the placeholder's own example, "M 31", returned
 // "No matches", which is why the default placeholder below carries it too.
 
-import { useEffect, useRef, useState, type JSX } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from "react";
 import { api } from "../../api";
 import type { CatalogEntry } from "../../types";
 import { catalogScopeHint } from "../../lib/catalogHint";
@@ -45,12 +45,45 @@ export function outsideTapDismisses(
   return Math.hypot(up.x - down.x, up.y - down.y) <= slop;
 }
 
+/** Gap kept between the suggestion list and the edge of the screen. */
+export const DROPDOWN_EDGE_MARGIN_PX = 8;
+
+/** How far LEFT the suggestion list has to move to stay on screen.
+ *
+ *  UX-2026-07-28 S5, measured on an 820px tablet in the Plan: the field sits at
+ *  x=563, the list is anchored to the field's left edge and is 288px wide, so it
+ *  ran to 851 — 31px past the screen, taking the altitude badge (the number you
+ *  choose the target BY) with it. The list is not scrollable sideways and the
+ *  page clips, so those pixels were unreachable, not merely ugly.
+ *
+ *  Pure, and pinned by a test, because the interesting cases are the ones that
+ *  must NOT move: shifting a list that already fits would drag it off the other
+ *  edge instead. Never shifts further than the anchor's own distance from the
+ *  left edge. */
+export function dropdownShiftPx(
+  rootLeft: number,
+  width: number,
+  viewportWidth: number,
+  margin: number = DROPDOWN_EDGE_MARGIN_PX,
+): number {
+  const overhang = rootLeft + width + margin - viewportWidth;
+  if (!(overhang > 0)) return 0;
+  return Math.min(overhang, Math.max(0, rootLeft - margin));
+}
+
 export function CatalogSearch({
   onPick,
   placeholder = "Search catalog — e.g. M 31",
+  className = "w-56",
 }: {
   onPick: (e: CatalogEntry) => void;
   placeholder?: string;
+  /** Width of the whole widget. `.field` is 100% wide in unlayered CSS (which
+   *  beats a Tailwind utility on the input itself), so the width has to be set
+   *  on the wrapper. The 224px default is what every in-a-toolbar caller had
+   *  hard-coded; the Atlas empty-state card passes `w-full` so the field is as
+   *  wide as the card on a phone instead of a 224px island in the middle. */
+  className?: string;
 }): JSX.Element {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
@@ -60,6 +93,10 @@ export function CatalogSearch({
   // result (which clears search directly). Mirrors ui.tsx's Tooltip.
   const [dismissed, setDismissed] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+  // px the suggestion list is nudged left so it cannot run off the screen. 0 in
+  // every layout that already fits (see dropdownShiftPx).
+  const [dropShift, setDropShift] = useState(0);
   // Monotonic query id. `clearTimeout` only cancels a debounce that has not
   // fired yet — a request already ON THE WIRE still lands and still writes.
   // On a phone talking to a Pi over patchy WiFi that is routine, and the
@@ -101,6 +138,23 @@ export function CatalogSearch({
   };
 
   const showDropdown = search.trim().length > 0 && !dismissed;
+
+  // Keep the suggestion list on the screen (see dropdownShiftPx). Measured from
+  // the ANCHOR's left edge and the list's own width — neither depends on the
+  // shift we then apply, so this settles in one pass and cannot oscillate.
+  // Layout effect, not effect: the list must be in place before it is painted.
+  useLayoutEffect(() => {
+    if (!showDropdown) { setDropShift(0); return; }
+    const measure = () => {
+      const root = rootRef.current, drop = dropRef.current;
+      if (!root || !drop) return;
+      setDropShift(dropdownShiftPx(
+        root.getBoundingClientRect().left, drop.offsetWidth, window.innerWidth));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [showDropdown]);
 
   // Outside-TAP + Escape dismissal (ui.tsx Tooltip precedent) so the dropdown
   // doesn't float over the page forever once the user has looked away without
@@ -151,7 +205,7 @@ export function CatalogSearch({
   }, [showDropdown]);
 
   return (
-    <div className="relative" ref={rootRef}
+    <div className={`relative ${className}`} ref={rootRef}
       onBlur={(e) => {
         // Only dismiss when focus genuinely moved to an element OUTSIDE this
         // widget. A null relatedTarget is focus going nowhere focusable — an
@@ -164,14 +218,21 @@ export function CatalogSearch({
         if (to && !e.currentTarget.contains(to)) setDismissed(true);
       }}>
       <input
-        className="field btn-touch !w-56"
+        className="field btn-touch"
         placeholder={placeholder}
         aria-label="Search the target catalog"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
       />
+      {/* Dropdown width: as wide as the field, never narrower than 288px (the
+          toolbar callers' field is 224px and every row carries a name AND an
+          altitude badge), and never wider than the screen it is anchored in. */}
       {showDropdown && (
-        <div className="absolute left-0 top-full mt-1 w-72 panel z-20 max-h-60 overflow-y-auto">
+        <div
+          ref={dropRef}
+          style={dropShift ? { left: -dropShift } : undefined}
+          className="absolute left-0 top-full mt-1 w-full min-w-72 max-w-[calc(100vw-2rem)] panel z-20 max-h-60 overflow-y-auto"
+        >
           {searching ? (
             <p className="px-3 py-2 text-xs text-dim">Searching…</p>
           ) : results.length > 0 ? (
