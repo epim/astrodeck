@@ -232,6 +232,30 @@ in the meantime the source of truth is
 
 ---
 
+## Who may sign in with Google
+
+Google sign-in proves *who someone is*. It says nothing about what they may do,
+so the role comes from **Settings → Auth → Who may sign in with Google** (admin
+only). Each address gets exactly the role you give it there.
+
+Anyone who authenticates successfully but is **not** on that list falls to the
+**Default role** above it — which is `deny` unless you changed it. So the safe
+setup is: leave the default at deny, and list the people you actually want.
+
+The list is re-checked on **every request**, not just at sign-in, so removing
+somebody takes effect immediately rather than whenever their session happens to
+expire.
+
+Two things worth knowing:
+
+- Raising the default role above `viewer` requires a pinned Workspace domain on
+  the server. Without that pin, "any authenticated Google user" means *any
+  Google account in the world*, which is not a default anything should offer.
+- Local accounts carry their own role and ignore this list entirely. It only
+  governs Google sign-in.
+
+---
+
 ## Reaching the rig from outside — the relay
 
 AstroDeck's **relay** gives you a remote front door **without port-forwarding or

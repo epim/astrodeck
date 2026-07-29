@@ -62,11 +62,13 @@ put a non-`safetymonitor` device into the `safety` role.
 - **`POST /api/safety/simulate`** forces a safe/unsafe state for testing
   (`config.safety`, admin).
 
-> **Note.** Today the **Settings → Safety** UI panel exposes only sun avoidance.
-> The safety monitor presets, altitude floors, horizon, and escalation knobs
-> below live in the server config (`server/config/astrodeck.json`) and are set
-> through the config API. The *plan-level* toggles that reference them are on
-> the Plan view (see below).
+Everything below is on **Settings → Safety**, in three panels: *Sun avoidance*,
+*Safety limits* (the presets, floors, twilight and unsafe response) and *When
+something fails* (the escalation policy). The *plan-level* toggles that
+reference them are on the Plan view — see below.
+
+Changing safety limits needs **admin** (`config.safety`). An operator sees the
+current values, read-only, with the reason stated.
 
 ---
 
@@ -77,20 +79,29 @@ Two different altitude concepts exist — don't confuse them:
 - **Per-target start gate** (`min alt` on the Plan schedule) — a target only
   *begins* once **it** climbs above this altitude. Set per target. See
   [plan-and-sequences.md](plan-and-sequences.md).
-- **Global pier-collision floor** (`SafetyConfig.min_alt_deg`) — watches the
-  **mount's** altitude and stops motion below it. Off by default (0). As
-  covered above, there is **no Settings UI control for this today** — it's
-  config-file/API only (`PATCH` the safety config with `min_alt_deg`). A full
-  **horizon profile** (az/alt control points for trees and ridgelines) and an
-  optional **no-go box** pier guard can raise the effective floor per
-  azimuth. Neither has a dedicated editor in the UI either: the one
-  UI-reachable horizon path is that a **saved location** can carry a stored
-  `horizon_min_deg`, which the Site panel re-applies on save if you hold
-  `config.safety` (see [site-and-locations.md](site-and-locations.md)) — but
-  nothing in the UI lets you *type* a new horizon number or plot a profile
-  today; both are set through the config API. Pier limits can only be
-  enforced when the mount actually reports pier side
-  (`enforce_pier_limits`).
+- **Global pier-collision floor** (`min_alt_deg`) — watches the **mount's**
+  altitude and stops motion below it. Off by default. Settings → Safety →
+  *Safety limits* → **Altitude floor**; turning it on starts at 10°, which suits
+  most piers. This is a "will the OTA hit something" rule, not a "is this target
+  worth shooting" one.
+
+The floor that actually applies at any moment is the **highest** of three
+things: that global floor, the site horizon, and any obstruction wedge.
+
+- **Obstructions** — azimuth wedges with hard edges, for a pier, a wall, a
+  chimney or the neighbour's tree. Settings → Safety → *Safety limits* →
+  **Obstructions**: azimuth from, azimuth to, minimum altitude. A wedge may wrap
+  through north (350 → 10 is the 20° span across due north). Edges are
+  deliberately hard — one degree outside the wedge the floor is gone — which is
+  what distinguishes this from a horizon profile, whose control points
+  interpolate and would slope a floor across the whole sky from a single pier.
+- **Site horizon** — a **saved location** can carry a stored `horizon_min_deg`,
+  which the Site panel re-applies on save if you hold `config.safety` (see
+  [site-and-locations.md](site-and-locations.md)). There is still no graphical
+  horizon-profile editor: a full az/alt profile is set through the config API.
+- **Pier limits** — `enforce_pier_limits` under *Advanced*. Only has any effect
+  when the mount actually reports pier side; on a mount that doesn't, it is
+  inert rather than wrong.
 
 ---
 
@@ -113,16 +124,36 @@ plan guide for the full target lifecycle.
 
 ## Escalation policy
 
-Beyond the hard safety monitor, a softer **escalation** policy (server config,
-`EscalationConfig`) decides what a run does about degraded conditions. Every
-default is the gentle **warn** — AstroDeck never silently downgrades or aborts by
-default. Configurable actions include:
+Beyond the hard safety monitor, a softer **escalation** policy decides what a run
+does about failures that are not weather. Settings → Safety → **When something
+fails** (needs `config.alerts`).
 
-- require cooling / guiding before lights (warn, abort, or skip),
-- autofocus-failure action, and HFR-reject action (warn, discard, or retake —
-  with a per-target retake cap, default 4),
-- a no-progress watchdog (off by default),
-- Alpaca reconnect-and-resume (off by default).
+Every default is the gentle **warn** — AstroDeck never silently downgrades or
+aborts on its own. That is the right answer while you are sitting next to the rig
+and the wrong one for an unattended night, which is the whole reason to visit
+this panel before leaving one running.
+
+Before the run starts:
+
+- **require the camera at temperature** — darks only match lights taken at the
+  same sensor temperature, so an unsettled cooler means the calibration library
+  will not match. Warn, skip the target, or end the run.
+- **require guiding** — refuse long exposures unguided. Leave off for short subs
+  on a well-aligned mount, or a rig with no guide camera.
+
+During it:
+
+- **autofocus failed** — usually thin cloud or a starless narrowband field.
+  Carrying on keeps the previous focus position.
+- **a frame failed the quality gate** — keep it, discard it, or shoot a
+  replacement, with a per-target retake cap (default 4) so a windy night cannot
+  burn the whole session on replacements that also fail.
+- **no-progress watchdog** — end the run if nothing has been saved for N
+  minutes. Off by default. This is the one that catches silent hangs a
+  per-failure rule cannot see: a wedged filter wheel, a mount that never
+  finishes slewing.
+- **reconnect and resume after a dropout** — network (Alpaca) devices only. A
+  USB device that vanishes is not recoverable this way.
 
 ---
 

@@ -132,6 +132,49 @@ NINA-stretched one.
 
 ---
 
+## Live View (live stacking)
+
+**Live View** keeps shooting and averages the subs together as they land, so
+faint detail climbs out of the noise while you watch instead of only after a
+night of processing. It is the EAA mode: point at a galaxy, and in a couple of
+minutes there is something on screen worth showing somebody.
+
+Press **Live View** in the capture buttons. **Reset stack** starts a fresh one —
+do that after you move the scope. The stack is a *preview*: every sub is still
+saved individually, so nothing about Live View costs you data.
+
+The readout above the image shows frames, integrated time, and how many subs
+were skipped.
+
+### What the alignment badge is telling you
+
+Each sub is aligned to the stack by matching a **pattern of stars**, not a single
+one. The frame count climbs either way, so when the alignment is anything other
+than a clean match the readout says so in words:
+
+| badge | what happened |
+|---|---|
+| *(none)* | a clean pattern match — nothing to report |
+| **weak align** | only one star could be matched. It holds, but if that star saturates or clouds over the stack will shift. More stars in frame, or a longer sub, fixes it |
+| **restarted** | the field moved too far to be the same framing, so the stack began again from this sub. The earlier subs are gone |
+| **drifting** | this sub was too far off to stack. If it keeps up, check tracking |
+| **no match** | the stars did not match the stack — usually cloud, or the scope was moved |
+| **no stars** | nothing to align on: cloud, a closed cover, or badly out of focus |
+
+### Satellites and aircraft
+
+A trail across one sub would otherwise land in the stack permanently and could
+only be cleared by starting over. Pixels far brighter than the running average
+are kept out, and the readout says how many. Under **Live View options** you can
+change how aggressive that is: lower rejects more; **0 turns it off**, which is
+what you want when the thing you are imaging is itself moving.
+
+Rejection needs a few frames first — it cannot tell a satellite from noise until
+it has some idea what the noise looks like — so the first few subs are stacked
+as-is.
+
+---
+
 ## Cooler
 
 The **Cooler** panel appears when the camera supports cooling:
@@ -152,6 +195,33 @@ power.
 When a filter wheel is connected, the **Filter Wheel** panel shows one button per
 filter name; the active filter is highlighted. Tap a filter to move the wheel to
 it.
+
+The gear icon opens **Filter slot names**, where you name each slot and set its
+focus offset. Names go into the FITS `FILTER` header and the saved filename, so
+they are what your stacker groups on — worth getting right before a long project
+rather than after.
+
+### Blackout slots
+
+Some wheels carry a **blackout** slot: a holder with no glass in it, which blocks
+the light path so you can shoot darks and bias without capping the scope. No
+wheel reports which slot that is, so tick **dark** against it in the slot-names
+dialog.
+
+Once a slot is marked, four things change:
+
+- **Darks and bias drive to it** automatically, when the step has no filter of
+  its own. Lights and flats never do.
+- **It takes no focus offset.** There is nothing to focus through, so the offset
+  column shows a dash and offset-learning skips the slot rather than burning a
+  full sweep discovering it cannot focus on it.
+- **No focuser move happens** going into or out of it, so a dark does not yank
+  the focuser to the reference position and back.
+- **It stops being offered as a filter** for light and flat steps in the plan
+  editor. It is still tappable in the panel above, labelled `blackout`, because
+  parking on it manually is a reasonable thing to want.
+
+Most wheels do not have one; leave every box unticked and nothing changes.
 
 ---
 
