@@ -10,6 +10,9 @@ import {
   simAssignments,
   slotState,
   type AssignmentMap,
+  persistableAssignedCount,
+  profileSaveSource,
+  profileSaveLock,
 } from "../equipment";
 import type { DriverInfo } from "../../types";
 
@@ -279,6 +282,37 @@ test("hardwareAssignments skips a single-role backend that is unreachable or dis
   eq(hardwareAssignments([down], ["telescope"]).telescope ?? null, null);
   const off = { ...zwoAm5, enabled: false };
   eq(hardwareAssignments([off], ["telescope"]).telescope ?? null, null);
+});
+
+// --- the save gate must count what a SAVE STORES, not what is picked -------
+// The save loop skips simulator rows (no persistable driver_id), so gating on
+// the raw pick count let eleven sim picks open Save and write a profile with
+// zero devices. Real drivers still persist unconnected, so "configure indoors,
+// connect at the scope" keeps working.
+
+test("simulator picks alone do not count toward a savable profile", () => {
+  const simOnly = { camera: { driverId: "sim" }, telescope: { driverId: "sim" } };
+  eq(persistableAssignedCount(simOnly), 0, "sim picks are not persistable");
+  eq(profileSaveSource(0, persistableAssignedCount(simOnly)), null, "nothing to save");
+});
+
+test("a real driver picked but NOT connected is still savable", () => {
+  const real = { camera: { driverId: "alpaca-1" }, telescope: { driverId: "sim" } };
+  eq(persistableAssignedCount(real), 1, "the real pick counts, the sim one does not");
+  eq(profileSaveSource(0, persistableAssignedCount(real)), "assignments",
+     "configure-indoors must keep working with no connection");
+});
+
+test("a connected rig outranks the picks", () => {
+  eq(profileSaveSource(11, 0), "connected-rig", "live devices win");
+});
+
+test("the sim-only lock names the actual next step", () => {
+  const lock = profileSaveLock({
+    permission: null, name: "Rig", live: 0, assigned: 0, simOnly: true, busy: false,
+  });
+  eq(typeof lock === "string" && /simulator/i.test(lock) && /connect/i.test(lock),
+     true, `sim-only reason must name the simulator and say connect, got: ${lock}`);
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);

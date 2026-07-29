@@ -47,6 +47,7 @@ import {
   profileResolvesRealMotion,
   profileSaveLock,
   profileSaveSource,
+  persistableAssignedCount,
   saveAssignments,
   simAssignments,
   slotState,
@@ -135,6 +136,11 @@ export default function EquipmentView(): JSX.Element {
   );
 
   const assignedCount = roles.filter((r) => assignments[r]).length;
+  // What a SAVE would actually store: the save loop skips simulator rows (they
+  // carry no persistable driver_id), so gating on the raw pick count let eleven
+  // sim picks open Save and write a profile with zero devices.
+  const savableAssigned = persistableAssignedCount(assignments);
+  const simOnlyPicks = assignedCount > 0 && savableAssigned === 0;
   // ONE definition of "this role is live" for the whole page — the rows, the
   // counts in the copy, and what Save decides to capture. It joins the two
   // things the server publishes, because neither alone is the whole truth:
@@ -363,14 +369,15 @@ export default function EquipmentView(): JSX.Element {
   //     `RigSpec(primary="none", roles={})` and connects NOTHING. Capturing the
   //     same rig writes `primary_backend: "sim"`: disconnect → activate → 10
   //     devices back, verified against /api/status.
-  const saveSource = profileSaveSource(connectedCount, assignedCount);
+  const saveSource = profileSaveSource(connectedCount, savableAssigned);
   const saveLock = profileSaveLock({
     permission: canConfig
       ? null
       : `Saving a profile needs ${accessPhrase("config.backend")}.`,
     name: profileName,
     live: connectedCount,
-    assigned: assignedCount,
+    assigned: savableAssigned,
+    simOnly: simOnlyPicks,
     busy,
   });
 

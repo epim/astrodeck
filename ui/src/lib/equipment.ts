@@ -443,6 +443,24 @@ export function profileSaveSource(live: number, assigned: number): ProfileSaveSo
   return null;
 }
 
+/** How many assignments would actually SURVIVE into a saved profile.
+ *
+ * The save loop skips simulator rows (`a.driverId === "sim"`) because the
+ * simulator is the implicit built-in and carries no persistable `driver_id`.
+ * The gate, meanwhile, counted every pick — so eleven simulator picks opened
+ * Save and then wrote a profile containing zero devices. The gate was counting
+ * a different thing from the save.
+ *
+ * Real drivers still persist unconnected, so "configure indoors, connect at the
+ * scope" keeps working; only the case that cannot produce a device is blocked,
+ * and a CONNECTED simulator rig still saves fine through the capture path. */
+export function persistableAssignedCount(
+  assignments: Record<string, { driverId?: string } | null | undefined>,
+): number {
+  return Object.values(assignments)
+    .filter((a) => !!a && a.driverId !== "sim").length;
+}
+
 /**
  * Why Save cannot run, or `null` when it can.
  *
@@ -459,13 +477,18 @@ export function profileSaveLock(opts: {
   permission: string | null;
   name: string;
   live: number;
+  /** MUST be persistableAssignedCount(), not the raw pick count — see there. */
   assigned: number;
+  /** true when the only picks are simulator rows, so the reason can say so. */
+  simOnly?: boolean;
   busy: boolean;
 }): string | null {
   if (opts.permission) return opts.permission;
   if (opts.busy) return "Another rig action is still running.";
   if (profileSaveSource(opts.live, opts.assigned) === null)
-    return "Nothing to save yet — connect a rig, or pick drivers on the rows above.";
+    return opts.simOnly
+      ? "Connect the simulator rig first — simulator picks alone can't be saved to a profile."
+      : "Nothing to save yet — connect a rig, or pick drivers on the rows above.";
   if (!opts.name.trim()) return "Name it first — the profile is stored under this name.";
   return null;
 }
