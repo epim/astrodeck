@@ -84,6 +84,9 @@ export default function CaptureView() {
   const [dew, setDew] = useState(0);
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
   const [camAdvanced, setCamAdvanced] = useState(false); // Advanced disclosure (egain)
+  // Live View's satellite-trail rejection. Held here, not in the panel, because
+  // the START request is issued by onLiveView below.
+  const [liveClipSigma, setLiveClipSigma] = useState(4);
   const egainLearn = useEgainLearn();
   // Calibration quick-action (calibration-capture spec §1.3): which frame type
   // Single/Loop will shoot. Manual capture defaults to Light (today's only
@@ -359,7 +362,7 @@ export default function CaptureView() {
     if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
     if (liveStackOn) { act(() => api.post("/api/capture/livestack/stop")); return; }
     void arm("live", "/api/capture/livestack/start",
-             { ...body, frame_type: "Light" }, exposureS);
+             { ...body, frame_type: "Light", clip_sigma: liveClipSigma }, exposureS);
   };
   const onResetStack = () => { if (canCapture && liveStackOn) act(() => api.post("/api/capture/livestack/reset")); };
 
@@ -769,6 +772,39 @@ export default function CaptureView() {
               </LockedChip>
             )}
           </div>
+
+          {/* Satellite-trail rejection. Folded in beside the Live View buttons
+              rather than given a panel of its own: it is one number, it only
+              matters to somebody already using Live View, and it is applied at
+              START, so this is the moment it is relevant. */}
+          <details className="mt-2">
+            <summary className="label cursor-pointer select-none min-h-11 flex items-center">
+              Live View options
+            </summary>
+            <label className="flex items-center gap-2 mt-2">
+              <span className="label shrink-0">reject trails above</span>
+              <input
+                className="field !w-20"
+                type="number"
+                min={0}
+                max={20}
+                step={0.5}
+                value={liveClipSigma}
+                aria-label="Satellite rejection sigma"
+                onChange={(e) =>
+                  setLiveClipSigma(Math.min(20, Math.max(0, Number(e.target.value) || 0)))
+                }
+              />
+              <span className="label shrink-0">sigma</span>
+            </label>
+            <p className="text-[11px] text-dim leading-snug mt-1 max-w-md">
+              A pixel this far above the running average is treated as a satellite
+              or aircraft trail and kept out of the stack. Lower rejects more; 0
+              turns it off, which is what you want if the thing you are imaging is
+              itself moving.
+              {liveStackOn && " Applied the next time you start Live View."}
+            </p>
+          </details>
 
           {/* ---- per-frame progress (item 5a). Exposing → deterministic fill that
                resets each frame; Downloading → indeterminate striped bar. Hidden
