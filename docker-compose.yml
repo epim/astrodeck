@@ -1,0 +1,48 @@
+# AstroDeck — one container, two volumes.
+#
+#   docker compose up -d          start it
+#   docker compose logs -f        watch it
+#   docker compose down           stop it (your data stays in ./data)
+#
+# Then open http://<this-machine>:8800 from a phone, tablet or laptop on the
+# same network.
+
+services:
+  astrodeck:
+    build: .
+    image: astrodeck:latest
+    container_name: astrodeck
+    restart: unless-stopped
+    ports:
+      # host:container. Change the LEFT number to move it off 8800 on the host.
+      - "8800:8800"
+    volumes:
+      # Bind mounts, not named volumes, so your captures are ordinary files you
+      # can copy off with anything — not buried in Docker's storage.
+      - ./data/config:/data/config
+      - ./data/captures:/data/captures
+    # USB devices. Docker cannot see a device that is not passed in, so a rig on
+    # USB needs one of these. Uncomment ONE:
+    #
+    #   the blunt option — the container sees every USB device, present or not,
+    #   including ones hotplugged later:
+    # privileged: true
+    # volumes:
+    #   - /dev/bus/usb:/dev/bus/usb
+    #
+    #   the narrow option — name the exact devices. Safer, but a device that
+    #   appears after the container starts is invisible until you restart it:
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0     # a serial mount, focuser or filter wheel
+    #   - /dev/ttyACM0:/dev/ttyACM0     # a CDC-ACM mount (e.g. ZWO AM5)
+    environment:
+      # Everything else is configured in the UI. These two just point the
+      # container's paths at the mounts above.
+      ASTRODECK_CONFIG_DIR: /data/config
+      ASTRODECK_CAPTURE_DIR: /data/captures
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8800/healthz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
