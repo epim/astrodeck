@@ -4,7 +4,11 @@ import {
   useStore, useAtlasBannerPending, useLastReportId, defaultSchedule,
   usePhotometry, usePreview,
 } from "../store";
-import { HoldButton, IconButton, InfoDot, Panel, Toggle } from "../components/ui";
+import {
+  HoldButton, HonestButton, IconButton, InfoDot, LockedNote, Panel, Toggle,
+} from "../components/ui";
+import { NumberField } from "../components/sequence/NumberField";
+import CatalogSearch from "../components/atlas/CatalogSearch";
 import SchedulePanel from "../components/sequence/SchedulePanel";
 import SessionsPanel from "../components/sequence/SessionsPanel";
 import PlanLibraryPanel from "../components/sequence/PlanLibraryPanel";
@@ -141,9 +145,8 @@ export default function SequenceView() {
   );
   const [preflightOpen, setPreflightOpen] = useState(false);
   const [ordering, setOrdering] = useState(false);
-  const [search, setSearch] = useState("");
-  const [results, setResults] = useState<CatalogEntry[]>([]);
-  const [searchErr, setSearchErr] = useState<string | null>(null);
+  // (query/results/searchErr state, and the debounced fetch that fed them, are
+  // gone with the hand-rolled search — CatalogSearch owns all of it now.)
   // In-flight guard for the quick-add visibility check (wave-3 §4): blocks a
   // second addTarget() while the first's /api/visibility fetch (or its confirm
   // dialog) is still pending, so a double-tap on a search result can't double-add.
@@ -174,18 +177,6 @@ export default function SequenceView() {
     setPendingUndo(null);
   };
   useEffect(() => () => { if (undoTimer.current != null) clearTimeout(undoTimer.current); }, []);
-
-  useEffect(() => {
-    if (!search) { setResults([]); setSearchErr(null); return; }
-    const t = setTimeout(async () => {
-      // UX-18: surface a fetch failure instead of swallowing it into "no results".
-      try {
-        setResults((await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6));
-        setSearchErr(null);
-      } catch (e) { setResults([]); setSearchErr(e instanceof Error ? e.message : "search unavailable"); }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [search]);
 
   const act = async (fn: () => Promise<unknown>) => {
     try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
@@ -287,6 +278,43 @@ export default function SequenceView() {
   const targetSeconds = (t: Target) => t.steps.reduce((b, s) => b + s.count * s.exposure_s, 0);
   const totalFrames = plan.targets.reduce((a, t) => a + targetFrames(t), 0);
 
+  // ------------------------------------------------- why RUN SEQUENCE is locked
+  // UX-2026-07-28 §S3: this was the ONE blocked control in the app that said
+  // nothing. Measured on the shipped build: the native `disabled` attribute,
+  // `aria-label` null, `title` null, `tabIndex` -1 — a dim rectangle that a
+  // finger cannot press, a screen reader skips and keyboard focus cannot reach,
+  // on the button that starts a six-hour unattended run. Three of its four
+  // blocking conditions printed a sentence in a SIBLING paragraph (never
+  // associated with the button), and the fourth — a run already going — printed
+  // nothing at all.
+  //
+  // One derived sentence now feeds both channels: HonestButton (dim +
+  // aria-disabled, still focusable and still pressable, and a press STATES the
+  // reason) and the LockedNote under it, for anyone who never presses. Each
+  // branch names the missing thing rather than the fact that something is
+  // missing — "add targets and steps first" was true of an empty plan AND of a
+  // plan whose every step had been zeroed, which are different repairs.
+  const blockedChecks = preflightItems.filter((i) => i.status === "blocked");
+  // One blocker gets its DETAIL ("M31 (Ha): 5000s", "no telescope connected") —
+  // that string is the whole repair. Several get named without details, because
+  // a sentence nobody finishes reading is the same as no sentence.
+  const blockedNames =
+    blockedChecks.length === 1
+      ? blockedChecks[0].label + (blockedChecks[0].detail?.value ? ` — ${blockedChecks[0].detail.value}` : "")
+      : blockedChecks.slice(0, 3).map((i) => i.label).join(", ")
+        + (blockedChecks.length > 3 ? ` +${blockedChecks.length - 3} more` : "");
+  const runningPlanName = sequence.plan_name ?? plan.name ?? "A plan";
+  const runReason: string | null =
+    !canRun ? `Running a sequence needs ${accessPhrase("control.mount")}.`
+      : running ? `“${runningPlanName}” is running — stop it before starting another run.`
+        : plan.targets.length === 0
+          ? "This plan has no targets — search the catalog above to add one."
+          : totalFrames === 0
+            ? "Every target here has no steps — add one with + STEP."
+            : verdict === "blocked"
+              ? `Pre-flight is blocked on ${blockedNames || "a check above"}.`
+              : null;
+
   // Delete every target sharing a mosaic_group (the whole mosaic), reversibly.
   const deleteGroup = (group: string) =>
     setPlanWithUndo(
@@ -382,7 +410,6 @@ export default function SequenceView() {
           schedule: defaultSchedule(),
         }],
       });
-      setSearch("");
     } finally {
       setPendingAdd(false);
     }
@@ -412,10 +439,11 @@ export default function SequenceView() {
       steps: plan.targets[ti].steps.map((s, i) => (i === si ? { ...s, ...patch } : s)),
     });
 
-  const num = (v: string, fallback: number) => {
-    const n = Number(v);
-    return Number.isFinite(n) && v !== "" ? n : fallback;
-  };
+  // (The `num(value, fallback)` helper that used to live here is gone — it was
+  // the rank-1 defect of the 2026-07-28 review. See NumberField.tsx: returning
+  // the PREVIOUS number for an empty string made every field in this editor
+  // impossible to clear, so each edit concatenated onto the old value:
+  // 120 -> backspace -> 300 gave 1300, and the cooling setpoint gave -1010.)
 
   // REVIEW #7 (systemic S2 — tablet portrait is the primary field device):
   // `md:grid-cols-[1fr_300px]` split at 768, so an 820 tablet got a 416px plan
@@ -645,7 +673,14 @@ export default function SequenceView() {
 
         {/* ----------------------------------------------------- targets */}
         <span id="seq-targets" className="block scroll-mt-4" aria-hidden="true" />
-        <Panel title="Targets"
+        {/* z-20: every `.panel` sets `backdrop-filter`, which makes each one its
+            own stacking context at z-index AUTO — so panels paint in DOM order
+            and the NEXT panel covers anything escaping this one, whatever
+            z-index that thing carries internally. Measured on the tablet: the
+            suggestion list, once it floats, was painted over by the Plan panel
+            34px below its top edge. Lifting the whole Targets panel is the only
+            level at which the fix takes. */}
+        <Panel title="Targets" className="z-20"
           right={
             <div className="flex flex-wrap items-center gap-2 min-w-0">
               {/* Reorder the plan by tonight's transit times; mosaic groups stay
@@ -659,32 +694,38 @@ export default function SequenceView() {
               >
                 {ordering ? "Ordering…" : "Order by tonight"}
               </button>
-              <div className="relative w-56 max-w-full min-w-0">
-                {/* A placeholder is NOT an accessible name: it is not exposed by
-                    the accname algorithm in every AT, and it vanishes the moment
-                    the user types. This was one of the two controls still
-                    reported unnamed after the UX-review sweep (#26). */}
-                <input className="field" placeholder="+ add target — search catalog"
-                  aria-label="Search the catalog to add a target"
-                  value={search} onChange={(e) => setSearch(e.target.value)} />
-                {results.length > 0 && (
-                <div className="absolute right-0 top-full mt-1 w-72 panel z-10 max-h-60 overflow-y-auto">
-                  {results.map((r) => (
-                    <button key={r.id} onClick={() => addTarget(r)} disabled={pendingAdd}
-                      className="w-full text-left px-3 py-2 text-xs hover:bg-raise transition-colors flex justify-between cursor-pointer disabled:opacity-40 disabled:cursor-default">
-                      <span><span className="mono text-accent">{r.id}</span> {r.name}</span>
-                      <span className={`mono ${r.alt > 40 ? "text-good" : r.alt < 20 ? "text-warn" : "text-dim"}`}>
-                        {r.alt.toFixed(0)}°
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-                {searchErr && results.length === 0 && (
-                  <div className="absolute right-0 top-full mt-1 w-72 panel z-10 px-3 py-2 text-xs text-bad">
-                    Search failed: {searchErr}
-                  </div>
-                )}
+              {/* UX-2026-07-28 #20: this WAS a second, older copy of the Atlas
+                  search — same 250 ms debounce, same /api/catalog?q=, same top
+                  6 — and it rendered NOTHING when the 25-object catalog had no
+                  match, so a query the catalog cannot answer looked exactly like
+                  one still loading. The Atlas copy had meanwhile grown the
+                  zero-state that names the catalog's coverage, a "Searching…"
+                  state, an outside-tap dismissal that survives a phone scroll,
+                  and a query-id guard that stops a slow in-flight request
+                  overwriting a newer answer. Importing it takes all four and
+                  makes the app's two searches one search.
+                  (What it does NOT bring across: this copy surfaced a failed
+                  fetch as "Search failed: …" where the Atlas reads a failure as
+                  "no matches". The shared zero-state still gives a next step, so
+                  that is the accepted cost of having one search — logged.)
+                  What does not transfer is WHERE the list hangs. Atlas drops it
+                  from the input's left edge with room to spare; this search sits
+                  at the right end of a panel header, so a 288px list dropping
+                  left-ward measured x=563 -> right=851 in an 820px tablet
+                  viewport and pushed `main` to 763/732: horizontal overflow on
+                  tablet portrait, the exact thing this round confirmed dead.
+                  (The hand-rolled list this replaced was `right-0` for the same
+                  reason.) `!absolute` is load-bearing, not redundant — `.panel`
+                  sets `position: relative` from UNLAYERED css, which beats a
+                  Tailwind utility layer, so the list has been sitting in normal
+                  FLOW, widening its row, in both searches all along. Only
+                  `!important` gets it out of flow. Anchored right from `md` up
+                  where the header row right-aligns, left below that where it
+                  wraps to its own line at the panel's left padding, and matched
+                  on `.panel` rather than a child-index chain so it survives the
+                  shared component gaining a wrapper. */}
+              <div className="[&_.panel]:!absolute md:[&_.panel]:!left-auto md:[&_.panel]:!right-0">
+                <CatalogSearch onPick={addTarget} placeholder="+ add target — e.g. M 31" />
               </div>
             </div>
           }>
@@ -888,18 +929,17 @@ export default function SequenceView() {
                       </label>
                       <label className="flex flex-col gap-0.5 w-[78px]">
                         <span className="label">exp s</span>
-                        <input className={`field !py-1 ${stepExposureInvalid ? "border-bad" : ""}`}
-                          inputMode="decimal"
-                          aria-label={`Exposure seconds — step ${si + 1} of ${t.name}`}
+                        <NumberField className="!py-1" inputMode="decimal"
+                          label={`Exposure seconds — step ${si + 1} of ${t.name}`}
                           title={stepExposureInvalid ? `Exposure must be 0–${EXPOSURE_MAX_S}s` : undefined}
-                          aria-invalid={stepExposureInvalid} value={s.exposure_s}
-                          onChange={(e) => patchStep(ti, si, { exposure_s: num(e.target.value, s.exposure_s) })} />
+                          invalid={stepExposureInvalid} value={s.exposure_s}
+                          onCommit={(n) => patchStep(ti, si, { exposure_s: n })} />
                       </label>
                       <label className="flex flex-col gap-0.5 w-[70px]">
                         <span className="label">gain</span>
-                        <input className="field !py-1" inputMode="numeric"
-                          aria-label={`Gain — step ${si + 1} of ${t.name}`} value={s.gain}
-                          onChange={(e) => patchStep(ti, si, { gain: num(e.target.value, s.gain) })} />
+                        <NumberField className="!py-1"
+                          label={`Gain — step ${si + 1} of ${t.name}`} value={s.gain}
+                          onCommit={(n) => patchStep(ti, si, { gain: n })} />
                       </label>
                       <label className="flex flex-col gap-0.5 w-[64px]">
                         <span className="label">bin</span>
@@ -911,9 +951,9 @@ export default function SequenceView() {
                       </label>
                       <label className="flex flex-col gap-0.5 w-[70px]">
                         <span className="label">count</span>
-                        <input className="field !py-1" inputMode="numeric"
-                          aria-label={`Frame count — step ${si + 1} of ${t.name}`} value={s.count}
-                          onChange={(e) => patchStep(ti, si, { count: Math.max(1, Math.round(num(e.target.value, s.count))) })} />
+                        <NumberField className="!py-1"
+                          label={`Frame count — step ${si + 1} of ${t.name}`} value={s.count}
+                          onCommit={(n) => patchStep(ti, si, { count: Math.max(1, Math.round(n)) })} />
                       </label>
                       <div className="flex items-center gap-2 self-end pb-0.5">
                         <span className="mono text-[10px] text-dim whitespace-nowrap">
@@ -956,14 +996,14 @@ export default function SequenceView() {
                             wrapper makes the 100% resolve to the size we want. */}
                         <label className="flex flex-col gap-0.5 w-[110px]">
                           <span className="label">target ADU</span>
-                          <input
-                            className={`field !py-1 ${running ? "opacity-50 cursor-not-allowed" : ""}`}
-                            inputMode="numeric"
+                          <NumberField
+                            className={`!py-1 ${running ? "opacity-50 cursor-not-allowed" : ""}`}
                             placeholder={String(FLAT_ADU_TARGET)}
-                            aria-label={`Target ADU for flat auto-exposure — step ${si + 1} of ${t.name}`}
-                            aria-disabled={running || undefined}
+                            label={`Target ADU for flat auto-exposure — step ${si + 1} of ${t.name}`}
+                            ariaDisabled={running}
+                            readOnly={running}
                             value={s.adu_target ?? 0}
-                            onChange={(e) => !running && patchStep(ti, si, { adu_target: num(e.target.value, s.adu_target ?? 0) })} />
+                            onCommit={(n) => patchStep(ti, si, { adu_target: n })} />
                         </label>
                         <span className="text-[11px] text-dim pb-1.5 min-w-0">
                           {(s.adu_target ?? 0) > 0
@@ -1080,23 +1120,28 @@ export default function SequenceView() {
                 dither every N frames
                 <InfoDot content={HELP.dither} label="About dither" />
               </span>
-              <input className="field !w-16 !py-1" value={plan.dither_every}
-                onChange={(e) => setPlan({ ...plan, dither_every: Math.max(0, Math.round(num(e.target.value, plan.dither_every))) })} />
+              <NumberField className="!w-16 !py-1" label="Dither every N frames"
+                value={plan.dither_every}
+                onCommit={(n) => setPlan({ ...plan, dither_every: Math.max(0, Math.round(n)) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">dither size (pixels)</span>
-              <input className="field !w-16 !py-1" value={plan.dither_pixels}
-                onChange={(e) => setPlan({ ...plan, dither_pixels: Math.max(0, Math.round(num(e.target.value, plan.dither_pixels))) })} />
+              <NumberField className="!w-16 !py-1" label="Dither size in pixels"
+                value={plan.dither_pixels}
+                onCommit={(n) => setPlan({ ...plan, dither_pixels: Math.max(0, Math.round(n)) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">refocus every N frames</span>
-              <input className="field !w-16 !py-1" value={plan.autofocus_every}
-                onChange={(e) => setPlan({ ...plan, autofocus_every: Math.max(0, Math.round(num(e.target.value, plan.autofocus_every))) })} />
+              <NumberField className="!w-16 !py-1" label="Refocus every N frames"
+                value={plan.autofocus_every}
+                onCommit={(n) => setPlan({ ...plan, autofocus_every: Math.max(0, Math.round(n)) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">refocus on temp Δ°C (0=off)</span>
-              <input className="field !w-16 !py-1" value={plan.refocus_on_temp_delta_c}
-                onChange={(e) => setPlan({ ...plan, refocus_on_temp_delta_c: Math.max(0, num(e.target.value, plan.refocus_on_temp_delta_c)) })} />
+              <NumberField className="!w-16 !py-1" inputMode="decimal"
+                label="Refocus on temperature change, in °C (0 = off)"
+                value={plan.refocus_on_temp_delta_c}
+                onCommit={(n) => setPlan({ ...plan, refocus_on_temp_delta_c: Math.max(0, n) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -1122,8 +1167,9 @@ export default function SequenceView() {
                   content="Lead time before the meridian for the live flip-ETA chip during a run — how far ahead you're warned the mount is about to flip."
                 />
               </span>
-              <input className="field !w-16 !py-1" value={plan.meridian_flip_warn_min ?? 15}
-                onChange={(e) => setPlan({ ...plan, meridian_flip_warn_min: Math.max(0, num(e.target.value, plan.meridian_flip_warn_min ?? 15)) })} />
+              <NumberField className="!w-16 !py-1" label="Meridian warning lead, in minutes"
+                value={plan.meridian_flip_warn_min ?? 15}
+                onCommit={(n) => setPlan({ ...plan, meridian_flip_warn_min: Math.max(0, n) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
@@ -1143,17 +1189,26 @@ export default function SequenceView() {
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">cool sensor to °C (blank=off)</span>
-              <input className="field !w-16 !py-1" placeholder="off"
-                value={plan.cool_to ?? ""}
-                onChange={(e) => setPlan({ ...plan, cool_to: e.target.value === "" ? null : num(e.target.value, plan.cool_to ?? -10) })} />
+              {/* The one field here where BLANK is a real setting ("off"), so it
+                  gets onEmpty. It was also the worst-hit by the old helper:
+                  typing "-10" into an empty box gave -1010, because the lone
+                  "-" mid-word parsed as non-finite and re-inserted the -10
+                  fallback under the caret. */}
+              <NumberField className="!w-16 !py-1" inputMode="decimal" placeholder="off"
+                label="Cool sensor to °C (blank = cooling off)"
+                value={plan.cool_to}
+                onCommit={(n) => setPlan({ ...plan, cool_to: n })}
+                onEmpty={() => setPlan({ ...plan, cool_to: null })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim inline-flex items-center gap-1">
                 flag HFR spikes (× median, 0=off)
                 <InfoDot content={HELP.hfrReject} label="About HFR spike rejection" />
               </span>
-              <input className="field !w-16 !py-1" value={plan.hfr_reject_factor}
-                onChange={(e) => setPlan({ ...plan, hfr_reject_factor: Math.max(0, num(e.target.value, plan.hfr_reject_factor)) })} />
+              <NumberField className="!w-16 !py-1" inputMode="decimal"
+                label="Flag HFR spikes above this multiple of the median (0 = off)"
+                value={plan.hfr_reject_factor}
+                onCommit={(n) => setPlan({ ...plan, hfr_reject_factor: Math.max(0, n) })} />
             </label>
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">park mount when done</span>
@@ -1213,8 +1268,9 @@ export default function SequenceView() {
                   {(plan.min_stars ?? 0) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
-                  <input className="field !w-16 !py-1" value={plan.min_stars ?? 0}
-                    onChange={(e) => setPlan({ ...plan, min_stars: Math.max(0, Math.round(num(e.target.value, plan.min_stars ?? 0))) })} />
+                  <NumberField className="!w-16 !py-1" label="Minimum stars per frame (0 = off)"
+                    value={plan.min_stars ?? 0}
+                    onCommit={(n) => setPlan({ ...plan, min_stars: Math.max(0, Math.round(n)) })} />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1223,8 +1279,10 @@ export default function SequenceView() {
                   {(plan.max_guide_rms ?? 0) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
-                  <input className="field !w-16 !py-1" value={plan.max_guide_rms ?? 0}
-                    onChange={(e) => setPlan({ ...plan, max_guide_rms: Math.max(0, num(e.target.value, plan.max_guide_rms ?? 0)) })} />
+                  <NumberField className="!w-16 !py-1" inputMode="decimal"
+                    label="Maximum guide RMS in arcseconds (0 = off)"
+                    value={plan.max_guide_rms ?? 0}
+                    onCommit={(n) => setPlan({ ...plan, max_guide_rms: Math.max(0, n) })} />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1238,8 +1296,10 @@ export default function SequenceView() {
                   {(plan.max_eccentricity ?? 0) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
-                  <input className="field !w-16 !py-1" value={plan.max_eccentricity ?? 0}
-                    onChange={(e) => setPlan({ ...plan, max_eccentricity: Math.min(1, Math.max(0, num(e.target.value, plan.max_eccentricity ?? 0))) })} />
+                  <NumberField className="!w-16 !py-1" inputMode="decimal"
+                    label="Maximum star eccentricity, 0 to 1 (0 = off)"
+                    value={plan.max_eccentricity ?? 0}
+                    onCommit={(n) => setPlan({ ...plan, max_eccentricity: Math.min(1, Math.max(0, n)) })} />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1254,8 +1314,10 @@ export default function SequenceView() {
                   {(plan.max_consecutive_rejects ?? 10) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
-                  <input className="field !w-16 !py-1" value={plan.max_consecutive_rejects ?? 10}
-                    onChange={(e) => setPlan({ ...plan, max_consecutive_rejects: Math.max(0, Math.round(num(e.target.value, plan.max_consecutive_rejects ?? 10))) })} />
+                  <NumberField className="!w-16 !py-1"
+                    label="Skip a step after N consecutive rejects (0 = off)"
+                    value={plan.max_consecutive_rejects ?? 10}
+                    onCommit={(n) => setPlan({ ...plan, max_consecutive_rejects: Math.max(0, Math.round(n)) })} />
                 </span>
               </label>
               <label className="flex items-center justify-between gap-2">
@@ -1270,8 +1332,10 @@ export default function SequenceView() {
                   {(plan.max_consecutive_rejects_night ?? 20) === 0 && (
                     <span className="text-[10px] uppercase tracking-widest text-dim">off</span>
                   )}
-                  <input className="field !w-16 !py-1" value={plan.max_consecutive_rejects_night ?? 20}
-                    onChange={(e) => setPlan({ ...plan, max_consecutive_rejects_night: Math.max(0, Math.round(num(e.target.value, plan.max_consecutive_rejects_night ?? 20))) })} />
+                  <NumberField className="!w-16 !py-1"
+                    label="End the night after N consecutive rejects (0 = off)"
+                    value={plan.max_consecutive_rejects_night ?? 20}
+                    onCommit={(n) => setPlan({ ...plan, max_consecutive_rejects_night: Math.max(0, Math.round(n)) })} />
                 </span>
               </label>
             </div>
@@ -1298,23 +1362,19 @@ export default function SequenceView() {
             permissions change enabled state, not what exists). Non-holders get it
             disabled with a lock note whose copy derives from the SAME capability
             the control enforces (control.mount — accessPhrase, R4B-PLAN-01). */}
-        <button className="btn btn-accent !py-3 !text-sm"
-          disabled={!canRun || running || totalFrames === 0 || verdict === "blocked"}
-          onClick={() => setPreflightOpen(true)}>
+        <HonestButton
+          className="btn btn-accent !py-3 !text-sm"
+          reason={runReason}
+          onExplain={(r) => showToast("info", r)}
+          onClick={() => setPreflightOpen(true)}
+        >
           ≡ Run Sequence
-        </button>
-        {!canRun && (
-          <p className="text-[11px] text-warn text-center inline-flex items-center justify-center gap-2 py-2">
-            <ReadOnlyBadge label="View only"
-              reason={`Running a sequence needs ${accessPhrase("control.mount")}.`} />
-            Running a sequence needs {accessPhrase("control.mount")}.
-          </p>
-        )}
-        {canRun && totalFrames === 0 && (
-          <p className="text-[11px] text-dim text-center">add targets and steps first</p>
-        )}
-        {totalFrames > 0 && verdict === "blocked" && (
-          <p className="text-[11px] text-bad text-center">fix the blocked items above to run</p>
+        </HonestButton>
+        {runReason && (
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {!canRun && <ReadOnlyBadge label="View only" reason={runReason} />}
+            <LockedNote reason={runReason} />
+          </div>
         )}
       </div>
 
