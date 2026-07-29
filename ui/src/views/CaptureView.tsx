@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api } from "../api";
 import {
   useStore, useStatus, usePolar, useLivePreviewId, useSequence, useLastLight,
   usePhotometry, usePreview, useEgainLearn,
@@ -178,14 +178,41 @@ export default function CaptureView() {
     try {
       await fn();
     } catch (e) {
-      // A 409 means the capture lock is already held (a raced double-tap on
-      // Single, a running sequence, polar alignment, ...) — some capture may
-      // genuinely be in flight and its progress state must not be stomped,
-      // so only unwind to idle for OTHER failures. Always surface the toast.
-      const status = e instanceof ApiError ? e.status : undefined;
-      if (status !== 409) setPhase("idle");
       showToast("error", (e as Error).message);
     }
+  };
+
+  // UX round-4 S4 ("success reported before it is earned"). The exposure bar used
+  // to be armed BEFORE the POST, and a 409 deliberately left it running on the
+  // theory that a 409 always means "the capture lock is held, so SOME capture is
+  // genuinely in flight". It doesn't: `hub.require("camera")` raises DeviceError
+  // and `_err` maps that to 409 too, so "no camera connected" is byte-identical
+  // at the client to "a capture is already running". Measured on a rejected
+  // Single: "Exposing…" for the exposure, then a striped "DOWNLOADING…" bar for
+  // the full 60 s watchdog, for a frame that never existed.
+  //
+  // The fix is ordering, not error parsing: arm the bar only once the server has
+  // ACCEPTED the exposure. A rejected request then has nothing to unwind (so it
+  // cannot stomp a genuinely-running frame either — the case the old comment was
+  // protecting), and the tap is acknowledged meanwhile by the control's own
+  // "Starting…" state rather than by a fictional frame.
+  const [pending, setPending] = useState<null | "single" | "loop" | "live">(null);
+  // Bumped by Stop, so a request that was already in flight when the user
+  // pressed Stop cannot come back and arm a bar for a frame they cancelled.
+  const armGenRef = useRef(0);
+  const arm = async (kind: "single" | "loop" | "live", path: string, payload: object,
+                     len: number) => {
+    const gen = ++armGenRef.current;
+    setPending(kind);
+    try {
+      await api.post(path, payload);
+    } catch (e) {
+      showToast("error", (e as Error).message);
+      return; // nothing was armed — never draw progress for a refused exposure
+    } finally {
+      setPending(null);
+    }
+    if (armGenRef.current === gen) beginExposure(len);
   };
 
   // Begin (or restart) the exposing phase. Records the wall-clock start + the frame
@@ -283,22 +310,21 @@ export default function CaptureView() {
   );
 
   const onSingle = () => {
-    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
-    beginExposure(exposureS);
-    act(() => api.post("/api/capture", body));
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
+    void arm("single", "/api/capture", body, exposureS);
   };
   const onLoop = () => {
-    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
     // A fresh Light loop starting is a new batch — clear the once-per-batch
     // darks-nudge guard so onStop can offer again for THIS batch.
     if (frameType === "Light") offeredRef.current = false;
-    beginExposure(exposureS);
-    act(() => api.post("/api/capture/loop", body));
+    void arm("loop", "/api/capture/loop", body, exposureS);
   };
   const onStop = () => {
     if (!canCapture) return;
     setStopPressed(true);
     window.setTimeout(() => setStopPressed(false), 220);
+    armGenRef.current++;   // void any accept still in flight (see `arm`)
     setPhase("idle");
     // End-of-session nudge (calibration-capture spec §1.3): stopping a Light
     // loop with a bankable batch of lights offers to switch to Dark + prefill.
@@ -330,10 +356,10 @@ export default function CaptureView() {
   // NOV-1 Live View: toggle arms the server-side stacker + starts the loop;
   // toggling off disarms + stops. Reset clears the accumulator, keeps arming.
   const onLiveView = () => {
-    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid) return;
+    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
     if (liveStackOn) { act(() => api.post("/api/capture/livestack/stop")); return; }
-    beginExposure(exposureS);
-    act(() => api.post("/api/capture/livestack/start", { ...body, frame_type: "Light" }));
+    void arm("live", "/api/capture/livestack/start",
+             { ...body, frame_type: "Light" }, exposureS);
   };
   const onResetStack = () => { if (canCapture && liveStackOn) act(() => api.post("/api/capture/livestack/reset")); };
 
@@ -342,6 +368,11 @@ export default function CaptureView() {
     ? Math.min(100, (elapsed / expLenRef.current) * 100)
     : 100;
   const remaining = Math.max(0, expLenRef.current - elapsed);
+  // The request is out but unanswered: the camera has NOT accepted the exposure
+  // yet, so the control says "Starting…" and no bar is drawn. Distinct from
+  // `inFlight`, which means a frame the server accepted is actually running.
+  const startingReason =
+    "Waiting for the camera to accept this exposure — no frame has started yet";
 
   // ------------------------------------------------- UX #24: stated reasons
   // A blocked control has to say WHY on a channel that survives a fingertip.
@@ -625,7 +656,14 @@ export default function CaptureView() {
                 glyph on a running exposure would read as "blocked", the opposite of
                 the truth. They keep the accented running chrome, drop the native
                 `disabled`, and carry aria-disabled + a spoken reason. */}
-            {inFlight && !looping ? (
+            {pending === "single" ? (
+              <button
+                className="btn tap-lg min-h-[56px]"
+                aria-disabled aria-busy
+                aria-label={startingReason}>
+                Starting…
+              </button>
+            ) : inFlight && !looping ? (
               <button
                 className="btn btn-accent border-accent tap-lg min-h-[56px]"
                 aria-disabled aria-pressed
@@ -647,6 +685,13 @@ export default function CaptureView() {
                 aria-disabled aria-pressed
                 aria-label="Looping — the capture loop is already running; press Stop to end it">
                 Looping…
+              </button>
+            ) : pending === "loop" ? (
+              <button
+                className="btn tap-lg min-h-[56px]"
+                aria-disabled aria-busy
+                aria-label={startingReason}>
+                Starting…
               </button>
             ) : loopReason ? (
               <LockedChip reason={loopReason} className="btn tap-lg min-h-[56px] justify-center">
@@ -700,6 +745,11 @@ export default function CaptureView() {
               <LockedChip reason={exposeReason} className="btn tap min-h-[44px] justify-center">
                 Live View
               </LockedChip>
+            ) : pending === "live" ? (
+              <button className="btn tap min-h-[44px]" aria-disabled aria-busy
+                aria-label={startingReason}>
+                Starting…
+              </button>
             ) : (
               <button
                 className={`btn tap min-h-[44px] ${liveStackOn ? "btn-accent border-accent" : ""}`}

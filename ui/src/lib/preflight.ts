@@ -21,6 +21,19 @@ export interface PreflightActions {
   startGuiding?: () => void | Promise<void>;
 }
 
+// --- cooling set-point bounds (UX round-4 S4) --------------------------------
+// A set-point outside this range is a typo, not a plan: it is the SAME range the
+// manual cooler field on Capture already enforces (CaptureView COOLER_MIN_C /
+// COOLER_MAX_C), and the plan editor never had one — so the field that decides a
+// whole night was the looser of the two. It also catches anything below absolute
+// zero, which is exactly what the plan editor's numeric field produces while you
+// edit it ("-10" becomes "-1010" because the field cannot be emptied).
+const SETPOINT_MIN_C = -60;
+const SETPOINT_MAX_C = 40;
+/** A thermoelectric cooler pulls roughly 35–45 °C below ambient; past that the
+ *  set-point is not reachable from the temperature the sensor is reading now. */
+const MAX_COOLER_DELTA_C = 45;
+
 const WORD: Record<CheckStatus, string> = {
   ok: "READY",
   warn: "WARN",
@@ -133,20 +146,54 @@ export function buildPreflight(
     });
 
   // --- cooling ---
+  // UX round-4 S4 ("success reported before it is earned"). A set-point the
+  // camera cannot reach used to be a WARN, so the run started, cooled for the
+  // full cool_timeout_s, and then — with the default escalation (require_cooling
+  // off) — shot lights at whatever temperature the sensor happened to be at. Ten
+  // minutes of a clear night and a night of mismatched darks, with nothing on
+  // screen having said so. Two of those cases are knowable BEFORE the run:
+  //   · a set-point outside what a cooled camera can hold (or below absolute
+  //     zero — the plan editor's numeric field turns -10 into -1010 mid-edit)
+  //     is not a warning, it is a value to fix, so it BLOCKS;
+  //   · a set-point further below the CURRENT sensor temperature than a TEC can
+  //     pull stays a warning — ambient falls overnight and cameras differ — but
+  //     it now states the deadline and what happens when it expires, instead of
+  //     printing a target that reads like a promise.
+  const coolTimeoutMin = Math.max(1, Math.round((plan.cool_timeout_s || 600) / 60));
   if (plan.cool_to == null) push("cooling", "Cooling", "skipped");
   else if (checking) push("cooling", "Cooling", "checking");
   else if (!status?.camera?.can_cool)
     push("cooling", "Cooling", "blocked", {
       detail: { value: "plan wants cooling; camera can't cool" },
     });
+  else if (
+    !Number.isFinite(plan.cool_to)
+    || plan.cool_to < SETPOINT_MIN_C
+    || plan.cool_to > SETPOINT_MAX_C
+  )
+    push("cooling", "Cooling", "blocked", {
+      detail: {
+        value: `${plan.cool_to} °C is outside what a cooled camera can hold (${SETPOINT_MIN_C} to ${SETPOINT_MAX_C} °C)`,
+      },
+    });
   else {
     const temp = status.camera.temperature;
     const target = plan.cool_to;
+    const coolerOff = !status.camera.cooler?.on;
     if (temp == null)
       push("cooling", "Cooling", "warn", { detail: { value: "temperature unknown" } });
     else if (Math.abs(temp - target) <= 1.0)
       push("cooling", "Cooling", "ok", {
         detail: { value: `${temp.toFixed(1)}`, unit: "°C" },
+      });
+    else if (coolerOff && target < temp - MAX_COOLER_DELTA_C)
+      // The sensor is sitting at ambient (cooler off), so this delta is the real
+      // one the TEC would have to pull.
+      push("cooling", "Cooling", "warn", {
+        detail: {
+          value: `${temp.toFixed(1)} → ${target} °C is ${Math.round(temp - target)}° of cooling; a cooler pulls about ${MAX_COOLER_DELTA_C}°. After ${coolTimeoutMin} min the run shoots at whatever it reached`,
+        },
+        fix: { label: "Start cooling now", onClick: actions.startCooling, inPlace: true },
       });
     else
       push("cooling", "Cooling", "warn", {
