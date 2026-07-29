@@ -191,6 +191,21 @@ export default function MonitorView() {
     lastEtaSentinel.current = sentinel;
     etaAnchorRef.current = { etaS: progress?.eta_s, receivedAtMs: Date.now() };
   }
+  // ----- did THIS client watch the current frame start? (UX round-4 S4) -----
+  // The engine publishes a progress snapshot at each frame BOUNDARY and never
+  // again while the exposure runs, so every field in it — server_now_ms,
+  // frame_started_at_ms, elapsed_s — is frozen for the whole sub (measured on
+  // /api/sequence/state: both ms values byte-identical for 40 s, then jumping
+  // together). A client that was watching when the snapshot arrived knows the
+  // frame's real age; a client that opened the dashboard mid-sub does NOT, and
+  // must say so instead of drawing a bar that reads "this frame just started".
+  const frameStartMs = progress?.frame_started_at_ms ?? null;
+  const sawFrameGapRef = useRef(false);
+  const firstFrameStartRef = useRef<number | null>(null);
+  if (frameStartMs == null) sawFrameGapRef.current = true;
+  else if (firstFrameStartRef.current == null) firstFrameStartRef.current = frameStartMs;
+  const joinedMidFrame =
+    !sawFrameGapRef.current && frameStartMs != null && frameStartMs === firstFrameStartRef.current;
 
   // ----- live 4-series ring for the dew early-warning trend AND the "Live
   // trend" panel (resolves B9; generalizes the old single-HFR ring — report
@@ -404,6 +419,16 @@ export default function MonitorView() {
   const roofConnected = !!dome?.connected;
   const roofShutter = dome?.shutter ?? "unknown";
   const roofAlarm = roofConnected && runActive && roofShutter !== "open";
+  // UX round-4 S4. "Roof open" carried a ✓ whenever it wasn't the closed-during-a-
+  // run case — including while the safety monitor was reporting rain, three lines
+  // under a red "Unsafe — rain sensor wet" banner. Open is only the GOOD state
+  // when it is safe to be open; with an unsafe (or non-reporting, which the
+  // engine's own gate treats as unsafe) monitor, an open roof is the exposure,
+  // so it must not wear the tick. The banner above already says WHY — this only
+  // stops the glyph from contradicting it.
+  const safetyUnsafe =
+    !!safety?.connected && (safety.reading == null || safety.reading.stale || !safety.reading.is_safe);
+  const roofOpenWhileUnsafe = roofConnected && roofShutter === "open" && safetyUnsafe;
 
   const healthIssues = useMemo(
     () =>
@@ -497,11 +522,17 @@ export default function MonitorView() {
                 {roofConnected && (
                   <span
                     className={`inline-flex items-center gap-1 shrink-0 ${
-                      roofAlarm ? "text-bad font-semibold" : roofShutter === "error" ? "text-warn" : "text-dim"
+                      roofAlarm ? "text-bad font-semibold"
+                        : roofShutter === "error" || roofOpenWhileUnsafe ? "text-warn"
+                          : "text-dim"
                     }`}
                   >
                     <Icon
-                      name={roofAlarm || roofShutter === "error" ? "alert" : roofShutter === "open" ? "check" : "info"}
+                      name={
+                        roofAlarm || roofShutter === "error" || roofOpenWhileUnsafe ? "alert"
+                          : roofShutter === "open" ? "check"
+                            : "info"
+                      }
                       size={12}
                     />
                     {domeStatusLabel(roofShutter)}
@@ -664,6 +695,7 @@ export default function MonitorView() {
                         exposureS={curExp}
                         stalled={stallSoft}
                         reducedMotion={reducedMotion}
+                        joinedMidFrame={joinedMidFrame}
                       />
                     )}
 
@@ -673,7 +705,19 @@ export default function MonitorView() {
                         <span className="text-dim text-sm ml-2">{progress.percent}%</span>
                       </span>
                       <span className="text-xs text-dim mono">
-                        {fmtDuration(progress.elapsed_s)} elapsed
+                        {/* Same frozen snapshot as the sub-frame bar: elapsed_s is
+                            stamped at the frame boundary, so a 5-minute sub read
+                            "0s elapsed" for five minutes. Advance it from the
+                            instant this snapshot arrived. NOT while paused —
+                            elapsed_s excludes paused time, so the stored value is
+                            already the right one to show there. */}
+                        {running && joinedMidFrame && "≥"}
+                        {fmtDuration(
+                          running
+                            ? progress.elapsed_s
+                              + Math.max(0, now - etaAnchorRef.current.receivedAtMs) / 1000
+                            : progress.elapsed_s,
+                        )} elapsed
                       </span>
                     </div>
 
@@ -919,22 +963,48 @@ function SubFrameBar({
   exposureS,
   stalled,
   reducedMotion,
+  joinedMidFrame,
 }: {
   startedAtMs: number;
   serverNowMs?: number;
   exposureS: number;
   stalled: boolean;
   reducedMotion?: boolean;
+  /** True when this client did not witness the frame start, so the age below is
+   *  a floor rather than a measurement (see MonitorView's anchor). */
+  joinedMidFrame?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 500);
     return () => clearInterval(t);
   }, []);
-  // Offset-correct the server epoch to the client clock via the emit instant.
-  const skew = serverNowMs != null ? Date.now() - serverNowMs : 0;
-  const elapsed = stalled ? exposureS : (now - (startedAtMs + skew)) / 1000;
+  // ONE anchor per frame — the bug this replaces (UX round-4, #3): the skew was
+  // re-derived on EVERY tick as `Date.now() - serverNowMs`, and the engine emits
+  // server_now_ms and frame_started_at_ms from the same instant and then never
+  // republishes, so the subtraction cancelled exactly and the bar read 0.0 s for
+  // the entire exposure — an empty bar and "frame 00:00 / 300s" for five
+  // minutes, on the one indicator that answers "is this frame running or has it
+  // stalled?". Anchor at the moment the snapshot lands (taking the server's own
+  // reported age of the frame if it gives one), then interpolate on the client
+  // clock, which is the only clock ticking between boundaries.
+  const anchorRef = useRef<{ key: number; atMs: number; ageS: number } | null>(null);
+  if (anchorRef.current?.key !== startedAtMs) {
+    const reportedAgeS = serverNowMs != null ? (serverNowMs - startedAtMs) / 1000 : 0;
+    anchorRef.current = {
+      key: startedAtMs,
+      atMs: Date.now(),
+      ageS: Number.isFinite(reportedAgeS) ? Math.max(0, reportedAgeS) : 0,
+    };
+  }
+  const anchor = anchorRef.current;
+  const elapsed = stalled
+    ? exposureS
+    : Math.max(0, anchor.ageS + (now - anchor.atMs) / 1000);
   const frac = Math.max(0, Math.min(1, elapsed / exposureS));
+  // We joined a frame already in flight and the server did not tell us how old
+  // it was, so all we can honestly claim is "at least this long".
+  const floorOnly = !stalled && !!joinedMidFrame && anchor.ageS < 0.5;
   return (
     <div className="flex flex-col gap-1">
       <div className="progress-track !h-2">
@@ -947,7 +1017,9 @@ function SubFrameBar({
         />
       </div>
       <span className={`mono text-[10px] tabular-nums ${stalled ? "text-warn" : "text-dim"}`}>
-        frame {fmtCountdown(Math.min(elapsed, exposureS))} / {Math.round(exposureS)}s
+        frame {floorOnly ? "≥" : ""}{fmtCountdown(Math.min(elapsed, exposureS))} /{" "}
+        {Math.round(exposureS)}s
+        {floorOnly && " · started before this screen opened"}
       </span>
     </div>
   );

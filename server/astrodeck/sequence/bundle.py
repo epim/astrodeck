@@ -76,6 +76,10 @@ class NullMasterLibrary:
     def match(self, key: CalibKey) -> str | None:  # noqa: ARG002 - protocol shape
         return None
 
+    def master_count(self) -> int:
+        """Always zero — there is no library to count (see ``_library_size``)."""
+        return 0
+
 
 @dataclass(frozen=True)
 class LightEntry:
@@ -145,6 +149,20 @@ class CalibrationLibraryAdapter:
 
     def __init__(self, lib) -> None:
         self._lib = lib
+
+    def master_count(self) -> int | None:
+        """How many masters the library holds (``None`` when it cannot say).
+
+        Optional beyond the :class:`MasterLibrary` Protocol, read through
+        ``getattr`` by :func:`_library_size`. It exists so a missing-master
+        warning can name the REASON: an empty library ("you shot the frames but
+        never built the masters") and a full library that simply has nothing at
+        this exposure/gain/binning/temperature are different problems with
+        different fixes, and the bundle used to report neither."""
+        try:
+            return len(self._lib.list_masters())
+        except Exception:
+            return None
 
     def match(self, key: CalibKey) -> str | None:
         try:
@@ -309,6 +327,62 @@ def fwhm_from_hfr(hfr: float | None, k: float = HFR_TO_FWHM_K) -> float | None:
         return None
 
 
+def _library_size(library: MasterLibrary) -> int | None:
+    """Masters in ``library``, or ``None`` when it cannot say (the Protocol only
+    requires ``match``; ``master_count`` is the optional extension)."""
+    fn = getattr(library, "master_count", None)
+    if not callable(fn):
+        return None
+    try:
+        n = fn()
+    except Exception:
+        return None
+    return int(n) if isinstance(n, int) and n >= 0 else None
+
+
+def _master_gap_warning(groups: list[Group], library: MasterLibrary) -> str | None:
+    """The sentence for "this bundle ships lights with no calibration", or None.
+
+    Why this exists: the manifest used to carry ``warnings: []`` next to
+    ``masters {dark:false, flat:false, bias:false}`` minutes after the operator
+    shot darks, flats AND bias — an empty warnings array beside three missing
+    masters reads as an all-clear, and the panel above it promises the lights
+    come "together with the matching calibration frames". The per-group booleans
+    were already correct; what was missing is the one thing the booleans cannot
+    say — WHY there is no master and WHAT to do about it. Shooting calibration
+    frames does not build masters: that is a separate library rebuild, which
+    nothing in the export path points at."""
+    if not groups:
+        return None
+    n_groups = len(groups)
+    missing = {k: sum(1 for g in groups if k in g.missing_masters)
+               for k in _MASTER_KINDS}
+    gaps = [k for k in _MASTER_KINDS if missing[k]]
+    if not gaps:
+        return None
+    # "Dark, Flat" when every group lacks them; "Flat (1 of 3 groups)" when the
+    # gap is partial, so the reader knows whether this is the whole run.
+    kinds = ", ".join(k if missing[k] == n_groups else f"{k} ({missing[k]} of {n_groups} groups)"
+                      for k in gaps)
+    size = _library_size(library)
+    if size == 0:
+        why = ("the calibration library is empty. Shooting calibration frames does "
+               "not build the masters; do that in Settings > Calibration > Rebuild "
+               "library, then export again")
+    elif size is None:
+        why = ("nothing in the calibration library matched. Shoot the missing "
+               "frames, then Settings > Calibration > Rebuild library")
+    else:
+        why = (f"none of the {size} masters in the library match this exposure, gain, "
+               "binning and temperature (flats also match on filter). Shoot the "
+               "missing frames, then Settings > Calibration > Rebuild library")
+    # Only claim the whole bundle is uncalibrated when it actually is; with one
+    # kind missing the list above is already the whole story.
+    everything = all(len(g.missing_masters) == len(_MASTER_KINDS) for g in groups)
+    tail = " Nothing in this bundle is calibrated." if everything else ""
+    return f"No master {kinds} for these lights — {why}.{tail}"
+
+
 def build_bundle(report: SessionReport, library: MasterLibrary, *,
                  is_local: Callable[[str], bool],
                  layout: str = "grouped",
@@ -346,8 +420,10 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             raise ValueError("keep_threshold must be in [0, 1] "
                              "(weights are group-normalized, best = 1.0)")
     warnings: list[str] = []
-    if isinstance(library, NullMasterLibrary):
-        warnings.append("No master library configured — masters were not matched.")
+    no_library = isinstance(library, NullMasterLibrary)
+    if no_library:
+        warnings.append("No master library configured — masters were not matched. "
+                        "The bundle ships the lights uncalibrated.")
 
     # 1 + 2: select locals, group in first-seen order.
     grouped: dict[tuple, list[FrameRecord]] = {}
@@ -423,6 +499,20 @@ def build_bundle(report: SessionReport, library: MasterLibrary, *,
             dir=gdir, target=target, filter=filt, exposure_s=exp, gain=gain,
             binning=binning, lights=tuple(lights), masters=masters,
             master_sources=master_sources, missing_masters=tuple(missing)))
+
+    # 5. Warn about what this bundle does NOT contain. `warnings: []` is read as
+    #    "nothing to report", so it must never be empty while the bundle is
+    #    missing masters or has nothing in it at all.
+    if not groups:
+        warnings.append(
+            "No lights in this bundle — none of this run's frames are saved on "
+            "this machine (save-to-library off, or the files were moved). Only "
+            "the manifest describes the run; there is nothing to stack.")
+    # (skipped when there is no library at all — the line above already says so,
+    #  and "rebuild the library" is the wrong advice when none is configured.)
+    gap = None if no_library else _master_gap_warning(groups, library)
+    if gap:
+        warnings.append(gap)
 
     return Bundle(report_id=report.id, plan_name=report.plan_name, layout=layout,
                   groups=tuple(groups), warnings=tuple(warnings),
