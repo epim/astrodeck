@@ -244,6 +244,19 @@ export interface LiveStackInfo {
   integrated_s: number;  // Σ accepted exposures
   rejected: number;      // subs skipped by drift-reject
   accepted: boolean;     // was THIS sub accepted (vs a drift skip)
+  /** Why this sub landed where it did. "" is a clean constellation match;
+   *  "weak_align" means it fell back to a single star, so the alignment is only
+   *  as good as that star. The rest are rejections, plus "reseed" — the stack
+   *  gave up on the old framing and started again on this sub. */
+  reason?: "" | "weak_align" | "drift" | "no_match" | "no_stars" | "reseed" | "size";
+  /** Star pairs backing the measured shift. >=3 is a real pattern; 1 is the
+   *  single-star fallback. */
+  support?: number;
+  /** Pixels clipped out of THIS sub as bright outliers — a satellite trail,
+   *  an aircraft, a cosmic ray hit. */
+  clipped?: number;
+  dx?: number;
+  dy?: number;
 }
 
 // NOV-12 Bahtinov focus aid — present only on raw/linear subs while the aid is
