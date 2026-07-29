@@ -135,17 +135,61 @@ class LiveStacker:
         cov = np.maximum(self._cov, 1e-6)
         return np.clip(np.round(self._sum / cov), 0, 65535).astype(np.uint16)
 
-    def _variance(self) -> np.ndarray | None:
-        """Per-pixel variance of the accumulated samples, or None while there
-        are too few frames for it to mean anything."""
+    def _clip_outliers(self, f: np.ndarray, dx: float, dy: float) -> int:
+        """Replace bright outliers in ``f`` with the running mean, IN PLACE.
+
+        Returns how many pixels were replaced. A no-op until there are enough
+        frames for the variance to mean anything — clipping on four samples of
+        noise would eat real stars.
+
+        Done in ROW BANDS rather than whole-frame. The arithmetic is identical
+        either way; the difference is peak memory, and at full frame it is not a
+        rounding error. On a 26 MP sensor a whole-frame pass allocates a
+        variance, a mean, a limit and a masked copy at 104 MB each — measured at
+        757 MB of transient on top of the 313 MB the accumulators already hold.
+        That is the difference between fitting in a 4 GB Raspberry Pi and not.
+        Banded, the transient is a few tens of MB regardless of sensor size.
+
+        ``f`` is written through: the caller's array is already a fresh float32
+        copy (``astype`` copies), so there is nothing to protect and no reason
+        to spend another full frame duplicating it.
+        """
         if (self._sum is None or self._sumsq is None or self._cov is None
-                or self._frames < MIN_FRAMES_FOR_CLIP):
-            return None
-        cov = np.maximum(self._cov, 1e-6)
-        mean = self._sum / cov
-        # E[x^2] - E[x]^2, floored at 0 (float error can make it slightly
-        # negative where every sample is identical).
-        return np.maximum(self._sumsq / cov - mean * mean, 0.0)
+                or self._frames < MIN_FRAMES_FOR_CLIP or self.clip_sigma <= 0):
+            return 0
+        h, w = self._shape                      # type: ignore[misc]
+        ys_dst, ys_src = _axis_slices(h, int(round(dy)))
+        xs_dst, xs_src = _axis_slices(w, int(round(dx)))
+        rows = ys_dst.stop - ys_dst.start
+        if rows <= 0:
+            return 0
+        # ~8 MB per band whatever the sensor, so the working set is bounded by
+        # the band rather than by the frame.
+        band_rows = max(1, min(rows, 2_000_000 // max(1, w)))
+
+        clipped = 0
+        for r0 in range(0, rows, band_rows):
+            r1 = min(r0 + band_rows, rows)
+            dst = (slice(ys_dst.start + r0, ys_dst.start + r1), xs_dst)
+            src = (slice(ys_src.start + r0, ys_src.start + r1), xs_src)
+            cov = np.maximum(self._cov[dst], 1e-6)
+            mean = self._sum[dst] / cov
+            # E[x^2] - E[x]^2, floored at 0 (float error can make it slightly
+            # negative where every sample is identical).
+            var = self._sumsq[dst] / cov
+            var -= mean * mean
+            np.maximum(var, 0.0, out=var)
+            np.sqrt(var, out=var)
+            limit = mean + self.clip_sigma * var
+            band = f[src]                       # a view into f
+            hot = band > limit
+            n = int(np.count_nonzero(hot))
+            if n:
+                clipped += n
+                # Substituted, not dropped: a hole in the coverage plane would
+                # turn the trail into a DARK streak instead of nothing.
+                np.copyto(band, mean, where=hot)
+        return clipped
 
     def _seed(self, data: np.ndarray, exposure_s: float,
               stars: list[Star]) -> None:
@@ -178,30 +222,12 @@ class LiveStacker:
         h, w = self._shape          # type: ignore[misc]
         f = data.astype(np.float32)
 
-        clipped = 0
-        var = self._variance()
-        if var is not None and self.clip_sigma > 0:
-            # Compare the incoming sub against the running estimate AT ITS OWN
-            # aligned position, using the whole-pixel part of the shift. A trail
-            # is many sigma out, so a pixel of registration slop does not matter
-            # for detection — and doing it here, before the bilinear split,
-            # means one comparison rather than four.
-            iy, ix = int(round(dy)), int(round(dx))
-            ys_dst, ys_src = _axis_slices(h, iy)
-            xs_dst, xs_src = _axis_slices(w, ix)
-            cov = np.maximum(self._cov[ys_dst, xs_dst], 1e-6)
-            mean = self._sum[ys_dst, xs_dst] / cov
-            limit = mean + self.clip_sigma * np.sqrt(var[ys_dst, xs_dst])
-            window = f[ys_src, xs_src]
-            hot = window > limit
-            clipped = int(np.count_nonzero(hot))
-            if clipped:
-                # Replace the outlier with the running mean rather than dropping
-                # it: a hole in the coverage plane would make the trail show up
-                # as a DARK streak instead of vanishing.
-                window = np.where(hot, mean, window)
-                f = f.copy()
-                f[ys_src, xs_src] = window
+        # Compare the incoming sub against the running estimate AT ITS OWN
+        # aligned position, using the whole-pixel part of the shift. A trail is
+        # many sigma out, so a pixel of registration slop does not matter for
+        # detection — and doing it here, before the bilinear split, means one
+        # comparison rather than four.
+        clipped = self._clip_outliers(f, dx, dy)
 
         # Bilinear split: floor + fractional remainder in each axis.
         fy, fx = int(np.floor(dy)), int(np.floor(dx))
