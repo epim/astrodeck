@@ -1957,7 +1957,18 @@ class Hub:
                 ls_info = {"frames": outcome.frames,
                            "integrated_s": round(outcome.integrated_s, 1),
                            "rejected": outcome.rejected,
-                           "accepted": outcome.accepted}
+                           "accepted": outcome.accepted,
+                           # Why this sub landed where it did: "" = a clean
+                           # constellation match, "weak_align" = fell back to a
+                           # single star, "drift"/"no_match"/"no_stars" =
+                           # rejected, "reseed" = adopted a new framing.
+                           "reason": outcome.reason,
+                           # Star pairs backing the shift, and the pixels clipped
+                           # out of THIS sub as bright outliers (a satellite).
+                           "support": outcome.support,
+                           "clipped": outcome.clipped,
+                           "dx": round(outcome.dx, 2),
+                           "dy": round(outcome.dy, 2)}
             black, mid, white = await asyncio.to_thread(auto_levels, data)
             jpeg, dw, dh = await asyncio.to_thread(
                 to_jpeg, data, black=black, mid=mid, white=white)
@@ -2457,11 +2468,13 @@ class Hub:
         return self._loop_task is not None and not self._loop_task.done()
 
     # -------------------------------------------------------- Live View (NOV-1)
-    def start_live_stack(self, reject_frac: float = 0.08) -> dict:
+    def start_live_stack(self, reject_frac: float = 0.08,
+                         clip_sigma: float = 4.0) -> dict:
         from .imaging import LiveStacker
-        self.live_stacker = LiveStacker(reject_frac=reject_frac)
+        self.live_stacker = LiveStacker(reject_frac=reject_frac,
+                                        clip_sigma=clip_sigma)
         bus.log("info", "Live View on — stacking subs", "capture")
-        return {"active": True}
+        return {"active": True, "clip_sigma": clip_sigma}
 
     def reset_live_stack(self) -> dict:
         if self.live_stacker is not None:

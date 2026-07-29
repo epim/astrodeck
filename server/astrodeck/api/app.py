@@ -574,8 +574,12 @@ class CaptureBody(BaseModel):
 
 class LiveStackBody(CaptureBody):
     # NOV-1 Live View: drift-reject threshold as a fraction of the frame's short
-    # edge (default 8%). Not surfaced in the beginner UI; a future Advanced knob.
+    # edge (default 8%). An Advanced knob — the default suits any tracked rig.
     reject_frac: float = 0.08
+    # Clip a pixel this many sigma above the running mean: the satellite-trail
+    # guard. 0 disarms it (a deliberate "stack everything" mode), which is what
+    # you want when the target itself is a genuine transient.
+    clip_sigma: float = Field(4.0, ge=0, le=20)
 
 
 class BahtinovBody(CaptureBody):
@@ -2897,7 +2901,8 @@ def create_app() -> FastAPI:
             hub.require("camera")
         except DeviceError as e:
             raise _err(e)
-        hub.start_live_stack(reject_frac=body.reject_frac)
+        hub.start_live_stack(reject_frac=body.reject_frac,
+                             clip_sigma=body.clip_sigma)
         await hub.start_loop(body.exposure_s, body.gain, body.offset, body.binning,
                              frame_type="Light")
         return {"active": True}
