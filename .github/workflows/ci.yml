@@ -1,6 +1,10 @@
 name: ci
 
 on:
+  # Run CI on demand without inventing a dummy commit. Needed in practice: CI
+  # was disabled for a stretch, and re-enabling it left no way to verify the
+  # backlog until something happened to land on a non-ignored path.
+  workflow_dispatch:
   push:
     branches: [main]
     # A docs- or scratch-only push should not spend five jobs (one of them
