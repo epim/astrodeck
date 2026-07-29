@@ -116,7 +116,32 @@ engine.dispatcher = dispatcher
 # re-checks state every tick and holds no long-lived assumptions).
 resume_arm = ResumeArm(engine, hub, weather=weather_service)
 
-UI_DIST = Path(__file__).resolve().parents[3] / "ui" / "dist"
+def _resolve_ui_dist() -> Path:
+    """Where the built SPA lives, across every way AstroDeck is shipped.
+
+    This used to be the repo-relative path alone, which is correct for a git
+    checkout and for the release tarball (it preserves ``server/`` beside
+    ``ui/dist/``) and wrong for every other form: in a container, a wheel, or a
+    single-file binary there is no ``ui/`` sibling, so the SPA silently did not
+    mount and the server answered API calls while serving no interface.
+
+    Order, first hit wins:
+      1. ``ASTRODECK_UI_DIR`` — an explicit override. What the container sets.
+      2. ``<package>/webui`` — the SPA copied INSIDE the package, which is how a
+         wheel and a PyInstaller bundle carry it (package data travels; a
+         sibling directory does not).
+      3. the repo / release-tarball layout.
+    """
+    env = os.environ.get("ASTRODECK_UI_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    bundled = Path(__file__).resolve().parents[1] / "webui"
+    if (bundled / "index.html").is_file():
+        return bundled
+    return Path(__file__).resolve().parents[3] / "ui" / "dist"
+
+
+UI_DIST = _resolve_ui_dist()
 
 # ------------------------------------------------ weather tile proxy (weather spec §6)
 # IEM tile cache proxy. Upstream HARDCODED server-side (never caller-supplied);
@@ -4418,7 +4443,11 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------ static UI
 
-    if UI_DIST.exists():
+    # index.html, not just the directory: a packaging mistake that leaves an
+    # empty or half-copied ui dir would otherwise crash the mount at boot
+    # (StaticFiles raises on a missing directory) instead of degrading to the
+    # API-only server the `else` branch already describes.
+    if (UI_DIST / "index.html").is_file() and (UI_DIST / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=UI_DIST / "assets"), name="assets")
 
         @app.get("/{path:path}")

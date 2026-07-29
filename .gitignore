@@ -16,3 +16,6 @@ native/target/
 
 # external UI review evidence (referenced by docs/superpowers/reviews, kept local)
 review-evidence*/
+
+# Built SPA copied into the package for binary/wheel packaging (build_binary.py)
+server/astrodeck/webui/

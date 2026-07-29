@@ -87,6 +87,12 @@ jobs:
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm ci
+      # The 99 UI test files gated nothing until now: each prints its own tally
+      # and exits zero either way, so a failing file was visible only to somebody
+      # running it by hand and reading the output. run-tests.mjs runs each in its
+      # own process (they install fake globals and do not clean up) and turns the
+      # result into an exit code.
+      - run: npm test
       - run: npm run build
 
   # The Rust native engine (star detection / autofocus / TPPA / guiding) + its

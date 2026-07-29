@@ -1,0 +1,35 @@
+# Keep the build context small and the image reproducible. Anything that is
+# built, cached, machine-specific or private stays out.
+
+.git
+.github
+.remember
+.claude
+.codex
+
+# Built and cached artefacts — the image builds its own.
+ui/node_modules
+ui/dist
+server/.venv
+server/build
+server/dist
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+native/target
+
+# Live rig state. Baking a config into an image would ship somebody's site
+# coordinates and user store to whoever pulls it.
+server/config
+server/captures
+data
+
+# Docs, tests and scratch: not needed at runtime.
+docs
+relay
+*.md
+!README.md
+capture_*.py
+*.png
+*.html
