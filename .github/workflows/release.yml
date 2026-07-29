@@ -85,9 +85,14 @@ jobs:
 
   # Single-file binaries: download one thing, run it, no Python install.
   #
-  # PyInstaller cannot cross-compile, so each artefact is built on the OS it
-  # targets — that is what the matrix is for, not parallelism. macOS runners
-  # bill at 10x, so this job runs only on a release tag, never on a push.
+  # PyInstaller cannot cross-compile, so each artefact is built on the OS AND
+  # architecture it targets — that is what the matrix is for, not parallelism.
+  # An arm64 macOS binary tells you nothing about an arm64 Linux one: same
+  # instruction set, different OS, libc and bootloader. So the Raspberry Pi
+  # needs its own row, not a Mac.
+  #
+  # Runner cost: macOS bills at 10x and arm64 Linux is free only on PUBLIC
+  # repos, so this job runs on a release tag only, never on a push.
   #
   # build_binary.py SMOKE-TESTS what it produced (starts it, checks /healthz,
   # the SPA, and that the device backends registered). A binary that builds and
@@ -101,6 +106,9 @@ jobs:
         include:
           - os: ubuntu-latest
             asset: astrodeck-linux-x86_64
+            path: dist/astrodeck
+          - os: ubuntu-24.04-arm      # native arm64 => the Raspberry Pi binary
+            asset: astrodeck-linux-arm64
             path: dist/astrodeck
           - os: windows-latest
             asset: astrodeck-windows-x86_64.exe
