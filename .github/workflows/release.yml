@@ -8,6 +8,12 @@ name: release
 on:
   push:
     tags: ['v*']
+  # Re-run a release build without re-tagging. A tag push is a one-shot trigger,
+  # so a run that fails for a reason unrelated to the code — a billing block, a
+  # runner outage — would otherwise mean deleting and re-pushing the tag. Select
+  # the TAG as the ref when dispatching; every step reads github.ref_name, which
+  # is the tag name either way.
+  workflow_dispatch:
 
 permissions:
   contents: write
