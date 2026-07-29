@@ -28,16 +28,20 @@ import {
 import BackendLinkGrid from "./BackendLinkGrid";
 import DriversPanel from "./DriversPanel";
 import SitePanel from "./SitePanel";
+import OpticsPanel from "./OpticsPanel";
 import SkyAtlasPanel from "./SkyAtlasPanel";
 import NamingPanel from "./NamingPanel";
 import WcsStampPanel from "./WcsStampPanel";
 import WeatherPanel from "./WeatherPanel";
 import ProfileList from "./ProfileList";
 import CalibrationLibraryPanel from "./CalibrationLibraryPanel";
+import CalibrationTolerancesPanel from "./CalibrationTolerancesPanel";
 import AccountPanel from "./AccountPanel";
 import UsersPanel from "./UsersPanel";
 import AuthMethodPanel from "./AuthMethodPanel";
 import SafetyPanel from "./SafetyPanel";
+import SafetyLimitsPanel from "./SafetyLimitsPanel";
+import EscalationPanel from "./EscalationPanel";
 import AlertsPanel from "./AlertsPanel";
 import UpdatePanel from "./UpdatePanel";
 import FactoryResetPanel from "./FactoryResetPanel";
@@ -220,8 +224,18 @@ export default function SettingsView(): JSX.Element {
         </div>
       )}
 
-      {/* ------------------------------------------------------------- SAFETY */}
-      {activeTab === "safety" && <SafetyPanel />}
+      {/* ------------------------------------------------------------- SAFETY
+          Sun avoidance first (it is armed by default and protects gear from a
+          daytime slew), then the limits that end a night, then the non-weather
+          failure policy. All three used to be one panel's worth of solar
+          controls plus a config file. */}
+      {activeTab === "safety" && (
+        <div className="flex flex-col gap-4">
+          <SafetyPanel />
+          <SafetyLimitsPanel />
+          <EscalationPanel />
+        </div>
+      )}
 
       {/* ------------------------------------------------------------- ALERTS */}
       {activeTab === "alerts" && canAlerts && <AlertsPanel />}
@@ -256,6 +270,7 @@ export default function SettingsView(): JSX.Element {
                 and every delivered FITS header was the last thing a first-run
                 user would ever find. It is now the first panel on the tab. */}
             <SitePanel />
+            <OpticsPanel />
             <DriversPanel />
             {canSeePrecise && <WeatherPanel />}
             <SkyAtlasPanel />
@@ -287,8 +302,16 @@ export default function SettingsView(): JSX.Element {
         </>
       )}
 
-      {/* -------------------------------------------------------- CALIBRATION */}
-      {activeTab === "calibration" && <CalibrationLibraryPanel />}
+      {/* -------------------------------------------------------- CALIBRATION
+          The library (what masters exist) above the tolerances (when they get
+          reused), because the list is what you came to look at and the
+          tolerances are what you change once and forget. */}
+      {activeTab === "calibration" && (
+        <div className="flex flex-col gap-4">
+          <CalibrationLibraryPanel />
+          <CalibrationTolerancesPanel />
+        </div>
+      )}
 
       {/* ----------------------------------------------------------- PROFILES */}
       {activeTab === "profiles" && (

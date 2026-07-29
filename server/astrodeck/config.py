@@ -1021,6 +1021,24 @@ class ConfigStore:
         cfg.naming = naming
         return self.bump_and_save()
 
+    def set_calibration(self, calibration: "CalibrationConfig") -> AppConfig:
+        """Persist the master-library matching + stacking tolerances.
+
+        Every bound is already declared on the model (pydantic Field ge/le), so
+        an out-of-range value 422s at the route before it reaches here. The
+        remaining rule is a RELATIONAL one pydantic cannot express: a temp bin
+        narrower than the temp match tolerance means two frames can match each
+        other yet land in different stacking buckets, which silently halves the
+        depth of every master. Rejected rather than quietly reconciled."""
+        if calibration.temp_bin_c < calibration.temp_tol_c:
+            raise ValueError(
+                f"the temperature bin ({calibration.temp_bin_c}°C) must be at "
+                f"least the match tolerance ({calibration.temp_tol_c}°C) — a "
+                "narrower bin splits frames that matched into separate stacks")
+        cfg = self.cfg()
+        cfg.calibration = calibration
+        return self.bump_and_save()
+
     # -- per-frame WCS stamping mutation (per-frame-wcs spec §3) ----------------
 
     def set_wcs_stamp(self, solve_saved_lights: bool,

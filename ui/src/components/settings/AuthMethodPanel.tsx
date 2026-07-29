@@ -41,6 +41,10 @@ export default function AuthMethodPanel(): JSX.Element {
   const [firstRun, setFirstRun] = useState(true);
   const [trustLoopback, setTrustLoopback] = useState(true);
   const [defaultRole, setDefaultRole] = useState<PrincipalRole | "deny">("deny");
+  // Held as ORDERED PAIRS rather than the Record it is on the wire: two rows
+  // mid-edit can transiently share an empty key, and an object would silently
+  // merge them (or reorder rows as keys change under the cursor).
+  const [allowlist, setAllowlist] = useState<[string, string][]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -95,6 +99,7 @@ export default function AuthMethodPanel(): JSX.Element {
             auth.local_enabled_first_run,
             auth.trust_loopback,
             auth.default_role,
+            auth.role_allowlist,
           ])
         : "",
     [auth],
@@ -108,6 +113,7 @@ export default function AuthMethodPanel(): JSX.Element {
     setFirstRun(auth.local_enabled_first_run ?? true);
     setTrustLoopback(auth.trust_loopback ?? true);
     setDefaultRole((auth.default_role as PrincipalRole) ?? "deny");
+    setAllowlist(Object.entries(auth.role_allowlist ?? {}));
     // I4: only worth fetching the user list while auth is still open
     // (methods==[]) — once a method is enabled the guided card can never
     // show again (see setupCardState), so skip the extra admin.users
@@ -158,6 +164,13 @@ export default function AuthMethodPanel(): JSX.Element {
         local_enabled_first_run: firstRun,
         trust_loopback: trustLoopback,
         default_role: defaultRole === "deny" ? null : defaultRole,
+        // Blank and malformed rows are dropped rather than sent: an entry with
+        // no @ can never match a Google account, so persisting it would only
+        // look like access somebody has. Last write wins on a duplicate address.
+        role_allowlist: Object.fromEntries(
+          allowlist
+            .map(([e, r]) => [e.trim().toLowerCase(), r] as [string, string])
+            .filter(([e]) => e.includes("@"))),
       };
       const next = await setAuthConfig(body);
       // Deterministic transition message (R4B-AUTH-02): when this save ENABLED
@@ -396,6 +409,92 @@ export default function AuthMethodPanel(): JSX.Element {
             </select>
           </Field>
         </div>
+
+        {/* --------------------------------------------------- Google allowlist
+            The Default role field above tells you what happens to "an
+            authenticated user not named in the allowlist" — and until now there
+            was no way to see or edit that allowlist from anywhere. It only
+            governs Google sign-in (local accounts carry their own role), so it
+            appears with Google. */}
+        {googleOn && (
+          <div className="py-3 border-t border-line">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm text-ink">Who may sign in with Google</div>
+                <p className="text-[11px] text-dim max-w-md">
+                  Each address gets exactly the role you give it here. Anyone who
+                  signs in successfully but is not on this list gets the default
+                  role above — which is <span className="text-ink">deny</span>{" "}
+                  unless you changed it. Re-checked on every request, so removing
+                  someone takes effect immediately.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn min-h-11 !px-3 text-[11px] shrink-0"
+                disabled={busy}
+                onClick={() => setAllowlist((p) => [...p, ["", "viewer"]])}
+              >
+                Add
+              </button>
+            </div>
+
+            {allowlist.length === 0 ? (
+              <p className="text-[11px] text-dim mt-2">
+                Nobody listed. Every Google sign-in falls to the default role.
+              </p>
+            ) : (
+              <div className="mt-3 flex flex-col gap-2">
+                {allowlist.map(([email, role], i) => (
+                  <div key={i} className="grid grid-cols-[1fr_7rem_2.75rem] gap-2 items-center">
+                    <input
+                      className="field"
+                      type="email"
+                      inputMode="email"
+                      placeholder="name@example.com"
+                      aria-label={`Allowed address ${i + 1}`}
+                      value={email}
+                      disabled={busy}
+                      onChange={(e) =>
+                        setAllowlist((p) =>
+                          p.map((row, j) => (j === i ? [e.target.value, row[1]] : row)))
+                      }
+                    />
+                    <select
+                      className="field"
+                      aria-label={`Role for ${email || `address ${i + 1}`}`}
+                      value={role}
+                      disabled={busy}
+                      onChange={(e) =>
+                        setAllowlist((p) =>
+                          p.map((row, j) => (j === i ? [row[0], e.target.value] : row)))
+                      }
+                    >
+                      {ROLES.filter((r) => r !== "deny").map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn min-h-11 !px-0 text-[11px]"
+                      aria-label={`Remove ${email || `address ${i + 1}`}`}
+                      disabled={busy}
+                      onClick={() => setAllowlist((p) => p.filter((_, j) => j !== i))}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {allowlist.some(([e]) => e.trim() && !e.includes("@")) && (
+              <p className="text-[11px] text-warn mt-2">
+                An entry without an @ can never match a Google account. Blank and
+                malformed rows are dropped on save.
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center justify-between gap-3 py-3">
           <div className="min-w-0">

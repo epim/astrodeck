@@ -52,7 +52,8 @@ from ..catalog.survey import router as survey_router
 from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
-from ..config import (AlertSink, AuthConfig, ConfigVersionConflict,
+from ..config import (AlertSink, AuthConfig, CalibrationConfig,
+                      ConfigVersionConflict,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
                       SurveyConfig, UpdateConfig, WcsStampConfig, WeatherConfig,
@@ -1266,6 +1267,23 @@ def create_app() -> FastAPI:
             principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
         try:
             cfg = await asyncio.to_thread(config_store.set_naming, body)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        return _config_payload(principal)
+
+    # ------------------------------------------------ calibration tolerances
+    # How aggressively master darks/flats/bias are reused across nights, and how
+    # the stacker bins them. config.site_optics for the same reason naming/wcs
+    # are: this decides what lands in the delivered file, not which hardware is
+    # driven. Relational validation lives in set_calibration (ValueError -> 422).
+    @app.post("/api/config/calibration")
+    @declare(CAP_CONFIG_SITE_OPTICS)
+    async def set_calibration_config(
+            body: CalibrationConfig,
+            principal: Principal = Depends(require(CAP_CONFIG_SITE_OPTICS))):
+        try:
+            cfg = await asyncio.to_thread(config_store.set_calibration, body)
         except ValueError as e:
             raise HTTPException(422, str(e))
         bus.publish("config", config=redacted(cfg))
