@@ -1956,6 +1956,7 @@ class SequenceEngine:
             return
         floor_base = float(cfg.safety.min_alt_deg or 0.0)
         horizon = cfg.safety.horizon
+        nogo = cfg.safety.nogo_box
         pier = cfg.safety.enforce_pier_limits
 
         tel = self.hub.devices.get("telescope")
@@ -1984,7 +1985,7 @@ class SequenceEngine:
                     f"slew to {target.name} would require a pier flip but meridian "
                     "flip is disabled")
 
-        if floor_base <= 0.0 and not horizon:
+        if floor_base <= 0.0 and not horizon and not nogo:
             return      # no floor configured → nothing to enforce
 
         # DESTINATION alt/az now (and projected forward across the slew+solve), so
@@ -2001,7 +2002,7 @@ class SequenceEngine:
             alt_p, az_p = altaz(ra, dec, lat, lon, now + SLEW_PROJECT_S)
             if alt_p < worst_alt:
                 worst_alt, worst_az = alt_p, az_p
-        floor = max(floor_base, schedule.effective_floor(floor_base, horizon, worst_az))
+        floor = schedule.effective_floor(floor_base, horizon, worst_az, nogo)
         if worst_alt < floor:
             raise SafetyAbort(
                 f"target {target.name} altitude {worst_alt:.0f}° below safety floor "

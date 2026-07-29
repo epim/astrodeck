@@ -26,6 +26,8 @@ import type {
   RigSpec,
   RotatorConfig,
   SafetyConfig,
+  EscalationConfig,
+  CalibrationConfig,
   SurveyConfig,
   UpdateConfig,
   UpdateStatus,
@@ -216,6 +218,12 @@ export const setAuthConfig = (auth: Partial<AuthState> & Record<string, unknown>
  *  A 403 {code:"forbidden"} surfaces when the override cap is missing. */
 export const setSafetyConfig = (safety: SafetyConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config", { safety });
+
+/** POST /api/config {escalation} → persist the WHOLE escalation block. Same
+ *  wholesale-replace contract as setSafetyConfig, but gated on config.alerts
+ *  (the server files recovery/notification policy under the alerts cap). */
+export const setEscalationConfig = (escalation: EscalationConfig):
+  Promise<AppConfig> => api.post<AppConfig>("/api/config", { escalation });
 
 // ------------------------------------------------------ dome / roof (PRO-4)
 import type { DomeShutter } from "../lib/dome";
@@ -422,6 +430,12 @@ export const getPackStatus = (): Promise<PackStatus> =>
   api.get<PackStatus>("/api/survey/pack");
 
 // -------------------------------------------------------- file naming (PRO-11)
+/** POST /api/config/calibration → config payload. config.site_optics.
+ *  422 when the temp bin is narrower than the temp match tolerance (a relational
+ *  rule pydantic can't express, so the server checks it at write time). */
+export const setCalibrationConfig = (calibration: CalibrationConfig):
+  Promise<AppConfig> => api.post<AppConfig>("/api/config/calibration", calibration);
+
 /** POST /api/config/naming → config payload. config.site_optics. */
 export const setNamingConfig = (naming: NamingConfig): Promise<AppConfig> =>
   api.post<AppConfig>("/api/config/naming", naming);

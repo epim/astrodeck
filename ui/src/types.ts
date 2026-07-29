@@ -619,6 +619,10 @@ export interface Optics {
   sensor_height_px: number;
   auto_from_camera: boolean;
   guide_focal_length_mm?: number | null; // A4: optional guide-scope focal length (mm)
+  // PRO-2 F-B: the OPTICAL TUBE's name, written to the FITS TELESCOP card when
+  // set and omitted when blank. Not the mount device name — stackers group on
+  // this, so a wrong string splits one target across two groups.
+  telescope_name: string;
 }
 
 export interface OpticsComputed {
@@ -650,6 +654,9 @@ export interface AppConfig {
   safety: SafetyConfig;
   escalation: EscalationConfig;
   alerts: AlertSink[];
+  // Master-library matching + stacking tolerances (PRO-1). Optional for the same
+  // reason optics_computed is: the WS `hello` bootstrap omits it.
+  calibration?: CalibrationConfig;
   // REDACTED outbound (P2-12): the deadman url can carry a per-ping secret in its
   // path/query, so the server blanks it and exposes only `deadman_configured`.
   // POST an empty `deadman_url` to leave the stored value unchanged (mirrors the
@@ -984,11 +991,25 @@ export interface AlertHealth {
   deadman: { configured: boolean; healthy: boolean; last_ping_age_s: number | null };
 }
 
+/** One obstruction wedge. `alt_max` is the floor the mount must clear while its
+ *  azimuth is inside the range (the server name is historical). The range wraps
+ *  the 0↔360 seam: 350 → 10 is the 20° span through due north. */
+export interface NoGoWedge {
+  az_min: number;
+  az_max: number;
+  alt_max: number;
+}
+
 export interface SafetyConfig {
   enabled: boolean;
   preset: "backyard" | "remote" | "custom";
+  poll_each_frame: boolean;             // read the monitor before every exposure
   min_alt_deg: number;                  // global pier-collision floor (mount-alt). 0 = off
   horizon: [number, number][] | null;   // sorted (az,alt) control points
+  // Hard-edged obstruction wedges: inside [az_min, az_max] the mount must stay
+  // above alt_max. Distinct from `horizon`, whose points interpolate — a pier
+  // declared at az 180 would otherwise slope a floor across the southern sky.
+  nogo_box: NoGoWedge[] | null;
   enforce_pier_limits: boolean;         // only settable when mount reports pier side
   twilight_deg: number;                 // nautical −12 default (C1-26)
   // Sun-exclusion cone (W1.10). ON by default to protect deep-sky gear; a
@@ -1008,6 +1029,16 @@ export interface SafetyConfig {
   // On ⇒ instead of ending the run, close the roof, wait for safe-again, REOPEN and
   // resume. Off (default) ⇒ close_dome_on_unsafe still aborts (byte-identical).
   reopen_dome_when_safe: boolean;
+}
+
+/** PRO-1 master-library matching + stacking tolerances. Mirrors backend
+ *  config.CalibrationConfig; every bound is enforced server-side too. */
+export interface CalibrationConfig {
+  exposure_tol_pct: number;   // 0..100 — how far a master's exposure may differ
+  temp_tol_c: number;         // 0..50  — how far its sensor temperature may differ
+  temp_bin_c: number;         // 0..50  — stacking bucket width; must be >= temp_tol_c
+  stack_sigma: number;        // >0..10 — sigma-clip threshold when combining
+  max_stack_frames: number;   // 1..1000 — cap on frames per master
 }
 
 export interface EscalationConfig {
