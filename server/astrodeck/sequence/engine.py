@@ -2260,13 +2260,26 @@ class SequenceEngine:
         return False
 
     async def _apply_filter(self, step) -> None:
-        if not step.filter or "filterwheel" not in self.hub.devices:
+        if "filterwheel" not in self.hub.devices:
             return
         fw = self.hub.require("filterwheel")
-        if step.filter not in fw.filter_names:
-            bus.log("warning", f"filter '{step.filter}' not in wheel — skipping move", "sequence")
-            return
-        new_slot = fw.filter_names.index(step.filter)
+        if step.filter:
+            if step.filter not in fw.filter_names:
+                bus.log("warning", f"filter '{step.filter}' not in wheel — skipping move", "sequence")
+                return
+            new_slot = fw.filter_names.index(step.filter)
+            label = step.filter
+        else:
+            # No filter named. A dark or a bias wants NO light path, so a wheel
+            # with a blackout slot drives to it — that is the whole reason the
+            # slot exists. Every other frame type (and every wheel without a
+            # blackout slot) stays where it is, exactly as before.
+            dark = fw.dark_slot()
+            if dark is None or (step.frame_type or "Light").strip().lower() \
+                    not in ("dark", "bias"):
+                return
+            new_slot = dark
+            label = fw.filter_names[dark] or f"slot {dark}"
         # P0-2: every device await here is BOUNDED. AlpacaFilterWheel.set_position
         # polls ``while position == -1`` where each HTTP request SUCCEEDS, so a
         # jammed wheel reporting -1 forever never trips a transport timeout — it
@@ -2276,14 +2289,18 @@ class SequenceEngine:
                                   "filter get_position")
         if new_slot == old_slot:
             return
-        self._set_state(detail=f"filter → {step.filter}")
+        self._set_state(detail=f"filter → {label}")
         await _bounded(fw.set_position(new_slot), FILTER_MOVE_TIMEOUT_S,
-                       f"filter → {step.filter}")
+                       f"filter → {label}")
         # shift focus by the per-filter offset delta (offsets are relative, so
-        # an incremental delta keeps focus correct as long as we step through changes)
+        # an incremental delta keeps focus correct as long as we step through
+        # changes). Skipped when either end of the move is a blackout slot: its
+        # offset is a placeholder zero, not a measurement, so honouring it would
+        # yank the focuser to the reference position and back for a dark.
         offsets = getattr(fw, "filter_offsets", []) or []
         if self.plan.apply_filter_offsets and "focuser" in self.hub.devices \
-                and len(offsets) > max(new_slot, old_slot):
+                and len(offsets) > max(new_slot, old_slot) \
+                and not fw.is_opaque(new_slot) and not fw.is_opaque(old_slot):
             delta = offsets[new_slot] - offsets[old_slot]
             if delta:
                 foc = self.hub.require("focuser")
@@ -2291,7 +2308,7 @@ class SequenceEngine:
                                      "focuser get_position")
                 await _bounded(foc.move_to(pos + delta), FOCUSER_MOVE_TIMEOUT_S,
                                "focuser offset move")
-                bus.log("info", f"applied filter offset {delta:+d} for {step.filter}", "sequence")
+                bus.log("info", f"applied filter offset {delta:+d} for {label}", "sequence")
 
     async def _maybe_meridian_flip(self, target: Target,
                                    next_exposure_s: float = 0.0) -> None:

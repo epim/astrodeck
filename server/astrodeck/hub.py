@@ -2123,6 +2123,14 @@ class Hub:
                     except (TypeError, ValueError):
                         pass
             fw.filter_offsets = cur
+        # Blackout flags are user-assigned — no wheel reports them — so unlike
+        # names there is no hardware fallback to preserve: the stored list IS the
+        # truth, padded/truncated to the wheel's real slot count.
+        opaque = saved.get("opaque")
+        if isinstance(opaque, list) and fw.filter_names:
+            n = len(fw.filter_names)
+            fw.filter_opaque = [bool(opaque[i]) if i < len(opaque) else False
+                                for i in range(n)]
 
     # ------------------------------------------------- learned camera EGAIN
     def _seed_egain_config(self) -> None:
@@ -2226,12 +2234,24 @@ class Hub:
         n_slots = len(names)
         if n_slots == 0:
             raise DeviceError("filter wheel reports no slots")
+        # A blackout slot has no light path, so autofocus through it can only
+        # fail — skip it outright rather than burn a full sweep discovering that.
+        blackout = [i for i in range(n_slots) if fw.is_opaque(i)]
+        if len(blackout) == n_slots:
+            raise DeviceError("every slot on this wheel is marked blackout — "
+                              "there is nothing to focus through")
         if ref_slot is None:
             ref_slot = default_ref_slot(names, await fw.get_position())
+            if ref_slot in blackout:      # current position IS the dark slot
+                ref_slot = next(s for s in range(n_slots) if s not in blackout)
         ref_slot = int(ref_slot)
         if not 0 <= ref_slot < n_slots:
             raise DeviceError(
                 f"reference slot {ref_slot} is outside the wheel (0..{n_slots - 1})")
+        if ref_slot in blackout:
+            raise DeviceError(
+                f"{names[ref_slot] or ref_slot} is a blackout slot — it passes no "
+                "light, so offsets cannot be measured against it")
         prior = list(fw.filter_offsets) if fw.filter_offsets else [0] * n_slots
 
         best_by_slot: dict[int, int] = {}
@@ -2240,7 +2260,8 @@ class Hub:
         try:
             # Reference first: without it there is nothing to measure against,
             # so a failed reference aborts before burning time on the rest.
-            for i in [ref_slot] + [s for s in range(n_slots) if s != ref_slot]:
+            for i in [ref_slot] + [s for s in range(n_slots)
+                                   if s != ref_slot and s not in blackout]:
                 bus.publish("filter_offsets", state="running", slot=i,
                             of=n_slots, name=names[i],
                             done_slots=sorted(best_by_slot))
@@ -2280,10 +2301,16 @@ class Hub:
             bus.publish("filter_offsets", state="failed", slot=None,
                         of=n_slots, error=str(e))
             raise
-        result = await self.set_filter_names(names, offsets)
+        # Re-send the blackout flags so set_filter_names zeroes their offsets:
+        # `offsets_from_positions` carries a skipped slot's PRIOR value forward,
+        # and a stale offset on a slot that passes no light is one autofocus
+        # would still apply.
+        result = await self.set_filter_names(names, offsets,
+                                             list(fw.filter_opaque) or None)
+        kept = [k for k in kept if k not in blackout]
         bus.publish("filter_offsets", state="done", slot=None, of=n_slots,
                     ref_slot=ref_slot, offsets=list(result["offsets"]),
-                    kept=kept, done_slots=sorted(best_by_slot))
+                    kept=kept, blackout=blackout, done_slots=sorted(best_by_slot))
         bus.log("info", f"filter offsets learned against "
                         f"{names[ref_slot] or ref_slot}"
                         + (f"; kept prior for {len(kept)} slot(s)" if kept else ""),
@@ -2292,10 +2319,12 @@ class Hub:
                 "names": result["names"], "kept": kept}
 
     async def set_filter_names(self, names: list[str],
-                               offsets: list[int] | None = None) -> dict:
-        """Apply + persist user filter slot names (and optional focuser offsets)
-        for the active profile (UX-05). Blank names keep the hardware fallback for
-        that slot. Returns the resulting names/offsets."""
+                               offsets: list[int] | None = None,
+                               opaque: list[bool] | None = None) -> dict:
+        """Apply + persist user filter slot names (and optional focuser offsets
+        and blackout flags) for the active profile (UX-05). Blank names keep the
+        hardware fallback for that slot. Returns the resulting names/offsets/
+        opaque flags."""
         fw = self.require("filterwheel")
         base = list(fw.filter_names) if fw.filter_names else [""] * len(names)
         for i in range(len(base)):
@@ -2311,10 +2340,23 @@ class Hub:
                     except (TypeError, ValueError):
                         pass
             fw.filter_offsets = cur
+        if opaque is not None:
+            # Sent whole (not merged per-index like names): the caller owns the
+            # full list, so clearing the last blackout flag has to be expressible.
+            fw.filter_opaque = [bool(opaque[i]) if i < len(opaque) else False
+                                for i in range(len(base))]
+            # A blackout slot has no light path, so a focus offset through it is
+            # meaningless — zero it rather than leave a stale number that
+            # autofocus would apply.
+            if fw.filter_offsets:
+                fw.filter_offsets = [0 if fw.is_opaque(i) else o
+                                     for i, o in enumerate(fw.filter_offsets)]
         from .config import config_store, save_filter_config
         save_filter_config(config_store.cfg().active_profile_id,
-                           fw.filter_names, fw.filter_offsets)
-        return {"names": fw.filter_names, "offsets": fw.filter_offsets}
+                           fw.filter_names, fw.filter_offsets,
+                           list(fw.filter_opaque) or None)
+        return {"names": fw.filter_names, "offsets": fw.filter_offsets,
+                "opaque": list(fw.filter_opaque)}
 
     def _counter_file(self) -> Path:
         # under CAPTURE_DIR (the persistent image library; auto-isolated by the
@@ -3057,6 +3099,11 @@ class Hub:
                     # HAS a wheel, instead of reporting "Filters — NOT NEEDED".
                     "current": (str(names[pos] or "")
                                 if pos is not None and 0 <= pos < len(names) else ""),
+                    # Blackout flags, parallel to names. The UI needs these to
+                    # keep an opaque slot out of Light/Flat pickers and to say
+                    # why the current frame is unfiltered.
+                    "opaque": list(fw.filter_opaque or []),
+                    "dark_slot": fw.dark_slot(),
                 }
             except Exception:
                 pass

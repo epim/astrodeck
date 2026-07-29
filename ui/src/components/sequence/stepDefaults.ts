@@ -37,13 +37,20 @@ export const FLAT_ADU_TARGET = 25000;
  * With a wheel connected this is the slot the wheel is physically parked on, so
  * the plan editor agrees with the hardware instead of writing `null` ("no
  * filter") onto a rig that unambiguously has one. With no wheel it stays null.
+ *
+ * A blackout slot is never the answer. The wheel is parked on one for the whole
+ * of a dark run, so without this a step added straight afterwards would inherit
+ * "shoot lights through the light block".
  */
 export function defaultFilter(
   names: string[] | undefined, position: number | undefined,
+  opaque: boolean[] = [],
 ): string | null {
   if (!names || names.length === 0) return null;
   const i = position ?? 0;
-  return names[i] ?? names[0] ?? null;
+  if (names[i] && !opaque[i]) return names[i];
+  const first = names.findIndex((n, j) => !!n && !opaque[j]);
+  return first >= 0 ? names[first] : null;
 }
 
 /**
@@ -59,9 +66,12 @@ export function nextStep(
   steps: ExposureStep[],
   filterNames?: string[],
   position?: number,
+  opaque: boolean[] = [],
 ): Omit<ExposureStep, "id"> {
   const last = steps.length > 0 ? steps[steps.length - 1] : null;
-  if (!last) return { ...BASE_STEP, filter: defaultFilter(filterNames, position) };
+  if (!last) {
+    return { ...BASE_STEP, filter: defaultFilter(filterNames, position, opaque) };
+  }
   const { id: _id, ...rest } = last;
   void _id;
   return { ...rest };

@@ -947,11 +947,15 @@ class SimRotator(Rotator):
 
 
 class SimFilterWheel(FilterWheel):
-    def __init__(self, rig: SimRig, name: str = "Sim Filter Wheel 7x36"):
+    def __init__(self, rig: SimRig, name: str = "Sim Filter Wheel 8x36"):
         super().__init__(name)
         self.rig = rig
-        self.filter_names = ["L", "R", "G", "B", "Ha", "OIII", "SII"]
-        self.filter_offsets = [0, 12, 10, 15, 120, 110, 115]  # focuser steps
+        # Slot 7 is a BLACKOUT carrier (no glass, blocks the light path) so the
+        # sim exercises the dark-slot routing every real 8-slot wheel needs.
+        # Appended rather than prepended on purpose: L..SII keep their indices.
+        self.filter_names = ["L", "R", "G", "B", "Ha", "OIII", "SII", "Dark"]
+        self.filter_offsets = [0, 12, 10, 15, 120, 110, 115, 0]  # focuser steps
+        self.filter_opaque = [False] * 7 + [True]
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))

@@ -353,6 +353,29 @@ class FilterWheel(Device):
     filter_names: list[str] = []
     #: per-filter focuser offsets (steps), parallel to filter_names; empty = none
     filter_offsets: list[int] = []
+    #: per-slot "this slot is opaque" flags, parallel to filter_names; empty = none.
+    #: A blackout/dark slot carries no glass at all — it blocks the light path so
+    #: darks and bias can be shot without capping the scope. Marked by the user
+    #: (no wheel reports it) and persisted per profile alongside names/offsets.
+    #: A list rather than a single index: nothing about a carousel says there is
+    #: at most one, and this reuses every loop that already walks the parallel
+    #: name/offset arrays.
+    filter_opaque: list[bool] = []
+
+    def dark_slot(self) -> int | None:
+        """The slot to shoot darks/bias through — the first opaque one, or None
+        when the wheel has no blackout slot (then darks shoot through whatever
+        filter is loaded, which is what every wheel did before this existed)."""
+        for i, op in enumerate(self.filter_opaque or []):
+            if op:
+                return i
+        return None
+
+    def is_opaque(self, slot: int) -> bool:
+        """True iff ``slot`` blocks the light path. Out-of-range is False, not an
+        error: callers ask about slots that may predate an opaque list."""
+        flags = self.filter_opaque or []
+        return 0 <= slot < len(flags) and bool(flags[slot])
 
     @abstractmethod
     async def get_position(self) -> int: ...

@@ -61,7 +61,17 @@ export interface RigStatus {
   mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
   focuser?: { position: number; max: number; temperature: number | null };
-  filterwheel?: { position: number; names: string[]; offsets?: number[] };
+  filterwheel?: {
+    position: number;
+    names: string[];
+    offsets?: number[];
+    /** resolved name of the slot the wheel is on ("" = unknown/unnamed) */
+    current?: string;
+    /** per-slot blackout flags (no glass, blocks the light path) */
+    opaque?: boolean[];
+    /** first blackout slot, or null when the wheel has none */
+    dark_slot?: number | null;
+  };
   rotator?: RotatorStatus;
   camera?: {
     temperature: number | null;

@@ -850,19 +850,37 @@ export default function CaptureView() {
                 )}
               </span>
             }>
+            {/* A blackout slot stays tappable here — parking on it manually is a
+                legitimate thing to want — but it is labelled so it is never
+                mistaken for a filter you can image through. */}
             <div className="flex flex-wrap gap-2">
-              {status.filterwheel.names.map((name, i) => (readOnlyReason ? (
-                <LockedChip key={`${i}-${name}`} reason={`Move to ${name} — ${readOnlyReason}`}
-                  className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}>
-                  {name}
-                </LockedChip>
-              ) : (
-                <button key={`${i}-${name}`}
-                  className={`btn tap min-h-[44px] !px-3 min-w-[56px] ${i === status.filterwheel!.position ? "btn-accent" : ""}`}
-                  onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
-                  {name}
-                </button>
-              )))}
+              {status.filterwheel.names.map((name, i) => {
+                const dark = !!status.filterwheel!.opaque?.[i];
+                const cls = `btn tap min-h-[44px] !px-3 min-w-[56px] ${
+                  i === status.filterwheel!.position ? "btn-accent" : ""}`;
+                const body = (
+                  <span className="inline-flex items-center gap-1.5">
+                    {name}
+                    {dark && (
+                      <span className="text-[9px] tracking-wider uppercase opacity-70">
+                        blackout
+                      </span>
+                    )}
+                  </span>
+                );
+                return readOnlyReason ? (
+                  <LockedChip key={`${i}-${name}`} reason={`Move to ${name} — ${readOnlyReason}`}
+                    className={cls}>
+                    {body}
+                  </LockedChip>
+                ) : (
+                  <button key={`${i}-${name}`} className={cls}
+                    aria-label={dark ? `Move to ${name} — blackout slot, blocks the light path` : undefined}
+                    onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
+                    {body}
+                  </button>
+                );
+              })}
             </div>
           </Panel>
         )}
@@ -872,6 +890,7 @@ export default function CaptureView() {
             onClose={() => setFilterEditOpen(false)}
             names={status.filterwheel.names}
             offsets={status.filterwheel.offsets ?? []}
+            opaque={status.filterwheel.opaque ?? []}
             position={status.filterwheel.position}
             canLearn={!!status.focuser}
             learnDisabledReason={
@@ -885,8 +904,8 @@ export default function CaptureView() {
               await api.post("/api/filterwheel/learn-offsets", { ref_slot: refSlot });
               showToast("info", "Learning filter offsets…");
             }}
-            onSave={async (names, offsets) => {
-              await api.post("/api/filterwheel/names", { names, offsets });
+            onSave={async (names, offsets, opaque) => {
+              await api.post("/api/filterwheel/names", { names, offsets, opaque });
               showToast("success", "Filter names saved");
             }}
           />
