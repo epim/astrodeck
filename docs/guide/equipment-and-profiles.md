@@ -101,6 +101,33 @@ connection rather than a driver's task offer — see
 
 ---
 
+## The imaging train (focal length, and the scope's name)
+
+**Settings → Connect → Imaging train.** Get this right before your first plate
+solve, not after: focal length sets the image scale that plate solving, the
+framing overlay and the guiding readout all depend on, and a wrong value makes
+solves fail with nothing on screen explaining why.
+
+- **Focal length (mm)** — the *effective* focal length of the whole train,
+  including any reducer or extender. A 0.8× reducer on a 530 mm scope is 424,
+  not 530. This is the single most common cause of "plate solving just doesn't
+  work".
+- **Telescope name** — written to the FITS `TELESCOP` card, which stackers group
+  on. Name the **optical tube**, not the mount: a wrong string here silently
+  splits one target across two groups at stacking time.
+- **Take sensor details from the camera** — on by default, and right for almost
+  every rig. Turn it off to pin pixel size and sensor dimensions by hand, which
+  is worth doing when a driver reports the wrong pixel size, or to keep a working
+  image scale while the camera is unplugged.
+- **Guide scope focal length** — the *guide* train, not the imaging one. Without
+  it, guiding RMS is reported in pixels at an assumed 1″/px rather than in real
+  arcseconds. Leave it blank if you do not guide.
+
+The Sky Atlas sidebar has an inline focal-length field too, and both write the
+same setting.
+
+---
+
 ## Rotator
 
 When a rotator is connected, the Equipment view shows a **Rotator** card:
