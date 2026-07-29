@@ -637,6 +637,10 @@ class FilterBody(BaseModel):
 class FilterNamesBody(BaseModel):
     names: list[str]
     offsets: list[int] = []
+    #: Per-slot blackout ("this slot is opaque") flags. None = leave whatever is
+    #: stored alone, so a client that predates the flag never clears it; a list
+    #: replaces the set wholesale, which is what makes un-marking a slot possible.
+    opaque: list[bool] | None = None
 
 
 class LearnOffsetsBody(BaseModel):
@@ -3521,7 +3525,8 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
         try:
-            return await hub.set_filter_names(body.names, body.offsets)
+            return await hub.set_filter_names(body.names, body.offsets,
+                                              body.opaque)
         except DeviceError as e:
             raise _err(e)
 
