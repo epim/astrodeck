@@ -84,11 +84,115 @@ def test_serial_wrong_port_is_unreachable(store, register):
 
 def test_local_present_is_reachable(store, register):
     register(_FakeHw("fake-usb", "local", ("rotator", "focuser"),
-                     [{"role": "focuser", "name": "EAF"}, {"role": "rotator", "name": "CAA"}]))
+                     [{"role": "focuser", "name": "EAF", "verified": True},
+                      {"role": "rotator", "name": "CAA", "verified": True}]))
     d = store.add_driver("fake-usb", transport="local")
     row = _probe(d)
     assert row["status"]["reachable"] is True
     assert {o["role"] for o in row["offers"]["devices"]} == {"rotator", "focuser"}
+
+
+# ------------------------------------- #97: offer what is THERE, named for itself
+# The probe used to build its offers from the backend CLASS's ``roles`` tuple and
+# name every one of them with the backend's generic label, using ``discover()``
+# only as a boolean "anything attached?". Both halves of that lied.
+
+def test_local_offers_only_the_roles_actually_discovered(store, register):
+    """One EAF attached, no CAA: a rotator must NOT be offered.
+
+    zwo-usb declares roles=("rotator","focuser") because it CAN serve both, but
+    the two roles are backed by two separate physical devices. Offering the
+    rotator anyway sends the user to a dropdown entry whose connect dies with
+    "no CAA attached (SDK enumerated 0 units)" — in the dark, mid-session."""
+    register(_FakeHw("only-eaf", "local", ("rotator", "focuser"),
+                     [{"role": "focuser", "name": "ZWO EAF (USB)", "verified": True}]))
+    d = store.add_driver("only-eaf", transport="local")
+    row = _probe(d)
+    assert row["status"]["reachable"] is True
+    assert [o["role"] for o in row["offers"]["devices"]] == ["focuser"]
+
+
+def test_verified_devices_are_named_for_themselves_not_the_backend(store, register):
+    """A rotator dropdown must read "ZWO CAA (USB)", not "ZWO USB accessories".
+
+    discover() returns the per-unit name the SDK confirmed; the probe used to
+    throw it away, so both roles of a two-device backend rendered under one
+    indistinguishable label."""
+    register(_FakeHw("named-usb", "local", ("rotator", "focuser"),
+                     [{"role": "focuser", "name": "ZWO EAF (USB)", "verified": True},
+                      {"role": "rotator", "name": "ZWO CAA (USB)", "verified": True}]))
+    d = store.add_driver("named-usb", transport="local")
+    row = _probe(d)
+    by_role = {o["role"]: o["name"] for o in row["offers"]["devices"]}
+    assert by_role == {"focuser": "ZWO EAF (USB)", "rotator": "ZWO CAA (USB)"}
+
+
+def test_unverified_devices_fall_back_to_the_backend_label(store, register):
+    """A guess must not be dressed as an identity.
+
+    The Wanderer sits behind a generic CH340 (VID 1A86:7523 — the same chip in
+    every Wanderer product), so its discover() name is the hedge "CH340 serial
+    (Wanderer?)" and it sets verified=False. Putting that string in a filter-wheel
+    dropdown reads as a device name; the backend's own label is the honest one."""
+    register(_FakeHw("unverified-serial", "serial", ("filterwheel",),
+                     [{"role": "filterwheel", "name": "CH340 serial (Wanderer?)",
+                       "port_path": "COM8", "verified": False}]))
+    d = store.add_driver("unverified-serial", transport="serial", port_path="COM8")
+    row = _probe(d)
+    assert [o["name"] for o in row["offers"]["devices"]] == [
+        "UNVERIFIED-SERIAL device"]          # _FakeHw.label
+
+
+def test_serial_offers_come_from_the_matching_port_only(store, register):
+    """Two CH340s on one bus: a driver bound to COM8 must not offer COM9's device."""
+    register(_FakeHw("two-serial", "serial", ("filterwheel", "rotator"),
+                     [{"role": "filterwheel", "name": "Wheel", "port_path": "COM8",
+                       "verified": True},
+                      {"role": "rotator", "name": "Rotator", "port_path": "COM9",
+                       "verified": True}]))
+    d = store.add_driver("two-serial", transport="serial", port_path="COM8")
+    row = _probe(d)
+    assert [(o["role"], o["name"]) for o in row["offers"]["devices"]] == [
+        ("filterwheel", "Wheel")]
+
+
+def test_indexed_unit_offers_only_its_own_unit(store, register):
+    """Two identical USB cameras: the driver pinned to index 1 must offer unit 1.
+
+    Each camera gets its own driver row carrying extra.index; without filtering,
+    both rows offered an identical generic entry and neither said which camera."""
+    register(_FakeHw("two-cams", "local", ("camera", "guide_camera"),
+                     [{"role": "camera", "name": "Cam A", "index": 0, "verified": True},
+                      {"role": "guide_camera", "name": "Cam A", "index": 0,
+                       "verified": True},
+                      {"role": "camera", "name": "Cam B", "index": 1, "verified": True},
+                      {"role": "guide_camera", "name": "Cam B", "index": 1,
+                       "verified": True}]))
+    d = store.add_driver("two-cams", transport="local", extra={"index": 1})
+    row = _probe(d)
+    assert {o["name"] for o in row["offers"]["devices"]} == {"Cam B"}
+    assert {o["role"] for o in row["offers"]["devices"]} == {"camera", "guide_camera"}
+
+
+def test_a_role_free_discovery_still_offers_the_backend_roles(store, register):
+    """Back-compat: a backend whose discover() reports units without a ``role``
+    keeps offering its declared roles rather than going silently empty."""
+    register(_FakeHw("roleless", "local", ("switch",),
+                     [{"name": "Some box", "verified": True}]))
+    d = store.add_driver("roleless", transport="local")
+    row = _probe(d)
+    assert [o["role"] for o in row["offers"]["devices"]] == ["switch"]
+
+
+def test_local_detail_names_every_unit_found(store, register):
+    """The status line said "ZWO EAF (USB)" for a bus holding an EAF AND a CAA,
+    because it read found[0] only."""
+    register(_FakeHw("detail-usb", "local", ("rotator", "focuser"),
+                     [{"role": "focuser", "name": "ZWO EAF (USB)", "verified": True},
+                      {"role": "rotator", "name": "ZWO CAA (USB)", "verified": True}]))
+    d = store.add_driver("detail-usb", transport="local")
+    row = _probe(d)
+    assert row["status"]["detail"] == "ZWO EAF (USB), ZWO CAA (USB)"
 
 
 def test_local_absent_is_unreachable(store, register):

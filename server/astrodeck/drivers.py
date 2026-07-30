@@ -247,12 +247,59 @@ def _is_native_hardware_type(driver_type: str) -> bool:
     return bool(b and getattr(b, "hardware", False))
 
 
+def _mine(found: list[dict], entry: DriverEntry, transport: str) -> list[dict]:
+    """The discovered units belonging to THIS driver row.
+
+    A backend enumerates every unit on the machine; a driver row addresses one.
+    Serial rows are pinned by ``port_path``; a row carrying ``extra.index`` (two
+    identical USB cameras) is pinned by index. A row with no index takes
+    everything the backend found, which is the single-unit case."""
+    rows = [d for d in found if isinstance(d, dict)]
+    if transport == "serial":
+        return [d for d in rows if str(d.get("port_path") or "") == entry.port_path]
+    index = (entry.extra or {}).get("index")
+    if index is None:
+        return rows
+    # An entry without an index belongs to whichever row asks: a backend that
+    # does not distinguish its units cannot contradict the row's addressing.
+    return [d for d in rows if d.get("index") is None or d.get("index") == index]
+
+
+def _offers_from(found: list[dict], backend_label: str) -> list[dict]:
+    """One offer per (role, name) actually discovered, ordered as found.
+
+    Two rules, both learned from the ZWO accessory bus (#97):
+
+    * The ROLES come from what is attached, not from the backend class. zwo-usb
+      declares ``("rotator", "focuser")`` because it CAN serve both, but each is
+      backed by a different physical device — offering a rotator with no CAA
+      plugged in produces a dropdown entry whose connect fails at slew time.
+    * The NAME comes from the unit when discovery ``verified`` it, else from the
+      backend. A verified name is the SDK's own answer ("ZWO CAA (USB)"); an
+      unverified one is our guess from a generic USB chip ("CH340 serial
+      (Wanderer?)") and must not be rendered as though it were an identity."""
+    devices: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for d in found:
+        role = str(d.get("role") or "").strip()
+        if not role:
+            continue
+        name = str(d.get("name") or "").strip() if d.get("verified") else ""
+        key = (role, name or backend_label)
+        if key in seen:
+            continue
+        seen.add(key)
+        devices.append({"role": role, "name": name or backend_label})
+    return devices
+
+
 async def _probe_native(entry: DriverEntry) -> dict:
     """Probe a native serial/local hardware driver by running the backend's OWN
     ``discover()`` (enumeration-only, never opens the device — safe while it is
-    connected). Reachable when the configured device is present; offers the
-    backend's roles so the driver becomes eligible in the Equipment dropdowns.
-    NEVER raises (a probe must not 500 describe_all)."""
+    connected). Reachable when the configured device is present; offers the roles
+    it actually FOUND, so the driver becomes eligible in the Equipment dropdowns
+    for exactly the hardware attached. NEVER raises (a probe must not 500
+    describe_all)."""
     from .devices.backend import BACKENDS
     backend = BACKENDS.get(driver_type_to_backend().get(entry.type, ""))
     if backend is None:
@@ -264,20 +311,30 @@ async def _probe_native(entry: DriverEntry) -> dict:
     found = found if isinstance(found, list) else []
     transport = (entry.transport or getattr(backend, "transport", "") or "").strip()
     label = getattr(backend, "label", None) or entry.label or entry.type
-    if transport == "serial":
-        ports = {str(d.get("port_path") or "") for d in found if isinstance(d, dict)}
-        present = bool(entry.port_path) and entry.port_path in ports
-        detail = entry.port_path if present else None
-        where = f" on {entry.port_path}" if entry.port_path else ""
-    else:  # local / USB — present iff at least one unit enumerated
-        present = len(found) > 0
-        first = found[0] if found else {}
-        detail = (first.get("name") if isinstance(first, dict) else None)
-        where = ""
-    if not present:
+    mine = _mine(found, entry, transport)
+    where = (f" on {entry.port_path}" if transport == "serial" and entry.port_path
+             else "")
+    if not mine:
         return _down(f"no {label}{where} detected")
-    roles = getattr(backend, "roles", ()) or ()
-    devices = [{"role": r, "name": label} for r in roles]
+    devices = _offers_from(mine, label)
+    if not devices:
+        # A backend whose discover() reports units without a ``role`` still gets
+        # its declared roles: it told us the hardware is there, just not what it
+        # fills. Losing the offers entirely would strand a working device.
+        devices = [{"role": r, "name": label}
+                   for r in (getattr(backend, "roles", ()) or ())]
+    if transport == "serial":
+        detail = entry.port_path
+    else:
+        # Name every unit on the bus. Reading found[0] alone is what made a bus
+        # holding an EAF *and* a CAA report simply "ZWO EAF (USB)", so the
+        # rotator looked unsupported and users went to ASCOM for it.
+        names: list[str] = []
+        for d in mine:
+            n = str(d.get("name") or "").strip()
+            if n and n not in names:
+                names.append(n)
+        detail = ", ".join(names) or None
     return _ok(devices, [], detail=detail)
 
 

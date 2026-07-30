@@ -96,14 +96,22 @@ class ZwoAsiBackend:
 
     async def discover(self) -> list[dict]:
         """Enumerate attached ASI units (guarded; [] on any failure so absent
-        DLLs never break discovery). Role hint 'guide_camera' — the ASI220MM is
-        the guide cam here; the profile may reassign it to 'camera'."""
+        DLLs never break discovery).
+
+        One entry PER ROLE the unit can fill, because the probe offers exactly
+        what discovery reports (drivers.py ``_offers_from``). Unlike the ZWO
+        accessory bus — where rotator and focuser are two separate devices — one
+        camera genuinely fills either role, so it reports both and the profile
+        decides which it takes. Emitting only the guide_camera "hint" here would
+        make the probe drop 'camera' and the unit would vanish from the imaging
+        picker."""
         found: list[dict] = []
         try:
             sdk = make_asi()
             for i in range(await asyncio.to_thread(sdk.count)):
-                found.append({"role": "guide_camera", "name": "ZWO ASI (USB)",
-                              "verified": True, "index": i})
+                for role in _CAMERA_ROLES:
+                    found.append({"role": role, "name": "ZWO ASI (USB)",
+                                  "verified": True, "index": i})
         except Exception:  # noqa: BLE001
             pass
         return found
