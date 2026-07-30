@@ -91,7 +91,7 @@ def test_default_open_serves_everything_and_user_crud(tmp_path, monkeypatch):
         assert c.get("/api/status").status_code == 200
         # admin.users CRUD is open (caller resolves to admin under no methods)
         assert c.get("/api/users").status_code == 200
-        r = c.post("/api/users", json={"username": "v1", "password": "pw",
+        r = c.post("/api/users", json={"username": "v1@example.com", "password": "pw",
                                        "role": "viewer"})
         assert r.status_code == 201, r.text
         assert "password_hash" not in r.json()
@@ -330,7 +330,7 @@ def test_user_crud_denied_for_viewer(tmp_path, monkeypatch):
         # a viewer holds NOT admin.users -> 403 on every CRUD verb
         assert c.get("/api/users").status_code == 403
         assert c.post("/api/users",
-                      json={"username": "x", "password": "pw",
+                      json={"username": "x@example.com", "password": "pw",
                             "role": "viewer"}).status_code == 403
 
 
@@ -340,7 +340,7 @@ def test_user_crud_allowed_for_admin_session(tmp_path, monkeypatch):
     with TestClient(app) as c:
         c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
         assert c.get("/api/users").status_code == 200
-        r = c.post("/api/users", json={"username": "newbie", "password": "pw",
+        r = c.post("/api/users", json={"username": "newbie@example.com", "password": "pw",
                                        "role": "operator"})
         assert r.status_code == 201, r.text
         uid = r.json()["id"]
@@ -360,10 +360,11 @@ def test_user_crud_allowed_for_admin_session(tmp_path, monkeypatch):
 
 def test_create_duplicate_user_409(tmp_path, monkeypatch):
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root", password="pw", role="admin")
+    users.create(username="root@example.com", password="pw", role="admin")
     with TestClient(app) as c:
         c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
-        r = c.post("/api/users", json={"username": "ROOT", "password": "pw",
+        # same address, different case -> still a duplicate
+        r = c.post("/api/users", json={"username": "ROOT@example.com", "password": "pw",
                                        "role": "viewer"})
         assert r.status_code == 409
 
@@ -383,7 +384,7 @@ def test_create_user_too_long_password_422(tmp_path, monkeypatch):
     users.create(username="root", password="pw", role="admin")
     with TestClient(app) as c:
         c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
-        r = c.post("/api/users", json={"username": "big", "role": "viewer",
+        r = c.post("/api/users", json={"username": "big@example.com", "role": "viewer",
                                        "password": "a" * 100})
         assert r.status_code == 422
 
@@ -476,15 +477,25 @@ def test_first_run_setup_rejects_empty_password_422(tmp_path, monkeypatch):
         assert c.get("/api/auth/methods").json()["first_run"] is True
 
 
-def test_create_user_rejects_empty_password_422(tmp_path, monkeypatch):
-    """``POST /api/users`` must reject a blank password with 422 (not 409/201)."""
+def test_create_user_with_no_password_is_a_google_only_account(tmp_path, monkeypatch):
+    """``POST /api/users`` with no password creates a GOOGLE-ONLY account.
+
+    This replaces an older test that required a 422 here. The reasoning then was
+    that an empty password is a bypass — true when an empty hash might match an
+    empty password. It cannot: the store writes NO hash and ``verify`` refuses a
+    hash-less account outright, so the account exists, holds a role, and simply
+    has no local sign-in. That is the whole feature.
+
+    The unauthenticated first-run path still demands a password; that one is
+    covered separately."""
     app, users, _ = _make_app(tmp_path, monkeypatch, methods=["local"])
-    users.create(username="root", password="pw", role="admin")
+    users.create(username="root@example.com", password="pw", role="admin")
     with TestClient(app) as c:
         c.cookies.set(SESSION_COOKIE, _login_cookie("admin"))
-        r = c.post("/api/users", json={"username": "ghost", "password": "",
-                                       "role": "admin"})
-        assert r.status_code == 422, r.text
-        # the empty-password admin was not created
-        names = [u["username"] for u in c.get("/api/users").json()["users"]]
-        assert "ghost" not in names
+        r = c.post("/api/users", json={"username": "ghost@example.com",
+                                       "password": "", "role": "viewer"})
+        assert r.status_code == 201, r.text
+        assert r.json()["has_password"] is False
+        # and it can never be logged into with a password, empty or otherwise
+        assert users.verify("ghost@example.com", "") is None
+        assert users.verify("ghost@example.com", "anything") is None

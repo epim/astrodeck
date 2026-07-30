@@ -95,8 +95,12 @@ def create_admin(username: str, password: str | None = None) -> dict:
 
     existing = user_store.get_by_username(username)
     if existing is None:
+        # require_email=False: this is the break-glass path. It has to work on
+        # a rig with no Google configured and nothing but a console, so it
+        # accepts a bare username where the API insists on an email.
         user = user_store.create(username=username, password=password,
-                                 role="admin", enabled=True)
+                                 role="admin", enabled=True,
+                                 require_email=False)
     else:
         # Reset the existing account to a known-good enabled admin.
         user_store.set_password(existing.id, password)
