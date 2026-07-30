@@ -1,9 +1,23 @@
-"""Local user store (username + bcrypt password) for offline/LAN auth (W2.6).
+"""The user store — ONE account list, whatever a person signs in with.
 
 A tiny JSON-backed user database living at ``server/config/users.json``, written
-atomically through the same ``write_json_atomic`` path the config store uses. It
-backs the LOCAL auth method (phone/tablet straight to the rig, no internet) and
-the admin user-management surface.
+atomically through the same ``write_json_atomic`` path the config store uses.
+
+**Identity is the email address.** Case-folded, unique, and the same key
+whether somebody signs in with a password or with Google. The *requirement* that
+it be an email is enforced at the API route, not here: this store must still be
+able to hold a bare username, because the CLI break-glass admin creates one and
+records predating unification already carry one.
+That is the whole point of this module's shape: user management used to be
+split in two, a local username+password store here and an email->role allowlist
+in ``AuthConfig``, with no relationship between them. Creating a Google-only
+user meant editing an allowlist rather than creating a user, and the same person
+could exist twice with two different roles. There is now one record per person.
+
+**A password is optional.** An empty ``password_hash`` is a valid, deliberate
+state meaning "this account signs in with Google only" — not a broken record and
+not an empty password. ``verify`` refuses it outright, so a password-less
+account can never be logged into locally, whatever is posted.
 
 Hard secrecy invariant -- the bcrypt ``password_hash``:
   - is READ only inside ``verify``;
@@ -46,19 +60,71 @@ def _norm_username(username: str) -> str:
     return (username or "").strip().casefold()
 
 
-class User(BaseModel):
-    """A local user record. ``password_hash`` is SECRET and never leaves the store.
+class InvalidEmailError(ValueError):
+    """The identity given is not a usable email address."""
 
-    ``username`` is stored case-folded (the canonical/unique key); ``email`` is
-    optional metadata only (local auth is by username, NOT email)."""
+
+def normalize_email(email: str) -> str:
+    """Canonical (trimmed, case-folded) email, or raise ``InvalidEmailError``.
+
+    Deliberately permissive — one ``@``, something either side, a dot in the
+    domain, no whitespace. This is not RFC 5322 validation and does not try to
+    be: the only thing that ultimately proves an address is a successful Google
+    sign-in. What it exists to catch is a bare username typed where an email
+    belongs, because that address is what Google will match against, and an
+    entry that can never match is an account somebody believes they created.
+    """
+    e = (email or "").strip().casefold()
+    if not e:
+        raise InvalidEmailError("an email address is required")
+    if any(c.isspace() for c in e):
+        raise InvalidEmailError("an email address cannot contain spaces")
+    # Exactly one "@". `partition` splits on the FIRST one, so without this
+    # "two@@at.com" reads as local="two", domain="@at.com" — which has a dot and
+    # passes every other check.
+    if e.count("@") != 1:
+        raise InvalidEmailError(
+            f"{email!r} is not an email address — it needs exactly one '@'")
+    local, sep, domain = e.partition("@")
+    if not sep or not local or not domain or "." not in domain:
+        raise InvalidEmailError(
+            f"{email!r} is not an email address — sign-in matches on the "
+            "address Google reports, so it has to be a real one")
+    return e
+
+
+class User(BaseModel):
+    """One account. ``password_hash`` is SECRET and never leaves the store.
+
+    ``username`` is the canonical, case-folded, unique key and for every account
+    created since the stores were unified it IS the email address. It keeps its
+    name so existing records, sessions and the JSON on disk stay readable
+    without a migration that could lock somebody out of their own rig.
+
+    ``password_hash`` empty means **Google sign-in only** — a deliberate state,
+    not a broken record. ``verify`` refuses it, so no password can ever match.
+    """
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     username: str                         # stored case-folded (unique key)
     email: str | None = None
     role: str = "viewer"
-    password_hash: str = ""               # bcrypt $2b$12$...  -- SECRET
+    password_hash: str = ""               # bcrypt $2b$12$...  -- SECRET; "" = OIDC-only
     enabled: bool = True
     created: float = Field(default_factory=lambda: time.time())
+
+    @property
+    def login_email(self) -> str:
+        """The address sign-in matches on. ``email`` when a legacy record
+        carries one, else the username (which is the email for anything created
+        since unification)."""
+        return (self.email or self.username or "").strip().casefold()
+
+    @property
+    def can_sign_in_locally(self) -> bool:
+        """False for a Google-only account. The store enforces this in
+        ``verify``; this is for surfaces that need to SAY which it is."""
+        return bool(self.password_hash)
 
     def to_public(self) -> dict:
         """Non-secret, JSON-safe view. ``password_hash`` is structurally ABSENT
@@ -67,9 +133,15 @@ class User(BaseModel):
             "id": self.id,
             "username": self.username,
             "email": self.email,
+            "login_email": self.login_email,
             "role": self.role,
             "enabled": self.enabled,
             "created": self.created,
+            # WHICH sign-in this account can use. Derived from whether a hash
+            # exists, never from the hash itself, so nothing about the secret
+            # leaves the store — only the yes/no the UI needs to say "password"
+            # or "Google only" instead of leaving the user to guess.
+            "has_password": self.can_sign_in_locally,
         }
 
 
@@ -150,20 +222,70 @@ class UserStore:
 
     # -- mutation --------------------------------------------------------------
 
-    def create(self, *, username: str, password: str, role: str,
-               email: str | None = None, enabled: bool = True) -> User:
-        """Create a user. Raises ``ValueError`` on a blank/duplicate username, an
-        unknown role, or a too-long password (from ``hash_password``)."""
-        key = _norm_username(username)
+    def create(self, *, username: str, password: str = "", role: str,
+               email: str | None = None, enabled: bool = True,
+               require_email: bool = False) -> User:
+        """Create a user. The identity is an EMAIL address.
+
+        ``password`` is OPTIONAL. Omitting it creates a Google-only account:
+        a real, usable record that simply cannot be logged into with a
+        password. That is the case this signature exists to serve — before
+        unification, a Google user was not a user at all but a row in an
+        allowlist, so there was nowhere to set their role, disable them, or
+        see them beside everyone else.
+
+        ``require_email`` is the PRODUCT policy — every account created through
+        the API is keyed on an email — and it lives at the route, not here,
+        deliberately. The store has to tolerate a bare username regardless: the
+        CLI break-glass admin (``python -m astrodeck create-admin``) must work
+        on a rig with no Google configured and nothing but a console, and
+        records predating unification already carry one. A store that refused
+        what it must still be able to hold would be lying about its own data.
+
+        Raises ``ValueError`` on a duplicate or unknown role,
+        ``InvalidEmailError`` on an identity that is not an email, and
+        ``PasswordTooLongError`` from ``hash_password``.
+        """
+        key = normalize_email(username) if require_email else _norm_username(username)
         if not key:
             raise ValueError("username required")
         if role not in ROLES:
             raise ValueError(f"unknown role: {role!r}")
         if self.get_by_username(key) is not None:
             raise ValueError("username already exists")
-        user = User(username=key, email=email, role=role,
-                    password_hash=hash_password(password), enabled=enabled)
+        # An empty password stores an EMPTY hash, never a hash of "". Hashing
+        # the empty string would produce a real bcrypt digest that a posted
+        # empty password would then match — turning "Google only" into "no
+        # password required".
+        pw_hash = hash_password(password) if password else ""
+        user = User(username=key, email=email or key, role=role,
+                    password_hash=pw_hash, enabled=enabled)
         self._cache()[user.id] = user
+        self._save()
+        return user
+
+    def get_by_email(self, email: str) -> User | None:
+        """The account whose sign-in address matches, or None.
+
+        The single lookup Google sign-in resolves a role through, so one person
+        cannot hold one role locally and a different one over Google."""
+        try:
+            key = normalize_email(email)
+        except InvalidEmailError:
+            return None
+        for u in self._cache().values():
+            if u.login_email == key:
+                return u
+        return None
+
+    def clear_password(self, user_id: str) -> User:
+        """Turn an account into Google-only sign-in.
+
+        Refuses on the last enabled admin when Google is not the only way back
+        in — see the route layer, which knows whether Google is configured.
+        Here it is unconditional: the store's job is the record, not policy."""
+        user = self._require(user_id)
+        user.password_hash = ""
         self._save()
         return user
 
@@ -242,6 +364,15 @@ class UserStore:
         if not user.enabled:
             # Same treatment for a disabled account: burn a real compare so a
             # disabled user is timing-indistinguishable from an enabled one.
+            dummy_verify(password)
+            return None
+        if not user.password_hash:
+            # A Google-only account. Refused HERE, explicitly, rather than left
+            # to verify_password: whether an empty hash can be matched is the
+            # single most dangerous question in this module, and the answer must
+            # not depend on a bcrypt library's behaviour on an empty string.
+            # Same decoy compare, so "has no password" is not distinguishable
+            # from "wrong password" by timing either.
             dummy_verify(password)
             return None
         if not verify_password(password, user.password_hash):

@@ -57,6 +57,7 @@ from . import users as users_mod
 from .capabilities import CAP_ADMIN_USERS, ROLES
 from .deps import _scope_is_remote, require
 from .passwords import PasswordTooLongError, PasswordTooShortError
+from .users import InvalidEmailError
 from .session import sign_session
 
 router = APIRouter(tags=["auth-local"])
@@ -165,8 +166,15 @@ class SetupLocal(BaseModel):
 
 
 class UserCreate(BaseModel):
+    """One account. ``username`` IS the email address.
+
+    ``password`` is optional and empty means **Google sign-in only** — a real
+    account with a role and an enabled flag that simply cannot be logged into
+    with a password. Before the stores were unified there was nowhere to
+    express that: a Google user was a row in an allowlist, not a user, so they
+    could not be listed, disabled, or given a role beside everyone else."""
     username: str
-    password: str
+    password: str = ""
     role: str = "viewer"
     email: str | None = None
     enabled: bool = True
@@ -243,6 +251,17 @@ async def setup_local_admin(body: SetupLocal, request: Request):
         # Auto-closed: a user already exists, so first-run is over.
         raise HTTPException(status_code=409, detail="setup already completed")
 
+    # First-run setup ALWAYS requires a real password, even though the store
+    # now accepts an empty one. This endpoint is UNAUTHENTICATED and reachable
+    # from the LAN, and it mints an ADMIN: making the password optional here
+    # would let anyone who can reach the port create a password-less admin.
+    # "Google sign-in only" is a choice an existing admin makes for somebody
+    # else, never the way the first admin comes into being.
+    if not (body.password or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail="the first admin must have a password — Google-only "
+                   "accounts can be created once you are signed in")
     try:
         user = store.create(username=body.username, password=body.password,
                             role="admin", email=body.email, enabled=True)
@@ -334,9 +353,15 @@ async def create_user(body: UserCreate):
     try:
         user = _store().create(username=body.username, password=body.password,
                                role=body.role, email=body.email,
-                               enabled=body.enabled)
+                               enabled=body.enabled, require_email=True)
     except (PasswordTooLongError, PasswordTooShortError) as exc:
-        # too-long OR blank/too-short password -> 422 (no empty-password user)
+        # A password was SUPPLIED and is unusable -> 422. An omitted password is
+        # not an error here: it is the Google-only account, and the store stores
+        # an empty hash rather than hashing "".
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidEmailError as exc:
+        # Identity is an email address. Distinct from the duplicate case below
+        # so the UI can point at the field rather than say "could not create".
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         # duplicate / blank username, unknown role
