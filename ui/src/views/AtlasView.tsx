@@ -755,9 +755,9 @@ export default function AtlasView(): JSX.Element {
                 }
               }}
               aria-label="Camera focal length in millimetres"
-              className="field btn-touch w-24 mono text-right"
+              className="field field-rig mono text-right"
             />
-            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+            <span className="inline-flex items-center field-rig-suffix border border-l-0 border-line2 bg-bg text-dim">
               mm
             </span>
           </span>
@@ -789,9 +789,9 @@ export default function AtlasView(): JSX.Element {
                 }
               }}
               aria-label="Camera pixel size in micrometres (0 uses the connected camera)"
-              className="field btn-touch w-20 mono text-right"
+              className="field field-rig mono text-right"
             />
-            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+            <span className="inline-flex items-center field-rig-suffix border border-l-0 border-line2 bg-bg text-dim">
               µm
             </span>
           </span>
@@ -820,9 +820,9 @@ export default function AtlasView(): JSX.Element {
                 }
               }}
               aria-label="Camera sensor width in pixels (0 uses the connected camera)"
-              className="field btn-touch w-20 mono text-right"
+              className="field field-rig mono text-right"
             />
-            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+            <span className="inline-flex items-center field-rig-suffix border border-l-0 border-line2 bg-bg text-dim">
               px
             </span>
           </span>
@@ -851,9 +851,9 @@ export default function AtlasView(): JSX.Element {
                 }
               }}
               aria-label="Camera sensor height in pixels (0 uses the connected camera)"
-              className="field btn-touch w-20 mono text-right"
+              className="field field-rig mono text-right"
             />
-            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+            <span className="inline-flex items-center field-rig-suffix border border-l-0 border-line2 bg-bg text-dim">
               px
             </span>
           </span>
@@ -880,9 +880,9 @@ export default function AtlasView(): JSX.Element {
                 }
               }}
               aria-label="Guide scope focal length in millimetres (optional; feeds real guide-scale arcsec stats)"
-              className="field btn-touch w-24 mono text-right"
+              className="field field-rig mono text-right"
             />
-            <span className="inline-flex items-center px-2 border border-l-0 border-line2 bg-bg text-dim text-xs">
+            <span className="inline-flex items-center field-rig-suffix border border-l-0 border-line2 bg-bg text-dim">
               mm
             </span>
           </span>
