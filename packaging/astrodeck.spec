@@ -38,8 +38,9 @@ if not (webui / "index.html").is_file():
         "that serves no interface.")
 datas.append((str(webui), "astrodeck/webui"))
 
-# Vendored SDK libraries. Windows-only DLLs today; the tree is copied wholesale
-# so a future .so/.dylib needs no change here.
+# Vendored SDK libraries: Windows DLLs plus the per-platform Linux .so and
+# macOS .dylib trees. Copied wholesale, so the binary carries the libraries for
+# the platform it was built on (and harmlessly, the others).
 vendor = SERVER / "astrodeck" / "vendor"
 if vendor.is_dir():
     datas.append((str(vendor), "astrodeck/vendor"))
