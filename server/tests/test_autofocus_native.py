@@ -119,3 +119,47 @@ async def test_run_autofocus_routes_through_provider():
         steps_each_side=4, binning=1, hub=hub)
     assert result.success, result.message
     assert abs(result.best_position - rig.best_focus) <= 400, result.best_position
+
+
+# ---------------------------------------------------------------- sparse fields
+
+async def test_a_field_too_sparse_to_fit_is_refused_before_the_sweep(monkeypatch):
+    """Below four stars a curve cannot be fitted, and defocusing only ever finds
+    FEWER — so sweeping is five minutes of moving the focuser to reach a failure
+    that was knowable from the very first frame. Refuse, name what to change,
+    and leave the focuser where it started.
+
+    Reproduces the 2026-07-30 session: a rig whose detector found 8 stars at
+    best focus and 0 a few thousand steps out, which spent forty minutes
+    reporting "only 0 stars" at every position."""
+    import astrodeck.focus.native as N
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    # The engine's detector, stubbed to report a field too sparse to fit.
+    monkeypatch.setattr(N._native, "detect_and_measure",
+                        lambda data, params: ([], {"star_count": 2,
+                                                   "hfr_median": 3.0,
+                                                   "hfr_mad": 0.1}))
+    res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                       binning=2)
+    assert res.success is False
+    assert "2 stars" in res.message
+    # the levers, in the order that helps: exposure is free, binning costs
+    # resolution the sweep does not need
+    assert "longer exposure" in res.message and "bin 1" in res.message
+    # and it never moved
+    assert await foc.get_position() == start
+
+
+async def test_a_merely_sparse_field_still_sweeps(monkeypatch):
+    """Doubtful is not hopeless. A synthetic field of 11 stars converges
+    perfectly well, so warning is right and refusing would be worse than the
+    failure it prevents — the user can always halt."""
+    rig, cam, foc = await _connected_sim()
+    q = bus.subscribe()
+    try:
+        res = await run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                         step=350, steps_each_side=4, binning=1)
+    finally:
+        bus.unsubscribe(q)
+    assert res.success, res.message

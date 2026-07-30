@@ -27,6 +27,8 @@ import asyncio
 import contextlib
 import math
 
+import numpy as np
+
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
@@ -112,6 +114,15 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     # alongside). AutofocusResult still gets plain (position,hfr) tuples.
     points: list[tuple[int, float, float]] = []
     bus.publish("focus", state="running", points=[], best=None)
+    # Say what we are about to do, in the terms that determine whether it can
+    # work. A sweep that fails is otherwise indistinguishable in the log from a
+    # sweep that was never going to: 2026-07-30 spent forty minutes on a rig
+    # reporting "only 0 stars" at every point, with nothing recorded about the
+    # exposure, the binning, or the frame it actually got.
+    bus.log("info",
+            f"autofocus sweep: {exposure_s:g}s at gain {gain}, bin {binning}, "
+            f"{2 * steps_each_side + 1} points of {step} steps around {start_pos}",
+            "focus")
 
     def _pts() -> list[dict]:
         return [{"position": p, "hfr": h, "sigma": s} for p, h, s in points]
@@ -119,7 +130,50 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     def _result_pts() -> list[tuple[int, float]]:
         return [(p, h) for p, h, _ in points]
 
+    #: The engine needs at least four measurable points to fit a curve, so a
+    #: field with fewer stars than that AT BEST FOCUS certainly cannot produce
+    #: them — defocusing spreads each star over more pixels and only ever finds
+    #: fewer. This is the "certainly hopeless" line, and it refuses.
+    MIN_STARS_TO_SWEEP = 4
+    #: Below this it is doubtful rather than hopeless, so it WARNS and proceeds.
+    #: Deliberately not a refusal: a synthetic field of 11 stars converges
+    #: perfectly well, and blocking a sweep that would have worked is worse than
+    #: attempting one that might not — the user can halt, and now knows why if
+    #: it fails. (Measured on a real rig: 24 stars at bin 1 became 8 at bin 2
+    #: and 0 a few thousand steps out, which is the case this warns about.)
+    SPARSE_FIELD_WARN = 15
+
     try:
+        # ONE frame before committing to the whole sweep. The failure this
+        # prevents is not a crash: it is five minutes of moving the focuser to
+        # reach "not_enough_spread", with nothing on screen saying the field was
+        # too sparse to measure before it started.
+        probe = await _expose()
+        _s, pstats = await asyncio.to_thread(
+            _native.detect_and_measure, probe.data, params)
+        n0 = int(pstats.get("star_count") or 0)
+        bus.log("info", f"autofocus: {n0} stars at the starting position", "focus")
+        # Name the levers, in the order that helps: exposure first (it costs
+        # nothing), then binning (it costs resolution the sweep does not need),
+        # then the thing only the user can judge.
+        levers = (f"a longer exposure than {exposure_s:g}s"
+                  + (f", bin 1 instead of {binning}" if binning > 1 else "")
+                  + ", or a richer field")
+        if n0 < MIN_STARS_TO_SWEEP:
+            reason = (f"only {n0} stars at the current focus — a curve needs at "
+                      f"least {MIN_STARS_TO_SWEEP} measurable points and "
+                      f"defocusing finds fewer, not more. Try {levers}.")
+            await focuser.move_to(start_pos)
+            bus.publish("focus", state="failed", points=[], best=None,
+                        message=reason)
+            bus.log("warning", f"autofocus not attempted: {reason}", "focus")
+            return AutofocusResult(False, start_pos, None, [], reason)
+        if n0 < SPARSE_FIELD_WARN:
+            bus.log("warning",
+                    f"autofocus: {n0} stars is a sparse field — the sweep may "
+                    f"run out of measurable points as it defocuses. If it "
+                    f"fails, try {levers}.", "focus")
+
         sweep = _native.FocusSweep(config, start_pos)
 
         while True:
@@ -142,8 +196,17 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # a measurement lets the engine fail cleanly (can't bracket a
                 # minimum) if EVERY frame is starless — which restores start below.
                 if n <= 0 or hfr is None or not math.isfinite(hfr) or hfr <= 0:
+                    # Include what the frame actually looked like. "0 stars" on
+                    # its own cannot distinguish a starless field from a black
+                    # frame from a detector that rejected everything — and that
+                    # ambiguity is what made this undiagnosable the first time.
+                    # Sampled every 8th pixel: representative, and ~64x cheaper
+                    # than a full-frame median inside the sweep loop.
+                    px = frame.data[::8, ::8]
                     bus.log("warning",
-                            f"native autofocus: only {n} stars at {pos}, skipping",
+                            f"native autofocus: only {n} stars at {pos}, skipping "
+                            f"(frame median {float(np.median(px)):.0f}, "
+                            f"max {int(px.max())})",
                             "focus")
                     continue
 
@@ -154,6 +217,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 weight = mad or 0.001
                 sweep.add_measurement(pos, float(hfr), weight, n)
                 points.append((pos, float(hfr), mad))
+                # The count on a GOOD point is the margin: a sweep that works
+                # with 9 stars and one that works with 90 look identical in a
+                # log that only mentions failures.
+                bus.log("info",
+                        f"autofocus: {pos} -> HFR {hfr:.2f} ({n} stars)", "focus")
                 bus.publish("focus", state="running", points=_pts(), best=None)
 
             elif action == "done":
