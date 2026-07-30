@@ -516,3 +516,62 @@ export function saveAssignments(a: AssignmentMap): void {
     // storage full / privacy mode — stickiness is best-effort, never fatal
   }
 }
+
+// ============================================================ GUIDER SLOT NOTE
+// The guider row's dropdown is NOT where you choose your guider, and saying
+// nothing about that made it read as a dead end: on a rig with a real guide
+// camera the list showed "Simulator" and nothing else, so the honest conclusion
+// was that AstroDeck cannot guide (user, 2026-07-30 — "how am I supposed to
+// select a guider? the only option is simulator").
+//
+// It is not a dead end, it is a different shape. The native guider is not a
+// DEVICE you assign; it is the Rust engine running on your guide CAMERA, picked
+// on the Guide screen's provider row (ProvidersConfig.guide, resolved server-
+// side by providers.py::_resolve_guide). Only BRIDGE guiders — PHD2, NINA — are
+// devices this dropdown can fill, which is why an unconfigured rig sees only the
+// simulator and concludes the worst.
+//
+// Lives here rather than in the JSX for the same reason profileDelete.ts does:
+// the judgement is the part worth pinning, and a sentence that names the wrong
+// screen is worse than no sentence at all.
+
+/** Which situation the guider slot is in. `native` = the engine can run here;
+ *  `no-guide-cam` = engine present but nothing to run it on; `no-engine` = the
+ *  native wheel is missing, so a bridge really is the only option. */
+export type GuiderSlotState = "native" | "no-guide-cam" | "no-engine";
+
+export function guiderSlotState(
+  nativeReachable: boolean,
+  guideCamConnected: boolean,
+): GuiderSlotState {
+  if (!nativeReachable) return "no-engine";
+  return guideCamConnected ? "native" : "no-guide-cam";
+}
+
+/** The sentence for that situation. Always names WHERE the control is, because
+ *  "you can't pick it here" without "you pick it there" is the same dead end
+ *  with extra words. */
+export function guiderSlotNote(
+  state: GuiderSlotState,
+  opts: { guideCamName?: string | null; nativeError?: string | null } = {},
+): string {
+  if (state === "no-engine") {
+    const why = opts.nativeError ? ` (${opts.nativeError})` : "";
+    return (
+      `The native guiding engine is unavailable${why}, so guiding needs a PHD2 ` +
+      `or NINA driver — add one under Settings → Drivers.`
+    );
+  }
+  if (state === "native") {
+    const cam = opts.guideCamName || "your guide camera";
+    return (
+      `AstroDeck guides with its own engine on ${cam} — no guider device to ` +
+      `assign here. Pick which guider runs on the Guide screen.`
+    );
+  }
+  return (
+    "AstroDeck's own guiding engine runs on a guide camera, not on a device " +
+    "assigned here. Connect a guide camera above and it becomes available on " +
+    "the Guide screen."
+  );
+}
