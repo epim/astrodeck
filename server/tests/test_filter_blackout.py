@@ -240,3 +240,27 @@ async def test_status_carries_opaque_and_dark_slot(filter_store):
         assert len(fwst["opaque"]) == len(fwst["names"])
     finally:
         await h.disconnect_all()
+
+
+async def test_a_disconnected_wheel_does_not_abort_an_unfiltered_step(filter_store):
+    """Regression guard. `hub.require` RAISES on a registered-but-disconnected
+    device, and the blackout work moved that call ahead of the empty-filter
+    check — so a wheel that dropped out mid-night would abort the run on the
+    next unfiltered frame, where before it just kept shooting.
+
+    A step that NAMES a filter still raises: that one genuinely cannot be
+    honoured without the wheel."""
+    from astrodeck.devices.base import DeviceError
+    h = Hub()
+    await h.connect_sim()
+    try:
+        fw = h.devices["filterwheel"]
+        fw.connected = False              # the wheel dropped out
+        eng = _engine(h)
+        eng.plan = _plan()
+        await eng._apply_filter(_step("Light"))        # must NOT raise
+        await eng._apply_filter(_step("Dark"))         # nor for a dark
+        with pytest.raises(DeviceError):
+            await eng._apply_filter(_step("Light", "Ha"))
+    finally:
+        await h.disconnect_all()
