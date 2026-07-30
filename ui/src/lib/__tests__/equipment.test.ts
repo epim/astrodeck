@@ -13,6 +13,8 @@ import {
   persistableAssignedCount,
   profileSaveSource,
   profileSaveLock,
+  guiderSlotState,
+  guiderSlotNote,
 } from "../equipment";
 import type { DriverInfo } from "../../types";
 
@@ -313,6 +315,56 @@ test("the sim-only lock names the actual next step", () => {
   });
   eq(typeof lock === "string" && /simulator/i.test(lock) && /connect/i.test(lock),
      true, `sim-only reason must name the simulator and say connect, got: ${lock}`);
+});
+
+
+// ---------------------------------------------------------- guider slot note
+// The guider dropdown is not where you choose your guider, and on a real rig it
+// lists only "Simulator" — so without a sentence the row reads as "AstroDeck
+// cannot guide". These pin the sentence, and above all that it NAMES the screen
+// that actually holds the control.
+
+test("guider slot: engine + guide camera is the native case", () => {
+  eq(guiderSlotState(true, true), "native");
+});
+
+test("guider slot: engine but no guide camera", () => {
+  eq(guiderSlotState(true, false), "no-guide-cam");
+});
+
+test("guider slot: no native engine at all", () => {
+  eq(guiderSlotState(false, true), "no-engine", "a missing engine outranks a present camera");
+});
+
+test("native note names the camera AND where to pick the guider", () => {
+  const s = guiderSlotNote("native", { guideCamName: "ZWO ASI (USB)" });
+  eq(s.includes("ZWO ASI (USB)"), true, `must name the camera, got: ${s}`);
+  eq(/guide screen/i.test(s), true, `must say WHERE to choose, got: ${s}`);
+});
+
+test("native note survives a missing camera name", () => {
+  const s = guiderSlotNote("native", { guideCamName: null });
+  eq(/your guide camera/i.test(s), true, `must degrade to a phrase, got: ${s}`);
+  eq(s.includes("null"), false, "must never render a null name");
+});
+
+test("no-guide-cam note says to connect one", () => {
+  const s = guiderSlotNote("no-guide-cam");
+  eq(/guide camera/i.test(s), true, `must name what is missing, got: ${s}`);
+  eq(/connect/i.test(s), true, `must say what to DO, got: ${s}`);
+});
+
+test("no-engine note carries the reason and points at a bridge", () => {
+  const s = guiderSlotNote("no-engine", { nativeError: "astrodeck_native wheel not installed" });
+  eq(s.includes("astrodeck_native wheel not installed"), true,
+     `must carry the probe's own reason, got: ${s}`);
+  eq(/phd2|nina/i.test(s), true, `must name the real alternative, got: ${s}`);
+});
+
+test("no-engine note reads cleanly with no reason available", () => {
+  const s = guiderSlotNote("no-engine");
+  eq(s.includes("()"), false, `empty parens leak an absent reason, got: ${s}`);
+  eq(s.includes("undefined"), false, "must never render undefined");
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);
