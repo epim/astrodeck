@@ -128,22 +128,34 @@ class Layout:
         self.failed_dir.mkdir(parents=True, exist_ok=True)
 
     # -- pointer + markers -----------------------------------------------------
-    def read_current(self) -> "str | None":
+    def _read_pointer(self, path: Path) -> "str | None":
+        """Read a version pointer, tolerating a byte-order mark.
+
+        ``encoding="utf-8"`` decodes a leading BOM to U+FEFF, and ``strip()``
+        removes whitespace — which a BOM is not. The surviving character makes
+        the version a name no release directory has, so ``PYTHONPATH`` points at
+        nothing and the server silently imports whatever ``astrodeck`` happens to
+        be in site-packages: an old build, running, healthy-looking, serving a
+        different version than the pointer claims. That is a very quiet way to
+        lose an install, and it takes one editor that writes a BOM (PowerShell's
+        ``Set-Content -Encoding utf8``, Notepad) to trigger it.
+
+        ``utf-8-sig`` consumes a BOM when present and is identical to utf-8 when
+        it is not."""
         try:
-            v = self.current.read_text(encoding="utf-8").strip()
+            v = path.read_text(encoding="utf-8-sig").strip()
         except OSError:
             return None
         return v or None
+
+    def read_current(self) -> "str | None":
+        return self._read_pointer(self.current)
 
     def set_current(self, version: str) -> None:
         write_text_atomic(self.current, version.strip() + "\n")
 
     def read_last_good(self) -> "str | None":
-        try:
-            v = self.last_good.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        return v or None
+        return self._read_pointer(self.last_good)
 
     def set_last_good(self, version: str) -> None:
         write_text_atomic(self.last_good, version.strip() + "\n")
