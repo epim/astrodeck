@@ -76,8 +76,16 @@ class InstallLayout:
         return self.root / CURRENT_POINTER
 
     def read_current(self) -> "str | None":
+        """The installed version, tolerating a byte-order mark.
+
+        ``utf-8-sig`` consumes a BOM when present and behaves exactly like
+        ``utf-8`` when it is not. Plain ``utf-8`` decodes one to U+FEFF, which
+        ``strip()`` keeps (a BOM is not whitespace) — and the surviving
+        character turns the version into a name no release directory has. The
+        supervisor mirror carries the same fix and the same reason; see
+        ``supervisor/protocol.py:_read_pointer``."""
         try:
-            v = self.current.read_text(encoding="utf-8").strip()
+            v = self.current.read_text(encoding="utf-8-sig").strip()
         except OSError:
             return None
         return v or None

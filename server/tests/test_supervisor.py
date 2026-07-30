@@ -72,6 +72,46 @@ def _result(root):
     return json.loads(P.Layout(root).result.read_text())
 
 
+# ------------------------------------------------------------ pointer reading
+
+def test_pointers_tolerate_a_byte_order_mark(tmp_path):
+    """A BOM in `current` must not become part of the version.
+
+    Cost a live install 2026-07-30: the pointer was rewritten with PowerShell's
+    `Set-Content -Encoding utf8`, which emits EF BB BF. utf-8 decodes that to
+    U+FEFF and `strip()` leaves it (a BOM is not whitespace), so the release
+    path became releases/<BOM>0.2.21 — a directory that does not exist. The
+    launcher's PYTHONPATH then pointed at nothing and the server imported the
+    stale astrodeck sitting in site-packages: running, answering /healthz, and
+    serving a DIFFERENT version than the pointer claimed."""
+    lay = P.Layout(tmp_path)
+    lay.ensure()
+    for path in (lay.current, lay.last_good):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xef\xbb\xbf0.2.21\n")
+    assert lay.read_current() == "0.2.21"
+    assert lay.read_last_good() == "0.2.21"
+
+
+def test_pointers_still_read_plain_utf8(tmp_path):
+    lay = P.Layout(tmp_path)
+    lay.ensure()
+    lay.set_current("0.3.0")
+    lay.set_last_good("0.3.0")
+    assert lay.read_current() == "0.3.0"
+    assert lay.read_last_good() == "0.3.0"
+
+
+def test_an_empty_or_bom_only_pointer_reads_as_absent(tmp_path):
+    """A pointer holding nothing but a BOM is not a version — it must read as
+    absent so the supervisor falls back to --initial-version rather than trying
+    to launch a release named after an invisible character."""
+    lay = P.Layout(tmp_path)
+    lay.ensure()
+    lay.current.write_bytes(b"\xef\xbb\xbf\n")
+    assert lay.read_current() is None
+
+
 # ---------------------------------------------------------------- scenarios
 
 def test_clean_stop_seeds_current_and_last_good(tmp_path):
