@@ -2993,6 +2993,15 @@ class Hub:
             "status": await self.poll_status(),
             "preview_id": self.preview_seq or None,
             "guide_recent": guide_recent,
+            # The long-running operations actually in flight RIGHT NOW, by name
+            # ("autofocus", "goto", "polar", ...). Without this the client has no
+            # way to learn that something it saw start has since ended: progress
+            # is delivered only as live events, so a WebSocket that drops across
+            # the terminal tick — routine on a phone over a relay at night —
+            # leaves the UI showing a sweep that finished forty minutes ago,
+            # with Halt as the only way out. Observed 2026-07-30.
+            "busy": sorted(k for k, t in (self._busy or {}).items()
+                           if t is not None and not t.done()),
         }
 
     async def poll_status(self) -> dict:

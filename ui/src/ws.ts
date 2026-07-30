@@ -83,6 +83,20 @@ export function connectWs(): void {
       const ts = Date.now() / 1000;
       if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
       if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+      // Focus has the SAME failure mode the sequence rehydration above exists
+      // for, and it bit a real session on 2026-07-30: the sweep failed at
+      // 23:13, the phone kept showing "measuring…" until Halt at 23:52, and
+      // Halt appeared to do nothing because there was nothing left to halt.
+      // `busy` is the server's truth about what is actually running, so a local
+      // "running" that the server does not corroborate is stale. Cleared to
+      // null rather than marked failed: the sweep may well have SUCCEEDED while
+      // we were disconnected, and inventing an outcome is worse than showing
+      // none. `lastAutofocusResult` still holds the last real result.
+      if (Array.isArray(snap.busy) && !snap.busy.includes("autofocus")) {
+        if (useStore.getState().focus?.state === "running") {
+          useStore.setState({ focus: null });
+        }
+      }
     } catch {
       /* ignore — WS status polling will catch up within ~2s */
     }
