@@ -26,3 +26,18 @@ POAGetConfig per-call calling convention were verified against the SDK's own
 Replace the DLL from a newer SDK zip's `lib/x64/`, refresh LICENSE, re-verify
 the bindings against that release's `pyPOACamera.py`, and bump the version note
 above.
+
+## Per-platform libraries
+
+`linux-arm64/`, `linux-x86_64/`, `linux-arm32/`, `linux-x86/` and `macos/` hold
+the same SDK (v3.10.0) built for each target. `devices/sdk_paths.py` picks the
+directory matching the running machine; the flat `PlayerOneCamera.dll` above is
+the historical Windows location and still resolves unchanged.
+
+The Linux files are fully versioned (`libPlayerOneCamera.so.3.10.0`) because the
+vendor ships the short names as symlinks, and a symlink survives neither a
+Windows checkout nor a wheel build.
+
+**Linux needs `libusb-1.0-0` installed.** Without it the library resolves and
+then fails to load with `libusb-1.0.so.0: cannot open shared object file`, which
+surfaces only as the camera not being offered. The container image installs it.

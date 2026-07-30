@@ -104,4 +104,10 @@ astrodeck = [
     "vendor/playerone/*.dll",
     "vendor/playerone/LICENSE",
     "vendor/playerone/*.md",
+    # Per-platform shared libraries (devices/sdk_paths.py). The Linux files are
+    # fully-versioned (libFoo.so.3.10.0) because a vendor ships the short names
+    # as SYMLINKS, and a symlink survives neither a Windows checkout nor a wheel
+    # build — so the glob must not assume a `.so` suffix comes last.
+    "vendor/*/linux-*/*",
+    "vendor/*/macos/*",
 ]
