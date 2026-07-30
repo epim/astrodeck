@@ -41,6 +41,8 @@ import {
   hardwareAssignments,
   hasRealMotion,
   liveRoleCount,
+  guiderSlotNote,
+  guiderSlotState,
   loadAssignments,
   profileActivateConfirm,
   profileConnectsNothing,
@@ -855,6 +857,42 @@ export default function EquipmentView(): JSX.Element {
 
 // One device slot row: assignment select → (optional) device select → slot
 // state word → live LED + connected name → inline RoleResult error. The
+// The guider slot is the one row whose dropdown is NOT where you choose your
+// guider, and saying nothing about that made it read as a dead end: on a rig
+// with a real guide camera the list showed "Simulator" and nothing else, so the
+// honest conclusion was that AstroDeck cannot guide (user, 2026-07-30 — "how am
+// I supposed to select a guider? the only option is simulator").
+//
+// It is not a dead end, it is a different shape. AstroDeck's native guider is
+// not a DEVICE you assign; it is the Rust engine running on your guide CAMERA,
+// picked on the Guide screen's provider row (providers.guide, resolved by
+// providers.py::_resolve_guide). Only bridge guiders — PHD2, NINA — are devices
+// this dropdown can fill, which is why an unconfigured rig sees only the sim.
+//
+// So this line says which of those three situations the rig is actually in, and
+// names the screen that holds the control. It reports state the row cannot
+// otherwise show; it never restates the dropdown next to it.
+function GuiderSlotNote({
+  drivers,
+  status,
+}: {
+  drivers: DriverInfo[];
+  status: ReturnType<typeof useStore.getState>["status"];
+}): JSX.Element | null {
+  const native = drivers.find((d) => d.id === "astrodeck");
+  const gc = status?.guide_camera;
+  const text = guiderSlotNote(
+    guiderSlotState(!!native?.status.reachable, !!gc?.connected),
+    { guideCamName: gc?.name, nativeError: native?.status.error },
+  );
+  return (
+    <p className="mt-1.5 pl-[23px] text-[11px] text-dim inline-flex items-start gap-1.5 leading-snug">
+      <Icon name="info" size={11} className="shrink-0 mt-0.5" />
+      <span>{text}</span>
+    </p>
+  );
+}
+
 // guider row nests the read-only guide-camera line (spec review finding 3).
 function RoleSlot({
   role,
@@ -1011,17 +1049,20 @@ function RoleSlot({
         />
       )}
       {role === "guider" && (
-        <div className="mt-2 pl-[23px] flex items-center gap-2 text-[11px]">
-          <span className="label">guide cam</span>
-          <span className="mono text-dim truncate">
-            {(() => {
-              const gc = status?.guide_camera;
-              const guider = status?.guider;
-              const on = !!gc?.connected || !!guider;
-              return on ? (gc?.name ?? guider?.name ?? "guide camera") : "— not connected —";
-            })()}
-          </span>
-        </div>
+        <>
+          <div className="mt-2 pl-[23px] flex items-center gap-2 text-[11px]">
+            <span className="label">guide cam</span>
+            <span className="mono text-dim truncate">
+              {(() => {
+                const gc = status?.guide_camera;
+                const guider = status?.guider;
+                const on = !!gc?.connected || !!guider;
+                return on ? (gc?.name ?? guider?.name ?? "guide camera") : "— not connected —";
+              })()}
+            </span>
+          </div>
+          <GuiderSlotNote drivers={drivers} status={status} />
+        </>
       )}
     </div>
   );
