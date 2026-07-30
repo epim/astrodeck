@@ -547,3 +547,34 @@ async def test_discover_filters_vid_pid(registered, monkeypatch):
     found = await registered.discover()
     assert found == [{"role": "telescope", "name": "ZWO AM5 (USB)",
                       "port_path": "COM3", "verified": True}]
+
+
+async def test_park_stops_tracking_before_commanding_it(fixed_env):
+    """VERIFIED ON HARDWARE 2026-07-30: with tracking ON the AM5 accepts :hP#
+    and silently does nothing — the mount never moves, never reports parked, and
+    every park times out at 60s. Tracking off first and the identical park lands
+    in ~15s.
+
+    This is the ordering that stands between the sun and the optics. A night
+    ALWAYS ends with the mount tracking, so "park at dawn" hit exactly this case
+    and failed. The command ORDER is asserted, not just that a park happened.
+    """
+    # unparked, tracking on; Gps flips to parked once :hP# has been sent
+    script = _connect_script(Gps="0", GAT="1")
+    fl = FakeLink(script)
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    fl.sent.clear()
+    # after connect, report parked as soon as the park command has gone out
+    fl.script["Gps"] = lambda cmd: "2" if "hP" in fl.sent else "0"
+    fl.script["GAT"] = lambda cmd: "0" if "Td" in fl.sent else "1"
+
+    await tel.park()
+
+    assert "hP" in fl.sent, "the park command was never sent"
+    # :Td# is tracking OFF on this mount (:Te# is on) — see set_tracking.
+    stop = fl.sent.index("Td") if "Td" in fl.sent else None
+    assert stop is not None, (
+        f"tracking was never stopped before parking (sent: {fl.sent})")
+    assert stop < fl.sent.index("hP"), (
+        f"tracking must stop BEFORE :hP#, got {fl.sent}")

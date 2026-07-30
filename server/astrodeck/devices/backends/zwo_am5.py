@@ -205,6 +205,27 @@ class ZwoAm5Telescope(Telescope):
         # Send-and-poll, with a wall-clock bound.
         if await self.is_parked():
             return
+        # STOP TRACKING FIRST. Verified on hardware 2026-07-30: with tracking
+        # ON, :hP# is accepted and silently does nothing — the mount never
+        # moves and never reports parked, so every park times out at 60s.
+        # Tracking off first, and the identical park lands in ~15s.
+        #
+        # This is the single most important ordering in the driver. A night
+        # ALWAYS ends with the mount tracking, so "park at dawn" — the thing
+        # standing between the sun and the optics — hit exactly this case and
+        # failed. It was found by test-firing a dawn failsafe rather than
+        # trusting that it would work.
+        try:
+            if await self.get_tracking():
+                await self.set_tracking(False)
+                # The mount needs a moment to actually stop before it will
+                # honour a park; polling Gps immediately reads the old state.
+                await asyncio.sleep(1.0)
+        except Exception:  # noqa: BLE001
+            # A mount that cannot report or stop tracking still gets the park
+            # attempt — refusing to try would be worse than trying and timing
+            # out, and this path is the last thing protecting the optics.
+            pass
         await self._link.request("hP", reply="none")
         deadline = asyncio.get_running_loop().time() + 60.0
         while True:
