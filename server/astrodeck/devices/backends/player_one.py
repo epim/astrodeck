@@ -98,13 +98,18 @@ class PlayerOneBackend:
 
     async def discover(self) -> list[dict]:
         """Enumerate attached Player One units (guarded; [] on any failure).
-        Role hint 'camera' — the Poseidon is the imaging cam here."""
+
+        One entry PER ROLE the unit can fill — see the same note on the ZWO ASI
+        backend. A camera fills either role; the probe now offers exactly what
+        discovery reports, so reporting only the 'camera' hint would drop this
+        unit out of the guide-camera picker."""
         found: list[dict] = []
         try:
             sdk = make_player_one()
             for i in range(await asyncio.to_thread(sdk.count)):
-                found.append({"role": "camera", "name": "Player One (USB)",
-                              "verified": True, "index": i})
+                for role in _CAMERA_ROLES:
+                    found.append({"role": role, "name": "Player One (USB)",
+                                  "verified": True, "index": i})
         except Exception:  # noqa: BLE001
             pass
         return found

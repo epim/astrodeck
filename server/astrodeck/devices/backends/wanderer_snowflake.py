@@ -23,8 +23,14 @@ from ..base import DeviceError, FilterWheel
 
 #: The wheel's protocol minimum firmware (the INDI driver's floor; our unit's).
 MIN_FW_DATE = 20260124
-#: Accepted model strings (both 8-slot wheels).
-MODELS = ("WSFW508", "WSFW368")
+#: Model-string PREFIX, not an allowlist. Known units are WSFW508 and WSFW368
+#: (both 8-slot; the number is the filter diameter — 50.8 mm and 36 mm), but the
+#: model is a label on a protocol we parse in full, so a WSFW we have not seen
+#: is accepted on its own terms rather than rejected as "not a Snowflake". The
+#: banner carries everything that actually varies: firmware date and slot count.
+MODEL_PREFIX = "WSFW"
+#: Fallback slot count for a banner whose per-slot letters are unreadable. The
+#: REAL count comes from the wire — see ``Banner.slots``.
 SLOT_COUNT = 8
 #: A goto can take several seconds per hop; INDI bounds the wait at 40 s.
 MOVE_TIMEOUT_S = 40.0
@@ -37,22 +43,32 @@ class Banner:
     model: str
     fw_date: int
     slot: int            # 1-based, as on the wire
-    letters: str         # 8 per-slot filter letters ('X' = unset)
+    letters: str         # ONE per-slot filter letter, per slot ('X' = unset)
     device_id: int
     at: float            # monotonic receive time
+
+    @property
+    def slots(self) -> int:
+        """How many slots this wheel has, straight from the device.
+
+        The letters field carries exactly one character per slot, so its length
+        IS the slot count. Reading it here instead of assuming ``SLOT_COUNT``
+        means a wheel with a different carousel reports its own size rather than
+        being described as an 8-slot unit that happens to be missing filters."""
+        return len(self.letters) or SLOT_COUNT
 
 
 def parse_banner(line: str) -> Banner | None:
     """Parse one stream line; None on anything malformed (resync-tolerant)."""
     parts = line.strip().split("A")
-    if len(parts) < 13 or parts[0] not in MODELS:
+    if len(parts) < 13 or not parts[0].startswith(MODEL_PREFIX):
         return None
     try:
         return Banner(
             model=parts[0],
             fw_date=int(parts[1]),
             slot=int(float(parts[2])),
-            letters="".join(parts[3])[:8],
+            letters=parts[3],
             device_id=int(parts[12]),
             at=time.monotonic(),
         )
@@ -145,6 +161,7 @@ class SnowflakeWheel(FilterWheel):
         self._link = link
         self.fw_date = 0
         self.model = ""
+        self.slots = SLOT_COUNT      # replaced at connect by the wheel's own count
 
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
@@ -165,9 +182,10 @@ class SnowflakeWheel(FilterWheel):
                 f"{MIN_FW_DATE}")
         self.model = first.model
         self.fw_date = first.fw_date
+        self.slots = first.slots
         self.filter_names = [
             (c if c not in ("X", "") else f"Slot {i + 1}")
-            for i, c in enumerate(first.letters.ljust(8, "X"))]
+            for i, c in enumerate(first.letters.ljust(self.slots, "X"))]
         self.connected = True
         # NO auto-calibrate: connect never moves the carousel.
 
@@ -179,6 +197,7 @@ class SnowflakeWheel(FilterWheel):
         d = super().describe()
         d["model"] = self.model
         d["fw_date"] = self.fw_date
+        d["slots"] = self.slots
         return d
 
     async def get_position(self) -> int:
@@ -188,9 +207,9 @@ class SnowflakeWheel(FilterWheel):
         return b.slot - 1
 
     async def set_position(self, slot: int) -> None:
-        if not (0 <= slot < SLOT_COUNT):
+        if not (0 <= slot < self.slots):
             raise DeviceError(
-                f"{self.name}: slot {slot} out of range 0..{SLOT_COUNT - 1}")
+                f"{self.name}: slot {slot} out of range 0..{self.slots - 1}")
         target = slot + 1                     # wire is 1-based
         sent_at = time.monotonic()
         await self._link.send(f"200{target}")
@@ -237,7 +256,8 @@ class SnowflakeSession:
     async def health(self) -> dict | None:
         if self._wheel is None or not self._wheel.connected:
             return None
-        return {"port": self._port_path, "model": self._wheel.model}
+        return {"port": self._port_path, "model": self._wheel.model,
+                "slots": self._wheel.slots}
 
     async def close(self) -> None:
         wheel, self._wheel = self._wheel, None
