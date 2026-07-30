@@ -216,7 +216,12 @@ def test_password_hash_absent_from_public_shape(tmp_path):
     pub = u.to_public()
     # structurally ABSENT (not blanked) from the public view
     assert "password_hash" not in pub
-    assert set(pub) == {"id", "username", "email", "role", "enabled", "created"}
+    assert set(pub) == {"id", "username", "email", "login_email", "role",
+                        "enabled", "created", "has_password"}
+    # `has_password` is a BOOL derived from whether a hash exists — never the
+    # hash, never a prefix of it, never its length.
+    assert pub["has_password"] is True
+    assert not any(isinstance(v, str) and v.startswith("$2b$") for v in pub.values())
     # ...and from every listed user
     for shape in (x.to_public() for x in s.list()):
         assert "password_hash" not in shape
@@ -446,10 +451,19 @@ def test_hash_rejects_blank_password():
     assert isinstance(PasswordTooShortError(), ValueError)
 
 
-def test_store_create_rejects_blank_password(tmp_path):
-    """The store (used by first-run setup + create-admin CLI + user create)
-    refuses a blank-password account."""
+def test_store_create_with_no_password_makes_a_google_only_account(tmp_path):
+    """The store now ACCEPTS a blank password — it means "Google sign-in only".
+
+    This inverts an older test that required PasswordTooShortError here. The
+    guard did not disappear, it moved to where it belongs: the unauthenticated
+    first-run route still refuses a blank password (that one mints an admin from
+    the LAN), while an authenticated admin may deliberately create a
+    password-less account for somebody who signs in with Google.
+
+    What must never change is that the account cannot be logged into locally."""
     s = _store(tmp_path)
-    with pytest.raises(PasswordTooShortError):
-        s.create(username="emptyadmin", password="", role="admin")
-    assert s.is_empty() is True  # nothing was created
+    u = s.create(username="oidc-only", password="", role="viewer")
+    assert u.password_hash == ""          # no hash, not a hash of ""
+    assert u.can_sign_in_locally is False
+    assert s.verify("oidc-only", "") is None
+    assert s.verify("oidc-only", "anything") is None

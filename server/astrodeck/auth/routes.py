@@ -278,12 +278,33 @@ async def auth_callback(request: Request, code: str = "", state: str = "",
 
 
 def _role_for_email(auth_cfg: Any, email: str | None) -> str | None:
-    """email -> role via ``role_allowlist`` then ``default_role`` (None = deny).
+    """email -> role. None means deny.
 
-    Re-reads the live ``auth_cfg`` so a removed allowlist entry denies the next
-    login immediately."""
+    Order, and the order is the point:
+
+      1. **The user store.** A Google sign-in resolves against the same account
+         list a password sign-in does, so one person has one role and one
+         enabled/disabled state however they arrive. A DISABLED account is
+         denied outright here rather than falling through to the allowlist or
+         the default role — otherwise disabling somebody would silently demote
+         them to the default instead of locking them out.
+      2. ``role_allowlist`` — the pre-unification map, still honoured so an
+         existing rig keeps working across the upgrade without anybody having
+         to re-enter their users before the next clear night.
+      3. ``default_role`` — for an authenticated stranger. None = deny.
+
+    Re-read live on every request, so removing access takes effect on the next
+    one rather than whenever a session happens to expire.
+    """
     if not email:
         return None
+    try:
+        from .users import user_store
+        u = user_store.get_by_email(email)
+    except Exception:  # noqa: BLE001 - a broken store must not break login
+        u = None
+    if u is not None:
+        return u.role if u.enabled else None
     allow = getattr(auth_cfg, "role_allowlist", {}) or {}
     if email in allow:
         return allow[email]
