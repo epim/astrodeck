@@ -2263,7 +2263,23 @@ class SequenceEngine:
     async def _apply_filter(self, step) -> None:
         if "filterwheel" not in self.hub.devices:
             return
-        fw = self.hub.require("filterwheel")
+        # `require` RAISES when a device is registered but not connected, and
+        # the two cases want opposite things from that:
+        #
+        #   a step that NAMES a filter cannot be honoured without the wheel, so
+        #   a disconnected wheel is a real error and is raised, as it always was;
+        #
+        #   a step with no filter never needed the wheel at all. Raising there
+        #   would turn a wheel that dropped out mid-night into an aborted run,
+        #   when the old behaviour — keep shooting, the wheel is not in the way —
+        #   is both safe and what the user expects. (Introduced by the blackout
+        #   slot work, which moved this call ahead of the empty-filter check.)
+        if not step.filter:
+            fw = self.hub.devices.get("filterwheel")
+            if fw is None or not getattr(fw, "connected", False):
+                return
+        else:
+            fw = self.hub.require("filterwheel")
         if step.filter:
             if step.filter not in fw.filter_names:
                 bus.log("warning", f"filter '{step.filter}' not in wheel — skipping move", "sequence")
