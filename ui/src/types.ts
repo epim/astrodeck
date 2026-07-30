@@ -447,6 +447,11 @@ export interface MonitorSnapshot {
   status: RigStatus;
   preview_id: number | null;
   guide_recent: { t: number; ra: number; dec: number }[];
+  /** Long-running operations in flight on the SERVER right now ("autofocus",
+   *  "goto", "polar", ...). The client's own view of what is running comes from
+   *  live events, which publish their terminal tick exactly once — so this is
+   *  how a client that was disconnected across that tick finds out. */
+  busy?: string[];
 }
 
 export interface LogLine {
