@@ -332,17 +332,27 @@ export const deleteDriver = (id: string): Promise<{ deleted: string }> =>
 
 // -------------------------------------------------- native hardware scanning
 // One physical device found by a hardware backend's discover(), GROUPED by
-// (driver_type, port_path, index) — a local/USB backend's discover() emits
-// one entry PER ROLE it can fill (e.g. zwo-usb: one for "focuser", one for
-// "rotator" when both an EAF and CAA are attached), but a single configured
-// driver of that type already offers every role the backend declares
-// (drivers.py _probe_native), so grouping avoids creating N redundant driver
-// rows for one physical unit. `index` (zwo-asi/player-one cameras only) tells
-// two identical USB cameras apart.
+// (driver_type, port_path, index) — a local/USB backend's discover() emits one
+// entry PER ROLE it can fill (zwo-usb: "focuser" for the EAF, "rotator" for the
+// CAA; a camera: both "camera" and "guide_camera" for the one unit). One
+// configured driver row addresses the whole bus, so grouping avoids N redundant
+// rows for one connection. `index` (zwo-asi/player-one cameras only) tells two
+// identical USB cameras apart.
+//
+// Grouping merges roles but must NOT merge identities: the server now offers
+// exactly the roles discovery reported, named per unit, so this row keeps the
+// per-unit names in `devices` and only borrows the backend's name when it is
+// genuinely covering more than one device.
 export type HwFound = {
   driver_type: string;
   transport: "network" | "serial" | "local";
+  /** What to CALL this row: the unit's own name when the group is one device,
+   *  the backend's name when it is a bus carrying several. */
   name: string;
+  /** The backend's own name, kept so the row can be renamed after grouping. */
+  backend_label: string;
+  /** Every distinct unit in this group — the EAF and the CAA on one ZWO bus. */
+  devices: string[];
   port_path?: string;
   index?: number;
   roles: string[];
@@ -377,17 +387,29 @@ export async function discoverHardware(): Promise<HwFound[]> {
       const row = grouped.get(key);
       if (row) {
         if (!row.roles.includes(e.role)) row.roles.push(e.role);
+        if (e.name && !row.devices.includes(e.name)) row.devices.push(e.name);
       } else {
         grouped.set(key, {
           driver_type: b.driver_type as string,
           transport: (b.transport as "network" | "serial" | "local") ?? "local",
           name: e.name,
+          backend_label: b.label,
+          devices: e.name ? [e.name] : [],
           port_path: e.port_path,
           index: e.index,
           roles: [e.role],
         });
       }
     }
+  }
+  // A group holding SEVERAL distinct devices is a bus, not a device, so it takes
+  // the backend's name. Naming it after whichever unit enumerated first is what
+  // labelled the ZWO accessory bus "ZWO EAF (USB)" — one row, named for its
+  // focuser, with the CAA hidden inside it, so the rotator read as unsupported
+  // and users went to ASCOM for a device we drive natively (#97). A camera
+  // reporting two ROLES is still one device, so it keeps its own name.
+  for (const row of grouped.values()) {
+    if (row.devices.length > 1) row.name = row.backend_label;
   }
   return Array.from(grouped.values());
 }
