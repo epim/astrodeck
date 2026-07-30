@@ -44,6 +44,15 @@ LABEL org.opencontainers.image.title="AstroDeck" \
       org.opencontainers.image.source="https://github.com/epim/astrodeck" \
       org.opencontainers.image.licenses="Apache-2.0"
 
+# libusb is a RUNTIME dependency of the vendored camera SDKs, not a build one.
+# Without it the .so resolves, ctypes tries to load it, and dies with
+# "libusb-1.0.so.0: cannot open shared object file" — which surfaces as the
+# camera backend registering nothing and the camera simply not being offered.
+# Verified by loading libPlayerOneCamera.so in this image with and without it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root. The uid is pinned so a bind-mounted capture directory has a stable
 # owner across rebuilds — otherwise last night's data becomes unwritable after
 # an image update.

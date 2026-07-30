@@ -22,3 +22,20 @@ Notes:
   export test, note versions above.
 - Loader/search order: `ASTRODECK_ZWO_SDK_DIR` env → this dir → known installs
   (`devices/zwo_sdk.py:_find_dll`).
+
+## Per-platform libraries
+
+`macos/libASICamera2.dylib` is the macOS build of the camera SDK.
+
+**There is no Linux `libASICamera2.so` here yet.** The upstream reference tree
+carries only `libASICamera2.a`, a *static* archive, which `ctypes.CDLL` cannot
+load at runtime — it exists for projects that link at build time. ZWO's own SDK
+download does ship `libASICamera2.so` for armv7/armv8/x64; that file is what is
+needed to make ZWO cameras work on Linux and the Raspberry Pi.
+
+`EAF_focuser` (focuser) and `CAARotator` (rotator) are Windows-only here for the
+same reason: the upstream tree we vendored from does not carry them at all, since
+it is a guiding application that drives neither. ZWO ships separate EAF and CAA
+Linux SDKs.
+
+**Linux needs `libusb-1.0-0` installed** for any of these once added.

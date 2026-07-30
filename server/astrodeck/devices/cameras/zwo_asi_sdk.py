@@ -168,6 +168,21 @@ def _loads_with_exports(path: Path, exports: list[str]):
 
 
 def _find_dll(basename: str):
+    """Locate + load the SDK for THIS platform. `basename` stays the Windows
+    filename because it keys _DLL_SPECS; the resolver derives the real name."""
+    from ..sdk_paths import candidates
+    alternatives, exports = _DLL_SPECS[basename]
+    stem = basename.rsplit(".", 1)[0]
+    for c in candidates("zwo", stem, env_var="ASTRODECK_ZWO_SDK_DIR",
+                        extra=alternatives):
+        if c.is_file():
+            dll = _loads_with_exports(c, exports)
+            if dll is not None:
+                return dll
+    return None
+
+
+def _find_dll_legacy(basename: str):
     alternatives, exports = _DLL_SPECS[basename]
     candidates: list[Path] = []
     env = os.environ.get("ASTRODECK_ZWO_SDK_DIR")
