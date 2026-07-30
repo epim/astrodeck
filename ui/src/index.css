@@ -850,11 +850,36 @@ nav.fixed[aria-label="Primary"] { padding-bottom: env(safe-area-inset-bottom, 0p
    accent stroke + width and gains a 1px black outline on top. */
 .svg-halo { paint-order: stroke; filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
 
-/* .btn-touch / .stepper — every Atlas control is >=44px (spec §8 / review touch
-   P0). .btn-touch is a generic >=44px tap target; .stepper is the +/- numeric
-   bump button. They set min-size only; visual chrome comes from .btn/.field etc.
-   (mirrors .step-btn, which predates the Atlas surface). */
+/* .btn-touch / .stepper — every Atlas control you DRIVE is >=44px (spec §8 /
+   review touch P0). .btn-touch is a generic >=44px tap target; .stepper is the
+   +/- numeric bump button. They set min-size only; visual chrome comes from
+   .btn/.field etc. (mirrors .step-btn, which predates the Atlas surface). */
 .btn-touch { min-height: 44px; min-width: 44px; }
+
+/* .field-rig — a rig-parameter input, deliberately NOT a 44px tap target.
+   The 44px floor exists for controls you hit in the dark with cold hands:
+   slew, stop, step, activate. Focal length and sensor size are not those.
+   They are typed once when a scope is set up and then never touched, and
+   holding them at 44px made four of them plus their labels ~66px tall EACH,
+   which is why the Atlas header read as a wall of boxes rather than a title
+   bar (reported four times; each earlier pass fixed the LAYOUT — 2-col grid,
+   desktop right-align — and left the height, so nothing visibly changed).
+   32px still clears the WCAG 2.2 AA target-size minimum of 24px; the AAA 44px
+   is reserved for the controls that actually move the rig. */
+.field-rig {
+  /* WIDTH IS THE WHOLE POINT, and it has to be set HERE.
+     `.field` above sets `width: 100%`, and this file has no @layer wrapper, so
+     it is unlayered and beats every Tailwind `w-*` utility no matter the value
+     (same cascade trap documented at the top of this file). That is why these
+     fields were reported as too wide four times: each pass edited the `w-24` /
+     `w-20` class on the input, which never applied, so nothing ever changed on
+     screen. A number that has to hold "6248" needs about five characters. */
+  width: 5.25rem;
+  min-height: 32px;
+  font-size: 12px;
+  padding: 3px 7px;
+}
+.field-rig-suffix { font-size: 11px; padding-left: 5px; padding-right: 5px; }
 .stepper {
   min-width: 44px; min-height: 44px;
   display: inline-flex; align-items: center; justify-content: center;

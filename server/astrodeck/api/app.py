@@ -136,9 +136,28 @@ def _resolve_ui_dist() -> Path:
     if env:
         return Path(env).expanduser().resolve()
     bundled = Path(__file__).resolve().parents[1] / "webui"
-    if (bundled / "index.html").is_file():
+    repo = Path(__file__).resolve().parents[3] / "ui" / "dist"
+    has_bundled = (bundled / "index.html").is_file()
+    has_repo = (repo / "index.html").is_file()
+    if has_bundled and has_repo:
+        # BOTH exist, so one of them is stale — take the newer.
+        #
+        # `webui` is a BUILD ARTIFACT (packaging/build_binary.py copies ui/dist
+        # into it) and nothing tracks or refreshes it outside that script. A
+        # release staged from a tree that once produced a binary therefore ships
+        # an old SPA that silently shadows the freshly-built ui/dist beside it:
+        # the server starts, serves a UI, and serves the WRONG one. That cost
+        # four rounds of "this Atlas fix didn't work" on 2026-07-30 — the fixes
+        # were real and had simply never reached a browser.
+        #
+        # mtime is the honest tiebreak: whichever build ran last is the one the
+        # author meant. Compare index.html, not the directory, because copying
+        # into a directory does not always bump its mtime.
+        return bundled if (bundled / "index.html").stat().st_mtime >= (
+            repo / "index.html").stat().st_mtime else repo
+    if has_bundled:
         return bundled
-    return Path(__file__).resolve().parents[3] / "ui" / "dist"
+    return repo
 
 
 UI_DIST = _resolve_ui_dist()
