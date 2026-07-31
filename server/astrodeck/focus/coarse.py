@@ -19,6 +19,7 @@ import contextlib
 
 from ..events import bus
 from ..devices.base import Camera, DeviceError, Focuser
+from ..imaging.stars import detect_stars
 from .autofocus import AutofocusResult
 
 #: The bar autofocus itself refuses below (focus/native.py MIN_STARS_TO_SWEEP).
@@ -82,9 +83,19 @@ async def run_coarse_focus(camera: Camera, focuser: Focuser, *,
     does, it goes to the best position seen and says so, which is still progress
     a user can act on.
     """
-    from . import native as _n
-    if not _n.NATIVE_AVAILABLE or _n._native is None:
-        raise DeviceError("native engine not installed")
+    # COUNT WITH THE PYTHON DETECTOR, not the native one.
+    #
+    # This routine asks exactly one question — "are there stars here?" — and on
+    # 2026-07-31 the native detector answered it wrong on real sky: a frame with
+    # 4373 pixels above 5 sigma, from which imaging.stars found 713 stars at HFR
+    # 5.26, gave the native detector TWO. Coarse focus using it reported 0 stars
+    # at all nine positions on a clean field, which is the exact failure this
+    # feature exists to end. Tracked as #102.
+    #
+    # imaging.stars is also the right tool on merit: it is a background+MAD
+    # threshold with hot-pixel rejection, and a COUNT is all we need — no HFR, no
+    # curve, no sub-pixel centroid. The native engine still owns autofocus
+    # itself, which is where its HFR measurement matters.
 
     start_pos = await focuser.get_position()
     positions = plan_positions(start_pos, focuser.max_position, span, stops)
@@ -95,7 +106,6 @@ async def run_coarse_focus(camera: Camera, focuser: Focuser, *,
         async with guard:
             return await camera.expose(exposure_s, gain, 30, binning=binning)
 
-    params = {"profile": hfr_method} if hfr_method else None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(1.0, float(timeout_s))
 
@@ -115,9 +125,8 @@ async def run_coarse_focus(camera: Camera, focuser: Focuser, *,
                 break
             await focuser.move_to(pos)
             frame = await _expose()
-            _stars, stats = await asyncio.to_thread(
-                _n._native.detect_and_measure, frame.data, params)
-            n = int(stats.get("star_count") or 0)
+            found = await asyncio.to_thread(detect_stars, frame.data)
+            n = len(found)
             seen.append((pos, n))
             if n > best_n:
                 best_pos, best_n = pos, n
