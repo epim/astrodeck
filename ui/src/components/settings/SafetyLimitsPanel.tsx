@@ -128,6 +128,9 @@ export default function SafetyLimitsPanel(): JSX.Element {
   };
 
   const floorOn = (draft.min_alt_deg ?? 0) > 0;
+  // 90 is the zenith, so a ceiling there constrains nothing — that is the
+  // honest "off" value rather than a separate boolean that could disagree.
+  const ceilingOn = (draft.max_alt_deg ?? 90) < 90;
   const ro = !canEdit;
 
   return (
@@ -237,6 +240,54 @@ export default function SafetyLimitsPanel(): JSX.Element {
                 onChange={(e) =>
                   patchKeepingPreset({
                     min_alt_deg: Math.min(89, Math.max(0, Number(e.target.value) || 0)),
+                  })
+                }
+              />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------- zenith keep-out */}
+      {/* A floor is not enough. This rig's mount reached its own tripod legs at
+          HIGH altitude with the optics still on open sky (2026-07-30), and
+          every other limit here is a minimum, so nothing had an opinion. */}
+      <div className="pt-4 border-t border-line mt-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm text-ink">Zenith keep-out</div>
+            <p className="text-[11px] text-dim max-w-md">
+              {ceilingOn
+                ? `A run stops rather than point above ${draft.max_alt_deg}°.`
+                : "OFF — the mount may point straight up. Turn this on if a long "
+                  + "imaging train can reach the tripod or fork near the zenith."}
+            </p>
+          </div>
+          <Toggle
+            checked={ceilingOn}
+            onChange={(v) => patchKeepingPreset({ max_alt_deg: v ? 80 : 90 })}
+            disabled={busy || ro}
+            label="Zenith keep-out"
+            showState
+          />
+        </div>
+        {ceilingOn && (
+          <div className="grid gap-3 sm:grid-cols-2 mt-3">
+            <Field
+              label="Ceiling (deg above horizon)"
+              hint="A run stops rather than let the mount go ABOVE this. Point the scope at the sky and raise it until something touches, then set a few degrees below that."
+            >
+              <input
+                className="field"
+                type="number"
+                min={1}
+                max={90}
+                step={1}
+                value={draft.max_alt_deg ?? 90}
+                disabled={busy || ro}
+                onChange={(e) =>
+                  patchKeepingPreset({
+                    max_alt_deg: Math.min(90, Math.max(1, Number(e.target.value) || 90)),
                   })
                 }
               />

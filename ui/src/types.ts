@@ -1026,6 +1026,7 @@ export interface SafetyConfig {
   preset: "backyard" | "remote" | "custom";
   poll_each_frame: boolean;             // read the monitor before every exposure
   min_alt_deg: number;                  // global pier-collision floor (mount-alt). 0 = off
+  max_alt_deg?: number;                 // zenith keep-out CEILING. 90 = off (#101)
   horizon: [number, number][] | null;   // sorted (az,alt) control points
   // Hard-edged obstruction wedges: inside [az_min, az_max] the mount must stay
   // above alt_max. Distinct from `horizon`, whose points interpolate — a pier

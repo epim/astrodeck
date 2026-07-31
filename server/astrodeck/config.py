@@ -110,6 +110,12 @@ class SafetyConfig(BaseModel):
     # floor is OFF until a SafetyMonitor or a custom horizon is configured (C1-4);
     # 0 = disabled. The UI sets 10 when the user enables the floor.
     min_alt_deg: float = 0.0
+    #: Zenith keep-out: the altitude a target must stay BELOW. 90 = no
+    #: ceiling (the zenith), which is the default so existing rigs are
+    #: unchanged. Exists because a mount can foul its own tripod at HIGH
+    #: altitude while still pointing at open sky, and every other limit
+    #: here is a minimum (observed on the AM5N, 2026-07-30).
+    max_alt_deg: float = Field(90.0, ge=0, le=90)
     horizon: list[tuple[float, float]] | None = None  # sorted (az,alt) control pts
     nogo_box: list[dict] | None = None     # optional [{az_min,az_max,alt_max}] pier guard
     enforce_pier_limits: bool = False      # only settable if mount reports pier side

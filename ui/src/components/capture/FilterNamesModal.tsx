@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useFilterOffsetsLearn } from "../../store";
+import { nameForOpaqueToggle } from "../../lib/filterSlots";
 
 /** Slot to pre-select as the offset reference: an L/Lum/Clear slot when the
  *  wheel has one (case-insensitive), else the wheel's current position. Mirrors
@@ -56,6 +57,9 @@ export function FilterNamesModal({
   const [draftNames, setDraftNames] = useState<string[]>(names);
   const [draftOffsets, setDraftOffsets] = useState<string[]>(offsets.map(String));
   const [draftOpaque, setDraftOpaque] = useState<boolean[]>(names.map((_, i) => !!opaque[i]));
+  // What each slot was called before blackout renamed it, so unticking can
+  // put it back rather than leaving DARK on a slot that now passes light.
+  const priorNames = useRef<(string | undefined)[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [learnOpen, setLearnOpen] = useState(false);
@@ -154,8 +158,21 @@ export function FilterNamesModal({
     setDraftNames((p) => p.map((n, j) => (j === i ? v : n)));
   const setOffset = (i: number, v: string) =>
     setDraftOffsets((p) => p.map((n, j) => (j === i ? v : n)));
-  const toggleOpaque = (i: number) =>
+  // Ticking blackout NAMES the slot DARK (user nit 2026-07-30). The name is not
+  // decoration: it lands in the FITS FILTER header and the saved-filename
+  // token, so a dark slot still called "L" files darks under the wrong filter.
+  // Only a placeholder name is replaced — silently overwriting one somebody
+  // typed is the variant to avoid — and unticking puts the old name back.
+  const toggleOpaque = (i: number) => {
+    const nowOpaque = !draftOpaque[i];
+    setDraftNames((prev) => prev.map((n, j) => {
+      if (j !== i) return n;
+      const next = nameForOpaqueToggle(n, i, nowOpaque, priorNames.current[i]);
+      if (nowOpaque && next !== n) priorNames.current[i] = n;
+      return next;
+    }));
     setDraftOpaque((p) => p.map((b, j) => (j === i ? !b : b)));
+  };
 
   const anyOpaque = draftOpaque.some(Boolean);
   // The reference must stay on a slot that passes light; marking the current

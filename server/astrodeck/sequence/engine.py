@@ -2007,6 +2007,24 @@ class SequenceEngine:
             raise SafetyAbort(
                 f"target {target.name} altitude {worst_alt:.0f}° below safety floor "
                 f"{floor:.0f}° (az {worst_az:.0f}°)")
+        # And a CEILING. A mount can foul its own tripod at HIGH altitude with
+        # the optics still on open sky; every other limit here is a minimum, so
+        # nothing had an opinion about it (#101, observed on the AM5N). Checked
+        # against the HIGHEST altitude across the slew window, which is the
+        # opposite end from the floor's worst case — a target rising toward the
+        # keep-out must be refused before it gets there, not after.
+        ceiling = schedule.effective_ceiling(
+            getattr(getattr(self._cfg, "safety", None), "max_alt_deg", None))
+        best_alt, best_az = alt_now, az_now
+        if projected:
+            alt_p, az_p = altaz(ra, dec, lat, lon, now + SLEW_PROJECT_S)
+            if alt_p > best_alt:
+                best_alt, best_az = alt_p, az_p
+        if best_alt > ceiling:
+            raise SafetyAbort(
+                f"target {target.name} altitude {best_alt:.0f}° above the "
+                f"zenith keep-out {ceiling:.0f}° (az {best_az:.0f}°) — the mount "
+                "can reach its own tripod up there")
 
     # ----------------------------------------------------------- watchdog (§1.9-F)
 
