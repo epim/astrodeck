@@ -883,6 +883,7 @@ class SimFocuser(Focuser):
         self.max_position = 60_000
         self.step_size_um = 1.2
         self._halt = asyncio.Event()
+        self._moving = False
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))
@@ -900,14 +901,23 @@ class SimFocuser(Focuser):
     async def halt(self) -> None:
         self._halt.set()
 
+    async def is_moving(self) -> bool:
+        return self._moving
+
     async def move_to(self, position: int) -> None:
         position = max(0, min(self.max_position, position))
         self._halt.clear()
         step = 200 if position > self.rig.focuser_pos else -200
-        while self.rig.focuser_pos != position and not self._halt.is_set():
-            remaining = position - self.rig.focuser_pos
-            self.rig.focuser_pos += step if abs(remaining) >= abs(step) else remaining
-            await asyncio.sleep(abs(step) / self.MOVE_RATE)
+        self._moving = True
+        try:
+            while self.rig.focuser_pos != position and not self._halt.is_set():
+                remaining = position - self.rig.focuser_pos
+                self.rig.focuser_pos += step if abs(remaining) >= abs(step) else remaining
+                await asyncio.sleep(abs(step) / self.MOVE_RATE)
+        finally:
+            # finally, not a trailing assignment: a cancelled or halted move
+            # must not leave the sim reporting motion forever.
+            self._moving = False
 
 
 class SimRotator(Rotator):

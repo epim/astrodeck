@@ -177,6 +177,24 @@ async def test_eaf_temp_none_on_error():
     assert await f.get_temperature() is None
 
 
+async def test_eaf_reports_motion_for_the_status_readout():
+    """The status poll needs the SAME EAFIsMoving truth ``move_to`` waits on, so
+    the UI can tell a move under way from a move that was silently refused."""
+    sdk = FakeEafSdk(moving_seq=[True, False])
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    assert await f.is_moving() is True
+    assert await f.is_moving() is False
+
+
+async def test_eaf_motion_read_surfaces_sdk_failure():
+    sdk = FakeEafSdk(raise_on={"is_moving": ZwoSdkError(3, "EAFIsMoving")})
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError, match="EAFIsMoving"):
+        await f.is_moving()
+
+
 # ---------------------------------------------------------------- CaaRotator
 
 class FakeCaaSdk:
@@ -467,14 +485,24 @@ async def test_arrival_is_what_counts_not_silence():
 # DEVICE. That is the whole reason "type 22000, press Go, nothing happens".
 
 class _ClampedEafSdk(FakeEafSdk):
-    """Hardware ceiling 600000, firmware limit 360 — the real rig."""
+    """Hardware ceiling 600000, firmware limit 360 — the real rig.
 
-    def __init__(self, enforced=360, **kw):
+    ``set_max_step`` is writable and read back by ``get_max_step``, mirroring
+    the device: the limit is settable, it just does not SURVIVE a reconnect."""
+
+    def __init__(self, enforced=360, settable=True, **kw):
         super().__init__(max_step=600000, **kw)
         self._enforced = enforced
+        self._settable = settable
 
     def get_max_step(self, d):
         self._log("get_max_step"); return self._enforced
+
+    def set_max_step(self, d, value):
+        self._log("set_max_step")
+        if not self._settable:
+            raise ZwoSdkError(8, "EAFSetMaxStep")
+        self._enforced = int(value)
 
 
 async def test_max_position_is_the_ENFORCED_limit_not_the_hardware_ceiling():
@@ -504,3 +532,136 @@ async def test_an_sdk_without_the_export_falls_back_rather_than_failing():
     f = zu.EafFocuser(sdk, 10)
     await f.connect()
     assert f.max_position == 60000
+
+
+def _logs_since(n: int) -> list[dict]:
+    """Focuser log payloads published after mark ``n`` (bus history wraps each
+    event as {"type", "data", "ts"})."""
+    from astrodeck.events import bus
+    return [e["data"] for e in list(bus.log_history)[n:]
+            if e.get("type") == "log" and e.get("data", {}).get("source") == "focuser"]
+
+
+async def test_falling_back_to_the_hardware_max_is_said_out_loud():
+    """The silent version of this fallback is indistinguishable from a healthy
+    read: on the real rig `max` reported 600000 and nothing anywhere said
+    whether that was the enforced limit or a failed attempt to read it. The UI
+    clamps Go-to targets against this number, so an unread limit means offering
+    positions the firmware will refuse without a word."""
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    sdk = FakeEafSdk(max_step=60000, position=100)   # no get_max_step export
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    said = _logs_since(before)
+    assert said, "a fallback to the hardware max must be announced"
+    assert any(e.get("level") == "warning" for e in said), \
+        f"must be a warning, not an aside: {said}"
+    assert any("60000" in str(e.get("message", "")) for e in said), \
+        f"must name the number it fell back to: {said}"
+
+
+# The EAF FORGETS its travel limit. 2026-07-31: a device deliberately set to
+# 40000 came back reporting 360 after a server restart (position reset to 0
+# too), silently re-arming "type 22000, press Go, nothing happens". Setting it
+# once by hand fixes nothing — it has to be restored on every connect.
+
+async def test_the_configured_travel_limit_is_restored_on_connect():
+    sdk = _ClampedEafSdk(enforced=360, position=0)      # woke up reset
+    f = zu.EafFocuser(sdk, 10, max_step=40000)
+    await f.connect()
+    assert "set_max_step" in sdk.calls, "must push the limit back, not just read it"
+    assert f.max_position == 40000, (
+        f"must end up with the configured travel, got {f.max_position}")
+    assert f.hardware_max_position == 600000
+
+
+async def test_a_move_that_was_refused_before_works_after_the_restore():
+    """The user's exact command. With the limit restored, 22000 is in range."""
+    sdk = _ClampedEafSdk(enforced=360, position=0, moving_seq=[True, False])
+    f = zu.EafFocuser(sdk, 10, max_step=40000)
+    await f.connect()
+    await f.move_to(22000)                    # would have raised "out of range"
+    assert await f.get_position() == 22000
+
+
+async def test_the_configured_limit_never_exceeds_the_hardware_ceiling():
+    sdk = _ClampedEafSdk(enforced=360, position=0)
+    f = zu.EafFocuser(sdk, 10, max_step=10_000_000)
+    await f.connect()
+    assert f.max_position == 600000, "must clamp to what the hardware can do"
+
+
+async def test_no_configured_limit_leaves_the_device_alone():
+    """Unconfigured must stay read-only: writing a guessed travel limit to
+    someone's focuser is not ours to do."""
+    sdk = _ClampedEafSdk(enforced=360, position=0)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    assert "set_max_step" not in sdk.calls
+    assert f.max_position == 360
+
+
+async def test_an_absurd_unconfigured_limit_is_called_out_with_the_fix():
+    """360 steps out of 600000 is 0.06% of the travel — nobody sets that on
+    purpose, and the symptom (Go does nothing) does not point at it."""
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    f = zu.EafFocuser(_ClampedEafSdk(enforced=360, position=0), 10)
+    await f.connect()
+    said = _logs_since(before)
+    warns = [e for e in said if e.get("level") == "warning"]
+    assert warns, f"an implausible limit must be a warning: {said}"
+    blob = " ".join(str(e.get("message", "")) for e in warns)
+    assert "360" in blob and "600000" in blob, f"must give both numbers: {blob}"
+    assert "max_step" in blob, f"must name the setting that fixes it: {blob}"
+
+
+async def test_a_normal_unconfigured_limit_is_not_cried_wolf_over():
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    f = zu.EafFocuser(_ClampedEafSdk(enforced=45000, position=0), 10)
+    await f.connect()
+    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+
+
+async def test_a_device_that_refuses_the_limit_says_so_rather_than_pretending():
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    sdk = _ClampedEafSdk(enforced=360, settable=False, position=0)
+    f = zu.EafFocuser(sdk, 10, max_step=40000)
+    await f.connect()
+    assert f.connected, "a refused limit must not cost the focuser entirely"
+    assert f.max_position == 360, "must report what the DEVICE will honour"
+    blob = " ".join(str(e.get("message", "")) for e in _logs_since(before)
+                    if e.get("level") == "warning")
+    assert "40000" in blob and "360" in blob, f"must name both numbers: {blob}"
+
+
+async def test_the_session_passes_the_configured_limit_to_the_focuser(monkeypatch):
+    """Plumbing: the value lives on the driver entry's `extra`, and the whole
+    fix is inert if it never reaches the device."""
+    from astrodeck.devices import zwo_sdk as zsdk
+    sdk = _ClampedEafSdk(enforced=360, position=0)
+    monkeypatch.setattr(zsdk, "make_eaf", lambda: sdk)
+
+    class _Conn:
+        extra = {"max_step": 40000}
+
+    dev = await zu.ZwoUsbSession().get_device("focuser", _Conn())
+    assert dev.max_position == 40000
+
+
+async def test_a_healthy_limit_read_is_also_stated():
+    """Not only the mismatch case — a log that speaks up only on disagreement
+    cannot distinguish 'agrees' from 'never asked'."""
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    sdk = _ClampedEafSdk(enforced=600000, position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    said = _logs_since(before)
+    assert any("600000" in str(e.get("message", "")) for e in said), \
+        f"must state the limit it is using: {said}"
+    assert not any(e.get("level") == "warning" for e in said), \
+        f"a successful read is not a warning: {said}"

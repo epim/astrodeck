@@ -63,7 +63,15 @@ export interface RigStatus {
   bahtinov_active?: boolean; // NOV-12: Bahtinov focus aid armed
   mode?: "none" | "sim" | "alpaca" | "nina";
   mount?: MountStatus;
-  focuser?: { position: number; max: number; temperature: number | null };
+  focuser?: {
+    position: number;
+    max: number;
+    temperature: number | null;
+    /** Device's own in-motion report. OPTIONAL on purpose: absent means the
+     *  backend cannot say (Focuser.is_moving defaults False), which is not the
+     *  same claim as `false`. lib/focusMove.ts treats the two differently. */
+    moving?: boolean;
+  };
   filterwheel?: {
     position: number;
     names: string[];

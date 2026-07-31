@@ -474,6 +474,11 @@ class NinaFocuser(_NinaDevice, Focuser):
     async def halt(self) -> None:
         await self.client.get("/equipment/focuser/stop-move")
 
+    async def is_moving(self) -> bool:
+        # Cached info() on purpose — this rides the 2s status poll, and forcing
+        # a fetch here would double the bridge traffic for every poll.
+        return bool(pick(await self.info(), "IsMoving", "Moving", default=False))
+
     async def _last_af(self) -> dict | None:
         try:
             return await self.client.get("/equipment/focuser/last-af")

@@ -313,6 +313,17 @@ class Focuser(Device):
     async def get_temperature(self) -> float | None:
         return None
 
+    async def is_moving(self) -> bool:
+        """Is the drawtube actually in motion right now?
+
+        Default False. A backend that cannot answer must not claim motion: the
+        UI uses this to tell "your move is under way" apart from "your move was
+        silently refused", and a hopeful True turns the second into the first —
+        which is the exact failure that cost 2026-07-30/31 (the EAF ignored
+        every move above its enforced limit and nothing anywhere said so).
+        """
+        return False
+
 
 class Rotator(Device):
     """Camera rotator / angle adjuster (e.g. ZWO CAA).
