@@ -124,3 +124,66 @@ async def test_a_backend_that_raises_still_gets_its_readouts_published():
     # Absent, not False: "cannot say" is a different claim from "not moving",
     # and the UI's stall detector treats the two differently.
     assert "moving" not in out["focuser"]
+
+
+# --------------------------------------------------- POST /api/focuser/set-position
+# Re-anchoring is a WRITE to the meaning of every stored focus position, so the
+# route has to be as careful as the driver: refuse when the device cannot do it,
+# refuse while it is busy, and never move anything.
+
+class _AnchorableFocuser(_MinimalFocuser):
+    can_set_position_reference = True
+
+    def __init__(self, name="anchorable"):
+        super().__init__(name)
+        self.moves: list[int] = []
+
+    async def move_to(self, position: int) -> None:
+        self.moves.append(int(position))
+        self.pos = int(position)
+
+    async def set_position_reference(self, position: int) -> None:
+        self.pos = int(position)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    import astrodeck.api.app as app_module
+    import astrodeck.config as config_mod
+    import astrodeck.hub as hub_mod
+    from astrodeck.config import ConfigStore
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv(app_module.NO_AUTOCONNECT_ENV_VAR, "1")
+    store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(config_mod, "config_store", store)
+    monkeypatch.setattr(hub_mod, "config_store", store)
+    monkeypatch.setattr(app_module, "config_store", store)
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", tmp_path / "captures")
+    app = app_module.create_app()
+    with TestClient(app) as c:
+        yield c, app_module.hub
+
+
+def test_set_position_reanchors_without_moving(client):
+    c, hub = client
+    foc = _AnchorableFocuser()
+    hub.devices["focuser"] = foc
+    r = c.post("/api/focuser/set-position", json={"position": 22000})
+    assert r.status_code == 200, r.text
+    assert r.json()["position"] == 22000
+    assert foc.moves == [], "re-anchoring must never command motion"
+
+
+def test_set_position_is_refused_when_the_device_cannot_do_it(client):
+    c, hub = client
+    hub.devices["focuser"] = _MinimalFocuser()      # capability flag is False
+    r = c.post("/api/focuser/set-position", json={"position": 22000})
+    assert r.status_code == 409
+    assert "cannot" in r.text.lower()
+
+
+def test_set_position_needs_a_focuser(client):
+    c, _ = client
+    r = c.post("/api/focuser/set-position", json={"position": 100})
+    assert r.status_code == 409

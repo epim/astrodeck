@@ -112,6 +112,18 @@ def _fast_polls(monkeypatch):
     monkeypatch.setattr(zu, "POLL_S", 0.01)
 
 
+@pytest.fixture(autouse=True)
+def _focuser_state(tmp_path, monkeypatch):
+    """Isolate the remembered-position store — AUTOUSE, because every connect
+    reads it and every completed move writes it. Opt-in isolation leaks: one
+    test's final position becomes the next test's "the focuser lost its count"
+    warning, which is a real defect this module must not manufacture."""
+    from astrodeck import config as cfg
+    monkeypatch.setattr(cfg, "FOCUSER_STATE_FILE",
+                        tmp_path / "focuser_state.json")
+    return tmp_path / "focuser_state.json"
+
+
 # ---------------------------------------------------------------- EafFocuser
 
 async def test_eaf_connect_and_props():
@@ -505,6 +517,24 @@ class _ClampedEafSdk(FakeEafSdk):
         self._enforced = int(value)
 
 
+class _TalkativeEafSdk(_ClampedEafSdk):
+    """An EAF whose firmware DOES answer the diagnostic calls."""
+
+    def __init__(self, motor="E2", battery="", reason=0, **kw):
+        super().__init__(**kw)
+        self._codes = (motor, battery)
+        self._reason = reason
+
+    def error_codes(self, d):
+        self._log("error_codes"); return self._codes
+
+    def power_off_reason(self, d):
+        self._log("power_off_reason"); return self._reason
+
+    def reset_position(self, d, value):
+        self._log("reset_position"); self.position = int(value)
+
+
 async def test_max_position_is_the_ENFORCED_limit_not_the_hardware_ceiling():
     sdk = _ClampedEafSdk(position=360)
     f = zu.EafFocuser(sdk, 10)
@@ -645,11 +675,14 @@ async def test_the_session_passes_the_configured_limit_to_the_focuser(monkeypatc
     sdk = _ClampedEafSdk(enforced=360, position=0)
     monkeypatch.setattr(zsdk, "make_eaf", lambda: sdk)
 
-    class _Conn:
-        extra = {"max_step": 40000}
-
-    dev = await zu.ZwoUsbSession().get_device("focuser", _Conn())
+    from astrodeck.devices.backend import ConnSpec
+    conn = ConnSpec(backend="zwo-usb", role="focuser",
+                    driver_id="zwo-usb-ad03", extra={"max_step": 40000})
+    dev = await zu.ZwoUsbSession().get_device("focuser", conn)
     assert dev.max_position == 40000
+    # ConnSpec names it driver_id, NOT id — reading the wrong field silently
+    # collapses every focuser onto one shared remembered-position slot.
+    assert dev._state_key == "zwo-usb-ad03"
 
 
 async def test_a_healthy_limit_read_is_also_stated():
@@ -665,3 +698,145 @@ async def test_a_healthy_limit_read_is_also_stated():
         f"must state the limit it is using: {said}"
     assert not any(e.get("level") == "warning" for e in said), \
         f"a successful read is not a warning: {said}"
+
+
+# ---------------------------------------------- diagnostics + re-anchoring
+# An open-loop stepper cannot be trusted to notice a mechanical stop, so the
+# repair for a lost position count is a human anchoring it — never a sweep into
+# the ends. These cover the three pieces of that: ask the device what it thinks
+# went wrong, let a human declare where the tube is, and NOTICE when the count
+# is lost instead of letting stored positions quietly change meaning.
+
+
+
+class _StuckTalkativeEafSdk(_TalkativeEafSdk):
+    """Against a stop AND willing to say so: accepts EAFMove, never moves."""
+
+    def move(self, d, step):
+        self._log("move")          # accepted, then ignored by the hardware
+
+    def is_moving(self, d):
+        self._log("is_moving"); return False, False
+
+
+async def test_a_refused_move_reports_what_the_device_says_is_wrong():
+    sdk = _StuckTalkativeEafSdk(motor="E2", enforced=600000, position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError) as ei:
+        await f.move_to(50000)
+    assert "motor error E2" in str(ei.value), str(ei.value)
+
+
+async def test_a_firmware_that_will_not_answer_costs_nothing():
+    """Most EAF firmwares return NOT_SUPPORTED here. Silence is not a fault,
+    and it must not replace the real error with a diagnostic one."""
+    sdk = _StuckEafSdk(max_step=600000, position=100)     # no error_codes at all
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError, match="did not happen"):
+        await f.move_to(50000)
+
+
+async def test_setting_the_position_reference_moves_nothing():
+    sdk = _TalkativeEafSdk(enforced=60000, position=347)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    await f.set_position_reference(22000)
+    assert await f.get_position() == 22000
+    assert "reset_position" in sdk.calls
+    assert "move" not in sdk.calls, "re-anchoring must never command motion"
+
+
+async def test_the_reference_cannot_be_set_mid_move():
+    """A number written while the tube is travelling is stale on arrival."""
+    sdk = _TalkativeEafSdk(enforced=60000, position=100, moving_seq=[True] * 50)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError, match="moving"):
+        await f.set_position_reference(22000)
+    assert "reset_position" not in sdk.calls
+
+
+async def test_the_reference_must_be_inside_the_travel():
+    sdk = _TalkativeEafSdk(enforced=40000, position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError, match="outside"):
+        await f.set_position_reference(99999)
+
+
+async def test_a_lost_position_count_is_reported_not_silently_accepted():
+    """The 2026-07-31 failure: 30000 before a reconnect, 0 after, tube unmoved,
+    and every stored focus position silently 30000 steps out."""
+    from astrodeck.events import bus
+    sdk = _TalkativeEafSdk(enforced=40000, position=30000, moving_seq=[True, False])
+    f = zu.EafFocuser(sdk, 10, state_key="zwo-usb-test")
+    await f.connect()
+    await f.move_to(30000)                     # records 30000
+
+    before = len(bus.log_history)
+    reset = _TalkativeEafSdk(enforced=40000, position=0)     # came back at zero
+    f2 = zu.EafFocuser(reset, 10, state_key="zwo-usb-test")
+    await f2.connect()
+    warns = [e for e in _logs_since(before) if e.get("level") == "warning"]
+    blob = " ".join(str(e.get("message", "")) for e in warns)
+    assert warns, "a lost position count must not be silent"
+    assert "30000" in blob and "0" in blob, f"must give both numbers: {blob}"
+    assert "not moved" in blob.lower() or "did not move" in blob.lower(), \
+        f"must say the drawtube itself did not move: {blob}"
+
+
+async def test_an_unchanged_position_says_nothing():
+    from astrodeck.events import bus
+    sdk = _TalkativeEafSdk(enforced=40000, position=12345, moving_seq=[True, False])
+    f = zu.EafFocuser(sdk, 10, state_key="k")
+    await f.connect()
+    await f.move_to(12345)
+
+    before = len(bus.log_history)
+    again = _TalkativeEafSdk(enforced=40000, position=12345)
+    f2 = zu.EafFocuser(again, 10, state_key="k")
+    await f2.connect()
+    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+
+
+async def test_two_focusers_do_not_overwrite_each_others_reference():
+    from astrodeck.config import load_focuser_position
+    a = _TalkativeEafSdk(enforced=40000, position=1000, moving_seq=[True, False])
+    fa = zu.EafFocuser(a, 10, state_key="driver-a")
+    await fa.connect(); await fa.move_to(1000)
+    b = _TalkativeEafSdk(enforced=40000, position=2000, moving_seq=[True, False])
+    fb = zu.EafFocuser(b, 11, state_key="driver-b")
+    await fb.connect(); await fb.move_to(2000)
+    assert load_focuser_position("driver-a") == 1000
+    assert load_focuser_position("driver-b") == 2000
+
+
+async def test_the_first_ever_connect_is_not_a_lost_count():
+    from astrodeck.events import bus
+    before = len(bus.log_history)
+    f = zu.EafFocuser(_TalkativeEafSdk(enforced=40000, position=5000), 10,
+                      state_key="fresh")
+    await f.connect()
+    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+
+
+async def test_describe_says_whether_the_firmware_answers_diagnostics():
+    """Whether EAFGetErrorCode answers is firmware-dependent, and it decides
+    whether a refused move can ever explain itself. That has to be visible
+    without waiting for a failure to find out."""
+    talkative = zu.EafFocuser(_TalkativeEafSdk(motor="E2", enforced=40000,
+                                               position=100, reason=1), 10)
+    await talkative.connect()
+    d = talkative.describe()
+    assert d["reports_diagnostics"] is True
+    assert d["motor_error_code"] == "E2"
+    assert d["power_off_reason"] == 1
+
+    quiet = zu.EafFocuser(_ClampedEafSdk(enforced=40000, position=100), 10)
+    await quiet.connect()
+    dq = quiet.describe()
+    assert dq["reports_diagnostics"] is False, \
+        "a firmware that will not answer must not look like one that did"
+    assert dq["motor_error_code"] is None
