@@ -15,6 +15,8 @@ import {
   profileSaveLock,
   guiderSlotState,
   guiderSlotNote,
+  backendBadge,
+  backendBadgeIsSim,
 } from "../equipment";
 import type { DriverInfo } from "../../types";
 
@@ -365,6 +367,44 @@ test("no-engine note reads cleanly with no reason available", () => {
   const s = guiderSlotNote("no-engine");
   eq(s.includes("()"), false, `empty parens leak an absent reason, got: ${s}`);
   eq(s.includes("undefined"), false, "must never render undefined");
+});
+
+
+// ---------------------------------------------------------- backend badge
+// The chip that says whether your commands reach the sky.
+
+test("a driver-assembled hardware rig is NOT badged SIM", () => {
+  // THE regression. hub._effective_primary hands back the first session's
+  // backend name for a rig with no declared primary; the old ternary defaulted
+  // anything unrecognised to "SIM", so five real devices read as a simulator.
+  eq(backendBadge("zwo-usb"), "NATIVE");
+  eq(backendBadge("zwo-am5"), "NATIVE");
+  eq(backendBadge("player-one"), "NATIVE");
+  eq(backendBadgeIsSim("zwo-usb"), false);
+});
+
+test("the simulator still says SIM", () => {
+  eq(backendBadge("sim"), "SIM");
+  eq(backendBadgeIsSim("sim"), true);
+});
+
+test("the known bridges keep their names", () => {
+  eq(backendBadge("nina"), "NINA");
+  eq(backendBadge("alpaca"), "ALPACA");
+  eq(backendBadge("native"), "ALPACA", "the hub maps native onto the alpaca path");
+});
+
+test("nothing connected shows no badge at all", () => {
+  eq(backendBadge("none"), null);
+  eq(backendBadge(""), null);
+  eq(backendBadge(null), null);
+  eq(backendBadge(undefined), null);
+});
+
+test("case and whitespace do not change the answer", () => {
+  eq(backendBadge(" NINA "), "NINA");
+  eq(backendBadge("Sim"), "SIM");
+  eq(backendBadgeIsSim(" SIM "), true);
 });
 
 console.log(`equipment.test.ts: ${passed} passed, ${failed} failed`);

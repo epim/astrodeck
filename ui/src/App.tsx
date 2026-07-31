@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { JSX } from "react";
 import { useStore, useBrightness, useAuthMethods, useWeatherAlertKey, type ViewName } from "./store";
+import { getHealth } from "./api/backends";
+import { backendBadge, backendBadgeIsSim } from "./lib/equipment";
 import { fmtHm } from "./lib/weather";
 import Logo from "./components/Logo";
 import { connectWs } from "./ws";
@@ -139,6 +141,40 @@ const GATED: Partial<Record<ViewName, boolean>> = {
 // round-trip, no private brightness copy that could drift from HeaderControls.
 // `locked` is NEVER persisted (a lock must not survive reload, design-system §3.3).
 // ============================================================================
+
+// The build actually running on the scope, beside the wordmark.
+//
+// It used to appear in exactly one place — Settings → Update — which is the
+// wrong place for it: "what version am I on?" is asked when something looks
+// wrong, and the answer sat three taps deep behind a panel about installing a
+// DIFFERENT version. It is also the first thing worth stating when reporting a
+// bug, or when checking whether a deploy actually took (2026-07-30: a stale
+// bundle served for hours because nothing on screen contradicted it).
+//
+// Sourced from /healthz, the one UNAUTHENTICATED route, so the chip fills in
+// before sign-in and while the WebSocket is down — which is exactly when the
+// question gets asked. Failure is silent: an unreachable server has louder
+// problems than a missing version, and the DISPLAY DISCONNECTED banner is
+// already saying so.
+function ServerVersion(): JSX.Element | null {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getHealth()
+      .then((h) => { if (alive && h?.version) setVersion(String(h.version)); })
+      .catch(() => { /* silent — see above */ });
+    return () => { alive = false; };
+  }, []);
+  if (!version) return null;
+  return (
+    <span
+      className="mono text-[10px] text-faint select-text shrink-0"
+      title={`AstroDeck server version ${version}`}
+    >
+      v{version}
+    </span>
+  );
+}
 
 export default function App() {
   // Split selectors (reliability §13 / Risk-14 perf P0): each subscription is a
@@ -321,11 +357,21 @@ export default function App() {
           <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
             ASTRO<span className="text-ink">DECK</span>
           </h1>
-          {status?.mode && status.mode !== "none" && (
-            <span className="hidden sm:inline px-2 py-0.5 border border-line2 text-[9px]
-              tracking-[0.18em] uppercase text-accent font-display font-medium"
-              title={`Backend: ${status.mode}`}>
-              {status.mode === "nina" ? "NINA" : status.mode === "alpaca" ? "ALPACA" : "SIM"}
+          <ServerVersion />
+          {backendBadge(status?.mode) && (
+            /* Not a ternary defaulting to SIM. A rig built from per-role
+               hardware drivers reports its first session's backend name
+               ("zwo-usb"), which matched no branch and fell through to the
+               default — so a fully real, tracking rig was badged SIMULATOR on
+               the one chip that says whether commands reach the sky. */
+            <span className={`hidden sm:inline px-2 py-0.5 border text-[9px]
+              tracking-[0.18em] uppercase font-display font-medium ${
+                backendBadgeIsSim(status?.mode)
+                  ? "border-warn text-warn"
+                  : "border-line2 text-accent"
+              }`}
+              title={`Backend: ${status?.mode}`}>
+              {backendBadge(status?.mode)}
             </span>
           )}
           {/* Unobtrusive current-role chip (W2.5). Silent for admin (the default
