@@ -74,7 +74,10 @@ def test_backend_is_registered_and_shape():
     assert b.name == "phd2"
     assert b.label == "PHD2"
     assert b.roles == ("guider",)
-    assert b.discoverable is False
+    # Discoverable since 2026-07-30: PHD2's SOCKET is not UDP-discoverable,
+    # but its BINARY is findable, and nothing else ever suggested PHD2 —
+    # the only route was knowing to hand-add a driver with host and port.
+    assert b.discoverable is True
     # endpoint-less in unmanaged-local mode: the orchestrator normalizes its
     # host/port -> None so a stray-addressed phd2-local guider override resolves.
     assert b.hostless is True
@@ -150,3 +153,58 @@ async def test_close_disconnects_guider_without_killing_external_app(fake_phd2):
 @pytest.mark.asyncio
 async def test_discover_is_empty():
     assert await get_backend("phd2").discover() == []
+
+
+# ------------------------------------------------- offered when installed
+
+def test_discover_offers_phd2_when_the_binary_is_installed(monkeypatch):
+    """One tap instead of knowing to type 127.0.0.1:4400 by hand."""
+    import asyncio
+
+    from astrodeck import drivers
+    from astrodeck.devices.backends.phd2_backend import PHD2_BACKEND
+
+    monkeypatch.setattr(drivers, "phd2_installed_at", lambda: r"C:\PHD2\phd2.exe")
+    found = asyncio.run(PHD2_BACKEND.discover())
+    assert len(found) == 1
+    assert found[0]["role"] == "guider"
+    assert found[0]["port"] == 4400
+    # NOT verified: finding the exe proves installed, not RUNNING. The socket
+    # exists only while the app is open, so the probe still decides that.
+    assert found[0]["verified"] is False
+
+
+def test_discover_offers_nothing_when_phd2_is_absent(monkeypatch):
+    import asyncio
+
+    from astrodeck import drivers
+    from astrodeck.devices.backends.phd2_backend import PHD2_BACKEND
+
+    monkeypatch.setattr(drivers, "phd2_installed_at", lambda: None)
+    assert asyncio.run(PHD2_BACKEND.discover()) == []
+
+
+def test_an_installed_but_closed_phd2_says_so(monkeypatch):
+    """"connection failed" reads as broken. PHD2 being closed is the NORMAL
+    state of a perfectly good install, and the fix is to launch it."""
+    import asyncio
+
+    from astrodeck import drivers
+
+    monkeypatch.setattr(drivers, "phd2_installed_at", lambda: r"C:\PHD2\phd2.exe")
+    res = asyncio.run(drivers._probe_phd2("127.0.0.1", 59999))
+    assert res["reachable"] is False
+    assert "not running" in res["error"], res["error"]
+    assert "start it" in res["error"].lower()
+
+
+def test_a_remote_phd2_does_not_claim_a_local_install(monkeypatch):
+    """The binary on THIS machine says nothing about a host across the LAN."""
+    import asyncio
+
+    from astrodeck import drivers
+
+    monkeypatch.setattr(drivers, "phd2_installed_at", lambda: r"C:\PHD2\phd2.exe")
+    res = asyncio.run(drivers._probe_phd2("192.0.2.1", 4400))
+    assert res["reachable"] is False
+    assert "not running" not in (res["error"] or "")

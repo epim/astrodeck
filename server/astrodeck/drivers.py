@@ -124,12 +124,47 @@ async def _probe_alpaca(host: str, port: int) -> dict:
     return _ok(devices, [])
 
 
+#: Where PHD2 installs itself. Used ONLY to tell "not installed" from "installed
+#: but not running" — two situations with completely different answers, which a
+#: bare "connection failed" collapses into one shrug.
+_PHD2_INSTALL_PATHS = (
+    r"C:\Program Files (x86)\PHDGuiding2\phd2.exe",
+    r"C:\Program Files\PHDGuiding2\phd2.exe",
+    "/usr/bin/phd2",
+    "/usr/local/bin/phd2",
+    "/Applications/PHD2.app/Contents/MacOS/PHD2",
+)
+
+
+def phd2_installed_at() -> str | None:
+    """The local PHD2 binary, or None. Cheap: a few stat calls."""
+    import os
+    for c in _PHD2_INSTALL_PATHS:
+        try:
+            if os.path.isfile(c):
+                return c
+        except OSError:
+            continue
+    return None
+
+
 async def _probe_phd2(host: str, port: int) -> dict:
-    """PHD2 probe: a plain TCP connect to its event socket (default 4400)."""
+    """PHD2 probe: a plain TCP connect to its event socket (default 4400).
+
+    PHD2's socket exists only while the APP IS OPEN, so an unreachable probe is
+    the normal state of a perfectly good install — and "connection failed" reads
+    as broken. When the binary is on this machine, say which of the two it is,
+    because the user's next action is completely different: launch it, versus
+    install it.
+    """
     try:
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port), timeout=2.0)
     except Exception as e:  # noqa: BLE001 — a probe must never raise
+        where = phd2_installed_at() if host in ("127.0.0.1", "localhost", "::1") else None
+        if where:
+            return _down("PHD2 is installed but not running — start it, and "
+                         "leave it open while you guide")
         return _down(str(e)[:200] or "connection failed")
     writer.close()
     try:
