@@ -245,6 +245,21 @@ export default function AtlasView(): JSX.Element {
 
   const [focalDraft, setFocalDraft] = useState<string>("");
   const [savingFocal, setSavingFocal] = useState(false);
+  // Optics live behind a gear: per-rig facts, not per-session controls.
+  const [opticsOpen, setOpticsOpen] = useState(false);
+  // The gear's label. It reports the RIG rather than saying "Optics",
+  // because a collapsed control that hides its value just moves the
+  // question one tap away — and focal length is the number most likely to
+  // be wrong after a reducer or a different scope.
+  const opticsSummary = useMemo(() => {
+    const f = mergedOptics?.focal_length_mm || 0;
+    const px = mergedOptics?.pixel_size_um || 0;
+    if (!f && !px) return "set up optics";
+    const parts: string[] = [];
+    if (f) parts.push(`${Math.round(f)}mm`);
+    if (px) parts.push(`${px.toFixed(2)}µm`);
+    return parts.join(" · ");
+  }, [mergedOptics]);
   // Inline pixel-size + sensor drafts (same shape as focalDraft). Empty/0 commits
   // "use camera" — the server merge fills them from the connected camera (§3.2).
   const [pixelDraft, setPixelDraft] = useState<string>("");
@@ -735,6 +750,24 @@ export default function AtlasView(): JSX.Element {
         {/* optics fields — compact 2-col grid on phone (was 5 full-width stacked
             boxes eating the screen); `sm:contents` dissolves the wrapper so the
             header's own flex flow is unchanged on wider screens. */}
+        {/* Equipment behind a gear (QA: "all equipment selection behind a
+            gear ... the flow doesn't make sense"). Focal length, pixel size and
+            sensor size are per-RIG facts: entered when a scope is built and
+            then never again. Sitting them permanently between the target and
+            "Go to this target" put the least-used controls in the middle of the
+            most-used path. Closed, the header reads target -> go. */}
+        <button
+          type="button"
+          className={`btn tap min-h-[36px] !px-2.5 shrink-0 ${opticsOpen ? "border-accent text-accent" : ""}`}
+          aria-expanded={opticsOpen}
+          aria-label="Camera and telescope specs"
+          title={opticsSummary}
+          onClick={() => setOpticsOpen((v) => !v)}
+        >
+          <Icon name="settings" size={14} />
+          <span className="ml-1.5 mono text-[11px] !normal-case">{opticsSummary}</span>
+        </button>
+        {opticsOpen && (
         <div className="grid grid-cols-2 gap-x-3 gap-y-2 w-full sm:contents">
         {/* inline focal-length field — self-contained optics (spec §6 C1-B1) */}
         <label className="flex flex-col gap-1 items-start min-w-0">
@@ -909,6 +942,7 @@ export default function AtlasView(): JSX.Element {
           </LockedChip>
         )}
         </div>
+        )}
       </header>
 
       {/* ------------------------------------------- point the scope at it (#18)

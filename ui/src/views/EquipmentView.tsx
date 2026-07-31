@@ -715,11 +715,25 @@ export default function EquipmentView(): JSX.Element {
                 nothing assigned yet — pick a driver above, or use one of these
               </span>
             )}
-            <button type="button" className="btn" disabled={busy || !canConfig || roles.length === 0} onClick={doSimRig}>
-              ▶ Simulator rig
-            </button>
+            {/* Detect first, simulator second and quieter (QA: "the equipment
+                page shouldn't list Simulator rig as first class"). On a real
+                observatory the simulator is a demo and a test fixture, not one
+                of two equal ways to start a night — offering it with the same
+                weight as the hardware invites connecting to nothing and
+                wondering why the mount will not move. It stays one tap away
+                because it IS how you explore the app with the scope in the
+                garage. */}
             <button type="button" className={`btn ${assignedCount === 0 ? "btn-accent" : ""}`} disabled={busy || !canConfig || roles.length === 0} onClick={doDetectHardware}>
               {busyWhat === "scan" ? "Scanning USB & serial…" : "▶ Detect hardware rig"}
+            </button>
+            <button
+              type="button"
+              className="btn !text-dim !border-line"
+              title="Connect a simulated rig — for exploring the app with no hardware attached"
+              disabled={busy || !canConfig || roles.length === 0}
+              onClick={doSimRig}
+            >
+              Simulator
             </button>
             <button type="button" className="btn btn-danger" disabled={busy || !canConfig} onClick={doDisconnect}>
               {busyWhat === "disconnect" ? "Disconnecting…" : "Disconnect"}
