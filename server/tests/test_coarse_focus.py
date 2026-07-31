@@ -78,20 +78,15 @@ class _Camera:
 def _patch_detector(monkeypatch, focuser, counts_by_position):
     """Star count as a function of focuser position.
 
-    Patches ATTRIBUTES on the real astrodeck.focus.native module rather than
-    swapping the module in sys.modules: the swap leaked across xdist workers and
-    made these tests pass alone and fail in the full suite — a test-isolation
-    bug of exactly the kind that teaches people to ignore red.
+    Patches the name coarse.py actually calls. It counts with imaging.stars'
+    detect_stars, NOT the native detector — see the note in coarse.py: on real
+    sky the native one reported 2 stars on a frame where detect_stars found 713
+    (#102), and coarse focus using it found nothing at any position on a clean
+    field.
     """
-    from astrodeck.focus import native as real
-
-    class _FakeNative:
-        @staticmethod
-        def detect_and_measure(_data, _params):
-            return [], {"star_count": counts_by_position(focuser._pos)}
-
-    monkeypatch.setattr(real, "NATIVE_AVAILABLE", True, raising=False)
-    monkeypatch.setattr(real, "_native", _FakeNative(), raising=False)
+    monkeypatch.setattr(
+        coarse, "detect_stars",
+        lambda _data, *a, **k: [object()] * counts_by_position(focuser._pos))
 
 
 def _run(counts, monkeypatch, **kw):
@@ -153,11 +148,11 @@ def test_a_cancelled_search_returns_the_focuser_to_where_it_started(monkeypatch)
     assert foc._pos == 20000, "must restore the starting position"
 
 
-def test_it_refuses_clearly_without_the_native_engine(monkeypatch):
-    from astrodeck.devices.base import DeviceError
-    from astrodeck.focus import native as real
-
-    monkeypatch.setattr(real, "NATIVE_AVAILABLE", False, raising=False)
-    monkeypatch.setattr(real, "_native", None, raising=False)
-    with pytest.raises(DeviceError, match="native engine"):
-        asyncio.run(run_coarse_focus(_Camera(), _Focuser()))
+def test_it_works_without_the_native_engine_at_all(monkeypatch):
+    """It counts with the Python detector, so the Rust engine being absent (or
+    broken, which is what prompted the switch) cannot stop the search. Getting
+    to rough focus must not depend on the component that needs rough focus."""
+    foc = _Focuser()
+    _patch_detector(monkeypatch, foc, lambda p: 9 if p == 0 else 0)
+    res = asyncio.run(run_coarse_focus(_Camera(), foc, stops=5))
+    assert res.success is True
