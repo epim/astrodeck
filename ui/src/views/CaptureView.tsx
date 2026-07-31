@@ -12,6 +12,7 @@ import {
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import { isExposureInvalid } from "../lib/exposure";
 import { CAPTURE_PRESETS } from "../lib/capturePresets";
+import PickerButton from "../components/ui/PickerButton";
 import { suggestSubLength } from "../lib/photometry";
 import {
   FRAME_TYPES,
@@ -83,6 +84,11 @@ export default function CaptureView() {
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
+  // Which preset was last applied — the picker button's readout. Not
+  // persisted: it describes THIS session's last tap, not a saved setting.
+  const [lastPreset, setLastPreset] = useState<string | null>(null);
+  // Photometry fields are a once-per-camera setup, so they start closed.
+  const [photAdvanced, setPhotAdvanced] = useState(false);
   const [camAdvanced, setCamAdvanced] = useState(false); // Advanced disclosure (egain)
   // Live View's satellite-trail rejection. Held here, not in the panel, because
   // the START request is issued by onLiveView below.
@@ -470,30 +476,32 @@ export default function CaptureView() {
             </Field>
           </div>
 
-          {/* ---- NOV-4 beginner capture presets (photometry/SNR design §3 Task 4):
-               one-tap exposure/gain/offset/binning fill via the same setter path as
-               "Match last lights" below. Pure data from lib/capturePresets. ---- */}
-          <div className="flex flex-wrap gap-2 mt-3">
-            {CAPTURE_PRESETS.map((p) => (readOnlyReason ? (
-              <LockedChip key={p.id} reason={`${p.blurb} — ${readOnlyReason}`}
-                className="btn tap min-h-[44px] !px-3">
-                {p.label}
-              </LockedChip>
-            ) : (
-              <button
-                key={p.id}
-                className="btn tap min-h-[44px] !px-3"
-                title={p.blurb}
-                onClick={() => {
-                  setExposure(String(p.exposure_s));
-                  setGain(String(p.gain));
-                  setOffset(String(p.offset));
-                  setBinning(String(p.binning));
-                  showToast("info", `Preset: ${p.label}`);
-                }}>
-                {p.label}
-              </button>
-            )))}
+          {/* Presets — ONE button that opens the list (QA: "presets should be
+               a button that opens a picker"). Six permanent 44px chips were
+               most of a rail, for a control you touch once a session. The
+               button names the last one applied, so the glance still works. */}
+          <div className="mt-3">
+            <PickerButton
+              label="Preset"
+              summary={lastPreset ?? "choose"}
+              options={CAPTURE_PRESETS.map((p) => ({
+                id: p.id, label: p.label, hint: p.blurb,
+              }))}
+              selected={lastPreset ? [CAPTURE_PRESETS.find((p) => p.label === lastPreset)?.id ?? ""] : []}
+              disabled={!!readOnlyReason}
+              disabledReason={readOnlyReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(id) => {
+                const p = CAPTURE_PRESETS.find((x) => x.id === id);
+                if (!p) return;
+                setExposure(String(p.exposure_s));
+                setGain(String(p.gain));
+                setOffset(String(p.offset));
+                setBinning(String(p.binning));
+                setLastPreset(p.label);
+                showToast("info", `Preset: ${p.label}`);
+              }}
+            />
           </div>
 
           {/* ---- Camera photometry profile (NOV-4/PRO-6 shared input, §1.3): a small
@@ -501,8 +509,21 @@ export default function CaptureView() {
                settings below + the Sequence/Monitor SNR readouts (photometry.ts, the
                tested core — no math duplicated here). All-zero = inert; never a wrong
                number, only an honest "add these" prompt downstream. ---- */}
+          {/* Camera photometry, behind a disclosure (QA). These are gain,
+               read noise and bias: three numbers you look up ONCE for a camera
+               and then never touch again. They were permanently occupying the
+               capture screen, above the controls used every single frame. */}
           <div className="mt-3 border-t border-line pt-3">
-            <div className="label mb-2">Camera photometry</div>
+            <button
+              type="button"
+              className="label mb-2 flex items-center gap-1.5"
+              aria-expanded={photAdvanced}
+              onClick={() => setPhotAdvanced((v) => !v)}
+            >
+              <span aria-hidden>{photAdvanced ? "▾" : "▸"}</span>
+              Camera photometry
+            </button>
+            {photAdvanced && (
             <div className="grid grid-cols-3 gap-3">
               <Field label="Gain (e-/ADU)"
                 hint="Your camera's sensor gain in electrons/ADU at the gain setting above — from the read-noise harness or the camera datasheet.">
@@ -546,6 +567,7 @@ export default function CaptureView() {
                   onChange={(e) => setPhotometry({ biasAdu: Number(e.target.value) || 0 })} />
               </Field>
             </div>
+            )}
             {canSuggest ? (
               <button className="btn tap min-h-[44px] mt-3" onClick={onSuggest}>
                 Suggest settings
@@ -886,38 +908,33 @@ export default function CaptureView() {
                 )}
               </span>
             }>
-            {/* A blackout slot stays tappable here — parking on it manually is a
-                legitimate thing to want — but it is labelled so it is never
-                mistaken for a filter you can image through. */}
-            <div className="flex flex-wrap gap-2">
-              {status.filterwheel.names.map((name, i) => {
-                const dark = !!status.filterwheel!.opaque?.[i];
-                const cls = `btn tap min-h-[44px] !px-3 min-w-[56px] ${
-                  i === status.filterwheel!.position ? "btn-accent" : ""}`;
-                const body = (
-                  <span className="inline-flex items-center gap-1.5">
-                    {name}
-                    {dark && (
-                      <span className="text-[9px] tracking-wider uppercase opacity-70">
-                        blackout
-                      </span>
-                    )}
-                  </span>
-                );
-                return readOnlyReason ? (
-                  <LockedChip key={`${i}-${name}`} reason={`Move to ${name} — ${readOnlyReason}`}
-                    className={cls}>
-                    {body}
-                  </LockedChip>
-                ) : (
-                  <button key={`${i}-${name}`} className={cls}
-                    aria-label={dark ? `Move to ${name} — blackout slot, blocks the light path` : undefined}
-                    onClick={() => act(() => api.post("/api/filterwheel/position", { position: i }))}>
-                    {body}
-                  </button>
-                );
-              })}
-            </div>
+            {/* One picker, not one 56px button per slot. An 8-slot wheel put
+                eight permanent targets on the capture screen for a control you
+                touch once per filter change. The button names the slot the
+                wheel is ON, so the state is still a glance — and a blackout
+                slot says so in its row, because parking on it manually is
+                legitimate but mistaking it for an imaging filter is not. */}
+            <PickerButton
+              label="Slot"
+              summary={
+                status.filterwheel.names[status.filterwheel.position] ??
+                `#${status.filterwheel.position + 1}`
+              }
+              options={status.filterwheel.names.map((name, i) => ({
+                id: String(i),
+                label: status.filterwheel!.opaque?.[i] ? `${name} — blackout` : name,
+                hint: status.filterwheel!.opaque?.[i]
+                  ? "Blocks the light path — for dark frames"
+                  : undefined,
+              }))}
+              selected={[String(status.filterwheel.position)]}
+              disabled={!!readOnlyReason}
+              disabledReason={readOnlyReason}
+              onBlocked={(r) => showToast("warning", r)}
+              onPick={(id) =>
+                act(() => api.post("/api/filterwheel/position", { position: Number(id) }))
+              }
+            />
           </Panel>
         )}
         {status?.filterwheel && (
