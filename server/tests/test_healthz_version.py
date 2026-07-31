@@ -38,6 +38,27 @@ def test_api_version_returns_update_snapshot():
             assert k in body
 
 
+def test_the_reported_version_matches_the_packaged_one():
+    """Two files carry the version and only one of them is what the app SAYS.
+
+    On 2026-07-31 a release bumped pyproject.toml but not ``__version__``, so
+    the deployed 0.2.26 introduced itself as 0.2.25 in the header and in
+    /healthz -- which is the exact signal a deploy check reads to decide whether
+    the new build is live. A version string that lies makes every later
+    verification unreliable.
+    """
+    import pathlib
+    import re
+
+    pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+    assert m, f"no version in {pyproject}"
+    assert m.group(1) == __version__, (
+        f"pyproject.toml says {m.group(1)} but astrodeck.__version__ is "
+        f"{__version__} — /healthz and the UI header report the latter")
+
+
 def test_create_app_boot_rbac_assertion_still_passes():
     # create_app() runs assert_route_capabilities(); a mis-wired new route would
     # raise here. The two new GETs carry no cap (read-only) and must not trip it.

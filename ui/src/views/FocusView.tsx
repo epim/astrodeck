@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { Icon } from "../components/icons";
 import {
@@ -34,6 +34,7 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 import StepDial from "../components/ui/StepDial";
 import { nudgeLabel } from "../lib/stepDial";
+import { moveProgress, type FocuserCommand } from "../lib/focusMove";
 
 /** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
  *  whole critical zone on a 30k-step EAF. */
@@ -177,7 +178,46 @@ export default function FocusView() {
     const r = Math.max(0, Math.round(p));
     return focMax != null ? Math.min(focMax, r) : r;
   };
-  const moveTo = (p: number) => act(() => api.post("/api/focuser/move", { position: clampPos(p) }));
+
+  // ------------------------------------------------- in-flight move feedback
+  // POST /api/focuser/move returns `{started}` immediately — the move itself
+  // runs as a background task. Until this existed, pressing Go looked EXACTLY
+  // like not pressing Go, which is how a firmware-refused move went unnoticed
+  // for two nights. Hold the commanded target and narrate it. See lib/focusMove.
+  const [cmd, setCmd] = useState<FocuserCommand | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  // When `pos` last CHANGED: proof of motion for the backends whose is_moving()
+  // cannot answer, and the reset for the stall clock on a long move.
+  const [progressAt, setProgressAt] = useState(() => Date.now());
+  const seenPos = useRef<number | null>(null);
+  useEffect(() => {
+    if (seenPos.current === pos) return;
+    seenPos.current = pos;
+    setProgressAt(Date.now());
+    setNow(Date.now());
+  }, [pos]);
+
+  const progress = moveProgress(cmd, foc ? pos : null, foc?.moving, now, progressAt);
+  const waiting = !!cmd && !progress?.settled;
+  useEffect(() => {
+    if (!waiting) return;                 // settled: stop burning a timer
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [waiting]);
+
+  const moveTo = async (p: number) => {
+    const target = clampPos(p);
+    setCmd({ target, startedAt: Date.now(), from: pos });
+    setNow(Date.now());
+    try {
+      await api.post("/api/focuser/move", { position: target });
+    } catch (e) {
+      // The command never landed, so there is nothing in flight to narrate —
+      // leaving it would draw "→ 22000" over a move that was never accepted.
+      setCmd(null);
+      showToast("error", (e as Error).message);
+    }
+  };
 
   // "Go to position" only checked non-empty string; non-numeric input (e.g.
   // "abc") produced NaN -> JSON.stringify serializes NaN to null, sending a
@@ -539,12 +579,28 @@ export default function FocusView() {
               <button
                 className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
                 style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
-                onClick={() => act(() => api.post("/api/focuser/halt"))}>
+                onClick={() => {
+                  // Drop the commanded target: after a deliberate Halt,
+                  // "not moving — stopped at X" is technically true but reads
+                  // as a fault report for something the user just did.
+                  setCmd(null);
+                  act(() => api.post("/api/focuser/halt"));
+                }}>
                 <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
                 Halt
               </button>
             )}
           </div>
+          {/* The move, narrated. `aria-live` because the whole point is that
+              something changed without the user touching anything. */}
+          {progress && (
+            <p role="status" aria-live="polite"
+              className={`mono text-[11px] mt-2.5 ${
+                progress.tone === "warn" ? "text-warn"
+                  : progress.tone === "good" ? "text-good" : "text-accent"}`}>
+              {progress.text}
+            </p>
+          )}
         </Panel>
       </div>
     </div>

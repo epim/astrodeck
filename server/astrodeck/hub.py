@@ -3123,6 +3123,15 @@ class Hub:
                 }
             except Exception:
                 pass
+            else:
+                # Its OWN try, deliberately: `moving` is the newest and least
+                # universally-supported reading here, and it must never be able
+                # to cost the position/max/temperature readouts the user is
+                # actually looking at. Absent key == "this backend cannot say".
+                try:
+                    out["focuser"]["moving"] = bool(await foc.is_moving())
+                except Exception:
+                    pass
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
             try:

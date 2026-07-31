@@ -26,6 +26,11 @@ EAF_MOVE_TIMEOUT_S = 120.0
 #: How close counts as arrived. The EAF is an exact-step device, so this is a
 #: guard against an off-by-one in the SDK's read-back, not a real tolerance.
 ARRIVAL_TOLERANCE_STEPS = 2
+#: A travel limit below this many steps, on a focuser whose hardware ceiling is
+#: an order of magnitude larger, is almost certainly a reset artefact rather
+#: than a deliberate setting — 360 steps out of 600000 is 0.06% of the travel,
+#: which no one configures on purpose. Worth saying out loud.
+SUSPICIOUS_LIMIT_STEPS = 1000
 
 
 def _sdk_guard(exc: ZwoSdkError, name: str, what: str) -> DeviceError:
@@ -38,12 +43,16 @@ class EafFocuser(Focuser):
     backend = "zwo-usb"
     hardware = True
 
-    def __init__(self, sdk, dev_id: int, name: str = "ZWO EAF"):
+    def __init__(self, sdk, dev_id: int, name: str = "ZWO EAF",
+                 max_step: int | None = None):
         super().__init__(name)
         self._sdk = sdk
         self._id = dev_id
         self._lock = asyncio.Lock()
         self.firmware = ""
+        #: The rig's configured travel limit, re-applied on every connect
+        #: (driver `extra.max_step`). None = leave whatever the device holds.
+        self._max_step = int(max_step) if max_step else None
 
     async def _call(self, fn, *args, what: str):
         async with self._lock:
@@ -74,17 +83,78 @@ class EafFocuser(Focuser):
         # enforced limit, and SAY BOTH at connect — one log line would have
         # ended that in minutes instead of hours.
         self.hardware_max_position = int(max_step)
-        enforced = None
+        from ...events import bus
+
+        # RESTORE the configured limit before reading it back.
+        #
+        # The EAF does not keep its travel limit across a reconnect: on
+        # 2026-07-31 a device deliberately set to 40000 came back reporting 360
+        # after a server restart, with its position counter also reset to 0.
+        # That is the entire "type 22000, press Go, nothing happens" bug, and it
+        # re-arms itself on every restart — so setting it once by hand fixes
+        # nothing. Push it back every time, then verify the device took it.
+        wanted: int | None = None
+        if self._max_step:
+            wanted = max(1, min(self._max_step, int(max_step)))
+            try:
+                await asyncio.to_thread(self._sdk.set_max_step, self._id, wanted)
+            except Exception as exc:  # noqa: BLE001 - older SDKs lack the export
+                bus.log("warning",
+                        f"{self.name}: could not apply the configured travel "
+                        f"limit {wanted} ({type(exc).__name__}: {exc}) — the "
+                        "device keeps whatever limit it woke up with", "focuser")
+
+        enforced: int | None = None
+        why: str | None = None
         try:
-            enforced = await asyncio.to_thread(self._sdk.get_max_step, self._id)
-        except Exception:            # noqa: BLE001 - older SDKs lack the export
-            enforced = None
-        self.max_position = int(enforced) if enforced else int(max_step)
-        if enforced is not None and enforced != max_step:
-            from ...events import bus
+            enforced = int(await asyncio.to_thread(self._sdk.get_max_step, self._id))
+        except Exception as exc:     # noqa: BLE001 - older SDKs lack the export
+            enforced, why = None, f"{type(exc).__name__}: {exc}"
+        self.max_position = enforced if enforced else int(max_step)
+
+        # ALWAYS say the numbers, even when they agree. The version of this that
+        # only spoke up on a mismatch is how a falling-back read looks identical
+        # to a healthy one: the rig reported max 600000 with the enforced limit
+        # never read, and nothing in the log said which of those had happened.
+        if wanted is not None and enforced == wanted:
+            bus.log("info", f"{self.name}: travel limit {enforced} restored from "
+                            f"the rig's configuration (hardware max {max_step})",
+                    "focuser")
+        elif wanted is not None:
+            bus.log("warning",
+                    f"{self.name}: asked for a travel limit of {wanted} but the "
+                    f"device reports {enforced} — moves past {self.max_position} "
+                    "will be refused", "focuser")
+        elif enforced and enforced != max_step:
             bus.log("info",
                     f"{self.name}: hardware max {max_step}, device travel limit "
                     f"{enforced}, using {self.max_position}", "focuser")
+        elif enforced:
+            bus.log("info", f"{self.name}: travel limit {enforced} (= hardware max)",
+                    "focuser")
+        else:
+            # Not a detail. `max_position` is what the UI clamps Go-to targets
+            # against, so an unread limit means the panel will happily offer
+            # positions the firmware will refuse without a word.
+            bus.log("warning",
+                    f"{self.name}: could not read the enforced travel limit "
+                    f"({why or f'EAFGetMaxStep returned {enforced!r}'}) — falling "
+                    f"back to the hardware max {max_step}, which the firmware may "
+                    "not honour", "focuser")
+
+        # An unconfigured, implausibly small limit is the reset artefact above.
+        # Say what it means and what to do, rather than leaving the user to
+        # discover it as "Go does nothing".
+        if (self._max_step is None and enforced
+                and enforced < SUSPICIOUS_LIMIT_STEPS
+                and int(max_step) > 10 * enforced):
+            bus.log("warning",
+                    f"{self.name}: the focuser will only accept positions up to "
+                    f"{enforced} of its {max_step} hardware steps. That is almost "
+                    "certainly a limit the EAF reset itself to, not one you set — "
+                    "moves past it are refused silently by the device. Set this "
+                    "driver's travel limit (max_step) so it is restored on every "
+                    "connect.", "focuser")
         self.connected = True
 
     async def disconnect(self) -> None:
@@ -169,6 +239,10 @@ class EafFocuser(Focuser):
 
     async def halt(self) -> None:
         await self._call(self._sdk.stop, what="halt")
+
+    async def is_moving(self) -> bool:
+        moving, _hand = await self._call(self._sdk.is_moving, what="poll move")
+        return bool(moving)
 
     async def get_temperature(self) -> float | None:
         try:
@@ -304,12 +378,16 @@ class ZwoUsbSession:
     async def get_device(self, role: str, conn):
         if role in self._devices:
             return self._devices[role]
-        name = (getattr(conn, "extra", None) or {}).get("name") or None
+        extra = getattr(conn, "extra", None) or {}
+        name = extra.get("name") or None
         try:
             if role == "focuser":
                 sdk = zwo_sdk.make_eaf()
                 dev = EafFocuser(sdk, await asyncio.to_thread(
-                    self._first_unit, sdk, "EAF"), name=name or "ZWO EAF")
+                    self._first_unit, sdk, "EAF"), name=name or "ZWO EAF",
+                    # The EAF forgets its travel limit on reconnect; this is the
+                    # rig's remembered value, re-applied on every connect.
+                    max_step=extra.get("max_step"))
             elif role == "rotator":
                 sdk = zwo_sdk.make_caa()
                 dev = CaaRotator(sdk, await asyncio.to_thread(
