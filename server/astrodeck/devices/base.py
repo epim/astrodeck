@@ -190,6 +190,27 @@ class Telescope(Device):
     #: and the rate control hidden.
     can_set_tracking_rate: bool = False
 
+    #: capability flag (Home control, 2026-07-30) — set True only by backends
+    #: that implement ``find_home``. Gates whether the UI offers the control at
+    #: all, so a mount without a home sensor never shows a button that cannot
+    #: work (house rule: no dead controls).
+    can_find_home: bool = False
+
+    async def find_home(self) -> None:
+        """Send the mount to its mechanical home and leave it USABLE there.
+
+        Home is not Park. Home is the known reference position you start a
+        session from — counterweight down, pointing at the pole — and the mount
+        must come back ready to slew. Park is "stop and stay stopped". Some
+        mounts reach both with the same wire command (the ZWO AM5's ``:hP#``
+        homes AND parks), so a backend whose home implies a park is expected to
+        unpark afterwards; ending parked would make the button a trap that looks
+        like it worked.
+
+        Default: refuse. A mount that cannot home says so rather than silently
+        doing nothing."""
+        raise DeviceError(f"{self.name} cannot find home")
+
     @abstractmethod
     async def get_position(self) -> tuple[float, float]:
         """Return (ra_hours, dec_degrees), JNow."""

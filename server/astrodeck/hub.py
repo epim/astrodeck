@@ -3082,6 +3082,10 @@ class Hub:
                     "slewing": await tel.is_slewing(),
                     "tracking_rate": await tel.get_tracking_rate(),
                     "can_set_tracking_rate": tel.can_set_tracking_rate,
+                    # Home control (2026-07-30): the client gates its Home
+                    # button on this, so a mount with no home sensor never shows
+                    # a control that would 400.
+                    "can_find_home": getattr(tel, "can_find_home", False),
                 }
             except Exception:
                 pass

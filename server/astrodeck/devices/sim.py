@@ -698,6 +698,10 @@ class SimTelescope(Telescope):
     #: tracking, 2026-07-21) -- no capability gating needed in the sim rig.
     can_set_tracking_rate = True
 
+    #: the sim mount can always home (Home control, 2026-07-30), so the
+    #: control is exercisable without hardware.
+    can_find_home = True
+
     def __init__(self, rig: SimRig, name: str = "Sim Mount EQ6-R"):
         super().__init__(name)
         self.rig = rig
@@ -780,6 +784,16 @@ class SimTelescope(Telescope):
 
     async def get_tracking_rate(self) -> str:
         return self._tracking_rate
+
+    async def find_home(self) -> None:
+        """Home: go to the pole, stop tracking, stay USABLE (not parked).
+
+        The distinction is the whole point of the control — see the contract
+        note on ``Telescope.find_home``. A sim that ended parked would let a
+        Home-then-slew bug pass here and only fail at the scope."""
+        await self.slew(0.0, 89.5)
+        self.rig.tracking = False
+        self.rig.parked = False
 
     async def park(self) -> None:
         await self.slew(0.0, 89.5)

@@ -49,6 +49,12 @@ DISCOVERY_MSG = b"alpacadiscovery1"
 # then handles in guiding contexts (imaging surfaces the DeviceError path).
 _IMAGEREADY_POLL_MARGIN_S = 30.0
 
+# Home control (2026-07-30). ASCOM FindHome is asynchronous on most drivers, so
+# the PUT returning proves nothing; we poll AtHome. Homing sweeps the full range
+# on some mounts, hence a park-sized budget rather than a slew-sized one.
+FIND_HOME_TIMEOUT_S = 180.0
+FIND_HOME_POLL_S = 1.0
+
 _client_id = 4242
 _txn = 0
 
@@ -540,6 +546,15 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
         except Exception:
             pass
 
+        # Probe CanFindHome ONCE at connect (Home control, 2026-07-30) — same
+        # rationale as the probes above, and the same honesty rule: the UI only
+        # offers Home when the mount says it can, so a scope with no home sensor
+        # never shows a button that would 400.
+        try:
+            self.can_find_home = bool(await self._get("canfindhome"))
+        except Exception:
+            pass
+
     async def get_position(self) -> tuple[float, float]:
         ra = await self._get("rightascension")
         dec = await self._get("declination")
@@ -576,6 +591,27 @@ class AlpacaTelescope(_AlpacaDevice, Telescope):
     async def get_tracking_rate(self) -> str:
         value = await self._get("trackingrate")
         return _TRACKING_RATE_NAME.get(int(value), "sidereal")
+
+    async def find_home(self) -> None:
+        """ASCOM ``FindHome``. Asynchronous on most drivers, so poll ``AtHome``
+        rather than trusting the PUT to have finished — a caller that returns
+        early would report "homed" while the mount is still swinging."""
+        await self._put("findhome")
+        deadline = asyncio.get_running_loop().time() + FIND_HOME_TIMEOUT_S
+        while True:
+            if asyncio.get_running_loop().time() > deadline:
+                raise DeviceError(
+                    f"{self.name}: home did not complete within "
+                    f"{FIND_HOME_TIMEOUT_S:.0f}s")
+            await asyncio.sleep(FIND_HOME_POLL_S)
+            try:
+                if await self._get("athome"):
+                    return
+            except Exception:  # noqa: BLE001
+                # A driver without AtHome cannot confirm; fall back to "not
+                # slewing" so we still return rather than hanging to the cap.
+                if not await self.is_slewing():
+                    return
 
     async def park(self) -> None:
         await self._put("park")
