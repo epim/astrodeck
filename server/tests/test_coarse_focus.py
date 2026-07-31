@@ -1,158 +1,164 @@
 """Coarse focus — the way out of the loop that cost a night.
 
-Autofocus needs stars to start; a badly-defocused rig has none; the only tool
-offered for getting to rough focus WAS autofocus. This walks the travel and
-hands off as soon as a position has enough stars.
+Autofocus needs stars to start; a badly-defocused rig has none. This shrinks
+the defocus BLOB until autofocus can take over, learning the focuser's real
+travel from moves that fail along the way.
+
+The blob physics are simulated (r = k*|x - focus|) rather than mocked to a
+constant, so the search has to actually converge instead of being told it did.
 """
 import asyncio
 
 import pytest
 
+from astrodeck.devices.base import DeviceError
 from astrodeck.focus import coarse
-from astrodeck.focus.coarse import ENOUGH_STARS, plan_positions, run_coarse_focus
+from astrodeck.focus.coarse import run_coarse_focus
+from astrodeck.imaging.defocus import HANDOVER_R80_PX, BlobSize
 
-
-# --------------------------------------------------------------- the plan
-
-def test_nearest_first_so_the_common_case_costs_two_frames():
-    """Focus is usually near where you are, and every stop costs an exposure."""
-    got = plan_positions(current=20000, max_position=40000, stops=5)
-    assert got[0] == 20000, f"must start where the focuser already is: {got}"
-    dist = [abs(p - 20000) for p in got]
-    assert dist == sorted(dist), f"not ordered by distance: {got}"
-
-
-def test_the_default_span_is_the_whole_travel():
-    """This runs when the user has no idea where focus is; a narrow default
-    would fail exactly when it is needed."""
-    got = plan_positions(current=5000, max_position=40000, stops=5)
-    assert min(got) == 0 and max(got) == 40000
-
-
-def test_a_span_narrows_the_search_around_the_current_position():
-    got = plan_positions(current=20000, max_position=40000, span=4000, stops=5)
-    assert min(got) >= 18000 and max(got) <= 22000
-
-
-def test_the_search_never_leaves_the_usable_travel():
-    """Clamped at both ends: a plan containing a negative position or one past
-    max would be rejected by the focuser mid-search, aborting the run."""
-    got = plan_positions(current=100, max_position=1000, span=100000, stops=7)
-    assert all(0 <= p <= 1000 for p in got), got
-
-
-def test_duplicate_stops_collapse():
-    """A short span over many stops rounds several onto the same integer; each
-    duplicate would cost a pointless exposure."""
-    got = plan_positions(current=500, max_position=1000, span=4, stops=9)
-    assert len(got) == len(set(got))
-
-
-def test_a_focuser_with_no_reported_travel_still_returns_something():
-    assert plan_positions(current=1234, max_position=0) == [1234]
-
-
-# ------------------------------------------------------------- the search
 
 class _Focuser:
-    def __init__(self, max_position=40000, start=20000):
+    """A focuser with a REAL travel that may be narrower than it advertises —
+    exactly the rig's situation, where max_position reads 600000 and the usable
+    range was 360 steps."""
+
+    def __init__(self, max_position=60000, start=0, real_lo=0, real_hi=60000):
         self.max_position = max_position
         self._pos = start
+        self.real_lo, self.real_hi = real_lo, real_hi
         self.visited: list[int] = []
 
-    async def get_position(self): return self._pos
+    async def get_position(self):
+        return self._pos
 
     async def move_to(self, p):
-        self._pos = int(p)
-        self.visited.append(self._pos)
+        p = int(p)
+        reachable = max(self.real_lo, min(self.real_hi, p))
+        self._pos = reachable
+        self.visited.append(reachable)
+        if reachable != p:
+            raise DeviceError(
+                f"move to {p} did not happen — stopped at {reachable}")
 
 
 class _Frame:
-    data = None
+    def __init__(self, pos):
+        self.data = pos          # carries the position; the fake measurer reads it
 
 
 class _Camera:
-    async def expose(self, *a, **k): return _Frame()
+    def __init__(self, focuser):
+        self.focuser = focuser
+        self.exposures = 0
+
+    async def expose(self, *a, **k):
+        self.exposures += 1
+        return _Frame(self.focuser._pos)
 
 
-def _patch_detector(monkeypatch, focuser, counts_by_position):
-    """Star count as a function of focuser position.
-
-    Patches the name coarse.py actually calls. It counts with imaging.stars'
-    detect_stars, NOT the native detector — see the note in coarse.py: on real
-    sky the native one reported 2 stars on a frame where detect_stars found 713
-    (#102), and coarse focus using it found nothing at any position on a clean
-    field.
-    """
-    monkeypatch.setattr(
-        coarse, "detect_stars",
-        lambda _data, *a, **k: [object()] * counts_by_position(focuser._pos))
+def _patch_blob(monkeypatch, focus=38000.0, k=0.02, blind=False):
+    """measure_blob() reads the position out of the fake frame and returns the
+    size the physics says it should be."""
+    def fake(data, **kw):
+        if blind:
+            return None
+        r = abs(float(data) - focus) * k
+        return BlobSize(r80=r, peak=5000.0, snr=100.0, x=10, y=10,
+                        background=600.0, sigma=20.0)
+    monkeypatch.setattr(coarse, "measure_blob", fake)
 
 
-def _run(counts, monkeypatch, **kw):
-    foc = _Focuser(**{k: kw.pop(k) for k in ("max_position", "start") if k in kw})
-    _patch_detector(monkeypatch, foc, counts)
-    return asyncio.run(run_coarse_focus(_Camera(), foc, **kw)), foc
+def _run(monkeypatch, *, focus=38000.0, k=0.02, blind=False, **fkw):
+    foc = _Focuser(**fkw)
+    cam = _Camera(foc)
+    _patch_blob(monkeypatch, focus, k, blind)
+    res = asyncio.run(run_coarse_focus(cam, foc, exposure_s=0.0))
+    return res, foc, cam
 
 
-def test_it_stops_the_moment_a_position_has_enough_stars(monkeypatch):
-    """It hands off; it does not optimise. Continuing past the first usable
-    position spends the user's night finding a marginally better one."""
-    res, foc = _run(lambda p: 12 if p == 0 else 0, monkeypatch, stops=5)
-    assert res.success is True
-    assert res.best_position == 0
+# ----------------------------------------------------------- convergence
+
+@pytest.mark.parametrize("start,focus", [
+    (0, 38000.0), (59000, 12000.0), (30000, 30000.0), (5000, 55000.0),
+])
+def test_it_finds_focus_from_anywhere(monkeypatch, start, focus):
+    res, _, _ = _run(monkeypatch, focus=focus, start=start)
+    assert res.success is True, res.message
+    assert abs(res.best_position - focus) * 0.02 <= HANDOVER_R80_PX
+
+
+def test_it_hands_over_rather_than_polishing(monkeypatch):
+    """The V-curve autofocus measures HFR far better than this can; every extra
+    probe here is a wasted exposure."""
+    res, _, cam = _run(monkeypatch, focus=38000.0, start=0)
+    assert res.success
     assert "autofocus" in res.message.lower()
-    # 20000 (start), then outward; it must NOT keep going after the hit.
-    assert foc.visited[-1] == 0
+    assert cam.exposures <= 9, f"took {cam.exposures} exposures"
 
 
-def test_the_bar_is_the_one_autofocus_itself_refuses_below(monkeypatch):
-    """Three stars is not enough for a curve, so it must not be enough here."""
-    res, _ = _run(lambda p: ENOUGH_STARS - 1, monkeypatch, stops=3)
+def test_already_in_focus_costs_one_exposure(monkeypatch):
+    res, foc, cam = _run(monkeypatch, focus=30000.0, start=30000)
+    assert res.success and cam.exposures == 1
+    assert foc.visited == []
+
+
+# ------------------------------------------- learning the real travel
+
+def test_it_narrows_the_range_when_a_move_is_refused(monkeypatch):
+    """The rig's actual failure: max_position says 60000, the focuser physically
+    stops at 20000. The search must learn that rather than retrying forever."""
+    res, foc, _ = _run(monkeypatch, focus=50000.0, start=0,
+                       max_position=60000, real_lo=0, real_hi=20000)
+    assert res.success is False
+    assert all(p <= 20000 for p in foc.visited), foc.visited
+
+
+def test_a_focuser_with_almost_no_travel_says_so_clearly(monkeypatch):
+    """360 usable steps out of a claimed 600000 — tonight's rig. The message has
+    to name the cause, because the user has to go and physically fix it."""
+    res, _, _ = _run(monkeypatch, focus=200000.0, start=0,
+                     max_position=600000, real_lo=0, real_hi=360)
+    assert res.success is False
+    low = res.message.lower()
+    assert "limit" in low or "jam" in low or "travel" in low, res.message
+
+
+def test_it_never_claims_success_it_cannot_have(monkeypatch):
+    res, _, _ = _run(monkeypatch, focus=500000.0, start=0,
+                     max_position=600000, real_lo=0, real_hi=1000)
     assert res.success is False
 
 
-def test_a_starless_search_parks_on_the_richest_position_found(monkeypatch):
-    """Not the start, and not wherever it happened to stop: the best place a
-    human would continue from."""
-    counts = {0: 1, 20000: 0, 40000: 3}
-    res, foc = _run(lambda p: counts.get(p, 0), monkeypatch, stops=3)
+# ------------------------------------------------------------ honesty
+
+def test_an_unmeasurable_frame_is_reported_not_guessed(monkeypatch):
+    """A fabricated size would send the search somewhere invented."""
+    res, _, _ = _run(monkeypatch, blind=True, start=1000)
     assert res.success is False
-    assert res.best_position == 40000
-    assert foc.visited[-1] == 40000, "must MOVE there, not just report it"
+    low = res.message.lower()
+    assert "sky" in low or "cover" in low or "measur" in low, res.message
 
 
-def test_the_failure_message_carries_every_count(monkeypatch):
-    """"It didn't work" is unactionable at 2am; the tally shows whether the
-    field was empty everywhere or promising somewhere."""
-    counts = {0: 1, 20000: 0, 40000: 3}
-    res, _ = _run(lambda p: counts.get(p, 0), monkeypatch, stops=3)
-    for pos, n in counts.items():
-        assert f"{pos}:{n}" in res.message, f"missing {pos}:{n} in {res.message!r}"
-
-
-def test_a_cancelled_search_returns_the_focuser_to_where_it_started(monkeypatch):
+def test_cancel_returns_the_focuser_to_where_it_started(monkeypatch):
     """A stranded focuser means the rig keeps shooting from a random position."""
-    foc = _Focuser()
-    _patch_detector(monkeypatch, foc, lambda p: 0)
+    foc = _Focuser(start=25000)
+    cam = _Camera(foc)
+    _patch_blob(monkeypatch, 38000.0, 0.02)
 
-    async def _cancel_after_one():
-        task = asyncio.ensure_future(
-            run_coarse_focus(_Camera(), foc, stops=9))
+    async def _cancel():
+        t = asyncio.ensure_future(run_coarse_focus(cam, foc, exposure_s=0.0))
         await asyncio.sleep(0)
-        task.cancel()
+        t.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await t
 
-    asyncio.run(_cancel_after_one())
-    assert foc._pos == 20000, "must restore the starting position"
+    asyncio.run(_cancel())
+    assert foc._pos == 25000
 
 
-def test_it_works_without_the_native_engine_at_all(monkeypatch):
-    """It counts with the Python detector, so the Rust engine being absent (or
-    broken, which is what prompted the switch) cannot stop the search. Getting
-    to rough focus must not depend on the component that needs rough focus."""
-    foc = _Focuser()
-    _patch_detector(monkeypatch, foc, lambda p: 9 if p == 0 else 0)
-    res = asyncio.run(run_coarse_focus(_Camera(), foc, stops=5))
-    assert res.success is True
+def test_a_focuser_reporting_no_travel_is_refused(monkeypatch):
+    foc = _Focuser(max_position=0)
+    cam = _Camera(foc)
+    _patch_blob(monkeypatch)
+    with pytest.raises(DeviceError, match="travel"):
+        asyncio.run(run_coarse_focus(cam, foc, exposure_s=0.0))
