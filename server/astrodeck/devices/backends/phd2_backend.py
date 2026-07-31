@@ -143,7 +143,7 @@ class Phd2Backend:
     name = "phd2"
     label = "PHD2"
     roles = ("guider",)
-    discoverable = False
+    discoverable = True
     #: Endpoint-less in unmanaged-local mode: the PHD2 socket is a fixed local
     #: endpoint, so the orchestrator normalizes host/port -> None and a
     #: stray-addressed phd2-local guider override still resolves to its session
@@ -178,8 +178,23 @@ class Phd2Backend:
         return Phd2Session(guider)
 
     async def discover(self) -> list[dict]:
-        """PHD2's socket is a fixed local endpoint, not UDP-discoverable."""
-        return []
+        """PHD2's socket is not UDP-discoverable — but the BINARY is findable.
+
+        Nothing suggested PHD2 anywhere: a hardware scan skipped it and the only
+        way to reach it was to know to add a driver by hand with host and port.
+        Nobody discovers that. So when PHD2 is installed on this machine, offer
+        it in the scan like any other local device.
+
+        `verified=False` is deliberate and load-bearing: finding the executable
+        proves it is INSTALLED, not that it is running. Its socket exists only
+        while the app is open, so the probe still decides reachability — this
+        only makes the driver offerable in one tap.
+        """
+        from ...drivers import phd2_installed_at
+        if phd2_installed_at() is None:
+            return []
+        return [{"role": "guider", "name": "PHD2 (this machine)",
+                 "host": "127.0.0.1", "port": 4400, "verified": False}]
 
 
 # Self-register at import (last-registration-wins). ``register`` returns the
