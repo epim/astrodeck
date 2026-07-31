@@ -42,9 +42,10 @@ class EafFocuser(Focuser):
 
     backend = "zwo-usb"
     hardware = True
+    can_set_position_reference = True
 
     def __init__(self, sdk, dev_id: int, name: str = "ZWO EAF",
-                 max_step: int | None = None):
+                 max_step: int | None = None, state_key: str | None = None):
         super().__init__(name)
         self._sdk = sdk
         self._id = dev_id
@@ -53,6 +54,16 @@ class EafFocuser(Focuser):
         #: The rig's configured travel limit, re-applied on every connect
         #: (driver `extra.max_step`). None = leave whatever the device holds.
         self._max_step = int(max_step) if max_step else None
+        #: Key for the remembered position (driver id), so two focusers on one
+        #: box do not overwrite each other's reference.
+        self._state_key = state_key
+        #: Diagnostics read once at connect. `reports_diagnostics` is the one
+        #: that matters: it says whether this firmware answers EAFGetErrorCode
+        #: at all, which decides whether a refused move can ever explain itself.
+        self._motor_error: str | None = None
+        self._battery_error: str | None = None
+        self._power_off_reason: int | None = None
+        self._reports_diagnostics = False
 
     async def _call(self, fn, *args, what: str):
         async with self._lock:
@@ -60,6 +71,29 @@ class EafFocuser(Focuser):
                 return await asyncio.to_thread(fn, self._id, *args)
             except ZwoSdkError as exc:
                 raise _sdk_guard(exc, self.name, what) from exc
+
+    async def _complaint(self) -> str:
+        """What the device says is wrong, as a trailing clause for an error
+        message — or "" when it will not say (several firmwares answer
+        NOT_SUPPORTED, and silence is not a fault).
+
+        Best-effort by construction: this only ever runs while building the
+        text of an error that has ALREADY happened, so it must not be able to
+        replace that error with one of its own.
+        """
+        try:
+            codes = await asyncio.to_thread(self._sdk.error_codes, self._id)
+        except Exception:  # noqa: BLE001
+            return ""
+        if not codes:
+            return ""
+        motor, battery = codes
+        parts = []
+        if motor:
+            parts.append(f"motor error {motor}")
+        if battery:
+            parts.append(f"battery error {battery}")
+        return f" The device reports {', '.join(parts)}." if parts else ""
 
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
@@ -156,6 +190,71 @@ class EafFocuser(Focuser):
                     "driver's travel limit (max_step) so it is restored on every "
                     "connect.", "focuser")
         self.connected = True
+        await self._read_diagnostics()
+        await self._check_position_reference()
+
+    async def _read_diagnostics(self) -> None:
+        """Ask the device what it will admit about itself. Read-only, once.
+
+        Whether EAFGetErrorCode answers at all is firmware-dependent (several
+        return NOT_SUPPORTED), and it decides whether a refused move can ever
+        explain itself. Recording it here means the answer is visible on the
+        Equipment page instead of only discoverable during a failure.
+        """
+        try:
+            codes = await asyncio.to_thread(self._sdk.error_codes, self._id)
+        except Exception:  # noqa: BLE001
+            codes = None
+        if codes is not None:
+            self._reports_diagnostics = True
+            self._motor_error, self._battery_error = codes or (None, None)
+        try:
+            self._power_off_reason = await asyncio.to_thread(
+                self._sdk.power_off_reason, self._id)
+        except Exception:  # noqa: BLE001
+            self._power_off_reason = None
+
+    async def _check_position_reference(self) -> None:
+        """Compare where the device says it is against where we last saw it.
+
+        This cannot REPAIR the reference — only a human putting the drawtube
+        somewhere known can do that (set_position_reference). Its whole job is
+        to make the loss visible: on 2026-07-31 an EAF came back reading 0 after
+        sitting at 30000, and the only symptom was that stored focus positions
+        quietly stopped meaning what they used to.
+        """
+        from ...config import load_focuser_position
+        from ...events import bus
+        try:
+            last = load_focuser_position(self._state_key)
+            now = int(await asyncio.to_thread(self._sdk.get_position, self._id))
+        except Exception:  # noqa: BLE001 - a bookkeeping read must never cost
+            return         # the connect itself
+        if last is None:
+            self._remember(now)
+            return
+        if abs(now - last) <= ARRIVAL_TOLERANCE_STEPS:
+            return
+
+        reason = None
+        try:
+            reason = await asyncio.to_thread(self._sdk.power_off_reason, self._id)
+        except Exception:  # noqa: BLE001
+            reason = None
+        power = ""
+        if reason == 1:
+            power = " The device reports it was last powered off in shipping mode."
+        elif reason == 0:
+            power = " The device reports a normal last power-off."
+
+        bus.log("warning",
+                f"{self.name}: position reads {now} but it was {last} when we "
+                f"last saw it, and nothing moved it in between — the focuser "
+                f"lost its count (this happens when it loses power). The "
+                f"drawtube has NOT moved, but every saved focus position is now "
+                f"off by about {last - now} steps. Re-anchor it: put the tube "
+                f"somewhere you know and set the position.{power}", "focuser")
+        self._remember(now)
 
     async def disconnect(self) -> None:
         try:
@@ -172,6 +271,15 @@ class EafFocuser(Focuser):
     def describe(self) -> dict:
         d = super().describe()
         d["firmware"] = self.firmware
+        d["hardware_max_position"] = getattr(self, "hardware_max_position", None)
+        # What the device will admit about itself. Recorded at connect rather
+        # than polled: these are diagnostics, and the question they answer —
+        # "can this focuser tell us anything when a move is refused?" — is a
+        # property of the firmware, not of the moment.
+        d["motor_error_code"] = self._motor_error
+        d["battery_error_code"] = self._battery_error
+        d["power_off_reason"] = self._power_off_reason
+        d["reports_diagnostics"] = self._reports_diagnostics
         return d
 
     async def get_position(self) -> int:
@@ -207,13 +315,14 @@ class EafFocuser(Focuser):
                     raise DeviceError(
                         f"{self.name}: move to {position} timed out after "
                         f"{EAF_MOVE_TIMEOUT_S:.0f}s — stopped at {now} "
-                        f"(started from {start})")
+                        f"(started from {start}).{await self._complaint()}")
                 await asyncio.sleep(POLL_S)
                 pos = await self._call(self._sdk.get_position,
                                        what="read position")
                 moving, _hand = await self._call(
                     self._sdk.is_moving, what="poll move")
                 if abs(pos - position) <= ARRIVAL_TOLERANCE_STEPS:
+                    self._remember(pos)
                     return                                   # actually arrived
                 if pos != last:
                     last, idle_polls = pos, 0                 # still making progress
@@ -224,11 +333,13 @@ class EafFocuser(Focuser):
                 # not-moving before the motor engages is preserved here.
                 idle_polls = idle_polls + 1 if not moving else 0
                 if idle_polls >= 2:
+                    self._remember(pos)
                     raise DeviceError(
                         f"{self.name}: move to {position} did not happen — the "
                         f"focuser stopped at {pos} and is no longer moving. It "
                         "is probably at a mechanical limit or the drawtube is "
-                        "jammed; try a smaller move in the other direction.")
+                        "jammed; try a smaller move in the other direction."
+                        + await self._complaint())
         except BaseException:
             # halt on ANY abnormal exit (cancel/timeout/SDK failure)
             try:
@@ -239,6 +350,33 @@ class EafFocuser(Focuser):
 
     async def halt(self) -> None:
         await self._call(self._sdk.stop, what="halt")
+
+    def _remember(self, position: int) -> None:
+        """Record where the drawtube ended up, so the next connect can notice
+        if the device came back somewhere else. Never raises."""
+        from ...config import save_focuser_position
+        save_focuser_position(self._state_key, int(position))
+
+    async def set_position_reference(self, position: int) -> None:
+        """Tell the EAF it is at ``position``. Moves nothing.
+
+        Refused mid-move on purpose: re-anchoring while the tube is travelling
+        writes a number that is already stale by the time it lands."""
+        if await self.is_moving():
+            raise DeviceError(
+                f"{self.name}: the focuser is moving — wait for it to stop "
+                "before setting its position")
+        position = int(position)
+        if not (0 <= position <= self.max_position):
+            raise DeviceError(
+                f"{self.name}: position {position} is outside "
+                f"0..{self.max_position}")
+        await self._call(self._sdk.reset_position, position,
+                         what="EAFResetPostion")
+        self._remember(position)
+        from ...events import bus
+        bus.log("info", f"{self.name}: position reference set to {position} "
+                        "— the drawtube did not move", "focuser")
 
     async def is_moving(self) -> bool:
         moving, _hand = await self._call(self._sdk.is_moving, what="poll move")
@@ -387,7 +525,11 @@ class ZwoUsbSession:
                     self._first_unit, sdk, "EAF"), name=name or "ZWO EAF",
                     # The EAF forgets its travel limit on reconnect; this is the
                     # rig's remembered value, re-applied on every connect.
-                    max_step=extra.get("max_step"))
+                    max_step=extra.get("max_step"),
+                    # Per-driver key so two focusers cannot overwrite each
+                    # other's remembered position. ConnSpec calls it driver_id
+                    # (not `id`); None for a raw spec, which shares one slot.
+                    state_key=getattr(conn, "driver_id", None))
             elif role == "rotator":
                 sdk = zwo_sdk.make_caa()
                 dev = CaaRotator(sdk, await asyncio.to_thread(

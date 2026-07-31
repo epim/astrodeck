@@ -643,6 +643,49 @@ def save_egain_config(profile_id: str | None, by_gain: dict) -> None:
     write_json_atomic(EGAIN_CONFIG_FILE, data)
 
 
+# --------------------------------------------------- focuser position reference
+# A stepper focuser's position is a COUNT, not a measurement: nothing on the
+# device knows where the drawtube physically is. On 2026-07-31 an EAF came back
+# from a reconnect reporting position 0 when it had been at 30000 — the tube had
+# not moved an inch, but every stored focus position silently stopped meaning
+# what it used to. Nothing said so.
+#
+# So: remember what we last saw, and compare on connect. This CANNOT repair the
+# reference (only the user can, by re-anchoring against something physical) —
+# its whole job is to turn a silent lie into a stated one.
+FOCUSER_STATE_FILE = CONFIG_DIR / "focuser_state.json"
+_FOCUSER_DEFAULT_KEY = "__default__"
+
+
+def load_focuser_position(key: str | None) -> int | None:
+    """Last position we saw for this focuser, or None if we've never seen one."""
+    data = read_json_or(FOCUSER_STATE_FILE, {})
+    if not isinstance(data, dict):
+        return None
+    entry = data.get(key or _FOCUSER_DEFAULT_KEY)
+    if not isinstance(entry, dict):
+        return None
+    try:
+        return int(entry["position"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_focuser_position(key: str | None, position: int) -> None:
+    """Record the focuser's position (best-effort merge; never raises).
+
+    Called on every completed move, so it must stay cheap and must never be
+    able to fail a move that actually happened."""
+    try:
+        data = read_json_or(FOCUSER_STATE_FILE, {})
+        if not isinstance(data, dict):
+            data = {}
+        data[key or _FOCUSER_DEFAULT_KEY] = {"position": int(position)}
+        write_json_atomic(FOCUSER_STATE_FILE, data)
+    except Exception:  # noqa: BLE001 - bookkeeping must not break the focuser
+        pass
+
+
 # --------------------------------------------------------------------- pure math
 
 def image_scale_arcsec_px(focal_mm: float, pixel_um: float, binning: int = 1) -> float:

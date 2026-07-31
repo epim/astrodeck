@@ -1,6 +1,7 @@
 // focusMove.test.ts — pressing Go must never look identical to not pressing Go.
 import {
-  ARRIVAL_TOLERANCE_STEPS, STALL_GRACE_MS, moveProgress, type FocuserCommand,
+  ARRIVAL_TOLERANCE_STEPS, STALL_GRACE_MS, anchorBlocker, moveProgress,
+  type FocuserCommand,
 } from "../focusMove";
 
 let passed = 0, failed = 0; const failures: string[] = [];
@@ -80,6 +81,45 @@ test("position 0 is a real position, not a missing one", () => {
   const p = moveProgress(cmd({ target: 5000 }), 0, false, T0 + 60_000, T0);
   ok(p != null, "0 must not be treated as absent");
   eq(p!.tone, "warn");
+});
+
+// ------------------------------------------------------- re-anchoring guard
+
+const anchor = (over: Partial<Parameters<typeof anchorBlocker>[0]> = {}) =>
+  anchorBlocker({ canFocus: true, hasFocuser: true, supported: true,
+                  moving: false, raw: "22000", max: 40000, ...over });
+
+test("a valid re-anchor is allowed", () => {
+  eq(anchor(), null);
+});
+
+test("every block states its own reason rather than sitting greyed out", () => {
+  // House rule: a disabled control the user cannot interrogate is a dead end.
+  for (const [label, over] of [
+    ["read-only", { canFocus: false }],
+    ["no focuser", { hasFocuser: false }],
+    ["unsupported", { supported: false }],
+    ["moving", { moving: true }],
+    ["blank", { raw: "  " }],
+    ["not a number", { raw: "abc" }],
+    ["negative", { raw: "-5" }],
+    ["past max", { raw: "99999" }],
+  ] as const) {
+    const r = anchor(over as object);
+    ok(typeof r === "string" && r.length > 0, `${label} must give a reason`);
+  }
+});
+
+test("re-anchoring is refused mid-move — the number would land stale", () => {
+  ok(/moving/i.test(anchor({ moving: true })!), "must say why");
+});
+
+test("the past-max reason names the limit, not just 'too big'", () => {
+  ok(anchor({ raw: "99999" })!.includes("40000"), "must name the max");
+});
+
+test("position 0 is a legitimate anchor", () => {
+  eq(anchor({ raw: "0" }), null);
 });
 
 console.log(`focusMove.test.ts: ${passed} passed, ${failed} failed`);

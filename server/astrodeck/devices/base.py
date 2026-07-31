@@ -313,6 +313,23 @@ class Focuser(Device):
     async def get_temperature(self) -> float | None:
         return None
 
+    #: Can this focuser be told "you are at position N" without moving?
+    #: The re-anchoring primitive for open-loop steppers whose count has been
+    #: lost; see set_position_reference.
+    can_set_position_reference: bool = False
+
+    async def set_position_reference(self, position: int) -> None:
+        """DECLARE the current position to be ``position``. Moves nothing.
+
+        A stepper focuser's position is a count with no physical meaning until
+        something anchors it. When that count is lost (the EAF resets to 0 when
+        it loses power), the only safe repair is for a human to put the drawtube
+        somewhere known and say so — driving into a mechanical stop to find one
+        is not safe on hardware with no limit switches.
+        """
+        raise DeviceError(
+            f"{self.name}: this focuser cannot have its position reference set")
+
     async def is_moving(self) -> bool:
         """Is the drawtube actually in motion right now?
 

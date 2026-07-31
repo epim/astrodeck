@@ -79,3 +79,28 @@ export function moveProgress(
     settled: true,
   };
 }
+
+/**
+ * Why re-anchoring is unavailable, or null when it is allowed.
+ *
+ * Re-anchoring rewrites what every saved focus position MEANS, so a blocked
+ * control here has to say why rather than sit greyed out (house rule §11.8).
+ */
+export function anchorBlocker(p: {
+  canFocus: boolean;
+  hasFocuser: boolean;
+  supported: boolean;
+  moving: boolean;
+  raw: string;
+  max: number | null;
+}): string | null {
+  if (!p.canFocus) return "Read-only session";
+  if (!p.hasFocuser) return "No focuser is connected";
+  if (!p.supported) return "This focuser cannot have its position set";
+  if (p.moving) return "Wait for the focuser to stop moving";
+  const n = Number(p.raw);
+  if (p.raw.trim() === "" || !Number.isFinite(n)) return "Type the position number first";
+  if (n < 0) return "Position cannot be negative";
+  if (p.max != null && n > p.max) return `Position must be ${p.max} or less`;
+  return null;
+}

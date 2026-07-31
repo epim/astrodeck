@@ -34,7 +34,7 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 import StepDial from "../components/ui/StepDial";
 import { nudgeLabel } from "../lib/stepDial";
-import { moveProgress, type FocuserCommand } from "../lib/focusMove";
+import { anchorBlocker, moveProgress, type FocuserCommand } from "../lib/focusMove";
 
 /** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
  *  whole critical zone on a 30k-step EAF. */
@@ -197,6 +197,10 @@ export default function FocusView() {
     setNow(Date.now());
   }, [pos]);
 
+  // Re-anchoring (EAFResetPostion): declare the position, move nothing.
+  const [anchorOpen, setAnchorOpen] = useState(false);
+  const [anchorText, setAnchorText] = useState("");
+
   const progress = moveProgress(cmd, foc ? pos : null, foc?.moving, now, progressAt);
   const waiting = !!cmd && !progress?.settled;
   useEffect(() => {
@@ -246,6 +250,12 @@ export default function FocusView() {
       ? "Type a position number in the box first"
       : null);
   const haltReason = readOnlyReason;
+  const anchorReason = anchorBlocker({
+    canFocus, hasFocuser: !!foc,
+    supported: !!foc?.can_set_position,
+    moving: !!foc?.moving,
+    raw: anchorText, max: focMax,
+  });
 
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_300px]">
@@ -600,6 +610,59 @@ export default function FocusView() {
                   : progress.tone === "good" ? "text-good" : "text-accent"}`}>
               {progress.text}
             </p>
+          )}
+
+          {/* Re-anchoring. A stepper focuser's position is a COUNT with no
+              physical meaning until something anchors it, and this one resets
+              to 0 when it loses power — the drawtube stays put while every
+              saved position silently changes meaning. This is the repair, and
+              it is deliberately behind a disclosure: it rewrites what all those
+              numbers mean, which is not something to do with a stray tap. */}
+          {foc?.can_set_position && (
+            <div className="mt-3 pt-3 border-t border-line">
+              {!anchorOpen ? (
+                <button className="btn w-full tap min-h-[36px] text-[11px]"
+                  onClick={() => { setAnchorOpen(true); setAnchorText(String(pos)); }}>
+                  Set current position…
+                </button>
+              ) : (
+                <>
+                  <p className="text-[11px] text-dim leading-snug mb-2">
+                    Tells the focuser it is at this number. <strong>Nothing
+                    moves.</strong> Use it when the count has been lost: put the
+                    drawtube somewhere you know first, then say where that is.
+                  </p>
+                  <div className="flex items-stretch gap-2">
+                    <input className="field mono flex-1" value={anchorText}
+                      inputMode="numeric"
+                      aria-label="New position value for the focuser"
+                      onChange={(e) => setAnchorText(e.target.value)} />
+                    {anchorReason ? (
+                      <LockedChip reason={anchorReason}
+                        className="btn tap min-h-[36px] justify-center">
+                        Set
+                      </LockedChip>
+                    ) : (
+                      <button className="btn btn-accent tap min-h-[36px]"
+                        onClick={() => act(async () => {
+                          await api.post("/api/focuser/set-position",
+                                         { position: Number(anchorText) });
+                          // The commanded-move narration is about a target that
+                          // no longer refers to the same place — drop it rather
+                          // than leave it pointing at the old frame.
+                          setCmd(null);
+                          setAnchorOpen(false);
+                        })}>
+                        Set
+                      </button>
+                    )}
+                    <button className="btn tap min-h-[36px]"
+                      onClick={() => setAnchorOpen(false)}>Cancel</button>
+                  </div>
+                  {anchorReason && <LockedNote reason={anchorReason} className="mt-2" />}
+                </>
+              )}
+            </div>
           )}
         </Panel>
       </div>
