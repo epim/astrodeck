@@ -458,3 +458,49 @@ async def test_arrival_is_what_counts_not_silence():
     await f.connect()
     await f.move_to(2000)
     assert sdk.position == 2000
+
+
+# ------------------------------------------- the enforced travel limit
+# 2026-07-31: EAF_INFO.MaxStep read 600000 while the firmware's stored
+# EAFGetMaxStep was 360. Only the former was bound, so the driver believed it
+# had the full range and every move above 360 was silently clamped BY THE
+# DEVICE. That is the whole reason "type 22000, press Go, nothing happens".
+
+class _ClampedEafSdk(FakeEafSdk):
+    """Hardware ceiling 600000, firmware limit 360 — the real rig."""
+
+    def __init__(self, enforced=360, **kw):
+        super().__init__(max_step=600000, **kw)
+        self._enforced = enforced
+
+    def get_max_step(self, d):
+        self._log("get_max_step"); return self._enforced
+
+
+async def test_max_position_is_the_ENFORCED_limit_not_the_hardware_ceiling():
+    sdk = _ClampedEafSdk(position=360)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    assert f.max_position == 360, (
+        f"must use the firmware limit, got {f.max_position}")
+    assert f.hardware_max_position == 600000
+
+
+async def test_a_move_past_the_enforced_limit_is_refused_before_the_hardware():
+    """Catching it in range-checking is better than discovering it as a stall:
+    the error names the limit instead of describing a symptom."""
+    sdk = _ClampedEafSdk(position=360)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError, match="out of range"):
+        await f.move_to(22000)
+    assert "move" not in sdk.calls, "must not command hardware it cannot reach"
+
+
+async def test_an_sdk_without_the_export_falls_back_rather_than_failing():
+    """An older or macOS SDK missing EAFGetMaxStep must keep the focuser
+    working — losing it entirely would be worse than the bug this fixes."""
+    sdk = FakeEafSdk(max_step=60000, position=100)   # no get_max_step attribute
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    assert f.max_position == 60000

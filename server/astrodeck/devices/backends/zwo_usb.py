@@ -66,7 +66,25 @@ class EafFocuser(Focuser):
                 raise _sdk_guard(exc, self.name, "connect") from exc
         if prop_name:
             self.name = f"{self.name} ({prop_name})" if prop_name not in self.name else self.name
-        self.max_position = int(max_step)
+        # EAF_INFO.MaxStep is the HARDWARE ceiling; EAFGetMaxStep is the limit
+        # the firmware actually enforces, and they are not the same number. On
+        # 2026-07-31 they read 600000 and 360: every move above 360 was silently
+        # clamped by the device while this driver believed it had the full range,
+        # so the user typed 22000, pressed Go, and nothing happened. Use the
+        # enforced limit, and SAY BOTH at connect — one log line would have
+        # ended that in minutes instead of hours.
+        self.hardware_max_position = int(max_step)
+        enforced = None
+        try:
+            enforced = await asyncio.to_thread(self._sdk.get_max_step, self._id)
+        except Exception:            # noqa: BLE001 - older SDKs lack the export
+            enforced = None
+        self.max_position = int(enforced) if enforced else int(max_step)
+        if enforced is not None and enforced != max_step:
+            from ...events import bus
+            bus.log("info",
+                    f"{self.name}: hardware max {max_step}, device travel limit "
+                    f"{enforced}, using {self.max_position}", "focuser")
         self.connected = True
 
     async def disconnect(self) -> None:
