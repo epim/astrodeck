@@ -383,6 +383,28 @@ fn detect_and_measure<'py>(
     stats.set_item("hfr_mad", result.stats.hfr_std_dev)?;
     stats.set_item("star_count", result.stats.star_count)?;
     stats.set_item("af_score", af_score)?;
+    // Per-gate rejection tallies. The Rust pipeline has always counted these;
+    // nothing could SEE them, so "2 stars on a field with 200" was a black box
+    // and the first diagnosis blamed the wrong stage entirely (saturated
+    // pixels — there were 21 in 26 million, and removing them changed nothing).
+    // A detector that discards candidates must be able to say which gate did it.
+    let m = &result.metrics;
+    stats.set_item("candidates", m.structure_candidates)?;
+    stats.set_item("saturated_pixels", m.saturated_pixel_count)?;
+    stats.set_item("hotpixels", m.hotpixel_count)?;
+    stats.set_item("rejected_too_small", m.too_small)?;
+    stats.set_item("rejected_on_border", m.on_border)?;
+    stats.set_item("rejected_too_elongated", m.too_elongated)?;
+    stats.set_item("rejected_too_distorted", m.too_distorted)?;
+    stats.set_item("rejected_degenerate", m.degenerate)?;
+    stats.set_item("rejected_low_sensitivity", m.low_sensitivity)?;
+    stats.set_item("rejected_not_centered", m.not_centered)?;
+    stats.set_item("rejected_too_flat", m.too_flat)?;
+    stats.set_item("rejected_hfr_failed", m.hfr_analysis_failed)?;
+    stats.set_item("rejected_too_low_hfr", m.too_low_hfr)?;
+    stats.set_item("rejected_contaminated", m.contaminated)?;
+    stats.set_item("structure_noise_sigma", m.structure_noise_sigma)?;
+    stats.set_item("measurement_noise_sigma", m.measurement_noise_sigma)?;
 
     Ok((stars, stats))
 }
