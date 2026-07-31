@@ -215,6 +215,36 @@ def nogo_floor(nogo_box: list[dict] | None, az: float) -> float:
     return floor
 
 
+#: No ceiling. 90 degrees is the zenith, so a limit there constrains nothing —
+#: the honest "unset" value, and the default, so existing rigs are unaffected.
+NO_CEILING_DEG = 90.0
+
+
+def effective_ceiling(max_alt_deg: float | None) -> float:
+    """The altitude a target must stay BELOW.
+
+    A floor is not enough. Many mounts foul themselves near the zenith rather
+    than near the horizon: on a strain-wave mount with a long imaging train the
+    camera reaches the tripod legs while the optics are still pointing at open
+    sky, and every altitude limit in this file is a MINIMUM, so nothing stopped
+    it. Observed on this rig 2026-07-30 — the scope was resting against the
+    tripod at high altitude, and no guard had an opinion.
+
+    Note the wedge field ``alt_max`` is NOT this: despite the name it is a
+    FLOOR (``nogo_floor`` — "inside this azimuth range, stay ABOVE"). That
+    misnaming is exactly why a zenith limit looked like it already existed.
+    """
+    if max_alt_deg is None:
+        return NO_CEILING_DEG
+    try:
+        v = float(max_alt_deg)
+    except (TypeError, ValueError):
+        return NO_CEILING_DEG
+    # Clamp rather than reject: a nonsense value must not silently disarm the
+    # guard, and must not make every target unreachable either.
+    return min(NO_CEILING_DEG, max(0.0, v))
+
+
 def effective_floor(min_alt_deg: float, horizon: list[tuple[float, float]] | None,
                     az: float, nogo_box: list[dict] | None = None) -> float:
     """``max(min_alt_deg, interp_wrap(horizon, az), nogo_floor(nogo_box, az))`` —
