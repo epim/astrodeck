@@ -3375,6 +3375,35 @@ def create_app() -> FastAPI:
                 await tel.park()
         return _spawn("goto", _park(), replace=True)
 
+    @app.post("/api/mount/home", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.find_home"})
+    async def find_home():
+        """Send the mount to its mechanical home and leave it usable there.
+
+        Same motion discipline as park: bump the fence FIRST so an in-flight
+        goto is abandoned rather than racing us, then run under the motion lock
+        with ``replace=True`` so a prior goto is CANCELLED instead of 409-ing
+        after the epoch bump already sabotaged it. Homing is a motion-committing
+        abort for exactly the same reason parking is."""
+        try:
+            tel = hub.require("telescope")
+        except DeviceError as e:
+            raise _err(e)
+        if not getattr(tel, "can_find_home", False):
+            # Refuse in the API rather than letting the UI offer a control that
+            # cannot work: the client gates on the same capability flag, so
+            # reaching here means a stale client or a direct call.
+            raise HTTPException(
+                status_code=400,
+                detail=f"{getattr(tel, 'name', 'this mount')} has no home position")
+        hub.bump_motion_epoch()
+
+        async def _home():
+            t = hub.require("telescope")
+            async with hub._motion_lock:
+                await t.find_home()
+        return _spawn("goto", _home(), replace=True)
+
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.unpark"})
     async def unpark():
