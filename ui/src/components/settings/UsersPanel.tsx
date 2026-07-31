@@ -27,7 +27,11 @@ import {
   deleteUser,
 } from "../../api/backends";
 import { ApiError } from "../../api";
-import { usePrincipal } from "../../store";
+import { usePrincipal, useAuthMethods } from "../../store";
+import {
+  emailLooksValid, newUserBlocker, newUserBody, passwordTooLong, signInSummary,
+  type SignInMethod,
+} from "../../lib/userCreate";
 import { ROLE_DESCRIPTIONS } from "../../lib/caps";
 import { Panel, EmptyState, Toggle } from "../ui";
 import { Icon } from "../icons";
@@ -348,36 +352,41 @@ export function AddUserForm({
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
   const [emailTouched, setEmailTouched] = useState(false);
+  const [method, setMethod] = useState<SignInMethod>("password");
   const [role, setRole] = useState<PrincipalRole>(defaultRole);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const tooLong = new TextEncoder().encode(password).length > 72;
+  // Offering Google-only while Google is off would mint an account that
+  // cannot sign in at all, and nothing would say so until they tried.
+  const authMethods = useAuthMethods();
+  const googleEnabled = !!authMethods?.methods?.includes("google");
+  const draft = { username, email, password, method };
+  const blocker = newUserBlocker(draft, googleEnabled);
+  const tooLong = passwordTooLong(password);
 
   // F7 #6a: required client-side only (server contract unchanged — see the
   // file-header note). Basic shape check catches an obvious typo without
   // pretending to be a full RFC 5322 validator.
   const emailTrimmed = email.trim();
   const emailMissing = emailTrimmed === "";
-  const emailInvalid = !emailMissing && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTrimmed);
+  // ONE email rule, shared with the submit gate (lib/userCreate). Two copies
+  // of a validation regex is two chances to disagree about what is valid.
+  const emailInvalid = !emailMissing && !emailLooksValid(emailTrimmed);
   const emailErrorText = emailMissing ? "Email is required." : emailInvalid ? "Enter a valid email address." : null;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setEmailTouched(true);
-    if (busy || tooLong || emailMissing || emailInvalid) return;
+    if (busy || blocker) return;
     setErr(null);
     setBusy(true);
     try {
-      await createUser({
-        username: username.trim(),
-        password,
-        role,
-        email: emailTrimmed,
-      });
+      await createUser({ ...newUserBody(draft), role });
       setUsername("");
       setPassword("");
       setEmail("");
+      setMethod("password");
       setEmailTouched(false);
       setRole(defaultRole);
       await onCreated();
@@ -424,18 +433,42 @@ export function AddUserForm({
             <span className="text-[11px] text-bad">{emailErrorText}</span>
           )}
         </label>
+        {/* ONE account form, two ways in. Demanding a password from someone
+            who will only ever arrive through Google means inventing a
+            credential nobody uses and everybody could leak. */}
         <label className="flex flex-col gap-1">
-          <span className="label">Password</span>
-          <input
-            className={`field ${tooLong ? "!border-bad" : ""}`}
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+          <span className="label">Sign-in method</span>
+          <select
+            className="field"
+            value={method}
+            onChange={(e) => setMethod(e.target.value as SignInMethod)}
             disabled={busy}
-            required
-          />
+          >
+            <option value="password">Password</option>
+            <option value="google">Google sign-in only</option>
+          </select>
         </label>
+        {method === "password" ? (
+          <label className="flex flex-col gap-1">
+            <span className="label">Password</span>
+            <input
+              className={`field ${tooLong ? "!border-bad" : ""}`}
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+            />
+          </label>
+        ) : (
+          <div className="flex flex-col gap-1">
+            <span className="label">Password</span>
+            <p className="text-[11px] text-dim leading-snug">
+              Not set — Google does the authenticating. Nothing is stored here
+              that could be stolen.
+            </p>
+          </div>
+        )}
         <label className="flex flex-col gap-1">
           <span className="label">Role</span>
           <select
@@ -460,7 +493,8 @@ export function AddUserForm({
           </li>
         ))}
       </ul>
-      {tooLong && <p className="text-xs text-bad">Password is too long (max 72 bytes).</p>}
+      {/* The consequence of the choice, said plainly where it is made. */}
+      <p className="text-[11px] text-dim leading-snug">{signInSummary(method, email)}</p>
       {err && (
         <p className="text-xs text-bad inline-flex items-center gap-1.5">
           <Icon name="alert" size={13} className="shrink-0" />
@@ -471,7 +505,10 @@ export function AddUserForm({
         <button
           type="submit"
           className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
-          disabled={busy || !username.trim() || !password || tooLong || emailMissing || emailInvalid}
+          aria-disabled={!!blocker || busy || undefined}
+          disabled={busy}
+          title={blocker ?? undefined}
+          onClick={(e) => { if (blocker) { e.preventDefault(); setEmailTouched(true); setErr(blocker); } }}
         >
           <Icon name="plus" size={15} />
           {busy ? "Creating…" : "Create user"}
