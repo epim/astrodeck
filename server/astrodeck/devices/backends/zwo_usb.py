@@ -33,6 +33,21 @@ ARRIVAL_TOLERANCE_STEPS = 2
 SUSPICIOUS_LIMIT_STEPS = 1000
 
 
+#: EAF_focuser.h documents the motor codes E0/E5 and battery codes E6/E7/E8.
+#: E0 IS THE HEALTHY ONE — reporting it as a fault would attach "the device
+#: reports motor error E0" to every failure that had nothing wrong with it.
+NO_FAULT_CODE = "E0"
+#: E5 is the one that matters here: the device CAN report a stall, on firmware
+#: that implements EAFGetErrorCode at all. The rig's 3.3.8 does not (see
+#: describe()["reports_diagnostics"]) — but a firmware that does would make a
+#: sweep-to-the-stops travel calibration terminable, which it otherwise is not.
+MOTOR_CODE_MEANINGS = {"E5": " (motor stall)"}
+
+
+def _is_fault(code: str | None) -> bool:
+    return bool(code) and code != NO_FAULT_CODE
+
+
 def _sdk_guard(exc: ZwoSdkError, name: str, what: str) -> DeviceError:
     return DeviceError(f"{name}: {what} failed — {exc}")
 
@@ -74,8 +89,8 @@ class EafFocuser(Focuser):
 
     async def _complaint(self) -> str:
         """What the device says is wrong, as a trailing clause for an error
-        message — or "" when it will not say (several firmwares answer
-        NOT_SUPPORTED, and silence is not a fault).
+        message — or "" when it has nothing to report or will not say (several
+        firmwares answer NOT_SUPPORTED, and silence is not a fault).
 
         Best-effort by construction: this only ever runs while building the
         text of an error that has ALREADY happened, so it must not be able to
@@ -89,9 +104,9 @@ class EafFocuser(Focuser):
             return ""
         motor, battery = codes
         parts = []
-        if motor:
-            parts.append(f"motor error {motor}")
-        if battery:
+        if _is_fault(motor):
+            parts.append(f"motor error {motor}{MOTOR_CODE_MEANINGS.get(motor, '')}")
+        if _is_fault(battery):
             parts.append(f"battery error {battery}")
         return f" The device reports {', '.join(parts)}." if parts else ""
 
