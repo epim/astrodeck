@@ -157,7 +157,7 @@ async def test_eaf_move_timeout_halts(monkeypatch):
     sdk = FakeEafSdk(moving_seq=[True] * 10_000)
     f = zu.EafFocuser(sdk, 10)
     await f.connect()
-    with pytest.raises(DeviceError, match="settle|timeout"):
+    with pytest.raises(DeviceError, match="settle|timed out|did not happen"):
         await f.move_to(30000)
     assert "stop" in sdk.calls
 
@@ -380,3 +380,81 @@ def test_entry_point_discovery_loads_zwo_usb(monkeypatch):
             BACKENDS["zwo-usb"] = prior
         else:
             BACKENDS.pop("zwo-usb", None)
+
+
+# ---------------------------------------------- a move that does not move
+# 2026-07-31: the EAF refused every move above position 360 (against a stop) and
+# move_to returned SUCCESS every time, because it waited for is_moving() to read
+# false twice — instantly true when the motor never engages. The user typed
+# 22000, pressed Go, and nothing happened, with no error in the UI, the log or
+# the API response.
+
+class _StuckEafSdk(FakeEafSdk):
+    """Accepts EAFMove, reports not-moving, and never changes position — a
+    focuser against a mechanical limit."""
+
+    def move(self, d, step):
+        self._log("move")          # accepted, and then ignored by the hardware
+
+    def is_moving(self, d):
+        self._log("is_moving")
+        return False, False
+
+
+async def test_a_refused_move_raises_instead_of_reporting_success():
+    zu.EAF_MOVE_TIMEOUT_S = 30.0
+    sdk = _StuckEafSdk(position=360)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError) as e:
+        await f.move_to(22000)
+    msg = str(e.value)
+    assert "22000" in msg, f"must name the target the user asked for: {msg}"
+    assert "360" in msg, f"must say where it actually stopped: {msg}"
+    assert "limit" in msg or "jam" in msg, f"must suggest the cause: {msg}"
+
+
+async def test_a_refused_move_does_not_wait_for_the_full_timeout():
+    """It knows within a couple of polls; making the user wait 120s for silence
+    is its own defect."""
+    zu.EAF_MOVE_TIMEOUT_S = 120.0
+    sdk = _StuckEafSdk(position=360)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    t0 = asyncio.get_running_loop().time()
+    with pytest.raises(DeviceError):
+        await f.move_to(22000)
+    assert asyncio.get_running_loop().time() - t0 < 10.0
+
+
+async def test_a_slow_but_progressing_move_is_not_called_stalled():
+    """Position creeping toward the target must never be mistaken for a stall,
+    or every slow focuser reports a false failure."""
+    zu.EAF_MOVE_TIMEOUT_S = 60.0
+
+    class _Creeper(FakeEafSdk):
+        def move(self, d, step):
+            self._log("move"); self.target = step
+        def is_moving(self, d):
+            self._log("is_moving")
+            t = getattr(self, "target", self.position)
+            if self.position != t:
+                # one step per poll: slow, but real progress
+                self.position += 1 if t > self.position else -1
+                return True, False
+            return False, False
+
+    sdk = _Creeper(position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    await f.move_to(105)              # must NOT raise
+    assert abs(sdk.position - 105) <= zu.ARRIVAL_TOLERANCE_STEPS
+
+
+async def test_arrival_is_what_counts_not_silence():
+    """The normal case still works: the move completes and returns cleanly."""
+    sdk = FakeEafSdk(position=1000, moving_seq=[True, True, False])
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    await f.move_to(2000)
+    assert sdk.position == 2000

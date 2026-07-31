@@ -23,6 +23,9 @@ from ..zwo_sdk import ZwoSdkError
 POLL_S = 0.5
 #: Wall-clock cap on a focuser move (Rotator uses its base MOVE_TIMEOUT_S=180).
 EAF_MOVE_TIMEOUT_S = 120.0
+#: How close counts as arrived. The EAF is an exact-step device, so this is a
+#: guard against an off-by-one in the SDK's read-back, not a real tolerance.
+ARRIVAL_TOLERANCE_STEPS = 2
 
 
 def _sdk_guard(exc: ZwoSdkError, name: str, what: str) -> DeviceError:
@@ -91,24 +94,53 @@ class EafFocuser(Focuser):
         if not (0 <= position <= self.max_position):
             raise DeviceError(
                 f"{self.name}: target {position} out of range 0..{self.max_position}")
+        start = await self._call(self._sdk.get_position, what="read position")
         await self._call(self._sdk.move, position, what="EAFMove")
         deadline = asyncio.get_running_loop().time() + EAF_MOVE_TIMEOUT_S
         try:
-            settled = 0
+            # ARRIVAL, not absence-of-motion.
+            #
+            # This loop used to return as soon as is_moving() read false TWICE,
+            # which is instantly true when the motor never engages. On 2026-07-31
+            # the EAF refused every move above position 360 — against a stop —
+            # and this returned SUCCESS every time. The user typed 22000, pressed
+            # Go, and nothing happened, with no error anywhere: not in the UI, not
+            # in the log, not in the API response. A move that did not move must
+            # never look like a move that did.
+            #
+            # So: succeed only when the position actually REACHES the target, and
+            # fail loudly when the motor goes idle somewhere else.
+            last = start
+            idle_polls = 0
             while True:
                 if asyncio.get_running_loop().time() > deadline:
+                    now = await self._call(self._sdk.get_position,
+                                           what="read position")
                     raise DeviceError(
-                        f"{self.name}: move failed to settle within "
-                        f"{EAF_MOVE_TIMEOUT_S:.0f}s — halted")
+                        f"{self.name}: move to {position} timed out after "
+                        f"{EAF_MOVE_TIMEOUT_S:.0f}s — stopped at {now} "
+                        f"(started from {start})")
                 await asyncio.sleep(POLL_S)
+                pos = await self._call(self._sdk.get_position,
+                                       what="read position")
                 moving, _hand = await self._call(
                     self._sdk.is_moving, what="poll move")
-                # two consecutive not-moving polls (review C-minor 4): a single
-                # poll right after the fire-and-forget move could read
-                # not-moving before the motor engages.
-                settled = settled + 1 if not moving else 0
-                if settled >= 2:
-                    return
+                if abs(pos - position) <= ARRIVAL_TOLERANCE_STEPS:
+                    return                                   # actually arrived
+                if pos != last:
+                    last, idle_polls = pos, 0                 # still making progress
+                    continue
+                # Not at the target, and the position is not changing. Two polls
+                # of that with the motor idle is a stall or a limit, not a slow
+                # start — the original two-poll guard against reading
+                # not-moving before the motor engages is preserved here.
+                idle_polls = idle_polls + 1 if not moving else 0
+                if idle_polls >= 2:
+                    raise DeviceError(
+                        f"{self.name}: move to {position} did not happen — the "
+                        f"focuser stopped at {pos} and is no longer moving. It "
+                        "is probably at a mechanical limit or the drawtube is "
+                        "jammed; try a smaller move in the other direction.")
         except BaseException:
             # halt on ANY abnormal exit (cancel/timeout/SDK failure)
             try:
