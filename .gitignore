@@ -19,3 +19,9 @@ review-evidence*/
 
 # Built SPA copied into the package for binary/wheel packaging (build_binary.py)
 server/astrodeck/webui/
+
+# Vendored ASTAP: fetched by scripts/fetch_astap.py at build time, never
+# committed. The smallest usable star database is 102 MB, and a binary that
+# large in git history is permanent, undiffable, and paid for by every clone.
+# build_release.py --strict is what stops a release shipping without it.
+/server/astrodeck/vendor/astap/

@@ -56,3 +56,27 @@ def test_db_dir_none_when_nothing_available(tmp_path, monkeypatch):
     monkeypatch.delenv("ASTAP_DATA", raising=False)
     monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path / "nope")
     assert astap._db_dir() is None
+
+
+def test_bundled_db_dir_detects_the_w08_001_format(tmp_path, monkeypatch):
+    """W08 is 0.6 MB against D05's 102 MB — the one that fits on a Pi image or
+    in a CI smoke test — and its .001 extension was unrecognised, so a W08
+    bundle would silently fall back to a system ASTAP install."""
+    monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
+    (tmp_path / "w08_0101.001").write_bytes(b"x")
+    assert astap._bundled_db_dir() == tmp_path
+
+
+def test_bundled_db_dir_detects_the_1476_format(tmp_path, monkeypatch):
+    monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
+    (tmp_path / "d80_3503.1476").write_bytes(b"x")
+    assert astap._bundled_db_dir() == tmp_path
+
+
+def test_a_binary_only_bundle_is_not_mistaken_for_a_database(tmp_path, monkeypatch):
+    """The regression behind the fix: Path.glob returns a generator, which is
+    always truthy, so a naive any() reported a database in an empty directory
+    and would point -d at nothing."""
+    monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
+    (tmp_path / "astap_cli.exe").write_bytes(b"MZ")     # binary, no DB
+    assert astap._bundled_db_dir() is None

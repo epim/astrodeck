@@ -116,3 +116,41 @@ which is a separable build dependency of PHD2 and does NOT travel to this port
 dossiers `docs/native-parity/algorithms/nina-autofocus.md` and
 `hocusfocus-autofocus-tilt.md`. No code was copied from NINA or Hocus Focus; the
 upstream projects are MPL-2.0 and this reimplementation is likewise MPL-2.0.
+
+## ASTAP — plate solver (MPL-2.0), bundled binary
+
+AstroDeck's releases bundle the ASTAP command-line solver (`astap_cli`) and one
+Gaia-derived star database, so that plate solving works without the user
+installing anything. ASTAP is by Han Kleijn — https://www.hnsky.org/astap.htm,
+source at https://github.com/han-k59/astap.
+
+ASTAP is licensed under the **Mozilla Public License, Version 2.0**. A copy is
+at https://mozilla.org/MPL/2.0/. MPL-2.0 is file-level copyleft covering ASTAP's
+own source; AstroDeck invokes `astap_cli` as a **separate process over its
+command-line interface** and does not link against it, so no MPL obligation
+extends to AstroDeck's code. Our obligation is to say so and to point at the
+upstream source, which is what this section does.
+
+### Star databases — ESA/Gaia/DPAC
+
+The bundled star database is derived from the ESA Gaia mission. Per the Gaia
+terms of use:
+
+> The Gaia data are open and free to use, provided credit is given to
+> 'ESA/Gaia/DPAC'.
+
+We give that credit here. This applies to every database AstroDeck may bundle
+(W08, D05, G05, D20, D50, D80).
+
+### Deliberately NOT bundled
+
+ASTAP's own installer additionally ships deep-sky and variable-star catalogue
+CSVs. AstroDeck does **not** fetch or redistribute those, and `scripts/
+fetch_astap.py` takes only the solver and the star database. They carry
+non-commercial terms which AstroDeck has no reason to inherit:
+
+* Wolfgang Steinicke's revised NGC/IC — *"Any non-commercial use of my data is
+  free! If a commercial use is planned, please contact me!"*
+* HyperLEDA — *"available in open-source for non-commercial purposes."*
+
+AstroDeck has its own object catalogue, so nothing is lost by excluding them.

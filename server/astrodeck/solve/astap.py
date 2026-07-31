@@ -41,6 +41,10 @@ _CANDIDATES = [
 # database files.
 _VENDOR_ASTAP = Path(__file__).resolve().parents[1] / "vendor" / "astap"
 
+#: Star-database file extensions ASTAP ships. Three formats in the wild:
+#: .290 (D05/D20/D50), .1476 (D80 and friends), .001 (W08 mag-8 wide).
+DB_EXTENSIONS = (".290", ".1476", ".001")
+
 
 def _bundled_candidates() -> list[Path]:
     # Checked FIRST so a bundled binary wins over a system install; names cover
@@ -54,10 +58,21 @@ def _bundled_db_dir() -> Path | None:
     """The vendored star-database directory, colocated with the bundled binary.
     ASTAP needs ``-d <dir>`` to find a DB outside its own install tree; a system
     install locates its own. Returns the dir only when it actually holds star-DB
-    files (``.290`` for D05/D20/D50, ``.1476`` for the larger format), so a
-    binary-only partial bundle never points ``-d`` at an empty directory."""
+    files, so a binary-only partial bundle never points ``-d`` at an empty
+    directory.
+
+    The extension encodes the database's format, and there are three in the
+    wild: ``.290`` (D05/D20/D50), ``.1476`` (D80 and the other large ones), and
+    ``.001`` (W08, the magnitude-8 wide-field set). W08 matters out of
+    proportion to its coverage because it is 0.6 MB against D05's 102 MB — it
+    is the one that fits on a Pi image or in a CI smoke test, and it was
+    invisible here until a bundle was actually built with it."""
     root = _VENDOR_ASTAP
-    if root.is_dir() and (any(root.glob("*.290")) or any(root.glob("*.1476"))):
+    # next(...) not any(glob): Path.glob returns a GENERATOR, which is always
+    # truthy, so `any(root.glob(...) for ...)` reports a database in an EMPTY
+    # directory — the exact partial-bundle case this function exists to catch.
+    if root.is_dir() and any(next(root.glob(f"*{ext}"), None) is not None
+                             for ext in DB_EXTENSIONS):
         return root
     return None
 
