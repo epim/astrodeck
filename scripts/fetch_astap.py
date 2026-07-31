@@ -42,9 +42,16 @@ from pathlib import Path
 
 SF = "https://sourceforge.net/projects/astap-program/files"
 
-#: Star databases, smallest first. D05 is the practical floor for a normal
-#: field; W08 is magnitude 8 only — enough for a very wide field, and included
-#: because 581 kB fits places 102 MB does not (a Pi image, a CI smoke test).
+#: Star databases, smallest first.
+#:
+#: SHIPPING DEFAULT IS D05 (decided 2026-07-30). It is the practical floor for
+#: a normal field, and it ships on EVERY artifact including the Pi image —
+#: 102 MB on an SD card is cheaper than a user discovering at 2am that their
+#: field is too narrow to solve.
+#:
+#: W08 is magnitude 8 only. Kept because 0.6 MB fits places 102 MB does not
+#: (a CI smoke test that proves the bundle wiring without a 102 MB download),
+#: NOT as a shipping option.
 DATABASES = {
     "w08": (f"{SF}/star_databases/w08_star_database_mag08_astap.zip/download", 0.6),
     "d05": (f"{SF}/star_databases/d05_star_database.zip/download", 102.2),
@@ -182,7 +189,7 @@ def main() -> int:
     ap.add_argument("--all-platforms", action="store_true",
                     help="every platform (what a release build wants)")
     ap.add_argument("--db", default="d05",
-                    help=f"star database ({', '.join(DATABASES)}); default d05")
+                    help=f"star database ({', '.join(DATABASES)}); default d05, which is what ships — w08 is for CI smoke tests only")
     ap.add_argument("--out", default=str(VENDOR))
     args = ap.parse_args()
 
