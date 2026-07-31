@@ -25,6 +25,7 @@
 // copy a tap-reachable home without adding seven more 44px targets to a
 // three-row phone toolbar. See `GroupHelp` for why they carry `mx-4`.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import PickerButton, { type PickerOption } from "../ui/PickerButton";
 import type { OverlayToggles, PreviewInfo, StretchParams } from "../../types";
 import { Icon, type IconName } from "../icons";
 import { InfoDot, LockedChip } from "../ui";
@@ -111,6 +112,50 @@ function Toggle({
   );
 }
 
+
+// The annotation set, as data. Availability carries its REASON, because a
+// greyed row that will not say why is the defect house rule §11.8 names.
+function annotationRows(
+  opts: { starsAvailable: boolean; clipAvailable: boolean; tilt: boolean; bahtinov: boolean },
+): PickerOption[] {
+  const rows: PickerOption[] = [
+    {
+      id: "stars", label: "Stars", hint: "a ring per detected star, sized by its HFR",
+      disabled: !opts.starsAvailable,
+      disabledReason: "No per-star data for this frame",
+    },
+    {
+      id: "clip", label: "Clip", hint: "a mask over pixels that hit full well — blown highlights",
+      disabled: !opts.clipAvailable,
+      disabledReason: "Clip mask needs linear data + known full well",
+    },
+    { id: "reticle", label: "Reticle", hint: "a full crosshair across the frame" },
+    { id: "centerMark", label: "Center", hint: "a small mark at the exact frame centre" },
+    {
+      id: "tilt", label: "Tilt", hint: "a corner-to-corner heatmap of star shape — sensor tilt",
+      disabled: !opts.tilt,
+      disabledReason: "No tilt data for this frame",
+    },
+  ];
+  if (opts.bahtinov) {
+    rows.push({
+      id: "bahtinov", label: "Spikes",
+      hint: "the fitted Bahtinov spike lines and their crossing",
+    });
+  }
+  return rows;
+}
+
+/** Which annotations are ON. `bahtinov` is opt-OUT (undefined reads as on),
+ *  which is why it cannot be tested for truthiness like the others. */
+function annotationsOn(overlays: OverlayToggles, rows: PickerOption[]): string[] {
+  return rows
+    .filter((r) => (r.id === "bahtinov"
+      ? (overlays as unknown as Record<string, unknown>).bahtinov !== false
+      : !!(overlays as unknown as Record<string, unknown>)[r.id]))
+    .map((r) => r.id);
+}
+
 export function PreviewToolbar({
   preview,
   overlays,
@@ -150,6 +195,30 @@ export function PreviewToolbar({
 }) {
   const [dlOpen, setDlOpen] = useState(false);
   const dlRef = useRef<HTMLDivElement>(null);
+
+  // Annotations, as one picker. `bahtinov` is opt-OUT (undefined reads as on),
+  // so the toggle cannot be a plain boolean flip like the others.
+  const annotationOptions = annotationRows({
+    starsAvailable,
+    clipAvailable,
+    tilt: !!preview?.tilt,
+    bahtinov: !!preview?.bahtinov?.geom,
+  });
+  const annotationSelected = annotationsOn(overlays, annotationOptions);
+  const annotationSummary =
+    annotationSelected.length === 0
+      ? "none"
+      : annotationSelected.length === 1
+        ? (annotationOptions.find((o) => o.id === annotationSelected[0])?.label ?? "1 on")
+        : `${annotationSelected.length} on`;
+  const toggleOverlay = (id: string) => {
+    if (id === "bahtinov") {
+      setOverlays({ bahtinov: overlays.bahtinov === false } as Partial<OverlayToggles>);
+      return;
+    }
+    const cur = (overlays as unknown as Record<string, boolean>)[id];
+    setOverlays({ [id]: !cur } as Partial<OverlayToggles>);
+  };
 
   useEffect(() => {
     if (!dlOpen) return;
@@ -245,69 +314,20 @@ export function PreviewToolbar({
 
       <span className="w-px h-6 bg-line mx-1 hidden sm:block" aria-hidden />
 
-      {/* overlay toggles */}
-      <Toggle
-        on={overlays.stars}
-        disabled={!starsAvailable}
-        icon="align"
-        label="Stars"
-        title={starsAvailable ? "Toggle star HFR overlay" : "No per-star data for this frame"}
-        onClick={() => setOverlays({ stars: !overlays.stars })}
+      {/* Annotations — ONE picker, not six permanent switches.
+          Six 44px toggles plus a help legend is most of a 300px rail, and the
+          set is consulted far less often than it was displayed. The button
+          states how many are on, so the glance still works; the options open
+          on demand and the per-overlay explanations ride each row's title
+          instead of a legend that was always on screen. */}
+      <PickerButton
+        label="Annotations"
+        summary={annotationSummary}
+        options={annotationOptions}
+        selected={annotationSelected}
+        onPick={(id) => toggleOverlay(id)}
+        multi
       />
-      <Toggle
-        on={overlays.clip}
-        disabled={!clipAvailable}
-        icon="alert"
-        label="Clip"
-        title={clipAvailable ? "Toggle saturation mask" : "Clip mask needs linear data + known full well"}
-        onClick={() => setOverlays({ clip: !overlays.clip })}
-      />
-      <Toggle
-        on={overlays.reticle}
-        icon="focus"
-        label="Reticle"
-        title="Toggle full reticle"
-        onClick={() => setOverlays({ reticle: !overlays.reticle })}
-      />
-      <Toggle
-        on={overlays.centerMark}
-        icon="capture"
-        label="Center"
-        title="Toggle center mark"
-        onClick={() => setOverlays({ centerMark: !overlays.centerMark })}
-      />
-      <Toggle
-        on={overlays.tilt}
-        disabled={!preview?.tilt}
-        icon="grid"
-        label="Tilt"
-        title={preview?.tilt ? "Toggle tilt / aberration heatmap" : "No tilt data for this frame"}
-        onClick={() => setOverlays({ tilt: !overlays.tilt })}
-      />
-      {/* Bahtinov spikes — offered ONLY while the aid is armed and fitting, so
-          the toolbar never grows a permanently dead switch. It lives here (not
-          just in FocusView's panel) so the overlay is reachable from CaptureView,
-          where the preview is shown without that panel. `undefined` reads as ON,
-          matching the shipped opt-OUT default. */}
-      {preview?.bahtinov?.geom && (
-        <Toggle
-          on={overlays.bahtinov !== false}
-          icon="focus"
-          label="Spikes"
-          title="Draw the fitted Bahtinov spike lines and their crossing on the preview"
-          onClick={() => setOverlays({ bahtinov: overlays.bahtinov === false })}
-        />
-      )}
-      <GroupHelp label="About the overlay toggles">
-        <HelpLine name="Stars">a ring per detected star, sized by its HFR.</HelpLine>
-        <HelpLine name="Clip">a mask over pixels that hit full well — blown highlights.</HelpLine>
-        <HelpLine name="Reticle">a full crosshair across the frame.</HelpLine>
-        <HelpLine name="Center">a small mark at the exact frame centre.</HelpLine>
-        <HelpLine name="Tilt">a corner-to-corner heatmap of star shape — sensor tilt.</HelpLine>
-        {preview?.bahtinov?.geom && (
-          <HelpLine name="Spikes">the fitted Bahtinov spike lines and their crossing.</HelpLine>
-        )}
-      </GroupHelp>
 
       <span className="flex-1" />
 
