@@ -735,6 +735,13 @@ class AsiairFocuser(_AsiairDevice, Focuser):
         await self._link.call(self._link.client.focuser.stop,
                               what="halt focuser")
 
+    async def is_moving(self) -> bool:
+        """Same idle test ``move_to`` waits on — one source of truth for
+        "is it turning", so the status readout and the move loop can never
+        disagree about it."""
+        info = await self._info()
+        return str(getattr(info, "state", "") or "").lower() != "idle"
+
 
 # --------------------------------------------------------------------- switch
 

@@ -712,6 +712,9 @@ class AlpacaFocuser(_AlpacaDevice, Focuser):
     async def halt(self) -> None:
         await self._put("halt")
 
+    async def is_moving(self) -> bool:
+        return bool(await self._get("ismoving"))
+
     async def get_temperature(self) -> float | None:
         try:
             return await self._get("temperature")
