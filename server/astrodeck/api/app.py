@@ -657,6 +657,12 @@ class FocuserMoveBody(BaseModel):
     position: int
 
 
+class FocuserSetPositionBody(BaseModel):
+    """Re-anchor: declare the current position. Moves nothing."""
+
+    position: int
+
+
 class RotatorMoveBody(BaseModel):
     position_deg: float
 
@@ -3481,6 +3487,36 @@ def create_app() -> FastAPI:
         except DeviceError as e:
             raise _err(e)
         return _spawn("focuser", foc.move_to(body.position))
+
+    @app.post("/api/focuser/set-position",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def focuser_set_position(body: FocuserSetPositionBody):
+        """Re-anchor the focuser's position count. MOVES NOTHING.
+
+        A stepper focuser's position is a count with no physical meaning until
+        something anchors it, and the EAF resets that count to 0 when it loses
+        power. The safe repair is a human putting the drawtube somewhere known
+        and saying so — NOT driving into a mechanical stop to find one, which
+        hardware without limit switches cannot be relied on to notice.
+
+        Synchronous (not _spawn): it is an instant write, and the caller wants
+        the failure, not a task id.
+        """
+        try:
+            foc = hub.require("focuser")
+        except DeviceError as e:
+            raise _err(e)
+        if not getattr(foc, "can_set_position_reference", False):
+            raise HTTPException(
+                409, f"{foc.name} cannot have its position reference set")
+        if (t := hub._busy.get("focuser")) and not t.done():
+            raise HTTPException(409, "the focuser is busy")
+        try:
+            await foc.set_position_reference(body.position)
+        except DeviceError as e:
+            raise _err(e)
+        return {"position": await foc.get_position()}
 
     @app.post("/api/focuser/autofocus", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)

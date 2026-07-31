@@ -71,6 +71,9 @@ export interface RigStatus {
      *  backend cannot say (Focuser.is_moving defaults False), which is not the
      *  same claim as `false`. lib/focusMove.ts treats the two differently. */
     moving?: boolean;
+    /** Can the position count be re-anchored without moving the drawtube
+     *  (EAFResetPostion)? Static capability, not a reading. */
+    can_set_position?: boolean;
   };
   filterwheel?: {
     position: number;

@@ -73,6 +73,18 @@ class _Type16(ctypes.Structure):
     _fields_ = [("type", ctypes.c_char * 16)]
 
 
+class _EafErrorMsg(ctypes.Structure):
+    """EAF_ERROR_MSG {char motor_error_code[3]; char battery_error_code[3];}.
+
+    Two TWO-CHARACTER codes, each NUL-terminated — not integers. Verified
+    against EAF_focuser.h (indi-3rdparty/libasi), because guessing a ctypes
+    layout for a native struct is how you corrupt a stack on someone's rig.
+    """
+
+    _fields_ = [("motor_error_code", ctypes.c_char * 3),
+                ("battery_error_code", ctypes.c_char * 3)]
+
+
 def _loads_with_exports(path: Path, exports: list[str]):
     """Return the loaded DLL when it loads AND exports everything, else None.
 
@@ -150,6 +162,20 @@ _SIGNATURES: dict[str, list] = {
     "EAFGetMaxStep": [_I, _PI],
     "EAFSetMaxStep": [_I, _I],
     "EAFStepRange": [_I, _PI],
+    # EAFResetPostion (ZWO's spelling) DECLARES the current position — it moves
+    # nothing. This is the safe way to re-anchor a focuser whose counter has
+    # been lost, as opposed to driving the drawtube into a mechanical stop to
+    # find one: the EAF is open-loop with no limit switches, so a hard stop is
+    # not something it can be relied on to notice.
+    "EAFResetPostion": [_I, _I],
+    # What the device says when something went wrong. `motor_error_code` is the
+    # one worth reading after a refused move. Older firmware answers
+    # NOT_SUPPORTED — hence optional, like the rest of this block.
+    "EAFGetErrorCode": [_I, ctypes.POINTER(_EafErrorMsg)],
+    # NOT a stall reason: this is the POWER-OFF reason (0 normal, 1 shipping
+    # mode). It earns its place because the EAF losing power is exactly what
+    # wipes its position counter and its travel limit.
+    "EAFGetReason": [_I, _PI],
     "CAAGetNum": [], "CAAGetID": [_I, _PI], "CAAOpen": [_I], "CAAClose": [_I],
     "CAAGetProperty": [_I, ctypes.POINTER(_Info)],
     "CAAMoveToMechanical": [_I, ctypes.c_float], "CAAGetDegree": [_I, _PF],
@@ -241,11 +267,56 @@ class EafSdk:
         return int(v.value)
 
     def set_max_step(self, dev_id: int, value: int) -> None:
-        """Write the stored travel limit. Persists in the device."""
+        """Write the stored travel limit. Does NOT reliably survive the device
+        losing power — see EafFocuser.connect, which re-applies it every time."""
         fn = getattr(self._d, "EAFSetMaxStep", None)
         if fn is None:
             raise ZwoSdkError(-1, "EAFSetMaxStep (not exported)")
         _check(fn(dev_id, int(value)), "EAFSetMaxStep")
+
+    def reset_position(self, dev_id: int, value: int) -> None:
+        """DECLARE the current position to be ``value``. Moves nothing.
+
+        The re-anchoring primitive: park the drawtube somewhere you know by
+        hand, then tell the driver where it is. ZWO spells it ``ResetPostion``.
+        """
+        fn = getattr(self._d, "EAFResetPostion", None)
+        if fn is None:
+            raise ZwoSdkError(-1, "EAFResetPostion (not exported)")
+        _check(fn(dev_id, int(value)), "EAFResetPostion")
+
+    def error_codes(self, dev_id: int) -> tuple[str, str] | None:
+        """``(motor, battery)`` two-character device error codes.
+
+        None when this SDK/firmware does not answer — several EAF firmwares
+        return NOT_SUPPORTED, and a focuser that cannot self-report is not an
+        error, just a quieter one.
+        """
+        fn = getattr(self._d, "EAFGetErrorCode", None)
+        if fn is None:
+            return None
+        msg = _EafErrorMsg()
+        try:
+            _check(fn(dev_id, ctypes.byref(msg)), "EAFGetErrorCode")
+        except ZwoSdkError:
+            return None
+        return (msg.motor_error_code.decode("ascii", "replace").strip(),
+                msg.battery_error_code.decode("ascii", "replace").strip())
+
+    def power_off_reason(self, dev_id: int) -> int | None:
+        """Why the device last powered down: 0 normal, 1 shipping mode.
+
+        None when unsupported. Worth reading at connect — the EAF losing power
+        is what wipes its position counter and its stored travel limit."""
+        fn = getattr(self._d, "EAFGetReason", None)
+        if fn is None:
+            return None
+        v = ctypes.c_int()
+        try:
+            _check(fn(dev_id, ctypes.byref(v)), "EAFGetReason")
+        except ZwoSdkError:
+            return None
+        return int(v.value)
 
 
 class CaaSdk:

@@ -3132,6 +3132,10 @@ class Hub:
                     out["focuser"]["moving"] = bool(await foc.is_moving())
                 except Exception:
                     pass
+                # Static capability, not a reading — the UI needs it to decide
+                # whether to offer re-anchoring at all.
+                out["focuser"]["can_set_position"] = bool(
+                    getattr(foc, "can_set_position_reference", False))
         fw = self.devices.get("filterwheel")
         if fw and fw.connected:
             try:
