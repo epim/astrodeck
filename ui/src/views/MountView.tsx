@@ -168,6 +168,23 @@ export default function MountView() {
                 onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Tracking" />
               <span className="label">tracking</span>
               <div className="flex-1" />
+              {/* Home — the reference position you START from, and the missing
+                  third of this row. Park says "stop and stay stopped"; Home says
+                  "go to the known place and be ready". Offered only when the
+                  mount advertises can_find_home, so a scope without a home
+                  sensor never sees a control that would 400. It stays available
+                  while PARKED because homing a parked mount is exactly how you
+                  begin a session: the server unparks as part of the move. */}
+              {m?.can_find_home && (
+                <button
+                  className="btn tap min-h-[44px]"
+                  disabled={!canMount || !!m?.slewing}
+                  title="Slew to the mount's home position and leave it ready to use"
+                  onClick={() => act(() => api.post("/api/mount/home"))}
+                >
+                  Home
+                </button>
+              )}
               {m?.parked ? (
                 <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
               ) : (

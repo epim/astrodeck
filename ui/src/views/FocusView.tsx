@@ -32,6 +32,70 @@ import { Field, LockedChip, LockedNote, Panel, Stat } from "../components/ui";
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
+import StepDial from "../components/ui/StepDial";
+import { nudgeLabel } from "../lib/stepDial";
+
+/** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
+ *  whole critical zone on a 30k-step EAF. */
+const STEP_VALUES = [1, 10, 100, 1000] as const;
+
+/**
+ * minus · dial · plus — the thumb row (design doc §Thumb zones).
+ *
+ * This replaced a 3x2 grid of fixed nudges. The grid's real cost was not its
+ * size but where it forced itself to live: six 44px targets cannot sit beside a
+ * preview, so they sat below it, so every adjustment was scroll-down / tap /
+ * scroll-up / look — the complaint that started this whole design.
+ */
+function StepRow({
+  step,
+  onStep,
+  reason,
+  onNudge,
+  onBlocked,
+}: {
+  step: number;
+  onStep: (v: number) => void;
+  /** Why nudging is unavailable, or null. Never a bare boolean: a blocked
+   *  control must be able to say why (house rule §11.8). */
+  reason: string | null;
+  onNudge: (delta: number) => void;
+  onBlocked: (reason: string) => void;
+}): JSX.Element {
+  const nudge = (sign: 1 | -1) => {
+    if (reason) { onBlocked(reason); return; }
+    onNudge(sign * step);
+  };
+  const btn = (sign: 1 | -1) => (
+    <button
+      type="button"
+      className={`btn tap min-h-[44px] mono !normal-case justify-center flex-1 ${
+        reason ? "opacity-40" : ""
+      }`}
+      aria-disabled={reason ? true : undefined}
+      aria-label={`Move focuser ${nudgeLabel(step, sign)} steps${reason ? ` — ${reason}` : ""}`}
+      title={reason ?? `Move ${nudgeLabel(step, sign)} steps`}
+      onClick={() => nudge(sign)}
+    >
+      {sign > 0 ? "+" : "−"}
+    </button>
+  );
+  return (
+    <div className="flex items-stretch gap-2 mb-3">
+      {btn(-1)}
+      <StepDial
+        values={STEP_VALUES}
+        value={step}
+        onChange={onStep}
+        ariaLabel="Focuser step size"
+        disabled={!!reason}
+        disabledReason={reason}
+        onBlocked={onBlocked}
+      />
+      {btn(1)}
+    </div>
+  );
+}
 
 export default function FocusView() {
   const status = useStatus();
@@ -67,6 +131,9 @@ export default function FocusView() {
     return idx > 0 ? previews[idx - 1] : null;
   }, [shown, previews]);
   const [absTarget, setAbsTarget] = useState("");
+  // The dial's magnitude. 100 is the useful default on a 30k-step EAF: 10 is a
+  // twiddle, 1000 crosses the whole critical zone.
+  const [step, setStep] = useState<number>(100);
   const [afExposure, setAfExposure] = useState("2");
   const [afStep, setAfStep] = useState("350");
   // UX-25: per-filter / per-binning autofocus. "" filter = leave the wheel where
@@ -264,68 +331,10 @@ export default function FocusView() {
           )}
         </Panel>
 
-        <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
-          {/* The header pill keeps its WHY in a `title=`; say it out loud here. */}
-          {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
-          <div className="flex items-end justify-between mb-4">
-            <Stat label="position" value={foc ? pos : "—"} />
-            <Stat label="max" value={foc?.max ?? "—"} />
-            <Stat label="temp" value={foc?.temperature?.toFixed(1) ?? "—"} unit="°C" />
-          </div>
-          <div className="grid grid-cols-3 gap-2 mb-3">
-            {[-1000, -100, -10, 10, 100, 1000].map((d) => (focuserReason ? (
-              <LockedChip key={d} reason={`Move ${d > 0 ? `+${d}` : d} steps — ${focuserReason}`}
-                className="btn tap min-h-[44px] mono !normal-case justify-center">
-                {d > 0 ? `+${d}` : d}
-              </LockedChip>
-            ) : (
-              <button key={d} className="btn tap min-h-[44px] mono !normal-case"
-                onClick={() => moveTo(pos + d)}>
-                {d > 0 ? `+${d}` : d}
-              </button>
-            )))}
-          </div>
-          <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
-            <Field label="Go to position">
-              <input className="field" placeholder={String(pos)} value={absTarget}
-                readOnly={!canFocus} aria-readonly={!canFocus || undefined}
-                onChange={(e) => setAbsTarget(e.target.value)} />
-            </Field>
-            {/* UX #24 — GO was the finding's named example: four different
-                blockers collapsed into one native `disabled`, with no title, no
-                aria-label and no note. It now names the one that applies. */}
-            {goReason ? (
-              <LockedChip reason={goReason} className="btn tap min-h-[44px] justify-center">
-                Go
-              </LockedChip>
-            ) : (
-              <button className="btn tap min-h-[44px]"
-                onClick={() => moveTo(absTargetNum)}>Go</button>
-            )}
-            {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
-                (they can't have a focuser move in flight to halt).
-
-                UX #14 / S3: the SAME non-hue danger encoding Capture's Stop now
-                carries (filled-square glyph + 2px border + a capped-luminance
-                fill), so "stop the thing" has one silhouette across the app
-                instead of a different red outline per view. */}
-            {haltReason ? (
-              <LockedChip reason={haltReason}
-                className="btn btn-danger tap min-h-[44px] !border-2 justify-center">
-                Halt
-              </LockedChip>
-            ) : (
-              <button
-                className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
-                style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
-                onClick={() => act(() => api.post("/api/focuser/halt"))}>
-                <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
-                Halt
-              </button>
-            )}
-          </div>
-        </Panel>
-
+        {/* Rail order (design doc): READOUT at the top nearest the image,
+            the ACTION next, and the thumb row LAST because that is where a
+            hand actually rests. Autofocus used to be the bottom-most panel,
+            which on a phone is off the end of a scroll. */}
         <Panel title="Autofocus" right={!canFocus && <ReadOnlyBadge />}>
           {(() => {
             const bs = focusButtonState({ canFocus, hasFocuser: !!foc, running });
@@ -339,7 +348,20 @@ export default function FocusView() {
                 liveStars: shown?.stars ?? null,
                 liveHfr: shown?.hfr ?? null,
               });
-              return act(() => api.post("/api/focuser/autofocus", {
+              // With the settings panel OPEN the user is explicitly steering, so
+              // their fields win; closed, the derived values do. One button,
+              // one rule, and the panel says which is in force. (Before, a
+              // SECOND button carried the manual params and the two were
+              // indistinguishable at a glance.)
+              const manual = afAdvanced;
+              return act(() => api.post("/api/focuser/autofocus", manual ? {
+                exposure_s: Number(afExposure) || d.exposure_s,
+                step: Number(afStep) || d.step,
+                binning: Number(afBin) || d.binning,
+                gain: d.gain,
+                steps_each_side: d.steps_each_side,
+                ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
+              } : {
                 exposure_s: d.exposure_s, gain: d.gain, step: d.step,
                 steps_each_side: d.steps_each_side, binning: d.binning,
               }));
@@ -348,30 +370,38 @@ export default function FocusView() {
             // it was just handed to `title=`, which a fingertip never fires. The
             // hero keeps its own chrome (a lock-glyph 56px button, not a chip) and
             // the reason is now spoken by aria-label AND printed underneath.
+            // ONE line: the action and its settings (design doc §Landscape —
+            // rail). The button used to span the whole screen with a separate
+            // "▸ Advanced" row beneath it, in a rail only 300px wide; the gear
+            // now sits on the same line, which is both smaller and closer to
+            // the thing it configures.
             return (
               <>
-                <button
-                  className={`btn btn-accent w-full tap-lg min-h-[56px] ${bs.disabled ? "opacity-40 mb-1.5" : "mb-3"}`}
-                  aria-disabled={bs.disabled || undefined}
-                  aria-label={bs.reason ? `${bs.label} — ${bs.reason}` : undefined}
-                  onClick={bs.disabled ? undefined : onTap}
-                >
-                  {bs.locked && <Icon name="lock" size={13} className="inline -mt-0.5 mr-1.5" />}
-                  {!bs.locked && <Icon name="focus" size={14} className="inline -mt-0.5 mr-1.5" />}
-                  {bs.label}
-                </button>
+                <div className={`flex items-stretch gap-2 ${bs.disabled ? "mb-1.5" : "mb-3"}`}>
+                  <button
+                    className={`btn btn-accent flex-1 tap-lg min-h-[56px] ${bs.disabled ? "opacity-40" : ""}`}
+                    aria-disabled={bs.disabled || undefined}
+                    aria-label={bs.reason ? `${bs.label} — ${bs.reason}` : undefined}
+                    onClick={bs.disabled ? undefined : onTap}
+                  >
+                    {bs.locked && <Icon name="lock" size={13} className="inline -mt-0.5 mr-1.5" />}
+                    {!bs.locked && <Icon name="focus" size={14} className="inline -mt-0.5 mr-1.5" />}
+                    {bs.label}
+                  </button>
+                  <button
+                    className={`btn tap min-h-[56px] px-3 ${afAdvanced ? "border-accent text-accent" : ""}`}
+                    aria-expanded={afAdvanced}
+                    aria-label="Autofocus settings"
+                    title="Autofocus settings"
+                    onClick={() => setAfAdvanced((v) => !v)}
+                  >
+                    <Icon name="settings" size={16} />
+                  </button>
+                </div>
                 {bs.reason && <LockedNote reason={bs.reason} className="mb-3" />}
               </>
             );
           })()}
-
-          <button
-            className="btn !px-2 !py-1 text-[11px] mb-3"
-            aria-expanded={afAdvanced}
-            onClick={() => setAfAdvanced((v) => !v)}
-          >
-            {afAdvanced ? "▾ Advanced" : "▸ Advanced"}
-          </button>
 
           {afAdvanced && (
             <>
@@ -417,22 +447,14 @@ export default function FocusView() {
                   )}
                 </Field>
               </div>
-              {focuserReason ? (
-                <LockedChip reason={focuserReason}
-                  className="btn btn-accent w-full tap-lg min-h-[56px] justify-center">
-                  {running ? "Running…" : "Run Autofocus"}
-                </LockedChip>
-              ) : (
-                <button className="btn btn-accent w-full tap-lg min-h-[56px]"
-                  onClick={() => act(() => api.post("/api/focuser/autofocus", {
-                    exposure_s: Number(afExposure) || 2,
-                    step: Number(afStep) || 350,
-                    binning: Number(afBin) || 2,
-                    ...(afFilter !== "" ? { filter: Number(afFilter) } : {}),
-                  }))}>
-                  <Icon name="focus" size={14} className="inline -mt-0.5 mr-1" />Run Autofocus
-                </button>
-              )}
+              {/* NO second run button here. There used to be one an inch below
+                  the hero, and two buttons that both say "run autofocus" is a
+                  question the user has to answer before every run. These fields
+                  now feed the ONE button above — see the note below. */}
+              <p className="text-[11px] text-dim leading-snug">
+                These override what the button above would have chosen. Close this
+                panel to go back to automatic settings.
+              </p>
             </>
           )}
           <p className="text-[11px] text-dim mt-3 leading-relaxed">
@@ -446,6 +468,67 @@ export default function FocusView() {
                 `${plan.refocus_on_temp_delta_c > 0 ? ` Δtemp ${plan.refocus_on_temp_delta_c}°C` : ""}`
               : "Refocus: manual only (set cadence in the plan)"}
           </p>
+        </Panel>
+
+        <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
+          {/* The header pill keeps its WHY in a `title=`; say it out loud here. */}
+          {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
+          <div className="flex items-end justify-between mb-4">
+            <Stat label="position" value={foc ? pos : "—"} />
+            <Stat label="max" value={foc?.max ?? "—"} />
+            <Stat label="temp" value={foc?.temperature?.toFixed(1) ?? "—"} unit="°C" />
+          </div>
+          {/* The thumb row (design doc §Thumb zones). Six buttons became three
+              controls: minus, the magnitude dial, plus. Held in two hands the
+              thumbs rest at the bottom corners, so that is where - and + go,
+              with the rarely-changed dial between them as the one thing you
+              have to look at. */}
+          <StepRow
+            step={step}
+            onStep={setStep}
+            reason={focuserReason}
+            onNudge={(d) => moveTo(pos + d)}
+            onBlocked={(r) => showToast("warning", r)}
+          />
+          <div className="grid grid-cols-[1fr_auto_auto] gap-2 items-end">
+            <Field label="Go to position">
+              <input className="field" placeholder={String(pos)} value={absTarget}
+                readOnly={!canFocus} aria-readonly={!canFocus || undefined}
+                onChange={(e) => setAbsTarget(e.target.value)} />
+            </Field>
+            {/* UX #24 — GO was the finding's named example: four different
+                blockers collapsed into one native `disabled`, with no title, no
+                aria-label and no note. It now names the one that applies. */}
+            {goReason ? (
+              <LockedChip reason={goReason} className="btn tap min-h-[44px] justify-center">
+                Go
+              </LockedChip>
+            ) : (
+              <button className="btn tap min-h-[44px]"
+                onClick={() => moveTo(absTargetNum)}>Go</button>
+            )}
+            {/* Halt is urgent motion-stop -> stays 1-tap (R9). Disabled for viewers
+                (they can't have a focuser move in flight to halt).
+
+                UX #14 / S3: the SAME non-hue danger encoding Capture's Stop now
+                carries (filled-square glyph + 2px border + a capped-luminance
+                fill), so "stop the thing" has one silhouette across the app
+                instead of a different red outline per view. */}
+            {haltReason ? (
+              <LockedChip reason={haltReason}
+                className="btn btn-danger tap min-h-[44px] !border-2 justify-center">
+                Halt
+              </LockedChip>
+            ) : (
+              <button
+                className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
+                style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
+                onClick={() => act(() => api.post("/api/focuser/halt"))}>
+                <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
+                Halt
+              </button>
+            )}
+          </div>
         </Panel>
       </div>
     </div>

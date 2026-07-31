@@ -51,6 +51,9 @@ export interface MountStatus {
   // supports changing it. Absent/false on backends that don't (control hidden).
   tracking_rate?: "sidereal" | "lunar" | "solar";
   can_set_tracking_rate?: boolean;
+  /** Mount advertises a home position (Home control, 2026-07-30). Absent on
+   *  older servers, so the control is simply not offered there. */
+  can_find_home?: boolean;
 }
 
 export interface RigStatus {

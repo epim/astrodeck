@@ -84,6 +84,7 @@ class ZwoAm5Telescope(Telescope):
     hardware = True
     can_pulse_guide = True    # EMULATED: timed R1 moves (native :Mg*# is inert)
     can_set_tracking_rate = True
+    can_find_home = True      # :hP# homes (and parks); find_home unparks after
 
     def __init__(self, link, name: str = "ZWO AM5"):
         super().__init__(name)
@@ -197,6 +198,19 @@ class ZwoAm5Telescope(Telescope):
         if not await self.is_parked():
             return
         await self._cmd_ack("Spu", "unpark")
+
+    async def find_home(self) -> None:
+        """Go to the home position and come back USABLE.
+
+        The AM5 has ONE wire command for this: ``:hP#`` homes and parks
+        together, which is why ``park()`` below sends the same thing. So homing
+        is park-then-unpark — the mount ends physically at home with tracking
+        off and the motors released, ready to slew.
+
+        Leaving it parked would be the trap: the button would look like it
+        worked and the next slew would be refused."""
+        await self.park()          # carries the tracking-off ordering below
+        await self.unpark()
 
     async def park(self) -> None:
         # Idempotent, mirroring unpark. VERIFIED ON HARDWARE 2026-07-20: :hP#
