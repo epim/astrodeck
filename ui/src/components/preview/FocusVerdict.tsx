@@ -6,6 +6,7 @@
 // (every warning carries an action — §12.6). NEVER color alone: word + arrow + text.
 import type { PreviewInfo } from "../../types";
 import { Icon } from "../icons";
+import { defocusMessage, focusState } from "../../lib/focusVerdict";
 import { autofocusLevel, type AfLevel } from "../../lib/autofocus";
 
 // ============================================================ AUTOFOCUS VERDICT
@@ -89,9 +90,26 @@ export function FocusVerdict({
     );
   }
   const hfr = preview.hfr;
-  const fewStars = (preview.stars ?? 0) < 3 || hfr == null;
+  const state = focusState(preview as {
+    hfr?: number | null; stars?: number | null; defocus_r80?: number | null;
+  });
+  const fewStars = state.kind === "few-stars";
   const fw = preview.full_well;
   const clipped = fw != null && preview.data_is_linear && preview.stats.max >= fw;
+
+  // Grossly defocused outranks everything below. In that state the star count is
+  // ring fragments and the HFR is the measurement box's ceiling, so "FAIR" is
+  // not just wrong, it tells the user to stop adjusting.
+  if (state.kind === "defocused") {
+    return (
+      <div className="text-xs flex flex-wrap items-center gap-x-2 gap-y-1" aria-live="polite">
+        <span className="text-bad font-medium inline-flex items-center gap-1">
+          <Icon name="alert" size={13} /> Far out of focus
+        </span>
+        <span className="text-dim">— {defocusMessage(state.r80)}</span>
+      </div>
+    );
+  }
 
   if (fewStars) {
     return (

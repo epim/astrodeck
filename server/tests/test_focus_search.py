@@ -119,3 +119,25 @@ def test_it_works_when_focus_lies_outside_the_searchable_range():
     d, hist = _run(0, 200000.0, lo=0, hi=360, limit=14)
     assert d.give_up is not None, "must not claim success it cannot have"
     assert all(0 <= p.position <= 360 for p in hist)
+
+
+def test_it_does_not_burn_probes_pinned_at_a_range_edge():
+    """Observed on the rig: five probes in a row at 40000, because "nudge on"
+    proposed a position the clamp turned back into the same number."""
+    hist = [Probe(40000, 590.0), Probe(40000, 591.0)]
+    d = decide(hist, 0, 40000)
+    assert d.move_to is None or d.move_to < 40000, \
+        f"must move off the edge, proposed {d.move_to}"
+
+
+def test_pinned_with_nowhere_to_go_gives_up_rather_than_spinning():
+    hist = [Probe(500, 300.0), Probe(500, 300.0)]
+    d = decide(hist, 500, 500)
+    assert d.give_up is not None
+    assert d.move_to == 500
+
+
+def test_it_moves_off_the_LOW_edge_too():
+    hist = [Probe(0, 500.0), Probe(0, 500.0)]
+    d = decide(hist, 0, 40000)
+    assert d.move_to is not None and d.move_to > 0
