@@ -2031,6 +2031,19 @@ class Hub:
             if hfr is not None:
                 info.setdefault("hfr", round(float(hfr), 2))
                 info.setdefault("stars", int(count))
+            # DEFOCUS SIZE, so the UI can tell "in focus" from "so far out that
+            # HFR is meaningless". detect_stars measures inside a 15px box, so
+            # its HFR saturates around 5-7px no matter how defocused the frame
+            # is: on 2026-07-31 an 880px donut field reported "median HFR 4.5px"
+            # and 1393 "stars", and the Focus panel called it FAIR. A number
+            # that cannot exceed 7 cannot report a 440px blob, so the honest
+            # signal has to come from a measurement that has no such ceiling.
+            if data_is_linear:
+                from .imaging.defocus import measure_blob
+                blob = await asyncio.to_thread(measure_blob, sub)
+                if blob is not None:
+                    info["defocus_r80"] = round(blob.r80, 1)
+                    info["defocus_snr"] = round(blob.snr, 1)
             # NOV-1: additive live-stacking readout (only when Live View is armed).
             if ls_info is not None:
                 info["livestack"] = ls_info

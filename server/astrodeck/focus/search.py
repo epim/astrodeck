@@ -85,8 +85,24 @@ def decide(history: list[Probe], lo: int, hi: int, *,
 
     prev = history[-2]
     if last.position == prev.position:
-        return Decision(move_to=_clamp(last.position + probe, lo, hi),
-                        why="repeated position; nudge on")
+        # Already tried this exact spot. Nudging by +probe is useless when the
+        # position is CLAMPED at a range edge — it proposes the same number
+        # again, and the search burns its whole probe budget standing still
+        # (observed on the rig: five probes in a row at 40000). Push AWAY from
+        # whichever edge we are pinned to, and if we are pinned to both there is
+        # nowhere left to look.
+        if last.position >= hi:
+            nxt = _clamp(last.position - probe, lo, hi)
+        elif last.position <= lo:
+            nxt = _clamp(last.position + probe, lo, hi)
+        else:
+            nxt = _clamp(last.position + probe, lo, hi)
+        if nxt == last.position:
+            return Decision(give_up=("the search is pinned at "
+                                     f"{last.position} with nowhere left to "
+                                     "move inside the usable travel"),
+                            move_to=min(history, key=lambda p: p.r80).position)
+        return Decision(move_to=nxt, why="already tried here; move off the edge")
 
     # Two points on a V. If the blob shrank, the line through them crosses zero
     # at (or near) focus. If it grew, the same line points backwards — which is

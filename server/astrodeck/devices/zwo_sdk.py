@@ -139,6 +139,17 @@ _SIGNATURES: dict[str, list] = {
     "EAFStop": [_I], "EAFIsMoving": [_I, _PB, _PB],
     "EAFGetPosition": [_I, _PI], "EAFGetTemp": [_I, _PF],
     "EAFGetFirmwareVersion": [_I, _PU, _PU, _PU],
+    # OPTIONAL extras — bound when the DLL has them, never required.
+    # EAFGetMaxStep is the firmware's STORED travel limit and is the number the
+    # device actually enforces; EAF_INFO.MaxStep is only the hardware ceiling.
+    # On 2026-07-31 those read 360 and 600000, and because only the latter was
+    # bound, every move above 360 was silently clamped while the driver believed
+    # it had 600000 steps. Deliberately NOT added to the required-export list:
+    # an older or macOS SDK missing one would fail the whole load and the
+    # focuser would disappear entirely, which is worse than the bug it fixes.
+    "EAFGetMaxStep": [_I, _PI],
+    "EAFSetMaxStep": [_I, _I],
+    "EAFStepRange": [_I, _PI],
     "CAAGetNum": [], "CAAGetID": [_I, _PI], "CAAOpen": [_I], "CAAClose": [_I],
     "CAAGetProperty": [_I, ctypes.POINTER(_Info)],
     "CAAMoveToMechanical": [_I, ctypes.c_float], "CAAGetDegree": [_I, _PF],
@@ -216,6 +227,25 @@ class EafSdk:
             dev_id, ctypes.byref(a), ctypes.byref(b), ctypes.byref(c)),
             "EAFGetFirmwareVersion")
         return f"{a.value}.{b.value}.{c.value}"
+
+    def get_max_step(self, dev_id: int) -> int | None:
+        """The firmware's STORED travel limit — the one it enforces.
+
+        None when the SDK does not export it, so a caller can fall back to
+        EAF_INFO.MaxStep rather than losing the focuser."""
+        fn = getattr(self._d, "EAFGetMaxStep", None)
+        if fn is None:
+            return None
+        v = ctypes.c_int()
+        _check(fn(dev_id, ctypes.byref(v)), "EAFGetMaxStep")
+        return int(v.value)
+
+    def set_max_step(self, dev_id: int, value: int) -> None:
+        """Write the stored travel limit. Persists in the device."""
+        fn = getattr(self._d, "EAFSetMaxStep", None)
+        if fn is None:
+            raise ZwoSdkError(-1, "EAFSetMaxStep (not exported)")
+        _check(fn(dev_id, int(value)), "EAFSetMaxStep")
 
 
 class CaaSdk:
