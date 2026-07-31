@@ -398,6 +398,22 @@ export default function FocusView() {
                     <Icon name="settings" size={16} />
                   </button>
                 </div>
+                {/* The way OUT of the loop that cost a night: autofocus needs
+                    stars to start, a badly-defocused rig has none, and until
+                    now the only tool offered for getting to rough focus was
+                    autofocus itself. This walks the travel counting stars and
+                    stops the moment a position has enough to hand over. It is
+                    offered permanently rather than only after a failure —
+                    someone who knows the rig is miles out should not have to
+                    fail once to be told about it. */}
+                <button
+                  className="btn w-full tap min-h-[44px] mb-3 text-[11px]"
+                  disabled={running || !foc || !canFocus}
+                  title="Step across the focuser's travel and stop where there are enough stars to autofocus"
+                  onClick={() => act(() => api.post("/api/focuser/coarse", {}))}
+                >
+                  Find focus roughly first
+                </button>
                 {bs.reason && <LockedNote reason={bs.reason} className="mb-3" />}
               </>
             );

@@ -68,6 +68,7 @@ from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
 from ..events import LOG_READ_MAX, bus, night_key
 from ..focus import run_autofocus
+from ..focus.coarse import run_coarse_focus
 from .. import hub as hub_module
 # Imported as a MODULE (not `from ..config import CONFIG_DIR`) so the factory-
 # reset routes read the live `CONFIG_DIR`, honouring a test monkeypatch exactly
@@ -677,6 +678,22 @@ class AutofocusBody(BaseModel):
     steps_each_side: int = 4
     binning: int = 2
     filter: int | None = None  # UX-25: slot to move to before the sweep (per-filter AF)
+
+class CoarseFocusBody(BaseModel):
+    """Coarse focus: find a position with stars, then hand off to autofocus.
+
+    Defaults are deliberately generous — this runs when the user cannot see
+    anything, so a longer exposure and coarse binning buy signal that the
+    search needs and the handoff does not care about."""
+    exposure_s: float = 4.0
+    gain: int = 200
+    binning: int = 2
+    #: Total travel to search, centred on the current position. None = the whole
+    #: usable range, which is the case this exists for ("I have no idea where
+    #: focus is"); a narrow default would fail exactly when it is needed.
+    span: int | None = None
+    stops: int = 9
+
 
 
 class FilterBody(BaseModel):
@@ -3495,6 +3512,31 @@ def create_app() -> FastAPI:
                 binning=body.binning, expose_guard=hub.exposure_guard, hub=hub)
 
         return _spawn("autofocus", _af())
+
+    @app.post("/api/focuser/coarse", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def coarse_focus(body: CoarseFocusBody):
+        """Walk the focuser travel until a position has enough stars to autofocus.
+
+        Same camera mutual exclusion as autofocus — it exposes on every stop —
+        and the same spawn lane, so Halt stops it and the UI's focus state
+        machine needs no new vocabulary."""
+        if engine.running or hub.looping:
+            raise HTTPException(409, "camera is busy (a capture loop or sequence "
+                                     "is running)")
+        try:
+            cam = hub.require("camera")
+            foc = hub.require("focuser")
+        except DeviceError as e:
+            raise _err(e)
+
+        async def _cf():
+            return await run_coarse_focus(
+                cam, foc, exposure_s=body.exposure_s, gain=body.gain,
+                binning=body.binning, span=body.span, stops=body.stops,
+                expose_guard=hub.exposure_guard)
+
+        return _spawn("autofocus", _cf())
 
     @app.post("/api/focuser/halt", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
