@@ -575,3 +575,39 @@ export function guiderSlotNote(
     "the Guide screen."
   );
 }
+
+// ============================================================== BACKEND BADGE
+// The header chip that answers "what am I driving through right now".
+//
+// It used to be a two-branch ternary — nina, alpaca, ELSE "SIM" — written when
+// those were the only three rigs that existed. The driver model broke that
+// assumption: a rig assembled from per-role hardware drivers has no single
+// primary, so hub._effective_primary falls through to the first session's
+// backend name ("zwo-usb" on this rig), which matched neither branch and landed
+// on the default. A telescope, two cameras, a filter wheel and a focuser, all
+// real, all connected, badged SIM.
+//
+// That is the worst possible lie for this particular chip: it is the one thing
+// on screen telling you whether commands reach the sky, and it was reading
+// "simulator" while the mount was tracking.
+
+/** The badge text for a backend mode, or null when nothing is connected. */
+export function backendBadge(mode: string | null | undefined): string | null {
+  const m = (mode ?? "").trim().toLowerCase();
+  if (!m || m === "none") return null;
+  if (m === "nina") return "NINA";
+  // "alpaca" is the label the hub gives the native/Alpaca path (W1.6 PIN).
+  if (m === "alpaca" || m === "native") return "ALPACA";
+  if (m === "sim") return "SIM";
+  // Anything else is a per-role hardware backend (zwo-am5, player-one,
+  // wanderer-snowflake, zwo-usb, ...). It is a DIRECT rig, and the one thing it
+  // is definitely not is the simulator.
+  return "NATIVE";
+}
+
+/** Whether the badge should read as a warning: the simulator is the only mode
+ *  where commands do not reach real hardware, and it deserves to look different
+ *  from every mode that does. */
+export function backendBadgeIsSim(mode: string | null | undefined): boolean {
+  return (mode ?? "").trim().toLowerCase() === "sim";
+}
