@@ -12,6 +12,18 @@ way — as does NINA). See
 | `CAARotator.dll` | CAA (rotator) C API | **1.5.6** | ZWO ASCOM Driver 6.5.35 (`CAA_ASCOM_x64.dll` — despite the name it exports the complete CAA SDK incl. `CAAMoveToMechanical`) | same |
 | `ASICamera2.dll` | ASICamera2 (camera) C API | **1.41.0.0** | ASIStudio install (`ASIGetSDKVersion`) | ctypes load + full 15-export check, 2026-07-20 (dev box; live `get_property` at scope pending) |
 
+`EAF_focuser.h` is vendored alongside the binaries — the C headers are the ONLY
+authority for a ctypes signature, and a wrong struct layout does not fail
+loudly, it corrupts a stack on someone's telescope. Consult it before binding
+anything new (`devices/zwo_sdk.py:_SIGNATURES`). Two things in it are easy to
+get wrong and cost real time on 2026-07-31:
+
+- `EAF_ERROR_MSG` is two **2-character strings**, not integers. (`EAF_ALL_INFO`
+  has same-named fields sized `[2]` rather than `[3]` — a different struct.)
+- The motor codes are `E0 no error` and `E5 motor stall`; the battery codes are
+  `E6`/`E7`/`E8`. **E0 is the healthy one** — treating it as a fault attaches an
+  invented hardware error to every unrelated failure.
+
 Notes:
 - `ASIStudio\CAA_SRC.dll` was REJECTED: it lacks `CAAMoveToMechanical` (pre-
   mechanical-API build). Filenames lie; exports don't — always re-verify with
