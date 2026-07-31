@@ -102,7 +102,7 @@ def _stage_survey_pack(pack_dir: Path, pkg_root: Path, slug: str = "dss2color") 
 
 def build(version: str, repo_root: Path, out_dir: Path,
           astap_dir: Path | None = None,
-          survey_pack_dir: Path | None = None) -> Path:
+          survey_pack_dir: Path | None = None, strict: bool = False) -> Path:
     repo_root = Path(repo_root).resolve()
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -120,26 +120,46 @@ def build(version: str, repo_root: Path, out_dir: Path,
 
     contents = ["server", "ui/dist"]
 
-    # ui/dist: prebuilt SPA (optional locally).
+    # Missing assets are collected and decided ONCE, at the end. A warning
+    # printed during an unattended build is not a control: 0.2.18 shipped with
+    # no survey pack and no online fetch, so the Atlas on the deployed box was
+    # simply black, and the only evidence was a line in a build log nobody read
+    # (#100). `--strict` turns every omission into a failed build.
+    missing: list[str] = []
+
+    # ui/dist: prebuilt SPA.
     ui_dist = repo_root / "ui" / "dist"
     if ui_dist.is_dir():
         shutil.copytree(ui_dist, staging / "ui" / "dist", ignore=_IGNORE)
     else:
-        print(f"WARNING: {ui_dist} missing -- bundling WITHOUT the UI "
-              "(CI must build it first)")
+        missing.append(f"the built UI ({ui_dist}) — the release would serve no "
+                       "interface at all")
 
-    # vendored ASTAP binary + D05 star DB (UX-04). Optional; warn + omit if absent.
+    # vendored ASTAP binary + D05 star DB (UX-04).
     if astap_dir is not None and Path(astap_dir).is_dir():
         contents += _stage_astap(Path(astap_dir), pkg_root)
     elif astap_dir is not None:
-        print(f"WARNING: --astap-dir {astap_dir} not found -- bundling WITHOUT ASTAP")
+        missing.append(f"ASTAP (--astap-dir {astap_dir}) — plate solving would "
+                       "need a separately-installed ASTAP")
 
-    # baseline survey pack for first-boot seeding (UX-07). Optional; warn + omit.
+    # baseline survey pack for first-boot seeding (UX-07).
     if survey_pack_dir is not None and Path(survey_pack_dir).is_dir():
         contents += _stage_survey_pack(Path(survey_pack_dir), pkg_root)
     elif survey_pack_dir is not None:
-        print(f"WARNING: --survey-pack {survey_pack_dir} not found -- bundling "
-              "WITHOUT a baseline survey pack")
+        missing.append(f"the baseline survey pack (--survey-pack "
+                       f"{survey_pack_dir}) — the Atlas would have no image "
+                       "source offline, which is the default")
+
+    if missing:
+        head = ("release is missing assets that were asked for:"
+                if strict else "WARNING: release is missing assets:")
+        print(head)
+        for m in missing:
+            print(f"  - {m}")
+        if strict:
+            raise SystemExit(
+                "refusing to build an incomplete release (--strict). Provide the "
+                "assets, or drop the flag if you meant to omit them.")
 
     manifest = {
         "name": "astrodeck",
@@ -163,6 +183,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", required=True)
+    ap.add_argument("--strict", action="store_true",
+                    help="fail the build when a requested asset is "
+                         "missing, instead of warning and shipping "
+                         "without it (what CI should use)")
     ap.add_argument("--out", default="dist")
     ap.add_argument("--repo-root",
                     default=str(Path(__file__).resolve().parents[1]))
@@ -173,7 +197,8 @@ def main() -> int:
     args = ap.parse_args()
     build(args.version, Path(args.repo_root), Path(args.out),
           astap_dir=Path(args.astap_dir) if args.astap_dir else None,
-          survey_pack_dir=Path(args.survey_pack) if args.survey_pack else None)
+          survey_pack_dir=Path(args.survey_pack) if args.survey_pack else None,
+          strict=args.strict)
     return 0
 
 
