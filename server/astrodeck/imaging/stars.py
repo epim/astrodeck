@@ -33,6 +33,23 @@ class Star:
 DEFAULT_MAX_STARS = 200
 DEFAULT_MAX_MARKS = 400
 
+#: A star SPREADS; a hot pixel does not. Minimum ratio of (background-subtracted)
+#: flux in the 8 immediate neighbours to the flux in the peak pixel itself.
+#:
+#: Measured on a real uncooled frame (Poseidon-M Pro, CCD-TEMP +15.7 C, 8 s,
+#: gain 300, no dark): 158 of the 200 peaks this function returned had their
+#: neighbours holding under HALF the centre's flux — they were single hot
+#: pixels, and this function was calling every one of them a star. That count
+#: feeds the preview HFR readout, the Bahtinov aid and the CLOUD DETECTOR, and
+#: it is what made a diagnosis of the native detector ("2 stars where Python
+#: finds 200") point at the wrong component for a day.
+#:
+#: Calibration: a Gaussian PSF puts ~5.8x the peak's flux into its 8 neighbours
+#: at sigma=1.5 px, and still ~2.0x at a badly undersampled sigma=0.7 px. A hot
+#: pixel puts ~0. Anything below 0.75 cannot be a resolved source at any
+#: sampling this instrument produces.
+MIN_NEIGHBOUR_FLUX_RATIO = 0.75
+
 
 def _ecc_theta(ixx: float, iyy: float, ixy: float) -> tuple[float, float]:
     """Second-moment eccentricity and major-axis position angle.
@@ -83,6 +100,13 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         cut = sub[y - half:y + half + 1, x - half:x + half + 1]
         if cut[half, half] < cut.max() * 0.95:
             continue  # not the local peak
+        # Hot-pixel rejection. A resolved source shares flux with its immediate
+        # neighbours; a hot pixel is one bright cell surrounded by background.
+        centre = float(sub[y, x])
+        if centre > 0.0:
+            ring8 = float(sub[y - 1:y + 2, x - 1:x + 2].sum()) - centre
+            if ring8 < MIN_NEIGHBOUR_FLUX_RATIO * centre:
+                continue
         used[max(0, y - half):y + half + 1, max(0, x - half):x + half + 1] = True
 
         # Local background from the cutout border, then flux-weighted mean
