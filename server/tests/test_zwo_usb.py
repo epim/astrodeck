@@ -840,3 +840,48 @@ async def test_describe_says_whether_the_firmware_answers_diagnostics():
     assert dq["reports_diagnostics"] is False, \
         "a firmware that will not answer must not look like one that did"
     assert dq["motor_error_code"] is None
+
+
+async def test_the_healthy_code_is_not_reported_as_a_fault():
+    """EAF_focuser.h: E0 means NO error. Appending "the device reports motor
+    error E0" to a failure invents a hardware fault that is not there."""
+    sdk = _StuckTalkativeEafSdk(motor="E0", enforced=600000, position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError) as ei:
+        await f.move_to(50000)
+    assert "E0" not in str(ei.value), str(ei.value)
+    assert "device reports" not in str(ei.value), str(ei.value)
+
+
+async def test_a_stall_code_is_named_not_just_echoed():
+    """E5 is the code that would make a travel calibration terminable — it
+    deserves to arrive as words, not as a two-letter token."""
+    sdk = _StuckTalkativeEafSdk(motor="E5", enforced=600000, position=100)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+    with pytest.raises(DeviceError) as ei:
+        await f.move_to(50000)
+    msg = str(ei.value)
+    assert "E5" in msg and "stall" in msg.lower(), msg
+
+
+def test_the_vendored_header_backs_the_bound_signatures():
+    """The header is the only authority for a ctypes layout, and a wrong one
+    corrupts a stack rather than failing loudly. Keep it here, and keep the
+    facts the bindings depend on true."""
+    h = zwo_sdk._VENDOR_DIR / "EAF_focuser.h"
+    if not h.is_file():
+        pytest.skip("header not vendored in this checkout")
+    text = h.read_text(encoding="utf-8", errors="replace")
+    for decl in ("EAFGetErrorCode(int ID, EAF_ERROR_MSG* pErrorCode)",
+                 "EAFGetReason(int ID, int* pReason)",
+                 "EAFResetPostion(int ID, int iStep)",
+                 "EAFGetMaxStep(int ID, int* piVal)",
+                 "EAFSetMaxStep(int ID, int iVal)"):
+        assert decl in text, f"header no longer declares: {decl}"
+    # The struct our _EafErrorMsg mirrors: 2 chars + terminator, twice.
+    assert "char motor_error_code[3];" in text
+    assert "char battery_error_code[3];" in text
+    # E0 is the healthy code — the whole reason _is_fault exists.
+    assert "E0 no error" in text and "E5 motor stall" in text
