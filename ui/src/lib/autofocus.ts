@@ -206,6 +206,16 @@ export const AF_SPAN_TARGET_FRAC = 0.12;
 export const AF_SPAN_MIN_FRAC = 0.04;
 export const AF_SPAN_MAX_FRAC = 0.30;
 export const AF_DEFAULT_GAIN = 120;
+/** Binning when there is no live frame to copy one from.
+ *
+ *  It used to be 2 ("brighter stars, fast download"), and that reasoning is
+ *  wrong for THIS job. A sweep's only task is to keep finding measurable stars
+ *  while it deliberately defocuses, and the one binning measurement this repo
+ *  actually owns says bin 2 costs two thirds of them: focus/native.py records
+ *  "24 stars at bin 1 became 8 at bin 2" from a real rig. Download time is not
+ *  the constraint on a nine-frame sweep. So the blind guess is the setting that
+ *  finds the most stars, and a real frame's binning is copied over it. */
+export const AF_FALLBACK_BIN = 1;
 
 /** Where the sweep's exposure/gain/binning actually came from.
  *
@@ -231,6 +241,14 @@ export interface DeriveAfInputs {
   maxGain: number | null; // status.camera?.max_gain
   liveExposureS: number | null; // shown?.exposure_s
   liveGain: number | null; // shown?.gain
+  /** The live frame's binning. NOT optional, deliberately: the first cut of
+   *  this file computed binning from the camera's ceiling alone while three
+   *  user-facing sentences said it was copied from the frame, so a user who
+   *  shot at bin 1 was told bin 1 was copied and swept at bin 2. A required
+   *  field forces every caller to answer rather than silently take the
+   *  fallback. PreviewInfo.binning is a required field, so a caller holding a
+   *  frame always has it; null means there is no frame. */
+  liveBinning: number | null; // shown?.binning
   liveStars: number | null; // shown?.stars
   liveHfr: number | null; // shown?.hfr
   /** Whether a live frame exists AT ALL, independent of what it measured.
@@ -273,12 +291,27 @@ export function deriveAutofocusParams(inp: DeriveAfInputs): DerivedAfParams {
       ? `${AF_EXPOSURE_FALLBACK_S}s default — the live frame measured only ${inp.liveStars ?? 0} stars, too few to copy from`
       : `${AF_EXPOSURE_FALLBACK_S}s guess — no frame has been taken, so there was nothing to copy`;
 
-  // binning — 2× sweet spot, respect a bin-1-only sensor
+  // binning — COPIED from the live frame, clamped to the sensor's ceiling.
+  // Like gain (below) this is a setting the user chose rather than something
+  // the frame measured, so it survives a star-poor frame. It was previously
+  // derived from the camera's bin ceiling alone — min(2, cap) — while the
+  // Camera panel defaulted to bin 1 and three sentences on this screen claimed
+  // the frame's binning had been copied. A user could shoot 4s / gain 220 /
+  // bin 1, be told all three were copied, and get a bin-2 sweep: the exact
+  // setting focus/native.py measured turning 24 stars into 8.
   const cap = inp.maxBin != null && inp.maxBin >= 1 ? Math.floor(inp.maxBin) : 4;
-  const binning = Math.min(2, cap);
-  const binBasis = binning === 2
-    ? "2× — brighter stars, fast download"
-    : "1× (camera has no higher binning)";
+  const liveBin =
+    inp.liveBinning != null && Number.isFinite(inp.liveBinning) && inp.liveBinning >= 1
+      ? Math.floor(inp.liveBinning) : null;
+  const binning = Math.min(liveBin ?? AF_FALLBACK_BIN, cap);
+  // No "camera bins no higher" case to write: the fallback is 1× and every
+  // sensor can do 1×, so with no frame the guess is never clamped. It is still
+  // a guess and says so — the whole point of the source/basis split.
+  const binBasis = liveBin != null
+    ? `copied from the live frame (bin ${binning})`
+      + (binning !== liveBin ? ` — clamped to this camera's ${cap}× ceiling` : "")
+    : `bin ${binning} guess — no frame has been taken; bin ${AF_FALLBACK_BIN} is the `
+      + "setting that leaves the most stars to measure as the sweep defocuses";
 
   // gain — reuse live gain else default, clamp to sensor ceiling.
   // The live frame's gain is copied whenever a frame exists, even a star-poor
@@ -403,10 +436,26 @@ export function plainFocusVerdict(args: {
 }): PlainVerdict {
   const level = autofocusLevel(args);
   switch (level) {
+    // A SUCCESS is where the server's advice matters most, and it was being
+    // thrown away here. focus/native.py calls _advice(ok=True) precisely to
+    // stop "letting a confident R² stand on four five-star samples", and the
+    // sentence it produces — "N of M points came from fewer than X stars and
+    // carry little weight in the fit, so this is thinner evidence than the R²
+    // suggests" — only ever fires on a run that fitted well enough to reach
+    // `excellent` (R² ≥ 0.98). Printing "Stars are tight" over it deleted the
+    // one warning the server took the trouble to compute. The headline and
+    // tone stay: the HFR and R² beside them are genuinely good and the caveat
+    // is about the evidence behind them, not the focus position itself.
     case "excellent":
-      return { level, tone: "good", headline: "Sharp!", detail: "Stars are tight — you're focused." };
+      return {
+        level, tone: "good", headline: "Sharp!",
+        detail: args.advice ?? "Stars are tight — you're focused.",
+      };
     case "good":
-      return { level, tone: "good", headline: "Focused.", detail: "Stars look good — you're ready to shoot." };
+      return {
+        level, tone: "good", headline: "Focused.",
+        detail: args.advice ?? "Stars look good — you're ready to shoot.",
+      };
     case "soft":
       return {
         level, tone: "warn", headline: "Almost there.",
@@ -435,9 +484,16 @@ export function plainFocusVerdict(args: {
       };
     case "pending":
     default:
+      // A run that finished with no HFR at all still lands here, and the server
+      // may well have said why. "Tap Focus my scope to start" under a run that
+      // just ran is the same throw-away this whole branch chain now avoids; with
+      // no advice (and before any run) the canned line is all there is.
       return args.state === "running"
         ? { level: "pending", tone: "neutral", headline: "Focusing…", detail: "Measuring your stars…" }
-        : { level: "pending", tone: "neutral", headline: "Not focused yet.", detail: "Tap Focus my scope to start." };
+        : {
+            level: "pending", tone: "neutral", headline: "Not focused yet.",
+            detail: args.advice ?? "Tap Focus my scope to start.",
+          };
   }
 }
 
