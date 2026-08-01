@@ -168,6 +168,23 @@ export default function AtlasView(): JSX.Element {
   // UX-2026-07-26 #18: framing has to be able to hand off to the mount. One
   // boolean is all this page needs — is there a mount at all.
   const mountConnected = useStore((s) => s.status?.mount != null);
+  // Live pointing (2026-07-31): the mount's REPORTED position, which SkyCanvas
+  // draws as a sky-anchored footprint. Narrowed to the five fields the drawing
+  // uses and shallow-compared, so a 2 s status tick that leaves the mount where
+  // it was does not re-render this page — and, more importantly, so the
+  // footprint moves ONLY when the hardware reports that it moved. Nothing here
+  // is ever set from the target; `gotoFraming` below posts a slew and returns.
+  const statusMount = useStore(
+    useShallow((s) => {
+      const m = s.status?.mount;
+      return m
+        ? {
+            ra_hours: m.ra_hours, dec_deg: m.dec_deg,
+            ra_str: m.ra_str, dec_str: m.dec_str, slewing: m.slewing,
+          }
+        : null;
+    }),
+  );
   const canMount = useCanControlMount();
 
   const setFraming = useStore((s) => s.setFraming);
@@ -1027,6 +1044,13 @@ export default function AtlasView(): JSX.Element {
             surveyDegraded={surveyDegraded}
             degradedText={degradedText}
             onlineFetch={onlineFetch}
+            // where the scope IS — raw telemetry, passed straight through. The
+            // canvas draws it; nothing animates it toward `center`.
+            pointing={statusMount}
+            rotator={statusRotator}
+            pointingWhere={
+              statusMount ? `${statusMount.ra_str} ${statusMount.dec_str}` : null
+            }
             onCenterChange={setCenter}
             onRotate={setRotation}
             onZoom={setZoom}
