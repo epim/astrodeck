@@ -139,9 +139,36 @@ def display_histogram(stretched01: np.ndarray, bins: int = 128) -> list[int]:
 
 def _encode(img01: np.ndarray, *, max_width: int, fmt: str,
             quality: int) -> tuple[bytes, int, int]:
-    """Shared 8-bit encode (mode 'L'), downscaling to ``max_width``."""
-    arr8 = (np.clip(img01, 0, 1) * 255).astype(np.uint8)
-    pil = Image.fromarray(arr8, mode="L")
+    """Shared 8-bit encode (grey), downscaling to ``max_width``.
+
+    ``img01`` must be a 2-D display-domain array in [0,1]; the returned width and
+    height are MEASURED off the encoded image, never predicted, because the hub
+    publishes them as ``display_width``/``display_height`` and the client sizes
+    the stage from them.
+
+    The two lines below are the only place in the preview path where raw bytes
+    meet a separately-supplied row length, so they are the only place a stride
+    can go wrong — and PIL will not stop it. ``Image.fromarray(arr, mode="L")``
+    does NOT check that the buffer is one byte per pixel: it lays the image over
+    the buffer at stride == width and reads ``width`` bytes per row. Hand it a
+    2-byte-per-pixel (uint16) array under mode "L" and every output row starts
+    half a row further into the previous one, so the frame comes out squeezed,
+    sheared diagonally and repeated down the canvas — encoded happily, returned
+    with HTTP 200, indistinguishable downstream from a good frame. That is the
+    artefact the Capture preview showed on 2026-07-31. So: the array is forced
+    to one byte per pixel FIRST, the image is then built from the array's own
+    dtype (no ``mode=`` reinterpretation — also removed outright in Pillow 13),
+    and anything that is not a plain 2-D frame is refused rather than guessed
+    at. A missing preview is honest; a sheared one is a lie about the sky.
+    """
+    a = np.asarray(img01)
+    if a.ndim != 2:
+        raise ValueError(
+            f"preview encode needs a 2-D frame, got shape {a.shape}; "
+            "encoding it would shear the image rather than fail")
+    # uint8 == one byte per pixel == row stride is exactly the frame width.
+    arr8 = (np.clip(a, 0, 1) * 255).astype(np.uint8)
+    pil = Image.fromarray(arr8)          # dtype-driven: 2-D uint8 -> mode "L"
     if pil.width > max_width:
         scale = max_width / pil.width
         pil = pil.resize((max_width, max(1, int(pil.height * scale))), Image.BILINEAR)
