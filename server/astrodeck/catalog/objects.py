@@ -4,11 +4,19 @@ The popular imaging targets: full set of crowd-pleaser Messiers plus the
 bright NGC/IC favorites. Not an exhaustive survey catalog — it's the list
 you'd actually point a rig at.
 
-``search_catalog`` searches three sources, not one: this deep-sky list, the
-named naked-eye stars in ``brightstars.py``, and the live Sun/Moon/planet
-ephemeris in ``solar_system.py``. ``CATALOG`` itself stays deep-sky-only —
+``search`` searches three sources, not one: this deep-sky list, the named
+naked-eye stars in ``brightstars.py``, and the live Sun/Moon/planet ephemeris
+in ``solar_system.py``. ``CATALOG`` itself stays deep-sky-only —
 /api/catalog/tonight ranks it as an imaging list and a star is not an imaging
 target.
+
+It returns rows AND notes. The notes are the answers that are not shaped like a
+target: the Sun withheld by the sun-avoidance gate, a body whose ephemeris
+failed this second, a body (Pluto) deliberately not carried. Whatever this
+function will not say, the screen has to invent — and the invented copy it
+shipped with, "Planets aren't supported yet", outlived the fact by one commit.
+``search_catalog`` is the rows-only shortcut for callers with nowhere to put a
+reason.
 """
 from __future__ import annotations
 
@@ -223,16 +231,36 @@ def _star_hits(q: str, qs: str) -> list[tuple[int, dict]]:
     return hits
 
 
-def _solar_system_hits(q: str, qs: str, when: float | None) -> list[tuple[int, dict]]:
-    """Ephemeris rows for the bodies this query names.
+def _names_body(qs: str, keys: Iterable[str]) -> bool:
+    """Did the query actually NAME this body, rather than merely share letters
+    with it?
+
+    Exact, or a prefix of at least three characters: "sun", "sol" and "satur"
+    name a body; "s" names nine of them and therefore none; and "sunflower" is
+    not a prefix of "sun", so the Sunflower Galaxy does not drag the Sun's
+    refusal onto an unrelated search."""
+    if len(qs) < 3:
+        return False
+    rank = _rank_keys(qs, keys)
+    return rank is not None and rank <= RANK_PREFIX
+
+
+def _solar_system_hits(q: str, qs: str,
+                       when: float | None) -> tuple[list[tuple[int, dict]], list[str]]:
+    """Ephemeris rows for the bodies this query names, and the reasons for the
+    ones it could not return.
 
     The ephemeris is evaluated ONLY for bodies that matched — a search for
-    "M31" must not pay for nine planet positions — and a body whose ephemeris
-    fails is dropped with a log line rather than emitted at a stale or guessed
-    position."""
+    "M31" must not pay for nine planet positions. A body whose ephemeris fails
+    is still not emitted at a guessed position, but it is no longer dropped in
+    SILENCE: until this returned a reason, a transient failure reached the user
+    as "Planets aren't supported yet" — the browser's guess — while the true
+    cause sat in the server log where nobody at a telescope will ever read it.
+    """
     from . import solar_system
 
     hits: list[tuple[int, dict]] = []
+    notes: list[str] = []
     for body in solar_system.offered_bodies():
         type_rank = RANK_TYPE if q and q in body.type_name.lower() else None
         rank = _best(_rank_keys(qs, solar_system.search_keys(body)), type_rank)
@@ -242,11 +270,46 @@ def _solar_system_hits(q: str, qs: str, when: float | None) -> list[tuple[int, d
             hits.append((rank, solar_system.row(body.key, when)))
         except solar_system.EphemerisUnavailable as e:
             log.warning("dropping %s from search: %s", body.label, e)
-    return hits
+            notes.append(
+                f"{body.label} could not be placed just now ({e}). It is left "
+                f"out rather than shown at a guessed position — the search does "
+                f"work for it; try again in a moment.")
+
+    # The Sun is withheld by the safety gate, not by the ephemeris, and it is
+    # withheld whether or not the query found anything else. That distinction is
+    # the whole finding: "sun" DOES return rows — M63 is the Sunflower Galaxy —
+    # so a refusal that only spoke on an empty result set never spoke at all,
+    # and the user got an unrelated galaxy with no word about the Sun.
+    sun = solar_system.BY_KEY[solar_system.SUN_KEY]
+    if _names_body(qs, solar_system.search_keys(sun)):
+        reason = solar_system.sun_block_reason()
+        if reason:
+            notes.append(reason)
+
+    carried = solar_system.not_carried_reason(qs)
+    if carried:
+        notes.append(carried)
+    return hits, notes
 
 
-def search_catalog(query: str, limit: int = 25,
-                   when: float | None = None) -> list[dict]:
+@dataclass(frozen=True)
+class SearchResult:
+    """What a search found, and what it knows but cannot express as a row.
+
+    ``notes`` exists because a target list has exactly one shape — a thing you
+    can slew to — and the three answers that mattered on the night this came
+    from are not that shape: the Sun is real and deliberately withheld, a body
+    can be real and momentarily unplaceable, and Pluto is a fair thing to type
+    and is not carried. Without a channel for those, the only component left to
+    explain the result is the browser, which has to guess from the query text.
+    """
+
+    rows: list[dict]
+    notes: list[str]
+
+
+def search(query: str, limit: int = 25,
+           when: float | None = None) -> SearchResult:
     """Search deep-sky objects, named stars and solar-system bodies at once.
 
     An EMPTY query browses the deep-sky list alone, unchanged. That is not an
@@ -276,9 +339,21 @@ def search_catalog(query: str, limit: int = 25,
                          RANK_TYPE if q in type_name else None)
         if rank is not None:
             scored.append((rank, o.mag, o.id, _dso_row(o)))
+    notes: list[str] = []
     if q:
-        for rank, r in _star_hits(q, qs) + _solar_system_hits(q, qs, when):
+        body_hits, notes = _solar_system_hits(q, qs, when)
+        for rank, r in _star_hits(q, qs) + body_hits:
             scored.append((rank, r["mag"], r["id"], r))
     # id breaks the remaining ties so the order is stable run to run.
     scored.sort(key=lambda t: (t[0], t[1], t[2]))
-    return [r for _, _, _, r in scored[:limit]]
+    return SearchResult(rows=[r for _, _, _, r in scored[:limit]], notes=notes)
+
+
+def search_catalog(query: str, limit: int = 25,
+                   when: float | None = None) -> list[dict]:
+    """Rows only — the shape every caller that just wants targets expects.
+
+    Kept as the plain-list entry point so a caller that renders a target list
+    is not forced to think about refusals; ``search`` is the one to call when
+    the screen has somewhere to PUT a refusal."""
+    return search(query, limit, when).rows

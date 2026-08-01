@@ -46,7 +46,7 @@ from ..auth.rbac import assert_route_capabilities, declare
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
                      _redact_session_for, _redact_site_for, _redact_ws_event)
 from ..persist import safe_id_path
-from ..catalog import search_catalog
+from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
 from ..catalog.tiles import router as tiles_router
@@ -4247,15 +4247,28 @@ def create_app() -> FastAPI:
 
     @app.get("/api/catalog", dependencies=[Depends(require(CAP_VIEW_STATUS))])
     @declare(CAP_VIEW_STATUS)
-    async def catalog(q: str = ""):
+    async def catalog(q: str = "", explain: bool = False):
+        """Target search. Returns a bare LIST of rows, as it always has.
+
+        `explain=1` returns {"results": [...], "notes": [...]} instead. The
+        notes are the things this server knows and a target row cannot say: the
+        Sun withheld by the sun-avoidance gate (a query for "sun" still returns
+        M63, the Sunflower Galaxy, so an explanation that waited for an empty
+        result set never appeared at all), a body whose ephemeris failed this
+        second, a body deliberately not carried. Anything not sent here the
+        browser has to guess, and its guess — "Planets aren't supported yet" —
+        is the failure this whole search change exists to end.
+        """
         from ..catalog import altaz
-        results = search_catalog(q)
-        for r in results:
+        found = search(q)
+        for r in found.rows:
             alt, az = altaz(r["ra_hours"], r["dec_deg"],
                             hub.site["latitude"], hub.site["longitude"])
             r["alt"] = round(alt, 1)
             r["az"] = round(az, 1)
-        return results
+        if explain:
+            return {"results": found.rows, "notes": found.notes}
+        return found.rows
 
     @app.get("/api/catalog/tonight",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])

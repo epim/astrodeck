@@ -11,10 +11,33 @@ PROVENANCE. Proper names, Bayer/Flamsteed designations, constellations, V
 magnitudes and J2000 positions are derived from the IAU Catalog of Star Names
 (IAU WGSN, 2022-04-04 edition; CC BY), cut at V <= 4.00 — roughly the naked-eye
 limit from a suburban back garden, so "if you can see it and it has a name, it
-is in here". Every row was then cross-checked against an INDEPENDENT source,
-the Yale Bright Star Catalogue (V/50, Hoffleit & Warren 1991) by HR number:
-240/240 agree, median separation 0.45", worst 10.4" (alpha Centauri, whose
-2 arcsec/yr proper motion splits the two catalogs' epochs).
+is in here". 241 rows.
+
+WHAT THAT CLAIM IS WORTH, precisely. An earlier version of this docstring said
+every row had been cross-checked against the Yale Bright Star Catalogue by HR
+number, quoting a median separation. That check was done by hand while writing
+the table; NOTHING IN THIS REPOSITORY CAN RE-RUN IT. There is no HR number on
+``NamedStar``, no vendored second catalog, and therefore no way for the next
+person to reproduce the number or for CI to notice if a row rots. A provenance
+claim you cannot re-run is a claim about the author, not about the data, and
+this instrument has spent a whole night being lied to by confident numbers — so
+the claim is withdrawn to what the repo can actually demonstrate, which is:
+
+  * every row lands inside the IAU boundary of the constellation its own
+    designation names (astropy's boundaries — a genuinely independent source,
+    and the check that catches a degree-scale transcription error);
+  * the 25 brightest stars in the sky are all present, by name;
+  * four published geometric facts hold to the arcminute — the Orion belt's
+    collinearity and 1.35 deg spacing, Mizar/Alcor at 11.8', the Dipper's
+    pointers at 5.37 deg, and Dubhe to Polaris at 28.7 deg. Each of those
+    constrains TWO OR THREE rows jointly against a number nobody derived from
+    this table, which is the part a coverage assertion cannot do;
+  * no two rows are the same point of sky, and no designation is claimed twice
+    except alpha Cen, which really is two stars.
+
+All of that lives in tests/test_catalog_stars.py and runs offline in ~1 s. It
+is weaker than a full catalog join and it is honest about being weaker. If you
+want the strong claim back, vendor an HR-keyed extract and add the column.
 
 FRAME. Fixed J2000/ICRS, the same convention as objects.py, so the hub's
 J2000 -> JNOW precession applies to these rows exactly as to a Messier target.

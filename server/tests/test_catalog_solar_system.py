@@ -21,7 +21,7 @@ import math
 import pytest
 
 from astrodeck.catalog import solar_system as ss
-from astrodeck.catalog.objects import search_catalog
+from astrodeck.catalog.objects import search, search_catalog
 from astrodeck.config import ConfigStore
 
 # 2026-07-31 04:00:00 UTC
@@ -162,9 +162,86 @@ def test_the_sun_is_not_a_search_result_by_default(store):
     assert "Sun" not in ids
 
 
+def test_searching_for_the_sun_says_why_the_sun_is_not_there(store):
+    """The refusal has to SPEAK, and the reason it nearly did not is subtle:
+    "sun" is not an empty search. M63 is the Sunflower Galaxy, so the query
+    comes back with a row, and any explanation that waited for "no matches"
+    would have handed the user an unrelated galaxy and said nothing about the
+    Sun at all — a silent instrument wearing the disguise of a working one.
+
+    So the note rides with the results, not instead of them."""
+    r = search("sun", limit=50, when=WHEN)
+    assert [x["id"] for x in r.rows] == ["M63"]          # the galaxy, not the Sun
+    assert r.notes == [ss.sun_block_reason()]
+    assert "filtered scope" in r.notes[0]
+    # ...and by the alias too, where there is genuinely nothing else to show.
+    assert search("sol", when=WHEN).notes == [ss.sun_block_reason()]
+
+
+def test_the_suns_refusal_does_not_leak_onto_unrelated_queries(store):
+    """"Sunflower" contains "sun" and has nothing to do with the Sun; "s" is a
+    prefix of it and of nine other things. Neither may drag a safety refusal
+    onto a search that never asked about the Sun — a warning that fires on the
+    wrong screen is how users learn to ignore warnings."""
+    assert search("sunflower", when=WHEN).notes == []
+    assert search("s", when=WHEN).notes == []
+
+
+def test_the_sun_says_nothing_when_it_is_not_being_withheld(store):
+    """During a solar session the Sun IS the answer, and a note explaining its
+    absence would be false. Reason and row are two states of one gate."""
+    cfg = store.cfg()
+    cfg.safety = cfg.safety.model_copy(update={"solar_avoidance": False})
+    r = search("sun", limit=50, when=WHEN)
+    assert "Sun" in [x["id"] for x in r.rows]
+    assert r.notes == []
+
+
 def test_a_blocked_sun_can_say_why_it_is_blocked(store):
     reason = ss.sun_block_reason()
     assert reason and "30" in reason and "avoidance" in reason.lower()
+    # It must point at the SAFE way to do this, never at a way around the gate:
+    # "use manual coordinates" would route the user straight at the thing sun
+    # avoidance exists to stop.
+    assert "manual" not in reason.lower() and "free-roam" not in reason.lower()
+
+
+# ------------------------------------------------- bodies we deliberately lack
+
+@pytest.mark.parametrize("query,expected", [
+    ("pluto", "JPL kernel"),
+    ("earth", "standing on it"),
+    ("ceres", "orbital elements"),
+])
+def test_a_body_we_do_not_carry_says_so_by_name(query, expected):
+    """Pluto is a fair thing to type. Before this, it fell through to a generic
+    "the catalog is deep-sky objects only" — which was already false, since the
+    catalog had just grown eight planets and 241 stars. Wrong scope copy sends
+    a user away from a feature that works."""
+    r = search(query, when=WHEN)
+    assert r.rows == []
+    assert len(r.notes) == 1 and expected in r.notes[0]
+
+
+def test_a_failed_ephemeris_names_the_body_it_could_not_place(store, monkeypatch):
+    """The failure mode the browser used to translate into "Planets aren't
+    supported yet". A body whose position cannot be computed must still not be
+    emitted — a wrong planet is worse than a missing one — but the reason has
+    to leave the process. Until it did, the server logged the truth and the
+    screen printed a guess."""
+    import astropy.coordinates as ac
+
+    def _boom(*a, **k):
+        raise RuntimeError("ephemeris table missing")
+
+    monkeypatch.setattr(ac, "get_body", _boom)
+    r = search("mars", limit=10, when=WHEN)
+    assert [x["id"] for x in r.rows] == []               # never a guessed position
+    assert len(r.notes) == 1
+    note = r.notes[0]
+    assert note.startswith("Mars")
+    assert "ephemeris table missing" in note             # the real cause, not a guess
+    assert "try again" in note
 
 
 def test_the_search_gate_is_the_slew_gate(store):
@@ -286,6 +363,28 @@ def test_the_route_the_atlas_calls_finds_them(client, query, expected):
 def test_the_route_never_hands_back_the_sun(client):
     rows = client.get("/api/catalog", params={"q": "sun"}).json()
     assert "Sun" not in [r["id"] for r in rows]
+
+
+def test_the_route_still_returns_a_bare_list_by_default(client):
+    """MountView and the Plan's search both consume /api/catalog as an array.
+    Adding a channel for reasons must not change the shape they read."""
+    body = client.get("/api/catalog", params={"q": "Mars"}).json()
+    assert isinstance(body, list) and body[0]["id"] == "Mars"
+
+
+def test_the_route_can_hand_back_the_reason_as_well_as_the_rows(client):
+    """`explain=1` is the whole delivery half of the fix: without it the reason
+    stops at the server log and the browser is left guessing from the query
+    text. Rows still carry alt/az, so a caller can render both from one GET."""
+    body = client.get("/api/catalog",
+                      params={"q": "sun", "explain": 1}).json()
+    assert [r["id"] for r in body["results"]] == ["M63"]
+    assert len(body["notes"]) == 1
+    assert "sun avoidance is armed" in body["notes"][0]
+    assert "alt" in body["results"][0]
+    # A query with nothing to explain says nothing, rather than padding.
+    assert client.get("/api/catalog",
+                      params={"q": "M31", "explain": 1}).json()["notes"] == []
 
 
 def test_the_moon_row_says_how_lit_it_is(store):
