@@ -7,6 +7,20 @@ position and drives to the minimum.
 Detection is a fast classic pipeline: background subtraction, threshold at
 k-sigma, local-maximum seeding, centroid + HFR on a small cutout. Good enough
 for focusing and star counts; not a photometry tool.
+
+Two size measurements live here and they are NOT interchangeable:
+
+* ``detect_stars`` measures each star in a fixed ``box`` px cutout. Cheap,
+  per-star, and correct while the star fits — the overlay, the star count, the
+  cloud detector and the preview HFR readout all want that. Its HFR SATURATES
+  around 0.77 * box/2 and it is not a focus metric off-focus; see
+  HFR_BOX_CEILING_FRACTION for why growing the box does not rescue it.
+* ``star_size`` / ``focus_size`` measure ONE number for the frame with no
+  ceiling at all, by finding sources on a pyramid of downsampled copies and
+  measuring each on its own azimuthally-median radial profile. This is the
+  AUTOFOCUS metric, because a sweep spends most of its points outside the
+  regime where a cutout of any fixed size can see the star. See the section
+  header further down for the sky data that forced it.
 """
 from __future__ import annotations
 
@@ -49,6 +63,31 @@ DEFAULT_MAX_MARKS = 400
 #: pixel puts ~0. Anything below 0.75 cannot be a resolved source at any
 #: sampling this instrument produces.
 MIN_NEIGHBOUR_FLUX_RATIO = 0.75
+
+#: What ``detect_stars``' HFR can and cannot say, so that no caller mistakes it
+#: for a focus metric off-focus. Inside a box of half-width h the flux-weighted
+#: mean radius cannot exceed ~0.77h — that is what a box of pure background
+#: reads — so the default box=15 saturates near 5 px, and it does so long
+#: before that. Measured here on Gaussians of known width, box=15:
+#:
+#:     sigma  1.6 -> HFR 2.00   (true 2.00)
+#:     sigma  3.0 -> HFR 3.37   (true 3.76)
+#:     sigma  5.0 -> HFR 3.91   (true 6.26)
+#:     sigma  8.0 -> HFR 4.13   (true 10.02)
+#:     sigma 12.0 -> HFR 4.20   (true 15.04)
+#:
+#: which is the sky reading of "HFR 4.5" on an 880 px donut field, reproduced
+#: on demand: past HFR ~4 this function returns the BOX's size, not the star's.
+#:
+#: Growing the box does not rescue it, and that was tried before this comment
+#: was written. A wider cutout on a dense field swallows the neighbours and
+#: measures the CLUSTER (simulator stars of sigma~1 came back at HFR 40), and
+#: clipping (pixel - background) at zero keeps the positive half of the noise,
+#: ~0.4 sigma per pixel, sitting at the box's largest radii — negligible at
+#: 15 px, decisive at 127. An off-focus source needs an aperture defined by the
+#: SOURCE and not by a constant. That is ``star_size``, below, and it is what an
+#: autofocus sweep must use.
+HFR_BOX_CEILING_FRACTION = 0.77
 
 
 def _ecc_theta(ixx: float, iyy: float, ixy: float) -> tuple[float, float]:
@@ -122,6 +161,12 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         cy = float((yy * cut).sum() / total)
         r = np.hypot(xx - cx, yy - cy)
         hfr = float((r * cut).sum() / total)
+        # `hfr > half` looks like the silent sample cut that would explain the
+        # off-focus collapse, and it is not: measured over the whole 2026-07-31
+        # fixture sweep it rejects 0 of 647 detections, because a 15 px box
+        # CANNOT produce an HFR above ~5.4 in the first place (see
+        # HFR_BOX_CEILING_FRACTION). Kept as-is; the ceiling is the defect and
+        # star_size is where it is fixed.
         if hfr <= 0.05 or hfr > half:
             continue
         # Second moments on the same background-subtracted cutout → real
@@ -157,8 +202,430 @@ def _median_hfr_from(stars: list[Star], min_stars: int = 3) -> tuple[float | Non
 
 
 def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
-    """Return (median HFR over the brightest stars, star count)."""
+    """Return (median HFR over the brightest stars, star count).
+
+    The PREVIEW readout. ``focus_size`` is what an autofocus sweep must use:
+    this one still asks "how big are the stars", and a sweep spends most of its
+    points where there are no stars, only donuts."""
     return _median_hfr_from(detect_stars(data), min_stars)
+
+
+# ---------------------------------------------------------------------------
+# SCALE-FREE SOURCE SIZE — the autofocus metric.
+#
+# Measured on the sky 2026-07-31 with the fixed-box HFR above, 4 s at gain 220
+# bin 1, eleven points of 250 steps around a true focus of 9900:
+#
+#      9900 -> HFR 4.44 (911 stars)   <- true focus
+#     10150 -> HFR 2.27  (22 stars)
+#     10400 -> HFR 2.13   (3 stars)
+#     10650 -> HFR 2.10   (7 stars)
+#     11150 -> HFR 2.62   (7 stars)
+#     -> autofocus failed: not_enough_spread
+#
+# Both halves of that are fatal and both come from the cutout. Detection
+# collapses, because a star's light spreads over an annulus that grows ~0.18 px
+# per focuser step and its surface brightness falls with the square of that; and
+# the measurement INVERTS, because what is left inside the box is one arc of the
+# ring, which is small. A focus metric that shrinks as you leave focus does not
+# merely fail, it aims the search away from the answer.
+#
+# So the size is measured differently here:
+#   * SOURCES ARE FOUND ON A PYRAMID of mean-binned copies, coarsest first. A
+#     180 px donut is a single filled blob once the cells are ~1/3 of it across,
+#     and binning an extended source by k lifts its per-pixel SNR by k. Coarse
+#     first also means one donut is claimed ONCE, instead of arriving as the
+#     130-713 ring fragments both detectors reported that night.
+#   * EACH SOURCE IS MEASURED ON ITS AZIMUTHALLY-MEDIAN RADIAL PROFILE, with the
+#     aperture grown until the profile falls into the noise. The median across
+#     each annulus is what makes it robust: a donut's ring fills its annulus, a
+#     neighbouring star occupies a few degrees of it and is ignored.
+#   * THE APERTURE HAS NO CEILING, only the frame. That is the whole point.
+#
+# Verified against server/tests/fixtures/focus_sweep (a real monotonic sweep of
+# the same field). Measured across the band an autofocus sweep samples:
+#
+#     8900 -> 76.25   9300 -> 51.29   9600 -> 23.83   9900 -> 4.61
+#    10200 -> 26.51  10500 -> 52.85  10900 -> 81.49     (px, one minimum)
+#
+# a clean V rising 0.074/0.078 px per step, whose two arms cross at 9896 —
+# four steps from the focus established independently from the full frames, and
+# 4.61 px at focus against the 4.44 those full frames measured with the box.
+# test_focus_metric.py is that check and it is the acceptance test for this code.
+#
+# The hard limit this CANNOT beat: past ~1500 steps out, a 4 s exposure did not
+# record the star at all (~6 ADU/px above background, which loses to a hot
+# pixel). Where there is no source, ``star_size`` returns None and
+# ``size_advice`` says what to change. No metric recovers a signal that was
+# never captured, and pretending otherwise is how a sweep ends up fitting noise.
+# ---------------------------------------------------------------------------
+
+#: Coarsest binning level in the detection pyramid. Level k finds sources up to
+#: roughly 3*k px across as single blobs, so 64 covers a ~200 px donut — the
+#: size a +/-1000 step sweep actually produces on this rig.
+SIZE_MAX_LEVEL = 64
+
+#: A binned level is only used while it still has this many cells per side.
+#: Below that the "background" is the source and every statistic is a fiction.
+SIZE_MIN_CELLS = 8
+
+#: Cap on sources measured per frame. The metric is a median over the brightest
+#: few; measuring 500 faint ones costs a second and moves the median by nothing.
+SIZE_MAX_SOURCES = 24
+
+#: Aperture radius ceiling, px. Bigger blobs than this belong to coarse focus
+#: (imaging.defocus), not to a sweep.
+SIZE_R_CAP = 512
+
+#: A source's aperture flux must beat this many sigma of its own aperture noise
+#: (sigma * sqrt(pixels)). At 5 a pure-noise 6.5 MP frame produced one phantom
+#: "source" of r=1.8 px — a fabricated size on the curve at a position where the
+#: truth was "nothing was recorded here". At 10 it produces none, and the
+#: DOMINANT source of every usable fixture frame — the one that decides the
+#: answer — clears the bar between 19x and 165x, so nothing real is at risk.
+SIZE_MIN_APERTURE_SNR = 10.0
+
+#: Sources fainter than this fraction of the brightest one do not vote. Their
+#: profiles are noise-dominated and they drag the median toward the noise floor
+#: — the same reason ``_median_hfr_from`` only lets the top flux quartile vote.
+SIZE_POPULATION_FRAC = 0.1
+
+#: A single source measured at this aperture SNR is a better focus point than
+#: three faint ones, so it satisfies ``focus_size``'s min_stars on its own. The
+#: count gate exists to keep a HOT PIXEL out of the fit; the resolved-source
+#: test now does that job directly and by construction.
+SIZE_CONFIDENT_SNR = 50.0
+
+
+@dataclass
+class SourceSize:
+    """One frame's answer to "how big are the sources", in data pixels."""
+    radius: float       #: flux-weighted mean radius, median over the bright sources
+    n_sources: int      #: sources that voted
+    n_found: int        #: resolved sources measured at all (>= n_sources)
+    snr: float          #: brightest source's aperture flux / (sigma*sqrt(pixels))
+    scale: int          #: pyramid level it was found at — 1 = a star, 64 = a donut
+    lower_bound: bool   #: the aperture ran into the frame edge; radius is a FLOOR
+
+
+def _mean_binned(a: np.ndarray, k: int) -> np.ndarray:
+    if k == 1:
+        return a
+    h, w = a.shape[0] // k * k, a.shape[1] // k * k
+    return a[:h, :w].reshape(h // k, k, w // k, k).mean(axis=(1, 3))
+
+
+def _bg_sigma(a: np.ndarray, sample: int = 250_000) -> tuple[float, float]:
+    """Robust (background, sigma). Subsampled above ``sample`` pixels: an exact
+    median of 26 million pixels costs ~200 ms and shifts the answer by less than
+    the noise it is measuring."""
+    flat = np.asarray(a).ravel()
+    if flat.size > sample:
+        flat = flat[::flat.size // sample]
+    bg = float(np.median(flat))
+    sig = float(np.median(np.abs(flat - bg))) * 1.4826
+    if sig <= 0.0:
+        sig = max(1e-6, float(flat.std()))
+    return bg, sig
+
+
+def _box3(b: np.ndarray) -> np.ndarray:
+    """3x3 mean. Applied only to BINNED levels: it is what fills the hole in a
+    ring so the coarse local maximum lands on the donut's centre instead of on
+    its rim, and at level 1 it would cost more than the whole rest of the pass."""
+    pad = np.pad(b, 1, mode="edge")
+    return sum(pad[i:i + b.shape[0], j:j + b.shape[1]]
+               for i in range(3) for j in range(3)) / 9.0
+
+
+def _size_levels(shape: tuple[int, int]) -> list[int]:
+    ks, k = [], 1
+    while k <= SIZE_MAX_LEVEL and min(shape[0] // k, shape[1] // k) >= SIZE_MIN_CELLS:
+        ks.append(k)
+        k *= 2
+    return ks
+
+
+def _seed_positions(img: np.ndarray, k: int, k_sigma: float,
+                    limit: int) -> list[tuple[float, float]]:
+    """Local maxima at binning level ``k``, returned in FULL-frame pixels."""
+    b = _mean_binned(img, k)
+    det = _box3(b) if k > 1 else b
+    bg, sig = _bg_sigma(det)
+    ys, xs = np.where(det > bg + k_sigma * sig)
+    if len(ys) == 0:
+        return []
+    order = np.argsort(det[ys, xs])[::-1]
+    ys, xs = ys[order], xs[order]
+    out: list[tuple[float, float]] = []
+    used = np.zeros(b.shape, dtype=bool)
+    for y, x in zip(ys, xs):
+        if used[y, x]:
+            continue
+        used[max(0, y - 2):y + 3, max(0, x - 2):x + 3] = True
+        out.append(((y + 0.5) * k, (x + 0.5) * k))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _radial_median_profile(img: np.ndarray, cy: float, cx: float, win: int,
+                           bg_fallback: float
+                           ) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """``(profile, samples_per_radius, background)`` about ``(cy, cx)``.
+
+    ``profile`` is background-subtracted and indexed by integer radius. Each
+    entry is the MEDIAN over that annulus, not the mean: that is what lets one
+    source be measured in a frame that contains others. Summing a window's flux
+    instead is exactly how ``measure_blob`` came to report a 445 px blob on a
+    frame holding 200 sharp stars — it was measuring the field, not a source.
+
+    The window is clipped to the frame, so annuli near an edge are partial;
+    ``samples_per_radius`` carries that so the caller can scale its noise bar.
+    """
+    h, w = img.shape
+    i0, i1 = int(max(0, cy - win)), int(min(h, cy + win + 1))
+    j0, j1 = int(max(0, cx - win)), int(min(w, cx + win + 1))
+    if i1 - i0 < 6 or j1 - j0 < 6:
+        return None
+    yy = (np.arange(i0, i1) - cy)[:, None]
+    xx = (np.arange(j0, j1) - cx)[None, :]
+    ri = np.sqrt(yy * yy + xx * xx).astype(np.int32).ravel()
+    vals = img[i0:i1, j0:j1].ravel()
+    inside = ri <= win
+    ri, vals = ri[inside], vals[inside]
+    if ri.size == 0:
+        return None
+    nbins = int(win) + 1
+    # One lexsort gives every annulus's median at once; nbins separate
+    # np.median calls cost ~4x more on the frames that matter.
+    order = np.lexsort((vals, ri))
+    ri_s, v_s = ri[order], vals[order]
+    bounds = np.searchsorted(ri_s, np.arange(nbins + 1))
+    cnt = np.diff(bounds).astype(np.float64)
+    mid = np.clip((bounds[:-1] + bounds[1:] - 1) // 2, 0, max(len(v_s) - 1, 0))
+    prof = np.where(cnt > 0, v_s[mid], np.nan)
+    if int(np.isfinite(prof).sum()) < 6:
+        return None
+    # Background from the outer quarter of the window, where the source is not.
+    tail = prof[int(nbins * 0.75):]
+    tail = tail[np.isfinite(tail)]
+    bg = float(np.median(tail)) if len(tail) >= 3 else bg_fallback
+    return np.where(np.isfinite(prof), prof - bg, 0.0), cnt, bg
+
+
+def _profile_edge(prof: np.ndarray, cnt: np.ndarray,
+                  sigma: float) -> tuple[int, int]:
+    """``(edge radius, peak radius)``: walk out from the profile's maximum and
+    stop where the annulus is no longer above the noise. THIS is "grow the
+    aperture until the enclosed flux converges" — one annulus at a time, with a
+    bar that scales as sigma/sqrt(samples) so a big, thin annulus is judged as
+    strictly as a small one. Starting from the peak rather than from r=0 is what
+    makes it work on a donut, whose centre is dark."""
+    smooth = np.convolve(prof, np.ones(3) / 3.0, mode="same")
+    peak = int(np.argmax(smooth))
+    bar = 2.5 * sigma / np.sqrt(np.maximum(cnt, 1.0))
+    for i in range(peak + 1, len(prof)):
+        if smooth[i] < bar[i]:
+            return i, peak
+    return len(prof) - 1, peak
+
+
+def _recentre(img: np.ndarray, bg: float, sigma: float, cy: float, cx: float,
+              r: float) -> tuple[float, float]:
+    """Flux-weighted centre inside radius ``r``. A coarse-level seed lands
+    within half a bin of the truth, and for a ring it can land on the rim; an
+    off-centre profile smears the ring across many radii and reads too big."""
+    h, w = img.shape
+    R = int(max(2, r))
+    i0, i1 = int(max(0, cy - R)), int(min(h, cy + R + 1))
+    j0, j1 = int(max(0, cx - R)), int(min(w, cx + R + 1))
+    v = np.clip(img[i0:i1, j0:j1] - bg - 3.0 * sigma, 0.0, None)
+    total = float(v.sum())
+    if total <= 0.0:
+        return cy, cx
+    ys = np.arange(i0, i1)[:, None]
+    xs = np.arange(j0, j1)[None, :]
+    return float((ys * v).sum() / total), float((xs * v).sum() / total)
+
+
+def _measure_source(img: np.ndarray, bg: float, sigma: float, cy: float,
+                    cx: float, win0: float, r_cap: float) -> dict | None:
+    """Measure one source, doubling the analysis window until its edge fits."""
+    h, w = img.shape
+    win = float(min(win0, r_cap))
+    state = None
+    for _ in range(6):
+        got = _radial_median_profile(img, cy, cx, int(win), bg)
+        if got is None:
+            return None
+        prof, cnt, local_bg = got
+        edge, peak = _profile_edge(prof, cnt, sigma)
+        state = (prof, cnt, local_bg, edge, peak, win)
+        if edge < 0.7 * win or win >= r_cap:
+            break
+        win = min(win * 2.0, r_cap)
+    prof, cnt, local_bg, edge, peak, win = state
+    if edge < 1:
+        return None
+    # Bin r holds every pixel whose radius floors to r, i.e. the annulus
+    # [r, r+1), so it stands at r+0.5 and not at r. Half a pixel sounds
+    # negligible and is not: at focus it is 12% of the whole answer, and it
+    # biases EVERY size low by the same half pixel, which is how a metric ends
+    # up disagreeing with the HFR it is supposed to be continuous with.
+    radii = np.arange(len(prof), dtype=np.float64) + 0.5
+    weight = np.clip(prof[:edge + 1], 0.0, None) * cnt[:edge + 1]
+    flux = float(weight.sum())
+    if flux <= 0.0:
+        return None
+    # Flux-weighted MEAN radius, deliberately the same estimator detect_stars
+    # uses, so the two agree at focus and the existing HFR calibration (and
+    # every threshold the UI hangs off it) still means what it meant.
+    mean_r = float((radii[:edge + 1] * weight).sum() / flux)
+    # r80 over the SAME aperture — the coarse-focus readout (imaging.defocus)
+    # wants an enclosing radius rather than a mean, and computing it here is how
+    # both numbers stay descriptions of one source instead of of one window.
+    cum = np.cumsum(weight)
+    r80 = float(radii[min(int(np.searchsorted(cum, 0.8 * flux)), edge)])
+    reach = min(cy, cx, h - 1 - cy, w - 1 - cx)
+    # Significance of the WHOLE aperture, not of its brightest pixel. A donut a
+    # thousand steps out peaks only ~4 sigma above sky per pixel and would fail
+    # any peak test, while its 60000-pixel aperture holds the flux of a bright
+    # star: 500 sigma. Judging it on the peak is judging surface brightness,
+    # which is exactly the quantity defocus destroys.
+    snr = flux / (sigma * math.sqrt(math.pi * max(edge, 1.0) ** 2))
+    return {"y": cy, "x": cx, "edge": float(edge), "peak_r": peak,
+            "mean_r": mean_r, "r80": r80, "flux": flux,
+            "peak": float(prof.max()), "bg": local_bg, "snr": float(snr),
+            "truncated": bool(edge >= 0.95 * win or edge > reach)}
+
+
+def _is_resolved(img: np.ndarray, bg: float, cy: float, cx: float,
+                 r: float) -> bool:
+    """The hot-pixel physics of MIN_NEIGHBOUR_FLUX_RATIO, applied at any scale:
+    the brightest pixel inside the aperture has to share flux with its
+    neighbours. Binning does not remove a hot pixel — a 60000 ADU cell is still
+    3700 ADU above sky after a 4x4 mean — so a pyramid without this test finds a
+    'source' on every dark frame."""
+    h, w = img.shape
+    R = max(2, int(r))
+    i0, i1 = max(0, int(cy) - R), min(h, int(cy) + R + 1)
+    j0, j1 = max(0, int(cx) - R), min(w, int(cx) + R + 1)
+    sub = img[i0:i1, j0:j1]
+    if sub.size == 0:
+        return False
+    iy, ix = np.unravel_index(int(np.argmax(sub)), sub.shape)
+    y, x = i0 + iy, j0 + ix
+    if y < 1 or x < 1 or y >= h - 1 or x >= w - 1:
+        return True                       # cannot judge at the border; keep it
+    centre = float(img[y, x]) - bg
+    if centre <= 0.0:
+        return True
+    ring8 = float(img[y - 1:y + 2, x - 1:x + 2].sum()) - 9.0 * bg - centre
+    return ring8 >= MIN_NEIGHBOUR_FLUX_RATIO * centre
+
+
+def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
+              max_sources: int = SIZE_MAX_SOURCES,
+              r_cap: float = SIZE_R_CAP) -> SourceSize | None:
+    """How big are the sources in this frame, in data pixels — or ``None``.
+
+    ``None`` means "no measurable source", which on a wide sweep is the literal
+    truth and not a failure of the code: see ``size_advice``.
+    """
+    img = np.asarray(data, dtype=np.float64)
+    if img.ndim != 2 or min(img.shape) < 16:
+        return None
+    bg, sigma = _bg_sigma(img)
+    cap = float(min(r_cap, min(img.shape) / 2.0))
+    found: list[dict] = []
+    claimed: list[tuple[float, float, float]] = []
+    for k in reversed(_size_levels(img.shape)):
+        # Coarse levels are a handful of big blobs; level 1 is a star field.
+        limit = 6 if k >= 8 else (40 if k > 1 else 60)
+        for (y, x) in _seed_positions(img, k, k_sigma, limit):
+            if len(found) >= max_sources:
+                break
+            if any((y - c[0]) ** 2 + (x - c[1]) ** 2 < c[2] ** 2 for c in claimed):
+                continue        # already measured as part of a bigger source
+            if not _is_resolved(img, bg, y, x, 3):
+                continue
+            m = _measure_source(img, bg, sigma, y, x, max(8.0, 8.0 * k), cap)
+            if m is None:
+                continue
+            ny, nx = _recentre(img, m["bg"], sigma, y, x, m["edge"])
+            better = _measure_source(img, bg, sigma, ny, nx,
+                                     max(8.0, m["edge"] * 1.5), cap)
+            if better is not None:
+                m = better
+            if m["snr"] < SIZE_MIN_APERTURE_SNR:
+                continue
+            if not _is_resolved(img, bg, m["y"], m["x"], max(3.0, m["edge"] * 0.5)):
+                continue
+            m["scale"] = k
+            claimed.append((m["y"], m["x"], max(3.0, m["edge"])))
+            found.append(m)
+    if not found:
+        return None
+    solid = [m for m in found if not m["truncated"]]
+    if not solid:
+        # Every source ran off the edge of the frame. Report the biggest as a
+        # floor rather than nothing: "at least this big" is still the right
+        # answer to "which way is focus", and lower_bound says not to trust the
+        # magnitude.
+        big = max(found, key=lambda m: m["mean_r"])
+        return SourceSize(radius=big["mean_r"], n_sources=1, n_found=len(found),
+                          snr=big["snr"], scale=int(big["scale"]),
+                          lower_bound=True)
+    solid.sort(key=lambda m: -m["flux"])
+    brightest = solid[0]
+    voters = [m for m in solid if m["flux"] >= SIZE_POPULATION_FRAC * brightest["flux"]]
+    return SourceSize(
+        radius=float(np.median([m["mean_r"] for m in voters])),
+        n_sources=len(voters), n_found=len(found),
+        snr=brightest["snr"], scale=int(brightest["scale"]), lower_bound=False)
+
+
+def size_advice(size: SourceSize | None, *,
+                exposure_s: float | None = None) -> str | None:
+    """What to change, when the number is missing or is not to be trusted.
+
+    ``None`` when the measurement stands on its own. Everything here is
+    something only this module knows, so the caller does not have to guess a
+    cause — guessing one is what sent the user outside to check the sky on a
+    clear night."""
+    if size is None:
+        longer = (f" Try {exposure_s * 4:g}s instead of {exposure_s:g}s."
+                  if exposure_s else "")
+        return ("No source rose above the noise anywhere in the frame. Far from "
+                "focus a star's light is spread over hundreds of pixels, so a "
+                "wide sweep needs a far longer exposure than a near-focus one — "
+                "this rig recorded nothing at all past about 1500 steps at 4s."
+                + longer)
+    if size.lower_bound:
+        return (f"The blob runs past the edge of the frame, so {size.radius:.0f}px "
+                "is a floor and not a measurement. Move back toward focus, or "
+                "sweep with a wider field (lower binning), before trusting the "
+                "size.")
+    return None
+
+
+def focus_size(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
+    """``(size in px, sources behind it)`` — the drop-in an autofocus sweep wants.
+
+    Same shape as ``median_hfr`` and the same units at focus, but it keeps
+    rising all the way out instead of turning over once the star outgrows a
+    cutout. ``min_stars`` still guards the fit, with one deliberate exception:
+    a single source measured at SIZE_CONFIDENT_SNR is admitted alone, because
+    at 1000 steps out a rich field legitimately yields two or three measurable
+    donuts and dropping those points is precisely how the sweep came back
+    'not_enough_spread' with a perfect V sitting in the data."""
+    size = star_size(data)
+    if size is None:
+        return None, 0
+    if size.n_sources < min_stars and size.snr < SIZE_CONFIDENT_SNR:
+        return None, size.n_sources
+    return size.radius, size.n_sources
 
 
 def _mid_bright_gate(stars: list[Star], full_well: int | None) -> tuple[float, float | None]:

@@ -29,6 +29,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# ONE definition of "where does this source end" and one of "is this a hot
+# pixel", shared with the star metric. Two answers to those questions is how
+# the same frame came back as "0-2 stars", "713 stars" and "a 445 px blob" on
+# the same night, each from a different piece of code.
+from .stars import (
+    SIZE_MIN_APERTURE_SNR, _bg_sigma, _is_resolved, _measure_source, _recentre,
+    _seed_positions,
+)
+
 #: Work at 1/4 resolution. A donut is hundreds of pixels across, so quarter-res
 #: costs nothing real and makes a 26 MP frame cheap to measure.
 BIN = 4
@@ -52,6 +61,28 @@ HANDOVER_R80_PX = 12.0
 #: (measured peak SNR 104) clears it with room to spare.
 SOURCE_THRESHOLD_SIGMA = 5.0
 
+#: How many separately resolved sources still count as "one blob".
+#:
+#: The single-blob assumption used to be assumed rather than checked, and on a
+#: real frame carrying 200 stars at median HFR 4.49 px this function answered
+#: "r80 445 px — 891 px across". It was summing every pixel above 5 sigma inside
+#: a 1200 px window, so what it actually measured was the SPREAD OF THE FIELD.
+#: Downstream that outranks HFR (lib/focusVerdict.ts lets defocus_r80 > 25 win),
+#: so a user with 200 sharp stars was told to run coarse focus, and it produced
+#: a fabricated 13 mm defocus in front of the user on 2026-07-31.
+#:
+#: Coarse focus exists for the regime where there are NO stars, only one huge
+#: annulus. One blob, or a blob with a companion merged into it, is that regime.
+#: Three separately resolved sources is not: the optics are resolving the field
+#: and imaging.stars.focus_size measures it properly out past +/-1000 steps, so
+#: declining here costs nothing and stops this function from voting on frames it
+#: cannot describe.
+MAX_SOURCES_FOR_ONE_BLOB = 2
+
+#: Brightest candidate peaks probed before giving up on finding a source. A
+#: hot pixel outshines any blob, so the first few are usually rejects.
+PROBE_PEAKS = 12
+
 
 @dataclass
 class BlobSize:
@@ -63,6 +94,11 @@ class BlobSize:
     y: int
     background: float
     sigma: float
+    #: The blob ran off the edge of the frame, so ``r80`` is a FLOOR. Still the
+    #: right answer to "which way is focus" — "at least this big" is what the
+    #: module docstring promises — but not a number to extrapolate a distance
+    #: from. ``focus_from_two`` on two floors invents a focus position.
+    lower_bound: bool = False
 
     @property
     def diameter(self) -> float:
@@ -80,10 +116,16 @@ def _binned(a: np.ndarray, k: int = BIN) -> np.ndarray:
 
 def measure_blob(data: np.ndarray, *, bin_: int = BIN,
                  window_px: int = WINDOW_PX) -> BlobSize | None:
-    """Size of the brightest source. None when there is no source at all.
+    """Size of the ONE dominant source, or None when that question is wrong.
 
     Works on a donut and on a star with the same code and the same units, which
     is what lets ONE number track focus across the whole range.
+
+    Two ways this declines, and both are answers rather than failures:
+    ``None`` when nothing rises above the noise, and ``None`` when the frame
+    resolves more than ``MAX_SOURCES_FOR_ONE_BLOB`` separate sources — the
+    single-blob assumption this measurement rests on is now CHECKED. The caller
+    then falls back to the star metric, which is the right instrument there.
     """
     a = np.asarray(data, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 8 * bin_ or a.shape[1] < 8 * bin_:
@@ -91,44 +133,50 @@ def measure_blob(data: np.ndarray, *, bin_: int = BIN,
     b = _binned(a, bin_)
     bg = float(np.median(b))
     sigma = float(1.4826 * np.median(np.abs(b - bg))) or 1e-6
+    # The hot-pixel test needs FULL resolution: at quarter-res a focused star
+    # and a hot pixel are both one cell, and only the unbinned neighbourhood
+    # tells them apart. (This is why the binned frame alone cannot police it.)
+    bg_full, _ = _bg_sigma(a)
 
-    # Find the brightest REGION, not the brightest pixel: a hot pixel is a
-    # single cell and would drag the window off the actual blob.
-    pad = np.pad(b, 1, mode="edge")
-    sm = sum(pad[i:i + b.shape[0], j:j + b.shape[1]]
-             for i in range(3) for j in range(3)) / 9.0
-    cy, cx = np.unravel_index(int(np.argmax(sm)), sm.shape)
-    if sm[cy, cx] - bg < 3.0 * sigma:
-        return None                       # nothing above the noise anywhere
-
-    r = max(4, window_px // (2 * bin_))
-    y0, y1 = max(0, cy - r), min(b.shape[0], cy + r + 1)
-    x0, x1 = max(0, cx - r), min(b.shape[1], cx + r + 1)
-    cut = b[y0:y1, x0:x1] - bg
-    yy, xx = np.mgrid[y0:y1, x0:x1]
-    rad = np.hypot(yy - cy, xx - cx).ravel()
-    # Count only pixels meaningfully ABOVE the background.
-    #
-    # Clipping raw residuals at zero instead lets the window's own noise
-    # dominate: at quarter-res a 1200px window is ~360k pixels, and the positive
-    # half of the noise sums to far more "flux" than a small source contains. A
-    # FOCUSED star then measured r80=410px — the metric reporting maximum
-    # defocus exactly when it was in focus, which would drive the search away
-    # from the answer.
-    resid = cut.ravel()
-    val = np.where(resid > SOURCE_THRESHOLD_SIGMA * sigma, resid, 0.0)
-    total = float(val.sum())
-    if total <= 0.0:
+    win0 = float(max(4, window_px // (2 * bin_)))
+    r_cap = float(min(b.shape) / 2.0)
+    sources: list[dict] = []
+    claimed: list[tuple[float, float, float]] = []
+    for (sy, sx) in _seed_positions(b, 1, SOURCE_THRESHOLD_SIGMA, PROBE_PEAKS):
+        if any((sy - c[0]) ** 2 + (sx - c[1]) ** 2 < c[2] ** 2 for c in claimed):
+            continue            # a rim peak of a blob already measured
+        if not _is_resolved(a, bg_full, sy * bin_, sx * bin_, 2 * bin_):
+            continue            # a hot pixel outshines every blob; skip it
+        m = _measure_source(b, bg, sigma, sy, sx, win0, r_cap)
+        if m is None:
+            continue
+        # A seed lands on the RING of a donut, never in its dark centre; the
+        # profile only describes the blob once it is centred on it.
+        ny, nx = _recentre(b, m["bg"], sigma, sy, sx, m["edge"])
+        better = _measure_source(b, bg, sigma, ny, nx,
+                                 max(win0, m["edge"] * 1.5), r_cap)
+        if better is not None:
+            m = better
+        if m["snr"] < SIZE_MIN_APERTURE_SNR:
+            continue
+        # A source whose aperture hit the frame edge is bigger than we measured,
+        # so it claims further out than we measured. Without this a blob that
+        # runs off the frame comes back as three "separate sources" — its own
+        # rim, counted twice — and the multi-source guard below then refuses a
+        # frame that holds exactly one (very large) blob.
+        claimed.append((m["y"], m["x"],
+                        max(3.0, m["edge"] * (2.0 if m["truncated"] else 1.0))))
+        sources.append(m)
+    if not sources:
         return None
-    order = np.argsort(rad)
-    cum = np.cumsum(val[order])
-    idx = int(np.searchsorted(cum, 0.8 * total))
-    idx = min(idx, len(order) - 1)
-    r80 = float(rad[order][idx] * bin_)
-    return BlobSize(r80=r80, peak=float(cut.max()),
-                    snr=float(cut.max() / sigma),
-                    x=int(cx * bin_), y=int(cy * bin_),
-                    background=bg, sigma=sigma)
+    if len(sources) > MAX_SOURCES_FOR_ONE_BLOB:
+        return None
+    m = max(sources, key=lambda s: s["flux"])
+    return BlobSize(r80=float(m["r80"] * bin_), peak=float(m["peak"]),
+                    snr=float(m["peak"] / sigma),
+                    x=int(m["x"] * bin_), y=int(m["y"] * bin_),
+                    background=bg, sigma=sigma,
+                    lower_bound=bool(m["truncated"]))
 
 
 def focus_from_two(p1: int, r1: float, p2: int, r2: float) -> float | None:
