@@ -146,20 +146,25 @@ def _encode(img01: np.ndarray, *, max_width: int, fmt: str,
     publishes them as ``display_width``/``display_height`` and the client sizes
     the stage from them.
 
-    The two lines below are the only place in the preview path where raw bytes
-    meet a separately-supplied row length, so they are the only place a stride
-    can go wrong — and PIL will not stop it. ``Image.fromarray(arr, mode="L")``
-    does NOT check that the buffer is one byte per pixel: it lays the image over
-    the buffer at stride == width and reads ``width`` bytes per row. Hand it a
-    2-byte-per-pixel (uint16) array under mode "L" and every output row starts
-    half a row further into the previous one, so the frame comes out squeezed,
-    sheared diagonally and repeated down the canvas — encoded happily, returned
-    with HTTP 200, indistinguishable downstream from a good frame. That is the
-    artefact the Capture preview showed on 2026-07-31. So: the array is forced
-    to one byte per pixel FIRST, the image is then built from the array's own
-    dtype (no ``mode=`` reinterpretation — also removed outright in Pillow 13),
-    and anything that is not a plain 2-D frame is refused rather than guessed
-    at. A missing preview is honest; a sheared one is a lie about the sky.
+    NOT the cause of the sheared/tiled Capture preview of 2026-07-31, and this
+    note is here so the next person does not spend the night here as one already
+    has. It is a tempting site: ``Image.fromarray(arr, mode="L")`` lays the image
+    over the buffer at stride == width without checking the buffer is one byte
+    per pixel, so a uint16 array under mode "L" really does come back squeezed,
+    sheared and repeated — verified against Pillow 12.2. But this function has
+    always run ``.astype(np.uint8)`` on the line before, so ``mode="L"`` only
+    ever restated the dtype's own mode (Pillow does not even deprecate it in that
+    case, and does not remove it in 13) and never had a wide buffer to misread;
+    a 3-plane array raised ``Too many dimensions`` rather than encoding anything.
+    Dropping the redundant ``mode=`` and naming the shape on refusal changes the
+    error text and NOTHING else — the output bytes are identical either way.
+
+    What the encoder does NOT do is give the frame its shape. ``img01`` arrives
+    already laid out, and this function reproduces that layout faithfully — a
+    frame whose rows were read at the wrong length upstream encodes into a
+    picture with the same shear, at a size that agrees with the event, and
+    nothing downstream can tell. #110's real mechanism is therefore above this
+    line: see the hand-off in ``tests/test_processing_stride.py``.
     """
     a = np.asarray(img01)
     if a.ndim != 2:
