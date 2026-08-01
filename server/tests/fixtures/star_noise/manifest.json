@@ -1,0 +1,23 @@
+{
+  "note": "Both 4s gain 220 bin 1, Player One 26MP, 2026-07-31/08-01. blank_overcast was taken under 100% cloud and contains NO sources at all; detect_stars reported 200 stars on it while the native detector reported 2. star_field is a clear-sky Milky Way field near Deneb with ~200 real stars at HFR 3.8.",
+  "entries": [
+    {
+      "file": "blank_overcast.npz",
+      "source": "Light_skycheck_L_2026-08-01_013556_0002.fits",
+      "shape": [
+        1024,
+        1024
+      ],
+      "expected_sources": 0
+    },
+    {
+      "file": "star_field.npz",
+      "source": "Light_qa-deneb_L_2026-07-31_231621_0002.fits",
+      "shape": [
+        1024,
+        1024
+      ],
+      "expected_sources": "many"
+    }
+  ]
+}

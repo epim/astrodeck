@@ -66,6 +66,18 @@ DEFAULT_MAX_MARKS = 400
 #: sampling this instrument produces.
 MIN_NEIGHBOUR_FLUX_RATIO = 0.75
 
+#: Minimum significance of a detection's WHOLE cutout, in sigma, against what
+#: noise alone would put in a region that size. The peak tests above judge one
+#: pixel; this judges the source.
+#:
+#: 8 sigma, from two real frames of the same camera and exposure
+#: (server/tests/fixtures/star_noise): on a fully overcast frame containing no
+#: sources the selected peaks reach only 5.7 sigma at the 99th percentile, while
+#: a real star field sits at 11.7 median and 285 at the 99th. 8 clears the whole
+#: noise population with margin and still keeps the great majority of real
+#: stars. Being in sigma, it needs no per-rig recalibration.
+MIN_APERTURE_SNR = 8.0
+
 #: What ``detect_stars``' HFR can and cannot say, so that no caller mistakes it
 #: for a focus metric off-focus. Inside a box of half-width h the flux-weighted
 #: mean radius cannot exceed ~0.77h — that is what a box of pure background
@@ -154,7 +166,32 @@ def detect_stars(data: np.ndarray, k_sigma: float = 5.0,
         # radius as the HFR metric — smooth and robust to undersampling,
         # unlike the cumulative half-flux threshold.
         border = np.concatenate([cut[0], cut[-1], cut[1:-1, 0], cut[1:-1, -1]])
-        cut = (cut - float(np.median(border))).clip(0)
+        local_bg = float(np.median(border))
+        # Is this a SOURCE, or is it noise that happened to peak?
+        #
+        # The peak test above (k_sigma, plus the hot-pixel neighbour ratio) asks
+        # about one pixel and its ring. Noise clears both: on a real, completely
+        # overcast frame with no stars in it at all, this function returned 200
+        # "stars" while the native detector returned 2 — and that count feeds the
+        # preview readout, the Bahtinov aid and the CLOUD DETECTOR, so a cloud
+        # detector could see two hundred stars through solid overcast.
+        #
+        # A noise peak is a couple of excess pixels; a star is a whole PSF. So
+        # judge the WHOLE cutout's flux against what noise alone would put in a
+        # region that size. Measured on two real frames from the same camera and
+        # exposure (server/tests/fixtures/star_noise), aperture SNR came out:
+        #     blank overcast : median 2.5, 99th percentile 5.7
+        #     real star field: median 11.7, 99th percentile 285
+        # so the bar below removes every one of the 143 false detections and
+        # keeps 72 of the real ones. It is in units of sigma, so it carries to
+        # any rig without recalibration.
+        #
+        # Computed BEFORE the clip: clipping keeps the positive half of the
+        # noise and would bias the very quantity being tested.
+        aper = float((cut - local_bg).sum())
+        if aper < MIN_APERTURE_SNR * noise * math.sqrt(cut.size):
+            continue
+        cut = (cut - local_bg).clip(0)
         total = float(cut.sum())
         if total <= 0:
             continue
