@@ -759,9 +759,18 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
 
         {/* 4. HTML label layer — real CSS px, >=12px */}
         <div className="absolute inset-0 pointer-events-none text-ink" aria-hidden>
-          {/* compass letters */}
+          {/* compass letters. The right-hand tick was labelled E and is WEST:
+              both renderers on this canvas place East to the LEFT (tileView
+              tileMesh `x = half − ξ·pxPerDeg  // East-left`, and surveyView's
+              transform for the <img> fallback), which is the standard N-up
+              astronomical orientation the survey frames arrive in. So the
+              letter, and only the letter, disagreed with every pixel under it —
+              and a compass that lies is not a decoration on a page whose whole
+              job is saying where something is. Relabelled rather than moved: the
+              tick geometry and the "Object size" clamp below it are measured
+              positions, and this needs one character, not a re-layout. */}
           <span className="absolute left-1/2 -translate-x-1/2 top-1 text-[12px] mono">N</span>
-          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[12px] mono">E</span>
+          <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[12px] mono">W</span>
           {/* "Your camera" + FOV readout, pinned just above the frame footprint.
               Anchored to END short of dead-center (not centered on it) so its
               text never sits in the rotate handle's central column — the
@@ -813,7 +822,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
               <span
                 className="absolute text-[12px] mono whitespace-nowrap px-1 bg-black/45 text-dim"
                 style={{
-                  // Parked on the right edge it would land exactly on the "E"
+                  // Parked on the right edge it would land exactly on the "W"
                   // compass letter (also right-1, vertically centred), so the
                   // clamped position steps down clear of it.
                   left: clamped ? boxPx - 6 : want,
