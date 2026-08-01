@@ -118,11 +118,84 @@ export function PreviewStage(props: Props) {
   // The linear path is the capability gate for the client LUT canvas AND for both
   // /crop and /render.png (they 404 without entry.linear). One flag, one truth.
   const linearEnabled = !!preview && !isNina && preview.data_is_linear;
+  // Which render path this frame takes. Hoisted above the dimension derivation
+  // because the <img> double buffer and the linear canvas measure their decoded
+  // bytes in two different places and both feed the same size.
+  const imgPath = !preview || isNina || !preview.data_is_linear;
+
+  // ----- the bytes, and their OWN dimensions -----
+  // ALWAYS keep the old front visible until the new image has DECODED in the back
+  // buffer, then promote (no blank, ever — decisions #17). Declared up here
+  // because the layout size below is measured off whichever buffer is painted.
+  const displayUrl = preview ? u(`/api/preview/${preview.id}`) : null;
+  const [frontUrl, setFrontUrl] = useState<string | null>(displayUrl);
+  const [backUrl, setBackUrl] = useState<string | null>(null);
+  const [backVisible, setBackVisible] = useState(false);
+  const [fadeOn, setFadeOn] = useState(true);
+  const fadeTimer = useRef<number | null>(null);
+
+  // Lane B — track the frame URL whose <img> failed to decode (404 / corrupt /
+  // pruned on the server). When the ACTIVE frame's url is the broken one we render
+  // the logo empty state instead of the browser's broken-image glyph. Reset on
+  // every new frame so a later good frame recovers automatically.
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+
+  // Dimensions of the bytes the browser ACTUALLY decoded, keyed by frame URL.
+  //
+  // On 2026-07-31 the Capture preview drew a frame sheared, tiled and at an
+  // angle while the saved FITS was clean — the signature of a row length that
+  // is not the one the pixels were written with. The stage used to take the
+  // event's display_width/display_height on faith and stretch whatever bytes
+  // arrived into that box, so it could not tell a good frame from a frame it
+  // was mis-sizing, and it drew the star overlay and the scale bar off the same
+  // wrong number. An <img> knows its own naturalWidth/naturalHeight; the linear
+  // canvas gets the same pair from useImageRemap's onReady. Measure, then draw
+  // — and when the measurement disagrees with the event, say so (below) rather
+  // than silently rescaling. The map is keyed by URL so a new frame can never
+  // inherit the previous frame's measurement, which is the whole bug class.
+  const [decodedByUrl, setDecodedByUrl] =
+    useState<ReadonlyMap<string, { w: number; h: number }>>(() => new Map());
+  const noteDecoded = (url: string | null, w: number, h: number) => {
+    if (!url || !w || !h) return;
+    setDecodedByUrl((prev) => {
+      const cur = prev.get(url);
+      if (cur && cur.w === w && cur.h === h) return prev;
+      const next = new Map(prev);
+      next.set(url, { w, h });
+      // Only the few URLs in flight (front, back, live) can matter; a kept-around
+      // measurement is exactly the stale dimension this map exists to prevent.
+      while (next.size > 4) {
+        const oldest = next.keys().next();
+        if (oldest.done) break;
+        next.delete(oldest.value);
+      }
+      return next;
+    });
+  };
+
+  // Which bytes are on screen right now: the promoted front buffer on the <img>
+  // path; on the linear path there is no double buffer — useImageRemap repaints
+  // the canvas as soon as the newest url decodes.
+  const paintedUrl = imgPath ? frontUrl ?? displayUrl : displayUrl;
+  const paintedDims = paintedUrl ? decodedByUrl.get(paintedUrl) ?? null : null;
   // P3-2 (client half): `_image_dims` returns 0 on a PIL decode failure, and 0 is
   // not nullish — so `??` would keep a 0-wide invisible stage. Use a FALSY fallback
   // so display_width=0 falls back to data_width (then 0). Same for height.
-  const dispW = preview?.display_width || preview?.data_width || 0;
-  const dispH = preview?.display_height || preview?.data_height || 0;
+  const metaW = preview?.display_width || preview?.data_width || 0;
+  const metaH = preview?.display_height || preview?.data_height || 0;
+  // The event's numbers are only a prediction of the bytes; use them until the
+  // bytes themselves are in hand, then believe the bytes.
+  const dispW = paintedDims?.w || metaW;
+  const dispH = paintedDims?.h || metaH;
+  // The server said one size and sent another. Nothing here can repair that, so
+  // the stage draws the pixels at their true size and reports the disagreement:
+  // whatever is on screen is the bytes, but the overlays are anchored to the
+  // frame the event described. Same-frame only — mid-crossfade the front buffer
+  // is legitimately the PREVIOUS frame at its own (different) size.
+  const dimsMismatch =
+    !!preview && paintedUrl === displayUrl && !!paintedDims && !!metaW && !!metaH
+      ? Math.abs(paintedDims.w - metaW) > 1 || Math.abs(paintedDims.h - metaH) > 1
+      : false;
 
   // ----- measure stage -----
   useLayoutEffect(() => {
@@ -206,22 +279,10 @@ export function PreviewStage(props: Props) {
   }, [setFit, setHundred, zoomAt, viewport.scale, stageSize.w, stageSize.h, loupeOn, linearEnabled]);
 
   // ----- double buffer (NINA / display <img> path) -----
-  // ALWAYS keep the old front visible until the new image has DECODED in the back
-  // buffer, then promote (no blank, ever — decisions #17). On a slow loop / pause
-  // / long exposure we cross-fade; on a fast loop we snap (0ms fade). A newer
-  // frame arriving mid-fade cancels the in-flight one by replacing backUrl.
-  const displayUrl = preview ? u(`/api/preview/${preview.id}`) : null;
-  const [frontUrl, setFrontUrl] = useState<string | null>(displayUrl);
-  const [backUrl, setBackUrl] = useState<string | null>(null);
-  const [backVisible, setBackVisible] = useState(false);
-  const [fadeOn, setFadeOn] = useState(true);
-  const fadeTimer = useRef<number | null>(null);
-
-  // Lane B — track the frame URL whose <img> failed to decode (404 / corrupt /
-  // pruned on the server). When the ACTIVE frame's url is the broken one we render
-  // the logo empty state instead of the browser's broken-image glyph. Reset on
-  // every new frame so a later good frame recovers automatically.
-  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+  // On a slow loop / pause / long exposure we cross-fade; on a fast loop we snap
+  // (0ms fade). A newer frame arriving mid-fade cancels the in-flight one by
+  // replacing backUrl. (The buffer state itself is declared further up, next to
+  // the decoded-dimension map that measures it.)
   useEffect(() => {
     setBrokenUrl(null);
   }, [displayUrl]);
@@ -258,7 +319,13 @@ export function PreviewStage(props: Props) {
   useEffect(() => () => { if (fadeTimer.current != null) clearTimeout(fadeTimer.current); }, []);
 
   // ----- linear path canvas remap -----
-  useImageRemap(canvasRef, linearEnabled ? displayUrl : null, stretch, linearEnabled, stretchDragging);
+  // The 6th argument is the canvas path's measurement: useImageRemap reports the
+  // naturalWidth/naturalHeight of the base it just decoded. Keying it on the
+  // CURRENT displayUrl is sound because a superseded load is cancelled in the
+  // hook's cleanup before its onload can fire, so onReady only ever describes
+  // the newest url — the one this closure is holding.
+  useImageRemap(canvasRef, linearEnabled ? displayUrl : null, stretch, linearEnabled,
+    stretchDragging, (w, h) => noteDecoded(displayUrl, w, h));
 
   // displayScale: display px per data px (for star coords)
   const displayScale = preview && preview.data_width ? dispW / preview.data_width : 1;
@@ -368,8 +435,12 @@ export function PreviewStage(props: Props) {
   // The <img> path can fail to decode (404 / pruned / corrupt). When the frame the
   // stage is currently trying to paint is the broken one, treat it like "no frame"
   // so we show the logo placeholder instead of a broken-image glyph.
-  const imgPath = !preview || isNina || !preview.data_is_linear;
   const activeImgUrl = frontUrl ?? displayUrl;
+  // The incoming buffer decodes on top of the front one and the two frames need
+  // not be the same size (a binning or ROI change mid-loop). Each buffer is drawn
+  // at ITS OWN measured size; until its bytes land, its own event dims are the
+  // best estimate we have of them.
+  const backDims = (backUrl ? decodedByUrl.get(backUrl) : null) ?? { w: metaW, h: metaH };
   const imgBroken = imgPath && brokenUrl != null && brokenUrl === activeImgUrl;
 
   // ----- empty / placeholder state -----
@@ -419,9 +490,14 @@ export function PreviewStage(props: Props) {
           <>
             {/* front buffer (current frame) stays painted until back decodes */}
             <img
-              src={frontUrl ?? displayUrl ?? undefined}
+              src={activeImgUrl ?? undefined}
               alt={`frame ${preview.id}`}
-              onError={() => setBrokenUrl(frontUrl ?? displayUrl ?? null)}
+              // Measure on every load, including a cache hit, so the front buffer
+              // is sized by the bytes in it rather than by what the event claimed.
+              onLoad={(e) =>
+                noteDecoded(activeImgUrl, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+              }
+              onError={() => setBrokenUrl(activeImgUrl ?? null)}
               className="astro absolute top-0 left-0"
               style={{ width: dispW, height: dispH, filter: ninaFilter }}
             />
@@ -432,7 +508,13 @@ export function PreviewStage(props: Props) {
                 key={backUrl}
                 src={backUrl}
                 alt=""
-                onLoad={onBackLoaded}
+                onLoad={(e) => {
+                  // record the incoming frame's real size BEFORE promoting it, so
+                  // the moment it becomes the front buffer the layer around it is
+                  // already the right shape — no one-frame stretch on a size change.
+                  noteDecoded(backUrl, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight);
+                  onBackLoaded();
+                }}
                 onError={() => {
                   // a broken incoming frame must not blank the (good) front buffer
                   // or get promoted; just drop the back buffer and keep the front.
@@ -441,8 +523,8 @@ export function PreviewStage(props: Props) {
                 }}
                 className="astro absolute top-0 left-0"
                 style={{
-                  width: dispW,
-                  height: dispH,
+                  width: backDims.w,
+                  height: backDims.h,
                   opacity: backVisible ? 1 : 0,
                   transition: fadeOn ? `opacity ${FADE_MS}ms ease` : "none",
                   filter: ninaFilter,
@@ -664,6 +746,24 @@ export function PreviewStage(props: Props) {
           <Tooltip content="A 1:1 view needs about 320 px of preview width to show enough sensor pixels to judge focus. Rotate the device, or open the preview in a wider panel.">
             <span className="preview-chip flex items-center gap-1">
               <Icon name="lock" size={11} /> Magnifier hidden
+            </span>
+          </Tooltip>
+        </div>
+      )}
+
+      {/* The bytes are not the size the frame said they were. Everything else on
+          this stage is positioned from the event's numbers, so the picture is
+          right and the annotations are not — the user has to be told which is
+          which, with both sizes named, or a mis-sized preview looks exactly like
+          a mis-focused sky. */}
+      {dimsMismatch && paintedDims && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+          <Tooltip
+            content={`Frame #${preview.id} was published as ${metaW}×${metaH} display pixels, but the bytes served for it decode as ${paintedDims.w}×${paintedDims.h}. The image is drawn at the size it actually is; star marks, the reticle and the scale bar are placed from the published size and will be off by that ratio. The saved FITS is written from the raw frame and is not affected. Two things cause this: the server could not measure the encoded frame, or a reused frame number is being served from the browser cache — reloading the page clears the second.`}
+          >
+            <span className="preview-chip !text-warn flex items-center gap-1" role="status">
+              <Icon name="alert" size={11} />
+              Preview bytes are {paintedDims.w}×{paintedDims.h}, not {metaW}×{metaH}
             </span>
           </Tooltip>
         </div>
