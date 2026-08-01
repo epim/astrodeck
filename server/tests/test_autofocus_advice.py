@@ -137,6 +137,45 @@ async def test_near_empty_points_never_reach_the_fit(monkeypatch):
 
 
 @native_only
+async def test_a_measured_failure_is_not_blamed_on_the_star_count(monkeypatch):
+    """Twelve stars at every point, every point measured, nothing dropped, and a
+    curve too flat to fit. That is a step-size or focuser fault and the engine
+    says so (``not_enough_spread``, which the panel renders as "HFR barely
+    changed from one end of the sweep to the other… increase the step size").
+    The advice OUTRANKS that line in the panel, so anything invented here does
+    not sit beside the real explanation — it replaces it.
+
+    The regression: advice was keyed off the start-position star count alone, so
+    any native failure under 15 stars was captioned "Only 12 stars in the field
+    — too few to keep measuring as the sweep defocuses", contradicted by the
+    run's own record and sending the user after exposure and sky for a focuser
+    that would not move. The same fault with 400 stars said nothing and got the
+    right explanation, so the sparse-field user was told something strictly
+    worse for an identical fault — on the very rigs that filed the bug."""
+    _rig, cam, foc = await _connected_sim()
+
+    def flat(n):
+        return lambda data, params: (
+            [], {"star_count": n, "hfr_median": 3.4, "hfr_mad": 0.30})
+
+    monkeypatch.setattr(N._native, "detect_and_measure", flat(12))
+    sparse = await N.run_native_autofocus(cam, foc, exposure_s=2.0, gain=200,
+                                          step=350, steps_each_side=4, binning=2)
+    monkeypatch.setattr(N._native, "detect_and_measure", flat(400))
+    rich = await N.run_native_autofocus(cam, foc, exposure_s=2.0, gain=200,
+                                        step=350, steps_each_side=4, binning=2)
+
+    assert sparse.success is False and rich.success is False
+    # Nothing was dropped and nothing was unmeasurable, so the run learned
+    # nothing the engine had not already said: it keeps quiet and lets the
+    # engine's reason through.
+    assert sparse.advice is None, sparse.advice
+    # And the answer does not depend on how rich the field happened to be.
+    assert sparse.advice == rich.advice
+    assert sparse.message == rich.message
+
+
+@native_only
 async def test_a_frame_full_of_stars_never_earns_expose_longer(monkeypatch):
     """A point can also vanish because the detector found stars and could not
     size them — our fault, not the sky's. That must not be filed as "too few
@@ -219,6 +258,55 @@ async def test_legacy_sweep_refuses_thin_points_and_says_why(monkeypatch):
     assert _focus_events(q)[-1].get("advice") == res.advice
     # the message says what was measured against what was needed — no guessing
     assert "0 of 9" in res.message, res.message
+
+
+async def test_an_all_thin_sweep_is_not_told_the_fit_discounted_it(monkeypatch):
+    """Both fitters weight RELATIVELY — √n into ``polyfit(w=…)``, 1/σ² in the
+    engine — and both are invariant to scaling every weight alike. So when all
+    nine points carry the same star count the weighting cancels exactly and the
+    fit leans on them completely.
+
+    The copy said "so the fit barely leans on them", which is a claim about our
+    own arithmetic that our own arithmetic contradicts, and it said it in the
+    one run where it mattered. It then appended "Try a longer exposure…" to a
+    sentence that had just diagnosed a stuck focuser or too-narrow sweep,
+    leaving the user to pick which half of their own advice to believe."""
+    _rig, cam, foc = await _connected_sim()
+    # Measurable, thin, and identical everywhere: a flat curve read off nine
+    # equally weak samples.
+    monkeypatch.setattr(A, "median_hfr", lambda data, min_stars=3: (3.4, 8))
+
+    res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+    assert res.success is False
+    assert res.advice
+    assert "barely leans" not in res.advice, res.advice
+    assert "nothing richer to weigh them against" in res.advice, res.advice
+    # the flat-curve diagnosis keeps its own remedy and is not undercut by a
+    # rival instruction: the levers are offered as evidence quality, not as a fix
+    assert "raise the step size" in res.advice, res.advice
+    assert "Try a longer exposure" not in res.advice, res.advice
+    assert "A firmer result would need a longer exposure" in res.advice, res.advice
+
+
+async def test_a_thin_point_beside_rich_ones_is_reported_as_discounted(monkeypatch):
+    """The other half of the same claim: one 4-star point among 500-star ones
+    genuinely IS down-weighted, and saying so is worth a line — with the richest
+    count in it, so the user can check the claim instead of taking it."""
+    rig, cam, foc = await _connected_sim()
+
+    def mixed(data, min_stars=3):
+        pos = rig.focuser_pos
+        return (9.0, 4) if abs(pos - 18500) < 100 else \
+            (2.0 + ((pos - 19200) / 1000.0) ** 2, 500)
+
+    monkeypatch.setattr(A, "median_hfr", mixed)
+    res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+    assert res.success, res.message
+    assert res.advice and "1 of 9 fitted points" in res.advice, res.advice
+    assert "richest of 500" in res.advice, res.advice
+    assert "the fit discounts them" in res.advice, res.advice
 
 
 async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):
