@@ -15,6 +15,7 @@ import {
   fovCornersSky,
   pointingFov,
   pointingCaption,
+  TAN_HORIZON_DEG,
   type AtlasViewGeom,
   type PointingInputs,
   type MountSample,
@@ -84,7 +85,7 @@ function readout(
 
 // ======================================================== §A  projection
 test("the view centre projects to the middle of the viewBox", () => {
-  const p = skyToView(M42.ra_hours, M42.dec_deg, geom);
+  const p = skyToView(M42.ra_hours, M42.dec_deg, geom)!;
   near(p.x, VIEW / 2, 1e-6, "centre x");
   near(p.y, VIEW / 2, 1e-6, "centre y");
 });
@@ -93,8 +94,8 @@ test("the view centre projects to the middle of the viewBox", () => {
 // survey tiles with it). Getting this backwards would glue the footprint to a
 // mirrored sky — it would track pans perfectly and still be in the wrong place.
 test("screen mapping is North-up / East-left, matching the survey tiles", () => {
-  const east = skyToView(M42.ra_hours + 0.1 / 15, M42.dec_deg, geom); // +RA = East
-  const north = skyToView(M42.ra_hours, M42.dec_deg + 0.1, geom);
+  const east = skyToView(M42.ra_hours + 0.1 / 15, M42.dec_deg, geom)!; // +RA = East
+  const north = skyToView(M42.ra_hours, M42.dec_deg + 0.1, geom)!;
   assert(east.x < VIEW / 2, `East must render LEFT of centre, got x=${east.x}`);
   near(east.y, VIEW / 2, 1, "East is horizontal");
   assert(north.y < VIEW / 2, `North must render ABOVE centre, got y=${north.y}`);
@@ -161,7 +162,7 @@ test("FALSIFICATION: a slew that fails leaves the frame where the scope is", () 
     { ...PARKED, slewing: true },           // command accepted, nothing has moved yet
     { ...PARKED, slewing: false },          // driver error / refused — motion never happened
   ];
-  const parkedPx = skyToView(PARKED.ra_hours, PARKED.dec_deg, geom);
+  const parkedPx = skyToView(PARKED.ra_hours, PARKED.dec_deg, geom)!;
   for (const [i, m] of timeline.entries()) {
     const r = readout(m, syncedRotator(120));
     near(r.axis!.x, parkedPx.x, 1e-9, `sample ${i} axis x`);
@@ -226,6 +227,88 @@ test("panning the Atlas scrolls the footprint off the view, as any sky object do
   assert(gone.offView, "a scope 4° outside a 2° view must report off-view");
   // panning the view East leaves the scope to its West, and West renders right
   assert(gone.axis!.x > VIEW, `clipped past the right edge, got x=${gone.axis!.x}`);
+});
+
+// ---- the projection horizon -------------------------------------------------
+// A gnomonic tangent plane covers ONE hemisphere and then FOLDS. Past 90° it
+// divides by a negative cosine, so the far side of the sky comes back mirrored
+// onto the near side; at the exact antipode it lands at (0,0) — dead centre of
+// the canvas. Measured before the guard existed: a mount at the antipode of the
+// view centre returned axis {500,500}, offView false, caveat null, and a full
+// confident rectangle at the rotator's PA, captioned "PA 30° measured at the
+// rotator". That is the forbidden outcome in its purest form — the frame
+// ARRIVING on the planned box while the tube is 180° away — so these tests guard
+// the same property §B does, in the one region where screen distance can't.
+test("a scope at the antipode of the view is refused, not drawn at the centre", () => {
+  const anti: MountSample = { ra_hours: (M42.ra_hours + 12) % 24, dec_deg: -M42.dec_deg };
+  const r = readout(anti, syncedRotator(30));
+  near(r.sepDeg, 180, 1e-6, "the fixture really is the antipode");
+  assert(r.axis === null, `the antipode has no place on this map, got ${JSON.stringify(r.axis)}`);
+  assert(r.outline === null && r.discRPx === null, "and so it gets no footprint of any kind");
+  assert(r.offView, "it must report as not on this canvas");
+  const c = pointingCaption(r, "17h35m17s +05°23′") ?? "";
+  assert(/off this map entirely/i.test(c), `caption must not imply a drawn frame: ${c}`);
+  assert(c.includes("180"), `caption must carry the real separation: ${c}`);
+});
+
+// Not just the exact antipode: 0.5° NORTH of it used to render 0.5° SOUTH of
+// centre, so the frame tracked the mount BACKWARDS across a whole patch of sky.
+test("no point on the far hemisphere reaches the canvas, mirrored or otherwise", () => {
+  const antiRa = (M42.ra_hours + 12) % 24;
+  const far: MountSample[] = [
+    { ra_hours: antiRa, dec_deg: -M42.dec_deg + 0.5 }, // the backwards-tracking case
+    { ra_hours: antiRa, dec_deg: -M42.dec_deg - 4 },
+    { ra_hours: antiRa + 1, dec_deg: 40 },
+    { ra_hours: M42.ra_hours + 8, dec_deg: M42.dec_deg },
+    { ra_hours: M42.ra_hours + 6.2, dec_deg: M42.dec_deg },
+  ];
+  for (const m of far) {
+    const r = readout(m, syncedRotator(30));
+    assert(r.sepDeg >= TAN_HORIZON_DEG, `fixture must be past the horizon, got ${r.sepDeg}°`);
+    assert(r.axis === null, `${r.sepDeg.toFixed(1)}° away still produced ${JSON.stringify(r.axis)}`);
+    assert(r.outline === null && r.discRPx === null, "no geometry past the horizon");
+    assert(r.offView, "past the horizon is not on the canvas");
+  }
+});
+
+// The guard has to cut AT the horizon: refusing the near side too would hide a
+// frame that is merely far away, which is a different lie in the same family.
+test("the horizon guard cuts at 90° and not one step before it", () => {
+  for (const dRaHours of [5.9, 5.95, 5.98, 6.0, 6.05, 6.2]) {
+    const m: MountSample = { ra_hours: M42.ra_hours + dRaHours, dec_deg: M42.dec_deg };
+    const r = readout(m, syncedRotator(30));
+    const inside = r.sepDeg < TAN_HORIZON_DEG;
+    assert(inside === (r.axis !== null),
+           `${r.sepDeg.toFixed(3)}° away: inside=${inside} but axis=${JSON.stringify(r.axis)}`);
+    if (inside) {
+      // A real coordinate, direction preserved, magnitude enormous — East is
+      // left, and ~89° East is very far left indeed. It clips; it does not fold.
+      assert(r.axis!.x < -1000, `a near-horizon point must fly off-canvas, got x=${r.axis!.x}`);
+      assert(r.offView, "and report off-view");
+    }
+  }
+});
+
+test("a footprint straddling the horizon is dropped, not closed through a mirrored corner", () => {
+  // Somewhere in the last fraction of a degree the axis is still projectable
+  // while a corner is not. The polygon must go away entirely: a quad with two
+  // corners folded back onto the near side is a bow-tie over sky nobody is
+  // pointing at, drawn with all the confidence of a real frame.
+  const centre = { ra_hours: geom.centerRaHours, dec_deg: geom.centerDecDeg };
+  let straddled = 0;
+  for (let dRa = 5.99; dRa < 6.03; dRa += 0.001) {
+    const here = { ra_hours: M42.ra_hours + dRa, dec_deg: M42.dec_deg };
+    const r = readout({ ...here }, syncedRotator(30));
+    if (r.axis === null) continue;
+    const anyPast = fovCornersSky(here, FOV_X, FOV_Y, 30).some(
+      (c) => angularSepDeg(c, centre) >= TAN_HORIZON_DEG,
+    );
+    if (!anyPast) continue;
+    straddled++;
+    assert(r.outline === null,
+           `a straddling footprint kept its polygon at sep ${r.sepDeg.toFixed(3)}°`);
+  }
+  assert(straddled > 0, "the scan found no straddling case — widen the fixture range");
 });
 
 // ==================================================== §C  honest unknowns
@@ -381,6 +464,30 @@ test("AtlasView feeds the footprint from status.mount, never from the session", 
          "statusMount must be selected from the status feed");
   assert(!/pointing=\{[^}]*\b(center|target|framing)\b/.test(atlasSrc),
          "pointing must not be sourced from the framing session");
+});
+
+// Required behaviour #2 — "it rotates to the target's framing angle as the
+// rotator turns" — lives half in the server, and the Atlas Go-to shipped without
+// its half. /api/mount/goto rotates ONLY when the body carries `rotation_deg`
+// (hub.goto_and_center: `rotation_deg is not None and rot is not None and
+// rot.connected`), so omitting it meant the rotator was never asked to move: the
+// live frame could travel with the mount and could never turn, next to a panel
+// promising it would. Source-read for the same reason as the two tests above.
+test("the Atlas Go-to sends the framing's PA, so the rotator is actually asked", () => {
+  const post = /api\.post\("\/api\/mount\/goto",\s*\{([\s\S]*?)\}\);/.exec(atlasSrc);
+  assert(post !== null, "AtlasView must post /api/mount/goto");
+  assert(/rotation_deg:\s*commandedPaDeg/.test(post![1]),
+         `the goto body must carry the commanded PA: ${post![1]}`);
+});
+
+// ...and the promise is written from that same value, so the copy cannot drift
+// back into announcing a rotation nothing sends. That drift is what made the new
+// live frame legible as a lie: it was correct, and the sentence beside it wasn't.
+test("the 'will rotate' note is gated on the angle the Go-to actually commands", () => {
+  assert(/const commandedPaDeg = /.test(atlasSrc),
+         "one expression must drive both the command and the promise");
+  assert(/\{commandedPaDeg != null && \(statusRotator/.test(atlasSrc),
+         "the rotation note must be gated on the commanded angle, not on rotation_deg alone");
 });
 
 // ----------------------------------------------------------------- report

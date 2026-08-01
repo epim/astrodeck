@@ -603,6 +603,29 @@ export default function AtlasView(): JSX.Element {
     }
   };
 
+  // ---- the camera angle this page actually COMMANDS ----
+  // One expression, read by the Go-to body, the run's toast and the "will
+  // rotate" note below, so the promise and the request cannot drift apart.
+  //
+  // 2026-07-31: they had drifted. `gotoFraming` posted /api/mount/goto without
+  // `rotation_deg`, and that field is the ONLY trigger for rotation — the server
+  // runs `rotate_to_pa` solely when `rotation_deg is not None and rot is not None
+  // and rot.connected` (hub.goto_and_center). So the rotator was never asked to
+  // turn from this page, while a panel below promised it would. The live pointing
+  // frame now on this canvas is what made that legible: it could travel with the
+  // mount and never turn, because nothing had commanded a turn.
+  //
+  // Null below 0.5°, not 0: `rotation_deg` starts at 0 for every framing session,
+  // so posting it unconditionally would bolt a plate-solve rotate loop onto every
+  // "just show me this" tap — minutes of motion nobody asked for. Above the
+  // dial's own dead-band it is a real request and gets sent.
+  const commandedPaDeg = rotation_deg > 0.5 ? rotation_deg : null;
+  // Whether that request can reach hardware. `status.rotator` is published only
+  // when a rotator exists AND reports connected (hub.status) — the exact
+  // condition goto_and_center rotates under — so this predicts the real outcome
+  // instead of the hoped-for one.
+  const willRotate = commandedPaDeg != null && statusRotator != null;
+
   const sendToPlan = async () => {
     if (!haveOptics || seqRunning || sending) return;
     if (belowLimit) {
@@ -630,10 +653,15 @@ export default function AtlasView(): JSX.Element {
           panelCount > 1
             ? `${panelCount} panels added to Plan`
             : "Target added to Plan",
+        // Only send the user to the camera when nothing else will turn it. This
+        // told every rig to hand-set the angle, rotator or not — which now sits
+        // one panel away from a note saying the rotator gets sent that angle.
         detail:
-          rotation_deg > 0.5
-            ? `Set your camera to PA ${Math.round(rotation_deg)}° before this run.`
-            : undefined,
+          commandedPaDeg == null
+            ? undefined
+            : willRotate
+              ? `Each panel slews, rotates to PA ${Math.round(commandedPaDeg)}° and centres before it exposes.`
+              : `Set your camera to PA ${Math.round(commandedPaDeg)}° before this run — there's no rotator to do it.`,
       });
       setView("sequence");
     } finally {
@@ -702,11 +730,24 @@ export default function AtlasView(): JSX.Element {
         dec_deg: center.dec_deg,
         center: true,
         force: pf?.verdict === "low",
+        // The rotation half of the framing, sent so the hardware actually
+        // performs it. null = no angle was asked for, which the server reads as
+        // "leave the rotator alone". When it is set, the live frame on the canvas
+        // turns because THIS made the rotator turn — the frame is still only ever
+        // a readout, and it reports the turn rather than causing the look of one.
+        rotation_deg: commandedPaDeg,
       });
       enqueueToast({
         level: "success",
         title: `Slewing to ${name}`,
-        detail: "It will plate-solve and re-centre when it arrives.",
+        // What the rig will do, in the order it will do it — including the case
+        // where the angle was asked for and no rotator can serve it, which is
+        // the user's cue to turn the camera by hand before the frame matches.
+        detail: willRotate
+          ? `It will plate-solve, rotate to PA ${Math.round(commandedPaDeg!)}° and re-centre when it arrives.`
+          : commandedPaDeg != null
+            ? `It will plate-solve and re-centre when it arrives. No rotator is connected, so set the camera to PA ${Math.round(commandedPaDeg)}° yourself.`
+            : "It will plate-solve and re-centre when it arrives.",
       });
     } catch (e) {
       enqueueToast({ level: "error", title: "Couldn't slew", detail: (e as Error).message });
@@ -987,7 +1028,11 @@ export default function AtlasView(): JSX.Element {
           {gotoReason ?? (
             <>
               Points the scope at the framed centre and plate-solves to re-centre
-              when it arrives. Altitude is re-checked at the tap.
+              when it arrives.
+              {willRotate
+                ? ` PA ${Math.round(commandedPaDeg!)}° goes with it, so the rotator turns on this tap too.`
+                : ""}{" "}
+              Altitude is re-checked at the tap.
             </>
           )}
         </p>
@@ -1136,15 +1181,19 @@ export default function AtlasView(): JSX.Element {
                 />
               </div>
 
-              {/* rotation honesty note — reality-aware (CAA spec §5.3) */}
-              {rotation_deg > 0.5 && (statusRotator ? (
+              {/* rotation honesty note — reality-aware (CAA spec §5.3), and
+                  written from `commandedPaDeg` so it can only ever describe an
+                  angle this page actually sends. It used to say "automatically
+                  on slew" while Go-to omitted rotation_deg entirely. */}
+              {commandedPaDeg != null && (statusRotator ? (
                 <p className="text-[12px] text-dim leading-snug">
-                  Camera will rotate to PA {Math.round(rotation_deg)}°
-                  automatically on slew ({statusRotator.name}).
+                  Go to this target — and every slew in a run — sends PA{" "}
+                  {Math.round(commandedPaDeg)}° to {statusRotator.name}, which
+                  rotates before it centres.
                   {(() => {
                     const cfg = { range_type: "full" as const, range_start_deg: 0,
                                   ...(config?.rotator ?? {}) };
-                    const h = adjustedPa(rotation_deg, statusRotator, cfg);
+                    const h = adjustedPa(commandedPaDeg, statusRotator, cfg);
                     return h.adjusted ? (
                       <span className="text-warn">
                         {" "}⚠ Outside the range of motion — it will image
@@ -1156,7 +1205,7 @@ export default function AtlasView(): JSX.Element {
               ) : (
                 <p className="text-[12px] text-dim leading-snug">
                   Camera angle is manual — set your camera to PA{" "}
-                  {Math.round(rotation_deg)}° before the run; there is no rotator
+                  {Math.round(commandedPaDeg)}° before the run; there is no rotator
                   in the rig.
                 </p>
               ))}

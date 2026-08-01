@@ -18,7 +18,9 @@
 //     x = view/2 − ξ·pxPerDeg,  y = view/2 − η·pxPerDeg
 // byte-identical to lib/tileView.tileMesh and lib/surveyView, so the footprint
 // is glued to the survey pixels underneath it through every pan and zoom rather
-// than to the viewport.
+// than to the viewport. That mapping exists only on the hemisphere around the
+// view centre — see TAN_HORIZON_DEG for what the gnomonic does with the other
+// half (it draws it MIRRORED onto this one) and why it is refused, not drawn.
 //
 // Epoch: everything here is J2000, which is what lib/framing.ts's projection
 // demands. That is safe because the hub publishes an already-converted position
@@ -90,7 +92,10 @@ export type PaSource = "rotator" | "none";
 export interface PointingReadout {
   /** false = no live position at all; the caller draws nothing. */
   known: boolean;
-  /** The optical axis in viewBox px. null exactly when `known` is false. */
+  /** The optical axis in viewBox px, or null when there is no such px — either
+   *  no position at all (`known` false) or a position on the far hemisphere,
+   *  which this projection cannot place (see TAN_HORIZON_DEG). Both mean the
+   *  same thing to a caller: draw nothing. */
   axis: ViewPoint | null;
   /** Sensor outline, 4 corners in viewBox px, closed cyclically. null when the
    *  outline cannot be drawn honestly — no optics (size unknown) or no measured
@@ -105,10 +110,13 @@ export interface PointingReadout {
   paSource: PaSource;
   /** Hardware reports itself in motion right now (slewing or rotating). */
   moving: boolean;
-  /** Angular distance from the Atlas view centre to the scope, degrees. */
+  /** Angular distance from the Atlas view centre to the scope, degrees. This is
+   *  a real great-circle distance (haversine), NOT a screen distance, so it
+   *  stays meaningful past the projection horizon where screen px stop being. */
   sepDeg: number;
-  /** The axis projects outside the canvas — the footprint has scrolled off,
-   *  exactly like any other sky object would. */
+  /** The footprint is not on the canvas: either it projects outside the viewBox
+   *  (scrolled off, exactly like any other sky object) or it is past the
+   *  projection horizon and has no place on this map at all. */
   offView: boolean;
   /** What this drawing does NOT know, as a sentence. null when fully known. */
   caveat: string | null;
@@ -120,10 +128,36 @@ export interface PointingReadout {
 }
 
 // ------------------------------------------------------------- projection
+/**
+ * The edge of what a tangent plane can hold. A gnomonic projection covers the
+ * hemisphere around its tangent point and nothing else, and it does NOT fail
+ * loudly past that: `framing.project` divides by h = cos(separation), which goes
+ * NEGATIVE beyond 90°, so a scope on the far side of the sky comes back MIRRORED
+ * onto the near side. At the exact antipode h = −1 and (ξ,η) = (0,0) — the
+ * middle of the canvas. Measured before this guard existed: mount at the
+ * antipode of the view centre drew a full confident rectangle at the rotator's
+ * PA, dead centre, `offView` false, no caveat. That is precisely the failure
+ * this whole feature exists to refuse — the frame ARRIVING on the planned box
+ * while the hardware is 180° away — so the far hemisphere is refused outright
+ * rather than drawn. (Near the horizon itself, h → 0 and the coordinates blow up
+ * to millions of px; those are honest, correctly-directed, and simply clip.)
+ */
+export const TAN_HORIZON_DEG = 90;
+
 /** Sky → viewBox px, North-up / East-left (see header). Pure; no clamping —
- *  a point behind the observer or far off-canvas returns a large finite number
- *  and clips, which is what "scrolled out of view" means. */
-export function skyToView(ra_hours: number, dec_deg: number, g: AtlasViewGeom): ViewPoint {
+ *  a point off-canvas returns a large finite number and clips, which is what
+ *  "scrolled out of view" means. null = the point is at or past the projection
+ *  horizon, i.e. it has no position on this map (NOT a position off its edge). */
+export function skyToView(
+  ra_hours: number,
+  dec_deg: number,
+  g: AtlasViewGeom,
+): ViewPoint | null {
+  const sep = angularSepDeg(
+    { ra_hours, dec_deg },
+    { ra_hours: g.centerRaHours, dec_deg: g.centerDecDeg },
+  );
+  if (!(sep < TAN_HORIZON_DEG)) return null; // !( < ) also catches NaN
   const { xi, eta } = project(ra_hours, dec_deg, g.centerRaHours, g.centerDecDeg);
   const half = g.view / 2;
   return { x: half - xi * g.pxPerDeg, y: half - eta * g.pxPerDeg };
@@ -215,12 +249,18 @@ export function pointingFov(inp: PointingInputs, g: AtlasViewGeom): PointingRead
   const m = inp.mount;
   if (!m || !Number.isFinite(m.ra_hours) || !Number.isFinite(m.dec_deg)) return nothing;
 
+  const here: SkyPoint = { ra_hours: m.ra_hours, dec_deg: m.dec_deg };
+  // Real great-circle distance, computed BEFORE any projection and never from
+  // screen px — it is the only honest number left once the scope is past the
+  // projection horizon, where there is no screen px to measure.
+  const sepDeg = angularSepDeg(here, {
+    ra_hours: g.centerRaHours,
+    dec_deg: g.centerDecDeg,
+  });
+  // null = the scope is somewhere real but not on THIS map (see TAN_HORIZON_DEG).
   const axis = skyToView(m.ra_hours, m.dec_deg, g);
-  const sepDeg = angularSepDeg(
-    { ra_hours: m.ra_hours, dec_deg: m.dec_deg },
-    { ra_hours: g.centerRaHours, dec_deg: g.centerDecDeg },
-  );
-  const offView = axis.x < 0 || axis.x > g.view || axis.y < 0 || axis.y > g.view;
+  const offView =
+    axis === null || axis.x < 0 || axis.x > g.view || axis.y < 0 || axis.y > g.view;
 
   const sizeKnown = inp.fovXDeg > 0 && inp.fovYDeg > 0;
   const rot = inp.rotator;
@@ -251,16 +291,22 @@ export function pointingFov(inp: PointingInputs, g: AtlasViewGeom): PointingRead
     caveatTone = "fix";
   }
 
-  const outline =
-    sizeKnown && paDeg !== null
-      ? fovCornersSky({ ra_hours: m.ra_hours, dec_deg: m.dec_deg }, inp.fovXDeg, inp.fovYDeg, paDeg)
-          .map((c) => skyToView(c.ra_hours, c.dec_deg, g))
+  const corners =
+    axis !== null && sizeKnown && paDeg !== null
+      ? fovCornersSky(here, inp.fovXDeg, inp.fovYDeg, paDeg).map((c) =>
+          skyToView(c.ra_hours, c.dec_deg, g),
+        )
       : null;
+  // All four corners or none. A footprint straddling the projection horizon —
+  // axis just inside 90°, one corner just outside — has no honest polygon: the
+  // missing corners do not exist on this plane, and closing the path through
+  // them would draw a bow-tie across sky nobody is pointing at.
+  const outline = corners && !corners.includes(null) ? (corners as ViewPoint[]) : null;
 
   // The circumscribed circle: whatever the camera angle turns out to be, the
   // sensor is inside this. Half the frame diagonal.
   const discRPx =
-    sizeKnown && paDeg === null
+    axis !== null && sizeKnown && paDeg === null
       ? (Math.hypot(inp.fovXDeg, inp.fovYDeg) / 2) * g.pxPerDeg
       : null;
 
@@ -298,6 +344,14 @@ export function pointingCaption(r: PointingReadout, where: string | null): strin
   if (!r.known) return null; // no mount: the page's Go-to control already says so
   const at = where ? ` (${where})` : "";
 
+  // Two different "you can't see it" claims, and collapsing them was a bug worth
+  // its own sentence. Past the horizon the footprint is not off the EDGE of this
+  // map — it is not on this map, and no amount of panning in the direction it
+  // seems to lie will reach it. The separation is the only thing the user can
+  // act on, so it leads.
+  if (r.sepDeg >= TAN_HORIZON_DEG) {
+    return `Scope is pointing ${fmtSep(r.sepDeg)} from this view${at} — past 90°, so it is off this map entirely, not just past its edge.`;
+  }
   if (r.offView) {
     return `Scope is pointing ${fmtSep(r.sepDeg)} from this view${at} — its frame is off the edge of the map.`;
   }
