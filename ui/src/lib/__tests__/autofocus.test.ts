@@ -5,7 +5,7 @@
 import {
   afResultAgeLabel, filterNameFromStatus, normalizeAutofocusResult,
   deriveAutofocusParams, plainFocusVerdict, focusButtonState, readFocusFailure,
-  AF_DEFAULT_STEP, AF_STEP_MAX,
+  AF_DEFAULT_STEP, AF_STEP_MAX, AF_FALLBACK_BIN,
 } from "../autofocus";
 
 let passed = 0;
@@ -107,7 +107,7 @@ const TH = { hfrGood: 2.0, hfrWarn: 3.5 };
 
 test("derive: reuses a star-bearing live frame's exposure, clamps to band", () => {
   const p = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 300,
-    liveExposureS: 3, liveGain: 100, liveStars: 40, liveHfr: 2.2 });
+    liveExposureS: 3, liveGain: 100, liveBinning: 2, liveStars: 40, liveHfr: 2.2 });
   assert(p.exposure_s === 3, `exposure ${p.exposure_s}`);
   assert(p.binning === 2, "bin2");
   assert(p.gain === 100, "reuse live gain");
@@ -116,28 +116,62 @@ test("derive: reuses a star-bearing live frame's exposure, clamps to band", () =
 });
 test("derive: no usable live frame -> fallback 2s; long sub clamps to 6s", () => {
   const a = deriveAutofocusParams({ focuserMax: null, maxBin: null, maxGain: null,
-    liveExposureS: 300, liveGain: null, liveStars: 2, liveHfr: null });
+    liveExposureS: 300, liveGain: null, liveBinning: null, liveStars: 2, liveHfr: null });
   assert(a.exposure_s === 2, `few stars -> fallback 2s, got ${a.exposure_s}`);
   const b = deriveAutofocusParams({ focuserMax: null, maxBin: null, maxGain: null,
-    liveExposureS: 300, liveGain: null, liveStars: 40, liveHfr: 2.2 });
+    liveExposureS: 300, liveGain: null, liveBinning: null, liveStars: 40, liveHfr: 2.2 });
   assert(b.exposure_s === 6, `300s sub clamps to 6s, got ${b.exposure_s}`);
 });
 test("derive: bin-1-only sensor and gain ceiling are respected", () => {
   const p = deriveAutofocusParams({ focuserMax: null, maxBin: 1, maxGain: 100,
-    liveExposureS: null, liveGain: 200, liveStars: null, liveHfr: null });
+    liveExposureS: null, liveGain: 200, liveBinning: 4, liveStars: null, liveHfr: null });
   assert(p.binning === 1, "bin clamped to 1");
   assert(p.gain === 100, `gain clamped to max, got ${p.gain}`);
 });
 test("derive: step rescales only at focuser-range extremes", () => {
   const nul = deriveAutofocusParams({ focuserMax: null, maxBin: 4, maxGain: 300,
-    liveExposureS: 2, liveGain: 120, liveStars: 40, liveHfr: 2 });
+    liveExposureS: 2, liveGain: 120, liveBinning: 2, liveStars: 40, liveHfr: 2 });
   assert(nul.step === AF_DEFAULT_STEP, "null focuser -> default");
   const tiny = deriveAutofocusParams({ focuserMax: 5000, maxBin: 4, maxGain: 300,
-    liveExposureS: 2, liveGain: 120, liveStars: 40, liveHfr: 2 });
+    liveExposureS: 2, liveGain: 120, liveBinning: 2, liveStars: 40, liveHfr: 2 });
   assert(tiny.step === 75, `5000 -> 75, got ${tiny.step}`); // 56% > 30%
   const huge = deriveAutofocusParams({ focuserMax: 100000, maxBin: 4, maxGain: 300,
-    liveExposureS: 2, liveGain: 120, liveStars: 40, liveHfr: 2 });
+    liveExposureS: 2, liveGain: 120, liveBinning: 2, liveStars: 40, liveHfr: 2 });
   assert(huge.step === AF_STEP_MAX, `100000 -> clamp ${AF_STEP_MAX}, got ${huge.step}`); // 2.8% < 4%
+});
+test("derive: the sweep BINS LIKE THE FRAME — the third parameter, and the one that cost the night", () => {
+  // The reviewed defect: binning was min(2, maxBin) unconditionally while three
+  // sentences on the Focus screen said it had been copied from the live frame.
+  // A user who shot the configuration that works — 4s / gain 220 / bin 1 — was
+  // told bin 1 was copied and swept at bin 2, the setting focus/native.py
+  // measured turning 24 stars into 8.
+  const one = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 570,
+    liveExposureS: 4, liveGain: 220, liveBinning: 1, liveStars: 2100, liveHfr: 2.4 });
+  assert(one.binning === 1, `bin 1 frame -> bin 1 sweep, got ${one.binning}`);
+  assert(/copied/i.test(one.basis.binning), `and says so: ${one.basis.binning}`);
+  const two = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 570,
+    liveExposureS: 4, liveGain: 220, liveBinning: 2, liveStars: 2100, liveHfr: 2.4 });
+  assert(two.binning === 2, "a bin-2 frame is copied just as faithfully");
+  // A star-poor frame still hands over its binning: like gain, it is a setting
+  // the user chose, not a measurement the frame failed to make.
+  const sparse = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 570,
+    liveExposureS: 1, liveGain: 220, liveBinning: 1, liveStars: 2, liveHfr: 3.0 });
+  assert(sparse.source === "sparse" && sparse.binning === 1,
+         `sparse frame keeps its binning, got ${sparse.binning}`);
+});
+test("derive: with NO frame the binning is a guess, is called one, and is not the star-losing one", () => {
+  const blind = deriveAutofocusParams({ focuserMax: 30000, maxBin: 4, maxGain: 570,
+    liveExposureS: null, liveGain: null, liveBinning: null, liveStars: null, liveHfr: null });
+  assert(blind.binning === AF_FALLBACK_BIN, `blind bin, got ${blind.binning}`);
+  assert(blind.binning === 1, "the blind guess is the setting that keeps the most stars");
+  assert(/guess/i.test(blind.basis.binning), `must not read as a decision: ${blind.basis.binning}`);
+  assert(!/copied/i.test(blind.basis.binning), "must not claim a copy that never happened");
+});
+test("derive: a frame binned past the sensor's ceiling is clamped and the clamp is stated", () => {
+  const p = deriveAutofocusParams({ focuserMax: null, maxBin: 2, maxGain: 300,
+    liveExposureS: 3, liveGain: 100, liveBinning: 4, liveStars: 40, liveHfr: 2.2 });
+  assert(p.binning === 2, `clamped to the ceiling, got ${p.binning}`);
+  assert(/clamped/i.test(p.basis.binning), `and says it clamped: ${p.basis.binning}`);
 });
 test("plainFocusVerdict: sharp / soft(action) / failed(action) / running", () => {
   assert(plainFocusVerdict({ state: "done", hfr: 1.8, r2: 0.997, ...TH }).headline === "Sharp!", "sharp");
@@ -203,6 +237,29 @@ test("plainFocusVerdict: the server's own advice outranks every canned sentence"
   assert(failed.detail === advice, "advice wins over the token explanation");
   const soft = plainFocusVerdict({ state: "done", hfr: 4.0, r2: 0.99, ...TH, advice });
   assert(soft.detail === advice, "a soft SUCCESS can also be worth explaining");
+});
+test("plainFocusVerdict: a SUCCESSFUL run's advice is rendered, not replaced by 'Sharp!'", () => {
+  // focus/native.py calls _advice(ok=True) explicitly to stop "letting a
+  // confident R² stand on four five-star samples", and the sentence it produces
+  // fires ONLY on a run good enough to reach `excellent` (R² >= 0.98). The
+  // panel used to print "Stars are tight — you're focused." over it, deleting
+  // the one caveat the server took the trouble to compute.
+  const thin = "3 of 9 points came from fewer than 10 stars and carry little weight "
+    + "in the fit, so this is thinner evidence than the R² suggests.";
+  const excellent = plainFocusVerdict({ state: "done", hfr: 1.8, r2: 0.997, ...TH, advice: thin });
+  assert(excellent.level === "excellent", "still an excellent run");
+  assert(excellent.headline === "Sharp!", "the headline still reports the measurement");
+  assert(excellent.detail === thin, `the caveat must survive: ${excellent.detail}`);
+  const good = plainFocusVerdict({ state: "done", hfr: 2.5, r2: 0.9, ...TH, advice: thin });
+  assert(good.detail === thin, "same for a merely good run");
+  // And with nothing to add, the canned reassurance is still there.
+  assert(plainFocusVerdict({ state: "done", hfr: 1.8, r2: 0.997, ...TH }).detail
+         === "Stars are tight — you're focused.", "no advice -> the plain sentence");
+  // A run that finished with no HFR at all is still a run that happened.
+  const noHfr = plainFocusVerdict({ state: "done", hfr: null, r2: null, ...TH, advice: thin });
+  assert(noHfr.detail === thin, `a done-but-unmeasured run keeps its advice: ${noHfr.detail}`);
+  assert(plainFocusVerdict({ ...TH }).detail === "Tap Focus my scope to start.",
+         "before any run, the canned invitation stands");
 });
 test("plainFocusVerdict: without advice it explains the token; with neither it invents no cause", () => {
   const explained = plainFocusVerdict({ state: "failed", hfr: null, r2: null, ...TH,

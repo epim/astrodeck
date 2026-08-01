@@ -24,8 +24,8 @@ import {
 import type { FocusEvent } from "../types";
 import { VCurve, type FocusFit } from "../components/graphs";
 import {
-  AF_DEFAULT_GAIN, afResultAgeLabel, deriveAutofocusParams, plainFocusVerdict,
-  focusButtonState, readFocusFailure,
+  AF_DEFAULT_GAIN, AF_FALLBACK_BIN, afResultAgeLabel, deriveAutofocusParams,
+  plainFocusVerdict, focusButtonState, readFocusFailure,
 } from "../lib/autofocus";
 import {
   FOCUS_DEFAULT_GAIN, FOCUS_EXPOSURE_PRESETS, focusCaptureBlocker, focusCaptureBody,
@@ -154,7 +154,11 @@ export default function FocusView() {
   // UX-25: per-filter / per-binning autofocus. "" filter = leave the wheel where
   // it is. Binning options track the camera's reported ceiling (UX-27 shape).
   const [afFilter, setAfFilter] = useState("");
-  const [afBin, setAfBin] = useState("2");
+  // Seeded from the derivation the moment the panel opens (toggleAfAdvanced), so
+  // this initial value is only ever a placeholder — but it used to be "2", the
+  // policy this file no longer holds, and a stale duplicate of a superseded
+  // default is how the old value creeps back.
+  const [afBin, setAfBin] = useState(String(AF_FALLBACK_BIN));
   const [afAdvanced, setAfAdvanced] = useState(false);
 
   // ------------------------------------------------------------ #113 camera
@@ -384,6 +388,15 @@ export default function FocusView() {
   });
   const singleReason =
     captureReason ?? (looping ? "A capture loop is running — press Stop first" : null);
+  // What stops the sweep getting the FRAME it copies from. `captureReason` is
+  // the rig-level half; a running loop is not one of those — its next frame is
+  // seconds away and satisfies the sweep by itself — but until that frame lands,
+  // "tap Single" is still the wrong instruction, because Single is locked behind
+  // the loop. Whatever this says, the sweep's refusal says the same thing, so
+  // the hero can never blame a missing frame on a tap the user cannot make.
+  const frameBlocker =
+    captureReason
+    ?? (looping ? "a capture loop is running — its first frame has not landed yet" : null);
 
   // ------------------------------------------- what the sweep would actually do
   // Derived at RENDER, not inside the tap handler, because the whole point is to
@@ -395,6 +408,10 @@ export default function FocusView() {
     maxGain: cam?.max_gain ?? null,
     liveExposureS: liveFrame?.exposure_s ?? null,
     liveGain: liveFrame?.gain ?? null,
+    // Binning is copied like gain: it is a setting the user chose, and it is
+    // the one of the three that this rig's working configuration differs on
+    // (bin 1 finds 2100 stars where bin 2 finds a third of them).
+    liveBinning: liveFrame?.binning ?? null,
     liveStars: liveFrame?.stars ?? null,
     liveHfr: liveFrame?.hfr ?? null,
     hasLiveFrame: !!liveFrame,
@@ -426,6 +443,7 @@ export default function FocusView() {
   const afReady = sweepReadiness({
     manual: afAdvanced, hasLiveFrame: !!liveFrame, liveStars: liveFrame?.stars ?? null,
     params: afParams, source: afDerived.source, paramsSent: afParamsSent,
+    captureBlocked: frameBlocker,
   });
   // Opening the settings panel seeds it from what the button WOULD have done —
   // otherwise "these override what the button above would have chosen" is a
@@ -443,6 +461,11 @@ export default function FocusView() {
   const frameWait = frameWaitNote({ startedAt: shotAt, exposureS: capExposureS, now });
   const sweepNote = sweepPreviewNote({
     running, pointsMeasured: focus?.points?.length ?? 0, framesSinceStart: sweepFrames,
+    // A loop started from the Capture screen keeps running through a sweep (the
+    // server refuses a loop only for polar and sequences), so frames CAN land
+    // here that are not the sweep's. Say whose they are rather than let them
+    // stand in as proof the sweep is delivering.
+    loopRunning: looping,
   });
 
   return (
@@ -731,9 +754,15 @@ export default function FocusView() {
                 + (liveFrame.stars != null ? ` · ${liveFrame.stars} stars` : "")
               : "no frame yet — autofocus has nothing to copy its settings from"}
           </p>
+          {/* Precise about WHICH of the three is copied unconditionally: gain
+              and binning are settings the user chose, so the sweep takes them
+              from any frame; the exposure is only copied once a frame proves it
+              produced stars, because copying the exposure that measured four
+              stars is copying the thing that did not work. */}
           <p className="text-[11px] text-dim mt-1 leading-snug">
-            Focus frames are not saved. Autofocus copies this exposure, gain and
-            binning, so shoot at settings that show stars before you sweep.
+            Focus frames are not saved. Autofocus sweeps at this gain and binning,
+            and at this exposure too once a frame shows stars — so shoot something
+            that works before you sweep.
           </p>
         </Panel>
 

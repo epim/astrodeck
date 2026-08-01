@@ -91,7 +91,7 @@ test("changing the preset mid-loop restarts the loop — a highlight is not an e
 const PARAMS = { exposure_s: 4, gain: 220, binning: 1, step: 350 };
 const ready = (over: Partial<Parameters<typeof sweepReadiness>[0]> = {}) =>
   sweepReadiness({
-    manual: false, hasLiveFrame: true, liveStars: 2100,
+    manual: false, hasLiveFrame: true, liveStars: 2100, captureBlocked: null,
     params: PARAMS, source: "measured", ...over,
   });
 
@@ -125,6 +125,29 @@ test("the refusal is not a dead end: it names a control on this same screen", ()
   ok(/tap a preset/i.test(r.block!), `must point at the presets: ${r.block}`);
 });
 
+test("the refusal defers to the reason the frame cannot be taken, and stops naming Single", () => {
+  // The reviewed defect: with no camera connected the hero said the sweep was
+  // blocked because no frame had been taken and told the user to tap Single —
+  // while Single, two inches above, read "No camera is connected". A blocked
+  // control resolving to a reason that is not merely incomplete but WRONG, and
+  // pointing at another blocked control.
+  const noCam = "No camera is connected — connect one on the Equipment page";
+  const r = ready({ hasLiveFrame: false, liveStars: null, source: "no-frame",
+                    captureBlocked: noCam });
+  ok(r.block != null, "still refuses");
+  ok(r.block!.includes(noCam), `must state the real cause: ${r.block}`);
+  ok(!/tap a preset|tap single/i.test(r.block!),
+     `must not send the user to a control that is itself locked: ${r.block}`);
+});
+
+test("with the camera free the refusal still names the one-tap fix", () => {
+  // The deferral must not swallow the ordinary case: when Single WOULD work,
+  // "tap a preset, then Single" is the whole justification for refusing at all.
+  const r = ready({ hasLiveFrame: false, liveStars: null, source: "no-frame",
+                    captureBlocked: null });
+  ok(/tap a preset/i.test(r.block!), `${r.block}`);
+});
+
 test("a star-poor frame WARNS and proceeds — the server re-probes with better information", () => {
   // Mirrors focus/native.py's own split: MIN_STARS_TO_SWEEP refuses,
   // SPARSE_FIELD_WARN warns and continues. The client counted stars in a frame
@@ -134,6 +157,11 @@ test("a star-poor frame WARNS and proceeds — the server re-probes with better 
   eq(r.basis, "sparse");
   ok(r.warn != null && r.warn.includes("3"), `the warning must carry the count: ${r.warn}`);
   ok(/fewer/i.test(r.warn!), "must say defocusing finds fewer stars, not more");
+  // It used to say "exposure and binning fell back to defaults". Binning does
+  // NOT fall back — it is copied from any frame, star-poor or not — so that
+  // sentence described a mechanism the code does not have.
+  ok(/gain and binning/i.test(r.provenance) && /exposure/i.test(r.provenance),
+     `the provenance must split what is copied from what falls back: ${r.provenance}`);
 });
 
 test("manual settings are never blocked, but an unmeasured rig is still called unmeasured", () => {
@@ -161,7 +189,7 @@ test("a backend sweep is never blocked and never claims our numbers were used", 
 
 test("the summary is the numbers actually posted, not a description of them", () => {
   const r = sweepReadiness({
-    manual: false, hasLiveFrame: true, liveStars: 40,
+    manual: false, hasLiveFrame: true, liveStars: 40, captureBlocked: null,
     params: { exposure_s: 2, gain: 120, binning: 2, step: 75 }, source: "measured",
   });
   ok(r.summary.includes("2s"), r.summary);
@@ -176,27 +204,47 @@ test("derive + readiness agree: no live frame is 'no-frame', not 'sparse'", () =
   // preview object, so if this drifts the hero silently unblocks itself.
   const d = deriveAutofocusParams({
     focuserMax: 40000, maxBin: 4, maxGain: 570,
-    liveExposureS: null, liveGain: null, liveStars: null, liveHfr: null,
+    liveExposureS: null, liveGain: null, liveBinning: null, liveStars: null, liveHfr: null,
     hasLiveFrame: false,
   });
   eq(d.source, "no-frame");
   eq(d.exposure_s, 2, "the historical blind fallback");
   eq(d.gain, 120, "the gain that found 8 stars");
   ok(sweepReadiness({ manual: false, hasLiveFrame: false, liveStars: null,
-                      params: d, source: d.source }).block != null,
+                      captureBlocked: null, params: d, source: d.source }).block != null,
      "a no-frame derivation must block");
+});
+
+test("derive + readiness agree about BINNING: what the panel says was copied, was copied", () => {
+  // The three sentences on this screen that claim the frame's binning is copied
+  // (the Camera panel note, the refusal, and the measured provenance) are only
+  // true if the derivation actually reads it. It did not.
+  const d = deriveAutofocusParams({
+    focuserMax: 40000, maxBin: 4, maxGain: 570,
+    liveExposureS: 4, liveGain: 220, liveBinning: 1, liveStars: 2100, liveHfr: 2.4,
+    hasLiveFrame: true,
+  });
+  eq(d.binning, 1, "the working configuration is bin 1, and the sweep must use it");
+  const r = sweepReadiness({ manual: false, hasLiveFrame: true, liveStars: 2100,
+                             captureBlocked: null, params: d, source: d.source });
+  ok(r.summary.includes("bin 1"),
+     `the summary the user reads must be the binning that goes out: ${r.summary}`);
+  ok(/copied/i.test(r.provenance), r.provenance);
 });
 
 test("derive marks a star-poor frame 'sparse', and a good one 'measured'", () => {
   const sparse = deriveAutofocusParams({
     focuserMax: 40000, maxBin: 4, maxGain: 570,
-    liveExposureS: 1, liveGain: 200, liveStars: 2, liveHfr: 3.2, hasLiveFrame: true,
+    liveExposureS: 1, liveGain: 200, liveBinning: 1, liveStars: 2, liveHfr: 3.2,
+    hasLiveFrame: true,
   });
   eq(sparse.source, "sparse");
   eq(sparse.gain, 200, "a chosen gain survives a frame whose star count does not");
+  eq(sparse.binning, 1, "and so does a chosen binning");
   const good = deriveAutofocusParams({
     focuserMax: 40000, maxBin: 4, maxGain: 570,
-    liveExposureS: 4, liveGain: 220, liveStars: 2100, liveHfr: 2.4, hasLiveFrame: true,
+    liveExposureS: 4, liveGain: 220, liveBinning: 1, liveStars: 2100, liveHfr: 2.4,
+    hasLiveFrame: true,
   });
   eq(good.source, "measured");
   eq(good.exposure_s, 4);
@@ -206,11 +254,12 @@ test("derive marks a star-poor frame 'sparse', and a good one 'measured'", () =>
 test("the basis strings say GUESS out loud when nothing was measured", () => {
   const d = deriveAutofocusParams({
     focuserMax: null, maxBin: 4, maxGain: null,
-    liveExposureS: null, liveGain: null, liveStars: null, liveHfr: null,
+    liveExposureS: null, liveGain: null, liveBinning: null, liveStars: null, liveHfr: null,
     hasLiveFrame: false,
   });
   ok(/guess/i.test(d.basis.exposure), `exposure basis: ${d.basis.exposure}`);
   ok(/guess/i.test(d.basis.gain), `gain basis: ${d.basis.gain}`);
+  ok(/guess/i.test(d.basis.binning), `binning basis: ${d.basis.binning}`);
 });
 
 // -------------------------------------------------------- a frame in flight
@@ -260,6 +309,34 @@ test("the first exposure of a sweep is not reported as a failure to deliver", ()
 test("once the sweep's frames DO arrive the note gets out of the way", () => {
   eq(sweepPreviewNote({ running: true, pointsMeasured: 3, framesSinceStart: 2 }), null);
   eq(sweepPreviewNote({ running: false, pointsMeasured: 0, framesSinceStart: 0 }), null);
+});
+
+test("a capture loop's frames are not counted as the sweep's — they belong to the loop", () => {
+  // /api/capture/loop refuses only for polar and sequences (api/app.py), NOT for
+  // a running sweep, so a loop started from the Capture screen keeps publishing
+  // previews right through autofocus. Silencing the note on those frames would
+  // let someone else's pictures stand in as proof the sweep is delivering — the
+  // exact substitution the note exists to prevent.
+  const n = sweepPreviewNote({
+    running: true, pointsMeasured: 3, framesSinceStart: 5, loopRunning: true,
+  });
+  ok(n != null, "must still speak while another source owns the stage");
+  ok(/loop/i.test(n!), `and must name whose frames these are: ${n}`);
+  ok(!/no frame .* has reached this screen/i.test(n!),
+     `must not claim an empty stage the user can see is full: ${n}`);
+  // Before the first point, same rule.
+  const first = sweepPreviewNote({
+    running: true, pointsMeasured: 0, framesSinceStart: 2, loopRunning: true,
+  });
+  ok(first != null && /loop/i.test(first), `${first}`);
+  ok(!/nothing has come back/i.test(first!),
+     "'nothing has come back yet' is false with loop frames landing");
+  // A loop that is running but has published nothing since the sweep began is
+  // not evidence of anything, so the plain note stands.
+  const quiet = sweepPreviewNote({
+    running: true, pointsMeasured: 3, framesSinceStart: 0, loopRunning: true,
+  });
+  ok(quiet != null && !/loop/i.test(quiet), `no loop frames -> no loop claim: ${quiet}`);
 });
 
 console.log(`focusCapture.test.ts: ${passed} passed, ${failed} failed`);
