@@ -85,6 +85,36 @@ BY_KEY: dict[str, Body] = {b.key: b for b in BODIES}
 SUN_KEY = "sun"
 
 
+# Bodies a user WILL type that this ephemeris deliberately does not carry, each
+# with the reason it does not. Saying nothing is what put the wrong words on the
+# screen in the first place: an empty result set was explained by the browser
+# guessing from the query text, and "Pluto" fell through to "the catalog is
+# deep-sky only" — which stopped being true the moment this module shipped. The
+# rule for tonight's whole repair pass: a component that cannot answer names the
+# question it could not answer.
+NOT_CARRIED: dict[str, str] = {
+    "pluto": ("Pluto is not carried: its position needs a JPL kernel this rig "
+              "does not download, and the approximation that works for the "
+              "eight planets is wrong for Pluto by more than a finder field."),
+    "earth": ("Earth is not a target — you are standing on it. To see where "
+              "the mount is pointing, use the Mount screen."),
+    "ceres": ("Minor planets are not carried: an asteroid's position needs "
+              "orbital elements that go stale, and a stale element set points "
+              "the mount at empty sky without saying so."),
+}
+
+
+def not_carried_reason(name: str) -> str | None:
+    """Why we have nothing for ``name`` (already lowercased/squashed), or None
+    when it is not one of the bodies we deliberately skip."""
+    if len(name) < 3:
+        return None
+    for key, reason in NOT_CARRIED.items():
+        if key.startswith(name) or name == key:
+            return reason
+    return None
+
+
 # ------------------------------------------------------------------ the Sun gate
 
 def sun_is_offered() -> bool:
