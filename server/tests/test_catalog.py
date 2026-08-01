@@ -42,7 +42,13 @@ def test_every_catalog_id_is_findable_spaced_and_unspaced():
 def test_name_and_type_search_still_substring():
     # Prose fields keep the plain substring test — a space there is a real word
     # boundary, so squashing them would let a query straddle two words.
-    assert _ids("andromeda") == ["M31"]
+    #
+    # "andromeda" no longer returns M31 ALONE, because the star list spells out
+    # each star's constellation and three named stars live in Andromeda. It
+    # still returns M31 FIRST: "Andromeda Galaxy" starts with the query, the
+    # stars merely contain it, and rank beats magnitude (all three stars are
+    # brighter than M31 and would otherwise have buried it).
+    assert _ids("andromeda")[0] == "M31"
     assert _ids("orion nebula") == ["M42"]
     assert "M42" in _ids("emission nebula")
     assert _ids("orionnebula") == []
@@ -54,7 +60,10 @@ def test_short_and_punctuation_queries_do_not_match_everything():
     assert set(_ids("m3")) == {"M3", "M31", "M33"}
     assert _ids("-") == []
     assert _ids("/") == ["NGC 2264"]  # matches the NAME "Cone Nebula / Xmas Tree"
-    # An empty query still browses the whole catalog (unchanged).
+    # An empty query still browses the DEEP-SKY catalog and nothing else: the
+    # 241 named stars are all brighter than every object in it and a planet's
+    # position is only true for the instant it was computed, so neither belongs
+    # in a "what shall I image tonight?" browse. Both answer typed queries.
     assert len(search_catalog("", limit=99)) == len(CATALOG)
 
 

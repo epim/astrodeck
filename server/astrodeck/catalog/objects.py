@@ -3,13 +3,23 @@
 The popular imaging targets: full set of crowd-pleaser Messiers plus the
 bright NGC/IC favorites. Not an exhaustive survey catalog — it's the list
 you'd actually point a rig at.
+
+``search_catalog`` searches three sources, not one: this deep-sky list, the
+named naked-eye stars in ``brightstars.py``, and the live Sun/Moon/planet
+ephemeris in ``solar_system.py``. ``CATALOG`` itself stays deep-sky-only —
+/api/catalog/tonight ranks it as an imaging list and a star is not an imaging
+target.
 """
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .difficulty import difficulty_for
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -123,31 +133,152 @@ _INDEX: list[tuple[DSO, str, str, str]] = [
 ]
 
 
-def search_catalog(query: str, limit: int = 25) -> list[dict]:
+# ----------------------------------------------------------------- relevance
+# A hit is not a boolean. Once stars and planets share the result list, "how
+# well" a row matches decides what the user sees first, and the old sort — pure
+# magnitude — would hand the top slot to whichever coincidental match happened
+# to be the brightest object in the sky. "Mars" must return the planet ahead of
+# any galaxy whose name merely contains those four letters, and "Caph" must
+# return the star, not something 30 times more luminous that shares a syllable.
+# Rank first, magnitude only to break ties inside a rank.
+RANK_EXACT, RANK_PREFIX, RANK_SUBSTRING, RANK_TYPE = 0, 1, 2, 3
+
+
+def _rank_keys(qs: str, keys: Iterable[str]) -> int | None:
+    """Best rank of a squashed query against squashed designation keys.
+
+    `qs` is empty for a punctuation-only query ("-", "/"), which would
+    otherwise be a substring of every key in the catalog and match everything —
+    hence the explicit guard rather than a falsy-string accident.
+    """
+    if not qs:
+        return None
+    best: int | None = None
+    for k in keys:
+        if qs == k:
+            return RANK_EXACT
+        if k.startswith(qs):
+            r = RANK_PREFIX
+        elif qs in k:
+            r = RANK_SUBSTRING
+        else:
+            continue
+        best = r if best is None else min(best, r)
+    return best
+
+
+def _rank_prose(q: str, texts: Iterable[str]) -> int | None:
+    """Best rank against PROSE fields ("Andromeda Galaxy", "β Cas ·
+    Cassiopeia"). Prose is matched raw, never squashed: a space in a name is a
+    real word boundary, and squashing would let a query straddle two words
+    ("orionnebula" must not find the Orion Nebula)."""
+    if not q:
+        return None
+    best: int | None = None
+    for text in texts:
+        if q == text:
+            return RANK_EXACT
+        if text.startswith(q):
+            r = RANK_PREFIX
+        elif q in text:
+            r = RANK_SUBSTRING
+        else:
+            continue
+        best = r if best is None else min(best, r)
+    return best
+
+
+def _best(*ranks: int | None) -> int | None:
+    live = [r for r in ranks if r is not None]
+    return min(live) if live else None
+
+
+def _dso_row(o: DSO) -> dict:
+    d = difficulty_for(o.id, o.mag, o.size_arcmin)
+    return {
+        "id": o.id, "name": o.name,
+        "type": _TYPE_NAMES[o.type],
+        "kind": "dso",
+        "ra_hours": o.ra_hours, "dec_deg": o.dec_deg,
+        "mag": o.mag, "size_arcmin": o.size_arcmin,
+        "difficulty": d["tier"],
+        "surface_brightness": d["surface_brightness"],
+        "difficulty_source": d["source"],
+    }
+
+
+def _star_hits(q: str, qs: str) -> list[tuple[int, dict]]:
+    from . import brightstars
+
+    hits: list[tuple[int, dict]] = []
+    # A TYPE match ("star", "planet", "galaxy") is the weakest kind of hit
+    # wherever it comes from — it says nothing about WHICH object was meant —
+    # so it is pinned to RANK_TYPE rather than scored as prose, exactly as the
+    # deep-sky branch does.
+    type_rank = RANK_TYPE if q and q in brightstars.TYPE_NAME.lower() else None
+    for star, keys, described in brightstars.INDEX:
+        rank = _best(_rank_keys(qs, keys), _rank_prose(q, (described,)), type_rank)
+        if rank is not None:
+            hits.append((rank, brightstars.row(star)))
+    return hits
+
+
+def _solar_system_hits(q: str, qs: str, when: float | None) -> list[tuple[int, dict]]:
+    """Ephemeris rows for the bodies this query names.
+
+    The ephemeris is evaluated ONLY for bodies that matched — a search for
+    "M31" must not pay for nine planet positions — and a body whose ephemeris
+    fails is dropped with a log line rather than emitted at a stale or guessed
+    position."""
+    from . import solar_system
+
+    hits: list[tuple[int, dict]] = []
+    for body in solar_system.offered_bodies():
+        type_rank = RANK_TYPE if q and q in body.type_name.lower() else None
+        rank = _best(_rank_keys(qs, solar_system.search_keys(body)), type_rank)
+        if rank is None:
+            continue
+        try:
+            hits.append((rank, solar_system.row(body.key, when)))
+        except solar_system.EphemerisUnavailable as e:
+            log.warning("dropping %s from search: %s", body.label, e)
+    return hits
+
+
+def search_catalog(query: str, limit: int = 25,
+                   when: float | None = None) -> list[dict]:
+    """Search deep-sky objects, named stars and solar-system bodies at once.
+
+    An EMPTY query browses the deep-sky list alone, unchanged. That is not an
+    oversight: the empty query is the Atlas's "show me what to image" browse,
+    and 241 naked-eye stars — every one of them brighter than every galaxy —
+    would bury it. Stars and planets answer a question that is always typed.
+
+    ``when`` (unix seconds) pins the solar-system ephemeris; None means now.
+    """
     q = query.strip().lower()
     # The DESIGNATION is matched with separators removed from both sides, so
     # spacing and case are irrelevant. That only ever widens the id match:
     # if the raw query was a substring of the raw id, it is still a substring
     # once the same separators are dropped from both, so "m3" -> M3/M31/M33
-    # is untouched. `qs` is empty for a punctuation-only query, which must not
-    # match everything, hence the explicit guard.
-    #
-    # NAMES and TYPE NAMES keep the plain substring test on purpose: those are
-    # prose ("Andromeda Galaxy", "Emission Nebula") where a space is a real
-    # word boundary, and squashing them would let a query straddle two words.
-    qs = squash_designation(q)
-    results = []
+    # is untouched. Greek is spelled out first, because a letter like β is not
+    # [a-z0-9] and squashing would DELETE it — turning "β Cas" into "cas".
+    from .brightstars import latinise_greek
+
+    qs = squash_designation(latinise_greek(q))
+    scored: list[tuple[int, float, str, dict]] = []
     for o, sid, name, type_name in _INDEX:
-        if not q or (qs and qs in sid) or q in name or q in type_name:
-            d = difficulty_for(o.id, o.mag, o.size_arcmin)
-            results.append({
-                "id": o.id, "name": o.name,
-                "type": _TYPE_NAMES[o.type],
-                "ra_hours": o.ra_hours, "dec_deg": o.dec_deg,
-                "mag": o.mag, "size_arcmin": o.size_arcmin,
-                "difficulty": d["tier"],
-                "surface_brightness": d["surface_brightness"],
-                "difficulty_source": d["source"],
-            })
-    results.sort(key=lambda r: r["mag"])
-    return results[:limit]
+        rank: int | None
+        if not q:
+            rank = RANK_SUBSTRING       # browse: every row equal, mag decides
+        else:
+            rank = _best(_rank_keys(qs, (sid,)), _rank_prose(q, (name,)),
+                         RANK_TYPE if q in type_name else None)
+        if rank is not None:
+            scored.append((rank, o.mag, o.id, _dso_row(o)))
+    if q:
+        for rank, r in _star_hits(q, qs) + _solar_system_hits(q, qs, when):
+            scored.append((rank, r["mag"], r["id"], r))
+    # id breaks the remaining ties so the order is stable run to run.
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [r for _, _, _, r in scored[:limit]]
