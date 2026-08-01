@@ -61,24 +61,6 @@ HANDOVER_R80_PX = 12.0
 #: (measured peak SNR 104) clears it with room to spare.
 SOURCE_THRESHOLD_SIGMA = 5.0
 
-#: How many separately resolved sources still count as "one blob".
-#:
-#: The single-blob assumption used to be assumed rather than checked, and on a
-#: real frame carrying 200 stars at median HFR 4.49 px this function answered
-#: "r80 445 px — 891 px across". It was summing every pixel above 5 sigma inside
-#: a 1200 px window, so what it actually measured was the SPREAD OF THE FIELD.
-#: Downstream that outranks HFR (lib/focusVerdict.ts lets defocus_r80 > 25 win),
-#: so a user with 200 sharp stars was told to run coarse focus, and it produced
-#: a fabricated 13 mm defocus in front of the user on 2026-07-31.
-#:
-#: Coarse focus exists for the regime where there are NO stars, only one huge
-#: annulus. One blob, or a blob with a companion merged into it, is that regime.
-#: Three separately resolved sources is not: the optics are resolving the field
-#: and imaging.stars.focus_size measures it properly out past +/-1000 steps, so
-#: declining here costs nothing and stops this function from voting on frames it
-#: cannot describe.
-MAX_SOURCES_FOR_ONE_BLOB = 2
-
 #: Brightest candidate peaks probed before giving up on finding a source. A
 #: hot pixel outshines any blob, so the first few are usually rejects.
 PROBE_PEAKS = 12
@@ -94,6 +76,11 @@ class BlobSize:
     y: int
     background: float
     sigma: float
+    #: Separately resolved sources in the frame. 1 is the coarse-focus regime —
+    #: one huge annulus and nothing else. Many means the optics are resolving
+    #: the field, so ``r80`` describes one of its stars rather than a defocus
+    #: blob; the number is still true, it just stops being big.
+    n_sources: int = 1
     #: The blob ran off the edge of the frame, so ``r80`` is a FLOOR. Still the
     #: right answer to "which way is focus" — "at least this big" is what the
     #: module docstring promises — but not a number to extrapolate a distance
@@ -116,16 +103,32 @@ def _binned(a: np.ndarray, k: int = BIN) -> np.ndarray:
 
 def measure_blob(data: np.ndarray, *, bin_: int = BIN,
                  window_px: int = WINDOW_PX) -> BlobSize | None:
-    """Size of the ONE dominant source, or None when that question is wrong.
+    """Size of the DOMINANT source, or None when nothing rose above the noise.
 
     Works on a donut and on a star with the same code and the same units, which
     is what lets ONE number track focus across the whole range.
 
-    Two ways this declines, and both are answers rather than failures:
-    ``None`` when nothing rises above the noise, and ``None`` when the frame
-    resolves more than ``MAX_SOURCES_FOR_ONE_BLOB`` separate sources — the
-    single-blob assumption this measurement rests on is now CHECKED. The caller
-    then falls back to the star metric, which is the right instrument there.
+    ONE SOURCE, never a window's worth of them. That is the fix for the frame
+    that carried 200 stars at median HFR 4.49 px and came back "r80 445 px —
+    891 px across": the old code summed every pixel above 5 sigma inside a
+    1200 px window, so what it measured was the SPREAD OF THE FIELD. Downstream
+    that outranks HFR (lib/focusVerdict.ts lets defocus_r80 > 25 win), and it
+    produced a fabricated 13 mm defocus in front of the user on 2026-07-31.
+    The same frame now measures 2 px, because one sharp star IS 2 px.
+
+    It deliberately does NOT decline on a crowded frame, and a first attempt at
+    this fix did. Nothing falls back: ``focus.coarse`` has no second instrument,
+    it treats ``None`` as "nothing measurable" and aborts the whole routine with
+    "check the sky, the cover, and that the camera is exposing" — sending the
+    user outside on a frame full of stars, the exact anti-pattern this repair
+    pass exists to remove. Measured with the decline in place, a 60-donut field
+    returned None at EVERY defocus radius from 0 to 120 px, so coarse focus
+    could not complete a single handover. Multiplicity is reported instead, in
+    ``n_sources``; defocus is a property of the whole optical train, so the
+    dominant source's size is a good answer whether it has company or not.
+
+    ``None`` means only what it says: no source anywhere in the frame cleared
+    the noise. Nothing to measure is the one thing this cannot measure.
     """
     a = np.asarray(data, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 8 * bin_ or a.shape[1] < 8 * bin_:
@@ -169,14 +172,13 @@ def measure_blob(data: np.ndarray, *, bin_: int = BIN,
         sources.append(m)
     if not sources:
         return None
-    if len(sources) > MAX_SOURCES_FOR_ONE_BLOB:
-        return None
     m = max(sources, key=lambda s: s["flux"])
     return BlobSize(r80=float(m["r80"] * bin_), peak=float(m["peak"]),
                     snr=float(m["peak"] / sigma),
                     x=int(m["x"] * bin_), y=int(m["y"] * bin_),
                     background=bg, sigma=sigma,
-                    lower_bound=bool(m["truncated"]))
+                    lower_bound=bool(m["truncated"]),
+                    n_sources=len(sources))
 
 
 def focus_from_two(p1: int, r1: float, p2: int, r2: float) -> float | None:

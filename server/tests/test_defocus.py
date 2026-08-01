@@ -6,9 +6,15 @@ property — both detectors proved it tonight, failing in opposite directions on
 the same frames.
 
 And the property that matters just as much, added after this measurement told a
-user with 200 sharp stars that they were 13 mm out of focus: the single-blob
-assumption is CHECKED. When the frame is not one blob, this function says so
-instead of measuring the spread of the field and calling it a source.
+user with 200 sharp stars that they were 13 mm out of focus: it measures ONE
+SOURCE, on that source's own aperture. Never a window's total flux, which is
+what made the answer grow with the SEPARATION of the stars in frame.
+
+It measures one source; it does not REFUSE crowded frames. A first attempt at
+this fix did refuse them, and that bricked coarse focus, which has no second
+instrument and reads no-answer as a reason to tell the user to go outside and
+check the sky. So the tests below pin both halves: an honest small number on a
+field of sharp stars, and an answer at every defocus radius on a field of many.
 """
 import json
 from pathlib import Path
@@ -17,8 +23,7 @@ import numpy as np
 import pytest
 
 from astrodeck.imaging.defocus import (
-    HANDOVER_R80_PX, MAX_SOURCES_FOR_ONE_BLOB, BlobSize, focus_from_two,
-    measure_blob, shrinking,
+    HANDOVER_R80_PX, BlobSize, focus_from_two, measure_blob, shrinking,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "focus_sweep"
@@ -141,7 +146,7 @@ def test_the_handover_bar_separates_a_star_from_a_donut():
         f"star {star.r80}, bar {HANDOVER_R80_PX}, donut {donut.r80}")
 
 
-# ------------------------------------------- the single-blob assumption, CHECKED
+# --------------------------------- ONE source, and never a refusal to answer
 
 def _star_field(n=200, shape=(1200, 1600), sigma=2.0, seed=23):
     """A frame that is FULL of sharp stars — the state this measurement used to
@@ -157,19 +162,62 @@ def _star_field(n=200, shape=(1200, 1600), sigma=2.0, seed=23):
     return img
 
 
-def test_a_frame_full_of_stars_is_REFUSED_rather_than_called_one_blob():
+def _donut_field(n, radius, shape=(1200, 1600), peak=500.0, seed=7):
+    """Every star in the frame defocused by the same amount — what a rig
+    actually shows part-way out, and what coarse focus has to measure."""
+    rng = np.random.default_rng(seed)
+    img = rng.normal(600, 20, shape).astype(np.float32)
+    m = int(radius) + 8
+    yy, xx = np.mgrid[-m:m + 1, -m:m + 1]
+    r = np.hypot(yy, xx)
+    blob = np.where((r <= radius) & (r >= 0.35 * radius), peak, 0.0) \
+        if radius >= 3 else peak * 20 * np.exp(-(r ** 2) / (2 * 2.0 ** 2))
+    for _ in range(n):
+        y = int(rng.integers(m + 2, shape[0] - m - 2))
+        x = int(rng.integers(m + 2, shape[1] - m - 2))
+        img[y - m:y + m + 1, x - m:x + m + 1] += blob.astype(np.float32)
+    return img
+
+
+def test_a_frame_full_of_stars_measures_ONE_STAR_not_the_spread_of_the_field():
     """The reported defect. 200 stars at median HFR 4.49px came back as
     "r80 445px — 891px across", because the old code summed every pixel above
     5 sigma inside a 1200px window: it was measuring the spread of the FIELD.
     lib/focusVerdict.ts lets defocus_r80 > 25 outrank HFR, so that number told
     a user with 200 sharp stars to run coarse focus, and it produced a
-    fabricated 13mm defocus in front of them."""
-    assert measure_blob(_star_field()) is None
+    fabricated 13mm defocus in front of them.
+
+    The honest answer on that frame is a few pixels, because one sharp star IS
+    a few pixels — not a refusal, which would leave coarse focus with nothing."""
+    m = measure_blob(_star_field())
+    assert m is not None, "refusing here is what bricked coarse focus"
+    assert m.r80 < HANDOVER_R80_PX, f"200 sharp stars measured r80={m.r80}"
+    assert m.ready_for_autofocus
+    assert m.n_sources > 2, "the frame's multiplicity is reported, not hidden"
+
+
+def test_coarse_focus_gets_an_answer_at_every_defocus_on_a_crowded_field():
+    """The regression a review caught. With a multi-source refusal in place this
+    returned None for EVERY radius here, and focus.coarse — which has no second
+    instrument — aborted on the first probe with "nothing bright enough to
+    measure anywhere in the frame — check the sky, the cover, and that the
+    camera is exposing", on a frame holding sixty sources.
+
+    Defocus is a property of the optical train, so every source in the frame
+    carries the same blur and the dominant one is a good answer whether it has
+    company or not."""
+    sizes = []
+    for radius in (0, 8, 20, 45, 90):
+        m = measure_blob(_donut_field(60, radius))
+        assert m is not None, f"no answer at radius {radius}: coarse focus dies here"
+        sizes.append(m.r80)
+    assert sizes == sorted(sizes), f"not monotonic with defocus: {sizes}"
+    assert sizes[0] < HANDOVER_R80_PX < sizes[-1], \
+        f"a crowded field must still cross the handover bar: {sizes}"
 
 
 def test_a_single_star_is_still_measured_so_the_handover_can_happen():
-    """The refusal above must be about MULTIPLICITY, not about being in focus —
-    coarse focus has to be able to see the blob shrink all the way down."""
+    """Coarse focus has to be able to see the blob shrink all the way down."""
     m = measure_blob(_star(_bg(), 300.0, 400.0, 4000.0, 2.0))
     assert m is not None and m.ready_for_autofocus
 
@@ -185,10 +233,6 @@ def test_it_measures_ONE_source_and_not_the_distance_between_two():
     assert both is not None and alone is not None
     assert abs(both.r80 - alone.r80) < 8.0, \
         f"the far star moved the measurement: {alone.r80} -> {both.r80}"
-
-
-def test_the_multi_source_bar_is_a_named_constant_with_a_reason():
-    assert 1 <= MAX_SOURCES_FOR_ONE_BLOB <= 4
 
 
 # ------------------------------------------------- against the real sweep
