@@ -85,6 +85,11 @@ export interface RigStatus {
     opaque?: boolean[];
     /** first blackout slot, or null when the wheel has none */
     dark_slot?: number | null;
+    /** Is the carousel turning right now? ABSENT means the backend cannot say
+     *  (hub.poll_status publishes it in its own try, and FilterWheel.is_moving
+     *  defaults False rather than guessing) — so undefined must be read as
+     *  "watch the position instead", never as "not moving". */
+    moving?: boolean;
   };
   rotator?: RotatorStatus;
   camera?: {

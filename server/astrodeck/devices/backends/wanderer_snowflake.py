@@ -162,6 +162,13 @@ class SnowflakeWheel(FilterWheel):
         self.fw_date = 0
         self.model = ""
         self.slots = SLOT_COUNT      # replaced at connect by the wheel's own count
+        #: 1-based slot a goto is currently driving to, or None when idle. This
+        #: is the wheel's in-motion state and there is no other source for it:
+        #: the banner stream PAUSES for the whole physical move (module
+        #: docstring), so ``latest`` keeps reporting the OLD slot until the
+        #: carousel lands. Reading position alone, a move looks like nothing
+        #: happening — which is exactly what the Capture screen showed.
+        self._move_target: int | None = None
 
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
@@ -206,17 +213,39 @@ class SnowflakeWheel(FilterWheel):
             raise DeviceError(f"{self.name}: no status banner yet")
         return b.slot - 1
 
+    async def is_moving(self) -> bool:
+        """True from the instant the goto goes out until the resumed banner
+        shows the target slot.
+
+        The wheel gives us no separate "busy" field, and it cannot: the stream
+        that would carry one is silent for the duration of the move. So the
+        honest signal is the command we are still waiting on. It is real motion,
+        not a timer — if the carousel jams, ``wait_banner`` times out, the goto
+        raises, and the flag clears in the ``finally`` below, so a stuck wheel
+        stops claiming motion instead of pulsing forever.
+        """
+        return self._move_target is not None
+
     async def set_position(self, slot: int) -> None:
         if not (0 <= slot < self.slots):
             raise DeviceError(
                 f"{self.name}: slot {slot} out of range 0..{self.slots - 1}")
         target = slot + 1                     # wire is 1-based
         sent_at = time.monotonic()
-        await self._link.send(f"200{target}")
-        # Completion = a banner NEWER than the command showing the target slot
-        # (the stream pauses during the physical move and resumes with it).
-        await self._link.wait_banner(
-            lambda b: b.at > sent_at and b.slot == target, MOVE_TIMEOUT_S)
+        self._move_target = target
+        try:
+            await self._link.send(f"200{target}")
+            # Completion = a banner NEWER than the command showing the target
+            # slot (the stream pauses during the physical move and resumes with
+            # it).
+            await self._link.wait_banner(
+                lambda b: b.at > sent_at and b.slot == target, MOVE_TIMEOUT_S)
+        finally:
+            # finally, not a trailing assignment: a timed-out or cancelled goto
+            # must not leave the wheel reporting motion for the rest of the
+            # session — the whole point of the flag is that "turning" and
+            # "jammed" look different.
+            self._move_target = None
 
 
 # ------------------------------------------------------------------ session

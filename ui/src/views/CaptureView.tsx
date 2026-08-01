@@ -26,6 +26,7 @@ import { confirmDialog } from "../components/ConfirmDialog";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { Icon } from "../components/icons";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
+import { filterMotion, type FilterCommand } from "../lib/filterSlots";
 import { HELP } from "../help";
 
 // ---------------------------------------------------------------- capture phase
@@ -84,6 +85,13 @@ export default function CaptureView() {
   const [coolerTarget, setCoolerTarget] = useState("-10");
   const [dew, setDew] = useState(0);
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
+  // The filter change this session asked for, and a 1Hz clock to age it.
+  // Same shape and the same reason as FocusView's `cmd`: POST
+  // /api/filterwheel/position spawns a task and answers immediately, so without
+  // holding the request there is nothing on screen between the tap and the
+  // carousel landing several seconds later. See lib/filterSlots.filterMotion.
+  const [filterCmd, setFilterCmd] = useState<FilterCommand | null>(null);
+  const [filterNow, setFilterNow] = useState(() => Date.now());
   // Which preset was last applied — the picker button's readout. Not
   // persisted: it describes THIS session's last tap, not a saved setting.
   const [lastPreset, setLastPreset] = useState<string | null>(null);
@@ -190,6 +198,35 @@ export default function CaptureView() {
       showToast("error", (e as Error).message);
     }
   };
+
+  // --- filter wheel: what the Slot button reads while the carousel turns ---
+  // `moving` rides the raw status event (hub publishes status.filterwheel.moving
+  // in its own try, so it is ABSENT on a backend that cannot say — undefined
+  // means "watch the position", not "stopped").
+  const fw = status?.filterwheel;
+  const fwMotion = filterMotion(
+    filterCmd, fw?.position, fw?.moving, fw?.names ?? [], filterNow);
+  // Age the command only while something is unresolved — a settled wheel must
+  // not keep a timer alive behind a screen the user is watching for an hour.
+  const fwWaiting = !!filterCmd && !fwMotion.problem && fw?.position !== filterCmd.slot;
+  useEffect(() => {
+    if (!fwWaiting) return;
+    const t = setInterval(() => setFilterNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [fwWaiting]);
+  // Drop the command once the wheel has landed on it: from here the slot NAME is
+  // the whole answer, which is exactly what was asked for.
+  useEffect(() => {
+    if (filterCmd && fw?.position === filterCmd.slot && !fw?.moving) setFilterCmd(null);
+  }, [filterCmd, fw?.position, fw?.moving]);
+  // Which row carries the dot. Mid-turn that is the slot you ASKED for (the
+  // button agrees, and the reported position is the old slot — or, on an ASCOM
+  // wheel, the clamped -1 sentinel, i.e. nothing at all). With the wheel turning
+  // for a sequence rather than for us, no row: marking a slot we cannot know
+  // would be the guess this whole change exists to stop.
+  const fwSelected = fwMotion.pulsing
+    ? (filterCmd ? [String(filterCmd.slot)] : [])
+    : [String(fw?.position ?? -1)];
 
   // UX round-4 S4 ("success reported before it is earned"). The exposure bar used
   // to be armed BEFORE the POST, and a 409 deliberately left it running on the
@@ -913,13 +950,17 @@ export default function CaptureView() {
                 touch once per filter change. The button names the slot the
                 wheel is ON, so the state is still a glance — and a blackout
                 slot says so in its row, because parking on it manually is
-                legitimate but mistaking it for an imaging filter is not. */}
+                legitimate but mistaking it for an imaging filter is not.
+
+                While a change is in flight the button names the slot you ASKED
+                for and pulses (`.blink`) until the wheel reports it has stopped
+                turning. It is not a fixed-duration animation: it is driven by
+                status.filterwheel.moving, so a jammed wheel stops pulsing and
+                says so rather than finishing a reassuring loop on schedule. */}
             <PickerButton
               label="Slot"
-              summary={
-                status.filterwheel.names[status.filterwheel.position] ??
-                `#${status.filterwheel.position + 1}`
-              }
+              summary={fwMotion.summary}
+              className={fwMotion.pulsing ? "blink !border-accent !text-accent" : ""}
               options={status.filterwheel.names.map((name, i) => ({
                 id: String(i),
                 label: status.filterwheel!.opaque?.[i] ? `${name} — blackout` : name,
@@ -927,14 +968,37 @@ export default function CaptureView() {
                   ? "Blocks the light path — for dark frames"
                   : undefined,
               }))}
-              selected={[String(status.filterwheel.position)]}
+              selected={fwSelected}
               disabled={!!readOnlyReason}
               disabledReason={readOnlyReason}
               onBlocked={(r) => showToast("warning", r)}
-              onPick={(id) =>
-                act(() => api.post("/api/filterwheel/position", { position: Number(id) }))
-              }
+              onPick={(id) => {
+                const slot = Number(id);
+                setFilterCmd({
+                  slot, startedAt: Date.now(), from: status.filterwheel!.position,
+                });
+                setFilterNow(Date.now());
+                act(async () => {
+                  try {
+                    await api.post("/api/filterwheel/position", { position: slot });
+                  } catch (e) {
+                    // The command never reached the wheel, so there is no move
+                    // to narrate — leaving it would pulse "→ L" over a request
+                    // the server refused outright.
+                    setFilterCmd(null);
+                    throw e;
+                  }
+                });
+              }}
             />
+            {/* prefers-reduced-motion kills .blink, so the pulse alone is not
+                allowed to be the only cue: the summary above reads "→ L" while
+                turning, and a wheel that never got there says so here. */}
+            {fwMotion.problem && (
+              <p role="status" aria-live="polite" className="mono text-[11px] text-warn mt-2.5">
+                {fwMotion.problem}
+              </p>
+            )}
           </Panel>
         )}
         {status?.filterwheel && (

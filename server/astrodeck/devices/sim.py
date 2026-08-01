@@ -980,6 +980,7 @@ class SimFilterWheel(FilterWheel):
         self.filter_names = ["L", "R", "G", "B", "Ha", "OIII", "SII", "Dark"]
         self.filter_offsets = [0, 12, 10, 15, 120, 110, 115, 0]  # focuser steps
         self.filter_opaque = [False] * 7 + [True]
+        self._moving = False
 
     async def connect(self) -> None:
         await asyncio.sleep(_sim_delay(0.05))
@@ -991,10 +992,23 @@ class SimFilterWheel(FilterWheel):
     async def get_position(self) -> int:
         return self.rig.filter_slot
 
+    async def is_moving(self) -> bool:
+        return self._moving
+
     async def set_position(self, slot: int) -> None:
         moves = abs(slot - self.rig.filter_slot)
-        await asyncio.sleep(0.4 * min(moves, len(self.filter_names) - moves or 1))
-        self.rig.filter_slot = slot
+        # The slot flips at the END of the travel, exactly like a real wheel:
+        # the carousel is between filters for the whole sleep, and only the
+        # `moving` flag can say so. A sim that updated the position instantly
+        # would make the Capture screen's pulse untestable off hardware.
+        self._moving = True
+        try:
+            await asyncio.sleep(0.4 * min(moves, len(self.filter_names) - moves or 1))
+            self.rig.filter_slot = slot
+        finally:
+            # finally, not a trailing assignment — a cancelled filter change must
+            # not leave the sim claiming the wheel is still turning forever.
+            self._moving = False
 
 
 class SimSwitch(Switch):

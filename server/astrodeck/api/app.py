@@ -3786,18 +3786,19 @@ def create_app() -> FastAPI:
     @app.get("/api/guide/frame.png", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
     @declare(CAP_VIEW_PREVIEW)
     async def guide_frame():
-        """Auto-stretched PNG thumbnail of the current guide star (PHD2
-        ``get_star_image`` in PHD2/NINA mode, a synthesized frame in sim). Cheap
-        and safe: 404 (never 500) when there is no guider or no current star
-        image, so the UI degrades to a 'guide camera unavailable' note."""
-        if not hub.guider or not hub.guider.connected:
-            raise HTTPException(404, "no guider connected")
-        try:
-            png = await hub.guider.guide_frame()
-        except Exception:
-            png = None
+        """Auto-stretched PNG of the guide field: the guider's own star image
+        (PHD2 ``get_star_image``, sim's synthesized frame) when a guider is
+        running, else one exposure from the connected guide CAMERA.
+
+        That second source is the 2026-07-31 fix: this route gated on
+        ``hub.guider``, which is None on a native rig unless a profile overrides
+        the ``guider`` role, so a connected-and-idle ZWO ASI guide camera 404'd
+        every time and the Capture panel's toggle looked dead. ``hub`` decides
+        which source applies and NAMES why when neither does; still 404 (never
+        500), and the reason rides the detail."""
+        png, reason = await hub.guide_preview_png()
         if not png:
-            raise HTTPException(404, "no guide frame available")
+            raise HTTPException(404, reason or "no guide frame available")
         return Response(png, media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
