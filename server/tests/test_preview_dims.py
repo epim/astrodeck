@@ -9,6 +9,12 @@ belongs to a different exposure and nothing downstream can tell.
 
 So: publish two frames of different shapes back to back and hold the whole
 contract to the second one's OWN pixels.
+
+These pass on the hub as it stood before #110 was investigated, and that is the
+result, not a formality: "a cached width/height in the publish path" was one of
+the two named suspects for the sheared 2026-07-31 preview and this rules it out.
+The surviving suspect is upstream of the hub — see the hand-off at the top of
+``test_processing_stride.py``.
 """
 from __future__ import annotations
 
