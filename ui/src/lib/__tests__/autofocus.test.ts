@@ -4,7 +4,7 @@
 
 import {
   afResultAgeLabel, filterNameFromStatus, normalizeAutofocusResult,
-  deriveAutofocusParams, plainFocusVerdict, focusButtonState,
+  deriveAutofocusParams, plainFocusVerdict, focusButtonState, readFocusFailure,
   AF_DEFAULT_STEP, AF_STEP_MAX,
 } from "../autofocus";
 
@@ -153,6 +153,77 @@ test("focusButtonState: viewer locked > no-focuser > running > enabled", () => {
   assert(focusButtonState({ canFocus: true, hasFocuser: true, running: true }).label === "Focusing…", "running label");
   const ok = focusButtonState({ canFocus: true, hasFocuser: true, running: false });
   assert(ok.disabled === false && ok.reason === null, "enabled");
+});
+test("focusButtonState: an unmeasured sweep is blocked, and the hero carries the reason", () => {
+  // The 2026-07-31 failure: a rig with permission, a focuser and an idle sweep
+  // still cannot honestly start one when nothing has been measured to copy.
+  const b = focusButtonState({
+    canFocus: true, hasFocuser: true, running: false,
+    sweepBlock: "Take a frame first — autofocus copies the live frame",
+  });
+  assert(b.disabled === true, "must not start");
+  assert(b.reason!.includes("Take a frame first"), "must carry the sentence, not a bare boolean");
+  // A bigger fact about the rig still outranks it.
+  assert(/read-only/i.test(focusButtonState({
+    canFocus: false, hasFocuser: true, running: false, sweepBlock: "no frame",
+  }).reason!), "permission outranks the parameter complaint");
+});
+
+// ---------------------------------------------------- #114 failure explainer
+test("readFocusFailure: the engine's tokens are explained in the SAME terms they mean", () => {
+  // The bug: "Not enough stars to lock onto — check the sky is clear" printed
+  // directly above "r_squared_below_threshold", which is a fit-SHAPE failure
+  // that happens perfectly well with two thousand stars. The user chased the
+  // star count all night because the sentence, not the token, was in English.
+  const r = readFocusFailure("r_squared_below_threshold");
+  assert(r.code === "r_squared_below_threshold", "code kept for the technical chip");
+  assert(r.explain != null, "must be explained");
+  assert(/shape|curve/i.test(r.explain!), `must be about the curve, not the star count: ${r.explain}`);
+  assert(!/not enough stars/i.test(r.explain!), "must not blame star count");
+});
+test("readFocusFailure: every engine reason is covered, and each names an action", () => {
+  // Mirrors native/crates/astrodeck-native/src/lib.rs fail_reason_label.
+  for (const code of ["not_enough_spread", "r_squared_below_threshold", "out_of_bounds",
+                      "hfr_worse_than_start", "fit_unavailable"]) {
+    const r = readFocusFailure(code);
+    assert(r.code === code, `${code} recognised`);
+    assert(r.explain != null && r.explain.length > 20, `${code} explained`);
+  }
+});
+test("readFocusFailure: a decorated or unknown message never fabricates an explanation", () => {
+  assert(readFocusFailure("native engine: out_of_bounds").code === "out_of_bounds", "prefix tolerated");
+  assert(readFocusFailure("only 0 stars at the current focus").explain === null, "server prose -> no client guess");
+  assert(readFocusFailure(null).code === null, "null -> nothing");
+  assert(readFocusFailure("   ").explain === null, "blank -> nothing");
+});
+test("plainFocusVerdict: the server's own advice outranks every canned sentence", () => {
+  const advice = "Every point measured 0 stars at 2s/gain 120 — try 4s at gain 220.";
+  const failed = plainFocusVerdict({ state: "failed", hfr: null, r2: null, ...TH,
+                                     message: "fit_unavailable", advice });
+  assert(failed.detail === advice, "advice wins over the token explanation");
+  const soft = plainFocusVerdict({ state: "done", hfr: 4.0, r2: 0.99, ...TH, advice });
+  assert(soft.detail === advice, "a soft SUCCESS can also be worth explaining");
+});
+test("plainFocusVerdict: without advice it explains the token; with neither it invents no cause", () => {
+  const explained = plainFocusVerdict({ state: "failed", hfr: null, r2: null, ...TH,
+                                        message: "r_squared_below_threshold" });
+  assert(/curve|shape/i.test(explained.detail), `must explain the token: ${explained.detail}`);
+  const bare = plainFocusVerdict({ state: "failed", hfr: null, r2: null, ...TH });
+  assert(!/not enough stars/i.test(bare.detail), "must not guess a cause it was never told");
+  assert(/try again/.test(bare.detail), "but must still carry an action");
+  const prose = plainFocusVerdict({ state: "failed", hfr: null, r2: null, ...TH,
+                                    message: "only 0 stars at the current focus" });
+  assert(prose.detail.includes("only 0 stars"), "an unexplained server sentence is passed through, not dropped");
+});
+test("normalizeAutofocusResult: advice rides on the event; blank is not advice", () => {
+  const withAdvice = normalizeAutofocusResult(
+    { state: "failed", points: [], best: null, message: "fit_unavailable",
+      advice: "Try 4s at gain 220." }, CTX)!;
+  assert(withAdvice.advice === "Try 4s at gain 220.", "carried");
+  assert(normalizeAutofocusResult({ state: "done", points: [], best: null }, CTX)!.advice === null,
+         "an older server that cannot say -> null, never a fabricated sentence");
+  assert(normalizeAutofocusResult({ state: "done", points: [], best: null, advice: "  " }, CTX)!.advice === null,
+         "blank advice must not hide the fallback that does have something to say");
 });
 
 console.log(`autofocus.test: ${passed} passed, ${failed} failed`);
