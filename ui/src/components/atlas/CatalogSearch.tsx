@@ -88,6 +88,9 @@ export function CatalogSearch({
 }): JSX.Element {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<CatalogEntry[]>([]);
+  //: What the SERVER said it could not answer and why. Empty on an older
+  //: server, which is the only case the local hint below still covers.
+  const [notes, setNotes] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
   // Dismissed by outside-click/Escape without clearing the query, so the
   // dropdown stays gone until the user edits the query again or picks a
@@ -123,15 +126,25 @@ export function CatalogSearch({
     setSearching(true);
     const t = setTimeout(async () => {
       let next: CatalogEntry[];
+      let why: string[] = [];
       let broke = false;
       try {
-        next = (await api.get<CatalogEntry[]>(`/api/catalog?q=${encodeURIComponent(search)}`)).slice(0, 6);
+        // explain=1: the server answers with rows AND notes. The notes are the
+        // answers that are not rows — "Pluto is not carried", "the ephemeris is
+        // unavailable right now" — composed by the code that actually knows.
+        // Without this the browser guessed a reason instead, and went on saying
+        // "Planets aren't supported yet" for a year after they were.
+        const r = await api.get<{ results: CatalogEntry[]; notes?: string[] }>(
+          `/api/catalog?q=${encodeURIComponent(search)}&explain=1`);
+        next = (r.results ?? []).slice(0, 6);
+        why = r.notes ?? [];
       } catch {
         next = [];
         broke = true;
       }
       if (queryId.current !== id) return; // a newer query owns the field now
       setResults(next);
+      setNotes(why);
       setFailed(broke);
       setSearching(false);
     }, 250);
@@ -268,7 +281,12 @@ export function CatalogSearch({
               ) : (
                 <>
                   <p className="text-ink">No matches for &quot;{search.trim()}&quot;.</p>
-                  <p className="text-dim">{catalogScopeHint(search)}</p>
+                  {/* The SERVER's reason when it has one — it knows what it
+                      carries and whether the ephemeris answered. The local hint
+                      is only the fallback for an older server. */}
+                  {notes.length > 0
+                    ? notes.map((n, i) => <p key={i} className="text-dim">{n}</p>)
+                    : <p className="text-dim">{catalogScopeHint(search)}</p>}
                 </>
               )}
             </div>

@@ -4260,7 +4260,14 @@ def create_app() -> FastAPI:
         is the failure this whole search change exists to end.
         """
         from ..catalog import altaz
-        found = search(q)
+        # OFF the event loop. search() now evaluates astropy ephemerides inline:
+        # ~6ms per planet, ~27ms for the Moon, and ~512ms on the first
+        # solar-system query of the process (astropy import + IERS init). This
+        # route is hit on a 250ms debounce from two search boxes, so run on the
+        # loop it would stall the 2s status poll and the relay behind it — half a
+        # second of frozen telemetry for one keystroke. Same offload the hub
+        # already uses for detect_stars and measure_blob.
+        found = await asyncio.to_thread(search, q)
         for r in found.rows:
             alt, az = altaz(r["ra_hours"], r["dec_deg"],
                             hub.site["latitude"], hub.site["longitude"])

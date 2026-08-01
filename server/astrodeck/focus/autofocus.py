@@ -15,7 +15,7 @@ import numpy as np
 
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
-from ..imaging.stars import median_hfr
+from ..imaging.stars import focus_size, median_hfr, size_advice, star_size
 
 
 #: A median HFR over fewer than this many stars is one detection's opinion: with
@@ -30,6 +30,39 @@ MIN_STARS_PER_POINT = 3
 #: suggests. What it means for the FIT depends on the company the point keeps —
 #: see ``thin_points_phrase``.
 THIN_POINT_STARS = 10
+
+
+def sweep_metric(data, min_stars: int = MIN_STARS_PER_POINT
+                 ) -> tuple[float | None, int, str | None]:
+    """One sweep point: ``(size px | None, sources, the metric's own advice)``.
+
+    THE seam the sweep measures through, deliberately a single named function:
+    it is what tests substitute, and it is where the choice of metric lives so
+    that choice cannot silently differ between the curve and the final verify.
+
+    ``star_size`` rather than the ``focus_size`` wrapper because the SourceSize
+    is needed twice — once for the number, once so ``size_advice`` can say what
+    the metric actually saw when a point is refused, instead of the sweep
+    inferring a cause it cannot know.
+    """
+    size = star_size(data)
+    value, n = _size_point(size, min_stars)
+    return value, n, (size_advice(size) if value is None else None)
+
+
+def _size_point(size, min_stars: int) -> tuple[float | None, int]:
+    """``(size px | None, sources)`` for one sweep point, from a ``SourceSize``.
+
+    Mirrors ``imaging.stars.focus_size`` exactly — the sweep calls ``star_size``
+    directly so it can also hand the SourceSize to ``size_advice``, and this
+    keeps the accept/refuse rule in ONE shape rather than two that can drift.
+    """
+    from ..imaging.stars import SIZE_CONFIDENT_SNR
+    if size is None:
+        return None, 0
+    if size.n_sources < min_stars and size.snr < SIZE_CONFIDENT_SNR:
+        return None, size.n_sources
+    return size.radius, size.n_sources
 
 
 def sweep_levers(exposure_s: float, binning: int) -> str:
@@ -168,6 +201,11 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     counts: list[int] = []
     #: (position, star count) for every point too thin to be a measurement.
     dropped: list[tuple[int, int]] = []
+    #: The size metric's OWN account of the first point it could not measure.
+    #: Only the metric knows whether it found nothing at all or found one source
+    #: too faint to trust, and that distinction is the difference between "expose
+    #: longer" and "you are pointed at nothing".
+    metric_note: str | None = None
     bus.publish("focus", state="running", points=[], best=None)
 
     def _thin_advice(extra: str = "") -> str | None:
@@ -176,7 +214,9 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         ``None`` when nothing was dropped and there is no ``extra``: a sweep that
         measured everything cleanly and still failed has no business guessing at
         a cause, and a guessed cause is what sent the user out to a clear sky."""
-        bits = [b for b in (extra,) if b]
+        # The metric's own observation leads: it is the only party that looked
+        # at the pixels, so it outranks anything inferred from the star counts.
+        bits = [b for b in (extra, metric_note) if b]
         # Dropped points and thin points are the same shortage seen at two
         # depths, so only the louder one speaks.
         thin = None if dropped else thin_points_phrase(counts)
@@ -221,8 +261,18 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
             # offloaded preview-path detection).
             # The floor is the SWEEP's, stated here rather than inherited from the
             # detector's default: what a fit point needs is a property of fitting.
-            hfr, n_stars = await asyncio.to_thread(
-                median_hfr, frame.data, min_stars=MIN_STARS_PER_POINT)
+            # focus_size, NOT median_hfr. Measured over tonight's ground-truth
+            # sweep (server/tests/fixtures/focus_sweep), median_hfr reads
+            # 4.73 4.89 4.69 4.52 4.43 ... 4.56 4.87 4.57 across +/-5000 steps —
+            # dead flat at its 15px-box ceiling, which is why every sweep this
+            # week fitted noise and died with not_enough_spread. focus_size on
+            # the same frames reads 42.7 77.0 76.3 51.4 21.9 4.61 26.7 52.8 81.4:
+            # a curve with an actual minimum. Same return shape, same units at
+            # focus; it simply keeps rising once the star outgrows a cutout.
+            hfr, n_stars, why = await asyncio.to_thread(
+                sweep_metric, frame.data, MIN_STARS_PER_POINT)
+            if why and metric_note is None:
+                metric_note = why
             if hfr is None:
                 # Refused, not merely "skipped": a median over one or two
                 # detections carries a hot pixel's opinion into the fit with the
@@ -335,7 +385,11 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         await focuser.move_to(best)
 
         frame = await _expose()
-        final_hfr, _ = await asyncio.to_thread(median_hfr, frame.data)
+        # The SAME metric the curve was fitted with. Reporting median_hfr here
+        # would let a run that landed badly still print a healthy-looking 4.5px,
+        # because that number cannot exceed its own measurement box — the exact
+        # lie that made every frame this week look identically "FAIR".
+        final_hfr, _ = await asyncio.to_thread(focus_size, frame.data)
     except BaseException:
         # Never leave the focuser parked at an arbitrary sweep position. Restore
         # start_pos best-effort (shielded so even a cancel completes the move
