@@ -15,12 +15,14 @@ Two size measurements live here and they are NOT interchangeable:
   cloud detector and the preview HFR readout all want that. Its HFR SATURATES
   around 0.77 * box/2 and it is not a focus metric off-focus; see
   HFR_BOX_CEILING_FRACTION for why growing the box does not rescue it.
-* ``star_size`` / ``focus_size`` measure ONE number for the frame with no
-  ceiling at all, by finding sources on a pyramid of downsampled copies and
-  measuring each on its own azimuthally-median radial profile. This is the
-  AUTOFOCUS metric, because a sweep spends most of its points outside the
-  regime where a cutout of any fixed size can see the star. See the section
-  header further down for the sky data that forced it.
+* ``star_size`` / ``focus_size`` measure ONE number for the frame, by finding
+  sources on a pyramid of downsampled copies and measuring each on its own
+  azimuthally-median radial profile — an aperture set by the SOURCE, and
+  escalated onto a binned copy when the source outgrows what is affordable at
+  full resolution, so the frame itself is the only limit. This is the AUTOFOCUS
+  metric, because a sweep spends most of its points outside the regime where a
+  cutout of any fixed size can see the star. See the section header further
+  down for the sky data that forced it.
 """
 from __future__ import annotations
 
@@ -240,7 +242,11 @@ def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]
 #     aperture grown until the profile falls into the noise. The median across
 #     each annulus is what makes it robust: a donut's ring fills its annulus, a
 #     neighbouring star occupies a few degrees of it and is ignored.
-#   * THE APERTURE HAS NO CEILING, only the frame. That is the whole point.
+#   * THE APERTURE'S ONLY CEILING IS THE FRAME. It used to be a constant
+#     (SIZE_R_CAP, 512 px) and that constant made the metric invert exactly the
+#     way the 15 px box did — see SIZE_COARSE_BINS for the measurement. A source
+#     too big for the full-resolution budget is now re-measured on a binned
+#     copy, where the same budget spans that many times as much sky.
 #
 # Verified against server/tests/fixtures/focus_sweep (a real monotonic sweep of
 # the same field). Measured across the band an autofocus sweep samples:
@@ -253,6 +259,15 @@ def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]
 # 4.61 px at focus against the 4.44 those full frames measured with the box.
 # test_focus_metric.py is that check and it is the acceptance test for this code.
 #
+# WHAT IT COSTS, because a sweep runs this once per point and a point that
+# arrives after the mount has drifted is not a point. Measured on this machine,
+# per frame: 3 ms on the 110px in-focus fixture crop, 40-90 ms on the 650px
+# off-focus ones, 506 ms for the whole 15-frame fixture sweep, 670 ms on a
+# synthetic 26 MP frame carrying 900 sharp stars, and 470 ms on a 2000px frame
+# holding a single 500px-radius donut (the binned re-measure is what keeps that
+# last one from being the 7.9 s an uncapped full-resolution aperture costs).
+# Against a 4 s sweep exposure that is noise.
+#
 # The hard limit this CANNOT beat: past ~1500 steps out, a 4 s exposure did not
 # record the star at all (~6 ADU/px above background, which loses to a hot
 # pixel). Where there is no source, ``star_size`` returns None and
@@ -263,6 +278,14 @@ def median_hfr(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]
 #: Coarsest binning level in the detection pyramid. Level k finds sources up to
 #: roughly 3*k px across as single blobs, so 64 covers a ~200 px donut — the
 #: size a +/-1000 step sweep actually produces on this rig.
+#:
+#: Raising this does NOT extend the range, and that was measured rather than
+#: assumed: at 256 a physical 200 px-radius annulus read 105 px instead of 145,
+#: and a 500 px one 184 instead of 365. A seed from level k is only accurate to
+#: k/2 px, so a coarser level buys reach at the cost of a centre, and an
+#: off-centre radial profile smears one source across many radii and reads LOW.
+#: Reach past this level comes from SIZE_COARSE_BINS, which re-measures a source
+#: that has already been found and centred — not from seeing it more coarsely.
 SIZE_MAX_LEVEL = 64
 
 #: A binned level is only used while it still has this many cells per side.
@@ -273,9 +296,51 @@ SIZE_MIN_CELLS = 8
 #: few; measuring 500 faint ones costs a second and moves the median by nothing.
 SIZE_MAX_SOURCES = 24
 
-#: Aperture radius ceiling, px. Bigger blobs than this belong to coarse focus
-#: (imaging.defocus), not to a sweep.
+#: Aperture radius budget AT FULL RESOLUTION, px. NOT a ceiling on the answer:
+#: a source whose light reaches this far is re-measured on a binned copy (see
+#: SIZE_COARSE_BINS). It is a COST limit — a radial profile over a 2r window is
+#: O(r^2), and simply raising this to 4096 took one frame holding an 800 px
+#: donut from 1.5 s to 7.9 s, which no sweep can afford.
 SIZE_R_CAP = 512
+
+#: Binning steps for re-measuring a source that outgrew the full-resolution
+#: budget: 4 reaches a ~2000 px aperture, 16 reaches the frame. Measured on a
+#: physical f/4 defocus annulus (35% central obstruction, spider vanes,
+#: seeing-softened edges), flux-weighted mean radius in px:
+#:
+#:     true               218.1  290.9  363.6  436.3  581.7
+#:     with a 512 cap     218.7  273.6  243.0  232.9  263.7   <- INVERTS
+#:     escalated          218.9  292.0  365.0  438.0  583.9
+#:
+#: The middle row is the defect a review caught here, and it is the SAME defect
+#: as the 15 px box in ``detect_stars``: once the donut outgrew the aperture it
+#: arrived as several arcs, each measuring the annulus's WIDTH rather than its
+#: radius, and the median over them SHRANK as the star grew. A metric that
+#: shrinks as you leave focus does not merely fail to find focus, it aims the
+#: search away from it. The rig's own 880 px-across donuts are radius 440 at
+#: bin 1, i.e. squarely inside the inverted part of that row.
+SIZE_COARSE_BINS = (4, 16)
+
+#: Escalate to SIZE_COARSE_BINS once the aperture has grown to this fraction of
+#: the full-resolution budget. Below it the full-res answer is already good to
+#: ~0.5% (the 218 column above), so escalating would buy nothing but time.
+SIZE_ESCALATE_FRAC = 0.75
+
+#: THE SHAPE THIS CANNOT MEASURE, stated because it is a real hole and not one
+#: the fixture would ever show. An annulus far THINNER than this instrument's
+#: (a 6 px ring, against the 0.35..1.0 R annulus a 35%-obstructed f/4 produces)
+#: reads its ring's WIDTH, ~3 px, at every radius: the azimuthal median cannot
+#: see a ring from a point on its rim, because the annulus at distance d meets
+#: the ring in two arcs of angular width ~w/d and more than half of it is sky.
+#:
+#: Left alone deliberately. Widening the search for the centre until the annular
+#: MEAN runs out does fix it, and it was built and measured and then thrown
+#: away: on the shape this rig ACTUALLY produces it made things worse (a
+#: 200 px-radius annulus fell from 146.0 to 104.3, real fixture 11900 from 167
+#: to 232), because widening also merges a crowded field into one blob. A metric
+#: that is right on the shape in front of the telescope beats one that is right
+#: on a shape it will never see, and the fixture is the arbiter.
+SIZE_THIN_RING_LIMIT_PX = 6
 
 #: A source's aperture flux must beat this many sigma of its own aperture noise
 #: (sigma * sqrt(pixels)). At 5 a pure-noise 6.5 MP frame produced one phantom
@@ -449,6 +514,81 @@ def _recentre(img: np.ndarray, bg: float, sigma: float, cy: float, cx: float,
     return float((ys * v).sum() / total), float((xs * v).sum() / total)
 
 
+def _lock_on(img: np.ndarray, bg: float, sigma: float, cy: float, cx: float,
+             r: float, iters: int = 4) -> tuple[float, float]:
+    """Walk the centre onto the source before measuring it.
+
+    ``_recentre`` once is not enough on a ring. A pyramid seed lands on the
+    brightest CELL, which for a donut is the RING and never the dark middle;
+    the flux-weighted centre inside a radius that spans the whole ring IS the
+    ring's centre, but one step at the ring's own width leaves you still on the
+    rim, and the radial profile then describes the ring's WIDTH. Measured on a
+    400 px-radius annulus: 273.6 px with one step, 291.6 with this, truth 290.9.
+
+    Refusing to move further than ``r`` from the seed is what keeps this a
+    refinement and not a search. Without that guard a blob truncated by the
+    frame edge walked onto a brighter compact star elsewhere, and the fixture
+    frame 5000 steps out of focus came back at 6.7 px — i.e. in focus.
+    """
+    sy, sx = cy, cx
+    for _ in range(iters):
+        ny, nx = _recentre(img, bg, sigma, cy, cx, r)
+        if math.hypot(ny - sy, nx - sx) > r:
+            break                       # that is a different source, not ours
+        step = math.hypot(ny - cy, nx - cx)
+        cy, cx = ny, nx
+        if step < 0.05 * r:
+            break                       # settled
+    return cy, cx
+
+
+def _binned_view(img: np.ndarray, b: int,
+                 cache: dict) -> tuple[np.ndarray, float, float] | None:
+    """A ``b``-binned copy of the frame with its OWN robust statistics, built
+    once per frame per level. Mean-binning divides the noise by b, so reusing
+    the full-resolution sigma would judge every binned annulus b times too
+    strictly and end the aperture early — which is the failure this whole
+    escalation exists to remove."""
+    if b not in cache:
+        s = _mean_binned(img, b)
+        bg, sig = _bg_sigma(s)
+        cache[b] = (s, bg, sig)
+    s, bg, sig = cache[b]
+    return None if min(s.shape) < 16 else (s, bg, sig)
+
+
+def _measure_at_bin(img: np.ndarray, cache: dict, b: int, cy: float, cx: float,
+                    win0: float, r_cap: float) -> dict | None:
+    """``_measure_source`` on a ``b``-binned copy, scaled back to full-frame px.
+
+    Aperture SNR survives the trip unchanged — binning divides sigma by b and
+    the aperture radius by b while dividing the flux by b^2 — so a donut judged
+    on a binned copy clears exactly the bar it would have cleared at full
+    resolution, and SIZE_MIN_APERTURE_SNR keeps meaning what it means.
+    """
+    got = _binned_view(img, b, cache)
+    if got is None:
+        return None
+    sub, bg, sigma = got
+    by, bx = (cy + 0.5) / b - 0.5, (cx + 0.5) / b - 0.5
+    m = _measure_source(sub, bg, sigma, by, bx, max(8.0, win0 / b),
+                        max(8.0, r_cap / b))
+    if m is None:
+        return None
+    ny, nx = _lock_on(sub, m["bg"], sigma, by, bx, m["edge"])
+    better = _measure_source(sub, bg, sigma, ny, nx, max(8.0, m["edge"] * 1.5),
+                             max(8.0, r_cap / b))
+    if better is not None and better["flux"] >= m["flux"]:
+        m = better
+    out = dict(m)
+    out["y"] = (m["y"] + 0.5) * b - 0.5
+    out["x"] = (m["x"] + 0.5) * b - 0.5
+    for key in ("edge", "mean_r", "r80"):
+        out[key] = m[key] * b
+    out["flux"] = m["flux"] * b * b
+    return out
+
+
 def _measure_source(img: np.ndarray, bg: float, sigma: float, cy: float,
                     cx: float, win0: float, r_cap: float) -> dict | None:
     """Measure one source, doubling the analysis window until its edge fits."""
@@ -537,7 +677,9 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
     if img.ndim != 2 or min(img.shape) < 16:
         return None
     bg, sigma = _bg_sigma(img)
-    cap = float(min(r_cap, min(img.shape) / 2.0))
+    half = min(img.shape) / 2.0
+    cap = float(min(r_cap, half))
+    binned: dict[int, tuple[np.ndarray, float, float]] = {}
     found: list[dict] = []
     claimed: list[tuple[float, float, float]] = []
     for k in reversed(_size_levels(img.shape)):
@@ -553,14 +695,35 @@ def star_size(data: np.ndarray, *, k_sigma: float = 5.0,
             m = _measure_source(img, bg, sigma, y, x, max(8.0, 8.0 * k), cap)
             if m is None:
                 continue
-            ny, nx = _recentre(img, m["bg"], sigma, y, x, m["edge"])
+            ny, nx = _lock_on(img, m["bg"], sigma, y, x, m["edge"])
             better = _measure_source(img, bg, sigma, ny, nx,
                                      max(8.0, m["edge"] * 1.5), cap)
-            if better is not None:
+            if better is not None and better["flux"] >= m["flux"]:
                 m = better
+            # The APERTURE stopped us, not the frame: re-measure the same source
+            # coarsely rather than report the fragment we can afford to see. The
+            # frame stopping us is a different answer (``truncated`` -> a floor),
+            # and binning cannot rescue light that was never on the sensor.
+            if m["edge"] >= SIZE_ESCALATE_FRAC * cap and cap < half:
+                for b in SIZE_COARSE_BINS:
+                    cm = _measure_at_bin(img, binned, b, m["y"], m["x"],
+                                         m["edge"] * 3.0, min(r_cap * b, half))
+                    if cm is None:
+                        continue
+                    if cm["mean_r"] > m["mean_r"]:
+                        m = cm
+                    if not cm["truncated"]:
+                        break   # this level held the whole source; go no coarser
             if m["snr"] < SIZE_MIN_APERTURE_SNR:
                 continue
-            if not _is_resolved(img, bg, m["y"], m["x"], max(3.0, m["edge"] * 0.5)):
+            # Over the WHOLE aperture, not half of it. A donut's middle is dark,
+            # so half the aperture can land entirely inside the hole, where the
+            # brightest pixel is noise and fails the neighbour test — this guard
+            # was throwing away the one correctly centred measurement of a ring
+            # and leaving only the rim fragments, which is how a 40 px ring came
+            # back as 3.3 px. The aperture IS the source we are claiming, so it
+            # is the region whose brightest pixel has to be a resolved one.
+            if not _is_resolved(img, bg, m["y"], m["x"], max(3.0, m["edge"])):
                 continue
             m["scale"] = k
             claimed.append((m["y"], m["x"], max(3.0, m["edge"])))
