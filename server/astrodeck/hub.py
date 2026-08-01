@@ -53,7 +53,7 @@ from .imaging import (
     to_thumb,
     write_wcs,
 )
-from .imaging.processing import frame_stats
+from .imaging.processing import frame_stats, to_png
 from .polar import PolarAlignSession
 from .profiles import Profile, ProfileDevice, profiles
 from . import rotation as _rotation
@@ -82,6 +82,14 @@ def _harness():
     from .devices.backend import ConnSpec, RigSpec
     from .devices.orchestrator import connect_profile
     return RigSpec, ConnSpec, connect_profile
+
+#: Guide-cam PREVIEW exposure (``guide_preview_png``), used only when no guider
+#: owns the guide camera. Short and hot on purpose: this answers "is the guide
+#: field clear / is there dew on the guide scope", so it wants to beat the
+#: panel's 2.5s poll, not to be a good guiding sub. A real guide loop, when one
+#: exists, always wins — see the ordering in ``guide_preview_png``.
+GUIDE_PREVIEW_EXPOSURE_S = 1.0
+GUIDE_PREVIEW_GAIN = 200
 
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
 #: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
@@ -939,6 +947,60 @@ class Hub:
         if self.guider is not None:
             return {"name": self.guider.name, "connected": self.guider.connected}
         return None
+
+    async def guide_preview_png(self) -> tuple[bytes | None, str]:
+        """A PNG of the guide camera's current view, or (None, why-not).
+
+        Why this is not just ``self.guider.guide_frame()``: on 2026-07-31 the
+        Capture screen's "Guide cam" toggle did nothing on a rig whose ZWO ASI
+        guide camera was connected and idle. The route gated on ``hub.guider``,
+        and ``hub.guider`` is None on a native rig unless a profile explicitly
+        overrides the ``guider`` role — ``NativeBackend.roles`` deliberately
+        excludes it (the native engine is offered through ``native_guider()``,
+        and the Equipment screen even tells the user there is "no guider device
+        to assign here"). So the one device that could have answered was sitting
+        there connected and was never asked.
+
+        Order matters. The guider first: while a guide loop is running its last
+        looped frame IS the truth, and grabbing our own exposure would fight it
+        for the sensor. Only when there is no guider do we drive the dedicated
+        guide camera ourselves.
+
+        Never raises — the caller turns (None, reason) into a 404, never a 500.
+        """
+        g = self.guider
+        if g is not None and getattr(g, "connected", False):
+            try:
+                png = await g.guide_frame()
+            except Exception:  # noqa: BLE001 — a preview must not 500 the panel
+                png = None
+            if png:
+                return png, ""
+            return None, f"{g.name} is connected but exposes no image"
+
+        cam = self.devices.get("guide_camera")
+        if cam is None or not getattr(cam, "connected", False):
+            return None, ("no guide camera and no guider are connected — assign "
+                          "a guide camera under Equipment, or start PHD2/NINA")
+        # One physical camera filling both roles (the OAG-style fallback
+        # native_guider() also allows). Exposing it here would take the sensor
+        # out from under the imaging train mid-sequence.
+        if cam is self.devices.get("camera"):
+            return None, (f"{cam.name} is also the imaging camera — its frames "
+                          "show in the capture preview, not here")
+        # busy_label already folds in `looping` ("capturing"), so this one read
+        # covers a capture loop, a sequence, an AF sweep and a solve.
+        busy = self.busy_label
+        if busy:
+            return None, f"{cam.name} is busy ({busy})"
+        try:
+            frame = await cam.expose(GUIDE_PREVIEW_EXPOSURE_S,
+                                     GUIDE_PREVIEW_GAIN, 0, binning=1)
+            return to_png(frame.data, stretch=True, max_width=512), ""
+        except Exception as exc:  # noqa: BLE001
+            # NAME the failure. "unavailable" was the whole complaint: the panel
+            # could not distinguish a camera that refused from one nobody asked.
+            return None, f"{cam.name} could not deliver a frame: {exc}"
 
     def summary(self) -> dict:
         sr = self._safety_reading
@@ -3159,6 +3221,17 @@ class Hub:
                 }
             except Exception:
                 pass
+            else:
+                # Its OWN try, for the same reason focuser.moving has one above:
+                # `moving` is the newest reading here and the least universally
+                # supported, and it must never be able to cost the slot names
+                # and position the user is actually looking at. Absent key ==
+                # "this backend cannot say", which the client treats as
+                # "watch the position instead" rather than as "not moving".
+                try:
+                    out["filterwheel"]["moving"] = bool(await fw.is_moving())
+                except Exception:
+                    pass
         # UX #27: roof/dome state on the status surface. The roof closing was
         # visible only in Settings -> Safety, so the dashboard said nothing while
         # the observatory shut itself. Cheap: one cached-ish shutter read, fully

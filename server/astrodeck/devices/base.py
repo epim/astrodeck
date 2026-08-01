@@ -433,6 +433,24 @@ class FilterWheel(Device):
     async def set_position(self, slot: int) -> None:
         """Move to slot (0-based); waits for completion."""
 
+    async def is_moving(self) -> bool:
+        """Is the carousel actually turning right now?
+
+        Default False, and for exactly the reason ``Focuser.is_moving`` defaults
+        False: the Capture screen pulses the slot you asked for until this goes
+        quiet, so a backend that returns a hopeful True it cannot substantiate
+        would make a wheel that ignored the command look identical to one that
+        obeyed it. That is the same confusion that cost 2026-07-30/31 on the
+        focuser, transplanted onto the filter wheel.
+
+        Saying False when you cannot tell is safe here because the position
+        readout is the second witness: the UI only trusts the flag while the
+        wheel has not yet reached the requested slot, and a wheel that never
+        arrives and never claims motion is reported as stuck rather than as
+        still turning.
+        """
+        return False
+
 
 @dataclass
 class SwitchPort:
