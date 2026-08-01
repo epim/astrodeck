@@ -207,6 +207,15 @@ export interface SweepReadiness {
  * their call — so it never blocks, but it still says that nothing has been
  * measured, because that is still true.
  *
+ * THE REFUSAL DEFERS. "Tap a preset above, then Single" is only true advice
+ * while Single is tappable. With no camera connected, or polar alignment or a
+ * sequence holding it, the first cut of this function still printed that
+ * sentence on the hero while the Single control two inches above it read "No
+ * camera is connected" — a blocked control resolving to a reason that is not
+ * merely incomplete but WRONG, and pointing at another blocked control. So it
+ * takes the capture blocker and states that instead: the reason nothing has
+ * been measured is the reason nothing CAN be measured.
+ *
  * And when a BACKEND runs the sweep (NINA), none of this applies: focus/
  * autofocus.py routes `choice.kind == "backend"` straight to the backend's own
  * autofocus and drops every parameter on the way. Blocking there would refuse a
@@ -221,6 +230,11 @@ export function sweepReadiness(p: {
   liveStars: number | null;
   params: { exposure_s: number; gain: number; binning: number; step: number };
   source: AfParamSource;
+  /** Why this screen cannot open the shutter right now (focusCaptureBlocker's
+   *  sentence), or null when it can. NOT optional: the refusal's instruction is
+   *  "tap a preset, then Single", and a caller that cannot say whether Single
+   *  works is a caller that cannot know whether that instruction is possible. */
+  captureBlocked: string | null;
   /** False when a backend owns autofocus and our exposure/gain/binning are
    *  never sent. Optional: absent means the native/sim path, which does use
    *  them. */
@@ -254,9 +268,15 @@ export function sweepReadiness(p: {
   if (!p.hasLiveFrame) {
     return {
       basis: "no-frame",
-      block:
-        "Take a frame first: autofocus copies the live frame's exposure, gain and "
-        + "binning, and there is no frame to copy. Tap a preset above, then Single.",
+      // Two different sentences because they are two different situations. The
+      // first is a missing tap; the second is a rig that cannot take the frame
+      // at all, and telling that user to "tap Single" would point them at a
+      // control that is itself locked with a different reason.
+      block: p.captureBlocked
+        ? "Autofocus copies the live frame's exposure, gain and binning, and no "
+          + `frame has been taken yet: ${p.captureBlocked}.`
+        : "Take a frame first: autofocus copies the live frame's exposure, gain and "
+          + "binning, and there is no frame to copy. Tap a preset above, then Single.",
       summary,
       // The numbers are already on the summary line beside this, so the warning
       // slot stays empty rather than printing them a second time — the refusal
@@ -272,7 +292,12 @@ export function sweepReadiness(p: {
       basis: "sparse",
       block: null,
       summary,
-      provenance: `the live frame measured only ${n} stars, so exposure and binning fell back to defaults`,
+      // Gain and binning ARE copied from a star-poor frame — they are settings
+      // the user chose, not measurements the frame failed to make. Only the
+      // exposure falls back, because copying an exposure that produced n stars
+      // is copying the thing that did not work.
+      provenance: `the live frame measured only ${n} stars, so its gain and binning `
+        + "are copied but the exposure fell back to a default",
       warn:
         `A sweep defocuses on purpose, and defocusing finds FEWER stars than ${n}, `
         + "never more. Take a longer or higher-gain frame first and this copies it.",
@@ -302,19 +327,37 @@ export function sweepReadiness(p: {
  * letting an empty stage imply the camera is idle.
  *
  * @param framesSinceStart new live-preview ids seen since the sweep began.
- *   >0 means frames ARE arriving and the stage speaks for itself.
+ *   >0 means frames ARE arriving — but see `loopRunning` before believing they
+ *   are the sweep's.
+ * @param loopRunning a capture loop is running. /api/capture/loop refuses only
+ *   for polar and sequences (api/app.py), NOT for a running sweep, so a loop
+ *   started from the Capture screen keeps publishing previews right through an
+ *   autofocus run. Its frames are not the sweep's, and silencing this note on
+ *   them would let a user read someone else's frames as evidence the sweep is
+ *   delivering — the same substitution the note exists to prevent.
  */
 export function sweepPreviewNote(p: {
   running: boolean;
   pointsMeasured: number;
   framesSinceStart: number;
+  loopRunning?: boolean;
 }): string | null {
   if (!p.running) return null;
-  if (p.framesSinceStart > 0) return null;
+  // Frames that belong to a running loop are not evidence about the sweep.
+  const loopFrames = !!p.loopRunning && p.framesSinceStart > 0;
+  if (p.framesSinceStart > 0 && !loopFrames) return null;
+  // Name the owner when there is one. "No frame from the sweep has reached this
+  // screen" is false-sounding with pictures visibly landing on the stage, and a
+  // sentence the screen contradicts is a sentence nobody reads again.
+  const whose = loopFrames
+    ? "the frames on the stage are your capture loop's, not the sweep's"
+    : "no frame from the sweep has reached this screen";
   if (p.pointsMeasured <= 0) {
-    return "Autofocus is exposing its first frame — nothing has come back yet.";
+    return loopFrames
+      ? `Autofocus is exposing its first frame — ${whose}.`
+      : "Autofocus is exposing its first frame — nothing has come back yet.";
   }
   return `${p.pointsMeasured} ${p.pointsMeasured === 1 ? "point" : "points"} measured, `
-    + "but no frame from the sweep has reached this screen. The V-curve below is "
-    + "the live evidence — it advances once per point.";
+    + `but ${whose}. The V-curve below is the live evidence — it advances once `
+    + "per point.";
 }
