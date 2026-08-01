@@ -32,8 +32,8 @@ import numpy as np
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
-from .autofocus import (MIN_STARS_PER_POINT, THIN_POINT_STARS, AutofocusResult,
-                        dropped_points_phrase, sweep_levers)
+from .autofocus import (MIN_STARS_PER_POINT, AutofocusResult,
+                        dropped_points_phrase, sweep_levers, thin_points_phrase)
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -184,18 +184,34 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         """The specific guidance THIS run earned — the sentence that used to go
         only to the log — or None when the run learned nothing specific.
 
-        None is the honest answer: an absent advice lets the panel fall back to
-        its generic copy, whereas an invented one is precisely what sent a user
-        under a 2% cloud sky out to "check the sky is clear" on 2026-07-31."""
+        Every clause below is keyed to something this run MEASURED: points it
+        had to drop, frames it could not size, how thin the fitted points were.
+        What is deliberately absent is a cause inferred from a proxy. The
+        start-position star count NEVER speaks on its own here, because the
+        panel ranks this advice above the engine's own failure token said in
+        words — so a guess made from ``n0`` does not merely sit beside the
+        accurate explanation, it replaces it. A flat curve measured from 12
+        stars at every point, nothing dropped, is a step-size or focuser fault;
+        captioning it "too few stars" is the 2026-07-31 mistake with a fresh
+        number in it, and worst on exactly the rigs that filed the bug (24 stars
+        at bin 1 become 8 at bin 2, so EVERY failure there would be blamed on
+        the field while the same fault on a rich rig got diagnosed correctly).
+
+        None is the honest answer when nothing specific was learned: an absent
+        advice lets the panel fall back to the engine token in words, whereas an
+        invented one is precisely what sent a user under a 2% cloud sky out to
+        "check the sky is clear"."""
         bits: list[str] = []
-        starved = False   # …of stars, which is what the levers below can fix
-        if not ok and 0 <= n0 < SPARSE_FIELD_WARN:
-            bits.append(f"Only {n0} stars in the field — too few to keep "
-                        f"measuring as the sweep defocuses.")
-            starved = True
         if dropped:
             bits.append(dropped_points_phrase(dropped, attempted) + ".")
-            starved = True
+            # The start count is context FOR THE DROPS, never a finding on its
+            # own: a field already thin at best focus had no margin to lose,
+            # which is the 24-at-bin-1 → 8-at-bin-2 → 0-further-out shape this
+            # warns about. With drops on the record it is measured, not guessed.
+            if 0 <= n0 < SPARSE_FIELD_WARN:
+                bits.append(f"The field had only {n0} stars at the start "
+                            f"position, so it had nothing to spare as it "
+                            f"defocused.")
         if unsized:
             # Not the user's to fix, so it gets no lever — but they should know
             # a point vanished for a reason that is not their sky.
@@ -203,21 +219,23 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         f"{'' if len(unsized) == 1 else 's'} had stars this "
                         f"detector could not size "
                         f"({', '.join(str(p) for p in unsized[:3])}).")
-        weak = sum(1 for c in counts if c < THIN_POINT_STARS)
-        if ok and weak and not dropped:
-            bits.append(f"{weak} of {len(counts)} points came from fewer than "
-                        f"{THIN_POINT_STARS} stars and carry little weight in "
-                        f"the fit, so this is thinner evidence than the R² "
-                        f"suggests.")
-            starved = True
+        # Thin-but-measured points qualify a RESULT; they are not a cause of a
+        # failure. On a failed run the engine's reason is the finding, and
+        # burying it under a star-count caveat is the same suppression the n0
+        # clause used to commit. (The per-point counts still go to the log.)
+        thin = thin_points_phrase(counts) if ok and not dropped else None
+        if thin:
+            bits.append(thin)
         if not bits:
             return None
-        if starved:
-            # One "change this" at the end. Every starvation fact above has the
-            # same three remedies, and repeating them per fact is how specific
-            # advice starts reading as the boilerplate it replaces.
-            bits.append(("A firmer result would need " if ok else "Try ")
-                        + levers + ".")
+        # One "change this" at the end. Every starvation fact above has the same
+        # three remedies, and repeating them per fact is how specific advice
+        # starts reading as the boilerplate it replaces.
+        if dropped:
+            # Points went missing for want of stars, so the levers ARE the fix.
+            bits.append("Try " + levers + ".")
+        elif thin:
+            bits.append("A firmer result would need " + levers + ".")
         return " ".join(bits)
 
     try:
@@ -231,16 +249,20 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         n0 = int(pstats.get("star_count") or 0)
         bus.log("info", f"autofocus: {n0} stars at the starting position", "focus")
         if n0 < MIN_STARS_TO_SWEEP:
-            # message = the diagnosis (what was measured against what is needed);
-            # advice = the fix, naming the exposure and binning THIS run used.
-            # They are two lines in the panel, so neither repeats the other.
+            # Both of these land in the panel — ``reason`` as the verdict chip,
+            # ``advice`` as the detail line — so between them they get to carry
+            # two facts, not one fact twice. The chip states what was measured
+            # against what a fit needs; the detail states what to CHANGE, and
+            # therefore does not repeat the star count it is a response to.
             reason = (f"only {n0} stars at the current focus — a curve needs at "
                       f"least {MIN_STARS_TO_SWEEP} measurable points and "
                       f"defocusing finds fewer, not more")
-            # The advice rides on the RESULT and on the event, not only in the
-            # log: this same sentence was already going to the log on 2026-07-31
-            # while the panel told a user under a clear sky to check the sky.
-            advice = _advice(ok=False)
+            # The fix rides on the RESULT and on the event, not only in the log:
+            # this sentence was already going to the log on 2026-07-31 while the
+            # panel told a user under a clear sky to check the sky. Built here
+            # rather than by _advice, which speaks only from what a SWEEP
+            # measured and this run has not swept.
+            advice = "Try " + levers + "."
             await focuser.move_to(start_pos)
             bus.publish("focus", state="failed", points=[], best=None,
                         message=reason, advice=advice)

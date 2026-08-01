@@ -25,9 +25,10 @@ from ..imaging.stars import median_hfr
 #: same authority as a 900-star one and fitted the resulting noise.
 MIN_STARS_PER_POINT = 3
 
-#: Measured, but from few enough stars that the fit barely leans on the point.
-#: Worth naming in the advice: a run that "succeeded" on a handful of these is
-#: thinner evidence than its R² suggests.
+#: Measured, but from few enough stars to be worth naming in the advice: a run
+#: that "succeeded" on a handful of these is thinner evidence than its R²
+#: suggests. What it means for the FIT depends on the company the point keeps —
+#: see ``thin_points_phrase``.
 THIN_POINT_STARS = 10
 
 
@@ -55,6 +56,34 @@ def dropped_points_phrase(dropped: list[tuple[int, int]], attempted: int) -> str
     return (f"{len(dropped)} of {attempted} sweep points had fewer than "
             f"{MIN_STARS_PER_POINT} measurable stars ({detail}{more}) and were "
             f"dropped rather than fitted")
+
+
+def thin_points_phrase(counts: list[int]) -> str | None:
+    """How much of the fitted curve rests on samples too thin to trust, said in
+    terms that match what the fitter ACTUALLY does with them. None when nothing
+    is thin.
+
+    Both fitters weight *relatively* — numpy's ``polyfit(w=√n)`` and the
+    engine's ``1/σ²`` are both invariant to scaling every weight alike — so
+    "the fit barely leans on them" is true only of a thin point sitting beside a
+    richer one. When EVERY point is equally thin the weighting cancels exactly
+    and the fit leans on them completely. The old copy asserted the reassuring
+    half in both cases, and asserted it hardest in the run where it was false:
+    nine 8-star points, a flat curve, and a sentence telling the user the fit
+    had discounted the only evidence it had. A line of advice that is wrong
+    about our own arithmetic is worth less than no line at all.
+    """
+    thin = [n for n in counts if n < THIN_POINT_STARS]
+    if not thin:
+        return None
+    if len(thin) == len(counts):
+        return (f"Every one of the {len(counts)} fitted points came from fewer "
+                f"than {THIN_POINT_STARS} stars, so the whole curve rests on "
+                f"thin samples — weighting cannot discount them when it has "
+                f"nothing richer to weigh them against.")
+    return (f"{len(thin)} of {len(counts)} fitted points came from fewer than "
+            f"{THIN_POINT_STARS} stars against a richest of {max(counts)}, so "
+            f"the fit discounts them.")
 
 
 @dataclass
@@ -148,21 +177,31 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         measured everything cleanly and still failed has no business guessing at
         a cause, and a guessed cause is what sent the user out to a clear sky."""
         bits = [b for b in (extra,) if b]
-        starved = False
+        # Dropped points and thin points are the same shortage seen at two
+        # depths, so only the louder one speaks.
+        thin = None if dropped else thin_points_phrase(counts)
         if dropped:
             bits.append(dropped_points_phrase(dropped, len(positions)) + ".")
-            starved = True
-        elif weak := sum(1 for n in counts if n < THIN_POINT_STARS):
-            bits.append(f"{weak} of {len(counts)} points were measured from "
-                        f"fewer than {THIN_POINT_STARS} stars, so the fit barely "
-                        f"leans on them.")
-            starved = True
-        if starved:
-            # Only when the sweep actually ran short of stars: telling someone
-            # whose frames were full of them to expose longer is the same wrong
-            # turn as telling them to check a clear sky.
+        elif thin:
+            bits.append(thin)
+        if not bits:
+            return None
+        # Only when the sweep actually ran short of stars: telling someone whose
+        # frames were full of them to expose longer is the same wrong turn as
+        # telling them to check a clear sky.
+        if dropped:
+            # Points went missing for want of stars, so the levers ARE the fix.
             bits.append("Try " + sweep_levers(exposure_s, binning) + ".")
-        return " ".join(bits) or None
+        elif thin:
+            # Points were measured, only thinly. Handing the levers over as an
+            # instruction here would contradict an ``extra`` that has just
+            # diagnosed a step-size or focuser fault ("raise the step size … or
+            # the focuser is not moving as far as it reports. Try a longer
+            # exposure…" left the user to pick a half). They are offered as what
+            # would make the NEXT run's points firmer, not as a rival fix.
+            bits.append("A firmer result would need "
+                        + sweep_levers(exposure_s, binning) + ".")
+        return " ".join(bits)
 
     # Failure-recovery invariant (autofocus review): a focuser stranded mid-sweep
     # would make the sequence shoot the whole target defocused (up to

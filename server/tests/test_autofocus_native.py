@@ -143,12 +143,17 @@ async def test_a_field_too_sparse_to_fit_is_refused_before_the_sweep(monkeypatch
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                        binning=2)
     assert res.success is False
-    # message = the diagnosis, advice = the fix (#114: the panel renders the
-    # advice INSTEAD of its generic detail line, so the two must not repeat).
+    # message = the diagnosis, advice = the fix. Both reach the panel — the
+    # message as the verdict chip, the advice as the detail line — so between
+    # them they must carry two facts and not one fact twice. They used to open
+    # with the same star count and the same "defocusing finds fewer", spending
+    # both lines saying it.
     assert "2 stars" in res.message
+    assert res.advice and "2 stars" not in res.advice, res.advice
+    assert "defocus" not in res.advice, res.advice
     # the levers, in the order that helps: exposure is free, binning costs
     # resolution the sweep does not need
-    assert res.advice and "longer exposure" in res.advice and "bin 1" in res.advice
+    assert "longer exposure" in res.advice and "bin 1" in res.advice
     # and it never moved
     assert await foc.get_position() == start
 
