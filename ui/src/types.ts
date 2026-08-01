@@ -114,7 +114,16 @@ export interface RigStatus {
   // guider is PHD2 (status.guider) with no image; this optional field lets the UI
   // know a live guide-cam frame is fetchable without reading the preview itself.
   // The backend lane sets this (or extends status.guider) — coordinate the name. ---
-  guide_camera?: { name: string; connected: boolean };
+  guide_camera?: {
+    name: string; connected: boolean;
+    // Why the preview has no picture right now, in the server's own words
+    // ("… is also the imaging camera", "… could not deliver a frame: <driver
+    // error>"). The preview panel renders an <img>, which can only observe THAT
+    // the load failed, so every named refusal the route produces would otherwise
+    // arrive as one generic sentence. Absent = no recent refusal; it expires
+    // server-side, so it never describes a camera that has since been fixed.
+    preview_reason?: string;
+  };
   // --- monitor (Batch-2; server-computed from HA for sim/Alpaca, device value for NINA) ---
   meridian?: MeridianInfo;
   // --- reliability (additive; old clients ignore) ---

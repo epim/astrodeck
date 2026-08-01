@@ -199,6 +199,11 @@ export default function CaptureView() {
     }
   };
 
+  // Why the guide preview has no picture, in the server's words. Present only
+  // while an attempt has recently failed (the hub expires it), so this line
+  // appears exactly when the panel below is showing its generic placeholder.
+  const guidePreviewReason = status?.guide_camera?.preview_reason ?? "";
+
   // --- filter wheel: what the Slot button reads while the carousel turns ---
   // `moving` rides the raw status event (hub publishes status.filterwheel.moving
   // in its own try, so it is ABSENT on a backend that cannot say — undefined
@@ -928,6 +933,18 @@ export default function CaptureView() {
             Shared-lane panel: collapsible, self-polls GET /api/guide/frame.png only
             while toggled on. Lets the user glance at the guide field from Capture. */}
         <GuideFramePreview />
+        {/* The panel drives an <img>, so all it can observe about a failure is
+            that the load errored — the server's named 404 detail never reaches
+            it and every distinct nothing renders as "Guide camera frame
+            unavailable". The reason rides status.guide_camera.preview_reason
+            instead, and this is where it gets said. It expires server-side, so
+            it is only ever about the attempt you just watched fail. */}
+        {guidePreviewReason && (
+          <p role="status" aria-live="polite"
+            className="mono text-[11px] text-warn -mt-1 px-1">
+            {guidePreviewReason}
+          </p>
+        )}
 
         {/* ------------------------------------------------------- filter */}
         {status?.filterwheel && (
