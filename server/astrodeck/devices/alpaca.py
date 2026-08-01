@@ -786,6 +786,18 @@ class AlpacaFilterWheel(_AlpacaDevice, FilterWheel):
         while await self._get("position") == -1:
             await asyncio.sleep(0.3)
 
+    async def is_moving(self) -> bool:
+        """ASCOM reports a turning wheel by returning ``Position == -1``
+        (IFilterWheelV2 §Position) — the one wire fact that says "between
+        slots".
+
+        ``get_position`` above clamps that -1 to 0 so no caller ever sees a
+        negative slot, and that clamp is precisely what hid the turn: mid-move
+        the status poll read 0 and the Capture screen calmly named slot 1's
+        filter. Read the RAW value here instead, so the sentinel survives.
+        """
+        return int(await self._get("position")) < 0
+
 
 class AlpacaSwitch(_AlpacaDevice, Switch):
     dev_type = "switch"

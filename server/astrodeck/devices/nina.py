@@ -598,6 +598,17 @@ class NinaFilterWheel(_NinaDevice, FilterWheel):
         await self.client.get("/equipment/filterwheel/change-filter", filterId=fid,
                               timeout=120.0)
 
+    async def is_moving(self) -> bool:
+        # Cached info() on purpose, same trade as NinaFocuser.is_moving: this
+        # rides the 2s status poll and a forced fetch would double bridge
+        # traffic for a flag whose worst-case staleness is one poll.
+        #
+        # `default=False` is the honest answer, not a guess: a bridge build that
+        # omits IsMoving genuinely cannot tell us, and the UI's fallback (the
+        # requested slot has not arrived) is a better witness than a fabricated
+        # True would be.
+        return bool(pick(await self.info(), "IsMoving", "Moving", default=False))
+
 
 # ----------------------------------------------------------------------- switch
 
