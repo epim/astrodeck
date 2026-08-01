@@ -143,10 +143,12 @@ async def test_a_field_too_sparse_to_fit_is_refused_before_the_sweep(monkeypatch
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                        binning=2)
     assert res.success is False
+    # message = the diagnosis, advice = the fix (#114: the panel renders the
+    # advice INSTEAD of its generic detail line, so the two must not repeat).
     assert "2 stars" in res.message
     # the levers, in the order that helps: exposure is free, binning costs
     # resolution the sweep does not need
-    assert "longer exposure" in res.message and "bin 1" in res.message
+    assert res.advice and "longer exposure" in res.advice and "bin 1" in res.advice
     # and it never moved
     assert await foc.get_position() == start
 
