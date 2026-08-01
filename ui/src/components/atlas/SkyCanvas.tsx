@@ -28,8 +28,13 @@ import {
 import type { CatalogEntry } from "../../types";
 import { fovFromOptics, deproject, plausibilityHint, type OpticsLike } from "../../lib/framing";
 import { surveyTransform, type SurveyGeom } from "../../lib/surveyView";
+import {
+  pointingFov, pointingCaption,
+  type MountSample, type RotatorSample,
+} from "../../lib/atlasFov";
 import { u } from "../../lib/base";
 import { FovOverlay } from "./FovOverlay";
+import { PointingFrame } from "./PointingFrame";
 import { RotateHandle } from "./RotateHandle";
 import { initTileGL } from "../../lib/tileGL";
 import { TileEngine } from "./TileEngine";
@@ -88,6 +93,19 @@ export interface SkyCanvasProps {
   /** config.survey.online_fetch — passed through to the tile engine (spec §4). */
   onlineFetch?: boolean;
 
+  // ---- live pointing (2026-07-31) -----------------------------------------
+  // Where the scope IS, as opposed to `center`/`rotationDeg`, which are where
+  // the user intends to point it. These are raw telemetry straight off
+  // status.mount / status.rotator: no code path in this component moves them
+  // toward the target, and none should ever be added. If a slew fails, these
+  // simply stop changing and the footprint stays put, which is the point.
+  /** status.mount (already J2000 — hub.py converts before publishing). */
+  pointing?: MountSample | null;
+  /** status.rotator. Absent = no rotator, so the camera angle is unmeasured. */
+  rotator?: RotatorSample | null;
+  /** The mount's own formatted position (ra_str + dec_str) for the caption. */
+  pointingWhere?: string | null;
+
   // callbacks — AtlasView routes these into setFraming.
   onCenterChange: (ra_hours: number, dec_deg: number) => void;
   onRotate: (deg: number) => void;
@@ -132,6 +150,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     center, rotationDeg, survey, stretch, fovZoomDeg, optics, focalMmOverride,
     mosaic, catalogTarget, night, mode, imageBrightness = 1,
     surveyDegraded = false, degradedText, onlineFetch = false,
+    pointing = null, rotator = null, pointingWhere = null,
     onCenterChange, onRotate, onZoom, onSurveyError, onSurveyLoad,
   } = props;
 
@@ -490,6 +509,43 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     onCenterChange(sky.ra_hours, sky.dec_deg);
   };
 
+  // ---- live pointing footprint (2026-07-31) ----
+  // A pure function of the CURRENT telemetry sample and the CURRENT view. It
+  // re-runs when the mount reports a new position (so the footprint travels
+  // during a slew) and when the user pans (so the footprint stays glued to the
+  // sky and scrolls off the edge). Nothing here knows the target: there is no
+  // tween, and a failed slew is simply a sample that never changed.
+  const pointingReadout = useMemo(
+    () =>
+      pointingFov(
+        { mount: pointing, rotator, fovXDeg: fov.fov_x_deg, fovYDeg: fov.fov_y_deg },
+        {
+          centerRaHours: center.ra_hours,
+          centerDecDeg: center.dec_deg,
+          pxPerDeg,
+          view: VIEW,
+        },
+      ),
+    [pointing, rotator, fov.fov_x_deg, fov.fov_y_deg, center.ra_hours, center.dec_deg, pxPerDeg],
+  );
+  const pointingText = pointingCaption(pointingReadout, pointingWhere);
+  // Label anchor in CSS px: pinned under the LOWEST drawn part of the footprint
+  // (frame corner, disc rim, or the bare reticle) so it never lands on top of
+  // the geometry it names, and clamped so it cannot leave the canvas — the same
+  // failure the "Object size" legend was measured doing at 390px.
+  const pointingLabel = useMemo(() => {
+    const r = pointingReadout;
+    if (!r.axis || r.offView) return null;
+    const bottomView = r.outline
+      ? Math.max(...r.outline.map((p) => p.y))
+      : r.axis.y + (r.discRPx ?? 9);
+    const scale = boxPx / VIEW;
+    return {
+      left: Math.min(boxPx - 30, Math.max(30, r.axis.x * scale)),
+      top: Math.min(boxPx - 16, Math.max(12, bottomView * scale + 4)),
+    };
+  }, [pointingReadout, boxPx]);
+
   // ---- object-size ellipse + verdict ----
   const sizeDeg = (catalogTarget?.size_arcmin ?? 0) / 60;
   const semiMajorDeg = sizeDeg > 0 ? sizeDeg / 2 : null;
@@ -691,6 +747,9 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
             objectSemiMinorDeg={semiMajorDeg}
             haveOptics={haveOptics}
           />
+          {/* live pointing — drawn AFTER the planned box so the truth is never
+              hidden underneath the intention when the two coincide. */}
+          <PointingFrame view={VIEW} readout={pointingReadout} />
           {/* compass N/E ticks (geometry; the N/E letters live on the HTML layer) */}
           <g className="svg-halo" stroke="var(--accent)" strokeWidth={1.5} opacity={0.8}>
             <line x1={cx} y1={24} x2={cx} y2={56} />
@@ -777,6 +836,22 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
           <span className="absolute right-1 bottom-1 text-[12px] mono bg-black/45 px-1 text-dim">
             {fmtAngle(fovZoomDeg)} wide
           </span>
+          {/* live-pointing label. Pairs with "Your camera" (the frame you are
+              PLANNING) by naming the other claim outright — this is where the
+              tube is aimed right now. Mounted last so it paints above the other
+              labels when a slew brings the two frames together. */}
+          {pointingLabel && (
+            <span
+              className="absolute text-[12px] mono px-1 bg-black/55 whitespace-nowrap text-good"
+              style={{
+                left: pointingLabel.left,
+                top: pointingLabel.top,
+                transform: "translateX(-50%)",
+              }}
+            >
+              Pointing now
+            </span>
+          )}
         </div>
 
         {/* 5. rotate handle — mounted AFTER the HTML label layer (wave-2 G3
@@ -854,6 +929,20 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       )}
       {verdict && (
         <div className="text-[12px] text-ink">{verdict}</div>
+      )}
+      {/* The live footprint's own sentence — the numbers a shape cannot carry
+          (where the tube is aimed, what angle was actually measured, how far
+          off the map it has scrolled) and, when something is unmeasured, which
+          of the three unknowns it is. This is also the accessible channel: the
+          canvas SVG is aria-hidden, so without this line a screen reader would
+          be told nothing about the pointing at all. */}
+      {pointingText && (
+        /* Deliberately NOT role="status": the position changes every telemetry
+           tick during a slew, and a live region would read the whole sentence
+           out several times a second. It is plain text in the DOM, on demand. */
+        <p className={`text-[12px] leading-snug ${pointingReadout.caveatTone === "fix" ? "text-warn" : "text-dim"}`}>
+          {pointingText}
+        </p>
       )}
     </div>
   );
