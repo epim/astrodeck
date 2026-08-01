@@ -476,3 +476,13 @@ export const startPackFetch = (order = 4): Promise<{ started: boolean; already?:
 /** DELETE /api/survey/pack → {deleted}. 409 while a fetch runs. config.site_optics. */
 export const deletePack = (): Promise<{ deleted: boolean }> =>
   api.del<{ deleted: boolean }>("/api/survey/pack");
+
+// ------------------------------------------------------------------- version
+/** GET /healthz → `{ok, version}`. The one route that is UNAUTHENTICATED (the
+ *  supervisor health-checks it on every restart, a relay liveness-probes it),
+ *  which makes it the right source for the version chip: it answers before
+ *  sign-in and while the WebSocket is down — exactly when "what is actually
+ *  running out there?" is the question you need answered. It discloses only the
+ *  version: no identity, no rig state. */
+export const getHealth = (): Promise<{ ok: boolean; version: string }> =>
+  api.get<{ ok: boolean; version: string }>("/healthz");

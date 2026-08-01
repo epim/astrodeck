@@ -232,13 +232,13 @@ async def test_legacy_sweep_refuses_thin_points_and_says_why(monkeypatch):
     _rig, cam, foc = await _connected_sim()
     asked: list[int] = []
 
-    def fake_median_hfr(data, min_stars=3):
+    def fake_metric(data, min_stars=3):
         # Two detections is what the frame has; the sweep's own floor decides
         # whether that is a measurement.
         asked.append(min_stars)
-        return (None, 2) if 2 < min_stars else (3.0, 2)
+        return (None, 2, None) if 2 < min_stars else (3.0, 2, None)
 
-    monkeypatch.setattr(A, "median_hfr", fake_median_hfr)
+    monkeypatch.setattr(A, "sweep_metric", fake_metric)
 
     q = bus.subscribe()
     try:
@@ -274,7 +274,8 @@ async def test_an_all_thin_sweep_is_not_told_the_fit_discounted_it(monkeypatch):
     _rig, cam, foc = await _connected_sim()
     # Measurable, thin, and identical everywhere: a flat curve read off nine
     # equally weak samples.
-    monkeypatch.setattr(A, "median_hfr", lambda data, min_stars=3: (3.4, 8))
+    monkeypatch.setattr(A, "sweep_metric",
+                        lambda data, min_stars=3: (3.4, 8, None))
 
     res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
                               steps_each_side=4, binning=2)
@@ -297,10 +298,10 @@ async def test_a_thin_point_beside_rich_ones_is_reported_as_discounted(monkeypat
 
     def mixed(data, min_stars=3):
         pos = rig.focuser_pos
-        return (9.0, 4) if abs(pos - 18500) < 100 else \
-            (2.0 + ((pos - 19200) / 1000.0) ** 2, 500)
+        return (9.0, 4, None) if abs(pos - 18500) < 100 else \
+            (2.0 + ((pos - 19200) / 1000.0) ** 2, 500, None)
 
-    monkeypatch.setattr(A, "median_hfr", mixed)
+    monkeypatch.setattr(A, "sweep_metric", mixed)
     res = await run_autofocus(cam, foc, exposure_s=2.0, gain=200, step=350,
                               steps_each_side=4, binning=2)
     assert res.success, res.message
@@ -317,14 +318,14 @@ async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):
     true_focus = 19200          # the sim starts here; keep the vertex in the window
     outlier_at = 18500
 
-    def fake_median_hfr(data, min_stars=3):
+    def fake_metric(data, min_stars=3):
         # A textbook V, except at one position where four stars report nonsense.
         pos = rig.focuser_pos
         if abs(pos - outlier_at) < 100:
-            return 9.0, 4
-        return 2.0 + ((pos - true_focus) / 1000.0) ** 2, 500
+            return 9.0, 4, None
+        return 2.0 + ((pos - true_focus) / 1000.0) ** 2, 500, None
 
-    monkeypatch.setattr(A, "median_hfr", fake_median_hfr)
+    monkeypatch.setattr(A, "sweep_metric", fake_metric)
     res = await run_autofocus(cam, foc, exposure_s=0.05, gain=200, step=350,
                               steps_each_side=4, binning=2)
     assert res.success, res.message

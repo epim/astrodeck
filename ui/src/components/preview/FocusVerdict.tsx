@@ -100,11 +100,17 @@ export function FocusVerdict({
   // Grossly defocused outranks everything below. In that state the star count is
   // ring fragments and the HFR is the measurement box's ceiling, so "FAIR" is
   // not just wrong, it tells the user to stop adjusting.
-  if (state.kind === "defocused") {
+  // Two bars, not one: "too big for HFR to mean anything" and "too far out for
+  // an autofocus sweep to bracket" are different distances and different
+  // instructions. Collapsing them sent the user to coarse focus from 300 steps
+  // off — one autofocus step from perfect. See lib/focusVerdict for the
+  // measured numbers behind each.
+  if (state.kind === "defocused" || state.kind === "soft") {
+    const far = state.kind === "defocused";
     return (
       <div className="text-xs flex flex-wrap items-center gap-x-2 gap-y-1" aria-live="polite">
-        <span className="text-bad font-medium inline-flex items-center gap-1">
-          <Icon name="alert" size={13} /> Far out of focus
+        <span className={`${far ? "text-bad" : "text-warn"} font-medium inline-flex items-center gap-1`}>
+          <Icon name="alert" size={13} /> {far ? "Far out of focus" : "Out of focus"}
         </span>
         <span className="text-dim">— {defocusMessage(state.r80)}</span>
       </div>

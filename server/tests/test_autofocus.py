@@ -47,11 +47,18 @@ async def test_autofocus_minimum_not_bracketed_fails():
     await foc.connect()
 
     start = await foc.get_position()
-    # push true focus just past the top of the sweep (start 19200, ±4*350 =
+    # Push true focus WELL past the top of the sweep (start 19200, ±4*350 =
     # 17800..20600): the curve still opens upward (a>0) but its vertex lands
     # beyond the swept range, so the OLD code would np.clip it to 20600 and report
     # success at an out-of-focus edge. The bracket guard must reject it instead.
-    state.best_focus = start + 1500
+    #
+    # +3000, not +1500. At +1500 the vertex sat only 100 steps outside the top
+    # point, and once the sweep switched to the size metric (which has a real
+    # minimum instead of median_hfr's flat 15px-box ceiling) the fit could see
+    # the turn and bracket it legitimately — so the test was passing on the old
+    # metric's blindness rather than on the guard. Put focus somewhere the sweep
+    # genuinely never reaches.
+    state.best_focus = start + 3000
     result = await run_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                  step=350, steps_each_side=4, binning=2)
     assert not result.success
