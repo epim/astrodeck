@@ -120,6 +120,41 @@ class NativeCamera(Camera):
         uint16). If a future adapter downloads RAW8 it must signal the format so
         this decode can match; today none do (both request RAW16)."""
         w, h = roi.w // roi.bin, roi.h // roi.bin
+        want = w * h * 2
+
+        # THE ROW LENGTH MUST BE THE ONE WE THINK IT IS.
+        #
+        # `count=w*h` silently takes a PREFIX of the buffer. If the SDK applied a
+        # different ROI than we asked for — a width rounded up to a multiple of
+        # 8, a subframe clamped to the sensor, a stale ROI from the previous
+        # exposure — then every row of the reshape is offset from the last by a
+        # constant, and the result is a picture sheared diagonally and repeated
+        # down the frame. It is returned with no error, and it looks enough like
+        # an image that the pipeline, the preview and the FITS writer all accept
+        # it. That is the reported 2026-07-31 artefact: "distorted and stretched
+        # and shown at an angle. And tiled."
+        #
+        # So: a short buffer is refused outright (np.frombuffer would raise a
+        # ValueError naming neither number), and a LONG one is still used —
+        # refusing a frame over trailing padding would be worse than the bug —
+        # but it is announced with every number needed to identify the culprit,
+        # because a silent mismatch is the only reason this took two attempts to
+        # diagnose and neither of them was right.
+        if len(raw) < want:
+            raise DeviceError(
+                f"camera returned {len(raw)} bytes but a {w}x{h} 16-bit frame "
+                f"needs {want} (ROI {roi.w}x{roi.h} bin {roi.bin}). Reshaping "
+                "it would produce a sheared, tiled image that looks like a real "
+                "picture of the sky.")
+        if len(raw) > want:
+            from ...events import bus
+            bus.log("warning",
+                    f"camera returned {len(raw)} bytes for a {w}x{h} 16-bit "
+                    f"frame that needs {want} (ROI {roi.w}x{roi.h} bin "
+                    f"{roi.bin}); using the first {want} and the rest is "
+                    "unexplained. If the image looks sheared or repeated, the "
+                    "sensor's real row length is not the one requested.",
+                    "camera")
         arr = np.frombuffer(raw, dtype="<u2", count=w * h)
         return arr.reshape((h, w)).astype(np.uint16)
 
