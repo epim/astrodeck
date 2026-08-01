@@ -59,9 +59,18 @@ export const PointingFrame = memo(function PointingFrame(
 
   // Off-canvas is normal — the footprint is glued to the sky, so panning away
   // scrolls it out of view like any other object. Skip the draw once it is well
-  // clear: a scope pointing at the far side of the sky projects to a gnomonic
-  // coordinate near the projection's blow-up, and handing the renderer a path
-  // millions of units wide is pointless work, not a picture.
+  // clear: handing the renderer a path millions of units wide is pointless work,
+  // not a picture.
+  //
+  // This is an OPTIMISATION and nothing more. It used to be written as the
+  // safety net for a scope on the far side of the sky, on the assumption that
+  // such a pointing "projects near the projection's blow-up" — false. The
+  // gnomonic blows up at 90° and then FOLDS BACK, so the far hemisphere lands
+  // inside the canvas, mirrored, with the antipode exactly at the centre; a
+  // screen-distance cull can never catch that. The real guard is angular and
+  // lives in lib/atlasFov (TAN_HORIZON_DEG), which hands us a null axis for
+  // anything past the horizon. What survives to here is the near-90° case:
+  // correctly-directed coordinates that are merely enormous.
   const stray = Math.max(Math.abs(axis.x - view / 2), Math.abs(axis.y - view / 2));
   if (!Number.isFinite(stray) || stray > view * 1.5) return null;
 
