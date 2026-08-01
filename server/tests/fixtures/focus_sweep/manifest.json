@@ -1,0 +1,197 @@
+{
+  "true_focus_position": 9900,
+  "note": "Monotonic focuser sweep over one rich star field (Caph), 4s at gain 220, bin 1, 2026-07-31, captured specifically as ground truth for the off-focus star metric. True focus established independently by measuring FULL frames: 9400->HFR 4.81, 9900->HFR 3.37, 10400->HFR 4.92 (medians over 200 stars); parabola vertex 9891. Each entry is a full-resolution crop around the dominant source, sized to that source; entries with bin=2 were downsampled 2x to stay committable and their pixel scale is doubled.",
+  "optics": {
+    "pixel_um": 3.76,
+    "focal_length_mm": 800,
+    "f_ratio": 4.0
+  },
+  "entries": [
+    {
+      "file": "focus_4900.npz",
+      "focuser_position": 4900,
+      "offset_from_focus": -5000,
+      "shape": [
+        329,
+        590
+      ],
+      "bin": 2,
+      "source_extent_px": 328.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_5900.npz",
+      "focuser_position": 5900,
+      "offset_from_focus": -4000,
+      "shape": [
+        96,
+        96
+      ],
+      "bin": 1,
+      "source_extent_px": 16.0,
+      "usable_for_size_metric": false,
+      "note": "no star recorded at this defocus in a 4s exposure \u2014 the locator found a hot pixel; use only as an example of a frame with NO measurable source"
+    },
+    {
+      "file": "focus_6900.npz",
+      "focuser_position": 6900,
+      "offset_from_focus": -3000,
+      "shape": [
+        96,
+        96
+      ],
+      "bin": 1,
+      "source_extent_px": 19.0,
+      "usable_for_size_metric": false,
+      "note": "no star recorded at this defocus in a 4s exposure \u2014 the locator found a hot pixel; use only as an example of a frame with NO measurable source"
+    },
+    {
+      "file": "focus_7900.npz",
+      "focuser_position": 7900,
+      "offset_from_focus": -2000,
+      "shape": [
+        604,
+        604
+      ],
+      "bin": 2,
+      "source_extent_px": 336.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_8900.npz",
+      "focuser_position": 8900,
+      "offset_from_focus": -1000,
+      "shape": [
+        650,
+        650
+      ],
+      "bin": 1,
+      "source_extent_px": 181.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_9300.npz",
+      "focuser_position": 9300,
+      "offset_from_focus": -600,
+      "shape": [
+        510,
+        510
+      ],
+      "bin": 1,
+      "source_extent_px": 142.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_9600.npz",
+      "focuser_position": 9600,
+      "offset_from_focus": -300,
+      "shape": [
+        442,
+        442
+      ],
+      "bin": 1,
+      "source_extent_px": 123.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_9900.npz",
+      "focuser_position": 9900,
+      "offset_from_focus": 0,
+      "shape": [
+        110,
+        110
+      ],
+      "bin": 1,
+      "source_extent_px": 31.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_10200.npz",
+      "focuser_position": 10200,
+      "offset_from_focus": 300,
+      "shape": [
+        236,
+        236
+      ],
+      "bin": 1,
+      "source_extent_px": 66.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_10500.npz",
+      "focuser_position": 10500,
+      "offset_from_focus": 600,
+      "shape": [
+        434,
+        434
+      ],
+      "bin": 1,
+      "source_extent_px": 121.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_10900.npz",
+      "focuser_position": 10900,
+      "offset_from_focus": 1000,
+      "shape": [
+        658,
+        658
+      ],
+      "bin": 1,
+      "source_extent_px": 183.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_11900.npz",
+      "focuser_position": 11900,
+      "offset_from_focus": 2000,
+      "shape": [
+        369,
+        369
+      ],
+      "bin": 4,
+      "source_extent_px": 411.0,
+      "usable_for_size_metric": true
+    },
+    {
+      "file": "focus_12900.npz",
+      "focuser_position": 12900,
+      "offset_from_focus": 3000,
+      "shape": [
+        96,
+        96
+      ],
+      "bin": 1,
+      "source_extent_px": 11.0,
+      "usable_for_size_metric": false,
+      "note": "no star recorded at this defocus in a 4s exposure \u2014 the locator found a hot pixel; use only as an example of a frame with NO measurable source"
+    },
+    {
+      "file": "focus_13900.npz",
+      "focuser_position": 13900,
+      "offset_from_focus": 4000,
+      "shape": [
+        198,
+        198
+      ],
+      "bin": 1,
+      "source_extent_px": 55.0,
+      "usable_for_size_metric": false,
+      "note": "no star recorded at this defocus in a 4s exposure \u2014 the locator found a hot pixel; use only as an example of a frame with NO measurable source"
+    },
+    {
+      "file": "focus_14900.npz",
+      "focuser_position": 14900,
+      "offset_from_focus": 5000,
+      "shape": [
+        96,
+        96
+      ],
+      "bin": 1,
+      "source_extent_px": 10.0,
+      "usable_for_size_metric": false,
+      "note": "no star recorded at this defocus in a 4s exposure \u2014 the locator found a hot pixel; use only as an example of a frame with NO measurable source"
+    }
+  ],
+  "usable_range_note": "Entries with usable_for_size_metric=true span 8900..10900 plus the marginal 4900/7900/11900. That +/-1000 band IS the range autofocus sweeps, so it is the range the size metric must get right. The unusable entries document where signal runs out at 4s."
+}
