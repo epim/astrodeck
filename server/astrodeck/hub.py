@@ -89,7 +89,18 @@ def _harness():
 #: panel's 2.5s poll, not to be a good guiding sub. A real guide loop, when one
 #: exists, always wins — see the ordering in ``guide_preview_png``.
 GUIDE_PREVIEW_EXPOSURE_S = 1.0
+#: Preview gain WISH, not a hardware fact — clamped to the camera's own reported
+#: ceiling before it is sent. An ASI120MM Mini, the commonest ZWO guide camera
+#: there is, tops out at 100, and the ZWO SDK RAISES on an out-of-range control
+#: value instead of clipping it, so an unclamped 200 would answer "could not
+#: deliver a frame" forever on exactly the rigs this preview exists for.
 GUIDE_PREVIEW_GAIN = 200
+#: How long a preview outcome stays worth publishing on ``status.guide_camera``.
+#: The panel polls the image every 2.5 s while it is open, so a note older than
+#: this is from a panel nobody is looking at any more — and a reason from five
+#: minutes ago describing a camera that has since been reconnected is precisely
+#: the kind of confident stale claim this run is about.
+GUIDE_PREVIEW_NOTE_TTL_S = 10.0
 
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
 #: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
@@ -265,6 +276,16 @@ class Hub:
         # with the wrong exposure metadata / InvalidOperation).
         self._capture_lock: asyncio.Lock = asyncio.Lock()
         self._capture_busy: str | None = None
+        # --- guide-cam preview (guide_preview_png) ------------------------------
+        # The exposure in flight, shared between overlapping callers: the panel
+        # swaps a cache-busted <img src> every 2.5s whether or not the previous
+        # one has landed, and a preview that takes longer than that would
+        # otherwise start a second exposure on a camera already exposing.
+        self._guide_preview_task: asyncio.Task | None = None
+        # (reason, monotonic time) of the last preview outcome, for status. An
+        # <img> cannot read a 404 body, so the reason has to travel some other
+        # way or the panel is back to saying "unavailable" about everything.
+        self._guide_preview_note: tuple[str, float] = ("", 0.0)
         # cached EquatorialSystem verdict for the connected Alpaca mount: True when
         # it expects topocentric (JNOW) coordinates and the hub must precess
         # J2000<->JNOW at the slew/sync boundary. None until first probed; reset on
@@ -967,7 +988,16 @@ class Hub:
         guide camera ourselves.
 
         Never raises — the caller turns (None, reason) into a 404, never a 500.
+        Every exit also records the reason for ``status.guide_camera``, because a
+        404 body reaches only the code that reads it and the panel reads an
+        ``<img>``.
         """
+        png, reason = await self._guide_preview_source()
+        self._guide_preview_note = (reason, time.monotonic())
+        return png, reason
+
+    async def _guide_preview_source(self) -> tuple[bytes | None, str]:
+        """Source selection for ``guide_preview_png`` (which owns the note)."""
         g = self.guider
         if g is not None and getattr(g, "connected", False):
             try:
@@ -988,19 +1018,56 @@ class Hub:
         if cam is self.devices.get("camera"):
             return None, (f"{cam.name} is also the imaging camera — its frames "
                           "show in the capture preview, not here")
-        # busy_label already folds in `looping` ("capturing"), so this one read
-        # covers a capture loop, a sequence, an AF sweep and a solve.
-        busy = self.busy_label
-        if busy:
-            return None, f"{cam.name} is busy ({busy})"
+        # NO busy_label gate here, deliberately. busy_label is a HUB-WIDE label
+        # for the IMAGING train (goto/solve/autofocus/capture/looping), and this
+        # line is only reached once we know the guide camera is a different
+        # device from the imaging one — so refusing on it said "ZWO ASI is busy
+        # (capturing)" about a camera that was idle, and disabled the panel at
+        # the one moment it is wanted: checking the guide field for dew or cloud
+        # is something you do WHILE a sequence runs. Nothing busy_label can ever
+        # report refers to this camera. The only contender for this sensor is
+        # another preview, and that is what the single-flight below is for.
+        task = self._guide_preview_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._expose_guide_preview(cam))
+            self._guide_preview_task = task
+        # shield: the panel re-requests every 2.5s and a 1s exposure plus a
+        # full-sensor USB readout plus a PNG encode can outlast that, so a second
+        # request must JOIN the exposure in flight rather than call start_exposure
+        # on a camera that is already exposing (two read_frame calls racing one
+        # buffer = torn frames, which the panel would render as the same
+        # uninformative "unavailable"). Shielded so a client that navigates away
+        # mid-frame cancels its own wait, never the exposure.
+        return await asyncio.shield(task)
+
+    async def _expose_guide_preview(self, cam) -> tuple[bytes | None, str]:
+        """ONE preview exposure, encoded. Separate coroutine so overlapping
+        callers can share a single in-flight frame. Never raises."""
+        # Clamp to the ceiling the device itself reported (Camera.max_gain, set
+        # from the SDK's gain_range at connect). 0 means "this backend does not
+        # report a ceiling" — NINA without GainMax, an Alpaca camera without
+        # gainmax — and inventing one there would be its own guess, so the wish
+        # goes through unchanged and the driver gets to refuse it by name.
+        ceiling = int(getattr(cam, "max_gain", 0) or 0)
+        gain = min(GUIDE_PREVIEW_GAIN, ceiling) if ceiling > 0 else GUIDE_PREVIEW_GAIN
         try:
-            frame = await cam.expose(GUIDE_PREVIEW_EXPOSURE_S,
-                                     GUIDE_PREVIEW_GAIN, 0, binning=1)
+            frame = await cam.expose(GUIDE_PREVIEW_EXPOSURE_S, gain, 0, binning=1)
             return to_png(frame.data, stretch=True, max_width=512), ""
         except Exception as exc:  # noqa: BLE001
             # NAME the failure. "unavailable" was the whole complaint: the panel
             # could not distinguish a camera that refused from one nobody asked.
             return None, f"{cam.name} could not deliver a frame: {exc}"
+
+    def guide_preview_note(self) -> str:
+        """The most recent preview refusal, while it is still current (or "").
+
+        Published on status so the panel can say WHICH nothing this is. It
+        expires: an old reason describing a camera that has since been fixed is
+        the confident stale claim the whole run is against."""
+        reason, at = self._guide_preview_note
+        if not reason or time.monotonic() - at > GUIDE_PREVIEW_NOTE_TTL_S:
+            return ""
+        return reason
 
     def summary(self) -> dict:
         sr = self._safety_reading
@@ -3307,6 +3374,15 @@ class Hub:
         # dedicated guide_camera device).
         gc = self._guide_camera_info()
         if gc is not None:
+            # Why the reason rides status and not just the 404: the preview panel
+            # renders an <img>, so the only thing it can observe about a failure
+            # is that the load errored — every named refusal the route produces
+            # ("no guide camera assigned", "could not deliver a frame: …")
+            # collapses into one generic sentence on the way. Absent key == no
+            # recent refusal to report.
+            note = self.guide_preview_note()
+            if note:
+                gc = gc | {"preview_reason": note}
             out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:
             c = self.nina_client

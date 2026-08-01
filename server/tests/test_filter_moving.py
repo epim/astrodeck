@@ -142,9 +142,10 @@ async def test_a_nina_bridge_without_an_ismoving_field_reports_not_moving():
 
 async def test_the_snowflake_reports_motion_the_instant_the_goto_goes_out():
     """The wheel has no busy field and cannot have one: the banner stream that
-    would carry it is silent for the duration of the move. So the honest signal
-    is the goto we are still waiting on — and it has to be live from the first
-    moment, because the first moment is when the user is looking."""
+    would carry it is silent for the duration of the move. That silence IS the
+    signal — while a goto is outstanding and nothing new arrives on the wire, the
+    carousel is turning — and it has to read live from the first moment, because
+    the first moment is when the user is looking."""
     fl = FakeStreamLink()
     fl.feed(LIVE_LINE)                       # slot 1 (0-based 0)
     w = ws.SnowflakeWheel(fl)
@@ -162,6 +163,41 @@ async def test_the_snowflake_reports_motion_the_instant_the_goto_goes_out():
     await task
     assert not await w.is_moving()
     assert await w.get_position() == 3
+
+
+async def test_a_snowflake_that_keeps_talking_never_started_turning(monkeypatch):
+    """The forty-second lie, killed.
+
+    Answering "a goto is outstanding" keeps ``is_moving`` True for the whole
+    MOVE_TIMEOUT_S (40 s), so a wheel that ignored the command was pixel-identical
+    to a working one for forty seconds — a fixed-duration reassurance spelled with
+    a timeout, which is the one thing this flag exists to abolish.
+
+    The stream pauses for the duration of a physical move, so a banner that
+    arrives AFTER the goto still naming the OLD slot is positive evidence the
+    carousel never started: the wheel is sitting there talking. Sub-second, not
+    forty."""
+    # Sleeps are generous next to the grace on purpose: time.monotonic() is
+    # quantized to ~15 ms on Windows, which is the platform this rig runs on.
+    monkeypatch.setattr(ws, "MOVE_START_GRACE_S", 0.05)
+    monkeypatch.setattr(ws, "MOVE_TIMEOUT_S", 0.8)
+    fl = FakeStreamLink()
+    fl.feed(LIVE_LINE)                       # slot 1 (0-based 0)
+    w = ws.SnowflakeWheel(fl)
+    await w.connect()
+
+    task = asyncio.create_task(w.set_position(3))
+    await asyncio.sleep(0.01)
+    fl.feed(LIVE_LINE)                       # inside the grace: it is spinning up
+    assert await w.is_moving(), "a wheel still being commanded is not a dead one"
+
+    await asyncio.sleep(0.2)
+    fl.feed(LIVE_LINE)                       # past the grace, STILL on slot 1
+    assert not await w.is_moving(), "a talking wheel is not a turning wheel"
+    assert not task.done(), "the goto keeps waiting — the wheel may yet act"
+
+    with pytest.raises(DeviceError):
+        await task
 
 
 async def test_a_jammed_snowflake_stops_claiming_motion(monkeypatch):
