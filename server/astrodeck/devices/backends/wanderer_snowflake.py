@@ -34,6 +34,16 @@ MODEL_PREFIX = "WSFW"
 SLOT_COUNT = 8
 #: A goto can take several seconds per hop; INDI bounds the wait at 40 s.
 MOVE_TIMEOUT_S = 40.0
+#: Grace between the goto going out and the stream's silence being treated as
+#: evidence. The command still has to cross the wire, be parsed, and spin a motor
+#: up, and the ~2 Hz banner keeps talking through all of that — without this
+#: window every healthy move would report "not turning" for its first fraction of
+#: a second. Three banner periods: long enough that a working wheel is never
+#: called dead, short enough that an IGNORED command is visible in about a second
+#: instead of at the 40 s timeout. Do not shrink it towards one banner period:
+#: this runs on Windows, where ``time.monotonic()`` is quantized to ~15 ms, and
+#: the reader thread's scheduling adds more on top.
+MOVE_START_GRACE_S = 1.5
 #: How long connect waits for the first banner before declaring "not a Snowflake".
 FIRST_BANNER_TIMEOUT_S = 5.0
 
@@ -162,13 +172,15 @@ class SnowflakeWheel(FilterWheel):
         self.fw_date = 0
         self.model = ""
         self.slots = SLOT_COUNT      # replaced at connect by the wheel's own count
-        #: 1-based slot a goto is currently driving to, or None when idle. This
-        #: is the wheel's in-motion state and there is no other source for it:
-        #: the banner stream PAUSES for the whole physical move (module
+        #: 1-based slot a goto is currently driving to, or None when idle, plus
+        #: the monotonic instant that goto went out. Position alone cannot show a
+        #: move: the banner stream PAUSES for the whole physical move (module
         #: docstring), so ``latest`` keeps reporting the OLD slot until the
-        #: carousel lands. Reading position alone, a move looks like nothing
-        #: happening — which is exactly what the Capture screen showed.
+        #: carousel lands, and a move looks like nothing happening — exactly what
+        #: the Capture screen showed. The SILENCE is the signal; ``_move_sent_at``
+        #: is what makes it readable (see ``is_moving``).
         self._move_target: int | None = None
+        self._move_sent_at: float = 0.0
 
     async def connect(self) -> None:
         if self.connected:            # idempotent: hub re-connects (double-open would fail)
@@ -214,17 +226,41 @@ class SnowflakeWheel(FilterWheel):
         return b.slot - 1
 
     async def is_moving(self) -> bool:
-        """True from the instant the goto goes out until the resumed banner
-        shows the target slot.
+        """Is the carousel turning — read off the wire, not off the command.
 
-        The wheel gives us no separate "busy" field, and it cannot: the stream
-        that would carry one is silent for the duration of the move. So the
-        honest signal is the command we are still waiting on. It is real motion,
-        not a timer — if the carousel jams, ``wait_banner`` times out, the goto
-        raises, and the flag clears in the ``finally`` below, so a stuck wheel
-        stops claiming motion instead of pulsing forever.
+        "A goto is outstanding" is NOT the same claim, and answering with it was
+        wrong: a wheel that ignored the command keeps that True for the whole
+        MOVE_TIMEOUT_S, so for forty seconds a dead wheel and a working one are
+        pixel-identical on the Capture screen. That is the fixed-duration
+        reassurance this flag exists to abolish, just spelled with a timeout.
+
+        The wheel has no busy field, but its SILENCE is one. The banner stream
+        pauses for the duration of a physical move and resumes with the new slot
+        (module docstring), so a banner that arrives AFTER our goto went out
+        still showing the old slot is positive evidence the carousel never
+        started: the wheel is sitting there talking. That is a sub-second
+        observation instead of a forty-second wait.
+
+        Two deliberate asymmetries:
+          * MOVE_START_GRACE_S covers command latency — the wheel is allowed to
+            still be talking while it spins up.
+          * When we cannot tell (no banner yet, or the stream has gone quiet) we
+            report motion, because silence with a goto outstanding is what a real
+            move looks like. The cost of that direction is bounded: the UI keeps
+            pulsing, and ``set_position`` still times out and raises.
         """
-        return self._move_target is not None
+        target = self._move_target
+        if target is None:
+            return False
+        b = self._link.latest
+        if b is None:
+            return True                     # no banner to reason from
+        # `at` is the receive time of a PARSED banner — the same clock and the
+        # same predicate set_position waits on, so the two can never disagree
+        # about whether the stream has resumed.
+        if b.at > self._move_sent_at + MOVE_START_GRACE_S and b.slot != target:
+            return False
+        return True
 
     async def set_position(self, slot: int) -> None:
         if not (0 <= slot < self.slots):
@@ -233,6 +269,7 @@ class SnowflakeWheel(FilterWheel):
         target = slot + 1                     # wire is 1-based
         sent_at = time.monotonic()
         self._move_target = target
+        self._move_sent_at = sent_at
         try:
             await self._link.send(f"200{target}")
             # Completion = a banner NEWER than the command showing the target
