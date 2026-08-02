@@ -20,6 +20,8 @@ client mirror):
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 
 from fastapi import APIRouter
@@ -28,6 +30,7 @@ from pydantic import BaseModel, Field
 from ..config import ARCSEC_PER_RAD
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 # rho->0 guard threshold (spec §5). Below this the tangent point IS the center, so
 # the inverse projection returns (ra0, dec0) verbatim — never divides by rho and
@@ -162,44 +165,100 @@ def compute_mosaic(spec: MosaicSpecIn | dict) -> dict:
     }
 
 
+# ------------------------------------------------- per-panel transit altitude
+
+def _why(e: BaseException) -> str:
+    """One-line cause for a panel that has no transit altitude.
+
+    Carries the exception TYPE, because the message alone is often empty — the
+    ``FileNotFoundError`` the config-store cold-load race raised (fixed
+    2026-08-01) stringifies to nothing at all, and an empty reason is exactly
+    the silence this field exists to end.
+    """
+    detail = str(e).strip()
+    return f"{type(e).__name__}: {detail}" if detail else type(e).__name__
+
+
+async def _stamp_transit_alt(panels: list[dict], date: str) -> None:
+    """Fill each panel's ``transit_alt`` for ``date``, and where that is
+    impossible put the REASON on the panel as ``transit_alt_error``.
+
+    This was two bare ``except Exception`` swallows that logged nothing and said
+    nothing: a panel that failed simply had no ``transit_alt`` key, so the mosaic
+    answered for some panels and was silent about the others, and the client
+    could not tell "not asked for" from "we tried and could not". That silence is
+    why the config-store cold-load race surfaced only as an intermittent red test
+    instead of a report — and it would hide the next cause (an astropy fault, an
+    unset site, an OSError, a future writer race) exactly as well. A panel with
+    no altitude now names what stopped it, on the wire and in the server log.
+
+    Raises ``HTTPException(422)`` for a malformed ``date`` — see
+    ``visibility.check_night_date``: ``_night_anchor_unix`` silently falls back
+    to TONIGHT on an unparseable date, so without this an off-by-one month in
+    any client got tonight's altitudes labelled as the night it asked for.
+    """
+    try:
+        # Lazy: visibility pulls astropy + the hub/auth stack, and a mosaic with
+        # no date must not pay for it.
+        from .visibility import check_night_date, transit_alt_for
+    except Exception as e:  # noqa: BLE001 - report it; never fail the mosaic
+        why = _why(e)
+        log.warning("mosaic transit altitudes unavailable: %s", why)
+        for p in panels:
+            p["transit_alt_error"] = f"visibility unavailable ({why})"
+        return
+
+    date = check_night_date(date)
+    if date is None:
+        # Only an empty date reaches here, and the route already filtered that.
+        # Kept so a future caller cannot slip a None through and be handed
+        # TONIGHT's altitudes for a night it did not ask about.
+        return
+
+    # Bound the fan-out: up to rows*cols (<=100) panels must not all hit the
+    # shared default executor at once (starves config/plan disk I/O).
+    sem = asyncio.Semaphore(8)
+
+    async def _alt(p: dict) -> tuple[float | None, str | None]:
+        try:
+            async with sem:
+                v = await asyncio.to_thread(
+                    transit_alt_for, p["ra_hours"], p["dec_deg"], date=date)
+            # A non-finite altitude is not a measurement. It would also take the
+            # WHOLE mosaic down: starlette's JSONResponse renders with
+            # allow_nan=False, so one NaN panel 500s the response.
+            if v is None or not math.isfinite(v):
+                return None, f"visibility returned no usable altitude ({v!r})"
+            return float(v), None
+        except Exception as e:  # noqa: BLE001 - one bad panel, not a dead mosaic
+            return None, _why(e)
+
+    results = await asyncio.gather(*[_alt(p) for p in panels])
+    for p, (alt, reason) in zip(panels, results):
+        if alt is not None:
+            p["transit_alt"] = alt
+        else:
+            p["transit_alt_error"] = reason or "transit altitude not computed"
+    lost = [p for p in panels if "transit_alt_error" in p]
+    if lost:
+        log.warning("%d of %d mosaic panels have no transit altitude: %s",
+                    len(lost), len(panels), lost[0]["transit_alt_error"])
+
+
 # ----------------------------------------------------------------- route
 
 @router.post("/api/framing/mosaic")
 async def post_mosaic(spec: MosaicSpecIn) -> dict:
     """Canonical mosaic for ``MosaicSpecIn`` -> ``MosaicResult``.
 
-    When ``spec.date`` is provided (and the visibility module imports cleanly),
-    each panel's ``transit_alt`` is filled with its **peak altitude tonight**
-    (NOT the instantaneous "now" alt). astropy transforms run off the event loop.
+    When ``spec.date`` is provided, each panel's ``transit_alt`` is filled with
+    its **peak altitude that night** (NOT the instantaneous "now" alt); a panel
+    the visibility module could not answer for carries ``transit_alt_error``
+    saying why. astropy transforms run off the event loop.
     """
     result = compute_mosaic(spec)
 
     if spec.date:
-        try:
-            import asyncio
-
-            from .visibility import transit_alt_for
-
-            # Bound the fan-out: up to rows*cols (<=100) panels must not all hit
-            # the shared default executor at once (starves config/plan disk I/O).
-            sem = asyncio.Semaphore(8)
-
-            async def _alt(p: dict) -> float | None:
-                try:
-                    async with sem:
-                        return await asyncio.to_thread(
-                            transit_alt_for, p["ra_hours"], p["dec_deg"],
-                            date=spec.date)
-                except Exception:
-                    return None
-
-            alts = await asyncio.gather(*[_alt(p) for p in result["panels"]])
-            for p, a in zip(result["panels"], alts):
-                if a is not None:
-                    p["transit_alt"] = a
-        except Exception:
-            # visibility unavailable (e.g. astropy import issue) — leave panels
-            # without transit_alt rather than failing the mosaic.
-            pass
+        await _stamp_transit_alt(result["panels"], spec.date)
 
     return result
