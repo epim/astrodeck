@@ -8,6 +8,15 @@ just never asked it. ``/api/guide/frame.png`` gated on ``hub.guider``, and
 Equipment screen even tells the user there is "no guider device to assign here".
 So the panel 404'd forever on a rig that had everything it needed.
 
+Second half, measured on the rig 2026-08-01: the route now answers, and what it
+answers with is HTTP 200, 223 bytes, a valid 512x288 PNG in which EVERY PIXEL IS
+ZERO, byte-identical across three calls four seconds apart. The camera was
+connected, no guide loop was running, and nothing about the request reached the
+run log. So the source selection reached its SUCCESS branch and encoded an array
+that nothing had written: ``auto_stretch`` maps a constant array to a constant
+image without complaint (median 0, MAD 0), and a black rectangle with no
+explanation is the same defect the user first reported, one layer down.
+
 ``Hub.guide_preview_png`` is the source-selection rule, and these are its edges.
 Nothing here needs hardware.
 
@@ -16,6 +25,7 @@ tests/test_guide_frame.py, which belongs to another lane this run.
 """
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from astrodeck.devices.base import Camera, CameraFrame
@@ -40,6 +50,10 @@ class _FakeGuideCam(Camera):
         #: encode can outlast the panel's 2.5s poll, and instant fakes are the
         #: reason that overlap was invisible.
         self.gate: "asyncio.Event | None" = None
+        #: exact pixels to hand back. None = the default frame below (a flat
+        #: background with one star), which is what a working camera looks like.
+        #: Set it to model what the rig actually returned on 2026-08-01.
+        self.data = None
 
     async def connect(self) -> None: self.connected = True
     async def disconnect(self) -> None: self.connected = False
@@ -58,8 +72,11 @@ class _FakeGuideCam(Camera):
             raise RuntimeError(self.fail)
         self.exposures.append(seconds)
         self.gains.append(gain)
-        data = np.full((64, 64), 300, dtype="uint16")
-        data[32, 32] = 40000
+        if self.data is not None:
+            data = self.data
+        else:
+            data = np.full((64, 64), 300, dtype="uint16")
+            data[32, 32] = 40000
         return CameraFrame(data=data, exposure_s=seconds, gain=gain,
                            offset=offset, binning=binning, bayer_pattern=None,
                            temperature_c=None, timestamp=0.0)
@@ -318,3 +335,204 @@ def test_the_endpoint_passes_the_reason_through_as_the_404_detail(detail, tmp_pa
         r = c.get("/api/guide/frame.png")
         assert r.status_code == 404
         assert detail in r.json()["detail"]
+
+
+# ------------------------------------- a success that is not a picture (#115)
+#
+# Everything above asks "did we ask the right device". This block asks the next
+# question, the one the rig answered on 2026-08-01: what came back was a
+# 200 with an all-zero PNG. An exposure call that returns is not the same event
+# as a frame, and the encoder cannot tell the difference — a constant array
+# stretches to a constant image and looks exactly like a legitimately dark one.
+
+
+async def test_an_all_zero_frame_is_refused_instead_of_encoded_as_black():
+    """MEASURED: 512x288 PNG, every pixel zero, byte-identical across three
+    calls four seconds apart. Real sensor noise varies frame to frame, so that
+    was never an exposure — it was the download handing back its own untouched
+    allocation. Encoding it produced a black rectangle the panel could not
+    explain, which is indistinguishable from the "nothing happens" the whole
+    ticket is about."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    # 1920x1080 is the shape that came off the rig — a 512-wide preview of it is
+    # exactly the 512x288 PNG that was served.
+    cam.data = np.zeros((1080, 1920), dtype="uint16")
+    hub.devices["guide_camera"] = cam
+
+    png, reason = await hub.guide_preview_png()
+    assert png is None, "an untouched buffer must not be served as a picture"
+    assert "ZWO ASI guide" in reason        # which instrument
+    assert "1920x1080" in reason            # and what it actually returned
+    assert "reads 0" in reason
+    assert "Equipment" in reason, "a blocked panel has to name a way forward"
+
+
+async def test_a_uniformly_saturated_frame_is_refused_on_the_same_evidence():
+    """65535 everywhere carries the same information as 0 everywhere: zero
+    variance across a megapixel. A brightness test would have passed this one
+    straight through — the signal is that nothing in the buffer varies."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    cam.data = np.full((1080, 1920), 65535, dtype="uint16")
+    hub.devices["guide_camera"] = cam
+
+    png, reason = await hub.guide_preview_png()
+    assert png is None
+    assert "reads 65535" in reason
+
+
+async def test_a_faint_frame_with_real_noise_is_still_served():
+    """The refusal keys on variance, not on level. A short guide exposure at low
+    gain under a genuinely dark sky is near-black and is a perfectly good frame;
+    refusing it would trade one silent lie for another."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    rng = np.random.default_rng(7)
+    cam.data = rng.integers(4, 12, size=(64, 64), dtype=np.uint16)
+    hub.devices["guide_camera"] = cam
+
+    png, reason = await hub.guide_preview_png()
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", reason
+    assert reason == ""
+
+
+async def test_a_frame_that_is_not_two_dimensional_is_named_not_encoded():
+    """``to_png`` refuses a non-2-D array by raising, which would have surfaced
+    as the generic "could not deliver a frame: preview encode needs…". Say what
+    the camera returned instead, in the camera's own terms."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    cam.data = np.zeros((3, 64, 64), dtype="uint16")
+    hub.devices["guide_camera"] = cam
+
+    png, reason = await hub.guide_preview_png()
+    assert png is None
+    assert "not an image" in reason and "ZWO ASI guide" in reason
+
+
+async def test_the_empty_buffer_reaches_the_panel_through_status():
+    """The panel renders an ``<img>`` and can observe only that the load failed,
+    so the refusal has to ride status like every other named one — otherwise
+    this fix just swaps a black rectangle for a broken-image icon."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    cam.data = np.zeros((1080, 1920), dtype="uint16")
+    hub.devices["guide_camera"] = cam
+
+    await hub.guide_preview_png()
+    st = await hub.poll_status()
+    assert "nothing was exposed" in st["guide_camera"]["preview_reason"]
+    assert "preview_ok" not in st["guide_camera"]
+
+
+# ----------------------------------------------- three states, not two (#115)
+
+
+async def test_a_camera_nobody_has_asked_yet_publishes_neither_verdict():
+    """Assigned and connected, panel never opened. There is no reason to report
+    and no frame to report either — and saying nothing is only honest as long as
+    a delivered frame says something."""
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam()
+
+    gc = (await hub.poll_status())["guide_camera"]
+    assert "preview_reason" not in gc and "preview_ok" not in gc
+
+
+async def test_a_delivered_frame_is_distinguishable_from_a_camera_nobody_asked():
+    """Recording an outcome only on refusal made success carry no information at
+    all: a working preview and a camera that had never been asked published the
+    identical empty ``guide_camera`` block, so the panel had nothing to check the
+    picture against when the picture was black."""
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam()
+
+    png, _ = await hub.guide_preview_png()
+    assert png
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is True
+    assert "preview_reason" not in gc
+
+
+async def test_the_delivered_frame_verdict_expires_like_the_reason(monkeypatch):
+    """Same rule as the refusal note, for the same reason: "a frame arrived"
+    from five minutes ago describes a camera that may since have been unplugged.
+    An expired verdict falls back to "nobody has asked recently", not to a
+    claim."""
+    import astrodeck.hub as hub_mod
+
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam()
+    await hub.guide_preview_png()
+    assert hub.guide_preview_ok()
+
+    base = hub_mod.time.monotonic()
+    monkeypatch.setattr(hub_mod.time, "monotonic",
+                        lambda: base + GUIDE_PREVIEW_NOTE_TTL_S + 1)
+    assert hub.guide_preview_ok() is False
+
+
+# ------------------------------------- the exposure leaves a trace (#115)
+
+
+async def test_the_preview_writes_one_log_line_per_change_of_outcome():
+    """Half the cost of diagnosing the black frame was that the run log had
+    NOTHING about the request — no exposure, no error — so "was the camera even
+    asked?" could only be answered from the response bytes. One line per
+    transition answers it; a line per request would bury the log, since the
+    panel re-requests every 2.5s."""
+    from astrodeck.events import bus
+
+    hub = Hub()
+    cam = _FakeGuideCam()
+    hub.devices["guide_camera"] = cam
+    at = len(bus.log_history)
+
+    def guide_lines():
+        return [e["data"]["message"] for e in bus.log_history[at:]
+                if e["data"]["source"] == "guide"]
+
+    await hub.guide_preview_png()
+    await hub.guide_preview_png()
+    lines = guide_lines()
+    assert len(lines) == 1, "a repeated poll with the same outcome is not news"
+    # The ADU range is the one number that separates a read from an allocation.
+    assert "ZWO ASI guide" in lines[0] and "64x64" in lines[0]
+    assert "300..40000 ADU" in lines[0]
+
+    cam.data = np.zeros((64, 64), dtype="uint16")
+    await hub.guide_preview_png()
+    lines = guide_lines()
+    assert len(lines) == 2, "the moment it stops being a frame IS news"
+    assert "nothing was exposed" in lines[1]
+
+
+# ------------------------------- the shared exposure vs a reconnect (#115)
+
+
+async def test_a_reconnected_camera_is_exposed_rather_than_joining_the_old_one():
+    """The single-flight task is shared by everyone who asks while it runs, and
+    a reconnect swaps ``devices['guide_camera']`` for a NEW object with a fresh
+    SDK handle. Joining the exposure started on the closed one would answer for
+    a camera that no longer exists — the same class of stale confident claim as
+    serving the frame before last."""
+    import asyncio
+
+    hub = Hub()
+    old = _FakeGuideCam("ZWO ASI guide")
+    old.gate = asyncio.Event()
+    hub.devices["guide_camera"] = old
+
+    first = asyncio.create_task(hub.guide_preview_png())
+    await asyncio.sleep(0.02)
+    assert old.started == 1
+
+    new = _FakeGuideCam("ZWO ASI guide")          # what a reconnect leaves behind
+    hub.devices["guide_camera"] = new
+    png, reason = await hub.guide_preview_png()
+    assert png, reason
+    assert new.started == 1, "the live handle must be the one that is asked"
+
+    old.gate.set()
+    await first
