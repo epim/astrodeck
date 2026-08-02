@@ -17,6 +17,7 @@ import type { VisibilityNight } from "../../types";
 import { Panel, Stat } from "../ui";
 import { Icon } from "../icons";
 import { api, ApiError } from "../../api";
+import { MosaicNight } from "./MosaicNight";
 import {
   VIS_W,
   VIS_H,
@@ -127,6 +128,14 @@ export const VisibilityPanel = memo(function VisibilityPanel({
       {state.kind === "ok" && (
         <VisChart night={state.night} nowUnix={nowRef.current} />
       )}
+      {/* The chart above answers for ONE point. A mosaic is up to a hundred
+          pointings spread across the sky, and until this landed the page said
+          nothing at all about the other ninety-nine. Mounted outside the state
+          switch on purpose: it is a separate endpoint, so a centre fetch that
+          failed must not also swallow panel altitudes that did arrive. It reads
+          the mosaic straight off the framing session (no prop plumbing) and
+          renders nothing for a 1×1, which the chart already IS. */}
+      <MosaicNight raHours={keyRa} decDeg={keyDec} altLimitDeg={altLimit} />
     </Panel>
   );
 });
