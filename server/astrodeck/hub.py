@@ -102,6 +102,42 @@ GUIDE_PREVIEW_GAIN = 200
 #: the kind of confident stale claim this run is about.
 GUIDE_PREVIEW_NOTE_TTL_S = 10.0
 
+
+def _guide_preview_defect(data: np.ndarray, cam_name: str) -> tuple[str, int, int]:
+    """``(why this array is not a picture of the guide field, min ADU, max ADU)``.
+
+    Measured on the rig 2026-08-01: ``/api/guide/frame.png`` answered HTTP 200
+    with a valid 512x288 PNG in which EVERY PIXEL WAS ZERO, byte-identical
+    across three calls four seconds apart. ``auto_stretch``/``to_png`` map a
+    constant array to a constant image without complaint (median 0, MAD 0 ->
+    the whole transfer function collapses), so the failure arrived dressed as a
+    success: the panel drew a black rectangle and had nothing to say about it,
+    which is the defect the user originally reported, one layer down.
+
+    A real sensor read is never flat. Read noise alone spreads even a shuttered
+    dark frame over several ADU, so ``min == max`` across a megapixel is not a
+    dark sky — it is a buffer that nothing wrote (a download that handed back
+    its own allocation, an exposure that never reached the sensor). Say that,
+    and let the caller refuse, rather than encoding it as a picture.
+
+    Deliberately NOT a brightness test: a genuinely faint guide field at low
+    gain is a legitimate frame and must still be served. The signal is variance,
+    not level.
+    """
+    a = np.asarray(data)
+    if a.ndim != 2 or a.size == 0:
+        return (f"{cam_name} returned {a.size} values shaped {a.shape}, which is "
+                "not an image"), 0, 0
+    lo, hi = int(a.min()), int(a.max())
+    if lo == hi:
+        return (f"{cam_name} reported success but every one of its "
+                f"{a.shape[1]}x{a.shape[0]} pixels reads {lo}. A sensor read "
+                "always carries read noise, so nothing was exposed or nothing "
+                "was downloaded — reconnect the guide camera under Equipment."
+                ), lo, hi
+    return "", lo, hi
+
+
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
 #: its OWN task (NOT the 2s status loop) so a slow/hung sensor never blocks status;
 #: a read that exceeds SAFETY_READ_TIMEOUT_S is cached as a STALE reading, which
@@ -282,10 +318,24 @@ class Hub:
         # one has landed, and a preview that takes longer than that would
         # otherwise start a second exposure on a camera already exposing.
         self._guide_preview_task: asyncio.Task | None = None
+        # WHICH camera object that task is exposing. A reconnect replaces the
+        # device object, and joining an exposure started on the old (now closed)
+        # handle would answer for a camera that no longer exists.
+        self._guide_preview_task_cam: Any = None
         # (reason, monotonic time) of the last preview outcome, for status. An
         # <img> cannot read a 404 body, so the reason has to travel some other
         # way or the panel is back to saying "unavailable" about everything.
         self._guide_preview_note: tuple[str, float] = ("", 0.0)
+        # monotonic time of the last preview that actually returned a picture.
+        # THIRD state, and the reason it exists: a refusal publishes a reason and
+        # a success publishes nothing, so before this a delivered frame and a
+        # camera nobody had asked yet looked identical on status — which is how
+        # an all-black rectangle passed for a preview (2026-08-01).
+        self._guide_preview_ok_at: float | None = None
+        # the outcome we last wrote to the run log, so the 2.5s poll logs one
+        # line per CHANGE instead of burying the log or (as on 2026-08-01)
+        # leaving no trace of the exposure at all.
+        self._guide_preview_logged: str | None = None
         # cached EquatorialSystem verdict for the connected Alpaca mount: True when
         # it expects topocentric (JNOW) coordinates and the hub must precess
         # J2000<->JNOW at the slew/sync boundary. None until first probed; reset on
@@ -988,12 +1038,19 @@ class Hub:
         guide camera ourselves.
 
         Never raises — the caller turns (None, reason) into a 404, never a 500.
-        Every exit also records the reason for ``status.guide_camera``, because a
-        404 body reaches only the code that reads it and the panel reads an
-        ``<img>``.
+        Every exit also records its outcome for ``status.guide_camera``, because
+        a 404 body reaches only the code that reads it and the panel reads an
+        ``<img>``. THREE outcomes, not two: a refusal publishes ``preview_reason``
+        and a delivered frame publishes ``preview_ok``, so the absence of both
+        can mean the one thing it should — nobody has asked this camera yet.
+        Recording only refusals made a success carry no information at all, and
+        an all-black rectangle rode that silence out to the panel on 2026-08-01.
         """
         png, reason = await self._guide_preview_source()
-        self._guide_preview_note = (reason, time.monotonic())
+        now = time.monotonic()
+        self._guide_preview_note = (reason, now)
+        if png:
+            self._guide_preview_ok_at = now
         return png, reason
 
     async def _guide_preview_source(self) -> tuple[bytes | None, str]:
@@ -1028,9 +1085,10 @@ class Hub:
         # report refers to this camera. The only contender for this sensor is
         # another preview, and that is what the single-flight below is for.
         task = self._guide_preview_task
-        if task is None or task.done():
+        if task is None or task.done() or self._guide_preview_task_cam is not cam:
             task = asyncio.create_task(self._expose_guide_preview(cam))
             self._guide_preview_task = task
+            self._guide_preview_task_cam = cam
         # shield: the panel re-requests every 2.5s and a 1s exposure plus a
         # full-sensor USB readout plus a PNG encode can outlast that, so a second
         # request must JOIN the exposure in flight rather than call start_exposure
@@ -1052,11 +1110,58 @@ class Hub:
         gain = min(GUIDE_PREVIEW_GAIN, ceiling) if ceiling > 0 else GUIDE_PREVIEW_GAIN
         try:
             frame = await cam.expose(GUIDE_PREVIEW_EXPOSURE_S, gain, 0, binning=1)
-            return to_png(frame.data, stretch=True, max_width=512), ""
         except Exception as exc:  # noqa: BLE001
             # NAME the failure. "unavailable" was the whole complaint: the panel
             # could not distinguish a camera that refused from one nobody asked.
-            return None, f"{cam.name} could not deliver a frame: {exc}"
+            reason = f"{cam.name} could not deliver a frame: {exc}"
+            self._log_guide_preview(f"error:{exc}", "warning",
+                                    f"guide preview: {reason}")
+            return None, reason
+        # A SUCCESSFUL call is not the same thing as a frame. On 2026-08-01 this
+        # branch encoded an array in which every pixel was zero and served it as
+        # HTTP 200 — a black rectangle with no explanation, indistinguishable
+        # from the "nothing happens" the user reported in the first place.
+        data = np.asarray(frame.data)
+        defect, lo, hi = _guide_preview_defect(data, cam.name)
+        if defect:
+            self._log_guide_preview("defect", "warning", f"guide preview: {defect}")
+            return None, defect
+        try:
+            png = to_png(data, stretch=True, max_width=512)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{cam.name} returned a frame that would not encode: {exc}"
+            self._log_guide_preview("encode", "warning", f"guide preview: {reason}")
+            return None, reason
+        self._log_guide_preview(
+            "ok", "info",
+            f"guide preview: {cam.name} {data.shape[1]}x{data.shape[0]}, "
+            f"{lo}..{hi} ADU at gain {gain}")
+        return png, ""
+
+    def _log_guide_preview(self, key: str, level: str, message: str) -> None:
+        """Log a preview outcome ONCE per change of outcome.
+
+        The panel re-requests every 2.5s, so logging every attempt would bury
+        the run log — but logging NONE of them is why the all-black preview of
+        2026-08-01 left no trace whatsoever (no exposure, no error, nothing) and
+        had to be diagnosed from the response bytes. One line per transition is
+        what answers "was the camera even asked?"."""
+        if key == self._guide_preview_logged:
+            return
+        self._guide_preview_logged = key
+        bus.log(level, message, "guide")
+
+    def guide_preview_ok(self) -> bool:
+        """True while the most recent preview actually returned a picture.
+
+        Three states, not two: a ``preview_reason`` on status means a refusal we
+        can explain, this means a real frame arrived, and NEITHER means the
+        camera has not been asked yet (or the last answer is too old to still
+        describe it). Success used to publish exactly what an unasked camera
+        published — nothing — so the panel could not tell a working preview from
+        one that had never run."""
+        at = self._guide_preview_ok_at
+        return at is not None and time.monotonic() - at <= GUIDE_PREVIEW_NOTE_TTL_S
 
     def guide_preview_note(self) -> str:
         """The most recent preview refusal, while it is still current (or "").
@@ -3383,6 +3488,10 @@ class Hub:
             note = self.guide_preview_note()
             if note:
                 gc = gc | {"preview_reason": note}
+            elif self.guide_preview_ok():
+                # The third state. Neither key = nobody has asked this camera
+                # yet, which is a different thing from a frame that arrived.
+                gc = gc | {"preview_ok": True}
             out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:
             c = self.nina_client
