@@ -14,6 +14,11 @@
 //      being removed), and
 //   4. an alert that arrives while the gate is up is not eaten — it is either
 //      re-offered when the gate lifts, or never consumed in the first place.
+// And one claim about the LIST rather than the behaviour:
+//   5. every slice the store actually has is either cleared by the gate or
+//      exempted on the record, checked by walking the store at runtime — see
+//      NON_RIG_KEYS. Claims 1-4 are only worth what that walk is worth: they
+//      test the slices someone thought of, and #117 was a slice nobody did.
 //
 // Run: npx tsx src/lib/__tests__/authGate.test.ts
 // No test runner is wired into this UI (build is `tsc -b && vite build`), so
@@ -215,6 +220,9 @@ function populateRig(): void {
     config: { site: { name: "Test Site", is_default: false, horizon_min_deg: 20 } } as never,
     lastReportId: "sess-2026-08-01",
     framing: { center: { ra_hours: 1, dec_deg: 40 } } as never,
+    // What openHelp() leaves behind when the operator taps "How to fix →" on a
+    // failure toast: a named piece of this rig's hardware, and that it failed.
+    helpTopic: "camera-offline",
   });
 }
 
@@ -261,14 +269,133 @@ test("clearedRigState hands back fresh containers, never the dropped ones", () =
   assert(a.toasts !== b.toasts, "toasts array is not shared between clears");
 });
 
-test("the cleared list covers the slices that describe the observatory", () => {
-  // Named explicitly so adding a rig slice without adding it here is a visible
-  // omission rather than a silent one.
-  for (const k of [
-    "status", "site", "config", "weather", "weatherAlertKey", "previews",
-    "preview", "logs", "toasts", "safety", "sequence", "guide", "focus",
-    "equipConnected", "lastReportId", "framing", "masters", "runBanner",
-  ]) {
+// ------------------------------------------- the other half of RIG_STATE_KEYS
+// Every store slice the gate deliberately does NOT clear, each with the reason
+// it is safe to still be holding while a stranger stands in front of the
+// sign-in form. The two tests below walk the store's own runtime key set and
+// require each slice to appear in exactly one of the two lists, so a slice
+// added to store.ts cannot default into "kept" by nobody noticing it.
+//
+// Reasons, not categories: a reviewer has to be able to check the claim without
+// opening store.ts. "it's a pref" is not a reason; "it is read back out of
+// localStorage on the next load, so clearing it buys nothing" is.
+const NON_RIG_KEYS: Record<string, string> = {
+  // ---- the gate itself. Clearing any of these switches off the screen we are
+  // gating behind, so the "fix" would undo the fix.
+  authGate:
+    'the gate\'s own value — resetting it to "open" tells every reader that the operational console is up',
+  principal:
+    "caps.shouldShowLogin() returns FALSE for a null principal (it must, or a slow /api/me flashes a login over a signed-in admin) and useAuthResolving() then returns true — so dropping it swaps the login screen for the boot splash, which is the WEAKER gate: intakeBlocked is false there. It does still hold the previous operator's email; nothing on the login screen renders it, and both sign-out paths re-resolve /api/me to the anonymous viewer sentinel.",
+  authMethods:
+    "the login-screen signal itself: methods == [] means open LAN and NO gate at all, so clearing it is indistinguishable from 'sign-in is switched off'",
+
+  // ---- the user's own draft. It is on disk; blanking the in-memory copy would
+  // be theatre, not privacy.
+  plan: "the target list the user typed — setPlan persists it to localStorage and loadPlan() reads it back on the next load",
+  loadedPlanId: "which row of the user's own plan library the editor has open",
+  editorDirty: "a bare boolean: the draft has unsaved edits",
+  siteDirty: "a bare boolean: the site FORM has unsaved edits. The site itself (`site`, `config`) is cleared.",
+  opticsDirty: "a bare boolean: the optics form has unsaved edits",
+  atlasHandoff:
+    "a monotonic bump meaning 'the user pressed Send to plan'. It carries no payload — the panel COUNT the banner renders is `atlasBannerPending`, which IS cleared.",
+
+  // ---- the person's screen, not the sky. The persisted ones (night, both
+  // brightnesses, touch, photometry, overlays/stretch, coachSeen, autoMonitor)
+  // are re-read from localStorage on the next load, so clearing them protects
+  // nothing and costs a night-adapted operator their dark vision on the way back
+  // in. The rest are session-only and describe the glass, not the rig.
+  view: "which screen the user was on. The console tree behind the gate is unmounted; a view name is not a reading.",
+  night: "dark-adaptation mode — a property of the operator's eyes",
+  brightDay: "remembered day-mode screen brightness",
+  brightNight: "remembered night-mode screen brightness",
+  touch: "haptics / hit-target sizing / reversed slew axes / auto-lock delay",
+  photometry: "the egain / read-noise / bias the user typed from a camera datasheet — never on the wire, so the rig never told us these",
+  overlays: "which preview overlays are switched on",
+  stretch: "the preview stretch controls. The FRAMES they apply to (`preview`, `previews`) are cleared.",
+  viewport: "pan/zoom of the preview canvas",
+  hfrGood: "the client-side 'good HFR' threshold — a constant in store.ts, never written from a rig event",
+  hfrWarn: "the client-side 'warn HFR' threshold — likewise",
+  coachSeen: "which coach marks this person has already dismissed",
+  wizardOpen: "is the first-run wizard on screen",
+  wizardStepId: "which wizard step was pinned",
+  autoMonitor: "the auto-select-the-Monitor-view preference",
+  notifyEnabled:
+    "the user's own opt-in to OS notifications, not anything the rig said. announcementsBlocked is what actually silences them under a gate; clearing this would instead switch UNSAFE/link-down alerting quietly back OFF for the same operator after every sign-out.",
+  locked: "the touch guard — never persisted, and about the glass, not the rig",
+  lockAvailable: "whether the touch guard is offered at all (a build capability, constant true)",
+  monitorAwake: "the keep-the-screen-awake toggle",
+  logOpen: "is the log drawer open. The LINES in it (`logs`) are cleared.",
+
+  // ---- transport. That the socket is up says nothing about what is on the
+  // other end of it, and the reconnect machinery has to keep working while the
+  // login screen is up or a gated tablet quietly stops trying to come back.
+  wsPhase: "up / connecting / down",
+  wsConnected: 'the compat mirror of wsPhase === "up"',
+  wsLastEvent: "when the last frame arrived — a clock reading, not its contents",
+  telemetryStale: "have frames stopped arriving",
+
+  // ---- cleared, but NOT through clearedRigState().
+  confirm:
+    "setAuthGate clears this one by hand because it holds a promise resolver: dropping the slice without calling resolve(false) wedges whoever is awaiting it forever. Pinned by 'a dialog already open when the gate engages is closed, not orphaned'.",
+};
+
+/** The store's slices as they actually are at cold boot, actions excluded.
+ *  Actions are filtered by VALUE — they are the store's only function-valued
+ *  members — so adding an action never has to be exempted as if it were state. */
+function storeSlices(): string[] {
+  const s = COLD_BOOT as unknown as Record<string, unknown>;
+  return Object.keys(s).filter((k) => typeof s[k] !== "function");
+}
+
+test("no slice can be added to the store without deciding whether the gate clears it", () => {
+  // WHAT THIS REPLACES: a hardcoded list of 18 names asserted to be a subset of
+  // RIG_STATE_KEYS. That is a claim about the list, not about the store — it
+  // never walked a slice, so it passed forever however many rig-describing
+  // slices store.ts grew afterwards. #117 was a slice nobody thought about.
+  const slices = storeSlices();
+  // The walk must be walking something. If the store import breaks or zustand
+  // ever hands back a bare {}, every loop below passes vacuously and this file
+  // reports green while checking nothing.
+  assert(slices.includes("weather"), "the walk cannot see a slice it is meant to clear");
+  assert(slices.includes("plan"), "the walk cannot see a slice it is meant to exempt");
+
+  const cleared = new Set<string>(RIG_STATE_KEYS as unknown as string[]);
+  const exempt = new Set(Object.keys(NON_RIG_KEYS));
+  for (const k of slices) {
+    assert(
+      cleared.has(k) || exempt.has(k),
+      `${k} is a store slice the auth gate has never been told what to do with. ` +
+        "If it describes the observatory, its night, or its hardware, add it to " +
+        "ClearedRigState + clearedRigState() in lib/authGate.ts; if it does not, add it " +
+        "to NON_RIG_KEYS here with the reason a stranger at the sign-in form may see it survive.",
+    );
+    assert(
+      !(cleared.has(k) && exempt.has(k)),
+      `${k} is both cleared and exempted — one of the two entries is a leftover`,
+    );
+  }
+});
+
+test("neither list can outlive the slices it is about", () => {
+  // A reason attached to a slice that no longer exists is a reason nobody will
+  // ever re-read, and the next slice to take that name silently inherits the
+  // exemption. Same for a cleared key: clearedRigState() would be spreading a
+  // dead key into the store on every sign-out.
+  const slices = new Set(storeSlices());
+  for (const [k, why] of Object.entries(NON_RIG_KEYS)) {
+    assert(slices.has(k), `NON_RIG_KEYS exempts "${k}", which is not a store slice`);
+    assert(why.trim().length > 0, `"${k}" is exempted with no stated reason`);
+  }
+  for (const k of RIG_STATE_KEYS) {
+    assert(slices.has(k as string), `clearedRigState() clears "${k}", which is not a store slice`);
+  }
+});
+
+test("the slices named in the #117 field report are among the cleared", () => {
+  // Not a completeness check (the walk above is) — these are the specific
+  // things the reported modal put in front of an unauthenticated viewer, kept
+  // by name so a refactor that drops one of them fails in its own terms.
+  for (const k of ["weather", "weatherAlertKey", "site", "status", "config"]) {
     assert(RIG_STATE_KEYS.includes(k as never), `${k} is cleared when the gate engages`);
   }
 });
@@ -358,6 +485,7 @@ test("once the gate engages the store holds nothing describing the rig", () => {
   assert(live.previews.length > 0, "precondition: preview frames are held");
   assert(live.logs.length > 0, "precondition: rig log lines are held");
   assert(live.toasts.length > 0, "precondition: a rig toast is up");
+  assert(live.helpTopic !== null, "precondition: a hardware failure planted a help deep-link");
 
   useStore.getState().setAuthGate("login");
 
