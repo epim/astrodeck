@@ -51,6 +51,12 @@ _EXPORTS = [
     "ASIGetControlCaps", "ASISetControlValue", "ASIGetControlValue",
     "ASISetROIFormat", "ASIGetROIFormat", "ASIStartExposure", "ASIStopExposure",
     "ASIGetExpStatus", "ASIGetDataAfterExp",
+    # A DLL that cannot be asked where the ROI ended up cannot place a subframe
+    # either, and the download would be laid out at a width nothing confirmed.
+    # Both have been in ASICamera2 since the first public SDK and both are
+    # exported by the vendored build (checked 2026-08-01), so gating on them
+    # costs nothing and keeps a crippled DLL from being selected silently.
+    "ASISetStartPos", "ASIGetStartPos",
 ]
 
 #: canonical basename -> (known install paths, verifying exports).
@@ -148,6 +154,7 @@ _SIGNATURES: dict[str, list] = {
     "ASIGetControlValue": [_I, _I, _PL, _PI],
     "ASISetROIFormat": [_I, _I, _I, _I, _I],
     "ASIGetROIFormat": [_I, _PI, _PI, _PI, _PI],
+    "ASISetStartPos": [_I, _I, _I], "ASIGetStartPos": [_I, _PI, _PI],
     "ASIStartExposure": [_I, _I], "ASIStopExposure": [_I],
     "ASIGetExpStatus": [_I, _PI],
     "ASIGetDataAfterExp": [_I, _PU, ctypes.c_long],
@@ -283,6 +290,31 @@ class AsiSdk:
     def set_roi(self, cam_id: int, w: int, h: int, bin: int, img_type: int) -> None:
         _check(self._d.ASISetROIFormat(cam_id, w, h, bin, img_type),
                "ASISetROIFormat")
+
+    def get_roi(self, cam_id: int) -> tuple[int, int, int, int]:
+        """(width, height, bin, img_type) the camera is ACTUALLY set to, in
+        binned pixels. This is the only authority on the download's row length;
+        the values passed to set_roi are a request, and ASISetROIFormat is
+        documented to require width%8 == 0 / height%2 == 0 rather than to
+        guarantee it returns them untouched."""
+        w, h, b, t = (ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int())
+        _check(self._d.ASIGetROIFormat(cam_id, ctypes.byref(w), ctypes.byref(h),
+                                       ctypes.byref(b), ctypes.byref(t)),
+               "ASIGetROIFormat")
+        return int(w.value), int(h.value), int(b.value), int(t.value)
+
+    def set_start_pos(self, cam_id: int, x: int, y: int) -> None:
+        """Place the subframe's top-left corner (binned pixels). MUST run after
+        set_roi: ASISetROIFormat re-centres the ROI on the sensor, so a caller
+        that only sets the format gets a frame from wherever the SDK put it and
+        is told nothing about it."""
+        _check(self._d.ASISetStartPos(cam_id, x, y), "ASISetStartPos")
+
+    def get_start_pos(self, cam_id: int) -> tuple[int, int]:
+        x, y = ctypes.c_int(), ctypes.c_int()
+        _check(self._d.ASIGetStartPos(cam_id, ctypes.byref(x), ctypes.byref(y)),
+               "ASIGetStartPos")
+        return int(x.value), int(y.value)
 
     def start_exposure(self, cam_id: int, dark: bool) -> None:
         _check(self._d.ASIStartExposure(cam_id, int(dark)), "ASIStartExposure")

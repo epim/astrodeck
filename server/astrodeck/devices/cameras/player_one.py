@@ -11,6 +11,7 @@ the two read-noise controls this camera earns its keep on —
 Vendor-specific logic lives here only; the engine owns the exposure/cooling loop."""
 from __future__ import annotations
 
+from ..base import DeviceError
 from .adapter import ROI, CameraAdapter, CameraCapabilities
 from . import registry
 from .player_one_sdk import (
@@ -41,6 +42,7 @@ class PlayerOneAdapter(CameraAdapter):
         self._modes: tuple[str, ...] = ()
         self._egain = 0.0
         self._nbytes = 0
+        self._applied: ROI | None = None
 
     def _basic(self) -> PoaProperty:
         # count() first: enumerate before get_properties(index) (at-scope lesson).
@@ -88,8 +90,62 @@ class PlayerOneAdapter(CameraAdapter):
         self._sdk.set_config(self._cam_id, POA_OFFSET, int(offset))
         w, h = roi.w // roi.bin, roi.h // roi.bin
         self._sdk.set_image_format(self._cam_id, w, h, roi.bin, POA_RAW16)
-        self._nbytes = w * h * 2
+        self._place(roi)
+        # THE DOWNLOAD IS SIZED FROM WHAT THE CAMERA APPLIED, NOT WHAT WE ASKED.
+        # Sizing it from the request is what makes a mismatch invisible: the
+        # buffer is ours, POAGetImageData fills the front of it and returns OK
+        # for any buffer that is big ENOUGH, and read_frame hands back exactly
+        # len == request. So the length can never disagree with the request no
+        # matter what the sensor did, and the engine lays rows of the applied
+        # width out at the requested one — the sheared, tiled picture of
+        # 2026-07-31. Reading the geometry back is the only thing that sees it.
+        self._applied = self._read_back(roi)
+        aw, ah = self._binned(self._applied or roi)
+        self._nbytes = aw * ah * 2
         self._sdk.start_exposure(self._cam_id, True)
+
+    @staticmethod
+    def _binned(r: ROI) -> tuple[int, int]:
+        return r.w // r.bin, r.h // r.bin
+
+    def _place(self, roi: ROI) -> None:
+        """Put the subframe where the caller asked. set_image_format parks the
+        origin at (0, 0), so without this an (x, y) request is discarded and the
+        frame is of a different patch of sky than the one requested."""
+        sp = getattr(self._sdk, "set_start_pos", None)
+        if sp is None:
+            if roi.x or roi.y:
+                raise DeviceError(
+                    f"this Player One SDK cannot place a subframe, so the "
+                    f"requested origin ({roi.x}, {roi.y}) could not be applied; "
+                    "the frame would be of a different part of the sensor than "
+                    "requested")
+            return
+        sp(self._cam_id, roi.x // roi.bin, roi.y // roi.bin)
+
+    def _read_back(self, roi: ROI) -> ROI | None:
+        """What POAGetImageSize/Bin/StartPos say the camera settled on, in the
+        request's unbinned units. None when the injected SDK cannot be asked."""
+        get = getattr(self._sdk, "get_roi", None)
+        if get is None:
+            return None
+        w, h, b, fmt = get(self._cam_id)
+        if fmt != POA_RAW16:
+            # _shape decodes little-endian uint16 unconditionally. A RAW8 frame
+            # decoded that way pairs adjacent pixels into one — refuse it here
+            # rather than deliver a half-width picture of the same sky.
+            raise DeviceError(
+                f"camera applied image format {fmt}, not RAW16 ({POA_RAW16}); "
+                "the download would be decoded as 16-bit and come out wrong")
+        b = b or roi.bin
+        x, y = 0, 0
+        gsp = getattr(self._sdk, "get_start_pos", None)
+        if gsp is not None:
+            x, y = gsp(self._cam_id)
+        return ROI(x=x * b, y=y * b, w=w * b, h=h * b, bin=b)
+
+    def applied_roi(self) -> ROI | None:
+        return self._applied
 
     def image_ready(self) -> bool:
         return self._sdk.image_ready(self._cam_id)
