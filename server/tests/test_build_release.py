@@ -1,8 +1,11 @@
 """Release-eng: build_release.py bundles vendored ASTAP + a baseline survey pack
-into the staged package at the paths the runtime discovers."""
+into the staged package at the paths the runtime discovers, and --strict refuses
+to ship a bundle that is missing one of them."""
 import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import build_release  # noqa: E402
@@ -54,6 +57,13 @@ def test_build_bundles_astap_and_pack(tmp_path):
     assert (out / "astrodeck-9.9.9.tar.gz").is_file()
 
 
+def _fake_ui(repo: Path) -> Path:
+    d = repo / "ui" / "dist"
+    (d / "assets").mkdir(parents=True)
+    (d / "index.html").write_text("<!doctype html><div id=root></div>")
+    return d
+
+
 def test_build_omits_assets_when_absent(tmp_path):
     repo = _fake_repo(tmp_path)
     out = tmp_path / "dist"
@@ -61,7 +71,58 @@ def test_build_omits_assets_when_absent(tmp_path):
     staging = out / "astrodeck-9.9.9"
     assert not (staging / "server" / "astrodeck" / "vendor").exists()
     manifest = json.loads((staging / "manifest.json").read_text())
-    assert manifest["contents"] == ["server", "ui/dist"]
+    # The manifest lists what LANDED. It used to name ui/dist unconditionally,
+    # so a bundle with no SPA in it still advertised one.
+    assert manifest["contents"] == ["server"]
+
+
+def test_strict_refuses_a_release_with_no_built_ui(tmp_path, capsys):
+    """The bundle whose omission is invisible until someone installs it: the
+    server comes up, /healthz is green, and there is no interface."""
+    repo = _fake_repo(tmp_path)
+    with pytest.raises(SystemExit):
+        build_release.build("9.9.9", repo, tmp_path / "dist", strict=True)
+    out = capsys.readouterr().out
+    assert "built UI" in out
+    assert "no interface" in out               # what the omission COSTS
+
+
+def test_an_empty_dist_directory_is_not_a_built_ui(tmp_path):
+    """A `npm run build` that half-ran, or a dist left by a cleaned checkout,
+    leaves a directory that `is_dir()` calls a UI. api/app.py mounts the SPA on
+    index.html for exactly this reason, and the bundler now agrees with it."""
+    repo = _fake_repo(tmp_path)
+    (repo / "ui" / "dist" / "assets").mkdir(parents=True)          # no index.html
+    with pytest.raises(SystemExit):
+        build_release.build("9.9.9", repo, tmp_path / "dist", strict=True)
+
+
+def test_strict_passes_when_every_requested_asset_is_present(tmp_path):
+    """The other direction: strict must not block a complete release."""
+    repo = _fake_repo(tmp_path)
+    _fake_ui(repo)
+    out = tmp_path / "dist"
+    tarball = build_release.build("9.9.9", repo, out, strict=True,
+                                  astap_dir=_fake_astap(tmp_path),
+                                  survey_pack_dir=_fake_pack(tmp_path))
+    assert tarball.is_file()
+    manifest = json.loads((out / "astrodeck-9.9.9" / "manifest.json").read_text())
+    assert manifest["contents"] == [
+        "server", "ui/dist",
+        "server/astrodeck/vendor/astap",
+        "server/astrodeck/catalog/_bundled_pack/dss2color",
+    ]
+
+
+def test_strict_names_every_missing_asset_in_one_pass(tmp_path, capsys):
+    """One rebuild per discovery is how a release takes an afternoon."""
+    repo = _fake_repo(tmp_path)                                    # no ui/dist
+    with pytest.raises(SystemExit):
+        build_release.build("9.9.9", repo, tmp_path / "dist", strict=True,
+                            astap_dir=tmp_path / "nope",
+                            survey_pack_dir=tmp_path / "also-nope")
+    out = capsys.readouterr().out
+    assert "built UI" in out and "ASTAP" in out and "survey pack" in out
 
 
 def test_build_survey_pack_needs_manifest(tmp_path):

@@ -72,8 +72,14 @@ jobs:
             exit 1
           fi
 
+      # --strict, because the default is to WARN and ship anyway. 0.2.18 went
+      # out with no survey pack that way and the Atlas on the deployed box was
+      # simply black; the only evidence was a line in a build log nobody read
+      # (#100). A tag push is unattended by definition — nobody is reading this
+      # log either — so the flag, not the warning, is the control. It fails the
+      # build listing every asset that is absent and what each omission costs.
       - name: Build release bundle
-        run: python scripts/build_release.py --version "${GITHUB_REF_NAME#v}" --out dist
+        run: python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist
 
       - name: Sign artifact (Ed25519 + SHA256 sidecars)
         env:
