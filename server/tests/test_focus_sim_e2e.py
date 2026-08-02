@@ -17,10 +17,18 @@ WHY THESE NUMBERS. ``SimCamera._render_stars`` renders each star with
 ``sigma = (1.8 + |pos - best_focus| / 700) / binning`` px, i.e. a true V in
 |offset| with a 1.8px seeing floor at focus, and ``_render`` seeds its RNG from
 the focuser position, so every frame in a sweep is reproducible but each
-position carries its own independent noise draw. Measured on this rig (15
-independent seeds per point, bin 2): ``focus_size`` reads 1.09px at focus,
-1.44px at 350 steps out, 1.76px at 700 and 2.40px at 1400 — a clean V — with a
-per-point scatter of sd ~0.065px that does not vary with defocus.
+position carries its own independent noise draw. Measured on this rig (60
+independent seeds per point, bin 2): ``focus_size`` reads 1.11px at focus,
+1.46px at 350 steps out, 1.76px at 700 and 2.40px at 1400 — a clean V — with a
+per-point scatter of sd ~0.073px over that span.
+
+That scatter is NOT constant in defocus, and an earlier draft of this file said
+it was. It holds between 0.066 and 0.077px out to 1400, then grows: ~0.092px at
+2800 and ~0.106px at 4000, which is exactly where the wide sweep's outermost
+points sit. Bigger donuts spread the same flux over more pixels, so the size
+estimate gets noisier the further out you measure. Quoting the inner figure for
+the whole range understates the arms of the very sweep that needs them, so the
+numbers below say which range they came from.
 """
 from __future__ import annotations
 
@@ -53,15 +61,18 @@ WIDE_SIDES = 4
 #: Chosen from what the sim justifies, not from what passes. Two independent
 #: readings agree on ~150:
 #:
-#: * Measurement. One sweep point's ``focus_size`` scatter is sd 0.065px (see
-#:   the module docstring) and the curve's arms rise at (2.40-1.09)/1400 =
-#:   0.00094 px per step, so a single point is worth ~70 steps of positional
-#:   uncertainty on its own; a 9-point weighted parabola pulls that down but not
-#:   to nothing. A survey of 58 runs over four sweep geometries (step 250/±5,
-#:   350/±4, 500/±4, 1000/±4) and starting offsets across the whole window
-#:   measured the landing error as mean ~0 (no bias), sd ~48 steps, worst case
-#:   108. 150 is ~3 sd — a real regression fails it, a benign change in the
-#:   detector's thresholds does not.
+#: * Measurement. One sweep point's ``focus_size`` scatter is sd ~0.073px over
+#:   the inner ±1400 (see the module docstring) and the curve's arms rise at
+#:   (2.40-1.11)/1400 = 0.00093 px per step, so a single point is worth ~79
+#:   steps of positional uncertainty on its own; a 9-point weighted parabola
+#:   pulls that down but not to nothing. A survey over four sweep geometries
+#:   (step 250/±5, 350/±4, 500/±4, 1000/±4) and starting offsets across the
+#:   whole window measured the landing error as mean ~0 (no bias), sd ~43 steps.
+#:   The WORST single landing depends on which offsets you happen to sample —
+#:   108 on the grid these tests use, 116 on a denser re-run — so the tolerance
+#:   is set from the sd, which is stable, rather than from a worst case that
+#:   moves with the sampling. 150 is ~3.5 sd: a real regression fails it, a
+#:   benign change in the detector's thresholds does not.
 #: * Optics. 150 steps grows the sim's PSF from 1.80px to 2.01px unbinned, 12%
 #:   on the seeing floor. That is the scale at which a star starts to look
 #:   different, so a tolerance any looser would be calling out-of-focus frames
@@ -72,10 +83,18 @@ WIDE_SIDES = 4
 #: success.
 FOCUS_TOLERANCE_STEPS = 150
 
-#: Two ``focus_size`` readings of the same physical defocus differ by sd ~0.09px
-#: (0.065 each, added in quadrature). 0.25 is a shade under 3 sd of that
-#: difference — tight enough that a verify frame taken somewhere other than the
-#: bottom of the V would fail it.
+#: Two ``focus_size`` readings of the same physical defocus differ by sd ~0.10px
+#: (0.073 each, added in quadrature), which makes 0.25 about 2.4 sd of pure
+#: noise — not the "just under 3 sd" an earlier draft of this comment asserted.
+#: 3 sd would have been 0.31px, so that draft was quoting a tolerance 25% tighter
+#: than the one it had actually written down.
+#:
+#: 2.4 sd is the right budget regardless, because the noise is only the floor and
+#: this number is bounded from both ends. The ceiling is what it must CATCH: one
+#: sweep step of mis-parking (350) moves the metric by 1.46-1.11 = 0.35px, so a
+#: budget at or above that would let a verify frame taken a whole step off the
+#: vertex pass as if it were the vertex. 0.25 sits between the two — clear of the
+#: noise, and under the smallest positional error worth failing a run over.
 METRIC_AGREEMENT_PX = 0.25
 
 
