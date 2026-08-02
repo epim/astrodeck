@@ -18,13 +18,37 @@
 // weather events" (true, and what the old comment relied on) says nothing about
 // this case at all.
 //
-// SO THERE ARE TWO RULES, and only the second one is durable:
-//   1. nothing user-facing speaks while a gate screen is up, and
-//   2. the store stops HOLDING the rig the moment the gate engages.
+// SO THERE ARE THREE RULES, and only the last two are durable:
+//   1. nothing user-facing SPEAKS while a gate screen is up — no confirm, no
+//      toast, no OS notification, no beep;
+//   2. the store DROPS the rig the moment the gate engages; and
+//   3. it stops TAKING THE RIG IN for as long as the gate is up.
 // Fixing only (1) would fix the one dialog we know about and leave every future
 // consumer of weather/status/previews/site free to make the same mistake — and
-// there will be future consumers. Both rules live here, store-free and
-// React-free, so there is one place to read them and one place to test them.
+// there will be future consumers.
+//
+// RULE 3 IS NOT BELT-AND-BRACES. It is what makes rule 2 more than a two-second
+// flicker, and the first version of this module shipped without it on the theory
+// that the transport already refused a gated client. The transport does not.
+// Close-1008-before-accept applies to a NEW handshake; it says nothing about a
+// socket that was accepted while the session was valid and is STILL OPEN when
+// the gate engages — which is this ticket's case, and the most deliberate one:
+//   - signing out does not close the socket (SignInButton / AccountPanel call
+//     logout() then re-resolve /api/me; nothing calls reconnectWs), and there is
+//     no global 401 interceptor in api.ts to close it either;
+//   - the server re-authenticates an already-open /ws only every
+//     WS_AUTH_RECHECK_S (60s, api/redact.py) and closes 4401 only at that check.
+//     Until it fires, `principal` is still the pre-logout admin, so frames go out
+//     UNREDACTED — precise site included;
+//   - hub publishes `status` every 2s.
+// So without rule 3: gate engages -> store cleared -> ~2s later a `status` frame
+// restores the site name, its precise coordinates, where the mount is pointed
+// and what is connected, followed by weather (threshold + site_lat/site_lon),
+// previews and error toasts — all behind the sign-in form, for up to a minute
+// after the operator pressed Sign out and handed the tablet over.
+//
+// All three rules live here, store-free and React-free, so there is one place to
+// read them and one place to test them.
 
 import type { GuideRmsByKind } from "./guideRms";
 import type { MasterRow } from "./calibrationLibrary";
@@ -50,17 +74,49 @@ import type {
  */
 export type AuthGate = "open" | "resolving" | "login";
 
-/** May a user-facing dialog be raised? Only with the console actually on screen. */
-export function dialogsBlocked(gate: AuthGate): boolean {
+/**
+ * Rule 1. May the console SAY anything to whoever is looking — a confirm dialog,
+ * a toast, an OS notification, a beep? Only with the operational shell actually
+ * on screen.
+ *
+ * Both gate screens keep <Toasts/> and <ConfirmHost/> mounted (they must, so
+ * they are there the instant the gate lifts), so "the console tree is unmounted"
+ * is NOT a reason a rig sentence cannot reach a gated viewer. This is.
+ */
+export function announcementsBlocked(gate: AuthGate): boolean {
   return gate !== "open";
 }
 
 /**
- * Why a dialog was refused — a blocked thing must be able to say what blocked
- * it (this one answers to a developer reading a suppressed confirm, never to the
- * gated viewer: telling them anything is the bug). null when nothing is blocked.
+ * Rule 3. May the store still TAKE IN the rig's telemetry? Not while the login
+ * screen is up — see the module header for why the open socket keeps delivering
+ * for up to a minute after sign-out, and what it delivers.
+ *
+ * The two predicates deliberately draw DIFFERENT lines, because holding and
+ * speaking are different risks:
+ *   - SPEAKING is blocked under the boot splash too. Nobody has been identified
+ *     yet, and "we do not know who is looking" is not "anyone" — and a beep plus
+ *     an OS notification leave the page entirely, so they reach further than any
+ *     overlay does.
+ *   - HOLDING is not. The splash renders none of these slices, and the one-shot
+ *     `hello` hydration (config, site, the safety snapshot) arrives in exactly
+ *     that window and never comes again on this socket — refusing it would leave
+ *     an entitled viewer with a console that never got its cold snapshot, to
+ *     protect a screen that displays nothing. If the splash resolves INTO the
+ *     login screen, gateEngaged drops everything it accumulated; if it resolves
+ *     into the console, that viewer was entitled to it all along.
  */
-export function dialogBlockedReason(gate: AuthGate): string | null {
+export function intakeBlocked(gate: AuthGate): boolean {
+  return gate === "login";
+}
+
+/**
+ * Why the gate refused — a blocked thing must be able to say what blocked it.
+ * This one answers to a DEVELOPER reading a suppressed confirm or a dropped
+ * frame, never to the gated viewer: telling them anything is the bug this whole
+ * module exists for. null when nothing is blocked.
+ */
+export function gateBlockedReason(gate: AuthGate): string | null {
   switch (gate) {
     case "login":
       return "the sign-in screen is up — there is no signed-in viewer to tell";
@@ -170,13 +226,21 @@ export interface ClearedRigState {
  *
  * `toasts` is in here because a toast is a sentence about the rig — "UNSAFE:
  * rain detected", "Sequence failed: mount lost" — sitting in the one overlay
- * that stays mounted over the login screen.
+ * that stays mounted over the login screen. Emptying the queue is only half of
+ * the job: announcementsBlocked has to keep the PRODUCER shut for as long as the
+ * gate is up, or the next `safety` frame refills what this just emptied.
  *
  * Dropping all of this costs nothing on the way back IN: the whole console tree
  * unmounts behind the login screen, so its panels re-fetch on mount when the
  * gate lifts, and the post-sign-in reconnect (Login.refreshSession ->
  * reconnectWs -> ws.onopen) re-hydrates config, principal, update, the log
  * history and the status/sequence snapshot before anything is rendered.
+ *
+ * `weather` is the ONE exception and it is App's job, not this module's:
+ * ws.onopen does not fetch it and the server republishes only every 15 minutes
+ * (OPEN_METEO_INTERVAL_S), so a high-cloud alert that arrived while intake was
+ * blocked would not be re-offered for up to a quarter of an hour. App re-fetches
+ * /api/weather on the login -> open transition for exactly that reason.
  */
 export function clearedRigState(): ClearedRigState {
   return {

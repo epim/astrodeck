@@ -1,7 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
-import { useStore, useBrightness, useAuthMethods, useWeatherAlertKey, type ViewName } from "./store";
+import {
+  useStore, useBrightness, useAuthMethods, useAuthGate, useWeatherAlertKey,
+  type ViewName,
+} from "./store";
 import { getHealth } from "./api/backends";
+import { getWeather } from "./api/weather";
 import { backendBadge, backendBadgeIsSim } from "./lib/equipment";
 import { fmtHm } from "./lib/weather";
 import Logo from "./components/Logo";
@@ -21,8 +25,8 @@ import { confirmDialog, ConfirmHost } from "./components/ConfirmDialog";
 import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import FirstRunWizard from "./components/FirstRunWizard";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
-import { useShouldShowLogin, useAuthResolving } from "./lib/caps";
-import { dialogsBlocked, type AuthGate } from "./lib/authGate";
+import { useShouldShowLogin, useAuthResolving, useCanViewWeather } from "./lib/caps";
+import { announcementsBlocked, type AuthGate } from "./lib/authGate";
 import Login from "./views/Login";
 import EquipmentView from "./views/EquipmentView";
 import ViewBoundary from "./components/ViewBoundary";
@@ -307,9 +311,17 @@ export default function App() {
   // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
   // and the gate dissolves the moment a session is minted — no reload. Toasts +
   // the confirm host stay mounted: Login's own errors render inline, but the
-  // hosts are there the instant the gate lifts. Nothing the RIG has to say gets
-  // through them while it is up — pushConfirm refuses under a gate (#117) and
-  // the rig state itself is dropped the moment the gate engages.
+  // hosts are there the instant the gate lifts.
+  //
+  // What keeps the rig out of those two mounted overlays is NOT this file — it
+  // is three guards in the store, named here so the claim is checkable rather
+  // than asserted (#117): pushConfirm and enqueueToast both refuse under
+  // announcementsBlocked, so neither host can be handed anything; handleEvent
+  // refuses under intakeBlocked, so the frames that feed them are not taken in
+  // at all; and setAuthGate drops what the live session left behind. The version
+  // of this comment that just said "nothing the rig has to say gets through"
+  // was itself the bug being fixed — a component reporting a guarantee it did
+  // not have.
   //
   // High-cloud night warning popup (weather spec §12): fires once per server-
   // side once-per-night latch (weatherAlertKey bumps only on the alert
@@ -328,10 +340,22 @@ export default function App() {
   // this is its local sky tonight". The gate check is the direct statement of
   // that rule at the site that broke it; the store's clear is what makes it hold
   // for the next effect somebody adds here.
+  //
+  // THE GATE IS A DEPENDENCY, not just a guard. weatherAlertKey is a latch that
+  // bumps once per alert edge, so an alert consumed while a gate screen was up
+  // used to be eaten for good: the key moved 0 -> 1, this effect returned early,
+  // and it never changed again — the operator signed in and was told nothing
+  // about a warning the spec calls mandatory. The boot splash makes that a real
+  // sequence (a `weather` frame inside the first 4s is held by the store but
+  // must not be spoken). Listing the gate here means the effect re-runs the
+  // moment it lifts and delivers the notice it was holding. It cannot double-
+  // fire: the only other transition into "open" is from "login", and that path
+  // ran clearedRigState, so the key is back at 0.
   const weatherAlertKey = useWeatherAlertKey();
+  const gate = useAuthGate();
   useEffect(() => {
     if (weatherAlertKey === 0) return;
-    if (dialogsBlocked(useStore.getState().authGate)) return;
+    if (announcementsBlocked(gate)) return;
     const w = useStore.getState().weather;
     const a = w?.alert;
     if (!w || !a) return;
@@ -345,7 +369,45 @@ export default function App() {
       tone: "warn",
       mode: "ok",
     });
-  }, [weatherAlertKey]);
+  }, [weatherAlertKey, gate]);
+
+  // #117 — re-learn the sky when the sign-in screen goes away. While the login
+  // gate is up the store refuses rig telemetry outright (store.handleEvent /
+  // intakeBlocked), so a `weather` frame that arrived in that window was dropped,
+  // not deferred. Everything else the console needs comes back on the post-login
+  // reconnect (ws.onopen re-hydrates config, the log history, the monitor
+  // snapshot) — weather is the one slice nothing re-fetches, and the server
+  // republishes it only every 15 minutes. Without this, an operator who signed
+  // back in at 22:05 could sit until 22:20 before being told about a high-cloud
+  // window that had already started.
+  //
+  // Only on login -> open, the exact span where intake was refused: firing it on
+  // the boot splash's resolving -> open would be a second cold GET for a slice
+  // the socket is about to deliver anyway. Cap-gated the same way
+  // SkyConditionsPanel is, so a non-holder never ISSUES the request (weather
+  // spec §8) rather than issuing it and eating a 403; fail-quiet regardless,
+  // because "this session cannot see weather" is a correct answer, not an error
+  // worth a toast.
+  const canViewWeather = useCanViewWeather();
+  const prevGate = useRef<AuthGate>(gate);
+  useEffect(() => {
+    const was = prevGate.current;
+    prevGate.current = gate;
+    if (!(was === "login" && gate === "open")) return;
+    if (!canViewWeather) return;
+    let live = true;
+    void getWeather()
+      .then((w) => {
+        if (!live) return;
+        useStore.getState().handleEvent({
+          type: "weather",
+          data: w as unknown as Record<string, unknown>,
+          ts: Date.now() / 1000,
+        });
+      })
+      .catch(() => { /* offline, or the cap went away — never a toast here */ });
+    return () => { live = false; };
+  }, [gate, canViewWeather]);
 
   // `splashUp` (not a second copy of the condition) — the store's gate value is
   // derived from the same boolean, so "what is on screen" and "what the store

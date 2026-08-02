@@ -3,13 +3,17 @@
 //
 // The reported failure was a modal reading "High cloud forecast tonight —
 // Forecast peak N% total cloud … at/above your N% threshold" rendered OVER the
-// sign-in form. Three claims are pinned here, in the order they matter:
-//   1. an alert edge while the gate is up raises no dialog,
+// sign-in form. Four claims are pinned here, in the order they matter:
+//   1. an alert edge while the gate is up raises no dialog — and neither does
+//      any other thing that can speak (toast, OS notification, beep),
 //   2. once the gate engages the store is holding nothing that describes the
-//      rig — the load-bearing half, because the dialog was only the first
-//      consumer of that state and will not be the last,
+//      rig AND does not take any more of it in — the load-bearing half, because
+//      the socket stays open across a sign-out and the server keeps serving the
+//      pre-logout principal for up to WS_AUTH_RECHECK_S (60s),
 //   3. a normal, signed-in alert still fires (the feature is not "fixed" by
-//      being removed).
+//      being removed), and
+//   4. an alert that arrives while the gate is up is not eaten — it is either
+//      re-offered when the gate lifts, or never consumed in the first place.
 //
 // Run: npx tsx src/lib/__tests__/authGate.test.ts
 // No test runner is wired into this UI (build is `tsc -b && vite build`), so
@@ -49,11 +53,27 @@ if (typeof g.window === "undefined") {
   };
 }
 
+// A recording stand-in for the browser Notification constructor. lib/notify.ts
+// fires one only when permission is "granted", so without this the OS-level
+// channel is a silent no-op under node and the "does it beep at a stranger?"
+// claim below could not be made at all. (beep() needs window.AudioContext,
+// which the stub above does not provide, so it self-cancels — the Notification
+// is the observable half.)
+const notified: { title: string; body: string }[] = [];
+class FakeNotification {
+  static permission = "granted";
+  constructor(title: string, opts: { body: string }) {
+    notified.push({ title, body: opts.body });
+  }
+}
+(g as unknown as { Notification?: unknown }).Notification = FakeNotification;
+
 const {
+  announcementsBlocked,
   clearedRigState,
-  dialogBlockedReason,
-  dialogsBlocked,
+  gateBlockedReason,
   gateEngaged,
+  intakeBlocked,
   RIG_STATE_KEYS,
 } = await import("../authGate");
 const { useStore } = await import("../../store");
@@ -142,14 +162,26 @@ function deliverWeatherAlert(): void {
   });
 }
 
-/** What App's weather-alert effect does, minus React (there is no DOM test
- *  runner here). Kept in the same shape as App.tsx: the early return on the
- *  gate, then the confirmDialog() call — which is store.pushConfirm(). Returns
- *  the promise the effect would have fired, or null when it declined to fire. */
-function weatherAlertEffect(): Promise<boolean> | null {
+// App's weather-alert effect, minus React. There is no DOM test runner in this
+// UI, so this is a MODEL of App.tsx's effect and not the effect itself — if
+// App's dependency array and this stop agreeing, only a human reading both will
+// notice. That is exactly why the dep array is modelled here rather than the
+// body alone: the bug this replaces was a missing DEPENDENCY (the gate), not a
+// missing statement, and a harness that re-runs the body on demand cannot tell
+// the difference between "React re-ran it" and "the test called it again".
+//
+// So: render() re-runs the body only when a dep actually changed, the way React
+// does. `deps` mirrors App.tsx's `[weatherAlertKey, gate]` exactly.
+let lastDeps: unknown[] | null = null;
+function resetEffect(): void { lastDeps = null; }
+function render(): Promise<boolean> | null {
   const st = useStore.getState();
+  const deps: unknown[] = [st.weatherAlertKey, st.authGate];
+  if (lastDeps && deps.every((d, i) => d === lastDeps![i])) return null; // no re-run
+  lastDeps = deps;
+  // ---- effect body, same shape as App.tsx ----
   if (st.weatherAlertKey === 0) return null;
-  if (dialogsBlocked(st.authGate)) return null;
+  if (announcementsBlocked(st.authGate)) return null;
   const w = st.weather;
   if (!w?.alert) return null;
   return st.pushConfirm({ title: "High cloud forecast tonight", mode: "ok" });
@@ -187,18 +219,30 @@ function populateRig(): void {
 }
 
 // ============================================================ A. pure module
-test("dialogsBlocked: only the operational console may speak", () => {
-  eq(dialogsBlocked("open"), false, "open");
-  eq(dialogsBlocked("login"), true, "login");
+test("announcementsBlocked: only the operational console may speak", () => {
+  eq(announcementsBlocked("open"), false, "open");
+  eq(announcementsBlocked("login"), true, "login");
   // The pre-decision splash counts too: a method is enabled and we do not yet
   // know who is looking, and "we don't know" is not "anyone".
-  eq(dialogsBlocked("resolving"), true, "resolving");
+  eq(announcementsBlocked("resolving"), true, "resolving");
 });
 
-test("a blocked dialog can say what blocked it", () => {
-  assert((dialogBlockedReason("login") ?? "").includes("sign-in screen"), "login reason names the screen");
-  assert((dialogBlockedReason("resolving") ?? "").length > 0, "resolving has a reason");
-  eq(dialogBlockedReason("open"), null, "nothing is blocked when the console is up");
+test("intake stops at the login screen but not at the boot splash", () => {
+  eq(intakeBlocked("login"), true, "the sign-in screen refuses rig telemetry");
+  eq(intakeBlocked("open"), false, "a signed-in console takes everything");
+  // Deliberately NARROWER than announcementsBlocked. The splash renders none of
+  // these slices, and the one-shot `hello` (config/site/safety) lands in exactly
+  // that window and never comes again on this socket — refusing it would leave
+  // an entitled viewer with a console that never got its cold snapshot, to
+  // protect a screen that displays nothing. A splash that resolves INTO login
+  // has everything dropped by gateEngaged anyway.
+  eq(intakeBlocked("resolving"), false, "the splash may hold what it may not say");
+});
+
+test("a blocked thing can say what blocked it", () => {
+  assert((gateBlockedReason("login") ?? "").includes("sign-in screen"), "login reason names the screen");
+  assert((gateBlockedReason("resolving") ?? "").length > 0, "resolving has a reason");
+  eq(gateBlockedReason("open"), null, "nothing is blocked when the console is up");
 });
 
 test("gateEngaged fires on the edge into login, not on the level", () => {
@@ -239,7 +283,8 @@ await testAsync("an alert edge while the login gate is up raises no dialog", asy
   // relay reconnect. This is the exact sequence from the field report.
   useStore.getState().setAuthGate("login");
 
-  const fired = weatherAlertEffect();
+  resetEffect();
+  const fired = render();
   eq(fired, null, "the effect declines to fire under the gate");
   eq(useStore.getState().confirm, null, "no dialog is mounted over the login screen");
 });
@@ -259,6 +304,47 @@ await testAsync("the splash refuses dialogs too", async () => {
   const p = useStore.getState().pushConfirm({ title: "High cloud forecast tonight", mode: "ok" });
   eq(useStore.getState().confirm, null, "nothing over the boot splash");
   eq(await p, false, "resolves false");
+});
+
+// The confirm host is not the only overlay the gate screens keep mounted —
+// App's login branch also mounts <Toasts/>. A toast is a sentence about the rig
+// ("UNSAFE: rain detected", "Sequence failed: mount lost"), so gating only the
+// confirm would have moved the leak one overlay to the left.
+test("no toast reaches the toast host while a gate screen is up", () => {
+  for (const gate of ["login", "resolving"] as AuthGate[]) {
+    useStore.setState({ authGate: "open", toasts: [] });
+    useStore.setState({ authGate: gate });
+    useStore.getState().enqueueToast({ level: "error", title: "UNSAFE: rain detected", ttl: 0 });
+    useStore.getState().enqueueToast({ level: "error", title: "Sequence failed: mount lost" });
+    eq(useStore.getState().toasts.length, 0, `${gate}: nothing was queued`);
+  }
+});
+
+test("the OS-level channel is gated too — no beep at a stranger", () => {
+  // notifyAndBeep leaves the page entirely: a Web Notification plus an audible
+  // beep, which no overlay can cover. And the 30s link-down alert needs NO open
+  // socket — it runs off a timer armed when wsPhase goes "down", which is
+  // exactly what happens once the gate engages and reconnects start being
+  // refused. Drive that timer directly rather than waiting 30s for it.
+  const realSetTimeout = globalThis.setTimeout;
+  let armed: (() => void) | null = null;
+  (globalThis as unknown as { setTimeout: unknown }).setTimeout =
+    ((fn: () => void) => { armed = fn; return 0; }) as unknown as typeof setTimeout;
+  try {
+    for (const [gate, want] of [["login", 0], ["resolving", 0], ["open", 1]] as const) {
+      notified.length = 0;
+      armed = null;
+      useStore.setState({ authGate: "open", notifyEnabled: true, wsPhase: "up" });
+      useStore.setState({ authGate: gate });
+      useStore.getState().setWsPhase("down");
+      assert(armed !== null, `${gate}: the link-down timer was armed`);
+      (armed as unknown as () => void)();
+      eq(notified.length, want, `${gate}: OS notifications fired`);
+    }
+  } finally {
+    (globalThis as unknown as { setTimeout: unknown }).setTimeout = realSetTimeout;
+    useStore.setState({ notifyEnabled: false, wsPhase: "up" });
+  }
 });
 
 // ============================== C. the store stops holding the rig (load-bearing)
@@ -316,16 +402,66 @@ test("the gate takes the rig, not the user's own things", () => {
   eq(s.night, true, "night mode is a property of the person's eyes, not the rig");
 });
 
-test("clearing is a one-shot edge: what the login screen itself raises survives", () => {
+// THE FINDING THAT SENT THIS BACK. Clearing the slices is worth about two
+// seconds on its own. Pressing Sign out does not close the websocket (nothing on
+// that path calls reconnectWs, and api.ts has no 401 interceptor), and the
+// server re-authenticates an already-open /ws only every WS_AUTH_RECHECK_S =
+// 60s — until then it is still serving the PRE-logout principal, unredacted,
+// while hub publishes `status` every 2s.
+test("the rig cannot refill the store through the socket that is still open", () => {
   useStore.setState({ authGate: "open" });
   populateRig();
   useStore.getState().setAuthGate("login");
-  useStore.getState().enqueueToast({ level: "error", title: "Invalid username or password." });
-  // A second, redundant report of the same gate must not wipe it.
+
+  // Everything the open socket would deliver in the next minute.
+  const ts = Date.now() / 1000;
+  const st = useStore.getState();
+  st.handleEvent({
+    type: "status",
+    data: {
+      mode: "zwo-usb",
+      site: { name: "Test Site", latitude: 12.34, longitude: -56.78, is_default: false, horizon_min_deg: 20 },
+      mount: { tracking: true, parked: false, slewing: false, ra_str: "01:02:03", dec_str: "+40:00:00", alt: 62 },
+    } as unknown as Record<string, unknown>,
+    ts,
+  });
+  deliverWeatherAlert();
+  st.handleEvent({ type: "preview", data: { id: 9, url: "/api/preview/9.jpg" } as unknown as Record<string, unknown>, ts });
+  st.handleEvent({ type: "log", data: { level: "error", source: "mount", message: "guiding lost" }, ts });
+  st.handleEvent({ type: "safety", data: { is_safe: false, reason: "rain detected", stale: false } as unknown as Record<string, unknown>, ts });
+  st.handleEvent({ type: "hello", data: { mode: "zwo-usb", site: { name: "Test Site" } } as unknown as Record<string, unknown>, ts });
+  // Not a WS frame: ws.onopen fetches /api/logs and AWAITS it, so this is the
+  // one rig-state write that can land without passing through handleEvent.
+  st.reconcileLogs([
+    { type: "log", ts, data: { level: "error", source: "mount", message: "guiding lost" } },
+  ] as unknown as Parameters<typeof st.reconcileLogs>[0]);
+
+  const s = useStore.getState() as unknown as Record<string, unknown>;
+  const pristine = clearedRigState() as unknown as Record<string, unknown>;
+  for (const k of RIG_STATE_KEYS) {
+    assert(
+      JSON.stringify(s[k]) === JSON.stringify(pristine[k]),
+      `${k} was refilled behind the login screen: ${JSON.stringify(s[k])}`,
+    );
+  }
+  // Named individually because each is a distinct thing the field report was
+  // about: where this observatory is, what its sky is doing, and what it saw.
+  eq(useStore.getState().status, null, "no site name, coordinates, or mount pointing");
+  eq(useStore.getState().weather, null, "no forecast, threshold, or site_lat/site_lon");
+  eq(useStore.getState().previews.length, 0, "no frames of tonight's target");
+  eq(useStore.getState().toasts.length, 0, "and no 'UNSAFE: rain detected' over the sign-in form");
+});
+
+test("clearing is a one-shot edge, not a per-commit sweep", () => {
+  useStore.setState({ authGate: "open" });
+  populateRig();
   useStore.getState().setAuthGate("login");
-  const t = useStore.getState().toasts;
-  eq(t.length, 1, "the login error is still on screen");
-  eq(t[0].title, "Invalid username or password.", "and it is the login's own message");
+  const before = useStore.getState();
+  // A second, redundant report of the same gate is a no-op, not a second clear.
+  useStore.getState().setAuthGate("login");
+  const after = useStore.getState();
+  eq(after.toasts, before.toasts, "the same array object — nothing was rebuilt");
+  eq(after.previews, before.previews, "same here");
 });
 
 await testAsync("a dialog already open when the gate engages is closed, not orphaned", async () => {
@@ -344,16 +480,68 @@ await testAsync("a normal authenticated alert still fires the dialog", async () 
   deliverWeatherAlert();
   eq(useStore.getState().weatherAlertKey, 1, "the null -> alert edge bumped the latch");
 
-  const fired = weatherAlertEffect();
+  resetEffect();
+  const fired = render();
   assert(fired !== null, "the effect fired");
   eq(useStore.getState().confirm?.title, "High cloud forecast tonight", "the warning is on screen");
   useStore.getState().resolveConfirm(false); // acknowledge-only ("ok" mode)
   eq(await (fired as Promise<boolean>), false, "acknowledged");
+
+  // Still once per alert: a re-render that changes neither dep says nothing.
+  eq(render(), null, "the acknowledged alert does not come back on the next render");
+});
+
+// ==================== E. the mandatory notice is deferred, never eaten
+// A notice suppressed because the gate was up must be DELIVERED when the gate
+// lifts, or the "user-required hard notice" is quietly downgraded to "shown if
+// the timing was lucky". Both routes to that are pinned here; note that render()
+// re-runs the body ONLY on a dep change, so the second delivery below happens
+// because the gate is a dependency, not because the test called it twice.
+await testAsync("an alert consumed under the splash is delivered when it lifts", async () => {
+  resetEffect();
+  useStore.setState({ authGate: "open", weather: null, weatherAlertKey: 0, confirm: null });
+  render();
+  // The splash HOLDS rig state (intakeBlocked is false there) but may not speak,
+  // so the latch moves while the dialog cannot fire — a one-way door unless the
+  // effect also watches the gate.
+  useStore.setState({ authGate: "resolving" });
+  deliverWeatherAlert();
+  eq(useStore.getState().weatherAlertKey, 1, "the latch moved under the splash");
+  eq(render(), null, "and nothing was said over it");
+
+  useStore.setState({ authGate: "open" });   // splash lifts; the KEY never changes again
+  const fired = render();
+  assert(fired !== null, "the notice the splash was sitting on is delivered");
+  eq(useStore.getState().confirm?.title, "High cloud forecast tonight", "on screen");
+  useStore.getState().resolveConfirm(false);
+  await fired;
+});
+
+await testAsync("an alert that arrives under the login gate is not consumed at all", async () => {
+  resetEffect();
+  useStore.setState({ authGate: "open", weather: null, weatherAlertKey: 0, confirm: null });
+  useStore.getState().setAuthGate("login");
+  deliverWeatherAlert();                     // dropped at intake — never consumed
+  eq(useStore.getState().weatherAlertKey, 0, "the latch never moved, so it is not spent");
+  eq(useStore.getState().weather, null, "and nothing about tonight is held");
+
+  // Signing back in. App re-fetches /api/weather on the login -> open edge
+  // precisely because nothing else re-delivers it (ws.onopen fetches
+  // config/logs/snapshot, not weather, and the server republishes only every
+  // 15 minutes) — this is that fetch, routed through handleEvent the same way.
+  useStore.getState().setAuthGate("open");
+  deliverWeatherAlert();
+  eq(useStore.getState().weatherAlertKey, 1, "the fresh session gets the edge");
+  const fired = render();
+  assert(fired !== null, "and the high-cloud warning is finally shown");
+  useStore.getState().resolveConfirm(false);
+  await fired;
 });
 
 await testAsync("signing back in re-arms the alert for the NEW session", async () => {
   // After a clear the latch is 0, so the next real alert edge (0 -> 1) fires
   // for the newly signed-in viewer instead of being swallowed as a repeat.
+  resetEffect();
   useStore.setState({ authGate: "open" });
   deliverWeatherAlert();
   useStore.getState().setAuthGate("login");
@@ -361,7 +549,7 @@ await testAsync("signing back in re-arms the alert for the NEW session", async (
   useStore.getState().setAuthGate("open"); // signed in again
   deliverWeatherAlert();
   eq(useStore.getState().weatherAlertKey, 1, "the new session gets its own edge");
-  const fired = weatherAlertEffect();
+  const fired = render();
   assert(fired !== null, "and the dialog fires for them");
   useStore.getState().resolveConfirm(false);
   await fired;
