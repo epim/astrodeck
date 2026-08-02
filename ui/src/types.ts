@@ -391,6 +391,22 @@ export interface FocusEvent {
   state: "running" | "done" | "failed";
   points: FocusPoint[];
   best: { position: number; hfr: number | null } | null;
+  /** What the run measured against what a fit needs — the verdict chip. */
+  message?: string;
+  /**
+   * The run's OWN account of what to change, composed by the code that watched
+   * the sweep. Declared here rather than left to the cast below it, because
+   * this is the field that fixed #114: the panel used to print a generic
+   * sentence keyed off the failure enum and told a user under a clear sky to go
+   * check the sky, while the server had already worked out "try a longer
+   * exposure than 2s, or a richer field" and thrown it away.
+   *
+   * store.ts reads the focus event through `as unknown as FocusEvent`, so an
+   * undeclared field compiles and then silently reads `undefined` if either end
+   * renames it. For a string whose entire job is to be the one true thing on
+   * screen when everything else has failed, that is not a risk worth carrying.
+   */
+  advice?: string | null;
 }
 
 // ----------------------------------------------------------------- monitor (Batch-2)
