@@ -350,6 +350,29 @@ class PlayerOneSdk:
     def get_egain(self, cam_id: int) -> float:
         return self._get(cam_id, POA_EGAIN)
 
+    #: WHAT POASetImageSize DOES TO A WIDTH IT DOES NOT LIKE, read out of the
+    #: vendored DLL rather than assumed: it ROUNDS DOWN AND REPORTS SUCCESS.
+    #:
+    #: astrodeck/vendor/playerone/PlayerOneCamera.dll (V3.10.1, 443,648 bytes,
+    #: sha256 7a6097316b73cb0889dc8ccd65e7c8ef...). `POASetImageSize` (export
+    #: RVA 0x1fbb0) checks the camera id, the open state and w>0/h>0 -- its own
+    #: only returns are 2 INVALID_ID, 4 INVALID_ARGU and 5 NOT_OPENED -- then
+    #: tail-calls the worker at RVA 0x28d50 with edx=width, r8d=height. That
+    #: worker clamps to sensor/bin and then, with no error path at all:
+    #:
+    #:     0x28dcd   83 e6 fc            and  esi, 0FFFFFFFCh   ; width  &= ~3
+    #:     0x28dde   83 e7 fe            and  edi, 0FFFFFFFEh   ; height &= ~1
+    #:     0x28df1   89 b3 78 15 00 00   mov  [rbx+1578h], esi  ; stores the
+    #:     0x28df7   89 bb 7c 15 00 00   mov  [rbx+157Ch], edi  ;   ROUNDED pair
+    #:
+    #: and `POAGetImageSize` (RVA 0x1d430) reads [rax+1578h] back at 0x1d552.
+    #: So the width is silently quantized to a multiple of 4, the height to a
+    #: multiple of 2, and the ONLY way to learn it is get_roi below. This is not
+    #: hypothetical on this rig: the Poseidon-M Pro is 6252x4176, so every bin-2
+    #: full-frame request is 3126 px wide and comes back 3124. See the audit in
+    #: tests/test_camera_roi_readback.py.
+    ALIGN_W, ALIGN_H = 4, 2
+
     def set_image_format(self, cam_id: int, w: int, h: int, bin: int, fmt: int) -> None:
         # Bin FIRST: changing the bin resizes the image, so a size set before it
         # would be thrown away. Start pos then size-relative, format last.
@@ -365,7 +388,12 @@ class PlayerOneSdk:
     def get_roi(self, cam_id: int) -> tuple[int, int, int, int]:
         """(width, height, bin, img_format) the camera is ACTUALLY set to, in
         binned pixels. What was passed to set_image_format is a request; this is
-        what the download's rows are really made of."""
+        what the download's rows are really made of.
+
+        Not a defensive nicety -- the measured behaviour above means these two
+        numbers really do differ, and POASetImageSize returns POA_OK when they
+        do. Calling this is the whole of the camera's honesty about its own
+        geometry."""
         w, h, b, f = (ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int())
         _check(self._d.POAGetImageSize(cam_id, ctypes.byref(w), ctypes.byref(h)),
                "POAGetImageSize")

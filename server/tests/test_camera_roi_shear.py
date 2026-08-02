@@ -13,23 +13,35 @@ how the previous two diagnoses did their damage:
 
 * this mechanism DOES produce a picture that matches the words. Shown below,
   rendered through the real preview encoder, from a real sky frame.
+* the mechanism is REAL on this rig, which the first version of this module
+  could only assume. Player One's ``POASetImageSize`` quantizes the requested
+  width down to a multiple of 4 and the height down to a multiple of 2 and
+  returns POA_OK -- two instructions read out of the vendored DLL and cited by
+  address at ``PlayerOneSdk.ALIGN_W``. The Poseidon-M Pro is 6252x4176, so a
+  full-frame bin-2 exposure asks for 3126 px per row and gets 3124; bin 2 is
+  what autofocus uses by default and what plate solve and rotate-to-PA use on
+  every run. The end-to-end reproduction is in test_camera_roi_readback.py.
 * it CONTRADICTS the other half of the report. ``_shape`` returns ONE array and
   the preview and ``save_fits`` both encode that object, so a shear from this
   mechanism is in the FITS too (``test_the_fits_would_carry_the_same_damage``).
   A clean FITS from the SAME exposure rules this mechanism out outright.
 * so it survives only under an assumption nobody has checked: that the clean
-  FITS and the sheared preview were different exposures. That fits the rest of
-  the account — the frames SAVED that night were bin 1 (6252 px, a multiple of
-  4) and the sheared preview came from a bin-2 loop (3126, not a multiple of 4)
-  — but "fits the account" is exactly the standard the two retracted diagnoses
-  also met.
+  FITS and the sheared preview were different exposures. That is now a narrower
+  thing to check than it was: the quantization bites at bin 2 and bin 4 and NOT
+  at bin 1 or bin 3, so a bin-1 save (6252, untouched) sitting beside a bin-2
+  preview is precisely the pairing it predicts. But "fits the account" is still
+  the standard the two retracted diagnoses also met, and which exposure the
+  reporter opened is not in the report.
 * nor does any ONE mismatch produce all four words. "At an angle" needs a small
   width deficit; "stretched ... and tiled" needs the applied width to be about
   half the requested one. One exposure cannot be both
-  (``test_no_single_mismatch_produces_all_four_of_the_reported_words``).
+  (``test_no_single_mismatch_produces_all_four_of_the_reported_words``). The
+  measured deficit at bin 2 is 2 px per row, which is the first case and not
+  the second, so "tiled" is still unexplained by anything measured so far.
 
-The one measurement that settles it is the width the SDK actually applied for
-that exposure, and reading it needs the camera. Until then #110 stays open.
+The missing measurement is therefore no longer the SDK's rule -- that one is
+settled, and offline. It is which exposure the clean FITS came from, and #110
+stays open on that alone.
 
 WHAT IS ACTUALLY PROVEN HERE. Every array below comes out of the real stack —
 ``AsiCameraAdapter`` with its geometry read-back disabled (the adapter exactly
@@ -360,6 +372,7 @@ CAVEATS = [
     "B/C and D/E are DIFFERENT mismatches. A camera applies one width per exposure, so no single frame shows all four reported words.",
     "D is what the preview actually draws for the half-width case: auto_stretch takes its black point from a 3/4-empty buffer and blows the band out.",
     "E re-stretches D's top quarter to make the tiling legible - a second stretch the product never performs. This is a mechanism, not a finding about the night: the same array goes to the FITS, so a CLEAN FITS from the SAME exposure rules this out.",
+    "The mechanism is real: Player One's POASetImageSize rounds a width down to a multiple of 4 and reports success, so the 6252px Poseidon at bin 2 asks for 3126 and gets 3124. What that produces is B's lean at 2px/row - NOT D. Nothing measured yet produces the tiling.",
 ]
 
 
