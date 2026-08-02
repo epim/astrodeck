@@ -107,18 +107,29 @@ def _guide_preview_defect(data: np.ndarray, cam_name: str) -> tuple[str, int, in
     """``(why this array is not a picture of the guide field, min ADU, max ADU)``.
 
     Measured on the rig 2026-08-01: ``/api/guide/frame.png`` answered HTTP 200
-    with a valid 512x288 PNG in which EVERY PIXEL WAS ZERO, byte-identical
-    across three calls four seconds apart. ``auto_stretch``/``to_png`` map a
-    constant array to a constant image without complaint (median 0, MAD 0 ->
-    the whole transfer function collapses), so the failure arrived dressed as a
-    success: the panel drew a black rectangle and had nothing to say about it,
-    which is the defect the user originally reported, one layer down.
+    with a 223-byte 512x288 PNG (sha acff576d3edc), byte-identical across three
+    calls four seconds apart, and nothing about the request in the run log.
 
-    A real sensor read is never flat. Read noise alone spreads even a shuttered
-    dark frame over several ADU, so ``min == max`` across a megapixel is not a
-    dark sky — it is a buffer that nothing wrote (a download that handed back
-    its own allocation, an exposure that never reached the sensor). Say that,
-    and let the caller refuse, rather than encoding it as a picture.
+    What those bytes prove is exactly one thing: the source array was CONSTANT.
+    Re-encoded offline, ``to_png(a, stretch=True, max_width=512)`` returns those
+    same 223 bytes for a constant array of 0, of 700 and of 60000 alike, and for
+    1920x1080 and 512x288 alike — ``auto_stretch`` collapses on median 0 / MAD 0
+    whatever the level, and the resize maps every 16:9-ish shape onto 512x288.
+    So the constant's VALUE and the frame's SHAPE are NOT recoverable from the
+    response. (The one value the bytes do exclude is full scale: a constant
+    65535 stretches to white and encodes as 768 quite different bytes.) The
+    first repair read this evidence as "all zero, 1920x1080, therefore a buffer
+    nothing wrote"; that was a reconstruction wearing a measurement's clothes,
+    and it is retracted here.
+
+    Constant is enough to refuse on, and it is all we get to say. A frame with
+    no variation contains no picture whatever produced it, and this function
+    cannot see which: a covered sensor whose read noise clips against a black
+    level of 0 (see ``_expose_guide_preview`` — ZWO maps the offset argument
+    onto ASI_OFFSET, so 0 really does clip), a sensor saturated by daylight, and
+    a download that handed back its own allocation all arrive here identical.
+    Naming one of them and sending the user to reconnect working hardware is
+    #114 rebuilt on the guide panel.
 
     Deliberately NOT a brightness test: a genuinely faint guide field at low
     gain is a legitimate frame and must still be served. The signal is variance,
@@ -130,12 +141,50 @@ def _guide_preview_defect(data: np.ndarray, cam_name: str) -> tuple[str, int, in
                 "not an image"), 0, 0
     lo, hi = int(a.min()), int(a.max())
     if lo == hi:
-        return (f"{cam_name} reported success but every one of its "
-                f"{a.shape[1]}x{a.shape[0]} pixels reads {lo}. A sensor read "
-                "always carries read noise, so nothing was exposed or nothing "
-                "was downloaded — reconnect the guide camera under Equipment."
-                ), lo, hi
+        return (f"{cam_name} returned a frame in which every one of its "
+                f"{a.shape[1]}x{a.shape[0]} pixels reads {lo} — no variation at "
+                "all, so there is no image in it. The frame does not say why: a "
+                "covered or swamped sensor and a download that handed back an "
+                "empty buffer arrive here identical. Uncover the guide scope and "
+                "retry; if it stays flat, reconnect the guide camera under "
+                "Equipment."), lo, hi
     return "", lo, hi
+
+
+def _guide_preview_encoded_defect(
+        png: bytes, source_name: str) -> tuple[str, tuple[int, int] | None]:
+    """``(why these encoded bytes are not a picture, the levels we saw or None)``.
+
+    The camera branch judges ADU before encoding; a guider hands back a PNG it
+    encoded itself, so the same question has to be asked one step later. Review
+    of the first repair built a fake guider whose ``guide_frame()`` returned an
+    all-black PNG: the hub served it, published ``preview_ok: True`` and wrote
+    no log line — the same black rectangle, surviving untouched on every rig
+    that runs PHD2, NINA, the sim or the native guider, now with a positive
+    claim on top of it.
+
+    Failing to DECODE is a fact about us, not about the image, so that returns
+    ``None`` levels and no refusal: the caller serves the bytes (a browser may
+    well render what Pillow would not open) and simply declines to claim a frame
+    it never looked at.
+
+    The levels are the guider's already-stretched 8-bit display values, not ADU
+    — enough to answer "is this a picture", which is the only question here.
+    """
+    try:
+        import io as _io
+
+        from PIL import Image
+        with Image.open(_io.BytesIO(png)) as im:
+            lo, hi = im.convert("L").getextrema()
+    except Exception:  # noqa: BLE001 — our blindness is not the guider's defect
+        return "", None
+    if lo == hi:
+        return (f"{source_name} returned an image in which every pixel reads "
+                f"{lo} — no variation at all, so there is no guide field in it. "
+                f"This panel only forwards {source_name}'s own view, so what is "
+                f"wrong is visible in {source_name}, not here."), (lo, hi)
+    return "", (lo, hi)
 
 
 #: SafetyMonitor poll cadence and per-read timeout (Batch 4b). The poller runs on
@@ -1041,40 +1090,69 @@ class Hub:
         Every exit also records its outcome for ``status.guide_camera``, because
         a 404 body reaches only the code that reads it and the panel reads an
         ``<img>``. THREE outcomes, not two: a refusal publishes ``preview_reason``
-        and a delivered frame publishes ``preview_ok``, so the absence of both
-        can mean the one thing it should — nobody has asked this camera yet.
+        and a frame we have LOOKED AT publishes ``preview_ok``, so the absence of
+        both can mean the one thing it should — nobody has asked this camera yet.
         Recording only refusals made a success carry no information at all, and
         an all-black rectangle rode that silence out to the panel on 2026-08-01.
+
+        ``preview_ok`` is deliberately narrower than "we returned bytes": a
+        guider PNG we could not decode is still served, but publishing a verdict
+        on pixels nobody inspected would be the same defect pointing the other
+        way.
         """
-        png, reason = await self._guide_preview_source()
+        png, reason, verified = await self._guide_preview_source()
         now = time.monotonic()
         self._guide_preview_note = (reason, now)
-        if png:
+        if png and verified:
             self._guide_preview_ok_at = now
         return png, reason
 
-    async def _guide_preview_source(self) -> tuple[bytes | None, str]:
-        """Source selection for ``guide_preview_png`` (which owns the note)."""
+    async def _guide_preview_source(self) -> tuple[bytes | None, str, bool]:
+        """``(png, refusal, were the pixels checked)`` for ``guide_preview_png``,
+        which owns the note. The third element exists because only some sources
+        can be inspected, and a claim is only allowed where one was."""
         g = self.guider
         if g is not None and getattr(g, "connected", False):
             try:
                 png = await g.guide_frame()
             except Exception:  # noqa: BLE001 — a preview must not 500 the panel
                 png = None
-            if png:
-                return png, ""
-            return None, f"{g.name} is connected but exposes no image"
+            if not png:
+                reason = f"{g.name} is connected but exposes no image"
+                self._log_guide_preview(f"guider-empty:{g.name}", "warning",
+                                        f"guide preview: {reason}")
+                return None, reason, False
+            # The guider path used to end at ``if png: return png`` — no check,
+            # no log line — so an all-black guide frame reached the panel exactly
+            # as the camera's empty buffer did. Same test, one step later.
+            defect, levels = _guide_preview_encoded_defect(png, g.name)
+            if defect:
+                self._log_guide_preview(f"guider-flat:{g.name}", "warning",
+                                        f"guide preview: {defect}")
+                return None, defect, True
+            if levels is None:
+                self._log_guide_preview(
+                    f"guider-unchecked:{g.name}", "info",
+                    f"guide preview: {len(png)} bytes from {g.name}, served "
+                    "unchecked — they would not decode here, so whether they "
+                    "carry an image is not something this server knows")
+                return png, "", False
+            self._log_guide_preview(
+                f"guider-ok:{g.name}", "info",
+                f"guide preview: {len(png)} bytes from {g.name}, display levels "
+                f"{levels[0]}..{levels[1]}")
+            return png, "", True
 
         cam = self.devices.get("guide_camera")
         if cam is None or not getattr(cam, "connected", False):
             return None, ("no guide camera and no guider are connected — assign "
-                          "a guide camera under Equipment, or start PHD2/NINA")
+                          "a guide camera under Equipment, or start PHD2/NINA"), False
         # One physical camera filling both roles (the OAG-style fallback
         # native_guider() also allows). Exposing it here would take the sensor
         # out from under the imaging train mid-sequence.
         if cam is self.devices.get("camera"):
             return None, (f"{cam.name} is also the imaging camera — its frames "
-                          "show in the capture preview, not here")
+                          "show in the capture preview, not here"), False
         # NO busy_label gate here, deliberately. busy_label is a HUB-WIDE label
         # for the IMAGING train (goto/solve/autofocus/capture/looping), and this
         # line is only reached once we know the guide camera is a different
@@ -1098,9 +1176,11 @@ class Hub:
         # mid-frame cancels its own wait, never the exposure.
         return await asyncio.shield(task)
 
-    async def _expose_guide_preview(self, cam) -> tuple[bytes | None, str]:
+    async def _expose_guide_preview(self, cam) -> tuple[bytes | None, str, bool]:
         """ONE preview exposure, encoded. Separate coroutine so overlapping
-        callers can share a single in-flight frame. Never raises."""
+        callers can share a single in-flight frame. Never raises. Returns
+        ``(png, refusal, checked)``; ``checked`` is always True here because this
+        branch has the raw ADU and always looks at them."""
         # Clamp to the ceiling the device itself reported (Camera.max_gain, set
         # from the SDK's gain_range at connect). 0 means "this backend does not
         # report a ceiling" — NINA without GainMax, an Alpaca camera without
@@ -1108,6 +1188,12 @@ class Hub:
         # goes through unchanged and the driver gets to refuse it by name.
         ceiling = int(getattr(cam, "max_gain", 0) or 0)
         gain = min(GUIDE_PREVIEW_GAIN, ceiling) if ceiling > 0 else GUIDE_PREVIEW_GAIN
+        # offset 0 is the black level, not a no-op: ZWO writes this argument
+        # straight to ASI_OFFSET, so a covered sensor's read noise clips against
+        # zero and comes back genuinely flat. That is a real way to reach the
+        # refusal below WITHOUT anything being broken, which is why the refusal
+        # does not get to say what went wrong. The requested settings go in the
+        # log line so the next reader can tell that case from the others.
         try:
             frame = await cam.expose(GUIDE_PREVIEW_EXPOSURE_S, gain, 0, binning=1)
         except Exception as exc:  # noqa: BLE001
@@ -1116,27 +1202,31 @@ class Hub:
             reason = f"{cam.name} could not deliver a frame: {exc}"
             self._log_guide_preview(f"error:{exc}", "warning",
                                     f"guide preview: {reason}")
-            return None, reason
+            return None, reason, False
         # A SUCCESSFUL call is not the same thing as a frame. On 2026-08-01 this
-        # branch encoded an array in which every pixel was zero and served it as
-        # HTTP 200 — a black rectangle with no explanation, indistinguishable
-        # from the "nothing happens" the user reported in the first place.
+        # branch encoded a CONSTANT array (see _guide_preview_defect for what the
+        # served bytes do and do not pin down) and served it as HTTP 200 — a black
+        # rectangle with no explanation, indistinguishable from the "nothing
+        # happens" the user reported in the first place.
         data = np.asarray(frame.data)
         defect, lo, hi = _guide_preview_defect(data, cam.name)
         if defect:
-            self._log_guide_preview("defect", "warning", f"guide preview: {defect}")
-            return None, defect
+            self._log_guide_preview(
+                "defect", "warning",
+                f"guide preview: {defect} (requested {GUIDE_PREVIEW_EXPOSURE_S}s "
+                f"at gain {gain}, offset 0)")
+            return None, defect, True
         try:
             png = to_png(data, stretch=True, max_width=512)
         except Exception as exc:  # noqa: BLE001
             reason = f"{cam.name} returned a frame that would not encode: {exc}"
             self._log_guide_preview("encode", "warning", f"guide preview: {reason}")
-            return None, reason
+            return None, reason, False
         self._log_guide_preview(
             "ok", "info",
             f"guide preview: {cam.name} {data.shape[1]}x{data.shape[0]}, "
             f"{lo}..{hi} ADU at gain {gain}")
-        return png, ""
+        return png, "", True
 
     def _log_guide_preview(self, key: str, level: str, message: str) -> None:
         """Log a preview outcome ONCE per change of outcome.
@@ -1152,14 +1242,16 @@ class Hub:
         bus.log(level, message, "guide")
 
     def guide_preview_ok(self) -> bool:
-        """True while the most recent preview actually returned a picture.
+        """True while the most recent preview returned pixels we LOOKED AT and
+        found to carry an image.
 
         Three states, not two: a ``preview_reason`` on status means a refusal we
-        can explain, this means a real frame arrived, and NEITHER means the
-        camera has not been asked yet (or the last answer is too old to still
-        describe it). Success used to publish exactly what an unasked camera
-        published — nothing — so the panel could not tell a working preview from
-        one that had never run."""
+        can explain, this means a frame we checked, and NEITHER means the camera
+        has not been asked yet (or the last answer is too old to still describe
+        it, or the bytes were served without our being able to inspect them).
+        Success used to publish exactly what an unasked camera published —
+        nothing — so the panel could not tell a working preview from one that had
+        never run."""
         at = self._guide_preview_ok_at
         return at is not None and time.monotonic() - at <= GUIDE_PREVIEW_NOTE_TTL_S
 
@@ -3490,7 +3582,9 @@ class Hub:
                 gc = gc | {"preview_reason": note}
             elif self.guide_preview_ok():
                 # The third state. Neither key = nobody has asked this camera
-                # yet, which is a different thing from a frame that arrived.
+                # recently, which is a different thing from a frame that arrived
+                # — and this key is only ever set for pixels the server actually
+                # inspected, never merely for bytes it passed along.
                 gc = gc | {"preview_ok": True}
             out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:

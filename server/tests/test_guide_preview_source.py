@@ -9,13 +9,19 @@ Equipment screen even tells the user there is "no guider device to assign here".
 So the panel 404'd forever on a rig that had everything it needed.
 
 Second half, measured on the rig 2026-08-01: the route now answers, and what it
-answers with is HTTP 200, 223 bytes, a valid 512x288 PNG in which EVERY PIXEL IS
-ZERO, byte-identical across three calls four seconds apart. The camera was
-connected, no guide loop was running, and nothing about the request reached the
-run log. So the source selection reached its SUCCESS branch and encoded an array
-that nothing had written: ``auto_stretch`` maps a constant array to a constant
-image without complaint (median 0, MAD 0), and a black rectangle with no
-explanation is the same defect the user first reported, one layer down.
+answers with is HTTP 200, 223 bytes, a valid 512x288 PNG that renders black,
+byte-identical across three calls four seconds apart. The camera was connected,
+no guide loop was running, and nothing about the request reached the run log. So
+the source selection reached its SUCCESS branch and encoded a CONSTANT array:
+``auto_stretch`` maps any constant array below full scale to the same black
+image (median 0, MAD 0), and a black rectangle with no explanation is the same
+defect the user first reported, one layer down.
+
+What the 223 bytes do NOT say is which constant, or what shape — see
+``test_the_served_bytes_identify_a_constant_array_and_nothing_more``. The first
+repair read them as "all zero at 1920x1080, so nothing wrote the buffer" and
+shipped a refusal that asserted that cause and prescribed a reconnect; the tests
+below hold it to what it can actually see.
 
 ``Hub.guide_preview_png`` is the source-selection rule, and these are its edges.
 Nothing here needs hardware.
@@ -88,6 +94,19 @@ class _Guider:
 
     def __init__(self, png: bytes | None): self.png = png
     async def guide_frame(self): return self.png
+
+    def stats(self):
+        # poll_status publishes the guider's own stats block; nothing in this
+        # file asserts on it, it just has to exist for status to build.
+        import types
+        return types.SimpleNamespace(state="idle")
+
+
+def _guider_png(data) -> bytes:
+    """What a guider hands back: an image it has already stretched and encoded
+    itself. The hub gets no ADU from this path, only bytes."""
+    from astrodeck.imaging.processing import to_png
+    return to_png(np.asarray(data), stretch=True, max_width=256)
 
 
 async def test_a_connected_guide_camera_serves_the_preview_with_no_guider():
@@ -340,32 +359,84 @@ def test_the_endpoint_passes_the_reason_through_as_the_404_detail(detail, tmp_pa
 # ------------------------------------- a success that is not a picture (#115)
 #
 # Everything above asks "did we ask the right device". This block asks the next
-# question, the one the rig answered on 2026-08-01: what came back was a
-# 200 with an all-zero PNG. An exposure call that returns is not the same event
+# question, the one the rig answered on 2026-08-01: what came back was a 200 with
+# a PNG that renders black. An exposure call that returns is not the same event
 # as a frame, and the encoder cannot tell the difference — a constant array
 # stretches to a constant image and looks exactly like a legitimately dark one.
 
 
-async def test_an_all_zero_frame_is_refused_instead_of_encoded_as_black():
-    """MEASURED: 512x288 PNG, every pixel zero, byte-identical across three
-    calls four seconds apart. Real sensor noise varies frame to frame, so that
-    was never an exposure — it was the download handing back its own untouched
-    allocation. Encoding it produced a black rectangle the panel could not
-    explain, which is indistinguishable from the "nothing happens" the whole
-    ticket is about."""
+def test_the_served_bytes_identify_a_constant_array_and_nothing_more():
+    """The evidence, pinned, because the first repair over-read it and the
+    over-reading was load-bearing: it chose the refusal's wording.
+
+    223 bytes at 512x288 says CONSTANT. It does not say which constant (0 and
+    700 encode identically) and it does not say what shape (1920x1080 and
+    512x288 encode identically). The only value it rules out is full scale.
+    Anyone tempted to write "the buffer was all zero" back into this module gets
+    stopped here."""
+    from astrodeck.imaging.processing import to_png
+
+    def enc(a):
+        return to_png(a, stretch=True, max_width=512)
+
+    served = enc(np.zeros((1080, 1920), dtype="uint16"))
+    assert len(served) == 223
+    assert enc(np.full((1080, 1920), 700, dtype="uint16")) == served, \
+        "the value of the constant is not recoverable from the response"
+    assert enc(np.zeros((288, 512), dtype="uint16")) == served, \
+        "the shape of the frame is not recoverable either"
+    assert enc(np.full((1080, 1920), 65535, dtype="uint16")) != served, \
+        "full scale is the one value the bytes exclude"
+
+
+async def test_a_constant_frame_is_refused_instead_of_encoded_as_black():
+    """MEASURED: a 512x288 PNG that renders black, byte-identical across three
+    calls four seconds apart. A frame with no variation carries no picture, and
+    encoding it produced a black rectangle the panel could not explain — which is
+    indistinguishable from the "nothing happens" the whole ticket is about."""
     hub = Hub()
     cam = _FakeGuideCam()
-    # 1920x1080 is the shape that came off the rig — a 512-wide preview of it is
-    # exactly the 512x288 PNG that was served.
     cam.data = np.zeros((1080, 1920), dtype="uint16")
     hub.devices["guide_camera"] = cam
 
     png, reason = await hub.guide_preview_png()
-    assert png is None, "an untouched buffer must not be served as a picture"
+    assert png is None, "a frame with no variation must not be served as a picture"
     assert "ZWO ASI guide" in reason        # which instrument
-    assert "1920x1080" in reason            # and what it actually returned
+    assert "1920x1080" in reason            # what IT returned, measured here
     assert "reads 0" in reason
     assert "Equipment" in reason, "a blocked panel has to name a way forward"
+
+
+async def test_the_refusal_reports_the_measurement_and_declines_the_diagnosis():
+    """#114, one screen over: the shipped text said "A sensor read always carries
+    read noise, so nothing was exposed or nothing was downloaded — reconnect the
+    guide camera under Equipment", which is a cause and a cure invented from a
+    signal that cannot distinguish them.
+
+    Two ways to get here with nothing broken. The preview passes offset 0, which
+    ZWO writes to ASI_OFFSET (the black level), so a capped sensor clips its read
+    noise against zero and legitimately comes back flat — cap the scope indoors to
+    check the camera and the old text told you the camera never exposed and sent
+    you to reconnect working hardware. And a sensor saturated in daylight WAS
+    exposed and WAS downloaded, so every clause of that sentence was false.
+
+    The measurement is the finding. The cause is not visible from here."""
+    for name, data in (("dust cap on, black level 0",
+                        np.zeros((1080, 1920), dtype="uint16")),
+                       ("daylight, fully saturated",
+                        np.full((1080, 1920), 65535, dtype="uint16"))):
+        hub = Hub()
+        cam = _FakeGuideCam()
+        cam.data = data
+        hub.devices["guide_camera"] = cam
+        png, reason = await hub.guide_preview_png()
+
+        assert png is None, name
+        assert "no variation" in reason, name          # what was measured
+        assert "does not say why" in reason, name      # and what was not
+        for invented in ("nothing was exposed", "nothing was downloaded",
+                         "always carries read noise", "reported success"):
+            assert invented not in reason, f"{name}: {invented!r} is a guess"
 
 
 async def test_a_uniformly_saturated_frame_is_refused_on_the_same_evidence():
@@ -422,7 +493,7 @@ async def test_the_empty_buffer_reaches_the_panel_through_status():
 
     await hub.guide_preview_png()
     st = await hub.poll_status()
-    assert "nothing was exposed" in st["guide_camera"]["preview_reason"]
+    assert "no variation" in st["guide_camera"]["preview_reason"]
     assert "preview_ok" not in st["guide_camera"]
 
 
@@ -505,7 +576,11 @@ async def test_the_preview_writes_one_log_line_per_change_of_outcome():
     await hub.guide_preview_png()
     lines = guide_lines()
     assert len(lines) == 2, "the moment it stops being a frame IS news"
-    assert "nothing was exposed" in lines[1]
+    assert "no variation" in lines[1]
+    # The exposure REQUEST belongs in the log, not in the user-facing refusal:
+    # offset 0 is the ZWO black level, and "flat at offset 0" is the difference
+    # between a capped sensor and a dead one for whoever reads this later.
+    assert "offset 0" in lines[1] and "gain" in lines[1]
 
 
 # ------------------------------- the shared exposure vs a reconnect (#115)
@@ -536,3 +611,89 @@ async def test_a_reconnected_camera_is_exposed_rather_than_joining_the_old_one()
 
     old.gate.set()
     await first
+
+
+# ----------------------- the OTHER source has the same defect (#115 review)
+#
+# Everything above drives the guide CAMERA. Every rig running PHD2, NINA, the
+# sim or the native guider takes the branch above it, and the first repair left
+# that branch at "if png: return png" — no inspection, no log line — while the
+# same commit began publishing preview_ok for it. So on those rigs the black
+# rectangle survived AND acquired a positive claim that a frame had arrived,
+# which is worse than the silence it replaced.
+
+
+async def test_a_guider_that_returns_a_blank_image_is_refused_like_the_camera():
+    """PHD2 handing back a uniform star image is the same event as an empty
+    camera buffer, one encode later: bytes that render as a rectangle. The hub
+    only ever sees a guider's frame already stretched and encoded, so it asks
+    the same question of the pixels it can decode."""
+    from astrodeck.events import bus
+
+    hub = Hub()
+    hub.guider = _Guider(_guider_png(np.zeros((60, 60), dtype="uint16")))
+    at = len(bus.log_history)
+
+    png, reason = await hub.guide_preview_png()
+    assert png is None, "an image with no variation is not a guide field"
+    assert "PHD2" in reason and "no variation" in reason
+    assert "reads 0" in reason
+    guide_lines = [e["data"]["message"] for e in bus.log_history[at:]
+                   if e["data"]["source"] == "guide"]
+    assert guide_lines, "the guider path used to leave no trace at all"
+
+
+async def test_a_blank_guider_image_never_publishes_that_a_frame_arrived():
+    """The exact repro from review: a guider whose ``guide_frame()`` returns an
+    all-black PNG got ``preview_ok: True`` on status. A panel checking that key
+    would have been told the preview was working while it showed a black
+    rectangle."""
+    hub = Hub()
+    hub.guider = _Guider(_guider_png(np.zeros((60, 60), dtype="uint16")))
+
+    await hub.guide_preview_png()
+    gc = (await hub.poll_status())["guide_camera"]
+    assert "preview_ok" not in gc
+    assert "no variation" in gc["preview_reason"]
+
+
+async def test_a_guider_image_with_a_star_in_it_is_served_and_vouched_for():
+    """The other half of the same rule: a real guider frame must still reach the
+    panel, and must be distinguishable from a guider nobody has asked yet."""
+    from astrodeck.events import bus
+
+    star = np.full((60, 60), 300, dtype="uint16")
+    star[30, 30] = 40000
+    hub = Hub()
+    hub.guider = _Guider(_guider_png(star))
+    at = len(bus.log_history)
+
+    png, reason = await hub.guide_preview_png()
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", reason
+    assert reason == ""
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is True
+    lines = [e["data"]["message"] for e in bus.log_history[at:]
+             if e["data"]["source"] == "guide"]
+    # The level SPAN is what separates a picture from a rectangle, the same way
+    # the ADU range does on the camera path. Its exact ends belong to the display
+    # stretch, so assert the span exists rather than pinning the pipeline.
+    assert len(lines) == 1 and "PHD2" in lines[0]
+    lo, hi = (int(x) for x in lines[0].split("display levels ")[1].split(".."))
+    assert lo < hi
+
+
+async def test_bytes_the_server_cannot_decode_are_served_but_not_vouched_for():
+    """Pillow failing to open the bytes is a fact about this server, not about
+    the guider's image — a browser may well render what we could not read. So
+    forward them (refusing on our own blindness would blank a working panel) and
+    do NOT publish preview_ok, which would be a verdict on pixels nobody looked
+    at. Neither key is the honest answer here: nothing recent is known."""
+    hub = Hub()
+    hub.guider = _Guider(b"\x89PNG\r\n\x1a\nnot really a png")
+
+    png, reason = await hub.guide_preview_png()
+    assert png == b"\x89PNG\r\n\x1a\nnot really a png"
+    assert reason == ""
+    gc = (await hub.poll_status())["guide_camera"]
+    assert "preview_ok" not in gc and "preview_reason" not in gc
