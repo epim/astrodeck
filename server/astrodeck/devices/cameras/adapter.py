@@ -99,3 +99,21 @@ class CameraAdapter(ABC):
 
     def set_dew_heater(self, power: int) -> None:
         raise DeviceError("camera has no dew heater")
+
+    def applied_roi(self) -> "ROI | None":
+        """The geometry the sensor ACTUALLY applied for the exposure in flight,
+        in the same unbinned-pixel units as the request, or None when this brand
+        cannot be asked.
+
+        A camera may legitimately give you a different frame from the one you
+        asked for: widths get rounded to an alignment, subframes get clamped to
+        the sensor, a bin change resets the size. What it must not do is let the
+        caller keep believing the request, because the download is laid out at
+        ``w // bin`` pixels per row — lay rows of one width out at another and
+        every row starts a constant offset into the last, which is a picture
+        sheared diagonally and repeated, produced with no error anywhere
+        (rendered from a real sky frame in tests/test_camera_roi_shear.py).
+
+        None means the engine has NOTHING to check the request against, so it
+        falls back to it. It does not mean the request was honoured."""
+        return None
