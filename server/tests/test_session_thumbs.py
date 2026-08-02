@@ -164,7 +164,7 @@ async def test_thumb_render_backpressure_drops_when_saturated(sim_hub, monkeypat
     assert all(f.thumb is None for f in s.frames[cap:])
 
 
-async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch):
+async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch, bus_lines):
     """Task 6 review (Important #1 — untracked tasks): ``_render_thumb`` used
     to be spawned via bare ``asyncio.create_task`` with no reference kept, so
     ``abort()`` could neither cancel nor await a pending render -> an
@@ -189,8 +189,12 @@ async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch):
         assert len(eng._thumb_tasks) == 1
         pending_task = next(iter(eng._thumb_tasks))
 
-        warnings_before = len([e for e in bus.log_history
-                               if e["data"].get("level") == "warning"])
+        # bus_lines, NOT bus.log_history: _history is a deque(maxlen=200) shared
+        # by the whole process, so this equality breaks when an unrelated suite
+        # fills the ring and an old warning ages out between the two counts --
+        # red for a reason outside this module. The captured list never evicts.
+        warnings_before = len([1 for lvl, _m, _s in bus_lines
+                               if lvl == "warning"])
         t0 = asyncio.get_event_loop().time()
         await asyncio.wait_for(eng.abort(), timeout=5.0)
         dt = asyncio.get_event_loop().time() - t0
@@ -198,8 +202,8 @@ async def test_abort_drains_pending_thumb_tasks(sim_hub, monkeypatch):
 
         assert pending_task.done()
         assert len(eng._thumb_tasks) == 0      # drained -- nothing orphaned
-        warnings_after = len([e for e in bus.log_history
-                              if e["data"].get("level") == "warning"])
+        warnings_after = len([1 for lvl, _m, _s in bus_lines
+                              if lvl == "warning"])
         assert warnings_after == warnings_before
     finally:
         gate.set()
