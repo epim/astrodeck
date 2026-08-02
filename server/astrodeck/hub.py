@@ -375,12 +375,20 @@ class Hub:
         # <img> cannot read a 404 body, so the reason has to travel some other
         # way or the panel is back to saying "unavailable" about everything.
         self._guide_preview_note: tuple[str, float] = ("", 0.0)
-        # monotonic time of the last preview that actually returned a picture.
-        # THIRD state, and the reason it exists: a refusal publishes a reason and
-        # a success publishes nothing, so before this a delivered frame and a
-        # camera nobody had asked yet looked identical on status — which is how
-        # an all-black rectangle passed for a preview (2026-08-01).
-        self._guide_preview_ok_at: float | None = None
+        # (were the pixels CHECKED, monotonic time) of the last preview that
+        # returned a picture; None once nothing recent has. THIRD state, and the
+        # reason it exists: a refusal publishes a reason and a success published
+        # nothing, so a delivered frame and a camera nobody had asked yet looked
+        # identical on status — which is how an all-black rectangle passed for a
+        # preview (2026-08-01).
+        #
+        # The bool is a fourth outcome the first version of this collapsed back
+        # into the third: bytes we forwarded but could not decode published
+        # exactly what an unasked camera published. That is the same defect one
+        # level down — "we looked and made no claim" and "nobody looked" are
+        # different facts, and only one of them is a reason to distrust the
+        # picture on screen.
+        self._guide_preview_frame: tuple[bool, float] | None = None
         # the outcome we last wrote to the run log, so the 2.5s poll logs one
         # line per CHANGE instead of burying the log or (as on 2026-08-01)
         # leaving no trace of the exposure at all.
@@ -1087,24 +1095,51 @@ class Hub:
         guide camera ourselves.
 
         Never raises — the caller turns (None, reason) into a 404, never a 500.
-        Every exit also records its outcome for ``status.guide_camera``, because
-        a 404 body reaches only the code that reads it and the panel reads an
-        ``<img>``. THREE outcomes, not two: a refusal publishes ``preview_reason``
-        and a frame we have LOOKED AT publishes ``preview_ok``, so the absence of
-        both can mean the one thing it should — nobody has asked this camera yet.
-        Recording only refusals made a success carry no information at all, and
-        an all-black rectangle rode that silence out to the panel on 2026-08-01.
+        That promise is kept by the guard below, not by hope: before it,
+        ``_expose_guide_preview`` guarded only ``expose()`` and ``to_png()``, so a
+        camera adapter that answered ``None`` instead of raising (measured here:
+        ``AttributeError: 'NoneType' object has no attribute 'data'``) escaped as
+        a 500 with no log line and left ``status.guide_camera`` carrying exactly
+        ``{name, connected}`` — which is, byte for byte, the status block
+        measured on the rig on 2026-08-01. A crash and a camera nobody asked are
+        not allowed to look the same.
 
-        ``preview_ok`` is deliberately narrower than "we returned bytes": a
-        guider PNG we could not decode is still served, but publishing a verdict
-        on pixels nobody inspected would be the same defect pointing the other
-        way.
+        Every exit records its outcome for ``status.guide_camera``, because a 404
+        body reaches only the code that reads it and the panel reads an ``<img>``.
+        FOUR outcomes, published as three keys and a silence:
+        ``preview_reason`` = a refusal we can explain; ``preview_ok: True`` = a
+        frame whose pixels we checked; ``preview_ok: False`` = bytes we forwarded
+        without being able to inspect them; neither key = nobody has asked this
+        camera recently. ``preview_ok`` is deliberately narrower than "we
+        returned bytes" — publishing a verdict on pixels nobody inspected would
+        be the same defect pointing the other way.
         """
-        png, reason, verified = await self._guide_preview_source()
+        try:
+            png, reason, verified = await self._guide_preview_source()
+        except Exception as exc:  # noqa: BLE001 — the promise above is the point
+            # Name the source the way the source order does: the guider owns the
+            # sensor when it is connected, else the guide camera. Guarded in turn
+            # because reading a name off a device that has just failed is not the
+            # place to acquire a second way to raise.
+            try:
+                src = (getattr(self.guider, "name", None)
+                       if self.guider is not None
+                       and getattr(self.guider, "connected", False)
+                       else getattr(self.devices.get("guide_camera"), "name", None))
+            except Exception:  # noqa: BLE001
+                src = None
+            png, reason, verified = None, (
+                f"the server failed while getting a frame from "
+                f"{src or 'the guide camera'}: {exc}"), False
+            self._log_guide_preview(f"crash:{exc}", "warning",
+                                    f"guide preview: {reason}")
         now = time.monotonic()
         self._guide_preview_note = (reason, now)
-        if png and verified:
-            self._guide_preview_ok_at = now
+        # Set on EVERY delivery, cleared on every non-delivery. Latching it only
+        # on success would let a checked frame from 9s ago vouch for the
+        # truncated bytes the panel is showing now — a stale claim inside the
+        # TTL, which is the shape of bug this whole slice removes.
+        self._guide_preview_frame = (verified, now) if png else None
         return png, reason
 
     async def _guide_preview_source(self) -> tuple[bytes | None, str, bool]:
@@ -1241,19 +1276,26 @@ class Hub:
         self._guide_preview_logged = key
         bus.log(level, message, "guide")
 
-    def guide_preview_ok(self) -> bool:
-        """True while the most recent preview returned pixels we LOOKED AT and
-        found to carry an image.
+    def guide_preview_verdict(self) -> bool | None:
+        """What the last recent preview delivery was worth, in three values.
 
-        Three states, not two: a ``preview_reason`` on status means a refusal we
-        can explain, this means a frame we checked, and NEITHER means the camera
-        has not been asked yet (or the last answer is too old to still describe
-        it, or the bytes were served without our being able to inspect them).
-        Success used to publish exactly what an unasked camera published —
-        nothing — so the panel could not tell a working preview from one that had
-        never run."""
-        at = self._guide_preview_ok_at
-        return at is not None and time.monotonic() - at <= GUIDE_PREVIEW_NOTE_TTL_S
+        ``True``  — a picture whose pixels we decoded and found to vary.
+        ``False`` — bytes we forwarded and could NOT inspect, so we make no claim
+                    about them; the browser may render what Pillow would not open.
+        ``None``  — nobody has asked this camera recently (or the last answer is
+                    older than the note TTL, or it was a refusal, which travels as
+                    ``preview_reason`` instead).
+
+        Three-valued rather than a bool because the bool version collapsed the
+        middle case into the last one: "we looked and could not tell" published
+        exactly what "nobody looked" published, and a panel showing a rectangle
+        could not tell which it was holding. Success originally published nothing
+        at all, which is how an unexplained black frame reached the screen on
+        2026-08-01 with no way to check it against anything."""
+        seen = self._guide_preview_frame
+        if seen is None or time.monotonic() - seen[1] > GUIDE_PREVIEW_NOTE_TTL_S:
+            return None
+        return seen[0]
 
     def guide_preview_note(self) -> str:
         """The most recent preview refusal, while it is still current (or "").
@@ -3580,12 +3622,16 @@ class Hub:
             note = self.guide_preview_note()
             if note:
                 gc = gc | {"preview_reason": note}
-            elif self.guide_preview_ok():
-                # The third state. Neither key = nobody has asked this camera
-                # recently, which is a different thing from a frame that arrived
-                # — and this key is only ever set for pixels the server actually
-                # inspected, never merely for bytes it passed along.
-                gc = gc | {"preview_ok": True}
+            else:
+                # The other two states a delivery can be in. `True` = pixels the
+                # server decoded and found to vary; `False` = bytes it forwarded
+                # without being able to look at them, which is a real thing to
+                # know while a rectangle is on screen. Neither key = nobody has
+                # asked this camera recently — different again, and only honest
+                # as long as a delivered frame says something.
+                verdict = self.guide_preview_verdict()
+                if verdict is not None:
+                    gc = gc | {"preview_ok": verdict}
             out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:
             c = self.nina_client
