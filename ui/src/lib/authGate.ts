@@ -115,6 +115,13 @@ export function intakeBlocked(gate: AuthGate): boolean {
  * This one answers to a DEVELOPER reading a suppressed confirm or a dropped
  * frame, never to the gated viewer: telling them anything is the bug this whole
  * module exists for. null when nothing is blocked.
+ *
+ * NAMES: an early review draft of #117 referred to `dialogsBlocked()` and
+ * `dialogBlockedReason()`. No such exports were ever written — the pair shipped
+ * as announcementsBlocked/gateBlockedReason because "dialog" names one of the
+ * four things the gate has to keep quiet (confirm, toast, OS notification,
+ * beep), and naming it after the narrowest one is how gating only the confirm
+ * came to look like a complete fix in the first place.
  */
 export function gateBlockedReason(gate: AuthGate): string | null {
   switch (gate) {
@@ -165,7 +172,16 @@ export const EMPTY_NINA_HEALTH: NinaHealth = {
  * Anything listed here is something an unauthenticated viewer must not be able
  * to be shown, however indirectly.
  *
- * NOT listed, on purpose:
+ * THIS LIST IS ENFORCED, not asserted. authGate.test.ts walks the store's OWN
+ * runtime key set and requires every slice to be either cleared here or in its
+ * NON_RIG_KEYS map, which carries a per-key reason the slice is safe to keep
+ * behind a sign-in form. A slice added to store.ts that is in neither fails the
+ * test rather than defaulting to "kept" — the previous version of that test
+ * checked a hardcoded list of 18 names against this one, which is a claim about
+ * the list and not about the store, so it passed no matter what store.ts grew.
+ * State outliving the reason it was safe is the whole of #117.
+ *
+ * NOT listed, on purpose (the reasons live per-key in the test's map):
  *   - `principal` / `authMethods` — these ARE the gate; clearing them would
  *     dissolve the login screen we are gating behind.
  *   - `plan` and `loadedPlanId` — the user's own target draft, persisted to
@@ -181,6 +197,15 @@ export interface ClearedRigState {
   status: null;
   site: null;
   config: null;
+  // Found by walking the store rather than re-reading this list: helpTopic is
+  // not a rig payload but a rig VERDICT. Its values are "camera-offline",
+  // "guiding-lost", "mount-move-failed", "cooler-stuck", "autofocus-failed",
+  // "nina-error" (types.TroubleshootTopic), and the only things that set it are
+  // diagnoseFailure's "How to fix →" on a failure toast and the same button in
+  // Monitor/Sequence. So a non-null value states that THIS rig's named hardware
+  // failed tonight. Nothing renders it behind the login screen today — which is
+  // exactly what was true of `weather` until an unconditional hook did.
+  helpTopic: null;
   update: null;
   equipConnected: false;
   preview: null;
@@ -247,6 +272,7 @@ export function clearedRigState(): ClearedRigState {
     status: null,
     site: null,
     config: null,
+    helpTopic: null,
     update: null,
     equipConnected: false,
     preview: null,
