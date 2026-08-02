@@ -123,6 +123,20 @@ export interface RigStatus {
     // arrive as one generic sentence. Absent = no recent refusal; it expires
     // server-side, so it never describes a camera that has since been fixed.
     preview_reason?: string;
+    // Whether the server VOUCHES for the picture the panel is currently showing.
+    // Three values, and all three are load-bearing:
+    //   true    a frame the server decoded and found to vary — so a dark preview
+    //           is a dark sky, not an empty buffer.
+    //   false   bytes it forwarded without being able to inspect them (a guider
+    //           PNG this server's Pillow would not open). The browser may render
+    //           them fine; the server simply has no opinion on what is in them.
+    //   absent  nobody has asked this camera in the last few seconds.
+    // Declared because the hub has published it since the #115 fix while the UI
+    // read only preview_reason — the third state existed solely inside the
+    // server, which is the same "claim outrunning its evidence" the fix was for.
+    // Mutually exclusive with preview_reason: a refusal has no picture to vouch
+    // for. Expires server-side on the same TTL as the reason.
+    preview_ok?: boolean;
   };
   // --- monitor (Batch-2; server-computed from HA for sim/Alpaca, device value for NINA) ---
   meridian?: MeridianInfo;

@@ -55,6 +55,47 @@ const DOWNLOAD_WATCHDOG_MS = 60_000;
 const COOLER_MIN_C = -60;
 const COOLER_MAX_C = 40;
 
+// ------------------------------------------------- guide-preview verdict (#115)
+/** What to say under the Guide cam panel about the picture in it, or null.
+ *
+ * status.guide_camera carries FOUR distinguishable outcomes and this screen used
+ * to read one of them. The hub has published `preview_ok` since the #115 fix,
+ * and its own docstrings describe the third state "as delivered to the user" —
+ * but nothing above the server declared or read the key, so the state existed
+ * only inside the process that claimed to have shipped it. That is the same
+ * shape as the bug the fix was for: a positive claim outrunning its evidence.
+ *
+ * Written as a function rather than nested ternaries in JSX so the four cases
+ * are visible at once and a fifth cannot be added by accident.
+ */
+function guidePreviewLine(reason: string, ok: boolean | undefined, srcName: string):
+  { tone: string; text: string } | null {
+  // A refusal has no picture to qualify, so it wins outright and says which of
+  // the several possible nothings this is, in the server's own words.
+  if (reason) return { tone: "text-warn", text: reason };
+  // Checked. Says the one thing the picture cannot say about itself: a guide
+  // frame is mostly black by nature, so "it looks dark" is evidence of nothing —
+  // what the user needs to know is whether the darkness was MEASURED or merely
+  // encoded. On 2026-08-01 it was encoded, from a buffer with no variation in it.
+  if (ok === true) {
+    return { tone: "text-dim",
+             text: "Checked — this frame varies, so a dark preview is the sky and not an empty buffer." };
+  }
+  // Delivered, and the server could not read the bytes it forwarded. Not a
+  // refusal (a browser may render what our decoder would not open) and not a
+  // vouching either — the honest middle, which used to be published as silence
+  // and was therefore indistinguishable from nobody having asked.
+  if (ok === false) {
+    return { tone: "text-warn",
+             text: `Not checked — ${srcName} sent bytes this server could not decode. Your browser may render them; nothing here vouches for what is in them.` };
+  }
+  // Nobody has asked this camera in the last few seconds — the normal state of a
+  // collapsed panel. Silence, because a permanent "not asked yet" line under an
+  // idle panel reads as a fault on a rig that has none, and because the case it
+  // used to be confused with (above) now says so itself.
+  return null;
+}
+
 export default function CaptureView() {
   const status = useStatus();
   const polar = usePolar();
@@ -199,10 +240,21 @@ export default function CaptureView() {
     }
   };
 
-  // Why the guide preview has no picture, in the server's words. Present only
-  // while an attempt has recently failed (the hub expires it), so this line
-  // appears exactly when the panel below is showing its generic placeholder.
-  const guidePreviewReason = status?.guide_camera?.preview_reason ?? "";
+  // What the server knows about the guide preview right now:
+  //
+  //   preview_reason   no picture, and which of the several nothings this is
+  //   preview_ok true  a picture whose pixels the server decoded and found to vary
+  //   preview_ok false bytes it forwarded but could not inspect — no claim either way
+  //   neither key      nobody has asked this camera in the last few seconds
+  //
+  // Both keys expire server-side, so neither ever describes a camera that has
+  // since been fixed or unplugged. `guide_camera.name` is the SOURCE's own name:
+  // the hub derives it from the guide-camera device, or from the guider on a
+  // PHD2/NINA rig where no guide_camera device exists.
+  const guidePreviewLineNow = guidePreviewLine(
+    status?.guide_camera?.preview_reason ?? "",
+    status?.guide_camera?.preview_ok,
+    status?.guide_camera?.name ?? "The guide camera");
 
   // --- filter wheel: what the Slot button reads while the carousel turns ---
   // `moving` rides the raw status event (hub publishes status.filterwheel.moving
@@ -936,13 +988,18 @@ export default function CaptureView() {
         {/* The panel drives an <img>, so all it can observe about a failure is
             that the load errored — the server's named 404 detail never reaches
             it and every distinct nothing renders as "Guide camera frame
-            unavailable". The reason rides status.guide_camera.preview_reason
-            instead, and this is where it gets said. It expires server-side, so
-            it is only ever about the attempt you just watched fail. */}
-        {guidePreviewReason && (
+            unavailable". So the server's verdict rides status.guide_camera
+            instead, and this is where it gets said (guidePreviewLine, above,
+            holds the four cases). ONE live region, so a screen reader hears one
+            announcement per change of outcome rather than one per state.
+
+            Each outcome carries its own WORDS as well as its own colour: under
+            the red night theme every token is a red, so a distinction that lives
+            only in hue does not survive the theme it is most needed in (S3). */}
+        {guidePreviewLineNow && (
           <p role="status" aria-live="polite"
-            className="mono text-[11px] text-warn -mt-1 px-1">
-            {guidePreviewReason}
+            className={`mono text-[11px] -mt-1 px-1 leading-snug ${guidePreviewLineNow.tone}`}>
+            {guidePreviewLineNow.text}
           </p>
         )}
 

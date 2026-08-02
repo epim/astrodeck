@@ -530,18 +530,19 @@ async def test_the_delivered_frame_verdict_expires_like_the_reason(monkeypatch):
     """Same rule as the refusal note, for the same reason: "a frame arrived"
     from five minutes ago describes a camera that may since have been unplugged.
     An expired verdict falls back to "nobody has asked recently", not to a
-    claim."""
+    claim — which is None here, NOT False: False is itself a statement about a
+    frame that was delivered."""
     import astrodeck.hub as hub_mod
 
     hub = Hub()
     hub.devices["guide_camera"] = _FakeGuideCam()
     await hub.guide_preview_png()
-    assert hub.guide_preview_ok()
+    assert hub.guide_preview_verdict() is True
 
     base = hub_mod.time.monotonic()
     monkeypatch.setattr(hub_mod.time, "monotonic",
                         lambda: base + GUIDE_PREVIEW_NOTE_TTL_S + 1)
-    assert hub.guide_preview_ok() is False
+    assert hub.guide_preview_verdict() is None
 
 
 # ------------------------------------- the exposure leaves a trace (#115)
@@ -677,8 +678,13 @@ async def test_bytes_the_server_cannot_decode_are_served_but_not_vouched_for():
     """Pillow failing to open the bytes is a fact about this server, not about
     the guider's image — a browser may well render what we could not read. So
     forward them (refusing on our own blindness would blank a working panel) and
-    do NOT publish preview_ok, which would be a verdict on pixels nobody looked
-    at. Neither key is the honest answer here: nothing recent is known."""
+    never claim they carry a picture.
+
+    ``preview_ok: False``, not an absent key. Publishing nothing here was the
+    same collapse this ticket is about one level down: "we looked and could not
+    tell" and "nobody looked" are different facts, and a panel with a rectangle
+    on it needs the first one to be sayable. Absence has to keep meaning exactly
+    one thing."""
     hub = Hub()
     hub.guider = _Guider(b"\x89PNG\r\n\x1a\nnot really a png")
 
@@ -686,4 +692,153 @@ async def test_bytes_the_server_cannot_decode_are_served_but_not_vouched_for():
     assert png == b"\x89PNG\r\n\x1a\nnot really a png"
     assert reason == ""
     gc = (await hub.poll_status())["guide_camera"]
-    assert "preview_ok" not in gc and "preview_reason" not in gc
+    assert gc["preview_ok"] is False
+    assert "preview_reason" not in gc
+
+
+async def test_a_checked_frame_does_not_vouch_for_the_unreadable_one_after_it():
+    """The verdict describes the LATEST delivery, not the best one inside the
+    TTL. Latching it on success only would let a frame checked nine seconds ago
+    certify the truncated bytes on screen now — a stale confident claim, arrived
+    at through a freshness window instead of through a guess, but the same lie."""
+    star = np.full((60, 60), 300, dtype="uint16")
+    star[30, 30] = 40000
+    hub = Hub()
+    hub.guider = _Guider(_guider_png(star))
+    await hub.guide_preview_png()
+    assert (await hub.poll_status())["guide_camera"]["preview_ok"] is True
+
+    hub.guider = _Guider(b"\x89PNG\r\n\x1a\ntruncated mid-write")
+    await hub.guide_preview_png()
+    assert (await hub.poll_status())["guide_camera"]["preview_ok"] is False
+
+
+# ---------------------- byte-identical was NOT a cache after all (#115 review)
+#
+# The rig evidence of 2026-08-01 included "byte-identical across three calls four
+# seconds apart (sha acff576d3edc)", and review read that as the signature of a
+# cache — specifically ``_guide_preview_task`` handing back a completed task's
+# result forever. It is not, and the two tests below are what settles it: every
+# call drives a fresh exposure, and a constant array simply encodes to the same
+# bytes every time it is encoded (pinned above in
+# ``test_the_served_bytes_identify_a_constant_array_and_nothing_more``). So
+# identical bytes were the deterministic encoder faithfully reporting an
+# unchanging input, and the defect was entirely the constant frame.
+#
+# They stay because "is it cached?" is the FIRST question anyone will ask the
+# next time this panel shows the same picture twice, and answering it from the
+# code took longer than answering it from a test would.
+
+
+async def test_every_poll_drives_a_fresh_exposure_rather_than_replaying_the_last():
+    """Sequential polls must each reach the sensor. ``_guide_preview_task`` is a
+    single-flight for CONCURRENT callers only — a completed task is replaced, not
+    re-awaited — and if it were ever re-awaited the panel would show one frozen
+    frame all night while every metric said the preview was working."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    hub.devices["guide_camera"] = cam
+
+    seen = []
+    for n in range(3):
+        # MOVE the star rather than dimming it: the preview is an 8-bit display
+        # stretch, so three frames differing by one ADU encode identically and
+        # would "prove" a cache that isn't there. Drift is what a guide field
+        # actually does between polls anyway.
+        cam.data = np.full((64, 64), 300, dtype="uint16")
+        cam.data[32, 20 + n * 8] = 40000
+        png, reason = await hub.guide_preview_png()
+        assert png, reason
+        seen.append(png)
+
+    assert cam.started == 3, "three polls, three exposures"
+    assert len(set(seen)) == 3, "the bytes must follow the sensor, not a cache"
+
+
+async def test_a_flat_frame_is_re_exposed_on_every_poll_too():
+    """The refusal path has the same obligation. A camera that is flat now
+    because the dust cap is on becomes a working camera the moment the cap comes
+    off, and a preview that stopped asking would keep printing the refusal at a
+    sky it had stopped looking at."""
+    hub = Hub()
+    cam = _FakeGuideCam()
+    cam.data = np.zeros((64, 64), dtype="uint16")
+    hub.devices["guide_camera"] = cam
+
+    for _ in range(3):
+        png, reason = await hub.guide_preview_png()
+        assert png is None and "no variation" in reason
+    assert cam.started == 3
+
+    cam.data = np.full((64, 64), 300, dtype="uint16")   # cap off
+    cam.data[32, 32] = 40000
+    png, reason = await hub.guide_preview_png()
+    assert png, reason
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is True and "preview_reason" not in gc
+
+
+# ------------------------- a 500 and an unasked camera looked the same (#115)
+
+
+class _AnswersNothing(_FakeGuideCam):
+    """A camera adapter that returns ``None`` from ``expose`` instead of raising.
+    ``Camera.expose`` is typed ``-> CameraFrame`` and every shipped adapter
+    raises on failure, but the type is not enforced and the hub's promise not to
+    raise must not depend on every present and future driver honouring it."""
+
+    async def expose(self, *a, **k):
+        self.started += 1
+        return None
+
+
+async def test_a_driver_that_answers_nothing_becomes_a_named_refusal_not_a_500(
+        bus_lines):
+    """MEASURED before the guard: ``AttributeError: 'NoneType' object has no
+    attribute 'data'`` escaped ``guide_preview_png`` — a coroutine whose
+    docstring says it never raises — so the route returned 500 instead of 404,
+    wrote nothing to the run log, and left ``status.guide_camera`` carrying
+    exactly ``{name, connected}``.
+
+    That last detail is why this matters here of all places: ``{name,
+    connected}`` and nothing else is precisely the status block measured on the
+    rig on 2026-08-01. A server-side crash was indistinguishable on the wire from
+    a camera nobody had asked, so the one state that is allowed to be silent had
+    a loud failure hiding inside it."""
+    hub = Hub()
+    hub.devices["guide_camera"] = _AnswersNothing("ZWO ASI guide")
+
+    png, reason = await hub.guide_preview_png()          # must not raise
+    assert png is None
+    assert "ZWO ASI guide" in reason, "name the instrument that failed"
+
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_reason"] == reason
+    assert "preview_ok" not in gc
+    assert [m for _lvl, m, src in bus_lines if src == "guide"], \
+        "a crash that leaves no log line is how this cost a night to find"
+
+
+async def test_the_guider_branch_is_covered_by_the_same_guard():
+    """The other source, and the reason the guard sits at the top rather than
+    around the exposure: ``guide_frame`` is implemented by PHD2, NINA, the sim
+    and the native guider, and only the ``await`` on it is inside a ``try``.
+    Everything the hub then does with the result — decode it, measure it, log its
+    length — assumed bytes. A guider that hands back anything else took the
+    panel's 404 to a 500, and the promise in the docstring is unconditional.
+
+    It also has to say WHICH device was being asked. The guider owns the sensor
+    while it is connected, so it is the one named even with a guide camera
+    assigned underneath it."""
+    class _NotBytes(_Guider):
+        def __init__(self): super().__init__(object())     # truthy, not bytes
+
+    hub = Hub()
+    hub.guider = _NotBytes()
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI guide")
+
+    png, reason = await hub.guide_preview_png()             # must not raise
+    assert png is None
+    assert "PHD2" in reason and "ZWO ASI guide" not in reason
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_reason"] == reason and "preview_ok" not in gc
