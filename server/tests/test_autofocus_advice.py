@@ -15,6 +15,8 @@ Two claims are pinned here:
 * a point measured from one or two detections is refused, not fitted as though
   it were a 900-star sample (and the refusal is visible, not silent).
 """
+import re
+
 import numpy as np
 import pytest
 
@@ -308,6 +310,76 @@ async def test_a_thin_point_beside_rich_ones_is_reported_as_discounted(monkeypat
     assert res.advice and "1 of 9 fitted points" in res.advice, res.advice
     assert "richest of 500" in res.advice, res.advice
     assert "the fit discounts them" in res.advice, res.advice
+
+
+def _v_curve_at(rig, minimum: int):
+    """A textbook V with its vertex at ``minimum``, 500 stars everywhere — so
+    the fit is exact and the only thing under test is what the run SAYS about a
+    vertex it cannot see."""
+    def metric(data, min_stars=3):
+        return 2.0 + ((rig.focuser_pos - minimum) / 1000.0) ** 2, 500, None
+    return metric
+
+
+async def test_a_vertex_just_past_the_edge_still_earns_its_number(monkeypatch):
+    """A minimum 800 steps outside a 2800-step window is a near miss: the arm
+    the sweep DID measure still constrains where the turn is, so the run has
+    earned the right to name the position and the user has earned a second run
+    that lands. This is the half of the not-bracketed advice that was always
+    right, pinned so the fix below cannot swallow it."""
+    rig, cam, foc = await _connected_sim()
+    # sim starts at 19200; ±4·350 sweeps 17800..20600.
+    monkeypatch.setattr(A, "sweep_metric", _v_curve_at(rig, 21_400))
+
+    res = await run_autofocus(cam, foc, exposure_s=0.05, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+
+    assert res.success is False
+    assert "bracket" in res.message
+    assert res.advice
+    # Parsed, not string-matched: the vertex is a float landing on 21399.99…,
+    # so pinning the exact digits would break on a numpy rounding change without
+    # anything being wrong with the advice.
+    said = re.search(r"about (\d+) steps above the swept range", res.advice)
+    where = re.search(r"Re-run centred near (\d+)", res.advice)
+    assert said and where, res.advice
+    assert abs(int(said.group(1)) - 800) <= 2, res.advice
+    assert abs(int(where.group(1)) - 21_400) <= 2, res.advice
+
+
+async def test_a_vertex_extrapolated_off_the_end_is_not_quoted_as_a_position(
+        monkeypatch):
+    """The other half, which was wrong every single time.
+
+    A parabola whose vertex falls far outside the measured points is
+    extrapolating off ONE arm, where its curvature comes from the noise on the
+    last few samples rather than from the V. Measured on the simulator
+    2026-08-01 with true focus 200-1600 steps outside a 2800-step window, that
+    extrapolation returned 8935, 12540, 16804, 22036 and once 939083 steps — so
+    the run told the user to "re-run centred near -921283", a focuser position
+    that does not exist, for a focus 800 steps past the edge. Direction is
+    knowledge here; distance is not, and a fabricated distance costs a second
+    wasted sweep.
+
+    Here the vertex lands at -5000, below the focuser's travel entirely."""
+    rig, cam, foc = await _connected_sim()
+    monkeypatch.setattr(A, "sweep_metric", _v_curve_at(rig, -5_000))
+
+    res = await run_autofocus(cam, foc, exposure_s=0.05, gain=200, step=350,
+                              steps_each_side=4, binning=2)
+
+    assert res.success is False
+    assert res.advice
+    # No number it cannot stand behind: not the extrapolated distance (22800
+    # steps below the edge), not the impossible position it points at.
+    assert "centred near" not in res.advice, res.advice
+    assert "22800" not in res.advice and "-5000" not in res.advice, res.advice
+    # What it does know, and did not used to say: which way, and the best thing
+    # it actually measured.
+    assert "below the swept range" in res.advice, res.advice
+    assert "was at 17800" in res.advice, res.advice
+    # And a lever that is true whatever the distance turns out to be.
+    assert "step at 700" in res.advice, res.advice
 
 
 async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):

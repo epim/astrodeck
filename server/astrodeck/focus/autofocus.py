@@ -360,16 +360,44 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # so the caller can widen / recentre the sweep.
         lo_edge, hi_edge = float(xs.min()), float(xs.max())
         if not (lo_edge < vertex < hi_edge):
-            # Name the direction and the distance: the fit knows where it thinks
-            # focus is, and "widen or recentre" without a number leaves the user
-            # to guess which way and by how much at 2am.
-            miss = int(vertex - (hi_edge if vertex > hi_edge else lo_edge))
-            advice = _thin_advice(
-                f"The fitted minimum sits about {abs(miss)} steps "
-                f"{'above' if miss > 0 else 'below'} the swept range "
-                f"({int(lo_edge)}..{int(hi_edge)}). Re-run centred near "
-                f"{int(vertex)}, or raise the step size so ±{steps_each_side} "
-                f"points span it.")
+            # Name the direction, and the distance ONLY while the fit is
+            # entitled to one. Which way focus lies is knowledge — the sweep
+            # watched the stars shrink toward one end and run out of room. How
+            # far is not: a parabola whose vertex falls outside the data is
+            # extrapolating off a single arm, and out there its curvature is set
+            # by the noise on the last few points rather than by the V.
+            #
+            # Measured on the simulator 2026-08-01, true focus 200-1600 steps
+            # outside a 2800-step window: the extrapolated vertex came back
+            # 8935, 12540, 16804, 22036 and once 939083 steps out, so the run
+            # advised "re-run centred near -921283" — a focuser position that
+            # does not exist — for a focus that was 800 steps past the edge.
+            # A number that confident and that wrong is worse than no number:
+            # it buys a second wasted sweep in the right direction at a
+            # fabricated distance.
+            span = hi_edge - lo_edge
+            above = vertex > hi_edge
+            way = "above" if above else "below"
+            miss = int(vertex - (hi_edge if above else lo_edge))
+            if abs(miss) <= span and 0 <= vertex <= focuser.max_position:
+                # Close enough to the data that the arm still constrains it, and
+                # a position the focuser can actually reach.
+                extra = (f"The fitted minimum sits about {abs(miss)} steps "
+                         f"{way} the swept range ({int(lo_edge)}..{int(hi_edge)}). "
+                         f"Re-run centred near {int(vertex)}, or raise the step "
+                         f"size so ±{steps_each_side} points span it.")
+            else:
+                low = int(xs[int(np.argmin(ys))])
+                extra = (
+                    f"Focus is {way} the swept range "
+                    f"({int(lo_edge)}..{int(hi_edge)}) — the smallest size the "
+                    f"sweep measured, {ys.min():.2f}px, was at {low}. How much "
+                    f"further it cannot say: the fitted minimum lies off the end "
+                    f"of the measured points. Re-run with the step at "
+                    f"{step * 2} (a ±{step * 2 * steps_each_side}-step window), "
+                    f"or move the focuser {'up' if above else 'down'} about "
+                    f"{int(span)} steps first.")
+            advice = _thin_advice(extra)
             await focuser.move_to(start_pos)
             bus.publish("focus", state="failed",
                         points=[{"position": p, "hfr": h} for p, h in points],
