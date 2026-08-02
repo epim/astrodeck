@@ -72,14 +72,40 @@ jobs:
             exit 1
           fi
 
-      # --strict, because the default is to WARN and ship anyway. 0.2.18 went
-      # out with no survey pack that way and the Atlas on the deployed box was
-      # simply black; the only evidence was a line in a build log nobody read
-      # (#100). A tag push is unattended by definition — nobody is reading this
-      # log either — so the flag, not the warning, is the control. It fails the
-      # build listing every asset that is absent and what each omission costs.
+      # The pack that 0.2.18 shipped without. It is git-ignored and ~45 MB, so
+      # it does not exist until someone fetches it, and on 0.2.18 nobody did:
+      # the box booted with online fetch off (the correct offline-first default)
+      # and no local tiles, so every tile 404'd and the Atlas was simply black
+      # (#100). Fetching it HERE is what makes --strict below able to fail on it.
+      # If a mirror outage ever blocks a hotfix, the escape hatch is an explicit
+      # `--allow-missing survey-pack`, which puts the omission in the shipped
+      # manifest.json — not deleting this step.
+      - name: Fetch the baseline survey pack (DSS2-color order 3)
+        run: |
+          # the fetcher IS the package (astrodeck.catalog.survey_pack, which
+          # imports the hub), so it needs the install the build steps skip.
+          pip install -e ./server
+          python -m astrodeck.catalog.survey_pack fetch --order 3 --dest release-assets/dss2color
+
+      # --strict, because the default is to WARN and ship anyway, and a tag push
+      # is unattended by definition — nobody is reading this log. It fails the
+      # build on any asset a complete release has and this one does not, whether
+      # or not the command line asked for it, and names what each omission costs.
+      #
+      # ASTAP is the one deliberate hole, and --allow-missing states it here and
+      # in the shipped manifest.json instead of leaving it to be found on the
+      # box. Two things are unsettled, both outside this workflow: this tarball
+      # is OS-agnostic while solve/astap.py::_bundled_candidates reads ONE flat
+      # vendor/astap dir, so there is no single binary that is the right one to
+      # put in it; and scripts/fetch_astap.py nests binaries per platform
+      # (<dir>/linux-x86_64/astap_cli) with the 102 MB database flat alongside,
+      # a layout the runtime cannot read. Cost, stated so a user is not left to
+      # infer it: plate solving needs a separately-installed ASTAP.
       - name: Build release bundle
-        run: python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist
+        run: |
+          python scripts/build_release.py --strict --version "${GITHUB_REF_NAME#v}" --out dist \
+            --survey-pack release-assets/dss2color \
+            --allow-missing astap
 
       - name: Sign artifact (Ed25519 + SHA256 sidecars)
         env:
