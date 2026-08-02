@@ -166,6 +166,14 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: and 0 a few thousand steps out, which is the case this warns about.)
     SPARSE_FIELD_WARN = 15
 
+    #: How far past the REQUESTED window the search may roam, as a multiple of
+    #: its half-span. The engine legitimately extends beyond the requested
+    #: points to bracket a minimum; it must not leave the neighbourhood. 2x is
+    #: deliberately generous so this fires only on a search that has lost the
+    #: plot — on 2026-08-01 one walked 2600 steps past the floor of a +/-1000
+    #: window and was still going when it was halted by hand.
+    LEASH_FACTOR = 2
+
     #: (position, star count) for every frame too thin to be a measurement,
     #: positions where the detector found stars but could not size them, and how
     #: many positions we exposed at. These are the facts the advice needs: a run
@@ -276,6 +284,15 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     f"run out of measurable points as it defocuses. If it "
                     f"fails, try {levers}.", "focus")
 
+        # How far the search may roam. The requested window is
+        # start +/- step*steps_each_side; the leash is twice that half-span,
+        # clamped to the focuser's real travel, so bracketing has room and a
+        # runaway does not. See the move_to guard below for what this is for.
+        half_span = step * steps_each_side
+        leash_lo = max(0, start_pos - LEASH_FACTOR * half_span)
+        leash_hi = min(getattr(focuser, "max_position", start_pos + half_span),
+                       start_pos + LEASH_FACTOR * half_span)
+
         sweep = _native.FocusSweep(config, start_pos)
 
         while True:
@@ -284,6 +301,41 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
 
             if action == "move_to":
                 pos = int(s["position"])
+                if not (leash_lo <= pos <= leash_hi):
+                    # A BOUNDED SWEEP MUST NOT BECOME AN UNBOUNDED WALK.
+                    #
+                    # 2026-08-01, on the sky: a run requested step 200 with 5
+                    # points each side — a window of 9500..11500 — and marched
+                    # to 6900, 2600 steps below the floor and still descending
+                    # when it was halted by hand. Its size metric was inverted
+                    # on that sparse field, so every step away from focus read
+                    # "better" and the search believed it.
+                    #
+                    # The engine extending PAST the requested points to bracket
+                    # a minimum is legitimate; leaving the neighbourhood
+                    # entirely is not. Unattended this drives the drawtube at a
+                    # mechanical stop that the EAF's firmware cannot report
+                    # (3.3.8 answers NOT_SUPPORTED to EAFGetErrorCode — see
+                    # vendor/zwo/EAF_focuser.h), so nothing downstream would
+                    # notice either.
+                    #
+                    # The leash is deliberately generous — twice the requested
+                    # half-span — so this can only ever fire on a search that
+                    # has genuinely lost the plot, never on honest bracketing.
+                    await focuser.move_to(start_pos)
+                    reason = (f"the sweep tried to move to {pos}, outside the "
+                              f"window this run asked for ({leash_lo}..{leash_hi}) "
+                              f"— stopping rather than walking the focuser away")
+                    advice = (
+                        "The size metric was almost certainly reading smaller "
+                        "the further out it went, which makes every wrong step "
+                        "look like an improvement. Check the field is rich "
+                        f"enough to measure while defocused, or try {levers}.")
+                    bus.log("warning", f"autofocus: {reason}. {advice}", "focus")
+                    bus.publish("focus", state="failed", points=points,
+                                best=None, message=reason, advice=advice)
+                    return AutofocusResult(False, start_pos, None, points,
+                                           reason, advice=advice)
                 await focuser.move_to(pos)
                 frame = await _expose()
                 attempted += 1
