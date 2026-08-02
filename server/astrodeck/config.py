@@ -743,11 +743,25 @@ class ConfigStore:
         #   * write_json_atomic stages every write at ONE fixed "<path>.tmp", so
         #     the first os.replace consumed that tmp and every other writer
         #     raised FileNotFoundError.
-        # Together: on a store that has never been written (a fresh install's
-        # first requests, or a test worker's throwaway config) concurrent readers
-        # of a plain `config_store.cfg()` blew up. It surfaced as panels of a
-        # mosaic silently missing their transit_alt, and as an intermittent red
-        # in test_framing under xdist.
+        # Together, concurrent readers of a never-written store blew up.
+        #
+        # WHERE that is reachable, corrected: commit 5b2cd54 claimed a fresh
+        # install hits this on its first concurrent requests. It cannot. The
+        # SERVED app materialises the store single-threaded before it can accept
+        # anything -- __main__._cmd_run calls _security_banner() -> cfg() on the
+        # main thread before create_app(), api/app.py::_lifespan reads cfg()
+        # twice before its yield, and uvicorn awaits lifespan startup before it
+        # creates a listener (uvicorn/server.py Server.startup) -- and nothing in
+        # a running server ever puts _cfg back to None. The only harness that
+        # reaches the cold path concurrently is one with no lifespan at all: the
+        # bare FastAPI() client fixture in tests/test_framing.py. So the OBSERVED
+        # severity is CI-only (an intermittent red under xdist, presenting as
+        # mosaic panels silently missing their transit_alt), not lost user data.
+        #
+        # The lock stays regardless: nothing ENFORCES that boot warm-up, so the
+        # class is safe only by accident of call order today -- one new entry
+        # point, script or reload() and it is a user's site being written twice
+        # at once. Do not read the narrow blast radius as "this was fine".
         # RLock, not Lock: the load path re-enters through
         # _save()/_restore_from_bak() on the SAME thread.
         self._lock = threading.RLock()
