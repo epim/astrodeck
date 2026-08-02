@@ -67,6 +67,21 @@ const COOLER_MAX_C = 40;
  *
  * Written as a function rather than nested ternaries in JSX so the four cases
  * are visible at once and a fifth cannot be added by accident.
+ *
+ * SCOPE, stated because the last version of this claimed delivery without it:
+ * <GuideFramePreview/> is mounted on THREE screens — here, GuideView and
+ * PolarView — and this line is rendered under exactly one of them. Those two
+ * views and the component itself are owned by other lanes this run and are not
+ * edited here, so on Guide and Polar all four outcomes are still invisible.
+ * The line belongs inside GuideFramePreview, which owns the picture, the poll
+ * and the open/closed state; putting it there fixes all three at once and is
+ * the follow-up this comment exists to hand over.
+ *
+ * @param srcName the device the SERVER says produced the frame
+ *   (status.guide_camera.preview_source), NOT guide_camera.name. The hub picks
+ *   those two by opposite rules — name prefers the guide-camera device, the
+ *   preview prefers a connected guider — so on a rig with both, `name` is the
+ *   camera that was never asked while the bytes came from the guider.
  */
 function guidePreviewLine(reason: string, ok: boolean | undefined, srcName: string):
   { tone: string; text: string } | null {
@@ -246,15 +261,24 @@ export default function CaptureView() {
   //   preview_ok true  a picture whose pixels the server decoded and found to vary
   //   preview_ok false bytes it forwarded but could not inspect — no claim either way
   //   neither key      nobody has asked this camera in the last few seconds
+  //   preview_source   which device produced that frame (rides with preview_ok)
   //
-  // Both keys expire server-side, so neither ever describes a camera that has
-  // since been fixed or unplugged. `guide_camera.name` is the SOURCE's own name:
-  // the hub derives it from the guide-camera device, or from the guider on a
-  // PHD2/NINA rig where no guide_camera device exists.
+  // All of these expire server-side, so none ever describes a camera that has
+  // since been fixed or unplugged.
+  //
+  // The name comes from `preview_source` — the device that answered — and NOT
+  // from `guide_camera.name`, which is chosen by the opposite rule (device
+  // first, guider second) and so names the wrong instrument on any rig carrying
+  // both. `preview_ok: false` can only come from the guider branch, so the
+  // sentence is wrong on precisely the rigs that have a guide camera assigned
+  // as well — where it read "ZWO ASI sent bytes we could not decode" about a
+  // camera the server never asked — and happened to be right only where there
+  // is no guide-camera device for `name` to disagree with. Being right by the
+  // absence of a second device is not the same as being right.
   const guidePreviewLineNow = guidePreviewLine(
     status?.guide_camera?.preview_reason ?? "",
     status?.guide_camera?.preview_ok,
-    status?.guide_camera?.name ?? "The guide camera");
+    status?.guide_camera?.preview_source ?? "the guide camera");
 
   // --- filter wheel: what the Slot button reads while the carousel turns ---
   // `moving` rides the raw status event (hub publishes status.filterwheel.moving
@@ -995,7 +1019,12 @@ export default function CaptureView() {
 
             Each outcome carries its own WORDS as well as its own colour: under
             the red night theme every token is a red, so a distinction that lives
-            only in hue does not survive the theme it is most needed in (S3). */}
+            only in hue does not survive the theme it is most needed in (S3).
+
+            ONE of the three screens that mount this panel — Guide and Polar
+            mount it too and still show none of the four outcomes. See
+            guidePreviewLine's header: the line belongs in GuideFramePreview,
+            which is another lane's file this run. */}
         {guidePreviewLineNow && (
           <p role="status" aria-live="polite"
             className={`mono text-[11px] -mt-1 px-1 leading-snug ${guidePreviewLineNow.tone}`}>

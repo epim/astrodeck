@@ -798,13 +798,20 @@ async def test_a_driver_that_answers_nothing_becomes_a_named_refusal_not_a_500(
     attribute 'data'`` escaped ``guide_preview_png`` — a coroutine whose
     docstring says it never raises — so the route returned 500 instead of 404,
     wrote nothing to the run log, and left ``status.guide_camera`` carrying
-    exactly ``{name, connected}``.
+    exactly ``{name, connected}``. A server-side crash was indistinguishable on
+    the wire from a camera nobody had asked, so the one state that is allowed to
+    be silent had a loud failure hiding inside it.
 
-    That last detail is why this matters here of all places: ``{name,
-    connected}`` and nothing else is precisely the status block measured on the
-    rig on 2026-08-01. A server-side crash was indistinguishable on the wire from
-    a camera nobody had asked, so the one state that is allowed to be silent had
-    a loud failure hiding inside it."""
+    An earlier version of this docstring went further and called ``{name,
+    connected}`` "precisely the status block measured on the rig on 2026-08-01",
+    i.e. offered the crash as a candidate for that defect. RETRACTED: on the
+    build that was measured a SUCCESSFUL delivery published ``{name, connected}``
+    too (a reason went out only when one was live), so the block distinguishes
+    nothing — and the measurement itself, HTTP 200 with 223 bytes of valid PNG,
+    excludes a crash, which returns 500 with no body. The guard is worth having
+    because a docstring promising never to raise did raise. That is the whole
+    claim; dressing it in someone else's evidence is how #110 got three wrong
+    diagnoses in a row."""
     hub = Hub()
     hub.devices["guide_camera"] = _AnswersNothing("ZWO ASI guide")
 
@@ -842,3 +849,143 @@ async def test_the_guider_branch_is_covered_by_the_same_guard():
     assert "PHD2" in reason and "ZWO ASI guide" not in reason
     gc = (await hub.poll_status())["guide_camera"]
     assert gc["preview_reason"] == reason and "preview_ok" not in gc
+
+
+# ------------- the verdict has to name the device that actually answered (#115)
+#
+# Two source orders live in hub.py and they are INVERSES of each other, on
+# purpose: ``_guide_camera_info`` builds ``status.guide_camera.name`` from the
+# guide-camera DEVICE first (it is the thing the Equipment screen assigned),
+# while ``_guide_preview_source`` asks the connected GUIDER first (it owns the
+# sensor while a loop runs). On a rig that has both — every sim rig, since
+# connect_sim brings up guide_camera AND the SimGuider — those two name
+# different instruments.
+#
+# That only became visible when the UI started composing a sentence around the
+# name: "<X> sent bytes this server could not decode". ``preview_ok: False`` is
+# reachable ONLY from the guider branch, and a guide camera is assigned in
+# exactly the case where the names differ, so the sentence named the wrong
+# device in every configuration it could ever appear in. Review probed it live:
+# guider=PHD2 + guide_camera=ZWO published ``{'name': 'ZWO ASI 120MM Mini',
+# 'preview_ok': False}`` — a warning about bytes from PHD2, pointing at a camera
+# the server never asked. Naming the wrong instrument is the same defect as
+# reporting a state nobody measured.
+
+
+async def test_the_verdict_names_the_source_and_not_the_camera_status_names():
+    """THE inversion, in the configuration that produces it: a connected guider
+    whose bytes we cannot decode, with a guide camera assigned underneath it.
+
+    ``name`` and ``preview_source`` must BOTH be present and must differ — the
+    first is the device the rig list is about, the second is the device the
+    picture came from, and collapsing them is what let a warning about PHD2 be
+    printed about a ZWO that was never exposed."""
+    hub = Hub()
+    hub.guider = _Guider(b"\x89PNG\r\n\x1a\nnot really a png")
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI 120MM Mini")
+
+    png, reason = await hub.guide_preview_png()
+    assert png and reason == ""
+
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is False
+    assert gc["preview_source"] == "PHD2", "the bytes came from the guider"
+    assert gc["name"] == "ZWO ASI 120MM Mini", \
+        "the rig list still names the assigned device — the two are not the same fact"
+
+
+async def test_a_checked_guider_frame_is_attributed_to_the_guider_too():
+    """The ``True`` case takes the same route through the same inverted orders,
+    so it gets the same test rather than being assumed to follow."""
+    star = np.full((60, 60), 300, dtype="uint16")
+    star[30, 30] = 40000
+    hub = Hub()
+    hub.guider = _Guider(_guider_png(star))
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI 120MM Mini")
+
+    await hub.guide_preview_png()
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is True and gc["preview_source"] == "PHD2"
+
+
+async def test_a_camera_preview_is_attributed_to_the_camera():
+    """The native rig: no guider role at all, so the two orders agree and the
+    source is the guide camera. Worth pinning because the fix would look equally
+    "working" if it hard-coded the guider."""
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI guide")
+
+    await hub.guide_preview_png()
+    gc = (await hub.poll_status())["guide_camera"]
+    assert gc["preview_ok"] is True and gc["preview_source"] == "ZWO ASI guide"
+
+
+async def test_the_source_follows_the_frame_when_the_source_changes():
+    """A guider that appears mid-session takes the sensor over. The attribution
+    has to move with it, not stay latched to whoever answered first — the
+    verdict already describes the LATEST delivery and a name that lagged behind
+    it would re-create the same wrong-instrument sentence a poll later."""
+    star = np.full((60, 60), 300, dtype="uint16")
+    star[30, 30] = 40000
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI guide")
+    await hub.guide_preview_png()
+    assert (await hub.poll_status())["guide_camera"]["preview_source"] == "ZWO ASI guide"
+
+    hub.guider = _Guider(_guider_png(star))
+    await hub.guide_preview_png()
+    assert (await hub.poll_status())["guide_camera"]["preview_source"] == "PHD2"
+
+
+async def test_a_refusal_publishes_no_source_because_its_words_carry_one():
+    """The refusal is the server's own sentence and already names the instrument
+    inside it ("PHD2 is connected but exposes no image"). A second name beside it
+    is a second thing that can be wrong, so there isn't one."""
+    hub = Hub()
+    hub.guider = _Guider(None)
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI guide")
+
+    png, reason = await hub.guide_preview_png()
+    assert png is None and "PHD2" in reason
+
+    gc = (await hub.poll_status())["guide_camera"]
+    assert "preview_source" not in gc and "preview_ok" not in gc
+
+
+async def test_the_source_expires_with_the_verdict_it_qualifies(monkeypatch):
+    """Same TTL as the verdict and the reason, because a name outliving the
+    frame it describes is a stale claim about which device the user should go
+    and look at."""
+    import astrodeck.hub as hub_mod
+
+    hub = Hub()
+    hub.devices["guide_camera"] = _FakeGuideCam("ZWO ASI guide")
+    await hub.guide_preview_png()
+    assert hub.guide_preview_source() == "ZWO ASI guide"
+
+    base = hub_mod.time.monotonic()
+    monkeypatch.setattr(hub_mod.time, "monotonic",
+                        lambda: base + GUIDE_PREVIEW_NOTE_TTL_S + 1)
+    assert hub.guide_preview_source() == ""
+    assert "preview_source" not in (await hub.poll_status())["guide_camera"]
+
+
+async def test_one_helper_holds_the_source_order_the_crash_path_has_to_guess_at():
+    """The crash path cannot ask the source which device it chose — it never got
+    an answer — so it derives the name itself, and it does that through the same
+    helper the delivery path is named from. A hand-rolled second copy of the
+    order is exactly how the two orders in this file came to disagree without
+    anything failing loudly, so the order lives in one place and this is it."""
+    hub = Hub()
+    assert hub._guide_preview_source_name() == "", "nothing connected, no name"
+
+    cam = _FakeGuideCam("ZWO ASI guide")
+    hub.devices["guide_camera"] = cam
+    assert hub._guide_preview_source_name() == "ZWO ASI guide"
+
+    hub.guider = _Guider(None)                       # connected: takes the sensor
+    assert hub._guide_preview_source_name() == "PHD2"
+
+    hub.guider.connected = False                     # PHD2 closed mid-session
+    assert hub._guide_preview_source_name() == "ZWO ASI guide", \
+        "a disconnected guider owns nothing — the camera is asked and is named"
