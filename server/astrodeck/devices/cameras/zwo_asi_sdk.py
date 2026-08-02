@@ -287,16 +287,69 @@ class AsiSdk:
                                           ctypes.byref(auto)), "ASIGetControlValue")
         return int(val.value)
 
+    #: WHAT ASISetROIFormat DOES TO A GEOMETRY IT DOES NOT LIKE, read out of the
+    #: vendored DLL rather than assumed: it REJECTS. There is no rounding
+    #: anywhere in the path, so a ZWO cannot quietly hand back rows shorter than
+    #: the ones asked for the way Player One can (PlayerOneSdk.ALIGN_W) — the
+    #: two brands are opposite answers and the difference is measured, not
+    #: inferred from the fact that the log strings begin "Failed to set".
+    #:
+    #: astrodeck/vendor/zwo/ASICamera2.dll (2,852,352 bytes, sha256
+    #: 0c8778c3cce2012961b079e3c7d0d834...). The export ASISetROIFormat (RVA
+    #: 0x4170) checks only the id, the open state and the image type itself —
+    #: its own immediates are 4 CAMERA_CLOSED at 0x41f9 and 9 INVALID_IMGTYPE at
+    #: 0x4270 — and hands the geometry to a virtual call at 0x43a0
+    #: (``ff 50 18``: call [rax+18h]) returning a BOOL. The CALLER turns that
+    #: bool into the error code, which is why grepping the export's body for
+    #: ``mov eax, 8`` finds nothing and concludes wrongly that the outcome is
+    #: unknown:
+    #:
+    #:     0x43c0   45 84 db            test   r11b, r11b   ; the validator's bool
+    #:     0x43c3   bb 08 00 00 00      mov    ebx, 8       ; ASI_ERROR_INVALID_SIZE
+    #:     0x43c8   41 0f 45 de         cmovne ebx, r14d    ; ...only if it passed
+    #:     0x43e7   8b c3               mov    eax, ebx     ; and that is the return
+    #:
+    #: The validator is the function at 0x63860. After the bin-table and bounds
+    #: checks it applies THREE alignment tests, each a ``jne`` straight to the
+    #: function's single ``xor al,al`` at 0x6389c — and there is not one
+    #: mask-and-store anywhere in it:
+    #:
+    #:     0x638dc   (height * bin) % 2 != 0  -> false, silently
+    #:     0x638e6   (width  * bin) % 8 != 0  -> false, silently
+    #:     0x638f6    height        % 8 != 0  -> false, after logging
+    #:               "Failed to set height: %d, the height must be multiple of 8"
+    #:
+    #: NOTE WHICH AXIS CARRIES WHICH RULE, and that the third is on the BINNED
+    #: height while the first two are on the unbinned dimensions. The third is
+    #: the one that bites: any sensor whose row count is not a multiple of 8
+    #: after binning is refused outright. The only other alignment string in the
+    #: DLL ("the width must be multiple of 24, height must be multiple of 4")
+    #: is guarded by hardware bin, which AstroDeck never enables.
+    ALIGN_W_UNBINNED, ALIGN_H_UNBINNED, ALIGN_H_BINNED = 8, 2, 8
+
+    @classmethod
+    def rejects_roi(cls, w: int, h: int, bin: int) -> bool:
+        """Whether the vendored DLL will refuse this (BINNED w, h, bin) with
+        ASI_ERROR_INVALID_SIZE, by the three rules cited above. Exposed so the
+        arithmetic lives beside its citation instead of being redone by hand in
+        a comment — which is how the ASI220MM came to be described as safe at
+        every bin when it is refused at two of them."""
+        return (h * bin % cls.ALIGN_H_UNBINNED != 0
+                or w * bin % cls.ALIGN_W_UNBINNED != 0
+                or h % cls.ALIGN_H_BINNED != 0)
+
     def set_roi(self, cam_id: int, w: int, h: int, bin: int, img_type: int) -> None:
         _check(self._d.ASISetROIFormat(cam_id, w, h, bin, img_type),
                "ASISetROIFormat")
 
     def get_roi(self, cam_id: int) -> tuple[int, int, int, int]:
         """(width, height, bin, img_type) the camera is ACTUALLY set to, in
-        binned pixels. This is the only authority on the download's row length;
-        the values passed to set_roi are a request, and ASISetROIFormat is
-        documented to require width%8 == 0 / height%2 == 0 rather than to
-        guarantee it returns them untouched."""
+        binned pixels. This is the only authority on the download's row length:
+        the values passed to set_roi are a request, and nothing in the SDK
+        promises they come back untouched. On the vendored build a violation is
+        refused rather than rounded (see ALIGN_H_BINNED above), so here the
+        read-back is a net under the NEXT ZWO build rather than a live catch —
+        but "refused" is itself only true of the DLL that was read."""
         w, h, b, t = (ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int())
         _check(self._d.ASIGetROIFormat(cam_id, ctypes.byref(w), ctypes.byref(h),
                                        ctypes.byref(b), ctypes.byref(t)),
