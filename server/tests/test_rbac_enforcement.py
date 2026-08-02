@@ -884,11 +884,26 @@ def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
     Asserted against the SAME fail-closed provider that closes /api/visibility, so
     the two read surfaces cannot drift apart again.
     """
+    from astrodeck.auth import CAP_VIEW_STATUS
     _store, app = _make_client(tmp_path, monkeypatch)
-    _install(None)  # fail-closed: no principal at all
     body = {"ra_hours": 5.0, "dec_deg": 10.0, "rows": 2, "cols": 2,
-            "fov_w_deg": 1.0, "fov_h_deg": 1.0, "overlap": 0.1,
+            "fov_x_deg": 1.0, "fov_y_deg": 1.0, "overlap": 0.1,
             "transit_alt": True}
+
+    # The body must be VALID, or this proves nothing. Route dependencies run
+    # BEFORE body validation, so a misspelled field still yields 401 with the
+    # gate and 422 without it -- a test that passes both ways for the wrong
+    # reason. Establish first that this exact body really does produce
+    # altitudes for a caller who IS entitled to them.
+    _install(_principal_with(CAP_VIEW_STATUS))
+    with TestClient(app) as c:
+        ok = c.post("/api/framing/mosaic", json=body)
+    assert ok.status_code == 200, ok.text
+    alts = [p.get("transit_alt") for p in ok.json()["panels"]]
+    assert any(a is not None for a in alts), (
+        f"precondition: this body must yield site-derived altitudes, got {alts}")
+
+    _install(None)  # fail-closed: no principal at all
     with TestClient(app) as c:
         assert c.get("/api/visibility").status_code == 401, (
             "precondition: the sibling read surface is closed")
