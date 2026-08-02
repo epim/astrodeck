@@ -19,6 +19,10 @@ The UI dist and BOTH vendored asset trees are OPTIONAL (a warning is printed and
 that asset is omitted) so the bundler can be smoke-tested without a node build or
 the ~150 MB of binaries; CI populates them before calling this.
 
+``--strict`` turns every one of those omissions into a failed build, and is what
+.github/workflows/release.yml passes — a release tag is built unattended, so a
+warning nobody reads is not a control (see the `missing` block in ``build``).
+
 Producing the assets (separate, network-heavy — not this script's job):
   * ASTAP: download the per-OS ``astap_cli`` from github.com/han-k59/astap plus the
     D05 star DB (``*.290``) into one dir; rename ``astap_cli``->``astap`` if desired.
@@ -118,7 +122,7 @@ def build(version: str, repo_root: Path, out_dir: Path,
     shutil.copytree(srv / "astrodeck", pkg_root, ignore=_IGNORE)
     shutil.copy2(srv / "pyproject.toml", staging / "server" / "pyproject.toml")
 
-    contents = ["server", "ui/dist"]
+    contents = ["server"]
 
     # Missing assets are collected and decided ONCE, at the end. A warning
     # printed during an unattended build is not a control: 0.2.18 shipped with
@@ -127,13 +131,17 @@ def build(version: str, repo_root: Path, out_dir: Path,
     # (#100). `--strict` turns every omission into a failed build.
     missing: list[str] = []
 
-    # ui/dist: prebuilt SPA.
+    # ui/dist: prebuilt SPA. Gate on index.html, not on the directory: a
+    # `npm run build` that half-ran, or a dist left behind by a cleaned
+    # checkout, leaves a directory that `is_dir()` calls a UI. api/app.py mounts
+    # the SPA on the same test for the same reason — a directory is not a UI.
     ui_dist = repo_root / "ui" / "dist"
-    if ui_dist.is_dir():
+    if (ui_dist / "index.html").is_file():
         shutil.copytree(ui_dist, staging / "ui" / "dist", ignore=_IGNORE)
+        contents.append("ui/dist")
     else:
-        missing.append(f"the built UI ({ui_dist}) — the release would serve no "
-                       "interface at all")
+        missing.append(f"the built UI ({ui_dist / 'index.html'}) — the release "
+                       "would serve the API and no interface at all")
 
     # vendored ASTAP binary + D05 star DB (UX-04).
     if astap_dir is not None and Path(astap_dir).is_dir():
