@@ -81,19 +81,30 @@ class AsiCameraAdapter(CameraAdapter):
         # applied width out at the requested one — the sheared, tiled picture of
         # 2026-07-31. Reading the geometry back is the only thing that can see it.
         #
-        # ON ZWO SPECIFICALLY THIS IS A NET, NOT A LIVE CATCH, and saying which
-        # is which keeps the next reader from mis-scoping the search. The
-        # vendored ASICamera2.dll answers a misaligned size by FAILING it — its
-        # own diagnostics are "Failed to set height: %d, the height must be
-        # multiple of 8" and "Failed to set width: %d, height: %d. When hardware
-        # bin set, the width must be multiple of 24, height must be multiple of
-        # 4", so a violation surfaces as an ASI_ERROR through _check rather than
-        # as a quietly different frame. (Contrast Player One, which rounds down
-        # and reports success: see PlayerOneSdk.ALIGN_W.) And this rig's ASI is
-        # the 1920x1080 ASI220MM, whose full frame divides to a multiple of 8
-        # wide at every bin 1-4, so nothing here even approaches the limit. The
-        # read-back stays because it costs one call and the next ZWO body,
-        # subframe or hardware-bin mode need not be so tidy.
+        # ON ZWO SPECIFICALLY THIS IS A NET, NOT A LIVE CATCH — but for a
+        # narrower reason than this comment used to give, and the difference
+        # matters because a wrong reason scopes the next search wrongly.
+        #
+        # The vendored ASICamera2.dll answers a misaligned geometry by FAILING
+        # it with ASI_ERROR_INVALID_SIZE, so a violation surfaces through _check
+        # as a loud error rather than as a quietly different frame. That is now
+        # read out of the DLL — the bool-to-error-code conversion and all three
+        # alignment tests are cited by address at AsiSdk.ALIGN_H_BINNED — and no
+        # longer inferred from the fact that its log strings say "Failed to set".
+        # (Contrast Player One, which rounds down and reports POA_OK: see
+        # PlayerOneSdk.ALIGN_W. Opposite answers; do not conflate them.)
+        #
+        # WHAT IS NOT TRUE, and was asserted here until it was checked: that
+        # this rig's ASI is nowhere near the limit. The rule that bites is on
+        # the BINNED HEIGHT (h % 8), not on the width, and the ASI220MM is
+        # 1920x1080 — 1080/540/360/270 at bins 1-4, of which 540 and 270 are not
+        # multiples of 8. So a full-frame bin-2 or bin-4 exposure on THIS camera
+        # is refused by the SDK. Nothing asks for one today: the guide preview
+        # is hard-coded to binning=1 and the native guider is built with no
+        # binning key, so NativeGuider's default of 1 stands. It would be an
+        # unexplained SDK error the day something does, which is a different
+        # bug from #110 and a real one — see the ASI220MM row of
+        # test_camera_roi_readback.py's per-bin table.
         self._applied = self._read_back(roi)
         aw, ah = self._binned(self._applied or roi)
         self._nbytes = aw * ah * 2
