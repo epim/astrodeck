@@ -4625,12 +4625,13 @@ def create_app() -> FastAPI:
     # retired cap, or reaches a motion sink without control.mount. The SPA
     # catch-all + the open auth-login dance are exempt. This runs LAST so every
     # route (incl. the included routers) is present when it enumerates.
-    # /api/framing/mosaic is pure STATELESS COMPUTE owned by the Sky-Atlas lane --
-    # it takes a structured body (hence POST) but mutates NO server state and
-    # commands NO device, so it is read-equivalent and exempt from the
-    # mutating-cap requirement. (/api/visibility/order, the other atlas POST, is
-    # NOT exempt -- catalog/visibility.py now gates it with view.status like any
-    # other read surface, so it declares a real capability and passes normally.)
+    # NOTHING under /api is exempt. /api/framing/mosaic used to be, as "pure
+    # stateless compute -- mutates no state, commands no device, so it is
+    # read-equivalent". Stateless is not the same as secret-free: the route's
+    # transit_alt answers are a function of the observing site, and the
+    # 2026-08-01 cross-cut review recovered the latitude from it with no
+    # principal at all. It now gates on view.status like its sibling
+    # /api/visibility/order and declares the capability normally.
     #
     # The whole ``/auth`` prefix is owned by the provider lane's auth/routes.py
     # (the OIDC login dance + self-revoke logout + fail-closed /auth/me). Those
@@ -4639,7 +4640,7 @@ def create_app() -> FastAPI:
     # the prefix is exempt from this app-side mutating-cap assertion.
     assert_route_capabilities(
         app,
-        exempt_paths={"/{path:path}", "/api/framing/mosaic"},
+        exempt_paths={"/{path:path}"},
         exempt_prefixes=("/assets", "/auth"))
 
     return app

@@ -24,9 +24,11 @@ import asyncio
 import logging
 import math
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from ..auth import CAP_VIEW_STATUS, require
+from ..auth.rbac import declare
 from ..config import ARCSEC_PER_RAD
 
 router = APIRouter()
@@ -262,7 +264,9 @@ async def _stamp_transit_alt(panels: list[dict], date: str | None) -> None:
 
 # ----------------------------------------------------------------- route
 
-@router.post("/api/framing/mosaic")
+@router.post("/api/framing/mosaic",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+@declare(CAP_VIEW_STATUS)
 async def post_mosaic(spec: MosaicSpecIn) -> dict:
     """Canonical mosaic for ``MosaicSpecIn`` -> ``MosaicResult``.
 
@@ -275,6 +279,20 @@ async def post_mosaic(spec: MosaicSpecIn) -> dict:
     Neither flag => no altitudes AND no error keys. Silence is the right answer
     to a question nobody asked; the Atlas "Send to Plan" path posts exactly this
     shape and must not pay for astropy on up to 100 panels.
+
+    GATED ON view.status LIKE EVERY OTHER READ SURFACE, and NOT exempt from the
+    route-capability assertion. It was exempt once, as "pure stateless compute --
+    mutates no state, commands no device, so it is read-equivalent". That
+    rationale was about MUTATION and never covered what the response contains.
+    Once ``transit_alt`` landed, the answer became a function of the observing
+    site: peak altitude for a given dec IS the site's latitude, recoverable by
+    sweeping dec and reading off the maximum. The 2026-08-01 cross-cut review did
+    exactly that against this route with no principal at all and recovered the
+    latitude to a tenth of a degree. Precise coordinates are treated as a secret
+    everywhere else in this codebase (test_rbac_enforcement keeps them out of the
+    bus log); an unauthenticated caller must not be able to ask the rig where it
+    is. Gating also closes an ungated 100-panel astropy fan-out on a box that may
+    be an SBC.
     """
     result = compute_mosaic(spec)
 

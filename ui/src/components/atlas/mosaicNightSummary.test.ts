@@ -163,10 +163,15 @@ test("a wholly below-limit mosaic says so about itself, not about a subset", () 
 test("a partly-lost mosaic never claims 'no panel clears' from the answered half", () => {
   // Both answered panels are below the limit, but two more are unknown — the
   // absolute phrasing would be a claim about panels we have no measurement for.
+  //
+  // The DENOMINATOR carries the same obligation, which is why this reads "of 2
+  // answered" and not "of 4". belowLimit is tallied only over answered panels,
+  // so "2 of 4" quietly makes the claim this test exists to prevent: it implies
+  // the other two clear the limit, when nothing was measured for them.
   const s = summarisePanelNight(
     [at(0, 0, 11), at(0, 1, 14), lost(1, 0, OSERR), lost(1, 1, OSERR)], 30);
   eq(belowLimitText(s, 30),
-     "2 of 4 panels never clear 30° tonight — row 1. "
+     "2 of 2 answered panels never clear 30° tonight — row 1. "
      + "Their whole night is below your horizon limit.");
 });
 

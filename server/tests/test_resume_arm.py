@@ -171,7 +171,8 @@ class _FakeWeather:
         return self._reason
 
 
-async def test_weather_veto_blocks_resume_and_arms_retry(sim_hub, monkeypatch):
+async def test_weather_veto_blocks_resume_and_arms_retry(sim_hub, monkeypatch,
+                                                         bus_lines):
     engine = SequenceEngine(sim_hub)
     await _dormant_armed(sim_hub, engine)
     now = {"t": 1_700_000_000.0}
@@ -183,10 +184,11 @@ async def test_weather_veto_blocks_resume_and_arms_retry(sim_hub, monkeypatch):
     await arm.tick()
     assert not engine.running                      # vetoed BEFORE any device touch
     assert arm._retry_at == now["t"] + RETRY_INTERVAL_S   # 10-min retry latch
-    from astrodeck.events import bus
-    assert any("auto-resume vetoed: cloud cover 80%" in
-               (e["data"].get("message") or "")
-               for e in bus.log_history), "veto warning must be logged"
+    # bus_lines, NOT bus.log_history: the ring is a deque(maxlen=200) shared by
+    # the whole process, so this scan goes red whenever an unrelated suite has
+    # already filled it and the awaited line ages out before the assertion.
+    assert any("auto-resume vetoed: cloud cover 80%" in m
+               for _lvl, m, _src in bus_lines), "veto warning must be logged"
 
 
 async def test_weather_veto_none_resumes(sim_hub, monkeypatch):

@@ -257,7 +257,17 @@ export function belowLimitText(
       + ` — their whole night is below your horizon limit.`;
   }
   const where = panelSetText(s.belowLimitPanels, s.grid);
-  return `${s.belowLimit} of ${s.total} panels never clear ${Math.round(altLimitDeg)}° tonight`
+  // DENOMINATE BY WHAT WAS COUNTED. belowLimit is tallied only over ANSWERED
+  // panels — the loop that fills it skips any panel with no finite transit_alt.
+  // Rendering it against s.total silently excludes the unanswered panels from
+  // the numerator while including them in the denominator, so on a partly
+  // answered mosaic ("3 of 100") the number reads as a fraction of the grid when
+  // it is a fraction of the answered subset, and understates the harm. The
+  // missing count has its own line, but a reader should not have to reconstruct
+  // this fraction from two sentences. When nothing is missing the two are equal
+  // and this reads exactly as before.
+  const of = s.missing > 0 ? `${s.answered} answered` : `${s.total}`;
+  return `${s.belowLimit} of ${of} panels never clear ${Math.round(altLimitDeg)}° tonight`
     + `${where ? ` — ${where}` : ""}. Their whole night is below your horizon limit.`;
 }
 

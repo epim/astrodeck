@@ -869,12 +869,41 @@ def test_locations_absent_from_all_payloads(tmp_path, monkeypatch):
             assert "locations" not in hello["data"].get("config", {})
 
 
-def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
+def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
+    """POST /api/framing/mosaic is closed to a caller with NO principal, and its
+    answers match /api/visibility -- the route it is a computational alias for.
+
+    Peak altitude for a given declination IS the observing latitude: sweep dec,
+    read off where transit_alt maximises, and you have the site. That is why this
+    route cannot be an unauthenticated one. It WAS, under a route-capability
+    exemption reading "pure stateless compute ... read-equivalent" -- a rationale
+    written about mutation, which silently stopped covering the response body the
+    day transit_alt was added to it. The 2026-08-01 cross-cut review recovered the
+    latitude to a tenth of a degree through this route with no session at all.
+
+    Asserted against the SAME fail-closed provider that closes /api/visibility, so
+    the two read surfaces cannot drift apart again.
+    """
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(None)  # fail-closed: no principal at all
+    body = {"ra_hours": 5.0, "dec_deg": 10.0, "rows": 2, "cols": 2,
+            "fov_w_deg": 1.0, "fov_h_deg": 1.0, "overlap": 0.1,
+            "transit_alt": True}
+    with TestClient(app) as c:
+        assert c.get("/api/visibility").status_code == 401, (
+            "precondition: the sibling read surface is closed")
+        r = c.post("/api/framing/mosaic", json=body)
+    assert r.status_code == 401, (
+        "site-derived transit altitudes were served to a caller with no "
+        f"principal (got {r.status_code}); the observing latitude is "
+        "recoverable from these numbers")
+
+
+def test_no_precise_coords_in_logs(tmp_path, monkeypatch, bus_lines):
     """After a /api/site save, a mount-gps read, and a full locations save/
     update/delete cycle against the seeded precise site, the NEW log entries
     contain no precise coordinate strings (spec §8; /api/logs is viewer-visible)."""
     import json as _json
-    from astrodeck.events import bus
     from astrodeck.auth import (CAP_VIEW_STATUS, CAP_CONFIG_SITE_OPTICS,
                                 CAP_CONFIG_SAFETY)
     store, app = _make_client(tmp_path, monkeypatch)
@@ -883,7 +912,6 @@ def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
                              CAP_CONFIG_SAFETY))
     lat_s, lon_s = "40.123456", "-74.654321"
     with TestClient(app) as c:
-        before = len(bus.log_history)
         c.put("/api/site", json={"site": {
             "name": "Secret Barn", "latitude": 40.123456,
             "longitude": -74.654321, "elevation_m": 123.4}})
@@ -896,8 +924,16 @@ def test_no_precise_coords_in_logs(tmp_path, monkeypatch):
             "name": "Barn2", "latitude": 40.123456, "longitude": -74.654321,
             "elevation_m": 123.4})
         c.delete(f"/api/locations/{lid}")
-        new_logs = bus.log_history[before:]
-    blob = _json.dumps(new_logs)
+    # bus_lines, NOT ``bus.log_history[before:]``. This assertion is the reason
+    # the slice idiom had to go: _history is a deque(maxlen=200) shared by the
+    # whole process, so once the ring is at cap ``before`` pins at 200 and the
+    # slice is EMPTY FOREVER. Elsewhere that idiom made tests flake red; HERE it
+    # failed OPEN -- blob became "[]" and both assertions passed while the
+    # coordinates really were in the log. A green vacuous privacy test is worse
+    # than no test: it certifies the site is not leaking no matter what starts
+    # leaking it. Capturing the call intercepts each line at its source, so
+    # nothing that ran earlier in the process can hide one.
+    blob = _json.dumps(bus_lines)
     assert lat_s not in blob, "precise latitude leaked into bus.log"
     assert lon_s not in blob, "precise longitude leaked into bus.log"
 
