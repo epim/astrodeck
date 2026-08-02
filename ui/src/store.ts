@@ -36,6 +36,19 @@ import type {
 } from "./types";
 import { accumulateLight, type LightSnapshot } from "./lib/calibration";
 import type { MasterRow } from "./lib/calibrationLibrary";
+// #117: the sign-in gate's two rules — nothing speaks while a gate screen is up,
+// and the store stops holding the rig the moment the gate engages — live in ONE
+// pure module. EMPTY_SEQUENCE/EMPTY_POLAR/EMPTY_NINA_HEALTH come from there too,
+// so "cleared" and "cold boot" are the same state by construction.
+import {
+  clearedRigState,
+  dialogsBlocked,
+  gateEngaged,
+  EMPTY_NINA_HEALTH,
+  EMPTY_POLAR,
+  EMPTY_SEQUENCE,
+  type AuthGate,
+} from "./lib/authGate";
 import { parseSeen, serializeSeen, withSeen, COACH_SEEN_KEY, WIZARD_SEEN_KEY, type SeenMap } from "./lib/coach";
 import type { WizardStepId } from "./lib/firstRunWizard";
 import { deriveNinaHealth } from "./lib/health";
@@ -129,17 +142,9 @@ export interface ConfirmRequest {
 }
 
 // ------------------------------------------------------------ default plan/state
-const EMPTY_SEQUENCE: SequenceState = { state: "idle" };
-const EMPTY_POLAR: PolarState = {
-  state: "idle",
-  az_error: 0,
-  alt_error: 0,
-  total_error: 0,
-  progress: 0,
-  message: "",
-  source: null,
-};
-const EMPTY_NINA_HEALTH: NinaHealth = { active: false, ageMs: null, state: "na", lastError: null };
+// EMPTY_SEQUENCE / EMPTY_POLAR / EMPTY_NINA_HEALTH now live in lib/authGate.ts
+// (imported above): they are both the cold-boot value and the value the auth
+// gate clears back to, and two copies of that would drift.
 
 const PLAN_KEY = "astrodeck-plan";
 
@@ -564,6 +569,18 @@ interface AppState {
   // login screen (today's default). Loaded at boot next to config/principal, and
   // re-loaded after login/logout/first-run/method-config so the gate flips live.
   authMethods: AuthMethods | null;
+  // #117: which gate screen (if any) is currently standing in for the console —
+  // App is the single writer (it renders those screens, so it cannot disagree
+  // with itself) and everything that could SPEAK to a viewer reads it from here
+  // rather than re-deriving the gate. See lib/authGate.ts for the two rules.
+  //
+  // Starts "open" because at module load it is literally true: no App is mounted,
+  // so no gate screen is standing in front of anything. That is not a fail-open
+  // hole — App publishes the real value from an effect declared AHEAD of the one
+  // that calls connectWs(), so the gate is known before the transport that
+  // carries rig data has been opened at all, and the store starts with no rig
+  // state to leak regardless.
+  authGate: AuthGate;
   plan: SequencePlan; // atlas SSOT; setPlan persists localStorage in the setter
   editorDirty: boolean;
   // id of the library plan currently loaded into the editor (null = a local draft
@@ -705,6 +722,11 @@ interface AppState {
   // failure leaves the prior value (or null) so a transient blip never strips the
   // gate. Call at boot next to loadConfig/loadPrincipal and after auth changes.
   loadAuthMethods: () => Promise<void>;
+  // #117: tell the store which gate screen is on the glass. Called by App (the
+  // one component that renders them). Transitioning INTO "login" also DROPS
+  // every rig-describing slice — see the action for why that half is the
+  // load-bearing one.
+  setAuthGate: (g: AuthGate) => void;
   setPlan: (p: SequencePlan, dirty?: boolean) => void;
   setEditorDirty: (b: boolean) => void;
   setLoadedPlanId: (id: string | null) => void;
@@ -809,6 +831,7 @@ export const useStore = create<AppState>((set, get) => ({
   update: null,
   principal: null, // unresolved → fail-closed viewer until loadPrincipal()
   authMethods: null, // unresolved → no login gate until loadAuthMethods() lands
+  authGate: "open", // #117 — see the slice comment: no gate screen exists yet
   plan: loadPlan(),
   editorDirty: false,
   loadedPlanId: null,
@@ -984,6 +1007,37 @@ export const useStore = create<AppState>((set, get) => ({
     } catch {
       /* keep prior value; never strip the gate on a transport blip */
     }
+  },
+
+  // #117 — THE LOAD-BEARING HALF. When the login screen takes over, everything
+  // the store is holding about the observatory goes with it: weather, status,
+  // site, previews, logs, toasts, the lot (lib/authGate.clearedRigState lists
+  // them, and says which slices are deliberately kept).
+  //
+  // Gating the one dialog we caught would have fixed one sentence. The state it
+  // was reading is the actual leak: it was delivered while the session was live
+  // and simply never dropped when the session ended, so any component that ever
+  // renders from it — today's or next month's — is one unconditional hook away
+  // from showing an unauthenticated viewer what the sky over this address is
+  // doing tonight.
+  //
+  // Only on the rising EDGE into "login" (gateEngaged), never per-commit: the
+  // login screen keeps the toast overlay mounted, and a level test would keep
+  // wiping anything raised after the edge.
+  //
+  // A pending confirm is resolved false rather than dropped: `confirm` holds a
+  // promise resolver, and clearing the slice without calling it wedges whatever
+  // call site is awaiting it (the same leak pushConfirm already guards against).
+  setAuthGate: (g) => {
+    const prev = get().authGate;
+    if (prev === g) return;
+    if (!gateEngaged(prev, g)) {
+      set({ authGate: g });
+      return;
+    }
+    const pending = get().confirm;
+    if (pending) pending.resolve(false);
+    set({ ...clearedRigState(), confirm: null, authGate: g });
   },
 
   setPlan: (p, dirty = true) => {
@@ -1222,6 +1276,21 @@ export const useStore = create<AppState>((set, get) => ({
   // wedge that call site forever (F-D1).
   pushConfirm: (req) =>
     new Promise<boolean>((resolve) => {
+      // #117 — the choke point for "no dialog fires over a gate screen". Every
+      // confirm in the app arrives here, so this is the one place the rule can
+      // be stated once and hold for call sites that do not exist yet; the
+      // weather-alert effect that leaked the forecast over the login screen was
+      // not doing anything unusual, it was just first.
+      //
+      // Refused == resolve(false), the same answer a Cancel gives, because every
+      // caller already treats false as "do not proceed" — and under a gate that
+      // is exactly right. Silent by design: an explanatory modal would be one
+      // more thing said to a viewer we have decided not to talk to
+      // (dialogBlockedReason exists for the developer reading this path).
+      if (dialogsBlocked(get().authGate)) {
+        resolve(false);
+        return;
+      }
       const prev = get().confirm;
       if (prev) prev.resolve(false);
       set({ confirm: { ...req, resolve } });
@@ -1695,6 +1764,10 @@ export const usePlan = () => useStore((s) => s.plan);
 // ============================================================================
 export const usePrincipal = () => useStore((s) => s.principal);
 export const useAuthMethods = () => useStore((s) => s.authMethods);
+/** #117: which gate screen is standing in for the console ("open" when none).
+ *  Read this — do NOT re-derive the gate — before showing a viewer anything the
+ *  rig told us. */
+export const useAuthGate = () => useStore((s) => s.authGate);
 export const useCaps = () =>
   useStore(useShallow((s) => s.principal?.caps ?? []));
 export const useBackendLinks = (): BackendLink[] =>

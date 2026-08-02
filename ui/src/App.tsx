@@ -22,6 +22,7 @@ import NotConnectedInterstitial from "./components/NotConnectedInterstitial";
 import FirstRunWizard from "./components/FirstRunWizard";
 import { useMonitorWakeLock } from "./lib/useWakeLock";
 import { useShouldShowLogin, useAuthResolving } from "./lib/caps";
+import { dialogsBlocked, type AuthGate } from "./lib/authGate";
 import Login from "./views/Login";
 import EquipmentView from "./views/EquipmentView";
 import ViewBoundary from "./components/ViewBoundary";
@@ -214,6 +215,29 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, []);
 
+  // --------------------------------------------------------- auth gate (#117)
+  // ONE value naming which screen is actually on the glass, computed in the SAME
+  // order the three returns below render them (splash first, then Login, then
+  // the console) — so the store's copy can never claim the console is up while a
+  // gate screen is. Published to the store because the things that must not
+  // speak over a gate are not all in this file: confirmDialog() is called from
+  // views, effects and the store itself, and re-deriving the gate at each of
+  // those sites is how the weather alert came to fire over the login screen in
+  // the first place (lib/authGate.ts).
+  //
+  // ORDER IS LOAD-BEARING — keep this effect above the others in this file.
+  // React runs a component's effects in declaration order, so publishing the
+  // gate first means (a) in a commit where the gate engages, the rig state is
+  // already dropped before any later effect here can read it, and (b) at boot
+  // the gate is known before connectWs() below has even opened the transport
+  // that carries rig data.
+  const splashUp = (authMethods === null || authResolving) && !authGraceElapsed;
+  const authGate: AuthGate = splashUp ? "resolving" : showLogin ? "login" : "open";
+  const setAuthGate = useStore((s) => s.setAuthGate);
+  useEffect(() => {
+    setAuthGate(authGate);
+  }, [authGate, setAuthGate]);
+
   // Hold a screen wake lock while a sequence is running OR monitorAwake is on —
   // NOT while locked (touch §8.3, R13). Reads its own narrow selectors.
   useMonitorWakeLock();
@@ -282,17 +306,32 @@ export default function App() {
   // the whole app is replaced by the full-screen Login. The WS effect above still
   // runs (hooks are unconditional), so loadAuthMethods/loadPrincipal keep polling
   // and the gate dissolves the moment a session is minted — no reload. Toasts +
-  // the confirm host stay mounted so login errors and dialogs still surface.
+  // the confirm host stay mounted: Login's own errors render inline, but the
+  // hosts are there the instant the gate lifts. Nothing the RIG has to say gets
+  // through them while it is up — pushConfirm refuses under a gate (#117) and
+  // the rig state itself is dropped the moment the gate engages.
+  //
   // High-cloud night warning popup (weather spec §12): fires once per server-
   // side once-per-night latch (weatherAlertKey bumps only on the alert
   // null -> non-null edge, store §9). Acknowledge-only (mode "ok",
   // ConfirmDialog.tsx:140-144) — the user-required hard notice; the
   // ignore-tonight override lives on the Sky Conditions / Sessions cards, not
-  // in this dialog. Non-holders never receive weather events (spec §8), so
-  // this can never fire for them.
+  // in this dialog.
+  //
+  // #117: this effect used to be justified by "non-holders never receive weather
+  // events (spec §8), so this can never fire for them". That is true of RBAC for
+  // an authenticated principal and says nothing about an UNAUTHENTICATED one:
+  // the weather was delivered while the session was live, the gate engaged
+  // afterwards (expiry / auth-epoch bump / relay reconnect), and this
+  // unconditional hook then read it out onto the login screen — peak cloud,
+  // hours, and the operator's threshold, i.e. "there is an observatory here and
+  // this is its local sky tonight". The gate check is the direct statement of
+  // that rule at the site that broke it; the store's clear is what makes it hold
+  // for the next effect somebody adds here.
   const weatherAlertKey = useWeatherAlertKey();
   useEffect(() => {
     if (weatherAlertKey === 0) return;
+    if (dialogsBlocked(useStore.getState().authGate)) return;
     const w = useStore.getState().weather;
     const a = w?.alert;
     if (!w || !a) return;
@@ -308,7 +347,10 @@ export default function App() {
     });
   }, [weatherAlertKey]);
 
-  if ((authMethods === null || authResolving) && !authGraceElapsed) {
+  // `splashUp` (not a second copy of the condition) — the store's gate value is
+  // derived from the same boolean, so "what is on screen" and "what the store
+  // thinks is on screen" are the same expression (#117).
+  if (splashUp) {
     return (
       <div className="h-full dim-content flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-dim">
