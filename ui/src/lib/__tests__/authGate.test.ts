@@ -14,11 +14,12 @@
 //      being removed), and
 //   4. an alert that arrives while the gate is up is not eaten — it is either
 //      re-offered when the gate lifts, or never consumed in the first place.
-// And one claim about the LIST rather than the behaviour:
-//   5. every slice the store actually has is either cleared by the gate or
-//      exempted on the record, checked by walking the store at runtime — see
-//      NON_RIG_KEYS. Claims 1-4 are only worth what that walk is worth: they
-//      test the slices someone thought of, and #117 was a slice nobody did.
+// And one claim about the LISTS rather than the behaviour:
+//   5. every member the store actually has is cleared by the gate, exempted on
+//      the record, or recorded as an action — three lists that must cover the
+//      store's runtime key set EXACTLY, with nothing skipped by inspecting its
+//      value. Claims 1-4 are only worth what that cover is worth: they test the
+//      slices someone thought of, and #117 was a slice nobody did.
 //
 // Run: npx tsx src/lib/__tests__/authGate.test.ts
 // No test runner is wired into this UI (build is `tsc -b && vite build`), so
@@ -272,9 +273,10 @@ test("clearedRigState hands back fresh containers, never the dropped ones", () =
 // ------------------------------------------- the other half of RIG_STATE_KEYS
 // Every store slice the gate deliberately does NOT clear, each with the reason
 // it is safe to still be holding while a stranger stands in front of the
-// sign-in form. The two tests below walk the store's own runtime key set and
-// require each slice to appear in exactly one of the two lists, so a slice
-// added to store.ts cannot default into "kept" by nobody noticing it.
+// sign-in form. The tests below walk the store's own runtime key set and require
+// every member to land in exactly one of THREE lists — cleared (RIG_STATE_KEYS),
+// exempted (here), or an action (STORE_ACTIONS) — so a slice added to store.ts
+// cannot default into "kept" by nobody noticing it.
 //
 // Reasons, not categories: a reviewer has to be able to check the claim without
 // opening store.ts. "it's a pref" is not a reason; "it is read back out of
@@ -339,13 +341,106 @@ const NON_RIG_KEYS: Record<string, string> = {
     "setAuthGate clears this one by hand because it holds a promise resolver: dropping the slice without calling resolve(false) wedges whoever is awaiting it forever. Pinned by 'a dialog already open when the gate engages is closed, not orphaned'.",
 };
 
-/** The store's slices as they actually are at cold boot, actions excluded.
- *  Actions are filtered by VALUE — they are the store's only function-valued
- *  members — so adding an action never has to be exempted as if it were state. */
+// ------------------------------------------------- what the walk may SKIP
+// The store's actions, recorded by name. This is the third list, and the walk
+// below partitions the store's runtime keys by NAME against it — not by asking
+// what each value happens to BE.
+//
+// WHY A RECORD AND NOT `typeof v !== "function"`. The first version of this walk
+// skipped members by value, on the comment "actions are the store's only
+// function-valued members". That was true when it was written (56 of them, all
+// actions) and enforced by nothing — a hand-check, sitting inside the one place
+// where being wrong makes the walk report green while checking less than it
+// says. A slice whose VALUE is a function — a formatter, a callback, a resolver
+// held at top level (the store already keeps a promise resolver one level down,
+// inside `confirm`) — would have been skipped in silence: no failure, no
+// NON_RIG_KEYS entry, no record that anyone had looked at it. That is #117's own
+// shape, reintroduced inside the check written to prevent it.
+//
+// Recorded instead, the two cases separate: adding an ACTION is a one-line edit
+// here, and adding function-valued STATE is a test failure that names the slice.
+// Order and grouping mirror store.ts's `// --- actions:` blocks so the two can
+// be diffed by eye.
+const STORE_ACTIONS: string[] = [
+  // core
+  "setView", "openHelp", "clearHelpTopic", "toggleNight", "handleEvent",
+  // calibration capture
+  "noteLightFrame", "clearLastLight",
+  // guiding assistant
+  "clearGuideAssistant",
+  // config / plan / site
+  "loadConfig", "loadUpdate", "loadMasters", "loadPrincipal", "loadAuthMethods",
+  "setAuthGate", "setPlan", "setEditorDirty", "setLoadedPlanId", "setSiteDirty",
+  "setOpticsDirty", "setSite",
+  // coach marks / first-run wizard
+  "markSeen", "resetCoach", "openWizard", "closeWizard", "setWizardStep",
+  // atlas / framing
+  "openFraming", "setFraming", "addTargetsToPlan", "dismissAtlasBanner",
+  // reliability
+  "setWsPhase", "noteWsEvent", "setTelemetryStale", "enqueueToast",
+  "dismissToast", "dismissExpired", "openLog", "closeLog", "reconcileLogs",
+  "setNotifyEnabled",
+  // confirm
+  "pushConfirm", "resolveConfirm",
+  // live preview
+  "pushPreview", "selectPreview", "setViewport", "setStretch", "setOverlays",
+  // monitor
+  "setAutoMonitor", "dismissRunBanner",
+  // touch
+  "setLocked", "setMonitorAwake", "setTouch",
+  // photometry
+  "setPhotometry",
+  // dimmer
+  "setBrightness", "resetBrightness",
+  // compat shims
+  "setWsConnected", "showToast",
+];
+
+/** The store's data slices as they actually are at cold boot: every member that
+ *  is not a recorded action. Partitioned by NAME, so a slice that happens to
+ *  hold a function is still a slice and still has to be classified.
+ *
+ *  What this still cannot see: a key that only ever exists after some later
+ *  `useStore.setState({ ... })` with a cast, since it is absent from the object
+ *  the creator returned. Every slice in store.ts today is declared there. */
 function storeSlices(): string[] {
-  const s = COLD_BOOT as unknown as Record<string, unknown>;
-  return Object.keys(s).filter((k) => typeof s[k] !== "function");
+  const actions = new Set(STORE_ACTIONS);
+  return Object.keys(COLD_BOOT as unknown as Record<string, unknown>).filter(
+    (k) => !actions.has(k),
+  );
 }
+
+test("the walk records what it skips instead of inferring it from the value", () => {
+  const s = COLD_BOOT as unknown as Record<string, unknown>;
+  eq(new Set(STORE_ACTIONS).size, STORE_ACTIONS.length, "STORE_ACTIONS has no duplicated entry");
+
+  // Forwards: nothing may be PARKED here to get out of being classified. A
+  // non-function under this name is a data slice hiding in the skip list — and
+  // this loop is also what stops the whole file passing vacuously, since it
+  // fails immediately if the store import ever hands back a bare {}.
+  for (const k of STORE_ACTIONS) {
+    assert(k in s, `STORE_ACTIONS records "${k}", which the store no longer has`);
+    assert(
+      typeof s[k] === "function",
+      `STORE_ACTIONS records "${k}", which is not a function — a data slice listed here is ` +
+        "skipped by the walk and never classified by the gate",
+    );
+  }
+
+  // Backwards: nothing function-valued may go UNrecorded, which is the case the
+  // old `typeof` filter swallowed without a sound.
+  const recorded = new Set(STORE_ACTIONS);
+  for (const [k, v] of Object.entries(s)) {
+    if (typeof v !== "function") continue;
+    assert(
+      recorded.has(k),
+      `"${k}" is a function-valued member of the store that nobody has classified. If it is an ` +
+        "action, add it to STORE_ACTIONS here. If it is STATE that happens to hold a function — a " +
+        "callback, a formatter, a promise resolver — then it is a slice like any other and the " +
+        "gate has to decide about it: cleared in lib/authGate.ts, or NON_RIG_KEYS with a reason.",
+    );
+  }
+});
 
 test("no slice can be added to the store without deciding whether the gate clears it", () => {
   // WHAT THIS REPLACES: a hardcoded list of 18 names asserted to be a subset of
@@ -367,7 +462,8 @@ test("no slice can be added to the store without deciding whether the gate clear
       `${k} is a store slice the auth gate has never been told what to do with. ` +
         "If it describes the observatory, its night, or its hardware, add it to " +
         "ClearedRigState + clearedRigState() in lib/authGate.ts; if it does not, add it " +
-        "to NON_RIG_KEYS here with the reason a stranger at the sign-in form may see it survive.",
+        "to NON_RIG_KEYS here with the reason a stranger at the sign-in form may see it survive. " +
+        "(If it is not a slice at all but a new ACTION, it belongs in STORE_ACTIONS.)",
     );
     assert(
       !(cleared.has(k) && exempt.has(k)),
