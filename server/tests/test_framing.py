@@ -193,6 +193,68 @@ def test_mosaic_route_fills_transit_alt_with_date(client):
         assert -90.0 <= p["transit_alt"] <= 90.0
 
 
+@pytest.fixture
+def cold_config(tmp_path):
+    """Hand back a callable that puts the process-wide ``config_store`` into its
+    never-loaded state on a fresh empty directory — exactly what a brand-new
+    install's first request meets."""
+    import astrodeck.config as config_mod
+    store = config_mod.config_store
+    saved_path, saved_cfg = store._path, store._cfg
+
+    def reset(n: int):
+        d = tmp_path / f"cold{n}"
+        d.mkdir()
+        store._path = d / "astrodeck.json"
+        store._cfg = None
+        return store
+
+    try:
+        yield reset
+    finally:
+        # Put the session throwaway store (conftest's
+        # _never_touch_the_real_config) back exactly as we found it: this is a
+        # singleton, and whichever test this xdist worker runs next reads it.
+        store._path, store._cfg = saved_path, saved_cfg
+
+
+def test_mosaic_fills_every_panel_when_config_has_never_been_loaded(
+        client, cold_config):
+    # Regression, and the cause of an intermittent red in
+    # test_mosaic_route_fills_transit_alt_with_date: the route fans its panels out
+    # over asyncio.to_thread, and EVERY panel reads hub.site -> the config_store
+    # singleton. When that singleton had not been materialised yet, each thread
+    # found ``_cfg is None``, each ran _load() -> _save(), and all of them wrote
+    # the one fixed "astrodeck.json.tmp"; the first os.replace consumed the tmp
+    # file and the rest raised FileNotFoundError. The route swallows a per-panel
+    # failure, so the symptom was a panel silently missing its transit_alt — the
+    # mosaic answering for some panels and saying nothing at all about the others.
+    #
+    # 8 panels = the route's semaphore width, so every worker thread races the
+    # lazy first load at once. One cold start caught the unfixed store only ~40%
+    # of the time (thread 1 often finished before thread 2 was scheduled), which
+    # is exactly how this reached CI as a flake; ten independent cold starts make
+    # it a gate. Each round must stamp all eight — a single lost panel fails.
+    for n in range(10):
+        store = cold_config(n)
+        r = client.post("/api/framing/mosaic", json={
+            "ra_hours": 0.71, "dec_deg": 41.27,
+            "rows": 2, "cols": 4, "overlap": 0.2, "rotation_deg": 0.0,
+            "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+            "date": "2026-01-15",
+        })
+        assert r.status_code == 200, r.text
+        panels = r.json()["panels"]
+        assert len(panels) == 8
+        lost = [p for p in panels if p.get("transit_alt") is None]
+        assert not lost, (
+            f"cold start {n}: {len(lost)} of 8 panels lost their transit_alt to "
+            f"the unmaterialised-config race: {lost}")
+        # ...and the cold path really ran this round, so a green here can never
+        # mean "the store was already warm and the race never had its chance".
+        assert store._cfg is not None and store._path.exists()
+
+
 def test_mosaic_route_rejects_unwrapped_center(client):
     # The input center itself must satisfy ge=0/lt=24 (the spec mirror). An out-of
     # -range center 422s at the model boundary.
