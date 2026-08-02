@@ -26,6 +26,13 @@ sensor did — the wrong row length arrives at exactly the right byte count. Wha
 catches it is the geometry read-back added to the adapters
 (``CameraAdapter.applied_roi``), covered in ``test_camera_roi_readback.py``.
 
+And the sensor really does do it, which is no longer a supposition: Player One's
+``POASetImageSize`` quantizes a width down to a multiple of 4 and returns
+POA_OK, so the 6252 px Poseidon at bin 2 asks for 3126 and reads out 3124 — the
+instructions are cited by address at ``PlayerOneSdk.ALIGN_W``. That makes the
+read-back the load-bearing check on this rig and these length guards the net
+under the NEXT brand, which is the split the tests below are written to.
+
 What the guard here is worth: it is the net under an adapter whose buffer size
 is not its own — a future brand that returns whatever the SDK hands it — and it
 names both numbers instead of leaving a ValueError inside numpy.

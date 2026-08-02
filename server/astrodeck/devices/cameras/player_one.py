@@ -91,14 +91,26 @@ class PlayerOneAdapter(CameraAdapter):
         w, h = roi.w // roi.bin, roi.h // roi.bin
         self._sdk.set_image_format(self._cam_id, w, h, roi.bin, POA_RAW16)
         self._place(roi)
-        # THE DOWNLOAD IS SIZED FROM WHAT THE CAMERA APPLIED, NOT WHAT WE ASKED.
-        # Sizing it from the request is what makes a mismatch invisible: the
+        # THE DOWNLOAD IS SIZED FROM WHAT THE CAMERA APPLIED, NOT WHAT WE ASKED,
+        # AND ON THIS BRAND THOSE ARE MEASURABLY DIFFERENT NUMBERS.
+        #
+        # POASetImageSize quantizes the width down to a multiple of 4 and the
+        # height down to a multiple of 2 and returns POA_OK -- read out of the
+        # vendored DLL's own code, cited instruction by instruction at
+        # PlayerOneSdk.ALIGN_W in player_one_sdk.py. The Poseidon-M Pro is
+        # 6252x4176, so `expose(binning=2)` asks for 3126 px per row and the
+        # sensor gives 3124. Nothing exotic reaches that: every focus sweep
+        # (autofocus, coarse and native all default to binning=2), plate solve
+        # and rotate-to-PA ask for exactly it.
+        #
+        # Sizing the buffer from the request is what made that invisible: the
         # buffer is ours, POAGetImageData fills the front of it and returns OK
         # for any buffer that is big ENOUGH, and read_frame hands back exactly
-        # len == request. So the length can never disagree with the request no
-        # matter what the sensor did, and the engine lays rows of the applied
-        # width out at the requested one — the sheared, tiled picture of
-        # 2026-07-31. Reading the geometry back is the only thing that sees it.
+        # len == request. So the length could never disagree with the request no
+        # matter what the sensor did, and the engine laid rows of 3124 out at
+        # 3126 -- every row two pixels further left than the last, the picture
+        # leaning and wrapping. Reading the geometry back is the only thing that
+        # sees it.
         self._applied = self._read_back(roi)
         aw, ah = self._binned(self._applied or roi)
         self._nbytes = aw * ah * 2

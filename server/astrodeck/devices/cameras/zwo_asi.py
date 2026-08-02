@@ -80,6 +80,20 @@ class AsiCameraAdapter(CameraAdapter):
         # request no matter what the sensor did, and the engine lays rows of the
         # applied width out at the requested one — the sheared, tiled picture of
         # 2026-07-31. Reading the geometry back is the only thing that can see it.
+        #
+        # ON ZWO SPECIFICALLY THIS IS A NET, NOT A LIVE CATCH, and saying which
+        # is which keeps the next reader from mis-scoping the search. The
+        # vendored ASICamera2.dll answers a misaligned size by FAILING it — its
+        # own diagnostics are "Failed to set height: %d, the height must be
+        # multiple of 8" and "Failed to set width: %d, height: %d. When hardware
+        # bin set, the width must be multiple of 24, height must be multiple of
+        # 4", so a violation surfaces as an ASI_ERROR through _check rather than
+        # as a quietly different frame. (Contrast Player One, which rounds down
+        # and reports success: see PlayerOneSdk.ALIGN_W.) And this rig's ASI is
+        # the 1920x1080 ASI220MM, whose full frame divides to a multiple of 8
+        # wide at every bin 1-4, so nothing here even approaches the limit. The
+        # read-back stays because it costs one call and the next ZWO body,
+        # subframe or hardware-bin mode need not be so tidy.
         self._applied = self._read_back(roi)
         aw, ah = self._binned(self._applied or roi)
         self._nbytes = aw * ah * 2

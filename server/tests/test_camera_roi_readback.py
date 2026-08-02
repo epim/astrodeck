@@ -40,13 +40,18 @@ from astrodeck.devices.base import DeviceError
 from astrodeck.devices.cameras.adapter import ROI
 from astrodeck.devices.cameras.engine import NativeCamera
 from astrodeck.devices.cameras.player_one import PlayerOneAdapter
-from astrodeck.devices.cameras.player_one_sdk import POA_RAW16, POA_RAW8
+from astrodeck.devices.cameras.player_one_sdk import (
+    POA_RAW16, POA_RAW8, PlayerOneSdk)
 from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter
 from astrodeck.devices.cameras.zwo_asi_sdk import ASI_IMG_RAW8, ASI_IMG_RAW16
 
 from test_camera_contract import CONTRACT_ADAPTERS
 
 SENSOR_W, SENSOR_H = 128, 64
+
+#: The quantization the vendored Player One DLL performs, taken from the module
+#: that cites the instructions rather than retyped here (see PoseidonSdk).
+ALIGN_W, ALIGN_H = PlayerOneSdk.ALIGN_W, PlayerOneSdk.ALIGN_H
 
 
 class _Sensor:
@@ -142,6 +147,134 @@ class FakeRoundingPoaSdk(_Sensor):
     def image_ready(self, cid): return True
     def get_image_data(self, cid, nbytes, timeout_ms=5000): return self._image(nbytes)
     def stop_exposure(self, cid): pass
+
+
+#: The Poseidon-M Pro's real sensor, read off the camera itself during the
+#: 2026-07-21 at-scope validation (docs/hardware/native-cameras-validation.md:
+#: "Poseidon 6252x4176/3.76um/16-bit/cooled"). The width matters: 6252 is a
+#: multiple of 4 and 6252//2 = 3126 is not.
+POSEIDON_W, POSEIDON_H = 6252, 4176
+
+
+class PoseidonSdk(FakeRoundingPoaSdk):
+    """The Poseidon-M Pro, rounding the way the vendored SDK is MEASURED to.
+
+    ``_apply`` is not a plausible-looking invention: it is
+    ``PlayerOneSdk.ALIGN_W``/``ALIGN_H``, which are the widths quantized by two
+    instructions read out of astrodeck/vendor/playerone/PlayerOneCamera.dll and
+    cited by address in player_one_sdk.py -- ``and esi, 0FFFFFFFCh`` on the
+    width, ``and edi, 0FFFFFFFEh`` on the height, both followed by a store of
+    the rounded value and NO error return. Importing the constants rather than
+    typing 4 and 2 here is deliberate: if the citation is ever corrected, this
+    fake changes with it instead of quietly preserving a rule the DLL no longer
+    has."""
+
+    def __init__(self, **kw):
+        kw.setdefault("sensor", (POSEIDON_W, POSEIDON_H))
+        super().__init__(**kw)
+        #: the binned size the adapter asked the SDK for, before rounding
+        self.requested: tuple[int, int] | None = None
+
+    def get_properties(self, i):
+        p = super().get_properties(i)
+        p.name = "Poseidon-M Pro"
+        return p
+
+    def _apply(self, w, h, b, fmt):
+        self.requested = (w, h)
+        # clamp to sensor/bin first, then quantize down -- the DLL's order
+        w, h = min(w, self.sw // b), min(h, self.sh // b)
+        self.applied_w = max(ALIGN_W, w - w % ALIGN_W)
+        self.applied_h = max(ALIGN_H, h - h % ALIGN_H)
+        self.applied_bin = b
+        if self.fmt is None:
+            self.fmt = fmt
+
+
+def test_the_rule_this_module_reproduces_is_the_one_the_shipped_sdk_documents():
+    """The fake is only evidence if it rounds like the DLL. This pins the two
+    constants so a drive-by edit to either cannot silently turn every Poseidon
+    test below into a test of a camera that does not exist."""
+    assert (ALIGN_W, ALIGN_H) == (4, 2)
+
+
+async def test_the_poseidon_at_bin_2_asks_for_a_width_this_sdk_will_not_give():
+    """THE REACHABLE CALL SEQUENCE, with no subframe and no unusual request in
+    it. Full frame, bin 2 -- what autofocus does by default (binning=2), and
+    what plate solve and rotate-to-PA do on every run. 6252//2 = 3126, which is
+    not a multiple of 4, so the sensor reads out 3124 and says so only if asked.
+
+    This is the exposure the whole of #110's third candidate rests on, and until
+    the DLL was read it was arithmetic about a rule nobody had checked."""
+    a = PlayerOneAdapter(sdk=PoseidonSdk())
+    cam = NativeCamera(a)
+    await cam.connect()
+    assert (cam.sensor_width, cam.sensor_height) == (POSEIDON_W, POSEIDON_H)
+
+    f = await cam.expose(0.01, gain=0, offset=0, binning=2)
+
+    assert a._sdk.requested == (3126, 2088), "what the adapter asked for"
+    assert a._sdk.applied_w == 3124, "what the sensor settled on"
+    assert a.applied_roi() == ROI(x=0, y=0, w=6248, h=4176, bin=2)
+    assert a._nbytes == 3124 * 2088 * 2
+    assert f.data.shape == (2088, 3124)
+    for y, row in enumerate(f.data):
+        assert row.min() == row.max() == y, f"row {y} is not the sensor's row {y}"
+
+
+async def test_without_the_read_back_that_same_exposure_is_the_reported_picture(said):
+    """The adapter exactly as it shipped on 2026-07-31, driven by the call
+    sequence above: the buffer is the size the request implies, nothing errors,
+    and the frame that reaches the preview, the star detector and the FITS
+    writer is sheared two pixels per row and wrapped.
+
+    Two pixels is small and that is the point -- the damage is a lean across the
+    whole field, not a tear anyone would mistake for a crash. The last 4176
+    pixels are buffer the sensor never wrote."""
+    a = PlayerOneAdapter(sdk=PoseidonSdk())
+    a._read_back = lambda roi: None
+    cam = NativeCamera(a)
+    await cam.connect()
+
+    f = await cam.expose(0.01, gain=0, offset=0, binning=2)
+
+    assert a._nbytes == 3126 * 2088 * 2, "sized from the request, as it used to be"
+    assert f.data.shape == (2088, 3126), "laid out at the request, as it used to be"
+    assert not said, "and not one word of complaint anywhere"
+
+    walked = [y for y, row in enumerate(f.data) if row.min() != row.max()]
+    assert len(walked) > 2000, f"only {len(walked)} of 2088 rows are mixed"
+    # sensor row r begins at output column (-2r) % 3126: the lean, and the wrap
+    for r in (1, 2, 100, 1563):
+        lin = r * 3124
+        assert f.data[lin // 3126, lin % 3126] == r
+        assert lin % 3126 == (-2 * r) % 3126
+    assert not f.data.ravel()[-4176:].any(), "the tail is unwritten buffer"
+    assert f.data.max() == 2087, "which is not the same as an empty frame"
+
+
+@pytest.mark.parametrize("bin_, asked, applied", [
+    (1, 6252, 6252),     # the sensor width is already a multiple of 4
+    (2, 3126, 3124),     # autofocus / plate solve / rotate-to-PA
+    (3, 2084, 2084),     # divides clean again
+    (4, 1563, 1560),     # and bites hardest here
+])
+def test_which_bins_of_this_sensor_the_quantization_bites(bin_, asked, applied):
+    """So nobody has to redo the arithmetic to know whether a report is this
+    bug. Only the bins whose full-frame width is not a multiple of 4 diverge,
+    which on a 6252 px sensor is 2 and 4 -- and bin 2 is the one the product
+    reaches for on its own."""
+    a = PlayerOneAdapter(sdk=PoseidonSdk())
+    a.open(0)
+    a.start_exposure(seconds=0.01, gain=0, offset=0, light=True,
+                     roi=ROI(x=0, y=0, w=POSEIDON_W, h=POSEIDON_H, bin=bin_))
+
+    assert a._sdk.requested[0] == asked
+    got = a.applied_roi()
+    assert got.w // got.bin == applied
+    assert (got.w == POSEIDON_W) == (asked == applied), (
+        "a divergence must change the reported field of view, and a "
+        "non-divergence must leave it alone")
 
 
 #: (brand, adapter factory over the rounding SDK, its RAW16 id, its RAW8 id).
