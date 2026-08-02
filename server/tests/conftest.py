@@ -113,3 +113,31 @@ def _reset_hub_singleton_locks():
     h._capture_lock = asyncio.Lock()
     h._motion_lock = asyncio.Lock()
     yield
+
+
+@pytest.fixture
+def bus_lines(monkeypatch):
+    """Every ``bus.log`` line a test provokes, as ``(level, message, source)``.
+
+    USE THIS, never ``bus.log_history[mark:]``.
+
+    ``EventBus._history`` is a ``deque(maxlen=200)`` shared by the whole test
+    process. The slice idiom takes ``mark = len(bus.log_history)`` and reads
+    everything after it — which works right up until the ring reaches its cap,
+    after which ``len`` is pinned at 200 and the slice is EMPTY FOREVER. The test
+    then fails with nothing wrong in its own module or in the code it exercises:
+    on 2026-08-01 three guide-preview tests went red because unrelated suites
+    (coarse focus, the native guider) had already filled the ring on that xdist
+    worker. Whether it passes depends on which worker it lands on and what ran
+    before it, which is the definition of a flake.
+
+    Capturing the call intercepts the line at its source, so nothing that
+    happens elsewhere in the process can hide it — and as a bonus the test's own
+    noise never enters the shared ring to break somebody else.
+    """
+    out: list[tuple[str, str, str]] = []
+    from astrodeck import events
+    monkeypatch.setattr(events.bus, "log",
+                        lambda level, message, source="hub": out.append(
+                            (level, message, source)))
+    return out

@@ -564,26 +564,30 @@ async def test_an_sdk_without_the_export_falls_back_rather_than_failing():
     assert f.max_position == 60000
 
 
-def _logs_since(n: int) -> list[dict]:
-    """Focuser log payloads published after mark ``n`` (bus history wraps each
-    event as {"type", "data", "ts"})."""
-    from astrodeck.events import bus
-    return [e["data"] for e in list(bus.log_history)[n:]
-            if e.get("type") == "log" and e.get("data", {}).get("source") == "focuser"]
+def _focuser_lines(captured) -> list[dict]:
+    """Focuser log payloads out of the ``bus_lines`` capture fixture.
+
+    This used to slice ``bus.log_history[mark:]``, which is wrong in a way that
+    only shows up under load: ``EventBus._history`` is a ``deque(maxlen=200)``
+    shared by the whole test process, so once the ring fills, ``len`` pins at 200
+    and the slice is empty forever. On 2026-08-01 that idiom — copied from here
+    into the guide-preview suite — turned three unrelated tests red because
+    other suites had already filled the ring on that xdist worker. Capture the
+    call instead; see the ``bus_lines`` fixture in conftest.""" 
+    return [{"level": lvl, "message": msg, "source": src}
+            for lvl, msg, src in captured if src == "focuser"]
 
 
-async def test_falling_back_to_the_hardware_max_is_said_out_loud():
+async def test_falling_back_to_the_hardware_max_is_said_out_loud(bus_lines):
     """The silent version of this fallback is indistinguishable from a healthy
     read: on the real rig `max` reported 600000 and nothing anywhere said
     whether that was the enforced limit or a failed attempt to read it. The UI
     clamps Go-to targets against this number, so an unread limit means offering
     positions the firmware will refuse without a word."""
-    from astrodeck.events import bus
-    before = len(bus.log_history)
     sdk = FakeEafSdk(max_step=60000, position=100)   # no get_max_step export
     f = zu.EafFocuser(sdk, 10)
     await f.connect()
-    said = _logs_since(before)
+    said = _focuser_lines(bus_lines)
     assert said, "a fallback to the hardware max must be announced"
     assert any(e.get("level") == "warning" for e in said), \
         f"must be a warning, not an aside: {said}"
@@ -632,14 +636,12 @@ async def test_no_configured_limit_leaves_the_device_alone():
     assert f.max_position == 360
 
 
-async def test_an_absurd_unconfigured_limit_is_called_out_with_the_fix():
+async def test_an_absurd_unconfigured_limit_is_called_out_with_the_fix(bus_lines):
     """360 steps out of 600000 is 0.06% of the travel — nobody sets that on
     purpose, and the symptom (Go does nothing) does not point at it."""
-    from astrodeck.events import bus
-    before = len(bus.log_history)
     f = zu.EafFocuser(_ClampedEafSdk(enforced=360, position=0), 10)
     await f.connect()
-    said = _logs_since(before)
+    said = _focuser_lines(bus_lines)
     warns = [e for e in said if e.get("level") == "warning"]
     assert warns, f"an implausible limit must be a warning: {said}"
     blob = " ".join(str(e.get("message", "")) for e in warns)
@@ -647,23 +649,19 @@ async def test_an_absurd_unconfigured_limit_is_called_out_with_the_fix():
     assert "max_step" in blob, f"must name the setting that fixes it: {blob}"
 
 
-async def test_a_normal_unconfigured_limit_is_not_cried_wolf_over():
-    from astrodeck.events import bus
-    before = len(bus.log_history)
+async def test_a_normal_unconfigured_limit_is_not_cried_wolf_over(bus_lines):
     f = zu.EafFocuser(_ClampedEafSdk(enforced=45000, position=0), 10)
     await f.connect()
-    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+    assert not [e for e in _focuser_lines(bus_lines) if e.get("level") == "warning"]
 
 
-async def test_a_device_that_refuses_the_limit_says_so_rather_than_pretending():
-    from astrodeck.events import bus
-    before = len(bus.log_history)
+async def test_a_device_that_refuses_the_limit_says_so_rather_than_pretending(bus_lines):
     sdk = _ClampedEafSdk(enforced=360, settable=False, position=0)
     f = zu.EafFocuser(sdk, 10, max_step=40000)
     await f.connect()
     assert f.connected, "a refused limit must not cost the focuser entirely"
     assert f.max_position == 360, "must report what the DEVICE will honour"
-    blob = " ".join(str(e.get("message", "")) for e in _logs_since(before)
+    blob = " ".join(str(e.get("message", "")) for e in _focuser_lines(bus_lines)
                     if e.get("level") == "warning")
     assert "40000" in blob and "360" in blob, f"must name both numbers: {blob}"
 
@@ -685,15 +683,13 @@ async def test_the_session_passes_the_configured_limit_to_the_focuser(monkeypatc
     assert dev._state_key == "zwo-usb-ad03"
 
 
-async def test_a_healthy_limit_read_is_also_stated():
+async def test_a_healthy_limit_read_is_also_stated(bus_lines):
     """Not only the mismatch case — a log that speaks up only on disagreement
     cannot distinguish 'agrees' from 'never asked'."""
-    from astrodeck.events import bus
-    before = len(bus.log_history)
     sdk = _ClampedEafSdk(enforced=600000, position=100)
     f = zu.EafFocuser(sdk, 10)
     await f.connect()
-    said = _logs_since(before)
+    said = _focuser_lines(bus_lines)
     assert any("600000" in str(e.get("message", "")) for e in said), \
         f"must state the limit it is using: {said}"
     assert not any(e.get("level") == "warning" for e in said), \
@@ -766,7 +762,7 @@ async def test_the_reference_must_be_inside_the_travel():
         await f.set_position_reference(99999)
 
 
-async def test_a_lost_position_count_is_reported_not_silently_accepted():
+async def test_a_lost_position_count_is_reported_not_silently_accepted(bus_lines):
     """The 2026-07-31 failure: 30000 before a reconnect, 0 after, tube unmoved,
     and every stored focus position silently 30000 steps out."""
     from astrodeck.events import bus
@@ -774,12 +770,10 @@ async def test_a_lost_position_count_is_reported_not_silently_accepted():
     f = zu.EafFocuser(sdk, 10, state_key="zwo-usb-test")
     await f.connect()
     await f.move_to(30000)                     # records 30000
-
-    before = len(bus.log_history)
     reset = _TalkativeEafSdk(enforced=40000, position=0)     # came back at zero
     f2 = zu.EafFocuser(reset, 10, state_key="zwo-usb-test")
     await f2.connect()
-    warns = [e for e in _logs_since(before) if e.get("level") == "warning"]
+    warns = [e for e in _focuser_lines(bus_lines) if e.get("level") == "warning"]
     blob = " ".join(str(e.get("message", "")) for e in warns)
     assert warns, "a lost position count must not be silent"
     assert "30000" in blob and "0" in blob, f"must give both numbers: {blob}"
@@ -787,18 +781,15 @@ async def test_a_lost_position_count_is_reported_not_silently_accepted():
         f"must say the drawtube itself did not move: {blob}"
 
 
-async def test_an_unchanged_position_says_nothing():
-    from astrodeck.events import bus
+async def test_an_unchanged_position_says_nothing(bus_lines):
     sdk = _TalkativeEafSdk(enforced=40000, position=12345, moving_seq=[True, False])
     f = zu.EafFocuser(sdk, 10, state_key="k")
     await f.connect()
     await f.move_to(12345)
-
-    before = len(bus.log_history)
     again = _TalkativeEafSdk(enforced=40000, position=12345)
     f2 = zu.EafFocuser(again, 10, state_key="k")
     await f2.connect()
-    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+    assert not [e for e in _focuser_lines(bus_lines) if e.get("level") == "warning"]
 
 
 async def test_two_focusers_do_not_overwrite_each_others_reference():
@@ -813,13 +804,11 @@ async def test_two_focusers_do_not_overwrite_each_others_reference():
     assert load_focuser_position("driver-b") == 2000
 
 
-async def test_the_first_ever_connect_is_not_a_lost_count():
-    from astrodeck.events import bus
-    before = len(bus.log_history)
+async def test_the_first_ever_connect_is_not_a_lost_count(bus_lines):
     f = zu.EafFocuser(_TalkativeEafSdk(enforced=40000, position=5000), 10,
                       state_key="fresh")
     await f.connect()
-    assert not [e for e in _logs_since(before) if e.get("level") == "warning"]
+    assert not [e for e in _focuser_lines(bus_lines) if e.get("level") == "warning"]
 
 
 async def test_describe_says_whether_the_firmware_answers_diagnostics():

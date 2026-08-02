@@ -39,6 +39,10 @@ class NativeCamera(Camera):
         self._lock = asyncio.Lock()
         self._caps = None
         self._exposing = False
+        #: Geometry mismatches already reported for THIS camera. A rounding
+        #: sensor mismatches on every frame; without this the warning would
+        #: evict the whole 200-line run log in minutes. See _layout_roi.
+        self._roi_complaints: set = set()
 
     async def _run(self, fn, *a):
         """Run a sync adapter hook off the event loop, serialized per device."""
@@ -103,7 +107,7 @@ class NativeCamera(Camera):
             self._exposing = False
         raw = await asyncio.to_thread(self._a.read_frame)
         applied = await asyncio.to_thread(self._a.applied_roi)
-        roi = self._layout_roi(roi, applied)
+        roi = self._layout_roi(roi, applied, self._roi_complaints)
         data = self._shape(raw, roi, caps)
         temp = await self.get_temperature()
         return CameraFrame(
@@ -119,7 +123,8 @@ class NativeCamera(Camera):
         return (r.w // r.bin, r.h // r.bin, r.bin, r.x // r.bin, r.y // r.bin)
 
     @classmethod
-    def _layout_roi(cls, requested: ROI, applied: ROI | None) -> ROI:
+    def _layout_roi(cls, requested: ROI, applied: ROI | None,
+                    seen: set | None = None) -> ROI:
         """The geometry the download must be laid out at.
 
         The request is what we asked the sensor for; ``applied`` is what the
@@ -131,9 +136,29 @@ class NativeCamera(Camera):
         marks and the mosaic tiling are all placed from these numbers."""
         if applied is None or cls._geometry(applied) == cls._geometry(requested):
             return requested
-        from ...events import bus
         aw, ah, ab, ax, ay = cls._geometry(applied)
         rw, rh, rb, rx, ry = cls._geometry(requested)
+
+        # ONCE PER DISTINCT MISMATCH, not once per frame.
+        #
+        # A geometry mismatch is a persistent property of a camera and an ROI,
+        # not an event: a sensor that rounds a width rounds it on every single
+        # exposure. Unthrottled, the guide preview alone (polled every 2.5s)
+        # writes ~24 identical lines a minute into bus._history, a
+        # deque(maxlen=200) — so in about eight minutes one repeated sentence
+        # has evicted the entire run log, the UI log drawer that renders it, and
+        # the night log on disk. That is the moment an operator most needs the
+        # log, and the flood would arrive precisely when something is wrong.
+        #
+        # ``seen`` is the caller's memory (one set per camera). Absent, this
+        # always speaks — a bare call has no history to consult, and a silent
+        # default would make the mismatch invisible to anyone calling directly.
+        key = (aw, ah, ab, ax, ay, rw, rh, rb, rx, ry)
+        if seen is not None:
+            if key in seen:
+                return applied
+            seen.add(key)
+        from ...events import bus
         bus.log("warning",
                 f"camera applied {aw}x{ah} bin {ab} at ({ax},{ay}) after being "
                 f"asked for {rw}x{rh} bin {rb} at ({rx},{ry}); the frame is laid "

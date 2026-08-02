@@ -141,3 +141,34 @@ def test_the_same_geometry_expressed_differently_is_not_a_disagreement():
     requested = ROI(x=0, y=0, w=6253, h=4176, bin=2)     # binned 3126
     applied = ROI(x=0, y=0, w=6252, h=4176, bin=2)       # binned 3126 too
     assert NativeCamera._layout_roi(requested, applied) is requested
+
+
+def test_a_persistent_geometry_mismatch_is_reported_once_not_per_frame(said):
+    """A rounding sensor mismatches on EVERY exposure. Unthrottled, the guide
+    preview's 2.5s poll writes ~24 identical lines a minute into bus._history —
+    a deque(maxlen=200) — so in about eight minutes one repeated sentence has
+    evicted the entire run log, the UI log drawer, and the night log on disk.
+    That is exactly when an operator needs the log."""
+    requested = ROI(x=0, y=0, w=6252, h=4176, bin=2)
+    applied = ROI(x=0, y=0, w=6248, h=4176, bin=2)
+    seen: set = set()
+    for _ in range(50):
+        assert NativeCamera._layout_roi(requested, applied, seen) is applied
+    assert len(said) == 1, f"one mismatch, {len(said)} log lines"
+
+
+def test_a_DIFFERENT_mismatch_still_speaks():
+    """Deduplication must not become silence: a new geometry is new news."""
+    seen: set = set()
+    a = ROI(x=0, y=0, w=6252, h=4176, bin=2)
+    NativeCamera._layout_roi(a, ROI(x=0, y=0, w=6248, h=4176, bin=2), seen)
+    NativeCamera._layout_roi(a, ROI(x=0, y=0, w=6240, h=4176, bin=2), seen)
+    assert len(seen) == 2
+
+
+def test_without_a_memory_it_always_speaks():
+    """A bare call has no history to consult, so a silent default would make the
+    mismatch invisible to anyone calling directly."""
+    requested = ROI(x=0, y=0, w=6252, h=4176, bin=2)
+    applied = ROI(x=0, y=0, w=6248, h=4176, bin=2)
+    assert NativeCamera._layout_roi(requested, applied) is applied

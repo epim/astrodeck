@@ -547,22 +547,18 @@ async def test_the_delivered_frame_verdict_expires_like_the_reason(monkeypatch):
 # ------------------------------------- the exposure leaves a trace (#115)
 
 
-async def test_the_preview_writes_one_log_line_per_change_of_outcome():
+async def test_the_preview_writes_one_log_line_per_change_of_outcome(bus_lines):
     """Half the cost of diagnosing the black frame was that the run log had
     NOTHING about the request — no exposure, no error — so "was the camera even
     asked?" could only be answered from the response bytes. One line per
     transition answers it; a line per request would bury the log, since the
     panel re-requests every 2.5s."""
-    from astrodeck.events import bus
-
     hub = Hub()
     cam = _FakeGuideCam()
     hub.devices["guide_camera"] = cam
-    at = len(bus.log_history)
 
     def guide_lines():
-        return [e["data"]["message"] for e in bus.log_history[at:]
-                if e["data"]["source"] == "guide"]
+        return [m for _lvl, m, src in bus_lines if src == "guide"]
 
     await hub.guide_preview_png()
     await hub.guide_preview_png()
@@ -623,23 +619,19 @@ async def test_a_reconnected_camera_is_exposed_rather_than_joining_the_old_one()
 # which is worse than the silence it replaced.
 
 
-async def test_a_guider_that_returns_a_blank_image_is_refused_like_the_camera():
+async def test_a_guider_that_returns_a_blank_image_is_refused_like_the_camera(bus_lines):
     """PHD2 handing back a uniform star image is the same event as an empty
     camera buffer, one encode later: bytes that render as a rectangle. The hub
     only ever sees a guider's frame already stretched and encoded, so it asks
     the same question of the pixels it can decode."""
-    from astrodeck.events import bus
-
     hub = Hub()
     hub.guider = _Guider(_guider_png(np.zeros((60, 60), dtype="uint16")))
-    at = len(bus.log_history)
 
     png, reason = await hub.guide_preview_png()
     assert png is None, "an image with no variation is not a guide field"
     assert "PHD2" in reason and "no variation" in reason
     assert "reads 0" in reason
-    guide_lines = [e["data"]["message"] for e in bus.log_history[at:]
-                   if e["data"]["source"] == "guide"]
+    guide_lines = [m for _lvl, m, src in bus_lines if src == "guide"]
     assert guide_lines, "the guider path used to leave no trace at all"
 
 
@@ -657,7 +649,7 @@ async def test_a_blank_guider_image_never_publishes_that_a_frame_arrived():
     assert "no variation" in gc["preview_reason"]
 
 
-async def test_a_guider_image_with_a_star_in_it_is_served_and_vouched_for():
+async def test_a_guider_image_with_a_star_in_it_is_served_and_vouched_for(bus_lines):
     """The other half of the same rule: a real guider frame must still reach the
     panel, and must be distinguishable from a guider nobody has asked yet."""
     from astrodeck.events import bus
@@ -666,15 +658,13 @@ async def test_a_guider_image_with_a_star_in_it_is_served_and_vouched_for():
     star[30, 30] = 40000
     hub = Hub()
     hub.guider = _Guider(_guider_png(star))
-    at = len(bus.log_history)
 
     png, reason = await hub.guide_preview_png()
     assert png and png[:8] == b"\x89PNG\r\n\x1a\n", reason
     assert reason == ""
     gc = (await hub.poll_status())["guide_camera"]
     assert gc["preview_ok"] is True
-    lines = [e["data"]["message"] for e in bus.log_history[at:]
-             if e["data"]["source"] == "guide"]
+    lines = [m for _lvl, m, src in bus_lines if src == "guide"]
     # The level SPAN is what separates a picture from a rectangle, the same way
     # the ADU range does on the camera path. Its exact ends belong to the display
     # stretch, so assert the span exists rather than pinning the pipeline.
