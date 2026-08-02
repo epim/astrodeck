@@ -12,7 +12,10 @@ Coverage (per the sub-batch brief / spec §5):
   * a high-dec center (+69 M81) -> finite panel coords + a sane tangent-plane
     total FOV (NOT raw degrees of RA);
   * boustrophedon (snake) panel order;
-  * a Target round-trips when built from a panel (ra_hours passes ge=0/lt=24).
+  * a Target round-trips when built from a panel (ra_hours passes ge=0/lt=24);
+  * per-panel transit altitude: asked for by a named ``date`` or by
+    ``transit_alt`` (tonight), silent when neither is asked for, and always
+    naming its cause on a panel it could not answer for.
 """
 from __future__ import annotations
 
@@ -191,6 +194,98 @@ def test_mosaic_route_fills_transit_alt_with_date(client):
     for p in panels:
         assert "transit_alt" in p
         assert -90.0 <= p["transit_alt"] <= 90.0
+
+
+def test_transit_alt_flag_answers_for_tonight_without_naming_a_night(client):
+    # The Atlas asks for TONIGHT, and it cannot do that by echoing
+    # VisibilityNight.date back: compute_night reports the UTC date of the
+    # night's solar-midnight anchor, while _night_anchor_unix reads a date as
+    # the civil date of the EVENING and adds 24h, so at every longitude <= 0 the
+    # echo lands a whole night late. `transit_alt: true` is the way to say
+    # "tonight" that has no date in it to drift.
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "transit_alt": True,
+    })
+    assert r.status_code == 200, r.text
+    panels = r.json()["panels"]
+    assert len(panels) == 2
+    for p in panels:
+        assert "transit_alt" in p, p
+        assert -90.0 <= p["transit_alt"] <= 90.0
+
+
+def test_a_mosaic_nobody_asked_a_night_about_stays_silent_rather_than_guessing(
+        client):
+    # Neither flag => no altitudes and, just as importantly, no transit_alt_error
+    # either. "We tried and could not" and "you never asked" are different
+    # answers, and the client distinguishes them by the presence of the error
+    # key; a route that stamped a reason here would make every plain Send look
+    # like a failure. This is also the route's astropy budget: Send posts this
+    # exact shape for up to 100 panels.
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 2, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+    })
+    assert r.status_code == 200, r.text
+    for p in r.json()["panels"]:
+        assert "transit_alt" not in p
+        assert "transit_alt_error" not in p
+
+
+def test_tonight_flag_still_names_the_reason_when_a_panel_fails(
+        client, monkeypatch):
+    # The reason channel has to survive on the path the UI actually uses. The
+    # Atlas reads transit_alt_error to put a stated cause where an altitude
+    # would be, so a failure in the `transit_alt: true` mode that dropped the key
+    # would put the blank cell straight back on the screen.
+    from astrodeck.catalog import visibility
+
+    def _boom(ra_hours, dec_deg, *, date=None, site=None):
+        raise OSError("ephemeris table unreadable")
+
+    monkeypatch.setattr(visibility, "transit_alt_for", _boom)
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 3, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "transit_alt": True,
+    })
+    assert r.status_code == 200, r.text
+    panels = r.json()["panels"]
+    assert len(panels) == 3
+    for p in panels:
+        assert "transit_alt" not in p
+        assert "OSError" in p["transit_alt_error"]
+        assert "ephemeris table unreadable" in p["transit_alt_error"]
+
+
+def test_a_named_date_beats_the_tonight_flag_rather_than_being_ignored(
+        client, monkeypatch):
+    # Both set: the named night wins, because that is the one the caller can be
+    # holding a chart of. A silent downgrade to tonight would be the same
+    # wrong-night bug the flag exists to avoid, just from the other direction.
+    from astrodeck.catalog import visibility
+
+    seen: list[str | None] = []
+    real = visibility.transit_alt_for
+
+    def _spy(ra_hours, dec_deg, *, date=None, site=None):
+        seen.append(date)
+        return real(ra_hours, dec_deg, date=date, site=site)
+
+    monkeypatch.setattr(visibility, "transit_alt_for", _spy)
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "date": "2026-01-15", "transit_alt": True,
+    })
+    assert r.status_code == 200, r.text
+    assert seen == ["2026-01-15", "2026-01-15"]
 
 
 @pytest.fixture

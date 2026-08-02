@@ -41,10 +41,11 @@ RHO_EPS = 1e-12
 # ----------------------------------------------------------------- request model
 
 class MosaicSpecIn(BaseModel):
-    """Mirrors the TS ``MosaicSpec`` (``ui/src/types.ts``) plus an optional
-    ``date`` so each panel's ``transit_alt`` can be filled from the visibility
-    module. ``pixel_size_um`` is optional — supplied only when the caller wants a
-    derived ``pixel_scale_arcsec`` in the result (the client computes its own)."""
+    """Mirrors the TS ``MosaicSpec`` (``ui/src/types.ts``) plus the two ways to
+    ask for per-panel ``transit_alt`` — ``date`` (a named night) or
+    ``transit_alt`` (tonight). ``pixel_size_um`` is optional — supplied only when
+    the caller wants a derived ``pixel_scale_arcsec`` in the result (the client
+    computes its own)."""
     ra_hours: float = Field(ge=0, lt=24)
     dec_deg: float = Field(ge=-90, le=90)
     rows: int = Field(1, ge=1, le=10)
@@ -55,6 +56,19 @@ class MosaicSpecIn(BaseModel):
     fov_y_deg: float = Field(gt=0)
     # optional — drives per-panel transit_alt when present + visibility available
     date: str | None = None
+    # Ask for TONIGHT's peak altitude per panel WITHOUT naming a night.
+    #
+    # It has to be its own flag because ``VisibilityNight.date`` cannot be
+    # replayed into ``date`` above: ``visibility.compute_night`` reports the UTC
+    # date of the night's solar-midnight anchor, while ``_night_anchor_unix``
+    # reads ``date`` as the civil date of the EVENING and adds 24 h. Measured at
+    # every longitude <= 0 that round-trip lands one whole night late (lon -120:
+    # anchor 2026-08-02T08:00Z is reported as "2026-08-02", which replays as
+    # 2026-08-03T08:00Z). A client echoing the date back would have been handed
+    # TOMORROW night's altitudes under tonight's chart — a plausible wrong
+    # answer, which this module already treats as worse than an error. Asking
+    # for "tonight" out loud is the only version that cannot drift.
+    transit_alt: bool = False
     # optional — only to derive pixel_scale_arcsec in the result
     pixel_size_um: float | None = None
     focal_length_mm: float | None = None
@@ -179,9 +193,10 @@ def _why(e: BaseException) -> str:
     return f"{type(e).__name__}: {detail}" if detail else type(e).__name__
 
 
-async def _stamp_transit_alt(panels: list[dict], date: str) -> None:
-    """Fill each panel's ``transit_alt`` for ``date``, and where that is
-    impossible put the REASON on the panel as ``transit_alt_error``.
+async def _stamp_transit_alt(panels: list[dict], date: str | None) -> None:
+    """Fill each panel's ``transit_alt`` for ``date`` (``None`` = tonight), and
+    where that is impossible put the REASON on the panel as
+    ``transit_alt_error``.
 
     This was two bare ``except Exception`` swallows that logged nothing and said
     nothing: a panel that failed simply had no ``transit_alt`` key, so the mosaic
@@ -198,8 +213,8 @@ async def _stamp_transit_alt(panels: list[dict], date: str) -> None:
     any client got tonight's altitudes labelled as the night it asked for.
     """
     try:
-        # Lazy: visibility pulls astropy + the hub/auth stack, and a mosaic with
-        # no date must not pay for it.
+        # Lazy: visibility pulls astropy + the hub/auth stack, and a mosaic that
+        # asked for neither a night nor tonight must not pay for it.
         from .visibility import check_night_date, transit_alt_for
     except Exception as e:  # noqa: BLE001 - report it; never fail the mosaic
         why = _why(e)
@@ -208,12 +223,12 @@ async def _stamp_transit_alt(panels: list[dict], date: str) -> None:
             p["transit_alt_error"] = f"visibility unavailable ({why})"
         return
 
+    # None/"" past this point means TONIGHT — and reaching here at all means the
+    # route saw ``transit_alt=true``, i.e. the caller asked for tonight in words.
+    # That gate replaces the blanket early-return this used to do: a caller that
+    # merely FORGOT its date still gets nothing, so it can never be handed
+    # tonight's altitudes labelled as the night it thought it asked for.
     date = check_night_date(date)
-    if date is None:
-        # Only an empty date reaches here, and the route already filtered that.
-        # Kept so a future caller cannot slip a None through and be handed
-        # TONIGHT's altitudes for a night it did not ask about.
-        return
 
     # Bound the fan-out: up to rows*cols (<=100) panels must not all hit the
     # shared default executor at once (starves config/plan disk I/O).
@@ -251,14 +266,19 @@ async def _stamp_transit_alt(panels: list[dict], date: str) -> None:
 async def post_mosaic(spec: MosaicSpecIn) -> dict:
     """Canonical mosaic for ``MosaicSpecIn`` -> ``MosaicResult``.
 
-    When ``spec.date`` is provided, each panel's ``transit_alt`` is filled with
-    its **peak altitude that night** (NOT the instantaneous "now" alt); a panel
-    the visibility module could not answer for carries ``transit_alt_error``
-    saying why. astropy transforms run off the event loop.
+    With ``spec.date`` (a named night) or ``spec.transit_alt`` (tonight), each
+    panel's ``transit_alt`` is filled with its **peak altitude that night** (NOT
+    the instantaneous "now" alt); a panel the visibility module could not answer
+    for carries ``transit_alt_error`` saying why. astropy transforms run off the
+    event loop.
+
+    Neither flag => no altitudes AND no error keys. Silence is the right answer
+    to a question nobody asked; the Atlas "Send to Plan" path posts exactly this
+    shape and must not pay for astropy on up to 100 panels.
     """
     result = compute_mosaic(spec)
 
-    if spec.date:
+    if spec.date or spec.transit_alt:
         await _stamp_transit_alt(result["panels"], spec.date)
 
     return result
