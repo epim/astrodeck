@@ -188,8 +188,14 @@ class NativeCamera(Camera):
         # sky frame in tests/test_camera_roi_shear.py, where it matches the words
         # of the 2026-07-31 report ("distorted and stretched and shown at an
         # angle. And tiled") — but NOT its other half: the same array goes to the
-        # FITS, and that report said the FITS was clean. #110 is not closed on
-        # this; the width the SDK actually applied is the measurement that would.
+        # FITS, and that report said the FITS was clean.
+        #
+        # The mechanism itself is no longer in doubt. Player One's
+        # POASetImageSize quantizes a width down to a multiple of 4 and reports
+        # success (the instructions are cited at PlayerOneSdk.ALIGN_W), and the
+        # Poseidon-M Pro at bin 2 asks for 3126 and gets 3124. What is still
+        # unaccounted for is the clean FITS, and the layout is decided in
+        # _layout_roi above, not here.
         #
         # But the LENGTH cannot detect it, and this is worth being blunt about
         # because it looks like it can. Both vendor adapters allocate the
