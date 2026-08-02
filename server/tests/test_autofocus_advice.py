@@ -410,3 +410,52 @@ async def test_legacy_fit_lets_the_richest_frames_decide(monkeypatch):
     assert abs(res.best_position - true_focus) < abs(unweighted - true_focus), \
         f"weighted {res.best_position} vs unweighted {unweighted:.0f}"
     assert abs(res.best_position - true_focus) <= 100, res.best_position
+
+
+@native_only
+async def test_a_sweep_that_wanders_out_of_its_window_is_stopped(monkeypatch):
+    """A BOUNDED SWEEP MUST NOT BECOME AN UNBOUNDED WALK.
+
+    2026-08-01, on the sky: a run asked for step 200 with 5 points each side —
+    a window of 9500..11500 — and marched to 6900, still descending when a human
+    halted it. Its size metric was inverted on that sparse field, so every step
+    away from focus read "better" and the search believed it.
+
+    Unattended that drives the drawtube at a mechanical stop the EAF's firmware
+    cannot report (3.3.8 answers NOT_SUPPORTED to EAFGetErrorCode), so nothing
+    downstream would have noticed either. Extending past the requested points to
+    bracket a minimum is legitimate; leaving the neighbourhood is not.
+    """
+    _rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+
+    # An engine that only ever wants to go further down, exactly as the real one
+    # did when its metric inverted.
+    class Runaway:
+        def __init__(self, cfg, start_pos):
+            self._p = start_pos
+
+        def next(self):
+            self._p -= 200
+            return {"action": "move_to", "position": self._p}
+
+        def add_measurement(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(N._native, "FocusSweep", Runaway)
+    monkeypatch.setattr(N._native, "detect_and_measure",
+                        lambda data, params: ([], {"star_count": 40,
+                                                   "hfr_median": 3.0,
+                                                   "hfr_mad": 0.2}))
+
+    res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                       step=200, steps_each_side=5, binning=2)
+
+    assert res.success is False
+    # The leash is 2x the requested half-span (5 * 200 = 1000), so it may reach
+    # start-2000 and no further.
+    assert await foc.get_position() == start, \
+        "a stopped sweep must put the focuser back where it started"
+    assert "outside the window" in res.message, res.message
+    assert str(start - 2 * 1000) in res.message or "9" in res.message, res.message
+    assert res.advice and "smaller the further out" in res.advice, res.advice
