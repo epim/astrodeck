@@ -36,14 +36,18 @@ import type {
 } from "./types";
 import { accumulateLight, type LightSnapshot } from "./lib/calibration";
 import type { MasterRow } from "./lib/calibrationLibrary";
-// #117: the sign-in gate's two rules — nothing speaks while a gate screen is up,
-// and the store stops holding the rig the moment the gate engages — live in ONE
-// pure module. EMPTY_SEQUENCE/EMPTY_POLAR/EMPTY_NINA_HEALTH come from there too,
+// #117: the sign-in gate's three rules — nothing SPEAKS while a gate screen is
+// up, the store DROPS the rig when the gate engages, and it stops TAKING THE RIG
+// IN while the gate stays up — live in ONE pure module. This file holds all
+// three choke points: announcementsBlocked in enqueueToast / pushConfirm /
+// announce(), intakeBlocked at the top of handleEvent, gateEngaged in
+// setAuthGate. EMPTY_SEQUENCE/EMPTY_POLAR/EMPTY_NINA_HEALTH come from there too,
 // so "cleared" and "cold boot" are the same state by construction.
 import {
+  announcementsBlocked,
   clearedRigState,
-  dialogsBlocked,
   gateEngaged,
+  intakeBlocked,
   EMPTY_NINA_HEALTH,
   EMPTY_POLAR,
   EMPTY_SEQUENCE,
@@ -798,6 +802,25 @@ let alertKey = 0;
 let linkDownTimer: ReturnType<typeof setTimeout> | null = null;
 const LINK_DOWN_ALERT_MS = 30000;
 
+// #117 — the rig's OTHER voice, and the one that reaches furthest. notifyAndBeep
+// raises an OS Notification and an audible beep, which leave the page entirely:
+// no overlay, no mounted tree, nothing the login screen can cover. The
+// link-down alert in particular needs NO open socket to fire — it runs off a
+// 30s timer armed when wsPhase goes "down", which is exactly what happens once
+// the gate engages and every reconnect starts getting refused, so blocking
+// intake does not reach it. Left unguarded it announces "AstroDeck disconnected
+// — The display lost the server for 30s — the rig keeps running" to whoever is
+// standing in front of the sign-in form, plus a beep. One wrapper so the three
+// call sites cannot each forget it.
+function announce(
+  state: { notifyEnabled: boolean; authGate: AuthGate },
+  title: string,
+  body: string,
+): void {
+  if (announcementsBlocked(state.authGate)) return;
+  notifyAndBeep(state, title, body);
+}
+
 // Hydrate the persisted preview toggles once at module load (mirrors loadPlan()).
 const PREVIEW_PERSISTED = loadPreviewPersisted();
 
@@ -1021,9 +1044,15 @@ export const useStore = create<AppState>((set, get) => ({
   // from showing an unauthenticated viewer what the sky over this address is
   // doing tonight.
   //
+  // This is only HALF of rule 2. Emptying the slices while the socket keeps
+  // delivering into them is a two-second clear; handleEvent's intakeBlocked
+  // guard is what keeps them empty. Neither is sufficient alone.
+  //
   // Only on the rising EDGE into "login" (gateEngaged), never per-commit: the
-  // login screen keeps the toast overlay mounted, and a level test would keep
-  // wiping anything raised after the edge.
+  // clear exists to drop what the PREVIOUS session left behind, exactly once. A
+  // level test would re-run it on every commit while the login screen is up,
+  // which reads as "keep the rig state empty" but is really a second, weaker
+  // copy of the intake guard sitting in the wrong place.
   //
   // A pending confirm is resolved false rather than dropped: `confirm` holds a
   // promise resolver, and clearing the slice without calling it wedges whatever
@@ -1150,7 +1179,7 @@ export const useStore = create<AppState>((set, get) => ({
         linkDownTimer = setTimeout(() => {
           linkDownTimer = null;
           if (get().wsPhase !== "up") {
-            notifyAndBeep(
+            announce(
               get(),
               "AstroDeck disconnected",
               "The display lost the server for 30s — the rig keeps running.",
@@ -1169,6 +1198,18 @@ export const useStore = create<AppState>((set, get) => ({
 
   enqueueToast: (input) =>
     set((s) => {
+      // #117 — the choke point for rule 1 on the OTHER overlay the gate screens
+      // keep mounted. A toast is a sentence about the rig: "UNSAFE: rain
+      // detected", "Sequence failed: mount lost — check the mount's USB cable",
+      // a humanized error log line naming a device. Gating the confirm host and
+      // leaving this open would have moved the leak one overlay to the left.
+      //
+      // Blanket, not per-producer, because the producers are the part that keeps
+      // being added to. Safe to be blanket today: Login raises its errors in its
+      // own inline `err` state (views/Login.tsx), never through the queue, so
+      // there is no gate-screen message this can swallow. If one is ever added,
+      // it needs its own exemption HERE rather than a second toast path.
+      if (announcementsBlocked(s.authGate)) return {} as Partial<AppState>;
       const now = Date.now();
       const level = input.level;
       const kind = input.kind ?? "generic";
@@ -1257,7 +1298,16 @@ export const useStore = create<AppState>((set, get) => ({
   closeLog: () => set({ logOpen: false }),
 
   reconcileLogs: (history) =>
-    set(() => {
+    set((s) => {
+      // #117 — the one rig-state write that does NOT come through handleEvent,
+      // so it needs the intake rule stated again here. ws.onopen fetches
+      // /api/logs and awaits it; if the gate engages inside that await, this
+      // would drop 200 lines naming this rig's devices and failures straight
+      // into the drawer behind the sign-in screen. Narrow window, free to close.
+      // (Safe on the way back in: the post-login reconnect opens a NEW socket,
+      // and its onopen cannot beat App's gate publish — a WS handshake is a
+      // network round trip, the effect is the same tick as the state change.)
+      if (intakeBlocked(s.authGate)) return {} as Partial<AppState>;
       // Refill the drawer from /api/logs after a reconnect; do NOT retroactively
       // inflate unseenError (we can't know which the user already saw).
       const logs = history.slice(-200);
@@ -1286,8 +1336,8 @@ export const useStore = create<AppState>((set, get) => ({
       // caller already treats false as "do not proceed" — and under a gate that
       // is exactly right. Silent by design: an explanatory modal would be one
       // more thing said to a viewer we have decided not to talk to
-      // (dialogBlockedReason exists for the developer reading this path).
-      if (dialogsBlocked(get().authGate)) {
+      // (gateBlockedReason exists for the developer reading this path).
+      if (announcementsBlocked(get().authGate)) {
         resolve(false);
         return;
       }
@@ -1425,6 +1475,27 @@ export const useStore = create<AppState>((set, get) => ({
 
   // ------------------------------------------------------------------ events
   handleEvent: (ev) => {
+    // #117 — rule 3, and the reason the clear in setAuthGate is worth anything.
+    // This is the ONE door every piece of rig telemetry comes through (the WS
+    // frame handler, the reconnect snapshot, and the panels' cold GETs all route
+    // here on purpose), so it is the one place "the store stops holding the rig"
+    // can be made to mean "and stops re-acquiring it".
+    //
+    // Without this, the clear lasts about two seconds. Pressing Sign out does
+    // NOT close the socket — nothing on that path calls reconnectWs — and the
+    // server only re-authenticates an open /ws every 60s (WS_AUTH_RECHECK_S), so
+    // until that check fires it is still serving the PRE-logout principal, i.e.
+    // unredacted. hub publishes `status` every 2s. The next frame would restore
+    // the site name and its precise coordinates, where the mount is pointed and
+    // what is connected, then weather, previews and error toasts — behind the
+    // sign-in form, for up to a minute.
+    //
+    // Dropped, not queued: a frame is a snapshot of a moment that has passed by
+    // the time anyone signs back in, and replaying a minute of stale rig state
+    // into a fresh session is its own wrong reading. The socket re-hydrates on
+    // reconnect (ws.onopen: config, logs, the monitor snapshot) and App
+    // re-fetches weather on the gate lift — see lib/authGate.ts.
+    if (intakeBlocked(get().authGate)) return;
     switch (ev.type) {
       case "status": {
         const status = ev.data as unknown as RigStatus;
@@ -1645,9 +1716,9 @@ export const useStore = create<AppState>((set, get) => ({
               ? { label: "How to fix →", kind: "openHelp", topic: diag.topic }
               : { label: "View log", kind: "openLog" },
           });
-          notifyAndBeep(get(), diag.title, diag.fix);
+          announce(get(), diag.title, diag.fix);
         } else if (seq.state === "complete" && prevState !== "complete") {
-          notifyAndBeep(
+          announce(
             get(),
             "Sequence complete",
             `${seq.progress?.frames_done ?? 0} frames captured`,
