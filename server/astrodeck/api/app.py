@@ -3396,6 +3396,18 @@ def create_app() -> FastAPI:
             tel = hub.require("telescope")
             async with hub._motion_lock:
                 await tel.park()
+            # PARK IS THE ONE EVENT AN UNATTENDED NIGHT MUST BE ABLE TO PROVE.
+            #
+            # Until 2026-08-02 this path wrote nothing anywhere. The morning
+            # question "did the rig park itself, or did I leave it tracking into
+            # the Sun?" was unanswerable from the night log: the mount sat at the
+            # pole with tracking off and not one line said how it got there, so
+            # the log could not distinguish a working failsafe from a lucky
+            # coincidence. The roof path next door has always passed log=bus.log
+            # into close_observatory for exactly this reason.
+            #
+            # Logged AFTER the await, so the line means "parked", not "asked to".
+            bus.log("info", "mount parked", "mount")
         return _spawn("goto", _park(), replace=True)
 
     @app.post("/api/mount/home", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -3425,6 +3437,7 @@ def create_app() -> FastAPI:
             t = hub.require("telescope")
             async with hub._motion_lock:
                 await t.find_home()
+            bus.log("info", "mount homed", "mount")   # see park, above
         return _spawn("goto", _home(), replace=True)
 
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
@@ -3433,6 +3446,11 @@ def create_app() -> FastAPI:
         try:
             tel = hub.require("telescope")
             await tel.unpark()
+            # The counterpart to the park line: without it the log shows a rig
+            # that parked and then, with no entry between, is somehow moving
+            # again. Unpark is what makes the mount free to slew, so it belongs
+            # in the same audit trail.
+            bus.log("info", "mount unparked", "mount")
             return {"ok": True}
         except DeviceError as e:
             raise _err(e)

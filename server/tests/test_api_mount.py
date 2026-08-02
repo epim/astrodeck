@@ -124,3 +124,67 @@ async def test_hub_status_includes_tracking_rate_when_connected():
     assert status["mount"]["tracking_rate"] == "sidereal"
     assert status["mount"]["can_set_tracking_rate"] is True
     await hub.disconnect_all()
+
+
+# ------------------------------------------------- park/home/unpark are audited
+
+class _ParkableTel(_Tel):
+    """A mount that parks, homes and unparks without complaint."""
+
+    can_find_home = True
+
+    def __init__(self):
+        super().__init__()
+        self.did: list[str] = []
+
+    async def park(self) -> None:
+        self.did.append("park")
+
+    async def find_home(self) -> None:
+        self.did.append("home")
+
+    async def unpark(self) -> None:
+        self.did.append("unpark")
+
+
+@pytest.mark.parametrize("route,verb,line", [
+    ("/api/mount/park", "park", "mount parked"),
+    ("/api/mount/home", "home", "mount homed"),
+    ("/api/mount/unpark", "unpark", "mount unparked"),
+])
+def test_park_home_unpark_are_written_to_the_night_log(
+        client, monkeypatch, bus_lines, route, verb, line):
+    """Each of these leaves a line, because the morning question is auditable.
+
+    On 2026-08-02 the mount was found parked at the pole with tracking off and
+    the night log held NOTHING about it: no park, no home, no failsafe. The rig
+    was fine, but the log could not say so -- an unattended session could not
+    distinguish "the failsafe worked" from "it happened to end up there". park()
+    was called and nothing was written, while the roof path beside it had always
+    threaded log=bus.log into close_observatory.
+
+    The line is emitted AFTER the device call, so its presence means the mount
+    reached the state, not that something asked it to.
+    """
+    tel = _ParkableTel()
+    monkeypatch.setattr(app_module.hub, "require", lambda role: tel)
+    r = client.post(route)
+    assert r.status_code == 200, r.text
+
+    # park/home run through _spawn and settle asynchronously; unpark is inline.
+    for _ in range(50):
+        if tel.did:
+            break
+        import time as _t
+        _t.sleep(0.02)
+    assert tel.did == [verb], f"device call never happened: {tel.did}"
+
+    for _ in range(50):
+        if any(line == m for _l, m, _s in bus_lines):
+            break
+        import time as _t
+        _t.sleep(0.02)
+    assert any(line == m and src == "mount" for _l, m, src in bus_lines), (
+        f"{route} completed without writing '{line}' to the log; a night that "
+        f"parks itself must be able to prove it. Lines seen: "
+        f"{[m for _l, m, _s in bus_lines]}")
