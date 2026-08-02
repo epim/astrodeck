@@ -69,6 +69,8 @@ async def test_a_sparse_field_run_carries_its_own_advice_out_on_the_result(monke
         return [], {"star_count": 1, "hfr_median": 5.0, "hfr_mad": 0.0}
 
     monkeypatch.setattr(N._native, "detect_and_measure", detector)
+    # The SIZE feeding the fit comes from the metric seam, not the detector.
+    monkeypatch.setattr(N, "native_sweep_metric", lambda data: (5.0, 1))
 
     q = bus.subscribe()
     try:
@@ -125,6 +127,11 @@ async def test_near_empty_points_never_reach_the_fit(monkeypatch):
     monkeypatch.setattr(N._native, "detect_and_measure", detector)
     monkeypatch.setattr(N._native, "FocusSweep", SpySweep)
 
+    def metric(data):
+        # Mirror the detector stub through the seam the fit actually reads.
+        return (POISON_HFR, 2) if calls["n"] == 5 else (3.0, 500)
+    monkeypatch.setattr(N, "native_sweep_metric", metric)
+
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                        step=350, steps_each_side=4, binning=2)
 
@@ -159,6 +166,9 @@ async def test_a_measured_failure_is_not_blamed_on_the_star_count(monkeypatch):
     def flat(n):
         return lambda data, params: (
             [], {"star_count": n, "hfr_median": 3.4, "hfr_mad": 0.30})
+
+    # A curve too flat to fit, expressed through the seam the fit reads.
+    monkeypatch.setattr(N, "native_sweep_metric", lambda data: (3.4, 12))
 
     monkeypatch.setattr(N._native, "detect_and_measure", flat(12))
     sparse = await N.run_native_autofocus(cam, foc, exposure_s=2.0, gain=200,
@@ -195,6 +205,10 @@ async def test_a_frame_full_of_stars_never_earns_expose_longer(monkeypatch):
         return real_detect(data, params)
 
     monkeypatch.setattr(N._native, "detect_and_measure", detector)
+    # "Found them, could not size them" is now a property of the SIZE seam: a
+    # rich frame whose sources the metric could not measure.
+    monkeypatch.setattr(N, "native_sweep_metric",
+                        lambda data: (None, 50) if calls["n"] == 5 else (3.0, 200))
     res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
                                        step=350, steps_each_side=4, binning=2)
 

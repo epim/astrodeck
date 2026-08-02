@@ -32,6 +32,7 @@ import numpy as np
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
+from ..imaging.stars import focus_size
 from .autofocus import (MIN_STARS_PER_POINT, AutofocusResult,
                         dropped_points_phrase, sweep_levers, thin_points_phrase)
 
@@ -65,6 +66,22 @@ def _fit_payload(outcome: dict) -> dict:
         "curve": outcome.get("curve") or [],
         "trendlines": outcome.get("trendlines"),
     }
+
+
+def native_sweep_metric(data) -> tuple[float | None, int]:
+    """The size a native sweep point contributes: ``(px | None, sources)``.
+
+    THE seam the native sweep measures through, deliberately one named function
+    — it is what tests substitute, and it is where the choice of metric lives so
+    that choice cannot silently differ from the legacy path's ``sweep_metric``.
+
+    Naming it matters for a second reason. When the measurement moved here, four
+    tests that stubbed ``_native.detect_and_measure`` went on passing while no
+    longer intercepting anything the fit used. A stub that has stopped
+    intercepting is worse than no stub: the test still reports success, while
+    testing something else entirely.
+    """
+    return focus_size(data)
 
 
 def point_sigma(hfr: float, mad: float, n_stars: int) -> float:
@@ -345,7 +362,37 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     _native.detect_and_measure, frame.data, params)
 
                 n = int(stats.get("star_count") or 0)
-                hfr = stats.get("hfr_median")
+                rust_hfr = stats.get("hfr_median")
+
+                # THE SIZE COMES FROM focus_size, NOT FROM THE DETECTOR'S HFR.
+                #
+                # The engine's hfr_median is measured inside a fixed cutout, so
+                # it cannot grow past that box — and once the star outgrows it,
+                # the number stops describing the star and starts describing the
+                # box. On 2026-08-01 that made a sweep read SMALLER the further
+                # it went from focus, so every wrong step looked like an
+                # improvement and the search walked the drawtube 3600 steps
+                # before it was halted by hand.
+                #
+                # Measured on that same sky (a moonlit, sparse field — the
+                # failing case, not the easy one), off the saved frames:
+                #     offset  -1500  -900  -300  -150    +0  +150  +300  +900  +1500
+                #     size     94.5  54.6  32.2  20.3   8.6   5.4  16.2  63.4  111.6
+                # a clean V with its minimum at focus, on the very field where
+                # the detector's HFR was inverted.
+                #
+                # focus_size costs 2-4s on a 26MP frame against a 4s exposure,
+                # so this roughly doubles per-point time; a correct sweep that
+                # takes half a minute longer is not a trade worth agonising over.
+                # Offloaded because it is numpy-heavy and would otherwise stall
+                # the event stream the UI is drawing from.
+                size, size_n = await asyncio.to_thread(native_sweep_metric, frame.data)
+                hfr = size
+                if size_n > n:
+                    # focus_size found sources the star detector did not — at
+                    # heavy defocus that is the normal case, and the count is
+                    # what the fit weights by.
+                    n = size_n
                 # REFUSE unmeasurable and near-empty frames — do not merely skip
                 # the starless ones. A median over one or two detections is a hot
                 # pixel's opinion, and this sweep used to record such a point with
@@ -373,7 +420,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                                f"{MIN_STARS_PER_POINT}")
                     else:
                         unsized.append(pos)
-                        why = f"{n} stars but no usable HFR ({hfr!r})"
+                        why = f"{n} stars but no usable size ({hfr!r})"
                     bus.log("warning",
                             f"native autofocus: dropping {pos}: {why} "
                             f"(frame median {float(np.median(px)):.0f}, "
@@ -386,8 +433,17 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # engine weights by 1/σ². Publish the same σ as the whisker so the
                 # chart's confidence and the fit's agree — a five-star point that
                 # drew a hairline whisker was the chart lying about its evidence.
-                mad = float(stats.get("hfr_mad") or 0.0)
-                sigma = point_sigma(float(hfr), mad, n)
+                # The engine reports MAD for ITS estimator, not for focus_size.
+                # Population scatter is a property of the FIELD though, not of
+                # which estimator measures it, so carry the measured RELATIVE
+                # scatter across rather than inventing an absolute one. When the
+                # detector could not supply a ratio, fall back to a 5% floor —
+                # no size is known better than that, and point_sigma's √n term
+                # is what actually separates a measurement from a rumour.
+                rel = 0.05
+                if rust_hfr and float(rust_hfr) > 0 and stats.get("hfr_mad"):
+                    rel = max(0.02, float(stats["hfr_mad"]) / float(rust_hfr))
+                sigma = point_sigma(float(hfr), rel * float(hfr), n)
                 sweep.add_measurement(pos, float(hfr), sigma, n)
                 points.append((pos, float(hfr), sigma))
                 counts.append(n)
