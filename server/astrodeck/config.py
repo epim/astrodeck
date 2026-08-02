@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import secrets
 import sys
+import threading
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -733,6 +734,23 @@ class ConfigStore:
     def __init__(self, path: Path = CONFIG_FILE):
         self._path = path
         self._cfg: AppConfig | None = None
+        # One thread at a time may materialise or persist this store. The store
+        # is a process-wide singleton read from worker threads (every route that
+        # does asyncio.to_thread -> hub.site lands here), and both of its disk
+        # paths were unsynchronised:
+        #   * cfg() lazy-loaded outside any lock, so N threads could each see
+        #     ``_cfg is None`` and each run _load() -> _save();
+        #   * write_json_atomic stages every write at ONE fixed "<path>.tmp", so
+        #     the first os.replace consumed that tmp and every other writer
+        #     raised FileNotFoundError.
+        # Together: on a store that has never been written (a fresh install's
+        # first requests, or a test worker's throwaway config) concurrent readers
+        # of a plain `config_store.cfg()` blew up. It surfaced as panels of a
+        # mosaic silently missing their transit_alt, and as an intermittent red
+        # in test_framing under xdist.
+        # RLock, not Lock: the load path re-enters through
+        # _save()/_restore_from_bak() on the SAME thread.
+        self._lock = threading.RLock()
 
     # -- loading ---------------------------------------------------------------
 
@@ -810,20 +828,27 @@ class ConfigStore:
 
     def cfg(self) -> AppConfig:
         if self._cfg is None:
-            self._cfg = self._load()
+            with self._lock:
+                # Re-check inside the lock: whoever held it may already have
+                # materialised the store, and a second _load() would write the
+                # file a second time (the collision described in __init__).
+                if self._cfg is None:
+                    self._cfg = self._load()
         return self._cfg
 
     def _save(self) -> None:
-        cfg = self._cfg
-        if cfg is None:
-            return
-        ensure_dir(self._path.parent)
-        write_json_atomic(self._path, cfg.model_dump())
+        with self._lock:
+            cfg = self._cfg
+            if cfg is None:
+                return
+            ensure_dir(self._path.parent)
+            write_json_atomic(self._path, cfg.model_dump())
 
     def reload(self) -> AppConfig:
         """Force a re-read from disk (used by tests)."""
-        self._cfg = self._load()
-        return self._cfg
+        with self._lock:
+            self._cfg = self._load()
+            return self._cfg
 
     def replace(self, cfg: AppConfig) -> AppConfig:
         """Swap the WHOLE in-memory config for ``cfg``, then bump + persist.
