@@ -137,6 +137,14 @@ export interface RigStatus {
     // Mutually exclusive with preview_reason: a refusal has no picture to vouch
     // for. Expires server-side on the same TTL as the reason.
     preview_ok?: boolean;
+    // Which device actually produced that frame — NOT necessarily `name` above.
+    // The hub picks `name` guide-camera-device-first and picks the preview
+    // source connected-guider-first, so on a rig running PHD2 with a guide
+    // camera also assigned (every sim rig) the two are different instruments.
+    // Rides with preview_ok only. Absent = the server has no recent delivery to
+    // attribute; say "the guide camera" rather than guessing from `name`, which
+    // is how a warning about PHD2's bytes ended up naming the ZWO.
+    preview_source?: string;
   };
   // --- monitor (Batch-2; server-computed from HA for sim/Alpaca, device value for NINA) ---
   meridian?: MeridianInfo;

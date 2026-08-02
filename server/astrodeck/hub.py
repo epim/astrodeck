@@ -388,7 +388,16 @@ class Hub:
         # level down — "we looked and made no claim" and "nobody looked" are
         # different facts, and only one of them is a reason to distrust the
         # picture on screen.
-        self._guide_preview_frame: tuple[bool, float] | None = None
+        #
+        # The name rides along because it is the SOURCE's name, and the source
+        # order here is the inverse of the one ``_guide_camera_info`` uses for
+        # ``status.guide_camera.name``: that prefers the guide-camera DEVICE,
+        # this prefers the connected GUIDER. On a rig with both — which is every
+        # sim rig — a UI that qualified the picture using the status name said
+        # "ZWO ASI sent bytes we could not decode" about bytes PHD2 sent and a
+        # camera nobody asked. Naming the wrong instrument is the same defect as
+        # naming a state nobody measured.
+        self._guide_preview_frame: tuple[bool, float, str] | None = None
         # the outcome we last wrote to the run log, so the 2.5s poll logs one
         # line per CHANGE instead of burying the log or (as on 2026-08-01)
         # leaving no trace of the exposure at all.
@@ -1099,10 +1108,19 @@ class Hub:
         ``_expose_guide_preview`` guarded only ``expose()`` and ``to_png()``, so a
         camera adapter that answered ``None`` instead of raising (measured here:
         ``AttributeError: 'NoneType' object has no attribute 'data'``) escaped as
-        a 500 with no log line and left ``status.guide_camera`` carrying exactly
-        ``{name, connected}`` — which is, byte for byte, the status block
-        measured on the rig on 2026-08-01. A crash and a camera nobody asked are
-        not allowed to look the same.
+        a 500 with no log line. A crash and a camera nobody asked are not allowed
+        to look the same.
+
+        That crash is NOT a candidate for the 2026-08-01 rig defect, and an
+        earlier draft of this docstring said it was, on the grounds that both
+        leave ``status.guide_camera`` carrying exactly ``{name, connected}``. So
+        did a SUCCESSFUL delivery on that build — it published a reason only when
+        one was live — so the signature separates nothing, and the measurement
+        (HTTP 200, 223 bytes) rules a crash out anyway, since a crash returns 500
+        with no body. The guard earns its place by making good a docstring
+        promise that demonstrably did not hold; it does not need a rig defect to
+        its name, and giving it one on a coincidence is exactly the reasoning
+        that cost #110 three wrong diagnoses.
 
         Every exit records its outcome for ``status.guide_camera``, because a 404
         body reaches only the code that reads it and the panel reads an ``<img>``.
@@ -1112,22 +1130,15 @@ class Hub:
         without being able to inspect them; neither key = nobody has asked this
         camera recently. ``preview_ok`` is deliberately narrower than "we
         returned bytes" — publishing a verdict on pixels nobody inspected would
-        be the same defect pointing the other way.
+        be the same defect pointing the other way. Alongside the verdict rides
+        ``preview_source``: the name of the device that ACTUALLY answered, which
+        is not always the one ``status.guide_camera.name`` carries (see
+        ``_guide_camera_info`` — the two source orders are inverses).
         """
         try:
-            png, reason, verified = await self._guide_preview_source()
+            png, reason, verified, src = await self._guide_preview_source()
         except Exception as exc:  # noqa: BLE001 — the promise above is the point
-            # Name the source the way the source order does: the guider owns the
-            # sensor when it is connected, else the guide camera. Guarded in turn
-            # because reading a name off a device that has just failed is not the
-            # place to acquire a second way to raise.
-            try:
-                src = (getattr(self.guider, "name", None)
-                       if self.guider is not None
-                       and getattr(self.guider, "connected", False)
-                       else getattr(self.devices.get("guide_camera"), "name", None))
-            except Exception:  # noqa: BLE001
-                src = None
+            src = self._guide_preview_source_name()
             png, reason, verified = None, (
                 f"the server failed while getting a frame from "
                 f"{src or 'the guide camera'}: {exc}"), False
@@ -1139,13 +1150,41 @@ class Hub:
         # on success would let a checked frame from 9s ago vouch for the
         # truncated bytes the panel is showing now — a stale claim inside the
         # TTL, which is the shape of bug this whole slice removes.
-        self._guide_preview_frame = (verified, now) if png else None
+        self._guide_preview_frame = (verified, now, src) if png else None
         return png, reason
 
-    async def _guide_preview_source(self) -> tuple[bytes | None, str, bool]:
-        """``(png, refusal, were the pixels checked)`` for ``guide_preview_png``,
-        which owns the note. The third element exists because only some sources
-        can be inspected, and a claim is only allowed where one was."""
+    def _guide_preview_source_name(self) -> str:
+        """Which device ``_guide_preview_source`` would ask right now, by name.
+
+        ONE copy of the source order, because the crash path needs the name of a
+        device it never got to and the two orderings in this file already differ
+        on purpose (``_guide_camera_info`` prefers the guide-camera device; the
+        preview prefers a connected guider). A third hand-rolled copy is how the
+        orderings drift apart without anything failing loudly.
+
+        Guarded throughout: reading a name off a device that has just failed is
+        not the place to acquire a second way to raise. "" when nothing answers.
+        """
+        try:
+            g = self.guider
+            if g is not None and getattr(g, "connected", False):
+                return str(getattr(g, "name", "") or "")
+            return str(getattr(self.devices.get("guide_camera"), "name", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    async def _guide_preview_source(self) -> tuple[bytes | None, str, bool, str]:
+        """``(png, refusal, were the pixels checked, who answered)`` for
+        ``guide_preview_png``, which owns the note. The third element exists
+        because only some sources can be inspected, and a claim is only allowed
+        where one was.
+
+        The fourth is the name of the device this function CHOSE. It is returned
+        rather than re-derived by the caller because ``status.guide_camera.name``
+        is chosen by the opposite rule, so on any rig carrying both a guider and
+        a guide camera the two names disagree — and the state that most needs a
+        name (``preview_ok: False``, reachable only from the guider branch below)
+        is exactly where they disagree."""
         g = self.guider
         if g is not None and getattr(g, "connected", False):
             try:
@@ -1156,7 +1195,7 @@ class Hub:
                 reason = f"{g.name} is connected but exposes no image"
                 self._log_guide_preview(f"guider-empty:{g.name}", "warning",
                                         f"guide preview: {reason}")
-                return None, reason, False
+                return None, reason, False, g.name
             # The guider path used to end at ``if png: return png`` — no check,
             # no log line — so an all-black guide frame reached the panel exactly
             # as the camera's empty buffer did. Same test, one step later.
@@ -1164,30 +1203,30 @@ class Hub:
             if defect:
                 self._log_guide_preview(f"guider-flat:{g.name}", "warning",
                                         f"guide preview: {defect}")
-                return None, defect, True
+                return None, defect, True, g.name
             if levels is None:
                 self._log_guide_preview(
                     f"guider-unchecked:{g.name}", "info",
                     f"guide preview: {len(png)} bytes from {g.name}, served "
                     "unchecked — they would not decode here, so whether they "
                     "carry an image is not something this server knows")
-                return png, "", False
+                return png, "", False, g.name
             self._log_guide_preview(
                 f"guider-ok:{g.name}", "info",
                 f"guide preview: {len(png)} bytes from {g.name}, display levels "
                 f"{levels[0]}..{levels[1]}")
-            return png, "", True
+            return png, "", True, g.name
 
         cam = self.devices.get("guide_camera")
         if cam is None or not getattr(cam, "connected", False):
             return None, ("no guide camera and no guider are connected — assign "
-                          "a guide camera under Equipment, or start PHD2/NINA"), False
+                          "a guide camera under Equipment, or start PHD2/NINA"), False, ""
         # One physical camera filling both roles (the OAG-style fallback
         # native_guider() also allows). Exposing it here would take the sensor
         # out from under the imaging train mid-sequence.
         if cam is self.devices.get("camera"):
             return None, (f"{cam.name} is also the imaging camera — its frames "
-                          "show in the capture preview, not here"), False
+                          "show in the capture preview, not here"), False, cam.name
         # NO busy_label gate here, deliberately. busy_label is a HUB-WIDE label
         # for the IMAGING train (goto/solve/autofocus/capture/looping), and this
         # line is only reached once we know the guide camera is a different
@@ -1211,11 +1250,13 @@ class Hub:
         # mid-frame cancels its own wait, never the exposure.
         return await asyncio.shield(task)
 
-    async def _expose_guide_preview(self, cam) -> tuple[bytes | None, str, bool]:
+    async def _expose_guide_preview(self, cam) -> tuple[bytes | None, str, bool, str]:
         """ONE preview exposure, encoded. Separate coroutine so overlapping
         callers can share a single in-flight frame. Never raises. Returns
-        ``(png, refusal, checked)``; ``checked`` is always True here because this
-        branch has the raw ADU and always looks at them."""
+        ``(png, refusal, checked, who answered)``; ``checked`` is always True on
+        the delivering exit because this branch has the raw ADU and always looks
+        at them, and the name is always this camera's — it is returned anyway so
+        the two source branches answer the same shape."""
         # Clamp to the ceiling the device itself reported (Camera.max_gain, set
         # from the SDK's gain_range at connect). 0 means "this backend does not
         # report a ceiling" — NINA without GainMax, an Alpaca camera without
@@ -1237,7 +1278,7 @@ class Hub:
             reason = f"{cam.name} could not deliver a frame: {exc}"
             self._log_guide_preview(f"error:{exc}", "warning",
                                     f"guide preview: {reason}")
-            return None, reason, False
+            return None, reason, False, cam.name
         # A SUCCESSFUL call is not the same thing as a frame. On 2026-08-01 this
         # branch encoded a CONSTANT array (see _guide_preview_defect for what the
         # served bytes do and do not pin down) and served it as HTTP 200 — a black
@@ -1250,18 +1291,18 @@ class Hub:
                 "defect", "warning",
                 f"guide preview: {defect} (requested {GUIDE_PREVIEW_EXPOSURE_S}s "
                 f"at gain {gain}, offset 0)")
-            return None, defect, True
+            return None, defect, True, cam.name
         try:
             png = to_png(data, stretch=True, max_width=512)
         except Exception as exc:  # noqa: BLE001
             reason = f"{cam.name} returned a frame that would not encode: {exc}"
             self._log_guide_preview("encode", "warning", f"guide preview: {reason}")
-            return None, reason, False
+            return None, reason, False, cam.name
         self._log_guide_preview(
             "ok", "info",
             f"guide preview: {cam.name} {data.shape[1]}x{data.shape[0]}, "
             f"{lo}..{hi} ADU at gain {gain}")
-        return png, "", True
+        return png, "", True, cam.name
 
     def _log_guide_preview(self, key: str, level: str, message: str) -> None:
         """Log a preview outcome ONCE per change of outcome.
@@ -1296,6 +1337,23 @@ class Hub:
         if seen is None or time.monotonic() - seen[1] > GUIDE_PREVIEW_NOTE_TTL_S:
             return None
         return seen[0]
+
+    def guide_preview_source(self) -> str:
+        """Which device produced the frame ``guide_preview_verdict`` is about.
+
+        Recorded at delivery, not derived at read time, and NOT the same thing as
+        ``status.guide_camera.name``: that one comes from ``_guide_camera_info``,
+        which prefers the guide-camera DEVICE, while the preview prefers a
+        connected GUIDER. Every sim rig has both, so the UI sentence that names
+        the instrument it will not vouch for — ``preview_ok: False``, which only
+        the guider branch can reach — named the wrong one until this existed.
+
+        "" when nothing recent has delivered, so the caller must not print it
+        bare; the copy it feeds falls back to a phrase that names no device."""
+        seen = self._guide_preview_frame
+        if seen is None or time.monotonic() - seen[1] > GUIDE_PREVIEW_NOTE_TTL_S:
+            return ""
+        return seen[2]
 
     def guide_preview_note(self) -> str:
         """The most recent preview refusal, while it is still current (or "").
@@ -3632,6 +3690,17 @@ class Hub:
                 verdict = self.guide_preview_verdict()
                 if verdict is not None:
                     gc = gc | {"preview_ok": verdict}
+                    # WHO answered, which the `name` two lines up does not say:
+                    # that comes from _guide_camera_info (guide-camera device
+                    # first), the picture comes from _guide_preview_source
+                    # (connected guider first). A rig with both — every sim rig
+                    # — makes them different devices, and the one line the UI
+                    # composes itself is the `False` case, reachable only from
+                    # the guider. Named from status.name it read "ZWO ASI sent
+                    # bytes we could not decode" about a camera nobody asked.
+                    src = self.guide_preview_source()
+                    if src:
+                        gc = gc | {"preview_source": src}
             out["guide_camera"] = gc
         if self.mode == "nina" and self.nina_client is not None:
             c = self.nina_client
