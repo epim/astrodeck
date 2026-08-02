@@ -6,13 +6,15 @@ tiled" on the Capture preview, while the FITS written from the same exposure was
 clean. Two diagnoses were proposed and both were wrong (a binning stride guess,
 and a Pillow ``mode="L"`` reinterpretation that was measured to change no bytes).
 
-The mechanism that DOES produce exactly that picture is here: ``_shape`` calls
-``np.frombuffer(raw, count=w*h)``, which takes a PREFIX. Feed it a buffer whose
-true row length differs from ``roi.w // roi.bin`` and every row is offset from
-the previous one by a constant — a diagonal shear — and the content wraps, which
-is the tiling. No exception, no warning; the frame flows on to the preview, the
-star detector and the FITS writer looking like a photograph. That picture is now
-rendered from a real sky frame in ``test_camera_roi_shear.py``.
+A third candidate is here, and it is a candidate, not a verdict: ``_shape``
+calls ``np.frombuffer(raw, count=w*h)``, which takes a PREFIX. Feed it a buffer
+whose true row length differs from ``roi.w // roi.bin`` and every row is offset
+from the previous one by a constant — a diagonal shear — and the content wraps,
+which is the tiling. No exception, no warning; the frame flows on to the
+preview, the star detector and the FITS writer looking like a photograph. That
+picture is rendered from a real sky frame in ``test_camera_roi_shear.py``, where
+it matches the words of the report but contradicts its other half — the damage
+would be in the FITS too, and the FITS was reported clean.
 
 READ THIS BEFORE TRUSTING THE TESTS BELOW. The length checks they cover cannot
 catch the #110 artefact on either shipped adapter, and the module used to imply
@@ -38,6 +40,24 @@ from astrodeck.devices.cameras.engine import NativeCamera
 
 def _buf(w: int, h: int, fill: int = 1000) -> bytes:
     return np.full(w * h, fill, dtype="<u2").tobytes()
+
+
+@pytest.fixture(autouse=True)
+def said(monkeypatch) -> list[tuple[str, str, str]]:
+    """Every log line this module provokes, and NONE of them on the real bus.
+
+    Two of these tests hand ``_shape`` a surplus buffer, which it announces.
+    Left on the process-global bus those entries land in ``bus._history``, a
+    ``deque(maxlen=200)`` shared by the whole test process — and several suites
+    read new lines as ``bus.log_history[at:]`` with ``at = len(bus.log_history)``,
+    a slice that is empty forever once the ring reaches its cap. A module that
+    leaks entries turns other modules' tests red without touching their code."""
+    out: list[tuple[str, str, str]] = []
+    from astrodeck import events
+    monkeypatch.setattr(events.bus, "log",
+                        lambda level, message, source="hub": out.append(
+                            (level, message, source)))
+    return out
 
 
 def test_a_correct_buffer_shapes_to_its_own_dimensions():
@@ -66,15 +86,10 @@ def test_a_short_buffer_is_refused_with_both_numbers():
     assert "shear" in msg.lower() or "sheared" in msg.lower(), msg
 
 
-def test_a_long_buffer_is_used_but_announced(monkeypatch):
+def test_a_long_buffer_is_used_but_announced(said):
     """Refusing a frame over trailing padding would be worse than the bug. But
     an unexplained surplus is the signature of an ROI the sensor did not apply
     as asked, so it must not pass in silence."""
-    said: list[tuple[str, str, str]] = []
-    from astrodeck import events
-    monkeypatch.setattr(events.bus, "log",
-                        lambda level, message, source="hub": said.append(
-                            (level, message, source)))
     roi = ROI(x=0, y=0, w=64, h=32, bin=1)
     out = NativeCamera._shape(_buf(64, 40), roi, None)
     assert out.shape == (32, 64), "the usable prefix is still delivered"
@@ -100,15 +115,10 @@ def test_a_surplus_buffer_is_still_shaped_at_the_requested_width():
     assert out.shape == (8, 6252)
 
 
-def test_the_applied_geometry_wins_over_the_requested_one(monkeypatch):
+def test_the_applied_geometry_wins_over_the_requested_one(said):
     """``_layout_roi`` is where the row length is actually decided now. When the
     adapter can say what the sensor applied, that is what the buffer is cut at —
     the request is only ever a hypothesis about the frame."""
-    said: list[tuple[str, str, str]] = []
-    from astrodeck import events
-    monkeypatch.setattr(events.bus, "log",
-                        lambda level, message, source="hub": said.append(
-                            (level, message, source)))
     requested = ROI(x=0, y=0, w=6252, h=4176, bin=2)     # binned 3126x2088
     applied = ROI(x=0, y=0, w=6248, h=4176, bin=2)       # binned 3124x2088
 

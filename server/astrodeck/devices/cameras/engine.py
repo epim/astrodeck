@@ -159,10 +159,12 @@ class NativeCamera(Camera):
         # width out at another and every row starts a constant offset into the
         # last: a picture sheared diagonally, wrapping into repeats, returned
         # with no error and looking enough like an image that the preview, the
-        # star detector and the FITS writer all accept it. That is the reported
-        # 2026-07-31 artefact ("distorted and stretched and shown at an angle.
-        # And tiled"), rendered from a real sky frame in
-        # tests/test_camera_roi_shear.py.
+        # star detector and the FITS writer all accept it. Rendered from a real
+        # sky frame in tests/test_camera_roi_shear.py, where it matches the words
+        # of the 2026-07-31 report ("distorted and stretched and shown at an
+        # angle. And tiled") — but NOT its other half: the same array goes to the
+        # FITS, and that report said the FITS was clean. #110 is not closed on
+        # this; the width the SDK actually applied is the measurement that would.
         #
         # But the LENGTH cannot detect it, and this is worth being blunt about
         # because it looks like it can. Both vendor adapters allocate the
