@@ -56,7 +56,13 @@ _EXPORTS = [
     "POAInitCamera", "POACloseCamera", "POASetConfig", "POAGetConfig",
     "POAGetConfigsCount", "POAGetConfigAttributesByConfigID",
     "POASetImageSize", "POASetImageBin", "POASetImageFormat",
-    "POASetImageStartPos", "POAStartExposure", "POAStopExposure",
+    "POASetImageStartPos",
+    # The Get half of the image-geometry API. A DLL that cannot be asked what it
+    # applied leaves the download to be laid out at a width nothing confirmed;
+    # all four are exported by the vendored V3.10.1 build (checked 2026-08-01).
+    "POAGetImageSize", "POAGetImageBin", "POAGetImageFormat",
+    "POAGetImageStartPos",
+    "POAStartExposure", "POAStopExposure",
     "POAImageReady", "POAGetImageData", "POAGetSensorModeCount",
     "POAGetSensorModeInfo", "POASetSensorMode",
 ]
@@ -170,6 +176,8 @@ _SIGNATURES: dict[str, list] = {
         [_I, _I, ctypes.POINTER(POAConfigAttributes)],
     "POASetImageSize": [_I, _I, _I], "POASetImageBin": [_I, _I],
     "POASetImageFormat": [_I, _I], "POASetImageStartPos": [_I, _I, _I],
+    "POAGetImageSize": [_I, _PI, _PI], "POAGetImageBin": [_I, _PI],
+    "POAGetImageFormat": [_I, _PI], "POAGetImageStartPos": [_I, _PI, _PI],
     "POAStartExposure": [_I, _I], "POAStopExposure": [_I],
     "POAImageReady": [_I, _PI],
     "POAGetImageData": [_I, _PU, ctypes.c_long, _I],
@@ -343,10 +351,33 @@ class PlayerOneSdk:
         return self._get(cam_id, POA_EGAIN)
 
     def set_image_format(self, cam_id: int, w: int, h: int, bin: int, fmt: int) -> None:
+        # Bin FIRST: changing the bin resizes the image, so a size set before it
+        # would be thrown away. Start pos then size-relative, format last.
         _check(self._d.POASetImageBin(cam_id, bin), "POASetImageBin")
         _check(self._d.POASetImageSize(cam_id, w, h), "POASetImageSize")
         _check(self._d.POASetImageStartPos(cam_id, 0, 0), "POASetImageStartPos")
         _check(self._d.POASetImageFormat(cam_id, fmt), "POASetImageFormat")
+
+    def set_start_pos(self, cam_id: int, x: int, y: int) -> None:
+        """Place the subframe's top-left corner (binned pixels)."""
+        _check(self._d.POASetImageStartPos(cam_id, x, y), "POASetImageStartPos")
+
+    def get_roi(self, cam_id: int) -> tuple[int, int, int, int]:
+        """(width, height, bin, img_format) the camera is ACTUALLY set to, in
+        binned pixels. What was passed to set_image_format is a request; this is
+        what the download's rows are really made of."""
+        w, h, b, f = (ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_int())
+        _check(self._d.POAGetImageSize(cam_id, ctypes.byref(w), ctypes.byref(h)),
+               "POAGetImageSize")
+        _check(self._d.POAGetImageBin(cam_id, ctypes.byref(b)), "POAGetImageBin")
+        _check(self._d.POAGetImageFormat(cam_id, ctypes.byref(f)), "POAGetImageFormat")
+        return int(w.value), int(h.value), int(b.value), int(f.value)
+
+    def get_start_pos(self, cam_id: int) -> tuple[int, int]:
+        x, y = ctypes.c_int(), ctypes.c_int()
+        _check(self._d.POAGetImageStartPos(cam_id, ctypes.byref(x), ctypes.byref(y)),
+               "POAGetImageStartPos")
+        return int(x.value), int(y.value)
 
     def start_exposure(self, cam_id: int, is_single: bool = True) -> None:
         _check(self._d.POAStartExposure(cam_id, int(is_single)), "POAStartExposure")

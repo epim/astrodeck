@@ -11,10 +11,22 @@ The mechanism that DOES produce exactly that picture is here: ``_shape`` calls
 true row length differs from ``roi.w // roi.bin`` and every row is offset from
 the previous one by a constant — a diagonal shear — and the content wraps, which
 is the tiling. No exception, no warning; the frame flows on to the preview, the
-star detector and the FITS writer looking like a photograph.
+star detector and the FITS writer looking like a photograph. That picture is now
+rendered from a real sky frame in ``test_camera_roi_shear.py``.
 
-These tests do not prove that this is what happened on the night. They prove
-that if it happens it can no longer happen QUIETLY.
+READ THIS BEFORE TRUSTING THE TESTS BELOW. The length checks they cover cannot
+catch the #110 artefact on either shipped adapter, and the module used to imply
+they could. Both adapters allocate the download buffer themselves and hand its
+size to the SDK; the SDK fills the front of it and reports success for any
+buffer that is big ENOUGH; ``read_frame`` returns the whole allocation. So
+``len(raw)`` equals the size the adapter computed, by construction, whatever the
+sensor did — the wrong row length arrives at exactly the right byte count. What
+catches it is the geometry read-back added to the adapters
+(``CameraAdapter.applied_roi``), covered in ``test_camera_roi_readback.py``.
+
+What the guard here is worth: it is the net under an adapter whose buffer size
+is not its own — a future brand that returns whatever the SDK hands it — and it
+names both numbers instead of leaving a ValueError inside numpy.
 """
 import numpy as np
 import pytest
@@ -73,15 +85,49 @@ def test_a_long_buffer_is_used_but_announced(monkeypatch):
     assert "sheared" in message.lower() or "repeated" in message.lower(), message
 
 
-def test_the_exact_shear_case_is_the_one_that_is_caught():
-    """A sensor that rounds width 6252 up to 6256 returns 4 extra columns per
-    row. Taking a w*h prefix of THAT and reshaping at 6252 is what shears an
-    image — and it is a LONGER buffer, not a shorter one, so the length check
-    has to look in both directions."""
+def test_a_surplus_buffer_is_still_shaped_at_the_requested_width():
+    """A buffer with 4 extra columns' worth of bytes per row is used, at the
+    requested width, and only the warning says the width may not be the
+    sensor's. Note what this is NOT: evidence about #110. A sensor that rounded
+    a width UP would need MORE bytes than the adapter allocated, and the SDK
+    fails a too-small buffer outright — so the surplus direction is the one the
+    shipped adapters cannot even reach, and the deficit direction never changes
+    the length at all."""
     roi = ROI(x=0, y=0, w=6252, h=8, bin=1)
     padded = _buf(6256, 8)
     assert len(padded) > 6252 * 8 * 2
     out = NativeCamera._shape(padded, roi, None)
-    # Still shaped at the REQUESTED width — the warning is what tells the user
-    # the requested width may not be the sensor's.
     assert out.shape == (8, 6252)
+
+
+def test_the_applied_geometry_wins_over_the_requested_one(monkeypatch):
+    """``_layout_roi`` is where the row length is actually decided now. When the
+    adapter can say what the sensor applied, that is what the buffer is cut at —
+    the request is only ever a hypothesis about the frame."""
+    said: list[tuple[str, str, str]] = []
+    from astrodeck import events
+    monkeypatch.setattr(events.bus, "log",
+                        lambda level, message, source="hub": said.append(
+                            (level, message, source)))
+    requested = ROI(x=0, y=0, w=6252, h=4176, bin=2)     # binned 3126x2088
+    applied = ROI(x=0, y=0, w=6248, h=4176, bin=2)       # binned 3124x2088
+
+    assert NativeCamera._layout_roi(requested, applied) is applied
+    assert said and said[-1][0] == "warning"
+    assert "3124" in said[-1][1] and "3126" in said[-1][1], said[-1][1]
+
+
+def test_an_adapter_that_cannot_report_a_geometry_leaves_the_request_alone():
+    """None means "nobody checked", not "the request was honoured" — so the
+    engine keeps the request and says nothing it cannot support."""
+    requested = ROI(x=0, y=0, w=6252, h=4176, bin=2)
+    assert NativeCamera._layout_roi(requested, None) is requested
+
+
+def test_the_same_geometry_expressed_differently_is_not_a_disagreement():
+    """The read-back arrives in binned pixels and is scaled back up, so an odd
+    requested width round-trips to an even one. Warning about that would be an
+    instrument crying wolf about its own arithmetic."""
+    requested = ROI(x=0, y=0, w=6253, h=4176, bin=2)     # binned 3126
+    applied = ROI(x=0, y=0, w=6252, h=4176, bin=2)       # binned 3126 too
+    assert NativeCamera._layout_roi(requested, applied) is requested

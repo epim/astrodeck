@@ -102,14 +102,44 @@ class NativeCamera(Camera):
         finally:
             self._exposing = False
         raw = await asyncio.to_thread(self._a.read_frame)
+        applied = await asyncio.to_thread(self._a.applied_roi)
+        roi = self._layout_roi(roi, applied)
         data = self._shape(raw, roi, caps)
         temp = await self.get_temperature()
         return CameraFrame(
             data=data, exposure_s=seconds, gain=gain, offset=offset,
-            binning=binning, bayer_pattern=caps.bayer_pattern,
+            binning=roi.bin, bayer_pattern=caps.bayer_pattern,
             temperature_c=temp, timestamp=time.time(),
             full_well=caps.max_adu, data_is_linear=True,
             egain_e_per_adu=_egain_from_caps(caps))
+
+    @staticmethod
+    def _geometry(r: ROI) -> tuple[int, int, int, int, int]:
+        """The numbers that decide the layout: everything in binned pixels."""
+        return (r.w // r.bin, r.h // r.bin, r.bin, r.x // r.bin, r.y // r.bin)
+
+    @classmethod
+    def _layout_roi(cls, requested: ROI, applied: ROI | None) -> ROI:
+        """The geometry the download must be laid out at.
+
+        The request is what we asked the sensor for; ``applied`` is what the
+        sensor says it did. Where they differ, the sensor is right — the buffer
+        is full of ITS rows, and laying them out at our width is what shears and
+        repeats the picture. The disagreement is announced rather than quietly
+        absorbed, because a frame that is not the requested geometry is also not
+        the requested field of view: the FITS header, the plate solve, the star
+        marks and the mosaic tiling are all placed from these numbers."""
+        if applied is None or cls._geometry(applied) == cls._geometry(requested):
+            return requested
+        from ...events import bus
+        aw, ah, ab, ax, ay = cls._geometry(applied)
+        rw, rh, rb, rx, ry = cls._geometry(requested)
+        bus.log("warning",
+                f"camera applied {aw}x{ah} bin {ab} at ({ax},{ay}) after being "
+                f"asked for {rw}x{rh} bin {rb} at ({rx},{ry}); the frame is laid "
+                "out at the size the camera reports, so the picture is intact, "
+                "but it is not the field of view that was requested.", "camera")
+        return applied
 
     @staticmethod
     def _shape(raw: bytes, roi: ROI, caps) -> np.ndarray:
@@ -122,24 +152,33 @@ class NativeCamera(Camera):
         w, h = roi.w // roi.bin, roi.h // roi.bin
         want = w * h * 2
 
-        # THE ROW LENGTH MUST BE THE ONE WE THINK IT IS.
+        # THE ROW LENGTH MUST BE THE ONE WE THINK IT IS — AND THIS CHECK CANNOT
+        # BE THE ONE THAT ESTABLISHES IT.
         #
-        # `count=w*h` silently takes a PREFIX of the buffer. If the SDK applied a
-        # different ROI than we asked for — a width rounded up to a multiple of
-        # 8, a subframe clamped to the sensor, a stale ROI from the previous
-        # exposure — then every row of the reshape is offset from the last by a
-        # constant, and the result is a picture sheared diagonally and repeated
-        # down the frame. It is returned with no error, and it looks enough like
-        # an image that the pipeline, the preview and the FITS writer all accept
-        # it. That is the reported 2026-07-31 artefact: "distorted and stretched
-        # and shown at an angle. And tiled."
+        # `count=w*h` silently takes a PREFIX of the buffer. Lay rows of one
+        # width out at another and every row starts a constant offset into the
+        # last: a picture sheared diagonally, wrapping into repeats, returned
+        # with no error and looking enough like an image that the preview, the
+        # star detector and the FITS writer all accept it. That is the reported
+        # 2026-07-31 artefact ("distorted and stretched and shown at an angle.
+        # And tiled"), rendered from a real sky frame in
+        # tests/test_camera_roi_shear.py.
         #
-        # So: a short buffer is refused outright (np.frombuffer would raise a
-        # ValueError naming neither number), and a LONG one is still used —
-        # refusing a frame over trailing padding would be worse than the bug —
-        # but it is announced with every number needed to identify the culprit,
-        # because a silent mismatch is the only reason this took two attempts to
-        # diagnose and neither of them was right.
+        # But the LENGTH cannot detect it, and this is worth being blunt about
+        # because it looks like it can. Both vendor adapters allocate the
+        # download buffer themselves and hand its size to the SDK; the SDK fills
+        # the front of it and succeeds for any buffer that is big enough, and
+        # read_frame returns the whole allocation. So `len(raw)` equals the size
+        # those adapters computed, by construction, whatever the sensor actually
+        # did — a wrong row length arrives at exactly the right byte count. The
+        # geometry read-back in the adapters (`applied_roi`) is what catches it;
+        # this check only catches an adapter whose buffer size is not its own.
+        #
+        # It still earns its place: a short buffer is refused outright (where
+        # np.frombuffer would raise a ValueError naming neither number), and a
+        # LONG one is used — refusing a frame over trailing padding would be
+        # worse than the bug — but announced with every number needed to name
+        # the culprit.
         if len(raw) < want:
             raise DeviceError(
                 f"camera returned {len(raw)} bytes but a {w}x{h} 16-bit frame "
