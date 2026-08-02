@@ -44,6 +44,8 @@ from astrodeck.devices.cameras.player_one_sdk import POA_RAW16, POA_RAW8
 from astrodeck.devices.cameras.zwo_asi import AsiCameraAdapter
 from astrodeck.devices.cameras.zwo_asi_sdk import ASI_IMG_RAW8, ASI_IMG_RAW16
 
+from test_camera_contract import CONTRACT_ADAPTERS
+
 SENSOR_W, SENSOR_H = 128, 64
 
 
@@ -157,6 +159,25 @@ def brand(request):
     return request.param
 
 
+@pytest.fixture(autouse=True)
+def said(monkeypatch) -> list[tuple[str, str, str]]:
+    """Every log line this module provokes, and NONE of them on the real bus.
+
+    Half these tests drive a geometry mismatch, which the engine announces. Left
+    on the process-global bus those entries land in ``bus._history``, a
+    ``deque(maxlen=200)`` shared by the whole test process — and several suites
+    read new lines as ``bus.log_history[at:]`` with ``at = len(bus.log_history)``,
+    a slice that is empty forever once the ring reaches its cap. The first
+    version of this module leaked four entries and turned three tests in
+    test_guide_preview_source.py red without touching a line of their code."""
+    out: list[tuple[str, str, str]] = []
+    from astrodeck import events
+    monkeypatch.setattr(events.bus, "log",
+                        lambda level, message, source="hub": out.append(
+                            (level, message, source)))
+    return out
+
+
 async def test_the_download_is_sized_from_what_the_camera_applied(brand):
     """122 rounded down to 120 means 120*64*2 bytes, not 122*64*2. Sizing the
     buffer from the request is what lets a wrong row length arrive at a byte
@@ -185,15 +206,10 @@ async def test_the_frame_is_laid_out_at_the_applied_width_not_the_requested_one(
         assert row.min() == row.max() == y, f"row {y} is not the sensor's row {y}"
 
 
-async def test_a_geometry_the_camera_changed_is_announced_not_absorbed(brand, monkeypatch):
+async def test_a_geometry_the_camera_changed_is_announced_not_absorbed(brand, said):
     """Shaping at the applied width fixes the picture but not the pointing: the
     frame is a different field of view from the one that was asked for, and the
     FITS header, the plate solve and the star marks are all placed from it."""
-    said: list[tuple[str, str, str]] = []
-    from astrodeck import events
-    monkeypatch.setattr(events.bus, "log",
-                        lambda level, message, source="hub": said.append(
-                            (level, message, source)))
     _name, make, _r16, _r8 = brand
     cam = NativeCamera(make())
     await cam.connect()
@@ -205,13 +221,9 @@ async def test_a_geometry_the_camera_changed_is_announced_not_absorbed(brand, mo
     assert "120x64" in msg and "122x64" in msg, msg
 
 
-async def test_a_geometry_the_camera_honoured_says_nothing(brand, monkeypatch):
+async def test_a_geometry_the_camera_honoured_says_nothing(brand, said):
     """The counterweight: a warning on every well-behaved exposure would train
     the user to ignore it, and 128 is already a multiple of 8."""
-    said: list[str] = []
-    from astrodeck import events
-    monkeypatch.setattr(events.bus, "log",
-                        lambda level, message, source="hub": said.append(message))
     _name, make, _r16, _r8 = brand
     cam = NativeCamera(make())
     await cam.connect()
@@ -295,3 +307,53 @@ async def test_the_byte_count_alone_could_never_have_caught_this(brand):
     assert f.data.shape == (64, 122), "laid out at the request, as it used to be"
     walked = [y for y, row in enumerate(f.data) if row.min() != row.max()]
     assert walked, "and the rows are sheared, with no error raised anywhere"
+
+
+# --------------------------------------------------------------------------
+# The rule bound to the ROSTER, not to the two adapters audited today
+# --------------------------------------------------------------------------
+#: Entries in the keystone contract that are not a vendor brand and therefore
+#: have no SDK that could be asked what it applied.
+NOT_A_BRAND = {"reference-fake"}
+
+
+def test_every_bundled_brand_is_audited_for_the_geometry_read_back():
+    """``CONTRACT_ADAPTERS`` in test_camera_contract.py is the roster every
+    bundled brand joins, and this rule has to bind on the roster rather than on
+    the two adapters that happened to be read on the day it was written.
+
+    The failure this guards is specific: a third adapter whose ``applied_roi()``
+    returns its own request — the original defect wearing the fix's clothes. A
+    compliant fake cannot expose that, because request and read-back coincide;
+    it takes a sensor that DISAGREES, which is what ``BRANDS`` above supplies.
+    So a brand appending itself to the contract list fails here until it brings
+    one."""
+    audited = {name for name, *_ in BRANDS}
+    missing = sorted(n for n, _f in CONTRACT_ADAPTERS
+                     if n not in NOT_A_BRAND
+                     and n.removesuffix("-fake") not in audited)
+    assert not missing, (
+        f"{missing} is in the keystone camera contract but has no rounding-SDK "
+        "fake in BRANDS here, so nothing checks that its applied_roi() reports "
+        "what the sensor did rather than what it was asked for. Add one: a fake "
+        "that rounds the requested width down and fills the buffer at ITS width.")
+
+
+@pytest.mark.parametrize("entry", CONTRACT_ADAPTERS, ids=lambda e: e[0])
+async def test_a_reported_geometry_is_one_the_delivered_frame_actually_has(entry):
+    """The half of the rule that a compliant sensor CAN check, run over the
+    whole contract roster: ``applied_roi()`` is either None — "this brand cannot
+    be asked", and the engine falls back to the request knowingly — or a
+    geometry the returned array really has. An adapter that reports a shape its
+    own picture does not have has invented a measurement, which is the whole
+    family of bugs this slice exists for."""
+    _name, factory = entry
+    a = factory()
+    cam = NativeCamera(a)
+    await cam.connect()
+    f = await cam.expose(0.01, gain=0, offset=0)
+    applied = a.applied_roi()
+    if applied is None:
+        assert f.data.shape == (cam.sensor_height, cam.sensor_width)
+        return
+    assert f.data.shape == (applied.h // applied.bin, applied.w // applied.bin)
