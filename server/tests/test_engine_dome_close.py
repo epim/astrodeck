@@ -84,10 +84,17 @@ async def wait_for(predicate, timeout=40.0):
     return False
 
 
-def _logged(substr: str) -> bool:
-    # log_history entries are {"type":"log","data":{level,message,source},"ts":..}.
-    return any(substr in (e.get("data") or {}).get("message", "")
-               for e in bus.log_history)
+def _logged(lines, substr: str) -> bool:
+    """Did THIS test provoke a line containing ``substr``?
+
+    Takes the ``bus_lines`` capture rather than reading ``bus.log_history``. The
+    ring is a deque(maxlen=200) shared by the whole process: a positive check
+    goes red when an unrelated suite fills it and the awaited line ages out, and
+    a negative check is meaningless because the ring holds other tests' lines
+    (the comment below at the debounce test says exactly this). The capture holds
+    this test's lines, all of them, and nobody else's.
+    """
+    return any(substr in m for _lvl, m, _src in lines)
 
 
 # ----------------------------------------------------------- end-of-night close
@@ -167,7 +174,7 @@ async def test_no_dome_leaves_pause_behavior_unchanged(sim_hub, temp_store):
     assert await wait_for(lambda: engine.state.get("state") == "complete", timeout=40), engine.state
 
 
-async def test_park_fails_refuses_close_and_pages(sim_hub, temp_store):
+async def test_park_fails_refuses_close_and_pages(sim_hub, temp_store, bus_lines):
     """If the fenced park does not confirm parked, close_observatory REFUSES: the
     roof stays OPEN (never ERROR — close_shutter is never called) and an error is
     logged. No crash."""
@@ -188,7 +195,7 @@ async def test_park_fails_refuses_close_and_pages(sim_hub, temp_store):
     # Refused (not crushed): the shutter was never actuated → still OPEN.
     assert await dome.shutter_state() is DomeShutterState.OPEN
     assert not await tel.is_parked()
-    assert _logged("AUTOMATED ROOF CLOSE FAILED") or _logged("REFUSED"), \
+    assert _logged(bus_lines, "AUTOMATED ROOF CLOSE FAILED") or _logged(bus_lines, "REFUSED"), \
         "a refused auto-close must page via an error log"
 
 
@@ -230,7 +237,7 @@ def force_cached_safe(hub: Hub) -> None:
     hub._safety_reading = SafetyReading(is_safe=True, source="Sim Safety Monitor")
 
 
-async def test_reopen_happy_path_closes_waits_reopens_resumes(sim_hub, temp_store):
+async def test_reopen_happy_path_closes_waits_reopens_resumes(sim_hub, temp_store, bus_lines):
     """close_dome_on_unsafe + reopen_dome_when_safe: an unsafe trip CLOSES the roof
     over the PARKED mount (via close_observatory — a recorded 'close' proves the
     park ran first), waits, then on safe-again REOPENS (open_shutter) and
@@ -262,11 +269,11 @@ async def test_reopen_happy_path_closes_waits_reopens_resumes(sim_hub, temp_stor
     assert events == ["close", "open"], events        # close BEFORE reopen
     assert await dome.shutter_state() is DomeShutterState.OPEN
     assert not await tel.is_parked(), "target must be re-acquired (unparked)"
-    assert _logged("reopening roof")
-    assert _logged("re-acquiring")
+    assert _logged(bus_lines, "reopening roof")
+    assert _logged(bus_lines, "re-acquiring")
 
 
-async def test_reopen_close_refused_falls_back_to_open_sky_pause(sim_hub, temp_store):
+async def test_reopen_close_refused_falls_back_to_open_sky_pause(sim_hub, temp_store, bus_lines):
     """INVARIANT 2: if the never-crush close REFUSES (mount won't confirm parked),
     the run does NOT enter the wait-reopen loop — it FALLS BACK to the open-sky
     park-hold pause (the roof is never actuated → stays OPEN, never crushed), and
@@ -290,7 +297,7 @@ async def test_reopen_close_refused_falls_back_to_open_sky_pause(sim_hub, temp_s
     assert await wait_for(lambda: engine.state.get("state") == "paused"), engine.state
     assert await dome.shutter_state() is DomeShutterState.OPEN, "roof never actuated"
     assert "close" not in events, "a REFUSED close must never touch the shutter"
-    assert _logged("close refused") or _logged("holding under open sky")
+    assert _logged(bus_lines, "close refused") or _logged(bus_lines, "holding under open sky")
 
     # Clear the condition → the fallback pause resumes and completes normally.
     force_cached_safe(sim_hub)
