@@ -181,6 +181,12 @@ export const EMPTY_NINA_HEALTH: NinaHealth = {
  * the list and not about the store, so it passed no matter what store.ts grew.
  * State outliving the reason it was safe is the whole of #117.
  *
+ * The walk skips only what a third list (STORE_ACTIONS) records BY NAME as an
+ * action; it does not decide what to skip by looking at each value. An earlier
+ * version skipped every function-valued member on the claim that actions were
+ * the only ones, which put a hand-check back inside the enforcement — and would
+ * have let a slice that happens to hold a function pass unclassified in silence.
+ *
  * NOT listed, on purpose (the reasons live per-key in the test's map):
  *   - `principal` / `authMethods` — these ARE the gate; clearing them would
  *     dissolve the login screen we are gating behind.
