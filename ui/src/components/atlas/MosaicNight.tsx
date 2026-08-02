@@ -134,9 +134,12 @@ export const MosaicNight = memo(function MosaicNight({
         })
         .then((res) => {
           if (!alive) return;
-          // `transit_alt_error` is on the wire but not yet on types.ts
-          // MosaicPanel; widen here rather than pretend the field is absent.
-          setState({ kind: "ok", panels: res.panels as PanelNight[] });
+          // No cast: MosaicPanel already satisfies PanelNight structurally (row
+          // and col are the only required fields, and PanelNight's extras are
+          // optional), so `transit_alt_error` is read through PanelNight without
+          // asserting anything about MosaicPanel. A cast here would have been a
+          // silent licence to keep reading fields nobody had declared.
+          setState({ kind: "ok", panels: res.panels });
         })
         .catch((e) => {
           if (!alive) return;
