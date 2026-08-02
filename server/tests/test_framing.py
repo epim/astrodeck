@@ -196,8 +196,14 @@ def test_mosaic_route_fills_transit_alt_with_date(client):
 @pytest.fixture
 def cold_config(tmp_path):
     """Hand back a callable that puts the process-wide ``config_store`` into its
-    never-loaded state on a fresh empty directory — exactly what a brand-new
-    install's first request meets."""
+    never-loaded state on a fresh empty directory.
+
+    This is a HARNESS state, not a field one: the served app materialises the
+    store single-threaded at boot (``__main__._security_banner`` and
+    ``api.app._lifespan``, both before uvicorn listens), so the cold path only
+    meets concurrency behind a bare ``FastAPI()`` with no lifespan — the
+    ``client`` fixture above. See ``ConfigStore.__init__`` for why the lock is
+    right anyway."""
     import astrodeck.config as config_mod
     store = config_mod.config_store
     saved_path, saved_cfg = store._path, store._cfg
@@ -253,6 +259,72 @@ def test_mosaic_fills_every_panel_when_config_has_never_been_loaded(
         # ...and the cold path really ran this round, so a green here can never
         # mean "the store was already warm and the race never had its chance".
         assert store._cfg is not None and store._path.exists()
+
+
+def test_panel_that_cannot_be_computed_says_why_instead_of_dropping_the_key(
+        client, monkeypatch):
+    # The mechanism that made the config-store race invisible: a per-panel
+    # failure used to be swallowed unlogged, so the panel simply had no
+    # transit_alt and the client could not tell "not asked for" from "we tried
+    # and could not". Whatever fails next must name itself.
+    from astrodeck.catalog import visibility
+
+    def _boom(ra_hours, dec_deg, *, date=None, site=None):
+        raise OSError("ephemeris table unreadable")
+
+    monkeypatch.setattr(visibility, "transit_alt_for", _boom)
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "date": "2026-01-15",
+    })
+    assert r.status_code == 200, r.text     # one dead panel is not a dead mosaic
+    panels = r.json()["panels"]
+    assert len(panels) == 2
+    for p in panels:
+        assert "transit_alt" not in p
+        # the type AND the message: a bare OSError stringifies to nothing, and an
+        # empty reason is the silence this field exists to end.
+        assert "OSError" in p["transit_alt_error"]
+        assert "ephemeris table unreadable" in p["transit_alt_error"]
+
+
+def test_every_panel_says_so_when_the_visibility_module_will_not_import(
+        client, monkeypatch):
+    # The other swallow: astropy/visibility unavailable wholesale. A ``None`` in
+    # sys.modules is exactly what CPython raises ImportError on, so this drives
+    # the real import failure rather than a stand-in.
+    import sys
+    monkeypatch.setitem(sys.modules, "astrodeck.catalog.visibility", None)
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 2, "cols": 2, "overlap": 0.2, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "date": "2026-01-15",
+    })
+    assert r.status_code == 200, r.text
+    panels = r.json()["panels"]
+    assert len(panels) == 4
+    for p in panels:
+        assert "transit_alt" not in p
+        assert "visibility unavailable" in p["transit_alt_error"]
+
+
+def test_mosaic_rejects_a_date_it_would_otherwise_answer_for_tonight(client):
+    # ``_night_anchor_unix`` swallows an unparseable date and anchors on TONIGHT,
+    # so this route used to hand back tonight's altitudes labelled as the night
+    # the caller asked for — a plausible wrong answer, which is worse than an
+    # error. /api/visibility has refused this since check_night_date landed; the
+    # mosaic route bypassed it.
+    r = client.post("/api/framing/mosaic", json={
+        "ra_hours": 0.71, "dec_deg": 41.27,
+        "rows": 1, "cols": 1, "overlap": 0.0, "rotation_deg": 0.0,
+        "fov_x_deg": FOV_X, "fov_y_deg": FOV_Y,
+        "date": "2026-13-45",
+    })
+    assert r.status_code == 422, r.text
+    assert "YYYY-MM-DD" in r.text
 
 
 def test_mosaic_route_rejects_unwrapped_center(client):
