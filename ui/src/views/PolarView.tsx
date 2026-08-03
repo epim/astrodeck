@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { useStore, usePolar, useProviders } from "../store";
-import { PolarReticle, knobHint, polarTier, type KnobDir } from "../components/polar";
+import { PolarReticle, knobHint, polarTier, polarInstruction, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Icon } from "../components/icons";
 import { Panel, Led } from "../components/ui";
@@ -165,10 +165,20 @@ export default function PolarView() {
             </div>
 
             {hasReading ? (
-              <div className="flex items-center gap-2 mt-2">
-                <Led state={verdict.led} label={verdict.text} />
-                <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
-              </div>
+              <>
+                <div className="flex items-center gap-2 mt-2">
+                  <Led state={verdict.led} label={verdict.text} />
+                  <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
+                </div>
+                {/* WHICH ADJUSTMENT, not how good it is — the verdict above
+                    already says that. Its thresholds (30′/10′/1′) are its own
+                    and deliberately do not match the verdict's 2′/10′: above 30′
+                    no bolt has the travel to fix it, so "keep going" would send
+                    the user turning a knob that cannot reach. */}
+                <p className="text-xs text-dim mt-1.5 leading-relaxed">
+                  {polarInstruction(total)}
+                </p>
+              </>
             ) : measuring || running ? (
               <div className="flex items-center gap-2 mt-2">
                 <Led state="busy" label="measuring" />
