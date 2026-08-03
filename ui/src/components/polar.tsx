@@ -5,8 +5,9 @@
  *  contains the error, from 300′ (tripod is pointing at the wrong bit of sky)
  *  down to 1′ (chasing the last of it in the dark), and every ring is labelled
  *  with its own arcminute value so the scale is never something you have to
- *  remember. The tier fills — good inside 2′, warn inside 10′ — still carry the
- *  verdict; the rings carry the ruler. Two scales, two questions.
+ *  remember. The tier boundaries — good inside 2′, warn inside 10′ — carry the
+ *  verdict, as a stroked, labelled EDGE and not merely a change of fill tint
+ *  (`tierMarks`); the ladder rings carry the ruler. Two scales, two questions.
  *
  *  Two motions, both sanctioned (spec §0.6) and both tweens of REAL readings
  *  rather than canned loops: the vector CONVERGES toward center as the user
@@ -152,6 +153,76 @@ export function ladderRings(smax: number): number[] {
     if (CEIL_LADDER[j] <= out[out.length - 1] * 0.62) out.push(CEIL_LADDER[j]);
   }
   return out.reverse();
+}
+
+/** The two VERDICT boundaries — 2′ "stop", 10′ "keep going" — that must also be
+ *  marked on the reticle, wherever the ladder has not already drawn them.
+ *
+ *  The ladder puts a ring on 2′ at exactly one of fourteen rungs (`ladderRings`
+ *  yields 2 only for `smax === 2`, which with hysteresis holds from 0.74′ to
+ *  1.85′), so the goal ring appeared only once the goal was already reached. At
+ *  3′–30′ — the entire range in which the bolts can still move you — the target
+ *  had no stroke and no label; its only trace was the `--good` disk's change of
+ *  tint. In `.night` every status token is a red at 0.05–0.10 fill opacity and
+ *  that edge composites to 1.10:1, which is the case `index.css:154-157` calls
+ *  out by name: "any status that must survive night mode needs a non-hue
+ *  channel". So the tier edges are drawn as strokes and labelled, and this
+ *  function says which ones are worth drawing at a given scale.
+ *
+ *  Excluded when the ladder already draws that ring (one circle, one label — a
+ *  second copy of "10′ keep going" in the other gutter is noise), and when the
+ *  mark would land on the centre pip: `TIER_MIN_FRAC` is 10 of the reticle's 165
+ *  units, comfortably clear of the 3-unit pip. */
+export const TIER_BOUNDS = [2, 10];
+const TIER_MIN_FRAC = 10 / 165;
+export function tierMarks(smax: number): number[] {
+  const ladder = ladderRings(smax);
+  return TIER_BOUNDS.filter(
+    (t) => t < smax && !ladder.includes(t) && t / smax >= TIER_MIN_FRAC,
+  );
+}
+
+/** What a ring is FOR, where it happens to coincide with a verdict boundary.
+ *  The tier and the scale are separate questions, but where they line up it
+ *  costs nothing to answer both. Shared by the ladder labels and the tier ones
+ *  so the same radius never gets two different words. */
+export function ringNote(r: number): string {
+  return r === 2 ? " stop" : r === 10 ? " keep going" : "";
+}
+
+/** Ascending union — the ring set on screen during a step is the outgoing one
+ *  plus the incoming one, so nothing pops out of existence mid-glide. */
+function union(a: number[], b: number[]): number[] {
+  return Array.from(new Set([...a, ...b])).sort((x, y) => x - y);
+}
+
+/** A ring on screen, with the opacity its fade STARTS from if it is leaving.
+ *  A ring that is not leaving is drawn at full strength and ignores `fade`. */
+export type FadingRing = { r: number; fade: number };
+
+/** The half-strength a ring drops to the moment it begins leaving. */
+const FADE_START = 0.5;
+
+export function freshRings(rs: number[]): FadingRing[] {
+  return rs.map((r) => ({ r, fade: FADE_START }));
+}
+
+/** Merge the rings currently on screen with the ring set of `rung`, carrying
+ *  each leaving ring's fade level forward by `prog` of the step it was in.
+ *
+ *  The carry is what makes a mid-step retarget continuous rather than merely
+ *  non-fatal. Restarting every leaving ring at FADE_START would take a circle
+ *  that had faded to 0.11 and brighten it back to 0.5 — a smaller pop than the
+ *  one being fixed, but still a pop, and in the same rare window (two readings
+ *  inside the 700ms step). Rings belonging to `rung` are staying, so they reset:
+ *  a ring only starts fading when it starts leaving. Pure, and tested. */
+export function mergeStepRings(on: FadingRing[], rung: number, prog: number): FadingRing[] {
+  const staying = ladderRings(rung);
+  const known = new Map(on.map(({ r, fade }) => [r, fade]));
+  return union(on.map((x) => x.r), staying).map((r) => ({
+    r,
+    fade: staying.includes(r) ? FADE_START : (known.get(r) ?? FADE_START) * (1 - prog),
+  }));
 }
 
 /** prefers-reduced-motion, live. Under reduce we snap to final readings (spec
@@ -330,7 +401,19 @@ export function PolarReticle({
     // 30′" there describes the empty state, not a change in the alignment.
     const firstReading = !wasActive.current;
     wasActive.current = active;
-    if (!active || firstReading || shownRung.current === smaxTarget) {
+    if (!active) {
+      /* Going idle is not a rescale — and the message must not outlive the
+         reading that produced it. This branch returns no cleanup, so the two
+         fade timers were cancelled by the PREVIOUS run's cleanup and never
+         re-armed: a session that converged, announced "ZOOM IN 2′ → 1′", and
+         was then restarted (`start()` resets state to idle → total 0 → no
+         reading → active false) left that string burned into the corner of an
+         empty reticle for the rest of the session. */
+      shownRung.current = smaxTarget;
+      setAnnounce(null);
+      return;
+    }
+    if (firstReading || shownRung.current === smaxTarget) {
       shownRung.current = smaxTarget;
       return;
     }
@@ -359,19 +442,61 @@ export function PolarReticle({
      which `smaxTarget` changes still has the pre-step `smax` and a progress of
      1, so the ring being retired would render at zero opacity and blink out
      before its fade began. Deriving progress from where `smax` actually sits
-     between the two rungs is 0 on that frame by construction. */
+     between the two rungs is 0 on that frame by construction.
+
+     The step is snapshotted when the TARGET changes, not when the previous step
+     FINISHES, and that distinction is worth a defect. A reading landing mid-glide
+     used to leave `from` naming a rung the scale had already travelled past:
+     step 10′→50′, retarget to 20′ at smax≈35, and log(35/10)/log(20/10) = 1.81
+     clamps to 1, so every leaving ring rendered at ZERO opacity on its first
+     frame instead of fading. Worse, the union was built from the rung we left
+     two steps ago, so the 15′ and 30′ circles actually on screen were not in it
+     at all and vanished in a single frame with no fade path — precisely the pop
+     this animation exists to prevent. Remembering the scale, the ring set AND
+     each ring's current fade level (`mergeStepRings`) at the instant of the
+     retarget fixes all of it. */
   const ringSet = ladderRings(smaxTarget);
   const settled = smax === smaxTarget;
-  const stepFrom = useRef(smaxTarget);
-  if (settled) stepFrom.current = smaxTarget; // idempotent; safe under StrictMode
-  const span = Math.log(smaxTarget / stepFrom.current);
-  const prog = span === 0 ? 1
-    : Math.min(1, Math.max(0, Math.log(smax / stepFrom.current) / span));
+  const step = useRef<{ from: number; fromRung: number; rings: FadingRing[]; target: number }>({
+    from: smaxTarget, fromRung: smaxTarget, rings: freshRings(ringSet), target: smaxTarget,
+  });
+  const progOf = (from: number, to: number) => {
+    const span = Math.log(to / from);
+    return span === 0 ? 1 : Math.min(1, Math.max(0, Math.log(smax / from) / span));
+  };
+  // Both writes are guarded by a comparison against what they store, so
+  // StrictMode's second invocation of this render is a no-op.
+  if (step.current.target !== smaxTarget) {
+    const prev = step.current;
+    step.current = {
+      from: smax,                    // wherever the glide had actually reached
+      fromRung: prev.target,         // the boundary that is now on its way out
+      rings: mergeStepRings(prev.rings, prev.target, progOf(prev.from, prev.target)),
+      target: smaxTarget,
+    };
+  }
+  if (settled) {
+    step.current = {
+      from: smaxTarget, fromRung: smaxTarget, rings: freshRings(ringSet), target: smaxTarget,
+    };
+  }
+  const prog = progOf(step.current.from, smaxTarget);
   const rings = settled
-    ? ringSet.map((r) => ({ r, leaving: false }))
-    : Array.from(new Set([...ladderRings(stepFrom.current), ...ringSet]))
-      .sort((a, b) => a - b)
-      .map((r) => ({ r, leaving: !ringSet.includes(r) }));
+    ? freshRings(ringSet).map(({ r, fade }) => ({ r, leaving: false, fade }))
+    // prog 0 here because this merge only ADDS the incoming rings; the fade the
+    // leaving ones are already carrying is applied per-ring at paint time.
+    : mergeStepRings(step.current.rings, smaxTarget, 0)
+      .map(({ r, fade }) => ({ r, leaving: !ringSet.includes(r), fade }));
+
+  /* The verdict boundaries the ladder is not already drawing (see `tierMarks`).
+     Read off the TARGET rung so the set is stable for the whole step. */
+  const marks = tierMarks(smaxTarget);
+  /* A tier edge fades in as the scale opens past it: at `t === smax` the disk's
+     edge IS the boundary ring, and a second stroke there only thickens the line.
+     Rungs step by at least 1.5x, so any settled scale that shows a mark at all
+     shows it at full strength — the ramp only does work mid-glide. */
+  const tierEdge = (t: number) =>
+    marks.includes(t) ? Math.min(1, Math.max(0, (smax / t - 1) * 6)) : 0;
 
   // Halo so labels stay legible over rings/vector in day AND night (paint a --bg
   // stroke UNDER the fill).
@@ -390,12 +515,13 @@ export function PolarReticle({
   const dotTrans = reduce ? undefined : "r 200ms ease-out";
 
   return (
+    <>
     <svg viewBox={`0 0 ${size} ${size}`} className="w-full mx-auto block instr-fit"
       style={{ aspectRatio: "1 / 1", maxWidth: "338px" }}
       role="img"
       aria-label={
         active
-          ? `Polar error ${total.toFixed(1)} arcminutes, view scale ${smaxTarget} arcminutes${azHint ? `, azimuth ${azHint.text}` : ""}${altHint ? `, altitude ${altHint.text}` : ""}`
+          ? `Polar error ${total.toFixed(1)} arcminutes, view scale ${smaxTarget} arcminute${smaxTarget === 1 ? "" : "s"}${azHint ? `, azimuth ${azHint.text}` : ""}${altHint ? `, altitude ${altHint.text}` : ""}`
           : "Polar alignment reticle — no measurement yet"
       }>
       <defs>
@@ -410,13 +536,25 @@ export function PolarReticle({
         </clipPath>
       </defs>
 
-      {/* tier zones — bad annulus (outside 10′), good disk (inside 2′). Clamped
-          to the boundary so they never spill past the outer ring; now that the
-          ladder reaches below 10′ that clamp does real work — at a 3′ scale the
-          whole reticle is inside the "good" tier and fills accordingly. */}
+      {/* Tier zones — bad annulus (outside 10′), warn disk (inside 10′), good
+          disk (inside 2′). Clamped to the boundary so they never spill past the
+          outer ring; now that the ladder reaches below 10′ that clamp does real
+          work — at a 3′ scale the whole reticle is inside the "good" tier and
+          fills accordingly.
+
+          The two inner disks carry a STROKE and not only a fill. A fill edge is
+          a hue step, and in .night --good/--warn/--bad are all reds at 0.05–0.10
+          opacity: the good disk's edge composites to rgb(48,13,11) against
+          rgb(25,9,6), i.e. 1.10:1 — invisible, and exactly the failure
+          index.css:154-157 forbids. The stroke is a luminance step (4.9:1 for
+          --good, 6.7:1 for --warn on the night ground), which is the non-hue
+          channel that rule demands. `tierEdge` is 0 where the ladder already
+          draws that ring or where the mark would sit on the centre pip. */}
       <circle cx={cx} cy={cy} r={R} fill="var(--bad)" fillOpacity={0.05} />
-      <circle cx={cx} cy={cy} r={Math.min(10, smax) * k} fill="var(--warn)" fillOpacity={0.05} />
-      <circle cx={cx} cy={cy} r={Math.min(2, smax) * k} fill="var(--good)" fillOpacity={0.1} />
+      <circle cx={cx} cy={cy} r={Math.min(10, smax) * k} fill="var(--warn)" fillOpacity={0.05}
+        stroke="var(--warn)" strokeWidth={1} strokeOpacity={tierEdge(10)} />
+      <circle cx={cx} cy={cy} r={Math.min(2, smax) * k} fill="var(--good)" fillOpacity={0.1}
+        stroke="var(--good)" strokeWidth={1} strokeOpacity={tierEdge(2)} />
 
       {/* Scale rings. The outermost (the boundary) is solid and heavier; inner
           references are thin and dashed. Weight + dash, never hue, so the two
@@ -424,18 +562,22 @@ export function PolarReticle({
           None of them takes --accent: that is reserved for the error mark, which
           has to stay the one thing your eye finds on this instrument. */}
       <g clipPath="url(#pa-clip)">
-        {rings.map(({ r, leaving }) => {
+        {rings.map(({ r, leaving, fade }) => {
           // A retiring boundary keeps its solid stroke while it fades. Flipping
           // it to the dashed inner style for the 700ms of the step would read as
-          // the ring changing meaning rather than leaving.
-          const boundary = r === smaxTarget || r === stepFrom.current;
+          // the ring changing meaning rather than leaving. `leaving` is the load
+          // -bearing half of that test: on a zoom-out 5′→10′ the 5′ ring is in
+          // BOTH sets, so matching `fromRung` alone drew it solid at width 1.4
+          // for 700ms and then snapped it to dashed 0.8 the frame the animation
+          // landed — a pop at the end of an animation whose job is to remove pops.
+          const boundary = r === smaxTarget || (leaving && r === step.current.fromRung);
           return (
             <circle key={r} cx={cx} cy={cy} r={r * k} fill="none"
               stroke="var(--line-bright)"
               strokeWidth={boundary ? 1.4 : 0.8}
               // A ring that is on its way out dims as the step proceeds rather
               // than blinking off at the end of it.
-              strokeOpacity={leaving ? 0.5 * (1 - prog) : 1}
+              strokeOpacity={leaving ? fade * (1 - prog) : 1}
               strokeDasharray={boundary ? "" : "2 5"} />
           );
         })}
@@ -452,17 +594,35 @@ export function PolarReticle({
           on the top vertical. Rungs that coincide with a verdict boundary say so
           — the tier and the scale are separate questions, but where they happen
           to line up it costs nothing to answer both. */}
-      {rings.map(({ r, leaving }) => {
+      {rings.map(({ r, leaving, fade }) => {
         const rp = r * k;
         // Off-scale mid-step, or crushed against the centre pip: no label.
         if (rp > R + 1 || rp < 16) return null;
-        const boundary = r === smaxTarget || r === stepFrom.current;
+        const boundary = r === smaxTarget || (leaving && r === step.current.fromRung);
         return (
           <text key={r} x={cx + 6} y={cy - rp + 13}
             fill={boundary ? "var(--text)" : "var(--text-dim)"}
             fontSize={boundary ? 11 : 10} fontFamily="IBM Plex Mono"
-            opacity={leaving ? 0.5 * (1 - prog) : 1} style={labelHalo}>
-            {r}′{r === 2 ? " stop" : r === 10 ? " keep going" : ""}
+            opacity={leaving ? fade * (1 - prog) : 1} style={labelHalo}>
+            {r}′{ringNote(r)}
+          </text>
+        );
+      })}
+
+      {/* …and the tier marks carry theirs in the BOTTOM gutter. Every ladder
+          label stacks in the top one, and the 2′ mark sits close inside its
+          neighbouring rung at exactly the scales where it matters (at 15′ the 2′
+          and 3′ circles are 11 units apart) — the 0.62 separation gate exists
+          because two labels in one gutter read as a smear. A second gutter costs
+          nothing and lets the target keep its word. */}
+      {marks.map((t) => {
+        const rp = Math.min(t, smax) * k;
+        if (rp < 16) return null; // crushed onto the centre pip: stroke only
+        return (
+          <text key={`t${t}`} x={cx + 6} y={cy + rp - 5}
+            fill="var(--text)" fontSize={10} fontFamily="IBM Plex Mono"
+            opacity={tierEdge(t)} style={labelHalo}>
+            {t}′{ringNote(t)}
           </text>
         );
       })}
@@ -471,7 +631,7 @@ export function PolarReticle({
           the old rings are gone there is nothing on screen to compare against —
           and a zoom-in moves the dot OUTWARD, which without this reads as the
           alignment getting worse at the exact moment it got better. */}
-      {announce && (
+      {active && announce && (
         <text x={10} y={18} fill="var(--accent)" fontSize={11} fontFamily="IBM Plex Mono"
           fontWeight={600} letterSpacing="0.5" style={{
             ...labelHalo,
@@ -522,5 +682,18 @@ export function PolarReticle({
       <circle cx={cx} cy={cy} r={3} fill="none" stroke="var(--good)" strokeWidth={1.2} />
       <circle cx={cx} cy={cy} r={1} fill="var(--good)" />
     </svg>
+
+    {/* The rescale, said out loud a second time, for the readers who cannot see
+        it. `role="img"` on the SVG makes every child presentational, so the
+        announcement text above reaches no assistive tech at all, and the
+        aria-label is not a live region — a rescale was silent, which the spec
+        names as the failure mode. Same information, outside the graphic, in a
+        polite live region so it queues behind whatever is being read. */}
+    <span className="sr-only" role="status" aria-live="polite">
+      {active && announce
+        ? `View scale ${announce.to < announce.from ? "zoomed in" : "zoomed out"}, ${announce.from} to ${announce.to} arcminute${announce.to === 1 ? "" : "s"} full scale`
+        : ""}
+    </span>
+    </>
   );
 }

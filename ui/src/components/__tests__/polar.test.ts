@@ -13,6 +13,7 @@
 
 import {
   polarTier, knobHint, polarInstruction, boundaryArcmin, ladderRings, CEIL_LADDER,
+  tierMarks, ringNote, TIER_BOUNDS, mergeStepRings, freshRings,
 } from "../polar";
 
 // ------------------------------------------------------------ harness
@@ -192,10 +193,101 @@ test("every rung's ring set is legible and self-consistent", () => {
   }
 });
 
+// --- TIER MARKS. Deriving the rings from the rung dropped the 2′ goal off the
+// screen: `ladderRings` yields 2 at exactly one of fourteen rungs, so from 3′ to
+// 30′ — every scale at which the bolts can still move you — the target the whole
+// screen exists to reach had no stroke and no label, only a change of fill tint.
+// In .night that tint is 1.10:1 (all three status tokens are reds at 0.05–0.10),
+// which index.css:154-157 forbids by name. These pin the mark back on.
+test("the 2′ target is marked at every scale where a user is working toward it", () => {
+  for (const s of [3, 5, 10, 15, 20, 30]) {
+    const marked = tierMarks(s).includes(2) || ladderRings(s).includes(2);
+    if (!marked) throw new Error(`${s}′ scale leaves the 2′ goal unmarked`);
+  }
+  eq(tierMarks(5).includes(2), true, "the review's case: 5′ scale, bolts coming down to 2′");
+});
+
+test("tier marks never duplicate a ring the ladder already draws", () => {
+  // One circle, one label. A second "10′ keep going" in the other gutter is the
+  // double-rendered-copy defect, not a redundancy that helps.
+  for (const s of CEIL_LADDER) {
+    const ladder = ladderRings(s);
+    for (const t of tierMarks(s)) {
+      if (ladder.includes(t)) throw new Error(`${s}′: ${t}′ marked twice`);
+      if (!TIER_BOUNDS.includes(t)) throw new Error(`${s}′: ${t}′ is not a verdict boundary`);
+      if (t >= s) throw new Error(`${s}′: ${t}′ mark is not inside the reticle`);
+    }
+  }
+});
+
+test("tier marks drop off rather than crowd the centre pip", () => {
+  // The pip is 3 of the reticle's 165 units; a mark under 10 units is on top of
+  // it. At 50′ the 2′ circle would be r=6.6 — and at 50′ the honest instruction
+  // is "use the bolts", not "you are nearly there".
+  eqArr(tierMarks(15), [2, 10], "15′ marks both boundaries");
+  eqArr(tierMarks(30), [2, 10], "30′ still marks 2′ (r=11, clear of the pip)");
+  eqArr(tierMarks(50), [10], "at 50′ the 2′ mark would sit on the pip");
+  eqArr(tierMarks(200), [], "at 200′ neither boundary is drawable");
+  eqArr(tierMarks(20), [2], "10′ is a ladder ring at the 20′ scale");
+  eqArr(tierMarks(2), [], "the 2′ rung IS the boundary ring");
+  eqArr(tierMarks(1), [], "nothing inside the floor rung");
+});
+
+test("tier marks say what they are for", () => {
+  eq(ringNote(2), " stop", "2′ is the stop line");
+  eq(ringNote(10), " keep going", "10′ is the keep-going line");
+  eq(ringNote(5), "", "an ordinary rung is just a number");
+});
+
 test("a rung that is not on the ladder still yields a drawable ring", () => {
   // Mid-tween the scale is a continuous value; the caller only ever passes the
   // TARGET rung, but a wrong caller must not blank the reticle.
   eqArr(ladderRings(7), [7], "off-ladder value degrades to a single ring");
+});
+
+// --- STEP RINGS. A ladder step cross-fades: the outgoing rings dim while the
+// incoming ones glide in. A NEW READING ARRIVING MID-STEP is the case that was
+// broken — the retarget has to inherit both the ring set on screen and how far
+// each of those rings had already faded.
+test("a mid-step retarget keeps the rings that are actually on screen", () => {
+  // Step 10′→50′ in flight. What is drawn is union([3,5,10],[15,30,50]).
+  const onScreen = mergeStepRings(freshRings(ladderRings(10)), 50, 0);
+  eqArr(onScreen.map((x) => x.r), [3, 5, 10, 15, 30, 50], "the union mid-step");
+  // Now a reading retargets to 20′ at ~78% of the way. Before this fix the merge
+  // was computed from ladderRings(10) — the rung left two steps ago — so 15, 30
+  // and 50 were absent from the union and blinked out in a single frame.
+  const after = mergeStepRings(onScreen, 50, 0.78);
+  eqArr(after.map((x) => x.r), [3, 5, 10, 15, 30, 50], "nothing is dropped by the retarget");
+});
+
+test("a ring that was already fading does not brighten when the target changes", () => {
+  const onScreen = mergeStepRings(freshRings(ladderRings(10)), 50, 0);
+  const dim = onScreen.find((x) => x.r === 3)!.fade;      // leaving: starts at 0.5
+  eq(dim, 0.5, "a ring starts leaving at half strength");
+  const after = mergeStepRings(onScreen, 50, 0.78);
+  const carried = after.find((x) => x.r === 3)!.fade;
+  eq(Math.round(carried * 1000) / 1000, 0.11, "0.5 × (1 − 0.78) is carried forward");
+  if (carried > dim) throw new Error("a leaving ring brightened on retarget");
+  // …while a ring that is only NOW leaving starts from full half-strength.
+  eq(after.find((x) => x.r === 50)!.fade, 0.5, "50′ was staying, so it resets");
+});
+
+test("step rings are ascending, deduplicated, and never lose the incoming set", () => {
+  for (const from of CEIL_LADDER) {
+    for (const to of CEIL_LADDER) {
+      const merged = mergeStepRings(freshRings(ladderRings(from)), to, 0.5);
+      const rs = merged.map((x) => x.r);
+      for (let i = 1; i < rs.length; i++) {
+        if (rs[i] <= rs[i - 1]) throw new Error(`${from}→${to}: not ascending / duplicated`);
+      }
+      for (const r of ladderRings(to)) {
+        if (!rs.includes(r)) throw new Error(`${from}→${to}: incoming ring ${r} missing`);
+      }
+      for (const r of ladderRings(from)) {
+        if (!rs.includes(r)) throw new Error(`${from}→${to}: outgoing ring ${r} vanished unfaded`);
+      }
+    }
+  }
 });
 
 // ============================================================ instruction copy
