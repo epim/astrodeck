@@ -55,7 +55,7 @@ from .imaging import (
 )
 from .imaging.processing import frame_stats, to_png
 from .polar import PolarAlignSession
-from .profiles import Profile, ProfileDevice, profiles
+from .profiles import Profile, ProfileDevice, profiles, resolve_optics
 from . import rotation as _rotation
 
 if TYPE_CHECKING:  # annotations only -- the harness is imported lazily at runtime
@@ -1472,11 +1472,13 @@ class Hub:
     def effective_optics(self) -> dict:
         """Resolve config-override-or-camera optics with an explicit source +
         availability flag, plus the computed image scale / FOV (bin-1). The
-        per-active-profile override wins at READ time and never stomps global."""
-        o = config_store.cfg().optics
-        prof = self._active_profile()
-        if prof and prof.optics:
-            o = prof.optics
+        per-active-profile override wins at READ time and never stomps global.
+
+        This is the ONE profile-aware readout in the whole /api/config payload,
+        so anything that wants the value the rig is really using has to come
+        through here — which is why the return dict below now carries every
+        ``Optics`` field, not just the ones that feed the image-scale maths."""
+        o = resolve_optics(self._active_profile())
         cam = self.devices.get("camera")
         cam_on = bool(cam and cam.connected)
         px = o.pixel_size_um or (getattr(cam, "pixel_size_um", 0.0) if cam_on else 0.0)
@@ -1498,6 +1500,15 @@ class Hub:
             "pixel_size_um": px,
             "sensor_width_px": int(w),
             "sensor_height_px": int(h),
+            # These two rode INSIDE the profile-swapped Optics block but never
+            # came back out of this function, so every caller that wanted the
+            # value actually in force had to re-read GLOBAL config and got the
+            # LOSING layer. The native guider did exactly that with
+            # guide_focal_length_mm. No camera fallback applies to either (a
+            # camera knows nothing about the guide scope, and auto_from_camera is
+            # a preference, not a measurement), so they pass through verbatim.
+            "guide_focal_length_mm": o.guide_focal_length_mm,
+            "auto_from_camera": o.auto_from_camera,
             "have_optics": have,
             "source": src,
             "image_scale_arcsec_px":
@@ -1800,17 +1811,38 @@ class Hub:
             except Exception as e:
                 results.append({"role": "phd2", "ok": False, "error": str(e)})
         cam = self.devices.get("camera")
-        if cam and cam.connected and config_store.cfg().optics.auto_from_camera:
-            o = config_store.cfg().optics
-            new_optics = o.model_copy(update={
-                "pixel_size_um": o.pixel_size_um or getattr(cam, "pixel_size_um", 0.0),
-                "sensor_width_px": o.sensor_width_px or getattr(cam, "sensor_width", 0),
-                "sensor_height_px": o.sensor_height_px or getattr(cam, "sensor_height", 0),
-            })
-            # offload the blocking disk write (with its time.sleep retry) so it
-            # never freezes the event loop on the Windows target.
-            await asyncio.to_thread(
-                config_store.set_optics, new_optics, None)
+        if cam and cam.connected:
+            # BOTH the gate and the write target used to be GLOBAL config, under
+            # a profile whose own optics block shadows global on every read (see
+            # effective_optics). On a rig with a profile optics override that
+            # meant: the profile's own auto_from_camera flag was never consulted,
+            # the camera-seeded numbers landed in a block nothing reads, and the
+            # override then hid them — the user watched the Optics panel fill in
+            # from the camera and not one of those values reached the rig.
+            #
+            # Resolve against the profile BEING CONNECTED (``p``), NOT
+            # ``_active_profile()``: set_active_profile is still several lines
+            # below us, so the cached active profile here is the PREVIOUS rig's
+            # and would seed this camera's pixels into the wrong layer.
+            o = resolve_optics(p)
+            if o.auto_from_camera:
+                new_optics = o.model_copy(update={
+                    "pixel_size_um": o.pixel_size_um or getattr(cam, "pixel_size_um", 0.0),
+                    "sensor_width_px": o.sensor_width_px or getattr(cam, "sensor_width", 0),
+                    "sensor_height_px": o.sensor_height_px or getattr(cam, "sensor_height", 0),
+                })
+                # offload the blocking disk write (with its time.sleep retry) so
+                # it never freezes the event loop on the Windows target.
+                if p.optics is not None:
+                    # The profile is the layer that WINS, so the seed has to land
+                    # there or the very next read discards it. Drop the cache too:
+                    # _profile_cache may still hold the pre-write copy of ``p``.
+                    p.optics = new_optics
+                    await asyncio.to_thread(profiles.save, p)
+                    self.invalidate_profile_cache()
+                else:
+                    await asyncio.to_thread(
+                        config_store.set_optics, new_optics, None)
         await asyncio.to_thread(config_store.set_active_profile, p.id)
         # seed the active-profile cache from the object we already hold (no disk
         # read), so the next effective_optics() is served from memory.

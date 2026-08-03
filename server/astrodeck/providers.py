@@ -38,7 +38,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from .config import IMPLICIT_DRIVER_IDS, config_store
+from .config import IMPLICIT_DRIVER_IDS, PROVIDER_CAPABILITIES, config_store
 from .devices.base import DeviceError
 from .solve import AstapSolver, PlateSolver, SimSolver, find_astap
 
@@ -96,12 +96,36 @@ def _valid_override_values() -> set[str]:
         return {"auto", "backend", *IMPLICIT_DRIVER_IDS}
 
 
-def _override(cap: Capability, hub: object) -> str:
-    """The effective override VALUE for ``cap``: the active PROFILE's per-rig
-    override wins over the global config; both default to ``auto``. A value
-    outside the current vocabulary (deleted driver id, malformed junk)
-    degrades to ``auto`` rather than raising (spec §3.4 resolve-time rule)."""
+def override_with_layer(cap: Capability, hub: object) -> tuple[str, str, object]:
+    """``(value, layer, profile_raw)`` — the effective override for ``cap`` AND
+    the identity of the layer that supplied it.
+
+    This is the ONE implementation of the provider precedence rule; ``_override``
+    below is a thin projection of it. Keeping them fused matters: the /api/config
+    provenance readout is only trustworthy if it reports the layer that the
+    resolver ACTUALLY consulted, and a second hand-written copy of "profile beats
+    config" would be free to drift into agreeing about the value while lying
+    about where it came from — which is the exact failure this whole change
+    exists to end.
+
+    ``layer`` is one of:
+      ``"profile"``  the active profile pinned a value inside the vocabulary;
+      ``"config"``   global ``AppConfig.providers`` pinned a non-``auto`` value;
+      ``"default"``  nobody pinned anything, so ``resolve()`` picks freely.
+    Note that a profile pinning the literal ``"auto"`` reports ``"profile"``, not
+    ``"default"`` — it still BEATS a global config pinned to (say) ``astap``, so
+    it is a real override and the user has to be able to see it. Conversely a
+    GLOBAL ``"auto"`` is indistinguishable from the field's own default once
+    persisted, so it is reported honestly as ``"default"``.
+
+    ``profile_raw`` is whatever the active profile holds for ``cap`` BEFORE
+    validation (``None`` when it holds nothing). A pin naming a driver id that no
+    longer exists degrades to the global layer with no signal anywhere in the
+    product today; surfacing the discarded string is the only way a user can tell
+    a silently-dropped override from an override that was never written.
+    """
     valid = _valid_override_values()
+    prof_raw: object = None
     getter = getattr(hub, "_active_profile", None)
     if callable(getter):
         try:
@@ -110,16 +134,24 @@ def _override(cap: Capability, hub: object) -> str:
             prof = None
         pov = getattr(prof, "providers", None) if prof is not None else None
         if isinstance(pov, dict):
-            v = pov.get(cap)
-            if isinstance(v, str) and v in valid:
-                return v
+            prof_raw = pov.get(cap)
+            if isinstance(prof_raw, str) and prof_raw in valid:
+                return prof_raw, "profile", prof_raw
     try:
         v = getattr(config_store.cfg().providers, cap, "auto")
         if isinstance(v, str) and v in valid:
-            return v
+            return v, ("default" if v == "auto" else "config"), prof_raw
     except Exception:
         pass
-    return "auto"
+    return "auto", "default", prof_raw
+
+
+def _override(cap: Capability, hub: object) -> str:
+    """The effective override VALUE for ``cap``: the active PROFILE's per-rig
+    override wins over the global config; both default to ``auto``. A value
+    outside the current vocabulary (deleted driver id, malformed junk)
+    degrades to ``auto`` rather than raising (spec §3.4 resolve-time rule)."""
+    return override_with_layer(cap, hub)[0]
 
 
 def _override_family(value: str) -> str:
@@ -433,7 +465,7 @@ def resolve_all(hub: object) -> dict[str, dict[str, str]]:
     failure becomes a ``kind:"unavailable"`` row carrying the reason, so status
     never 500s and the UI can badge every panel."""
     out: dict[str, dict[str, str]] = {}
-    for cap in ("autofocus", "polar_align", "solve", "guide"):
+    for cap in PROVIDER_CAPABILITIES:
         try:
             c = resolve(cap, hub)  # type: ignore[arg-type]
             out[cap] = {"kind": c.kind, "label": c.label, "reason": c.reason}

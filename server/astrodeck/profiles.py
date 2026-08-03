@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
 
-from .config import PROFILES_DIR, Optics
+from .config import PROFILES_DIR, PROVIDER_CAPABILITIES, Optics
 from .persist import (ensure_dir, list_json, read_json_or, safe_id_path,
                       write_json_atomic)
 
@@ -180,7 +180,47 @@ class Profile(BaseModel):
         # ``ConnSpec.extra`` now exists (see ``redact_profile`` below); the
         # persisted profile keeps the value at-rest so the rig can still connect.
 
+    def override_providers(self) -> dict[str, str] | None:
+        """The per-capability pins this profile ACTUALLY imposes, or ``None``.
+
+        Filtered to ``PROVIDER_CAPABILITIES`` because a profile's ``providers``
+        dict is a bare ``dict`` that accepts anything (including anything an
+        imported profile file carries) and only those four keys are ever read.
+
+        ``"auto"`` is deliberately NOT filtered out. It looks like "no override"
+        and is not: ``providers.override_with_layer`` returns the profile's value
+        whenever it is in the vocabulary, so a profile pinned to ``auto`` beats a
+        global config pinned to ``astap`` and changes which solver runs. Hiding
+        it here would recreate, one layer up, the same invisible override this
+        method exists to expose.
+        """
+        pov = self.providers
+        if not isinstance(pov, dict):
+            return None
+        out: dict[str, str] = {}
+        for cap in PROVIDER_CAPABILITIES:
+            v = pov.get(cap)
+            if isinstance(v, str) and v:
+                out[cap] = v
+        return out or None
+
     def row(self, active_id: str | None = None) -> dict:
+        """The picker row — identity PLUS the two blocks that override the rig.
+
+        ``providers`` and ``optics`` used to be dropped here, which made it
+        structurally impossible for the Profiles tab to show that a profile pins
+        a capability or a focal length: the list endpoint returns these rows, and
+        the full model is only reachable through a per-profile GET nothing on
+        that screen calls. That is how a ``polar_align: "sim"`` pin written
+        during one session kept the polar aligner simulated for twelve days while
+        every screen in the product displayed the global config's value.
+
+        Both blocks are small and secret-free (``redact_profile`` only scrubs
+        ``devices[].extra``), so they ride on the list row rather than forcing an
+        N+1 fetch. ``optics`` is dumped WHOLE because the whole model is what
+        wins: ``resolve_optics`` swaps the entire object, so a profile optics
+        block overrides every optics field at once, including the ones the
+        profile left at their own defaults."""
         return {
             "id": self.id,
             "name": self.name,
@@ -188,6 +228,8 @@ class Profile(BaseModel):
             "devices_count": len(self.devices),
             "site_name": self.site_name,
             "active": self.id == active_id,
+            "providers": self.override_providers(),
+            "optics": self.optics.model_dump() if self.optics else None,
         }
 
 
@@ -342,3 +384,62 @@ class ProfileLibrary:
 
 
 profiles = ProfileLibrary()
+
+
+# ------------------------------------------------------- the optics layer rule
+#
+# PROFILE > GLOBAL, in one place. Two seams need the answer and only one of them
+# has a hub: ``Hub.effective_optics`` (which owns a cached active-profile read
+# for the 2s status poll) and the native guider, which is constructed inside a
+# backend session that has no hub handle at all. That second seam read GLOBAL
+# config directly for ``guide_focal_length_mm`` while its siblings came from the
+# profile, so a profile optics override was honoured for imaging and silently
+# ignored for guiding: the imaging scale moved, the guide scale did not, and the
+# guider fell back to reporting RMS in pixels at an assumed 1"/px next to an
+# Optics panel showing a guide focal length that looked set. Both seams now call
+# the function below, so there is exactly one answer to "whose optics run".
+#
+# Both functions import ``config_store`` INSIDE the call rather than at module
+# scope, and that is load-bearing. A module-level ``from .config import
+# config_store`` freezes the object this module will use forever, so a caller
+# that redirects ``config.config_store`` (the idiom the whole test suite and the
+# factory-reset path use) would leave these two reading a DIFFERENT store than
+# the code that called them — the exact split that let a route test write its
+# fixtures into the developer's real config file while passing. Looking the name
+# up per call costs a dict lookup and keeps every reader on one store.
+
+
+def resolve_optics(profile: "Profile | None") -> Optics:
+    """The ``Optics`` block that ACTUALLY RUNS for ``profile``.
+
+    The active profile's block wins WHOLE when it has one — this is a model
+    swap, not a field-by-field merge, so a profile that sets only a focal length
+    also imposes its own (default) pixel size and sensor dimensions. Callers that
+    report provenance must say so; callers that just want the numbers get the
+    same numbers the rig uses. Never writes: the global block is untouched."""
+    from .config import config_store
+    if profile is not None and profile.optics is not None:
+        return profile.optics
+    return config_store.cfg().optics
+
+
+def active_profile() -> "Profile | None":
+    """The active profile read straight from disk — the hub-free reader.
+
+    ``Hub._active_profile`` is the CACHED one (the status poll must not touch the
+    disk every 2s); this exists for seams that have no hub, notably the native
+    backend building its guider. Defensive on purpose: a unit test's stub config
+    store has no ``active_profile_id`` and a missing/corrupt profile file must
+    degrade to "no active profile" rather than raise into a connect path, where
+    the failure would surface as a device that mysteriously would not connect."""
+    from .config import config_store
+    try:
+        active_id = getattr(config_store.cfg(), "active_profile_id", None)
+    except Exception:
+        return None
+    if not active_id:
+        return None
+    try:
+        return profiles.active(active_id)
+    except Exception:
+        return None
