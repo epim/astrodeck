@@ -23,7 +23,12 @@ surprises you about what it took is worse than no reset at all:
 
 2. **Kept unless explicitly asked for** — two separate opt-ins, both default
    OFF at the API and in the UI:
-   - ``delete_captures``: captured frames, session ledgers and night reports.
+   - ``delete_captures``: captured frames, session ledgers and night reports —
+     **and the gallery trash**, which is deliberately NOT preserved: a frame the
+     tester deleted last week is still the tester's data, and a "factory reset"
+     that leaves a populated bin behind has not returned the box to a fresh
+     install. Its bytes are counted by ``capture_inventory`` for the same reason
+     — the on-screen number must be what actually goes.
      These are the tester's IMAGES. Losing somebody's data to a settings button
      is unforgivable, so it is a distinct, separately-labelled choice.
    - ``reset_auth``: local sign-in accounts + the auth block. Kept by default
@@ -85,9 +90,13 @@ _AUTH_ENTRIES: tuple[tuple[str, bool], ...] = (
 #:
 #: Everything else under the root (target folders, ``darks``, ``untargeted``,
 #: ``sessions``, ``reports``, ``exports``, ``_masters``, ``_solve``, the frame
-#: counters) IS the capture library and goes when the box is ticked. Deny-list
-#: rather than allow-list on purpose: target folders are named after whatever
-#: the user imaged, so no allow-list could enumerate them.
+#: counters, the gallery's ``_trash`` and ``_gallery_thumbs``) IS the capture
+#: library and goes when the box is ticked. Deny-list rather than allow-list on
+#: purpose: target folders are named after whatever the user imaged, so no
+#: allow-list could enumerate them — and that same property is why the gallery's
+#: two directories need no entry here to be handled correctly. Adding ``_trash``
+#: to this set would be the bug: it would hand the next tester the previous
+#: tester's deleted frames.
 PRESERVED_CAPTURE_ENTRIES: frozenset[str] = frozenset({
     "_survey_pack", "_survey", "_weather_tiles", "logs",
 })
