@@ -34,6 +34,7 @@ import {
 import { isExposureInvalid } from "../lib/exposure";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
+import FocusPod from "../components/focus/FocusPod";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
@@ -458,7 +459,30 @@ export default function FocusView() {
     setAfAdvanced(!afAdvanced);
   };
 
+  // The sweep's gate and its tap, hoisted OUT of the Autofocus panel's IIFE.
+  // The #125 pod offers an AF chip over the preview, and the one thing that
+  // must never happen is two entry points that compute their own gate or build
+  // their own request body — that is how a shortcut becomes "a second control
+  // with its own behaviour", which this file already deleted once. One state
+  // object, one handler, two places to press it.
+  const afButton = focusButtonState({
+    canFocus, hasFocuser: !!foc, running, sweepBlock: afReady.block,
+  });
+  const runAutofocus = () => act(() => api.post("/api/focuser/autofocus", {
+    ...afParams,
+    ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
+  }));
+
   const frameWait = frameWaitNote({ startedAt: shotAt, exposureS: capExposureS, now });
+  // How far through the in-flight single exposure we are, for the pod's ring.
+  // Derived from the SAME `now` the move narrator and the exposure narrator
+  // already advance — joining that one interval rather than starting a second
+  // that would tick out of phase and draw a ring disagreeing with the countdown
+  // printed under the Camera panel. 1s granularity on purpose: that is how
+  // often `now` moves, and how often the sentence beside it changes.
+  const exposureProgress = shotAt == null || capExposureS <= 0
+    ? null
+    : Math.min(1, Math.max(0, (now - shotAt) / (capExposureS * 1000)));
   const sweepNote = sweepPreviewNote({
     running, pointsMeasured: focus?.points?.length ?? 0, framesSinceStart: sweepFrames,
     // A loop started from the Capture screen keeps running through a sweep (the
@@ -506,22 +530,68 @@ export default function FocusView() {
         {/* live preview so manual focus is not blind (spec §10) */}
         <Panel title="Live Preview" right={<FocusVerdict preview={shown} prev={prevFrame} hfrGood={hfrGood} hfrWarn={hfrWarn} />}>
           <div className="flex flex-col gap-2">
-            <PreviewStage
-              compact
-              preview={shown}
-              viewport={viewport}
-              setViewport={setViewport}
-              stretch={stretch}
-              overlays={overlays}
-              hfrGood={hfrGood}
-              hfrWarn={hfrWarn}
-              night={night}
-              linkDown={linkDown}
-              pinned={pinned}
-              newSincePinned={pinned && selectedId != null ? previews.filter((p) => p.id > selectedId).length : 0}
-              onReturnToLive={() => selectPreview(null)}
-              onControls={(c) => (focusControls.current = c)}
-            />
+            {/* #125. The pod is a SIBLING of the stage, held together by this
+                wrapper — never a descendant. usePreviewGestures binds its
+                listeners imperatively to the stage root and honours the
+                [data-no-pan] escape hatch ONLY in onPointerDown
+                (usePreviewGestures.ts:112-113): the wheel handler calls
+                preventDefault() unconditionally and the double-tap Fit/100%
+                accelerator has no check at all, so a chip inside the stage
+                would zoom the image under a scroll wheel and flip the zoom on a
+                double tap. (PreviewStage takes no `children` prop either.) */}
+            <div className="relative">
+              <PreviewStage
+                compact
+                preview={shown}
+                viewport={viewport}
+                setViewport={setViewport}
+                stretch={stretch}
+                overlays={overlays}
+                hfrGood={hfrGood}
+                hfrWarn={hfrWarn}
+                night={night}
+                linkDown={linkDown}
+                pinned={pinned}
+                newSincePinned={pinned && selectedId != null ? previews.filter((p) => p.id > selectedId).length : 0}
+                onReturnToLive={() => selectPreview(null)}
+                onControls={(c) => (focusControls.current = c)}
+              />
+              {/* Every prop below is state or a handler this screen ALREADY
+                  owns. The pod adds no capability — it is the same shutter, the
+                  same nudges, the same sweep, moved to where the thumb is while
+                  the eye is on the frame. Where it is blocked it is blocked by
+                  the same sentence the panel prints, because it is handed the
+                  same sentence. */}
+              <FocusPod
+                hfr={shown?.hfr ?? null}
+                prevHfr={prevFrame?.hfr ?? null}
+                exposureProgress={exposureProgress}
+                exposureNote={frameWait?.text ?? null}
+                captureBlocked={captureReason}
+                // null = the box is empty or not a number. The badge then reads
+                // "—" and its first tap writes a real preset into the box —
+                // which is also the repair for the blocker that state causes.
+                exposureS={capExposureInvalid ? null : capExposureS}
+                exposurePresets={FOCUS_EXPOSURE_PRESETS}
+                stepValues={STEP_VALUES}
+                onExposure={applyPreset}
+                onStep={setStep}
+                looping={looping}
+                starting={capPending}
+                exposing={shotAt != null}
+                step={step}
+                shootReason={singleReason}
+                loopReason={captureReason}
+                stopReason={readOnlyReason}
+                focuserReason={focuserReason}
+                autofocusReason={afButton.reason}
+                onShoot={() => void shoot("single", "/api/capture")}
+                onLoop={() => void shoot("loop", "/api/capture/loop")}
+                onStop={stopCapture}
+                onNudge={(d) => moveTo(pos + d)}
+                onAutofocus={runAutofocus}
+              />
+            </div>
             <div className="flex items-center gap-1 preview-toolbar">
               <button className="btn !px-2.5 min-h-11" aria-label="Zoom out" onClick={() => focusControls.current?.zoomOut()}>−</button>
               <button className="btn !px-2.5 min-h-11" aria-label="Zoom in" onClick={() => focusControls.current?.zoomIn()}>+</button>
@@ -815,17 +885,18 @@ export default function FocusView() {
             // The sweep is blocked when nothing has been measured for it to
             // copy (lib/focusCapture sweepReadiness) — ranked below permission
             // and hardware, because it is the smallest of the three facts.
-            const bs = focusButtonState({
-              canFocus, hasFocuser: !!foc, running, sweepBlock: afReady.block,
-            });
+            //
+            // Both of these are computed ONCE at component scope now (see the
+            // hoist above `frameWait`), because the #125 pod presses the same
+            // sweep from over the preview. Two call sites that each built their
+            // own gate and their own request body is exactly the drift this
+            // screen has already been burned by.
+            const bs = afButton;
             // `afParams` is built once at render (above) and is the SAME object
             // the summary line prints, so the sentence under the button and the
             // request that goes out cannot drift apart. The filter rides along
             // only when the user picked one in the open settings panel.
-            const onTap = () => act(() => api.post("/api/focuser/autofocus", {
-              ...afParams,
-              ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
-            }));
+            const onTap = runAutofocus;
             // UX #24: `focusButtonState` already computes excellent gating copy —
             // it was just handed to `title=`, which a fingertip never fires. The
             // hero keeps its own chrome (a lock-glyph 56px button, not a chip) and

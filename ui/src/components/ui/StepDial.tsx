@@ -91,7 +91,16 @@ export default function StepDial({
   };
 
   return (
-    <div className="relative select-none">
+    // touch-action: none, inline, on the root — the browser intersects
+    // touch-action from the touched element up to its scroll container, so this
+    // covers the button below it. Without it the designed gesture (press and
+    // slide UP through the options) is also the browser's page-scroll gesture,
+    // and the page wins: the arc opens, the page moves under the thumb, and the
+    // release commits whatever the finger happened to be over. Every other
+    // vertical-drag control here sets it the same way (SlewPad.tsx:314,
+    // TouchGuard.tsx:166, StretchHistogram.tsx:232). Found while building the
+    // Focus pod, where the same control sits over a live image.
+    <div className="relative select-none" style={{ touchAction: "none" }}>
       {/* The arc. Opens UPWARD so the thumb never covers the options it is
           choosing between, and is aria-hidden because the button below is the
           real control — a listbox here would announce twice. */}
