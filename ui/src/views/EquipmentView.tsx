@@ -138,6 +138,11 @@ export default function EquipmentView(): JSX.Element {
   );
 
   const assignedCount = roles.filter((r) => assignments[r]).length;
+
+  // The assignment map as last CONNECTED, so an edit is distinguishable from a
+  // re-press of the same thing. Null until this browser has connected or has
+  // adopted a rig that was already up (below).
+  const [connectedMap, setConnectedMap] = useState<AssignmentMap | null>(null);
   // What a SAVE would actually store: the save loop skips simulator rows (they
   // carry no persistable driver_id), so gating on the raw pick count let eleven
   // sim picks open Save and write a profile with zero devices.
@@ -154,6 +159,31 @@ export default function EquipmentView(): JSX.Element {
   const isRoleLive = (r: string) =>
     !!status?.connected?.[r]?.connected || !!linkByRole[r]?.connected;
   const connectedCount = liveRoleCount(status);
+
+  // WOULD PRESSING CONNECT CHANGE ANYTHING? Until now the button looked
+  // identical whether the rig was already up with these exact picks or had
+  // three edits waiting, so the only way to find out was to press it and watch
+  // the whole rig cycle. Roles whose pick differs from what is actually
+  // running:
+  const rigUp = connectedCount > 0;
+  // Compared BY VALUE. An Assignment is an object, and re-picking the same
+  // driver from the dropdown builds a fresh one — reference equality would call
+  // that an edit and light the button up over a change that is not one.
+  const asgKey = (a: Assignment | null | undefined) =>
+    a ? JSON.stringify(a) : "";
+  const dirtyRoles = connectedMap
+    ? roles.filter((r) => asgKey(assignments[r]) !== asgKey(connectedMap[r]))
+    : [];
+  // Adopt a rig that was already up when this browser arrived (another tab, a
+  // tablet, a resumed session). Without this the button would sit enabled and
+  // unexplained after every reload, which is the state it is meant to remove.
+  useEffect(() => {
+    if (rigUp && connectedMap === null) setConnectedMap({ ...assignments });
+    if (!rigUp && connectedMap !== null) setConnectedMap(null);
+    // assignments intentionally NOT a dependency: adopting on every keystroke
+    // would make an edit look like it was already connected.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rigUp, connectedMap]);
   // Roles the server reports as LIVE while this screen holds no assignment for
   // them — the #41 mismatch (a rig connected from anywhere but here).
   const liveUnassignedRoles = roles.filter((r) => isRoleLive(r) && !assignments[r]);
@@ -185,6 +215,10 @@ export default function EquipmentView(): JSX.Element {
       for (const r of res.results) resultMap[r.role] = r;
       setResults(resultMap);
       const okCount = res.results.filter((r) => r.ok).length;
+      // What is actually RUNNING on the rig now. Everything below compares the
+      // live picks against this, so the button can say whether pressing it
+      // would change anything.
+      setConnectedMap({ ...map });
       const attempted = res.results.filter((r) => r.attempted).length;
       if (okCount === 0 && attempted > 0) {
         showToast("error", "Rig connect attempted but no roles came up — see per-row errors");
@@ -272,7 +306,25 @@ export default function EquipmentView(): JSX.Element {
   // per-row pick) and THEN drives it through connectAssignments — never the
   // legacy /api/connect/sim shortcut, whose ConnectResult the Equipment
   // surface has no way to read into assignments/backend_links (root cause).
-  const doSimRig = () => {
+  const doSimRig = async () => {
+    // CONFIRM WHEN A REAL RIG IS UP. connectAssignments only holds for real
+    // MOTION, and a simulator map contains none — so this one button could
+    // disconnect live hardware and replace it with fakes on a single tap, with
+    // no dialog, while the scope was attached and tracking. Being quietly
+    // simulated is a genuinely expensive state to be in: a whole polar
+    // alignment session was spent on 2026-08-02 against a simulator nobody had
+    // noticed was selected.
+    if (connectedCount > 0) {
+      const ok = await confirmDialog({
+        title: "Replace the connected rig with simulators?",
+        body: `${connectedCount} role${connectedCount === 1 ? " is" : "s are"} `
+          + "connected to real hardware. This disconnects them and connects "
+          + "simulated devices instead — nothing you do afterwards reaches the sky.",
+        tone: "danger",
+        confirmLabel: "Use simulators",
+      });
+      if (!ok) return;
+    }
     const map = simAssignments(roles, drivers);
     setAssignments(map);
     saveAssignments(map);
@@ -695,21 +747,42 @@ export default function EquipmentView(): JSX.Element {
                 render at opacity 0.35 with no reachable reason (#16's
                 screenshot evidence). It is now dim + aria-disabled, with the
                 reason stated in the paragraph above and again beside it. */}
-            <button
-              type="button"
-              className={`btn min-h-11 ${
-                assignedCount > 0 && canConfig && !busy ? "btn-accent" : ""
-              } ${assignedCount === 0 ? "!text-dim" : ""}`}
-              disabled={busy || !canConfig}
-              aria-disabled={assignedCount === 0 || undefined}
-              onClick={assignedCount === 0 ? undefined : () => void doConnect()}
-            >
-              <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
-              {/* #18: the progress label belongs on the button that is doing the
-                  work. It used to read "Working…" here for a scan started three
-                  controls away. */}
-              {busyWhat === "connect" ? "Connecting…" : `Connect Rig (${assignedCount})`}
-            </button>
+            {/* Three states, because there are three situations and they used
+                to look the same:
+                  nothing assigned  — dim, nothing to connect
+                  connected, clean  — dim, pressing would re-cycle a working rig
+                                      for no gain (and drop the mount mid-run)
+                  edits pending     — accented, and SAYS HOW MANY, so you can
+                                      tell a real change from a stray tap
+                Still aria-disabled rather than the native attribute: a dim
+                control must still be focusable enough to explain itself. */}
+            {(() => {
+              const nothingToDo = assignedCount === 0
+                || (rigUp && dirtyRoles.length === 0);
+              const label = busyWhat === "connect" ? "Connecting…"
+                : rigUp && dirtyRoles.length > 0
+                  ? `Reconnect Rig (${dirtyRoles.length} changed)`
+                  : rigUp ? "Rig connected"
+                    : `Connect Rig (${assignedCount})`;
+              return (
+                <button
+                  type="button"
+                  className={`btn min-h-11 ${
+                    !nothingToDo && canConfig && !busy ? "btn-accent" : ""
+                  } ${nothingToDo ? "!text-dim" : ""}`}
+                  disabled={busy || !canConfig}
+                  aria-disabled={nothingToDo || undefined}
+                  title={rigUp && dirtyRoles.length > 0
+                    ? `Will reconnect: ${dirtyRoles.join(", ")}`
+                    : rigUp ? "The rig is connected with these exact picks — change one to re-enable"
+                      : undefined}
+                  onClick={nothingToDo ? undefined : () => void doConnect()}
+                >
+                  <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
+                  {label}
+                </button>
+              );
+            })()}
             {assignedCount === 0 && canConfig && (
               <span className="text-[11px] text-dim">
                 nothing assigned yet — pick a driver above, or use one of these
@@ -731,7 +804,7 @@ export default function EquipmentView(): JSX.Element {
               className="btn !text-dim !border-line"
               title="Connect a simulated rig — for exploring the app with no hardware attached"
               disabled={busy || !canConfig || roles.length === 0}
-              onClick={doSimRig}
+              onClick={() => void doSimRig()}
             >
               Simulator
             </button>
