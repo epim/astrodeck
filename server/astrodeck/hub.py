@@ -3716,6 +3716,22 @@ class Hub:
                 "healthy": healthy,
                 "warming_up": not self._bridge_ready,
             }
+        # Record last-known device state so a power cut is DETECTABLE on the way
+        # back up. Read off ``out`` rather than re-querying: these values were
+        # just measured, and a second round of device reads on the status path
+        # would cost more than the feature. Coalesced to one write per 10s and
+        # swallows its own errors, so it is safe on this hot path.
+        try:
+            from .devices import fingerprint as _fp
+            _m = out.get("mount") or {}
+            _f = out.get("focuser") or {}
+            _w = out.get("filterwheel") or {}
+            _fp.record(focuser_position=_f.get("position"),
+                       filter_slot=_w.get("position"),
+                       ra_hours=_m.get("ra_hours"), dec_deg=_m.get("dec_deg"),
+                       parked=_m.get("parked"), tracking=_m.get("tracking"))
+        except Exception:  # noqa: BLE001 — never break status over bookkeeping
+            pass
         return out
 
 
