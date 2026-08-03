@@ -100,6 +100,29 @@ export const clearProfileOverrides = (
     { providers: body.providers ?? [], optics: !!body.optics },
   );
 
+/** POST /api/profiles/{id}/set-providers → write capability pins INTO a profile,
+ *  returning the fresh row (#132).
+ *
+ *  The edit half of the disclosure `clearProfileOverrides` undoes, and the same
+ *  server-side-mutation rule applies for the same reason: a client-side
+ *  read-modify-write would have to start from `getProfile`, whose payload is
+ *  wire-REDACTED, and POSTing that back persists the blanked device secrets.
+ *
+ *  Send ONLY the capabilities being changed. The server overwrites exactly those
+ *  and leaves the rest of the profile's pins alone, so a stale client cannot
+ *  re-pin a capability the user never touched.
+ *
+ *  Callers must reload config afterwards: the winning layer, and therefore every
+ *  badge bound to it, only changes on the next `/api/config`. */
+export const setProfileProviders = (
+  id: string,
+  providers: Record<string, string>,
+): Promise<ProfileRow> =>
+  api.post<ProfileRow>(
+    `/api/profiles/${encodeURIComponent(id)}/set-providers`,
+    { providers },
+  );
+
 /** DELETE /api/profiles/{id} → {deleted:id}. */
 export const deleteProfile = (id: string): Promise<{ deleted: string }> =>
   api.del<{ deleted: string }>(`/api/profiles/${encodeURIComponent(id)}`);

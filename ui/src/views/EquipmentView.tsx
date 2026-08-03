@@ -58,7 +58,8 @@ import {
 } from "../lib/equipment";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
-import TasksPanel, { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
+import TasksPanel from "../components/equipment/TasksPanel";
+import { DEFAULT_PROVIDERS } from "../lib/providerWrite";
 import RotatorCard from "../components/equipment/RotatorCard";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
 import { ROLE_LABEL } from "../components/settings/backendMeta";

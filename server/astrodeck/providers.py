@@ -346,25 +346,106 @@ def _rig_has_bridge_session(hub: object) -> bool:
                for k in sessions)
 
 
+#: The guide-provider override values the UI renders a ROW for, in offer order.
+#: ``"sim"`` is deliberately absent: ``_resolve_guide`` has no ``sim`` branch, so
+#: pinning it behaves exactly like ``auto``. A control that does nothing is worse
+#: than no control, so it is never offered — an old profile that already holds it
+#: still round-trips (the UI keeps a stored value as a sticky row).
+GUIDE_PROVIDER_VALUES: tuple[str, ...] = ("auto", "astrodeck", "backend")
+
+
+def _guide_native_blocker(hub: object) -> str | None:
+    """Why the native guider cannot be OFFERED on this rig, or ``None`` when it
+    can. The sentence is user-facing and names the fix, not the symptom.
+
+    THE BUG THIS FUNCTION EXISTS TO END. The offer predicate used to be written
+    out a second time, one term looser than the resolver's: the dropdown accepted
+    ``guide_camera OR camera`` while ``_resolve_guide`` computes ``native_ok``
+    from ``guide_camera`` ALONE. So on a rig with only the imaging camera
+    connected, "AstroDeck native" was OFFERED, the write succeeded, and the
+    resolver fell straight through to ``ProviderChoice("backend", "PHD2", "no
+    guide camera connected — using the PHD2 bridge")``. The user picked native
+    and the badge said PHD2, with nothing on screen admitting the pick had been
+    discarded. One predicate now answers both questions, so the offer cannot
+    drift looser than the resolver again.
+
+    Requiring the ROLE rather than any connected camera is the physically correct
+    rule, not a stylistic one: the native guide loop needs its own exposure
+    stream, and the imaging camera is busy taking the light frame the guiding
+    exists to protect. A rig with a genuine off-axis guider assigns that camera
+    to the ``guide_camera`` role, so the requirement costs a correctly-configured
+    OAG rig nothing.
+
+    Order matters — the FIRST blocker is the one the user is shown, so it has to
+    be the one they would act on first. A NINA rig is checked before anything
+    else because no amount of guide-camera wiring changes that answer (D5).
+
+    Every sentence NAMES its own provider. The client renders these without
+    prefixing the option's label (prefixing produced the stutter "AstroDeck
+    native — AstroDeck native needs a guide camera…"), so a sentence that did not
+    identify itself would arrive on screen orphaned under a row of chips.
+    ``test_every_blocked_reason_names_its_own_provider`` pins that.
+    """
+    if getattr(hub, "nina_client", None) is not None:
+        return ("NINA owns guiding on a NINA rig — AstroDeck's own guider isn't "
+                "offered while NINA is driving this rig")
+    if not NATIVE_AVAILABLE:
+        return ("the AstroDeck native guiding engine isn't installed on this "
+                "host, so only the PHD2/NINA bridge can guide")
+    if _connected(hub, "guide_camera") is None:
+        return ("AstroDeck native needs a guide camera assigned and connected — "
+                "assign one to the guide camera role on Equipment")
+    if _connected(hub, "telescope") is None:
+        return ("AstroDeck native needs the mount connected — it guides by "
+                "pulsing the mount")
+    return None
+
+
+def _guide_backend_blocker(hub: object) -> str | None:
+    """Why the PHD2/NINA bridge cannot be OFFERED, or ``None``. Same
+    one-predicate rule as the native blocker above: the bridge is offered when a
+    bridge guider is genuinely reachable — a live NINA client, a bridge guider
+    already serving, or a retained PHD2/NINA session from the last connect."""
+    if (getattr(hub, "nina_client", None) is not None
+            or actual_guide_family(getattr(hub, "guider", None)) == "backend"
+            or _rig_has_bridge_session(hub)):
+        return None
+    return ("no PHD2 or NINA bridge is connected — add a PHD2 or NINA driver on "
+            "Equipment and connect it")
+
+
+def guide_provider_options(hub: object) -> list[dict]:
+    """Every guide-provider value the UI should RENDER, each with whether it is
+    selectable here and — when it is not — the sentence saying why.
+
+    Returning the blocked values WITH their reason (rather than silently
+    dropping them, which is what ``eligible`` alone forced) is what lets the
+    client use the house honest-disabled pattern: a dim, lock-marked, still
+    tap-reachable row carrying "AstroDeck native needs a guide camera assigned
+    and connected". A missing row tells the user nothing to act on; worse, on a
+    rig that simply has not connected yet it reads as "this product cannot do
+    that at all", which is how a user concluded AstroDeck could not guide."""
+    out: list[dict] = []
+    blockers = {
+        "auto": None,                              # always selectable
+        "astrodeck": _guide_native_blocker(hub),
+        "backend": _guide_backend_blocker(hub),
+    }
+    for value in GUIDE_PROVIDER_VALUES:
+        blocker = blockers.get(value)
+        out.append({"value": value, "eligible": blocker is None,
+                    "reason": blocker})
+    return out
+
+
 def guide_eligible_providers(hub: object) -> list[str]:
     """The guide-provider override VALUES actually selectable on the connected
-    rig — the Guide view dropdown's vocabulary (mirrors the UI's
-    ``eligibleTaskDrivers``: only offer what applies, review I1). Always
-    ``"auto"``; ``"astrodeck"`` when the native engine can run (guide-capable
-    camera + mount + wheel, and NOT a NINA rig, D5); ``"backend"`` when a
-    NINA/PHD2 bridge guider is actually available. A no-op value (e.g. a bare
-    ``"sim"`` pin, which has no resolver branch) is never offered."""
-    out = ["auto"]
-    nina = getattr(hub, "nina_client", None) is not None
-    gcam = _connected(hub, "guide_camera") or _connected(hub, "camera")
-    tel = _connected(hub, "telescope")
-    native_ok = bool(NATIVE_AVAILABLE and gcam is not None and tel is not None)
-    if native_ok and not nina:
-        out.append("astrodeck")
-    if (nina or actual_guide_family(getattr(hub, "guider", None)) == "backend"
-            or _rig_has_bridge_session(hub)):
-        out.append("backend")
-    return out
+    rig (mirrors the UI's ``eligibleTaskDrivers``: only offer what applies,
+    review I1). DERIVED from :func:`guide_provider_options` rather than computed
+    again, so the list and the per-option reasons can never disagree — that
+    duplication is precisely what produced the offer-a-provider-the-resolver-
+    rejects bug documented on ``_guide_native_blocker``."""
+    return [o["value"] for o in guide_provider_options(hub) if o["eligible"]]
 
 
 def _resolve_guide(hub: object, override: str) -> ProviderChoice:

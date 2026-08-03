@@ -3523,8 +3523,17 @@ class Hub:
             # Additive: the guide row carries the override values actually
             # SELECTABLE on this rig, so the Guide view offers only what applies
             # (review I1), never a no-op vocabulary option.
+            #
+            # ``options`` is the same answer with the BLOCKED values kept and a
+            # reason attached, which is what the client needs to render the house
+            # honest-disabled row ("AstroDeck native needs a guide camera
+            # assigned and connected") instead of just omitting the option. Both
+            # keys come from ONE server-side predicate — an offer list computed
+            # separately from the resolver is exactly how the dropdown came to
+            # offer a provider that `_resolve_guide` then threw away.
             guide_row = out["providers"].get("guide")
             if isinstance(guide_row, dict):
+                guide_row["options"] = _providers.guide_provider_options(self)
                 guide_row["eligible"] = _providers.guide_eligible_providers(self)
         except Exception as e:
             out["providers"] = {

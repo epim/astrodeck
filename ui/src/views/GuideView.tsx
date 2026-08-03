@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CalibrationReport } from "../types";
-import { api, ApiError } from "../api";
-import { clearProfileOverrides, setProvidersConfig } from "../api/backends";
+import { api } from "../api";
 import {
-  useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
+  useStore, useStatus, useGuide, useProviders, useGuideRmsByKind,
   useGuideAssistant,
 } from "../store";
 import {
@@ -19,13 +18,11 @@ import {
   Panel, Stat, Led, Toggle, Disclosure, LockedChip, LockedNote, lockedProps,
   LOCKED_CLASS,
 } from "../components/ui";
-import { useCanControlGuide, useCanConfigBackend, accessPhrase } from "../lib/caps";
+import { useCanControlGuide, accessPhrase } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
 import GuideFramePreview from "../components/GuideFramePreview";
-import { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
-import { OverrideNote, useClearOverride } from "../components/OverrideNote";
-import { entryOf, isProfileOverride, providerKey } from "../lib/effective";
+import GuideProviderControl from "../components/GuideProviderControl";
 import { compareRmsWindows } from "../lib/rmsCompare";
 import { selectGuideWindows } from "../lib/guideRms";
 import { guideNarration } from "../lib/guideNarration";
@@ -333,7 +330,7 @@ export default function GuideView() {
         <GuideAssistantPanel canGuide={canGuide} connected={connected}
           onToast={showToast} onOpenInTuning={setTuningSeed} />
 
-        <GuideProviderPanel onToast={showToast} />
+        <GuideProviderPanel />
 
         <GuideSettingsDrawer canGuide={canGuide} connected={connected}
           onToast={showToast} seed={tuningSeed} />
@@ -353,103 +350,27 @@ type ToastFn = (level: "success" | "info" | "warning" | "error", msg: string) =>
 
 // ------------------------------------------------------------ provider switch
 // Per-profile guide-provider override (P5-T1, spec §6 P5) + a same-night
-// head-to-head RMS comparison. Mirrors the Equipment "Tasks" panel's
-// provider-override mechanics EXACTLY (components/equipment/TasksPanel.tsx):
-// same global config write (`POST /api/config/providers`, `config.backend`-
-// gated — not `control.guide`, since it's a backend/connect-shape decision
-// like the other three task overrides, not a guide-safety one), same
-// optimistic-draft-then-revert-on-error pattern, same "Auto (best available)"
-// + ProviderBadge/reason-line idiom. `ProvidersConfig.guide` rides the SAME
-// per-profile snapshot the other three overrides already do (Profile.providers,
-// EquipmentView's doSaveProfile/doLoadProfile spread the whole object) — no
-// new profile plumbing was needed for that half of the brief.
+// head-to-head RMS comparison.
 //
-// The RMS comparison reads store.ts's `guideRmsByKind` (tagged at bus-ingest
-// time from `status.providers.guide.kind`, since the "guide" bus channel
-// itself carries no provider field) and hands the native-family window
-// ("astrodeck", or "sim" on a sim rig — both run the SAME NativeGuider engine,
-// see providers.py::_resolve_guide) and the PHD2/NINA-family window
-// ("backend") to the pure lib/rmsCompare.ts helper.
-// Friendly labels for the guide-provider override VALUES. The option VOCABULARY
-// itself comes from the server (`status.providers.guide.eligible`) so the
-// dropdown only ever offers what actually applies to the connected rig — the
-// same "only offer what's eligible" rule TasksPanel follows (review I1). A bare
-// "sim" pin is no longer offered (it was a no-op; the server never lists it).
-const GUIDE_PROVIDER_LABELS: Record<string, string> = {
-  auto: "Auto (best available)",
-  astrodeck: "AstroDeck native",
-  backend: "PHD2 / NINA bridge",
-  // Legacy: "sim" was offered pre-fix-round and may persist in an old profile
-  // snapshot; the server never lists it as eligible anymore (it behaved like
-  // Auto), so it only ever appears as the sticky stored-value option.
-  sim: "Simulator (legacy — same as Auto)",
-};
-const guideProviderLabel = (value: string): string =>
-  GUIDE_PROVIDER_LABELS[value] ?? value;
-
-function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
-  const config = useConfig();
-  const providers = useProviders();
-  const canConfig = useCanConfigBackend();
+// The CONTROL is no longer written here. It moved into the shared
+// components/GuideProviderControl.tsx so that Equipment's Tasks section can
+// render the SAME control as a fourth task row (UX-02) — the fourth pinnable
+// capability used to be reachable only from this screen, which is the one place
+// a user looking for "who runs each task" does not think to look. A second copy
+// of it on Equipment would have been worse than the omission: the layer-aware
+// write-back rule (#132 — a profile pin is edited IN the profile, not in the
+// global block the profile shadows) has to be identical on both screens, and two
+// copies of that decision is exactly how the original bug survived.
+//
+// What stays here is the part that is genuinely Guide-view-only: the same-night
+// head-to-head. It reads store.ts's `guideRmsByKind` (tagged at bus-ingest time
+// from `status.providers.guide.kind`, since the "guide" bus channel itself
+// carries no provider field) and hands the native-family window ("astrodeck",
+// or "sim" on a sim rig — both run the SAME NativeGuider engine, see
+// providers.py::_resolve_guide) and the PHD2/NINA-family window ("backend") to
+// the pure lib/rmsCompare.ts helper.
+function GuideProviderPanel() {
   const rmsByKind = useGuideRmsByKind();
-
-  // #129: the fourth pinnable capability, and it had the same bug as the other
-  // three — this seeded from `config.providers.guide`, the GLOBAL block, which
-  // the ACTIVE PROFILE beats inside providers.override_with_layer. Read the
-  // WINNING value; keep the global one underneath only as the bootstrap
-  // fallback, since the WS `hello` config carries no provenance block.
-  const guideEntry = entryOf(config, providerKey("guide"));
-  const guidePinned = isProfileOverride(guideEntry);
-  const seed =
-    (typeof guideEntry?.value === "string" && guideEntry.value) ||
-    config?.providers?.guide ||
-    "auto";
-  const [draft, setDraft] = useState(seed);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const { clear, clearing, error: clearErr } = useClearOverride();
-
-  // Re-seed whenever a fresh config lands (our own save, another client's, or
-  // a profile activate/load restoring its snapshot) — same idiom as
-  // TasksPanel's persist-and-reseed effect.
-  useEffect(() => {
-    setDraft(seed);
-  }, [seed]);
-
-  const persist = async (value: string) => {
-    if (busy) return;
-    setErr(null);
-    setBusy(true);
-    const next = { ...DEFAULT_PROVIDERS, ...(config?.providers ?? {}), guide: value };
-    setDraft(value); // optimistic — echoed back by loadConfig() below
-    try {
-      await setProvidersConfig(next);
-      await useStore.getState().loadConfig();
-      onToast("success", "Guide provider override saved");
-    } catch (e) {
-      setDraft(seed); // revert the optimistic edit
-      const msg =
-        e instanceof ApiError
-          ? e.status === 403
-            ? "config.backend required to change the guide provider"
-            : e.message
-          : e instanceof Error
-            ? e.message
-            : "couldn't save the guide provider override";
-      setErr(msg);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const choice = providers?.guide;
-  // Options the connected rig actually supports (server-resolved); "auto" is
-  // always present. The stored draft stays listed even if it's momentarily not
-  // eligible (disconnected rig) so it never silently vanishes — TasksPanel's
-  // sticky-option idiom.
-  const eligible = choice?.eligible ?? ["auto"];
-  const options = eligible.includes("auto") ? eligible : ["auto", ...eligible];
-  const draftInList = options.includes(draft);
   const { native: nativeWindow, backend: phd2Window } = selectGuideWindows(rmsByKind);
   const cmp = compareRmsWindows(nativeWindow, phd2Window);
   const cmpTone =
@@ -458,73 +379,11 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   return (
     <Panel title="Guide Provider" right={<ProviderBadge cap="guide" />}>
       <div className="flex flex-col gap-2.5">
-        <label className="flex flex-col gap-1">
-          <span className="label">Provider override</span>
-          {/* UX #24: a <select> has no `readOnly`, and the native `disabled`
-              attribute would drop the control and its reason out of the a11y
-              tree. Without the capability, show the value through the house
-              locked stand-in instead. (`busy` keeps the native attribute: it
-              lasts one round-trip and has no reason worth reading.) */}
-          {canConfig ? (
-            <select
-              className="field"
-              value={draft}
-              // Under a profile pin this select writes the global block, which
-              // the profile then beats — a save that succeeds and changes
-              // nothing that runs. Report instead of pretending; the note below
-              // carries the way out. Same rule as TasksPanel.
-              disabled={busy || guidePinned}
-              onChange={(e) => void persist(e.target.value)}
-              aria-label="Guide provider override"
-            >
-              {options.map((v) => (
-                <option key={v} value={v}>
-                  {guideProviderLabel(v)}
-                </option>
-              ))}
-              {/* sticky: a stored value not currently eligible (e.g. a
-                  disconnected rig) stays listed rather than vanishing */}
-              {!draftInList && (
-                <option value={draft}>{guideProviderLabel(draft)}</option>
-              )}
-            </select>
-          ) : (
-            <LockedChip
-              reason={`Guide provider override — ${accessPhrase("config.backend")} required`}
-              className="btn w-full">
-              {guideProviderLabel(draft)}
-            </LockedChip>
-          )}
-        </label>
-        {choice?.reason && <p className="text-[11px] text-dim leading-snug">{choice.reason}</p>}
-        <OverrideNote
-          entry={guideEntry}
-          format={(v) => guideProviderLabel(String(v))}
-          clearLabel="Clear the profile pin"
-          clearHint="Clearing it hands this dropdown back."
-          clearing={clearing}
-          error={clearErr}
-          onClear={
-            canConfig && guideEntry?.profile_id
-              ? () =>
-                  void clear(() =>
-                    clearProfileOverrides(guideEntry.profile_id as string, {
-                      providers: ["guide"],
-                    }),
-                  )
-              : undefined
-          }
-        />
-        <p className="text-[11px] text-dim leading-snug">
-          A switch takes effect at the next guiding start (it never swaps a
-          running guider).
-        </p>
-        {!canConfig && (
-          <p className="text-[11px] text-dim inline-flex items-center gap-1.5">
-            Read-only — changing the guide provider needs {accessPhrase("config.backend")}.
-          </p>
-        )}
-        {err && <p className="text-[11px] text-bad">{err}</p>}
+        {/* "stacked": this panel lives in a 300px column, where an inline label
+            plus a chip group wraps into nonsense. Everything else about the
+            control — eligibility, reasons, where the save lands — is identical
+            to the Equipment row. */}
+        <GuideProviderControl label="Provider override" layout="stacked" />
 
         <div className="border-t border-line pt-2.5 mt-0.5">
           <span className="label">Same-night RMS: native vs. PHD2</span>
