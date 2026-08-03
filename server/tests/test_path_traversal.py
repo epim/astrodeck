@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 import astrodeck.api.app as app_module
 from astrodeck.config import ConfigStore
-from astrodeck.persist import safe_subpath
+from astrodeck.persist import safe_id_path, safe_subpath
 
 INDEX_SENTINEL = "<!doctype html><title>astrodeck-spa-test</title>"
 CANARY = "SECRET-CANARY-9f3a"
@@ -71,6 +71,37 @@ LEGITIMATE = [
 def test_safe_subpath_refuses(tmp_path, candidate):
     with pytest.raises(KeyError):
         safe_subpath(tmp_path, candidate)
+
+
+# The two guards share `_refuse_component`, so the SAME corpus must bind both.
+# They drifted the day safe_subpath was written: it refused `:` anywhere,
+# trailing dot/space and reserved device names, and safe_id_path refused none of
+# the three, so `CON`, `COM3`, `NUL`, `x ` and `x.` were accepted by one and
+# rejected by the other. Not exploitable through the callers of the day — all
+# pass a non-empty suffix — but `x.` and `x ` already aliased two ids onto one
+# file on Windows, and one `suffix=""` call would have reopened the rest.
+SINGLE_COMPONENT = [c for c in TRAVERSAL if c not in ("", "/etc/passwd")]
+
+
+@pytest.mark.parametrize("candidate", SINGLE_COMPONENT)
+def test_safe_id_path_refuses_the_same_corpus(tmp_path, candidate):
+    with pytest.raises(KeyError):
+        safe_id_path(tmp_path, candidate, ".json")
+
+
+@pytest.mark.parametrize("candidate", ["", "/etc/passwd"])
+def test_safe_id_path_refuses_empty_and_absolute(tmp_path, candidate):
+    """Split out only because these two are refused for a different reason —
+    empty-string and separator, not component shape."""
+    with pytest.raises(KeyError):
+        safe_id_path(tmp_path, candidate, ".json")
+
+
+@pytest.mark.parametrize("ident", ["plan-1", "Rig1", "a_b.c", ".hidden", "M42 flat"])
+def test_safe_id_path_still_allows_real_ids(tmp_path, ident):
+    """The guards must not start refusing the ids the stores actually mint."""
+    resolved = safe_id_path(tmp_path, ident, ".json")
+    assert resolved.parent == tmp_path.resolve()
 
 
 @pytest.mark.parametrize("candidate", LEGITIMATE)
