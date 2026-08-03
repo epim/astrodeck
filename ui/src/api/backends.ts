@@ -80,6 +80,26 @@ export const importProfile = (raw: Record<string, unknown>): Promise<ProfileRow>
 export const renameProfile = (id: string, name: string): Promise<ProfileRow> =>
   api.patch<ProfileRow>(`/api/profiles/${encodeURIComponent(id)}`, { name });
 
+/** POST /api/profiles/{id}/clear-overrides → drop the profile's provider pins
+ *  and/or its whole optics block, returning the fresh row (#129).
+ *
+ *  This is the ONLY safe way to remove one: a client-side read-modify-write
+ *  would have to start from `getProfile`, whose payload is wire-REDACTED
+ *  (device `extra` secrets are blanked), and POSTing that back persists the
+ *  blanks. `optics` is all-or-nothing because the server swaps the optics block
+ *  WHOLE — there is no per-field optics override to clear.
+ *
+ *  Callers must reload config afterwards: the winning layer, and therefore
+ *  every badge bound to it, only changes on the next `/api/config`. */
+export const clearProfileOverrides = (
+  id: string,
+  body: { providers?: string[]; optics?: boolean },
+): Promise<ProfileRow> =>
+  api.post<ProfileRow>(
+    `/api/profiles/${encodeURIComponent(id)}/clear-overrides`,
+    { providers: body.providers ?? [], optics: !!body.optics },
+  );
+
 /** DELETE /api/profiles/{id} → {deleted:id}. */
 export const deleteProfile = (id: string): Promise<{ deleted: string }> =>
   api.del<{ deleted: string }>(`/api/profiles/${encodeURIComponent(id)}`);

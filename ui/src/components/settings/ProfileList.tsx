@@ -54,6 +54,7 @@ import {
   profileResolvesRealMotion,
 } from "../../lib/equipment";
 import { useCanConfigBackend } from "../../lib/caps";
+import { profileOverrideSummary } from "../../lib/effective";
 
 const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   alpaca: "Native / Alpaca",
@@ -514,6 +515,27 @@ function ProfileCard({
               {row.site_name ? ` · ${row.site_name}` : ""}
               {row.active && <span className="text-accent"> · auto-connects on boot</span>}
             </div>
+            {/* #129 — a profile can carry values that BEAT global config the
+                moment it is activated, and until now no screen in the product
+                displayed either block. That is how a `polar_align: "sim"` pin
+                written during one session kept the aligner simulated for twelve
+                days: it survived every later save (Update-from-rig deliberately
+                preserves optics/providers) with nothing anywhere to see it by.
+                It is spelled out rather than badged, because "overrides" with
+                no values is exactly the label that would have been ignored. */}
+            {profileOverrideSummary(row) && (
+              <div
+                className={`text-[10px] mt-1 leading-snug ${row.active ? "text-warn" : "text-dim"}`}
+              >
+                <span className="layer-chip layer-chip-profile mr-1.5 align-middle">
+                  <span aria-hidden>OVERRIDES</span>
+                </span>
+                {profileOverrideSummary(row)}
+                {row.active
+                  ? " — in force on this rig now."
+                  : " — these take over when you activate it."}
+              </div>
+            )}
           </>
         )}
       </div>
