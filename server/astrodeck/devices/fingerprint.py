@@ -37,11 +37,22 @@ def _now() -> float:
 
 
 def _path() -> Path:
-    global _PATH
-    if _PATH is None:
-        from ..hub import CAPTURE_DIR
-        _PATH = Path(CAPTURE_DIR) / "device_fingerprint.json"
-    return _PATH
+    """Resolved on EVERY call, never cached.
+
+    Caching it in the module global was order-dependent: whichever caller
+    touched this first froze the path to the CAPTURE_DIR of that moment, so a
+    later reader looked in a directory the writer had stopped using. It surfaced
+    as two unrelated resume tests failing in the full suite while passing alone
+    — the signature of shared state, and the same class of flake as reading the
+    process-wide bus ring. A Path join costs nothing; correctness here is worth
+    more than the microsecond.
+
+    ``_PATH`` remains as a test override only.
+    """
+    if _PATH is not None:
+        return _PATH
+    from ..hub import CAPTURE_DIR
+    return Path(CAPTURE_DIR) / "device_fingerprint.json"
 
 
 @dataclass(frozen=True)
