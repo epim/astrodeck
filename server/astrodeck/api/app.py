@@ -82,6 +82,7 @@ from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
 from ..naming import sanitize_component
 from ..plans import PLAN_SCHEMA, plan_library
 from ..profiles import Profile, profiles, redact_profile
+from ..provenance import effective_config
 from ..rotation import angle_equals, map_sky_target, mod360
 from ..sequence import SequenceEngine, SequencePlan
 from ..sequence import schedule as schedule_mod
@@ -1852,6 +1853,16 @@ def create_app() -> FastAPI:
         cfg = config_store.cfg()
         payload = redacted(cfg) | {
             "optics_computed": hub.effective_optics(),
+            # #129: ``redacted(cfg)`` above is the GLOBAL AppConfig — the LOSING
+            # layer for every key an active profile overrides. Bound to a form
+            # field it will happily show a provider or a focal length that is not
+            # what the rig is running, with no tell of any kind; that is how a
+            # profile-pinned simulator drove the polar aligner for twelve days.
+            # ``effective`` names, per key, the value in force and WHICH LAYER
+            # supplied it, so the panels can show the winner and mark the loser
+            # instead of silently displaying it. See astrodeck/provenance.py for
+            # the entry shape.
+            "effective": effective_config(hub),
             # UX #32: the capture root is an ASTRODECK_CAPTURE_DIR env var with no
             # readout anywhere in the product, so the naming preview showed a
             # relative path and "88 GB free" named no volume. Read-only for now

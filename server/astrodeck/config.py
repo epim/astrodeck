@@ -335,6 +335,17 @@ class ProvidersConfig(BaseModel):
     guide: str = "auto"
 
 
+#: The capability keys that route a provider, DERIVED from the model above so the
+#: list can never drift from it. Three places need this exact tuple and each used
+#: to spell it out by hand: ``providers.resolve_all`` (what status reports),
+#: ``ConfigStore.set_providers`` (what a write validates), and ``Profile.row``
+#: (which of a profile's ``providers`` keys are real overrides). A profile may
+#: carry ANY key in its ``providers`` dict — anything outside this tuple is
+#: inert: stored, exported, and read by nothing. Showing such a key as an
+#: override would be a lie, so the tuple is the filter, not a suggestion.
+PROVIDER_CAPABILITIES: tuple[str, ...] = tuple(ProvidersConfig.model_fields)
+
+
 # --------------------------------------------------- native guider settings (§3.5)
 #
 # Per-axis guide-ALGORITHM selection for the native autoguider (distinct from
@@ -1020,7 +1031,7 @@ class ConfigStore:
         write time (the route maps this ValueError to 422) rather than silently
         resolving to auto forever."""
         valid = self.valid_override_values()
-        for cap in ("autofocus", "polar_align", "solve", "guide"):
+        for cap in PROVIDER_CAPABILITIES:
             v = getattr(providers, cap, "auto")
             if v not in valid:
                 raise ValueError(
