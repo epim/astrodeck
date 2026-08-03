@@ -34,7 +34,8 @@ import {
 import { isExposureInvalid } from "../lib/exposure";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
-import FocusPod from "../components/focus/FocusPod";
+import FocusPod, { POD_MIN_STAGE_H } from "../components/focus/FocusPod";
+import { focusState } from "../lib/focusVerdict";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
@@ -474,6 +475,13 @@ export default function FocusView() {
   }));
 
   const frameWait = frameWaitNote({ startedAt: shotAt, exposureS: capExposureS, now });
+  // The SAME classifier FocusVerdict runs on the same frame, hoisted so the pod
+  // is gated by it too. Handing the pod the HFR was never enough to keep the
+  // corner and the header from disagreeing: past detect_stars' 15px box the
+  // header prints NO number, because the one it has is the box's ceiling.
+  const shownFocus = focusState(shown as {
+    hfr?: number | null; stars?: number | null; defocus_r80?: number | null;
+  });
   // How far through the in-flight single exposure we are, for the pod's ring.
   // Derived from the SAME `now` the move narrator and the exposure narrator
   // already advance — joining that one interval rather than starting a second
@@ -542,6 +550,13 @@ export default function FocusView() {
             <div className="relative">
               <PreviewStage
                 compact
+                // The stage has to be tall enough to hold the pod's arc: at 3:2
+                // a 390px phone gives 326×217 and the arc needs 230, and there
+                // is no clipping between here and the Panel header, so a short
+                // stage puts the two most-pressed chips over FocusVerdict. The
+                // floor only bites below ~410px of viewport; above that 3:2
+                // already gives more and the ratio wins as before.
+                minHeight={POD_MIN_STAGE_H}
                 preview={shown}
                 viewport={viewport}
                 setViewport={setViewport}
@@ -565,8 +580,10 @@ export default function FocusView() {
               <FocusPod
                 hfr={shown?.hfr ?? null}
                 prevHfr={prevFrame?.hfr ?? null}
+                hfrState={shownFocus.kind}
                 exposureProgress={exposureProgress}
                 exposureNote={frameWait?.text ?? null}
+                exposureNoteTone={frameWait?.tone ?? null}
                 captureBlocked={captureReason}
                 // null = the box is empty or not a number. The badge then reads
                 // "—" and its first tap writes a real preset into the box —

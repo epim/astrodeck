@@ -422,7 +422,17 @@ export function Tooltip({ content, children, side = "top", label, triggerClassNa
   useEffect(() => {
     if (!st.open) return;
     const onDoc = (e: Event) => { if (ref.current && !ref.current.contains(e.target as Node)) dispatch("outside"); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") dispatch("escape"); };
+    // preventDefault MARKS THE PRESS AS SPENT. Escape has no default action of
+    // its own, so this costs nothing here and it is the only signal an outer
+    // dismissable has that the key was already used: a locked chip inside the
+    // Focus pod's arc opens this bubble to say WHY it is blocked, and one
+    // Escape was closing the answer and the arc together (FocusPod's own
+    // window-level handler now skips a consumed event).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      dispatch("escape");
+    };
     document.addEventListener("pointerdown", onDoc);
     document.addEventListener("keydown", onKey);
     return () => { document.removeEventListener("pointerdown", onDoc); document.removeEventListener("keydown", onKey); };
