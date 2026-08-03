@@ -134,8 +134,11 @@ export function selectionQuery(sel: GallerySelection): string {
 export const framesPath = (o: Parameters<typeof framesQuery>[0]): string =>
   `/api/gallery/frames${framesQuery(o)}`;
 export const nightsPath = (): string => "/api/gallery/nights";
-export const summaryPath = (sel: GallerySelection): string =>
-  `/api/gallery/summary${selectionQuery(sel)}`;
+// No `summaryPath`: /api/gallery/summary exists for callers that have no
+// listing (a script pricing a stream), but this UI always has one — the frames
+// response carries `total`/`bytes` for the WHOLE filtered set from the same
+// server-side resolver download.zip uses, so asking for them again would be a
+// second library walk for two numbers already on screen.
 export const downloadPath = (sel: GallerySelection): string =>
   `/api/gallery/download.zip${selectionQuery(sel)}`;
 /**
@@ -309,19 +312,6 @@ export function frameSubtitle(f: GalleryFrame): string {
   return parts.length ? parts.join(" · ") : "header unreadable";
 }
 
-/** Local wall clock "HH:MM" from a unix second. */
-export function fmtClockSec(ts: number): string {
-  const d = new Date(ts * 1000);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-}
-
-/** Local calendar date "YYYY-MM-DD" from a unix second — the date a filename
- *  carries, as opposed to the observing night the frame belongs to. */
-export function localDate(ts: number): string {
-  const d = new Date(ts * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 /**
  * The sentence a frame needs when its NIGHT and its CALENDAR DATE disagree, and
  * null when they agree.
@@ -333,12 +323,22 @@ export function localDate(ts: number): string {
  * broken. It is not; the filename is the thing that splits the session. Saying
  * so on the frame that shows the discrepancy is cheaper than a help page nobody
  * opens.
+ *
+ * BOTH DATES COME FROM THE SERVER, and this module deliberately owns no clock.
+ * `night` is computed with the RIG's `localtime`; a browser reaching the rig
+ * through the relay is in its own timezone. Formatting `ts` here — with a rig in
+ * Arizona and a user in London, say — would put essentially every frame's
+ * calendar date one day ahead of its night and print a wall-clock time the frame
+ * was never taken at. The sentence written to REMOVE the night/filename
+ * confusion would have become its largest source, on this feature's headline
+ * correctness axis. So the row carries `local_date`/`local_clock` already in the
+ * observatory's clock, one line from the night derived from the same call.
  */
 export function nightVsFilename(f: GalleryFrame): string | null {
-  const cal = localDate(f.ts);
-  if (cal === f.night) return null;
-  return `Shot at ${fmtClockSec(f.ts)} on ${cal}, so it belongs to the night of ${f.night} ` +
-    `(a night runs noon to noon). The filename carries the calendar date.`;
+  if (!f.local_date || f.local_date === f.night) return null;
+  return `Shot at ${f.local_clock} on ${f.local_date} rig time, so it belongs to the ` +
+    `night of ${f.night} (a night runs noon to noon). The filename carries the ` +
+    `calendar date.`;
 }
 
 // ============================================================================

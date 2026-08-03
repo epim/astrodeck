@@ -1850,7 +1850,20 @@ export interface GalleryFrame {
   /** target directory, "" for a frame sitting at the library root. */
   folder: string;
   night: string;                 // "YYYY-MM-DD" night key
-  ts: number;                    // capture instant (unix seconds) the night came from
+  /** Capture instant, unix seconds — what the server sorted and derived the
+   *  night from. NOT for display: rendering it here formats it in the VIEWER's
+   *  timezone, which is the bug `local_date`/`local_clock` exist to close. */
+  ts: number;
+  /** `ts` in the OBSERVATORY's timezone — "YYYY-MM-DD" and "HH:MM".
+   *
+   *  Sent by the server rather than derived here because `night` was computed
+   *  with the RIG's `localtime`, and a browser on the relay is in its own
+   *  timezone. Formatting `ts` client-side would compare London's calendar date
+   *  against Arizona's night and announce a rollover on every frame in the
+   *  library, at a clock time the frame was never taken at. Both dates have to
+   *  be the observatory's or the comparison means nothing. */
+  local_date: string;
+  local_clock: string;
   target: string;                // OBJECT header, falling back to the folder name
   filter: string;                // "" when the header was unreadable
   frame_type: string;            // "Light" | "Flat" | … ; "" when unknown
@@ -1894,6 +1907,12 @@ export interface GalleryFailure {
   reason: string;
 }
 
+/** `/api/gallery/summary`. Kept as the route's documented shape even though this
+ *  UI never calls it: the frames listing already returns `total`/`bytes` for the
+ *  whole filtered set from the same server-side resolver, so asking again would
+ *  buy a second library walk for two numbers already on the button. The route is
+ *  for callers with no listing — a script pricing a stream before committing to
+ *  it. See the note in api/gallery.ts. */
 export interface GallerySummary {
   count: number;
   bytes: number;

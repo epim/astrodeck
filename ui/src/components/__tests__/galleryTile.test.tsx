@@ -65,6 +65,11 @@ const FRAME: GalleryFrame = {
   folder: "M42",
   night: "2026-06-15",
   ts: 1781234000,
+  // Rig-local, sent by the server. The tile must never re-derive these from
+  // `ts`: `night` above was computed in the observatory's timezone and a browser
+  // on the relay is not in it.
+  local_date: "2026-06-15",
+  local_clock: "23:50",
   target: "M42",
   filter: "L",
   frame_type: "Light",
@@ -171,16 +176,28 @@ test("a frame that crossed midnight explains itself on the tile", () => {
   // Its filename carries one calendar date and it is filed under another. That
   // is the single most confusing thing about this screen, so the tile that
   // shows it is where the explanation goes.
-  const html = render({ frame: { ...FRAME, night: "1999-01-01" } });
-  has(html, "1999-01-01", "the night it is filed under");
+  const html = render({
+    frame: { ...FRAME, night: "2026-06-15", local_date: "2026-06-16", local_clock: "00:12" },
+  });
+  has(html, "2026-06-15", "the night it is filed under");
+  has(html, "2026-06-16", "the calendar date its FILENAME carries");
+  has(html, "00:12", "the clock it was actually shot at");
   has(html, "noon to noon", "why the two dates differ");
 });
 
 test("a frame whose dates agree does not nag about the rollover", () => {
-  const cal = new Date(FRAME.ts * 1000);
-  const iso = `${cal.getFullYear()}-${String(cal.getMonth() + 1).padStart(2, "0")}-${String(cal.getDate()).padStart(2, "0")}`;
-  const html = render({ frame: { ...FRAME, night: iso } });
+  // Both dates are the SERVER's, so this is a comparison of two rig-timezone
+  // strings — not of a rig night against whatever calendar the viewer's laptop
+  // is on. Deriving the calendar date from `ts` here is how a user in London
+  // would see this note on every frame a rig in Arizona ever took.
+  const html = render({ frame: { ...FRAME, night: FRAME.local_date } });
   lacks(html, "noon to noon");
+});
+
+test("the tile's hover text quotes the RIG's clock, not the browser's", () => {
+  const html = render({ frame: { ...FRAME, ts: 0, local_clock: "23:50" } });
+  has(html, "captured 23:50 rig time", "the clock has to be the one the server sent");
+  lacks(html, "1970", "the tile formatted `ts` in the viewer's timezone");
 });
 
 test("the caption states the size — the number that decides whether to download", () => {

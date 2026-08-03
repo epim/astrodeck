@@ -4559,6 +4559,18 @@ def create_app() -> FastAPI:
     #: without the JSON itself becoming the slow part.
     _GALLERY_PAGE_MAX = 500
 
+    #: Bound on an explicit ``path`` selection.
+    #:
+    #: The POST bodies are already capped by their pydantic model; the GET
+    #: ``path`` list on ``summary`` and ``download.zip`` was bounded only by
+    #: whatever URL length the proxy in front happened to allow. Each path costs
+    #: a ``fits.getheader`` (measured ~4.7 ms) inside ``resolve_selection``, so a
+    #: long authenticated URL bought seconds of worker thread at ``view.preview``
+    #: — a limit that lives in someone else's config is not a limit. 1000 is far
+    #: above anything the UI can produce (its own URL budget is 6000 characters,
+    #: ~140 paths) and far below anything that costs real time.
+    _GALLERY_SELECTION_MAX = 1000
+
     def _gallery_nights_ok(*values: str) -> None:
         """422 on a malformed night bound. Refusing beats coercing: a silently
         ignored ``night_from=last week`` returns the WHOLE library and looks like
@@ -4582,6 +4594,12 @@ def create_app() -> FastAPI:
         # caller will not get next time either.
         _gallery_nights_ok(night_from, night_to)
         if paths:
+            if len(paths) > _GALLERY_SELECTION_MAX:
+                raise HTTPException(
+                    422, f"too many paths in one request "
+                         f"({len(paths)} > {_GALLERY_SELECTION_MAX}) — name the "
+                         f"set with the search and night filter instead, which "
+                         f"has no size limit")
             rows, failed = await asyncio.to_thread(
                 gallery_module.resolve_selection, paths)
             return rows, failed, False
@@ -4642,10 +4660,17 @@ def create_app() -> FastAPI:
                               path: list[str] = Query(default=[])):
         """What a download of this exact selection would be: ``{count, bytes}``.
 
-        Takes the SAME parameters as ``/api/gallery/download.zip`` so the number
-        on the button and the bytes on the wire cannot disagree. "Download 1,284
-        frames, 38.2 GB" is information the user has no other way to obtain, and
-        it is the difference between a deliberate action and a surprise."""
+        Takes the SAME parameters as ``/api/gallery/download.zip`` and goes
+        through the same resolver, so the two cannot disagree about what a
+        selection means (``test_gallery.py`` pins that pair).
+
+        NOT called by the shipped web UI, deliberately: ``/api/gallery/frames``
+        already returns ``total``/``bytes`` for the WHOLE filtered set from this
+        same resolver, so the grid prices "Download 1,284 frames, 38.2 GB" off a
+        listing it has already fetched rather than paying a second library walk
+        for the same two numbers. This route is for the callers that have no
+        listing — a script or a CLI that wants the size before committing to a
+        multi-GB stream."""
         rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
         return {**gallery_module.summarize(rows), "failed": failed}
 
@@ -4684,8 +4709,17 @@ def create_app() -> FastAPI:
                 or target.suffix.lower() not in gallery_module.FRAME_SUFFIXES
                 or not target.is_file()):
             raise HTTPException(404, "frame not found")
-        # ``target.name`` comes from a path safe_subpath already refused
-        # separators/CR/LF/quotes in, so it cannot forge a Content-Disposition.
+        # ``filename`` cannot forge a Content-Disposition — but NOT because
+        # ``safe_subpath`` sanitized it. That guard refuses separators, NUL,
+        # ``:``, ``.``/``..``, trailing dot-or-space and reserved device names,
+        # and it ACCEPTS CR, LF, ``"`` and ``;`` (verified against it directly).
+        # The header is safe because Starlette's FileResponse runs the name
+        # through ``quote()`` and, whenever quoting changed anything — which any
+        # of those four characters does — emits the fully percent-encoded RFC
+        # 5987 ``filename*`` form instead of a quoted string. Credited to
+        # Starlette rather than claimed for safe_subpath, so the next caller does
+        # not inherit a guarantee that does not exist; tightening the guard
+        # itself belongs to the file-safety sweep, with its own corpus.
         return FileResponse(target, media_type="application/fits",
                             filename=target.name)
 

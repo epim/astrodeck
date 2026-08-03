@@ -19,6 +19,7 @@ this file exists; everything else is coverage around them.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import time
 import zipfile
@@ -131,6 +132,39 @@ def test_night_filter_returns_the_whole_night_not_half_of_it(env):
     assert {f["name"][-9:] for f in body["frames"]} == {"0001.fits", "0002.fits"}
 
 
+def test_the_row_carries_the_rigs_local_date_and_clock(env):
+    """Both dates in the tile's rollover sentence must be the OBSERVATORY's.
+
+    ``night`` is ``events.night_key``, i.e. ``time.localtime`` on THIS box. A
+    browser reaching the rig through the relay is in its own timezone, so a UI
+    that formatted ``ts`` itself would compare (say) London's calendar date
+    against Arizona's night and announce a rollover on essentially every frame in
+    the library, quoting a wall-clock time the frame was never taken at — the one
+    sentence written to REMOVE the night/filename confusion becoming its largest
+    source. So the row carries the local date and clock already rendered here."""
+    c, root = env
+    _write(root, "M42/a.fits", ts=_local(2026, 6, 15, 23, 50))
+    _write(root, "M42/b.fits", ts=_local(2026, 6, 16, 0, 10))
+    rows = {r["name"]: r for r in c.get("/api/gallery/frames").json()["frames"]}
+
+    # Before midnight: the night and the calendar date agree, so the tile says
+    # nothing extra.
+    assert rows["a.fits"]["local_date"] == "2026-06-15"
+    assert rows["a.fits"]["local_clock"] == "23:50"
+    assert rows["a.fits"]["night"] == rows["a.fits"]["local_date"]
+
+    # After midnight: SAME night, NEXT calendar date. This is exactly the pair
+    # the explanation sentence is built from.
+    assert rows["b.fits"]["local_date"] == "2026-06-16"
+    assert rows["b.fits"]["local_clock"] == "00:10"
+    assert rows["b.fits"]["night"] == "2026-06-15"
+
+    for r in rows.values():
+        local = time.localtime(r["ts"])
+        assert r["local_date"] == time.strftime("%Y-%m-%d", local)
+        assert r["local_clock"] == time.strftime("%H:%M", local)
+
+
 def test_night_falls_back_to_mtime_when_the_header_cannot_be_read(cap):
     """A frame whose header is unreadable still appears, filed by mtime. Losing
     a row from the user's library because one file is corrupt is not acceptable;
@@ -142,6 +176,43 @@ def test_night_falls_back_to_mtime_when_the_header_cannot_be_read(cap):
     assert len(rows) == 1
     assert rows[0]["night"] == gallery.night_key(bad.stat().st_mtime)
     assert rows[0]["target"] == "M42"      # falls back to the folder name
+
+
+def test_a_symlinked_target_folder_is_skipped_but_said_out_loud(cap, monkeypatch):
+    """The walk refuses to follow symlinks — but silence about it is a trap.
+
+    A capture root whose target folder is a symlink to a NAS mount is a plausible
+    rig layout, and the silent version of this rule is an empty gallery plus a
+    "0 frames, 0 bytes" summary with no diagnostic anywhere: the user cannot tell
+    "nothing was captured" from "your library is behind a link this walk will not
+    follow". Not following it stays right (``safe_subpath``'s resolve backstop
+    would 404 every thumbnail and download under it, i.e. a grid of broken
+    tiles); saying so is what was missing."""
+    real = cap.parent / "nas" / "M42"
+    real.mkdir(parents=True)
+    _write(real.parent, "M42/a.fits", ts=_local(2026, 6, 15, 22, 0))
+    try:
+        (cap / "M42").symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError) as e:   # no privilege on this box
+        pytest.skip(f"cannot create a directory symlink here: {e}")
+
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(gallery.bus, "log",
+                        lambda level, message, source="hub":
+                        logged.append((level, message)))
+    gallery._SYMLINK_WARNED.clear()
+
+    rows, _ = gallery.scan()
+    assert rows == []
+    assert len(logged) == 1, f"expected exactly one diagnostic, got {logged}"
+    level, message = logged[0]
+    assert level == "warning"
+    assert "symlink" in message and "M42" in message
+
+    # Said ONCE per process: the walk runs on every listing request, and a line
+    # per request would bury the night log.
+    gallery.scan()
+    assert len(logged) == 1
 
 
 def test_malformed_night_bound_is_refused_not_ignored(env):
@@ -253,6 +324,26 @@ def test_summary_matches_what_the_download_will_contain(env):
         r.read()
 
 
+def test_an_explicit_selection_is_bounded_by_the_server_not_by_the_proxy(env):
+    """Each path in a ``path=`` selection costs a ``fits.getheader`` (measured
+    ~4.7 ms) inside ``resolve_selection``, so a long authenticated URL bought
+    seconds of worker thread at ``view.preview``. The only thing bounding it was
+    whatever URL length the proxy in front happened to allow — and a limit that
+    lives in someone else's config is not a limit. The POST bodies were already
+    capped by their model; these two GETs now are too."""
+    c, root = env
+    _write(root, "M42/a.fits", ts=_local(2026, 6, 15, 22, 0))
+    assert c.get("/api/gallery/summary",
+                 params={"path": ["M42/a.fits"] * 1000}).status_code == 200
+
+    over = c.get("/api/gallery/summary", params={"path": ["M42/a.fits"] * 1001})
+    assert over.status_code == 422
+    assert "too many paths" in over.json()["detail"]
+    # download.zip shares the resolver, so it shares the bound.
+    assert c.get("/api/gallery/download.zip",
+                 params={"path": ["M42/a.fits"] * 1001}).status_code == 422
+
+
 def test_summary_of_an_explicit_selection_reports_refusals(env):
     c, root = env
     _write(root, "M42/keep.fits", ts=_local(2026, 6, 15, 22, 0))
@@ -267,28 +358,49 @@ def test_summary_of_an_explicit_selection_reports_refusals(env):
 # --------------------------------------------- GROUNDED 2: the streamed download
 
 def test_bulk_download_is_streamed_not_materialised(cap):
-    """The generator must produce bounded chunks lazily.
+    """The archive must not exist before the first chunk does.
 
-    Asserted at the generator, where "not fully materialised" is observable: the
-    first chunk arrives after reading a fraction of the payload, and no chunk
-    exceeds the relay's frame ceiling. A buffered implementation would have to
-    read every source file before yielding anything."""
+    ASSERTED AT THE SOURCES, not at the byte count. The obvious version of this
+    test — take nine 64 KiB chunks and assert their total is less than the
+    payload — cannot fail: nine bounded chunks are 576 KB whether they came off a
+    generator or were sliced out of a fully-materialised blob, so the bound
+    implies the assertion and the assertion proves nothing. (Verified by writing
+    the implementation it claimed to refute — build the whole zip in a BytesIO,
+    then yield it in 64 KiB slices — and running that body verbatim against it:
+    every assertion passed.)
+
+    So `members` is a GENERATOR that records what has been pulled from it. A
+    buffered implementation must consume every source before it can yield a
+    single byte; a streaming one has read exactly the first when the first chunk
+    arrives. That is the difference, and it is now the thing being measured."""
     payload = 4 * 1024 * 1024
     for i in range(4):
         (cap / f"big{i}.fits").write_bytes(b"\0" * payload)
-    members = [(cap / f"big{i}.fits", f"big{i}.fits") for i in range(4)]
 
-    gen = gallery.iter_zip(members)
-    got = [next(gen) for _ in range(9)]
+    pulled: list[str] = []
+
+    def members():
+        for i in range(4):
+            pulled.append(f"big{i}.fits")
+            yield cap / f"big{i}.fits", f"big{i}.fits"
+
+    gen = gallery.iter_zip(members())
+    first = next(gen)
+    assert 0 < len(first) <= gallery.ZIP_CHUNK_BYTES
+    assert pulled == ["big0.fits"], (
+        f"the generator had already pulled {pulled} before yielding its first "
+        f"{len(first)} bytes — the archive is being built up front, not streamed"
+    )
+
+    got = [first] + [next(gen) for _ in range(8)]
     assert all(0 < len(ch) <= gallery.ZIP_CHUNK_BYTES for ch in got)
-    # Nine chunks in, we must still be far from the total — i.e. the generator
-    # has not quietly run to completion behind our back.
-    produced = sum(len(ch) for ch in got)
-    assert produced < payload, (
-        f"{produced} bytes materialised before the 10th chunk — "
-        "the archive is being built up front, not streamed")
+    assert pulled == ["big0.fits"], (
+        f"nine chunks (~{sum(len(c) for c in got)} bytes) into a {payload}-byte "
+        f"first member and the walk is already at {pulled} — sources are being "
+        "opened ahead of the bytes the client has taken")
 
     got.extend(gen)
+    assert pulled == [f"big{i}.fits" for i in range(4)], "some member was skipped"
     blob = b"".join(got)
     assert len(blob) > 4 * payload * 0.99
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
@@ -383,6 +495,57 @@ def test_thumbnail_renders_once_and_is_served_from_cache(env):
     again = c.get("/api/gallery/thumb", params={"path": "M42/a.fits"})
     assert again.content == r.content
     assert len(list((root / gallery.THUMBS_DIRNAME).glob("*.jpg"))) == 1
+
+
+def test_the_cache_prune_is_amortised_not_paid_on_every_render(cap, monkeypatch):
+    """The prune has to enumerate AND stat the whole cache before it can decide
+    it has nothing to do.
+
+    MEASURED on an NVMe box: 1.4 ms at 200 cached thumbs, 12.2 ms at 2000,
+    162.2 ms at the code's own 20 000-file cap. On the Pi-class SD card the cap
+    exists to protect, that last number is seconds — and running it on every
+    cache miss charged it to every newly rendered tile, on top of the FITS
+    decode, exactly while someone scrolls a large library for the first time. The
+    bound designed to protect the card was what made the grid crawl."""
+    calls: list = []
+    monkeypatch.setattr(gallery, "_prune_thumb_cache", lambda d: calls.append(d))
+    monkeypatch.setattr(gallery, "THUMB_PRUNE_EVERY", 5)
+    monkeypatch.setattr(gallery, "_thumb_render_seq", itertools.count())
+    for i in range(12):
+        _write(cap, f"M42/f{i}.fits", ts=_local(2026, 6, 15, 22, i), size=64)
+        gallery.thumbnail(f"M42/f{i}.fits")
+    assert len(calls) == 3, (
+        f"12 renders triggered {len(calls)} full cache walks at one per 5 — "
+        "the prune is being paid per render again")
+
+    # A cache HIT must not tick the counter either: re-rendering nothing cannot
+    # have pushed the cache over its bound.
+    gallery.thumbnail("M42/f0.fits")
+    assert len(calls) == 3
+
+
+def test_the_prune_still_bounds_the_cache_oldest_first(cap, monkeypatch):
+    """The amortisation is only safe because the pass itself still works. Its
+    rewrite onto ``os.scandir`` must not have changed what it deletes."""
+    import os
+
+    monkeypatch.setattr(gallery, "THUMB_CACHE_MAX_FILES", 4)
+    d = gallery.thumbs_root()
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(10):
+        p = d / f"{i:040x}_0_256.jpg"
+        p.write_bytes(b"x" * 1024)
+        os.utime(p, (1_700_000_000 + i, 1_700_000_000 + i))
+    # A non-thumbnail neighbour must survive: this directory is ours, but
+    # deleting something we did not write is not the prune's job.
+    (d / "notes.txt").write_text("keep me", encoding="utf-8")
+
+    gallery._prune_thumb_cache(d)
+    left = sorted(p.name for p in d.glob("*.jpg"))
+    assert len(left) == 4, f"pruned to {len(left)}, not 4"
+    assert left == sorted(f"{i:040x}_0_256.jpg" for i in range(6, 10)), \
+        "the prune kept the wrong four — it must evict OLDEST first"
+    assert (d / "notes.txt").is_file()
 
 
 def test_thumbnail_cache_key_includes_mtime(cap):
@@ -498,6 +661,44 @@ def test_restore_puts_the_frame_back(env):
     assert c.get("/api/gallery/trash").json()["count"] == 0
     assert not (root / gallery.TRASH_DIRNAME / "M42"
                 / ("a.fits" + gallery.TRASH_INFO_SUFFIX)).exists()
+
+
+def test_restore_refuses_the_sidecar_that_carries_the_grace_period(env):
+    """Restoring ``<frame>.trashinfo.json`` steals the frame's only metadata.
+
+    ``restore_frames`` used to accept any trash-relative path that ``is_file()``,
+    so a hand-crafted request could move the SIDECAR into the live library and
+    leave the frame in the bin with nothing beside it. ``purge_expired`` then
+    falls back to ``st_mtime`` — which the rename into the trash preserved, and
+    which is therefore the CAPTURE time — so a frame shot 60 days ago and deleted
+    today is purged on the very next sweep. That destroys exactly the data the
+    30-day grace period exists to protect, and it is the only safety net the
+    delete path has. Mirrors the suffix check ``trash_frames`` already had."""
+    import os
+
+    c, root = env
+    old = time.time() - 60 * 86400
+    _write(root, "M42/a.fits", ts=old)
+    os.utime(root / "M42" / "a.fits", (old, old))
+    assert c.post("/api/gallery/trash",
+                  json={"paths": ["M42/a.fits"]}).status_code == 200
+    sidecar = (gallery.trash_root() / "M42"
+               / ("a.fits" + gallery.TRASH_INFO_SUFFIX))
+    assert sidecar.is_file()
+
+    r = c.post("/api/gallery/trash/restore",
+               json={"paths": ["M42/a.fits" + gallery.TRASH_INFO_SUFFIX]}).json()
+    assert r["restored"] == []
+    assert r["failed"][0]["reason"] == "not a frame file"
+    assert sidecar.is_file(), "the sidecar left the bin"
+    assert not (root / "M42" / ("a.fits" + gallery.TRASH_INFO_SUFFIX)).exists()
+    # 30 days of grace, intact.
+    assert gallery.purge_expired()["purged"] == 0
+
+    # The counterfactual that makes the assertion above mean something: with the
+    # sidecar gone, mtime is all that is left, and mtime is the capture time.
+    sidecar.unlink()
+    assert gallery.purge_expired()["purged"] == 1
 
 
 def test_restore_refuses_to_overwrite_a_live_frame(env):

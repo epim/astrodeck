@@ -28,7 +28,6 @@ import { BASE } from "../../lib/base";
 import {
   filePath,
   fmtBytes,
-  fmtClockSec,
   frameSubtitle,
   nightVsFilename,
   thumbFailure,
@@ -113,8 +112,13 @@ export function TileSurface({
   // Everything a mouse user gets from hovering, spelled out for everyone else
   // too: the full relative path (the grid truncates it), the night that decided
   // the filing, the wall clock, and the size.
+  //
+  // The clock is the SERVER's `local_clock`, never `new Date(frame.ts)`: the
+  // night beside it was computed in the rig's timezone, and a browser on the
+  // relay is in its own. Two clocks in one sentence is a sentence that lies to
+  // everyone who is not sitting next to the mount.
   const title =
-    `${frame.path}\n${frame.night} · captured ${fmtClockSec(frame.ts)} · ${fmtBytes(frame.bytes)}` +
+    `${frame.path}\n${frame.night} · captured ${frame.local_clock} rig time · ${fmtBytes(frame.bytes)}` +
     (rollover ? `\n${rollover}` : "");
 
   return (
