@@ -38,6 +38,34 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+# Windows treats these as device names in EVERY directory, with or without an
+# extension ("CON.txt" is the console). Refused uniformly on both platforms for
+# the same reason both guards below check both separators — see the note in
+# ``safe_id_path``.
+_WIN_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
+def _refuse_component(name: str) -> bool:
+    """True when ``name`` must not be used as ONE path component.
+
+    Shared by both guards so they cannot drift apart again. They did drift, the
+    day ``safe_subpath`` was written (2026-08-03): the new one refused ``:``
+    anywhere, trailing dot/space, and reserved device names, and the older
+    ``safe_id_path`` refused none of the three. Not exploitable through today's
+    callers — every one passes a non-empty suffix, and a device name WITH an
+    extension does not resolve to the device — but ``x.`` and ``x `` already
+    alias two ids onto one file on Windows, and the first
+    ``safe_id_path(base, ident, suffix="")`` call would reopen the rest."""
+    return (name in (".", "..")
+            or ":" in name                      # drive prefix AND NTFS ADS
+            or name != name.rstrip(" .")        # Windows strips these silently
+            or name.split(".")[0].upper() in _WIN_RESERVED)
+
+
 def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
     """Resolve ``base/<ident><suffix>`` for a client-controllable ``ident``,
     raising ``KeyError`` for anything that is not a single contained filename
@@ -56,26 +84,15 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
     parent check remains as a belt-and-suspenders backstop (symlinks / odd
     normalization) once the string-level vectors are excluded."""
     if (not ident
-            or ident in (".", "..")
             or "/" in ident
             or "\\" in ident
             or "\x00" in ident
-            or (len(ident) >= 2 and ident[1] == ":")):   # X: — Windows drive
+            or _refuse_component(ident)):
         raise KeyError(ident)
     resolved = (base / f"{ident}{suffix}").resolve()
     if resolved.parent != base.resolve():
         raise KeyError(ident)
     return resolved
-
-
-# Windows treats these as device names in EVERY directory, with or without an
-# extension ("CON.txt" is the console). Refused uniformly on both platforms for
-# the same reason ``safe_id_path`` checks both separators — see its docstring.
-_WIN_RESERVED = frozenset(
-    ["CON", "PRN", "AUX", "NUL"]
-    + [f"COM{i}" for i in range(1, 10)]
-    + [f"LPT{i}" for i in range(1, 10)]
-)
 
 
 def safe_subpath(base: Path, relpath: str) -> Path:
@@ -111,10 +128,7 @@ def safe_subpath(base: Path, relpath: str) -> Path:
     if not parts:
         raise KeyError(relpath)
     for p in parts:
-        if (p in (".", "..")
-                or ":" in p
-                or p != p.rstrip(" .")
-                or p.split(".")[0].upper() in _WIN_RESERVED):
+        if _refuse_component(p):
             raise KeyError(relpath)
     resolved = base.joinpath(*parts).resolve()
     if not resolved.is_relative_to(base.resolve()):
