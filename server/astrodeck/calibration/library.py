@@ -18,6 +18,7 @@ from typing import Callable
 
 import numpy as np
 
+from ..gallery import THUMBS_DIRNAME, TRASH_DIRNAME
 from ..persist import read_json_or, safe_id_path, write_json_atomic
 from .keys import CAL_FRAME_TYPES, CalKey, key_from_header, key_index_id
 from .matcher import Gap, LightNeed, MasterRecord, MatchTolerance, coverage_for
@@ -25,7 +26,20 @@ from .stacker import stack_frames
 
 MASTERS_DIRNAME = "_masters"
 MANIFEST_NAME = "masters.json"
-EXCLUDE_DIRS = {MASTERS_DIRNAME, "_solve"}
+#: Directories under the capture root that ``_bucket_raw`` must not walk.
+#:
+#: ``_trash`` is here for a correctness reason, not tidiness. The gallery deletes
+#: a frame by RENAMING it into ``<CAPTURE_DIR>/_trash`` (inside the capture root
+#: because a rename is only atomic on one volume), and this scanner rglobs EVERY
+#: ``*.fits`` under that root. Without the exclusion, a flat or dark the user
+#: deleted yesterday is still found here and stacked straight back into a master
+#: — the frame is gone from the gallery, its bad data is not gone from the
+#: calibration it feeds, and nothing anywhere reports a problem. A deletion that
+#: does not take effect is worse than one that fails. Pinned by
+#: ``tests/test_gallery.py::test_deleted_flat_does_not_reappear_in_a_master``.
+#: The name is imported from ``gallery`` rather than repeated as a literal so the
+#: two cannot drift.
+EXCLUDE_DIRS = {MASTERS_DIRNAME, "_solve", TRASH_DIRNAME, THUMBS_DIRNAME}
 MANIFEST_SCHEMA = 1
 
 _MASTER_FIELDS = ("id", "frame_type", "exposure_s", "gain", "offset", "temp_c",
