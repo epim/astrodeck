@@ -45,7 +45,7 @@ from ..auth.rbac import assert_route_capabilities, declare
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
                      _redact_session_for, _redact_site_for, _redact_ws_event)
-from ..persist import safe_id_path
+from ..persist import safe_id_path, safe_subpath
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import survey_pack as survey_pack_mod
 from ..catalog.survey import router as survey_router
@@ -4649,8 +4649,21 @@ def create_app() -> FastAPI:
                     or path == "auth" or path.startswith("auth/")
                     or path == "ws" or path.startswith("ws/")):
                 raise HTTPException(status_code=404, detail="Not Found")
-            target = UI_DIST / path
-            if path and target.is_file():
+            # CONTAINMENT: `UI_DIST / path` alone was an UNAUTHENTICATED
+            # arbitrary file read. `{path:path}` captures separators, starlette
+            # percent-decodes before we see it (so `..%2f` arrives as `../`, past
+            # any client-side normalizer), and pathlib joins `..` literally —
+            # `GET /..%2f..%2f..%2fUsers%2f<u>%2f.ssh%2fknown_hosts` returned the
+            # file. This route is anonymous by necessity (it serves the sign-in
+            # shell), so the read needed no credential, and the relay exposes it
+            # off-LAN. A rejected path falls through to index.html rather than
+            # 403ing: an unknown path IS a client-side SPA route, and a distinct
+            # refusal would confirm which targets exist.
+            try:
+                target = safe_subpath(UI_DIST, path) if path else None
+            except KeyError:
+                target = None
+            if target is not None and target.is_file():
                 return FileResponse(target)
             return FileResponse(UI_DIST / "index.html")
 

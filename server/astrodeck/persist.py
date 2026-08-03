@@ -68,6 +68,60 @@ def safe_id_path(base: Path, ident: str, suffix: str = ".json") -> Path:
     return resolved
 
 
+# Windows treats these as device names in EVERY directory, with or without an
+# extension ("CON.txt" is the console). Refused uniformly on both platforms for
+# the same reason ``safe_id_path`` checks both separators — see its docstring.
+_WIN_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
+def safe_subpath(base: Path, relpath: str) -> Path:
+    """Resolve a client-controllable MULTI-segment relative path under ``base``,
+    raising ``KeyError`` for anything not contained (callers map ``KeyError`` →
+    404 / fall back).
+
+    The multi-segment sibling of ``safe_id_path``: use that one when the client
+    supplies a bare id, this one when it supplies a path with directories in it
+    (static assets, gallery frames). Same platform-uniform stance — every check
+    is a string check made BEFORE the filesystem is touched, and both OSes'
+    separators count as separators regardless of where the server runs, so a
+    Windows-authored store and a Linux host agree.
+
+    Refused: absolute paths, ``.``/``..`` in any component, either separator's
+    escape, NUL, a ``:`` anywhere (Windows drive prefix AND NTFS alternate data
+    streams), a component with a trailing dot or space (Windows silently strips
+    them, so ``evil.txt.`` and ``evil.txt`` name the same file), and reserved
+    device names. The ``resolve()`` + containment check stays as the backstop
+    for symlinks pointing out of ``base`` — the one vector no string check can
+    see."""
+    if not relpath or "\x00" in relpath:
+        raise KeyError(relpath)
+    # Absolute and UNC forms are REFUSED, not silently reinterpreted. Dropping
+    # the empty leading segment would quietly turn "/etc/passwd" into a
+    # contained "etc/passwd" and "\\\\server\\share\\x" into "server/share/x" —
+    # harmless here (neither file exists under the root) but a coercion the
+    # caller never asked for, and the next caller may join the result to a
+    # different base. Refusing keeps "what I passed is what got checked".
+    if relpath[0] in ("/", "\\"):
+        raise KeyError(relpath)
+    parts = [p for p in relpath.replace("\\", "/").split("/") if p != ""]
+    if not parts:
+        raise KeyError(relpath)
+    for p in parts:
+        if (p in (".", "..")
+                or ":" in p
+                or p != p.rstrip(" .")
+                or p.split(".")[0].upper() in _WIN_RESERVED):
+            raise KeyError(relpath)
+    resolved = base.joinpath(*parts).resolve()
+    if not resolved.is_relative_to(base.resolve()):
+        raise KeyError(relpath)
+    return resolved
+
+
 def _replace_with_retry(src: Path, dst: Path) -> None:
     """``os.replace(src, dst)`` with a short retry on Windows PermissionError.
 
