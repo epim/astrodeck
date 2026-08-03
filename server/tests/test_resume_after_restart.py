@@ -241,7 +241,8 @@ class _RecHub:
             return object()
         raise RuntimeError(role)
 
-    async def solve_and_sync(self, exposure_s: float = 3.0):
+    async def solve_and_sync(self, exposure_s: float = 3.0, *, blind: bool = False):
+        self.blind_used = blind
         self.calls.append("solve")
         if self._solve_raises:
             raise self._solve_raises
@@ -409,3 +410,22 @@ async def test_ready_devices_proceed_to_the_ladder(fp, monkeypatch):
     monkeypatch.setattr(arm, "_window_open", lambda *a, **k: True)
     await arm.tick()
     assert "solve" in hub.calls, "ready devices must reach the ladder"
+
+
+async def test_the_recovery_solve_throws_the_mount_hint_away(fp, monkeypatch):
+    """BLIND, not near. The hint drives ASTAP's near search, which is right for
+    centering and exactly wrong here: the premise of the whole ladder is that
+    the mount's idea of where it points may be false, so hinting the search with
+    it makes the solve fail precisely when it is needed.
+
+    Measured on the rig 2026-08-02 after killing the server mid-track: the mount
+    reported RA 18h53.6m Dec +33d01' while ASTAP solved the same frame at
+    RA 18h35.2m Dec +33d39' -- about 4 degrees out. The hinted solve returned
+    'no solution' on a sky the camera showed was clear."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    hub = _RecHub(focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    await arm._recover(_light_session())
+    assert getattr(hub, "blind_used", None) is True, (
+        "the post-restart solve must not trust the mount's position")

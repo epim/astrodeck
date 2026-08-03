@@ -241,13 +241,12 @@ class ResumeArm:
                 # Recovery is the opposite case: it runs once, nothing else is
                 # waiting on it, and failing costs a TEN MINUTE backoff.
                 #
-                # Measured on the rig 2026-08-02 pointing at a rich Lyra field
-                # under a sky the camera confirmed clear (170 stars at 5 s /
-                # gain 300): the 3 s default yielded just 16 detected stars and
-                # ASTAP returned "no solution", while the same sky at a longer
-                # exposure solved. Trading ten seconds against ten minutes is not
-                # a close call.
-                await self.hub.solve_and_sync(exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
+                # A longer exposure is cheap insurance for an ALL-SKY search,
+                # which has far less to go on than a near search. (It is not what
+                # fixed the 2026-08-02 failure -- that was the mount hint below.
+                # ASTAP solved the 3 s frame fine once the hint was dropped.)
+                await self.hub.solve_and_sync(
+                    exposure_s=RECOVERY_SOLVE_EXPOSURE_S, blind=True)
             except Exception as e:  # noqa: BLE001
                 return (f"blind plate solve failed after restart ({e}) — refusing "
                         "to slew a mount whose true position is unknown")
