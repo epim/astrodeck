@@ -173,7 +173,10 @@ function ServerVersion(): JSX.Element | null {
   if (!version) return null;
   return (
     <span
-      className="mono text-[10px] text-faint select-text shrink-0"
+      // hidden on a phone: shrink-0 here helped set the app's 382px minimum
+      // width (see the header comment). It stays selectable text everywhere the
+      // room exists, and Help reports the same version when it does not.
+      className="mono text-[10px] text-faint select-text shrink-0 hidden sm:inline"
       title={`AstroDeck server version ${version}`}
     >
       v{version}
@@ -457,8 +460,17 @@ export default function App() {
             of the three below the 44px touch minimum. The class is deliberately
             narrow so the rule cannot reach the <header> elements inside Panel or
             the overlay heads, which are text rows rather than icon clusters. */}
-        <header className="app-header relative z-20 flex items-center gap-3 px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0">
-          <h1 className="font-display font-semibold tracking-[0.3em] text-accent text-sm select-none">
+        {/* NOTHING IN THIS ROW USED TO GIVE, so it set the whole app's minimum
+            width. Measured 2026-08-03: min-content 382px — wider than an iPhone
+            SE/12-mini (375) and far wider than a 320px phone, so the page
+            scrolled sideways and the LINK indicator sat off-screen, on the one
+            row that reports whether the rig is reachable.
+            The wordmark's 0.3em tracking is most of it, and the version string
+            was explicitly shrink-0. Both now stand down on a phone; neither is
+            load-bearing there (the version is in Help, and the app is not
+            ambiguous about what it is). */}
+        <header className="app-header relative z-20 flex items-center gap-2 sm:gap-3 px-2 sm:px-4 h-12 border-b border-line bg-raise/70 backdrop-blur shrink-0 min-w-0">
+          <h1 className="font-display font-semibold tracking-[0.14em] sm:tracking-[0.3em] text-accent text-[13px] sm:text-sm select-none shrink-0">
             ASTRO<span className="text-ink">DECK</span>
           </h1>
           <ServerVersion />
