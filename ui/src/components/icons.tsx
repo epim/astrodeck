@@ -17,6 +17,12 @@ export type IconName =
   | "alert" | "check" | "info" | "x" | "clock"
   // misc
   | "grid" | "plus" | "trash" | "download" | "upload"
+  // gallery (2026-08-03): a STACK of pictures, deliberately not `frame` (crop
+  // corners — "the sensor's field") and not `grid` (four blank squares — the
+  // generic layout glyph, already the More-sheet idea). The nav rail is read at
+  // a glance in the dark; two nav entries whose glyphs differ only in whether
+  // the squares overlap are two entries nobody can tell apart.
+  | "gallery"
   // directional
   | "arrow-up" | "arrow-down" | "arrow-left" | "arrow-right";
 
@@ -70,6 +76,7 @@ const PATHS: Record<IconName, JSX.Element> = {
   trash: <><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6M5 6l1 14a2 2 0 002 2h8a2 2 0 002-2l1-14" /></>,
   download: <><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" /></>,
   upload: <><path d="M12 21V9M7 14l5-5 5 5" /><path d="M4 19h16" /></>,
+  gallery: <><rect x="2.5" y="6.5" width="14" height="12" rx="1.5" /><path d="M7 3.5h12a1.5 1.5 0 011.5 1.5v10" /><circle cx="6.8" cy="10.5" r="1.1" /><path d="M2.5 15.5l3.8-3.6 3.4 3.2 2.6-2.4 4.2 3.8" /></>,
   "arrow-up": <><path d="M12 19V5M5 12l7-7 7 7" /></>,
   "arrow-down": <><path d="M12 5v14M19 12l-7 7-7-7" /></>,
   "arrow-left": <><path d="M19 12H5M12 19l-7-7 7-7" /></>,

@@ -53,6 +53,13 @@ export const OVERFLOW_VIEWS: { id: ViewName; label: string; icon: IconName }[] =
   { id: "report", label: "Reports", icon: "download" },
   // NOV-9: troubleshooting/glossary page — mirrors "report", never primary nav.
   { id: "help", label: "Help", icon: "info" },
+  // Gallery (2026-08-03). Same standing as Reports and Help: on the desktop rail
+  // it is a first-class destination, and it appears HERE too because this sheet
+  // is the phone's copy of that rail, not a duplicate of it. The five primary
+  // slots stay the setup-critical tabs (touch spec R14), so on a phone browsing
+  // the library costs two taps — stated rather than papered over, exactly as the
+  // Tonight entry above states its own two-tap cost.
+  { id: "gallery", label: "Gallery", icon: "gallery" },
 ];
 
 const SIZING: { id: "auto" | "on" | "off"; label: string }[] = [

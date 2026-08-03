@@ -82,6 +82,7 @@ const LOADERS: Partial<Record<ViewName, Loader>> = {
   tonight: () => import("../views/TonightView"),
   report: () => import("../views/ReportView"),
   help: () => import("../views/HelpView"),
+  gallery: () => import("../views/GalleryView"),
 };
 
 /** Views this build code-splits, in preload order. */

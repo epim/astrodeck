@@ -93,6 +93,26 @@ const NAV: { id: ViewName; label: string; icon: IconName }[] = [
   // tester on the propped-up tablet had no "Help" to press at all. It stays in
   // the MORE sheet too — that is the phone's copy of this rail, not a duplicate.
   { id: "help", label: "Help", icon: "info" },
+  // APPENDED (gallery design 2026-08-03 §Nav — Risk-10 again: append, no
+  // reorder, no eviction. Monitor, Tonight, Reports and Help all landed this
+  // way, and this entry is the fifth instance of the same rule, not an
+  // exception to it).
+  //
+  // Why it is a destination and not a panel inside something else: "what did
+  // last night actually produce, and how much disk is it eating" is a question
+  // asked in the morning, at a desk, with no rig connected — the same shape of
+  // task Reports has, and the same reason Reports had to stop being reachable
+  // only from a phone's More sheet. It is deliberately NOT in the GATED table
+  // below: browsing files the rig already wrote needs no equipment at all, and
+  // sending someone to the not-connected interstitial to look at yesterday's
+  // frames would be a lie about what is required.
+  //
+  // THE RAIL HEIGHT IS A REAL CONSTRAINT AND THIS ENTRY MOVED IT. See the
+  // per-item padding note on the nav buttons below — a 15th entry does not fit
+  // at py-2 on a 1440x900 screen, and an entry below the fold of a scroll region
+  // with no visible affordance is an entry nobody finds. The padding change
+  // there is part of THIS change; do not revert one without the other.
+  { id: "gallery", label: "Gallery", icon: "gallery" },
 ];
 
 // ROUTING + CODE SPLITTING. Every destination except Equipment is a lazily
@@ -619,20 +639,28 @@ export default function App() {
                   // which states the same thing at full size.
                   aria-label={gated ? `${n.label} — connect equipment to use this` : undefined}
                   title={gated ? "Connect equipment to use this" : undefined}
-                  // py-2, not py-3. MEASURED on this tree at 1440x900 — the
-                  // "morning-after machine", the shortest viewport this rail
-                  // renders on: 13 entries at py-3 came to scrollHeight 815
-                  // against clientHeight 818, i.e. the rail was already one
-                  // entry from overflowing, and appending Help pushed it to 877
-                  // — the last item (HELP) sat BELOW the rail's own fold, on a
-                  // scroll region with no visible affordance. A nav entry a user
-                  // has to discover by scrolling the nav is not reachable, which
-                  // would have re-created the exact defect this change exists to
-                  // fix. py-2 brings 14 entries to 765 < 818 and every item
-                  // still stands ~53px tall, above the 44px floor. (A rotated
-                  // tablet, 1180x820, is tighter still and scrolls — it did
-                  // before this change too, at 13 entries.)
-                  className={`flex flex-col items-center gap-1 py-2 transition-colors relative cursor-pointer
+                  // py-1.5, not py-2 and definitely not py-3. MEASURED on this
+                  // tree at 1440x900 — the "morning-after machine", the shortest
+                  // viewport this rail renders on: 13 entries at py-3 came to
+                  // scrollHeight 815 against clientHeight 818, i.e. the rail was
+                  // already one entry from overflowing, and appending Help
+                  // pushed it to 877 — the last item (HELP) sat BELOW the rail's
+                  // own fold, on a scroll region with no visible affordance. A
+                  // nav entry a user has to discover by scrolling the nav is not
+                  // reachable. py-2 then brought 14 entries to 765 < 818.
+                  //
+                  // Those two measurements pin the per-entry cost exactly, which
+                  // is why this step needed no third one: (877-815)/(14-13) =
+                  // 62px per entry at py-3, and py-2 removes 8px of padding from
+                  // each, giving 54 — and 14x54 + 16 of nav padding = 772, which
+                  // is the 765 that was measured. Appending Gallery makes it 15
+                  // entries: 15x54 + 16 = 826, i.e. 8px PAST the 818 fold, on the
+                  // last item again. py-1.5 takes each entry to 50px, so 15x50 +
+                  // 16 = 766 with 52px of headroom, and every item still stands
+                  // 50px tall — above the 44px touch floor (touch spec R14). (A
+                  // rotated tablet, 1180x820, is tighter still and scrolls; it
+                  // did before this change too, at 13 entries.)
+                  className={`flex flex-col items-center gap-1 py-1.5 transition-colors relative cursor-pointer
                     ${view === n.id ? "text-accent" : gated ? "text-dim/60 hover:text-ink" : "text-dim hover:text-ink"}`}
                 >
                   {view === n.id && <span className="absolute left-0 top-2 bottom-2 w-[2px] bg-accent shadow-[0_0_8px_var(--glow)]" />}

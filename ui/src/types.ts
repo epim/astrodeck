@@ -25,7 +25,13 @@ export type ViewName =
   // reorder/eviction of the landed primary order.
   | "tonight"
   | "report"
-  | "help";
+  | "help"
+  // APPENDED (gallery design 2026-08-03 §Nav — the same Risk-10 precedent as
+  // Monitor / Tonight / Reports / Help above: the landed order is never
+  // rewritten, new destinations go on the end). Browsing what the rig has
+  // already written to disk is not an equipment-dependent task, so this one is
+  // deliberately absent from App's GATED table.
+  | "gallery";
 
 // NOV-9: the failure→topic / browsable-guide anchor set shared by
 // lib/troubleshoot.ts (diagnoseFailure + TROUBLESHOOTING), Toast.action's
@@ -1822,4 +1828,119 @@ export interface WeatherState {
   forecast: WeatherForecast | null;
   astrospheric: WeatherAstrospheric | null;
   alert: WeatherAlert | null;
+}
+
+// ============================================================================
+// IMAGE GALLERY (gallery design 2026-08-03). Mirrors the ten /api/gallery/*
+// routes 1:1. Read the route docstrings in server/astrodeck/api/app.py before
+// changing a field name here — these are the wire shapes, not a view model.
+// ============================================================================
+
+/** One row of the capture library. `night` is the NOON-TO-NOON observing night
+ *  the frame belongs to, derived server-side from `ts` (its DATE-OBS, else its
+ *  mtime) — NOT parsed out of the filename. The default naming template writes
+ *  the calendar date, so a 00:10 frame's name says "today" while it belongs to
+ *  the night that opened yesterday afternoon; `ts` is returned precisely so the
+ *  UI can show what decided that when the two disagree. */
+export interface GalleryFrame {
+  /** library-relative, forward-slashed: "M42/Light_M42_L_…_0001.fits". The
+   *  identity every other gallery route takes. */
+  path: string;
+  name: string;
+  /** target directory, "" for a frame sitting at the library root. */
+  folder: string;
+  night: string;                 // "YYYY-MM-DD" night key
+  ts: number;                    // capture instant (unix seconds) the night came from
+  target: string;                // OBJECT header, falling back to the folder name
+  filter: string;                // "" when the header was unreadable
+  frame_type: string;            // "Light" | "Flat" | … ; "" when unknown
+  exposure_s: number | null;     // null when the header did not say
+  bytes: number;
+  mtime: number;
+}
+
+export interface GalleryFramesPage {
+  frames: GalleryFrame[];
+  /** The WHOLE filtered set, not this page — so a download's size can be shown
+   *  without a second round trip. Same resolver the summary route uses. */
+  total: number;
+  bytes: number;
+  offset: number;
+  limit: number;
+  /** The walk hit its file ceiling: this is a PREFIX of the library, not the
+   *  library. Must be said out loud rather than presented as the whole thing. */
+  truncated: boolean;
+  scan_ms: number;
+}
+
+export interface GalleryNight {
+  night: string;
+  frames: number;
+  bytes: number;
+}
+
+export interface GalleryNightsResponse {
+  /** Tonight's key by the same noon rollover — so "tonight" is highlightable at
+   *  01:00, when the calendar date has already moved on and the night has not. */
+  current: string;
+  nights: GalleryNight[];
+  truncated: boolean;
+}
+
+/** A per-path refusal. Never merged into the happy path: a selection that
+ *  partly failed must not be able to look like a complete one. */
+export interface GalleryFailure {
+  path: string;
+  reason: string;
+}
+
+export interface GallerySummary {
+  count: number;
+  bytes: number;
+  failed: GalleryFailure[];
+}
+
+export interface TrashedFrame {
+  /** TRASH-relative, and possibly suffixed "-1" on a name collision. This — not
+   *  `original` — is what restore and purge take. */
+  path: string;
+  original: string;
+  bytes: number;
+  deleted_at: number;
+}
+
+export interface GalleryTrashResult {
+  trashed: TrashedFrame[];
+  failed: GalleryFailure[];
+  bytes: number;
+}
+
+export interface TrashItem {
+  path: string;                  // trash-relative (the id for restore/purge)
+  original: string;              // where it will go back to
+  name: string;
+  deleted_at: number;
+  expires_at: number;            // auto-purge instant (deleted_at + ttl)
+  bytes: number;
+  /** false when something already occupies `original` — restore would have to
+   *  overwrite a live frame, and it never will. */
+  restorable: boolean;
+}
+
+export interface GalleryTrashListing {
+  items: TrashItem[];
+  count: number;
+  bytes: number;
+  ttl_days: number;
+}
+
+export interface GalleryRestoreResult {
+  restored: { path: string; restored_to: string }[];
+  failed: GalleryFailure[];
+}
+
+export interface GalleryPurgeResult {
+  purged: number;
+  bytes: number;
+  failed: GalleryFailure[];
 }
