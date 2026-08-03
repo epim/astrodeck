@@ -54,6 +54,15 @@ interface Props {
   onReturnToLive: () => void;
   stretchDragging?: boolean;
   compact?: boolean;
+  /** Floor for the stage's height, in px, overriding the default (380 full, and
+   *  none at all when `compact` — where the 3:2 ratio alone decides).
+   *
+   *  Focus passes one because the pod it lays over this stage needs a known
+   *  minimum to open into: a compact stage is `w-full` at 3:2, so on a 390px
+   *  phone it is 217px tall, and the pod's arc needs 230. See POD_MIN_STAGE_H.
+   *  The ratio still wins wherever it gives more, so this only bites on narrow
+   *  screens — which is exactly where it is needed. */
+  minHeight?: number;
   // expose gesture controls to a parent toolbar
   onControls?: (c: StageControls) => void;
 }
@@ -95,8 +104,10 @@ export function PreviewStage(props: Props) {
     onReturnToLive,
     stretchDragging = false,
     compact = false,
+    minHeight,
     onControls,
   } = props;
+  const stageMinH = minHeight ?? (compact ? undefined : 380);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -471,7 +482,7 @@ export function PreviewStage(props: Props) {
       <div
         ref={stageRef}
         className="preview-stage astro-surface relative w-full overflow-hidden flex items-center justify-center"
-        style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: compact ? undefined : 380 }}
+        style={{ aspectRatio: compact ? "3 / 2" : undefined, minHeight: stageMinH }}
       >
         <div className="flex flex-col items-center text-center">
           <Logo size={compact ? 56 : 80} className="text-dim opacity-60" />
@@ -491,7 +502,7 @@ export function PreviewStage(props: Props) {
       className="preview-stage astro-surface relative w-full overflow-hidden outline-none"
       style={{
         aspectRatio: compact ? "3 / 2" : undefined,
-        minHeight: compact ? undefined : 380,
+        minHeight: stageMinH,
         touchAction: zoomedIn ? "none" : "pan-y",
       }}
     >
