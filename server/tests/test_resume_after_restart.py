@@ -121,3 +121,79 @@ async def test_resuming_keeps_the_existing_arm():
         assert s.auto_resume is True
     finally:
         await eng.abort()
+
+
+# ------------------------------------------------------- device fingerprint
+
+@pytest.fixture
+def fp(tmp_path, monkeypatch):
+    from astrodeck.devices import fingerprint as _fp
+    monkeypatch.setattr(_fp, "_PATH", tmp_path / "fp.json")
+    _fp.reset_for_tests()
+    return _fp
+
+
+def test_focus_is_untrusted_when_the_focuser_forgot_its_position(fp):
+    """The EAF forgets its position on power loss, so a focuser reporting a
+    different number than we last recorded is reporting a DEFAULT, not a
+    measurement. That mismatch IS the power-loss tell -- and it catches a yanked
+    USB hub too, which no OS shutdown event would."""
+    fp.record(focuser_position=9935, filter_slot=7, ra_hours=1.0,
+              dec_deg=2.0, parked=True, tracking=False)
+    assert fp.verdict(focuser_position=9935).focus_trusted is True
+    assert fp.verdict(focuser_position=0).focus_trusted is False
+
+
+def test_a_missing_fingerprint_trusts_nothing(fp):
+    """First-ever boot or a wiped state dir. Distrust costs an autofocus;
+    misplaced trust costs a night of blurred frames."""
+    assert fp.verdict(focuser_position=9935).focus_trusted is False
+
+
+def test_an_unreadable_fingerprint_trusts_nothing(fp, tmp_path):
+    """A truncated file must not read as agreement."""
+    (tmp_path / "fp.json").write_text("{not json", encoding="utf-8")
+    assert fp.verdict(focuser_position=9935).focus_trusted is False
+
+
+def test_writes_are_coalesced(fp, monkeypatch):
+    """The status poll runs several times a second for a value that rarely
+    changes; without coalescing this rewrites the file continuously."""
+    now = [1000.0]
+    monkeypatch.setattr(fp, "_now", lambda: now[0])
+    fp.record(focuser_position=1, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    fp.record(focuser_position=2, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    assert fp.verdict(focuser_position=1).focus_trusted is True   # 2nd coalesced
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=2, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    assert fp.verdict(focuser_position=2).focus_trusted is True
+
+
+def test_recording_never_raises(fp, monkeypatch):
+    """Bookkeeping must never break a run, whatever the disk is doing."""
+    def _boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(fp, "write_json_atomic", _boom)
+    fp.record(focuser_position=1, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)   # must not raise
+
+
+async def test_poll_status_records_the_fingerprint(fp, monkeypatch):
+    """The recorder must be fed by the real status path, not only by tests.
+
+    Without this the module would be perfectly correct and never called -- the
+    exact shape of the #112 autofocus bug, where a working metric was wired into
+    a code path the rig does not run."""
+    import astrodeck.hub as hubmod
+    h = hubmod.Hub()
+    await h.connect_sim()
+    try:
+        await h.poll_status()
+    finally:
+        await h.disconnect_all()
+    raw = fp.read_json_or(fp._path(), None)
+    assert isinstance(raw, dict), "poll_status never wrote a fingerprint"
+    assert "focuser_position" in raw and "parked" in raw
