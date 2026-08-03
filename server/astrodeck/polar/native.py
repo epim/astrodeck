@@ -55,6 +55,27 @@ _SOLVE_EXPOSURE_S = 0.3
 # "Aligned — stop here" threshold and the adjustment-phase cadence + safety cap
 # (the phase otherwise runs until the user stops; the cap keeps a forgotten
 # session from spinning forever).
+#: Refuse to measure when the telescope is closer to a celestial pole than this.
+#:
+#: Three-point polar alignment derives the mount's RA axis by fitting a circle
+#: through three plate-solved positions as the mount rotates in RA. The circle's
+#: radius IS the angular distance from that axis, so pointing near the pole
+#: makes the fit ill-conditioned: each solve's small residual is amplified when
+#: the circle is extrapolated to an axis direction. At 20 degrees the lever arm
+#: is workable; at 5 it is not.
+#:
+#: Measured on the rig 2026-08-03: a run at Dec +85 (5 degrees from the pole)
+#: reported 580 arcmin of error -- 9.7 degrees -- and told the operator to
+#: "adjust the mount", on a rig that had just produced 16 unguided 10 s subs at
+#: a steady HFR. Acting on that number would have wrecked a working alignment.
+#: The engine had already raised position_angle_spread_large and
+#: initial_error_large and reported the figure anyway.
+#:
+#: The trap is easy to fall into and has nothing to do with carelessness: park
+#: leaves this mount pointing at the pole, so starting TPPA straight after a
+#: park lands here every time.
+MIN_POLE_DISTANCE_DEG = 20.0
+
 _DONE_THRESHOLD_ARCMIN = 1.0
 _ADJUST_INTERVAL_S = 1.0
 _MAX_ADJUST_UPDATES = 240
@@ -98,6 +119,13 @@ async def _drive(session: Any, hub: Any) -> None:
     solver = _providers.pick_solver(hub)
     site = _site_dict(hub)
 
+    # Refuse BEFORE any slew when the scope is parked at / near a pole. Checked
+    # against the mount's own claim, which is cheap and catches the common case;
+    # the authoritative check is on the first SOLVED position below, because a
+    # mount can be wrong about where it points (2026-08-02: this one was 50 deg
+    # out after a restart).
+    await _refuse_near_pole(await _mount_dec(tel), "the mount reports")
+
     # Motion fence (W3.7): snapshot the epoch; a STOP/abort/safety halt bumps it,
     # and we abandon rather than keep slewing a mount someone just halted.
     epoch = getattr(hub, "_motion_epoch", 0)
@@ -112,6 +140,10 @@ async def _drive(session: Any, hub: Any) -> None:
         _check_alive(hub, epoch)
         await _wait_if_paused(session)
         frame, result, geom = await _capture_and_solve(hub, solver)
+        if i == 0:
+            # The authoritative check: where the sky says we are, not where the
+            # mount claims. Costs one exposure that was being taken anyway.
+            await _refuse_near_pole(result.dec_deg, "the plate solve puts you")
         solves.append({
             "ra_hours": result.ra_hours,
             "dec_deg": result.dec_deg,
@@ -273,3 +305,41 @@ def _publish_error(session: Any, err: dict, *, phase: str, point_index: int,
         alt_direction=err.get("alt_direction"),
         flags=err.get("flags", []),
     )
+
+
+async def _mount_dec(tel: Any) -> float | None:
+    """The mount's claimed declination, or None when it cannot say."""
+    try:
+        _ra, dec = await tel.get_position()
+        return None if dec is None else float(dec)
+    except Exception:  # noqa: BLE001 — a mount that cannot report is not a refusal
+        return None
+
+
+async def _refuse_near_pole(dec_deg: float | None, whose: str) -> None:
+    """Raise a user-presentable DeviceError when too close to a celestial pole.
+
+    Naming a REACHABLE fix matters more than naming the fault: the operator did
+    nothing wrong -- park leaves the mount at the pole, so the obvious "align
+    now" straight after a park lands exactly here. So the message says where to
+    point instead, not merely that this spot is invalid.
+
+    ``dec_deg`` None (a mount that will not report) is NOT a refusal: the solved
+    check downstream still runs, and refusing on a missing reading would break
+    rigs whose mounts are simply quiet.
+    """
+    if dec_deg is None:
+        return
+    pole_distance = 90.0 - abs(dec_deg)
+    if pole_distance >= MIN_POLE_DISTANCE_DEG:
+        return
+    raise DeviceError(
+        f"too close to the celestial pole to measure: {whose} "
+        f"{abs(dec_deg):.1f}° declination, {pole_distance:.1f}° from the "
+        f"pole (needs {MIN_POLE_DISTANCE_DEG:.0f}°). Three-point alignment "
+        "fits a circle through three solved positions as the mount turns in RA, "
+        "and that circle's radius is your distance from the pole — this close, "
+        "the fit cannot resolve an axis and would report a large error that is "
+        "not real. Slew to a target nearer the celestial equator, ideally within "
+        "about 30° of the meridian, and start again. (A parked mount points at "
+        "the pole, so this is the usual state right after parking.)")
