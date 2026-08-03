@@ -241,12 +241,18 @@ class ResumeArm:
                 # Recovery is the opposite case: it runs once, nothing else is
                 # waiting on it, and failing costs a TEN MINUTE backoff.
                 #
-                # A longer exposure is cheap insurance for an ALL-SKY search,
-                # which has far less to go on than a near search. (It is not what
-                # fixed the 2026-08-02 failure -- that was the mount hint below.
-                # ASTAP solved the 3 s frame fine once the hint was dropped.)
+                # A longer exposure than solve_and_sync's 3 s default, because
+                # recovery runs once, nothing waits on it, and failing costs a
+                # ten-minute backoff. More stars is the cheapest lever there is.
+                #
+                # It KEEPS the mount's pointing hint. Dropping it was tried on
+                # 2026-08-02 and was a regression: the hint bounds ASTAP's search
+                # to a 15-degree radius, which comfortably covers the ~4 degrees
+                # of error a sagged or slipped mount showed that night, while
+                # dropping it forces a true all-sky search that failed outright
+                # on a sparse field. Bounded-and-generous beats blind.
                 await self.hub.solve_and_sync(
-                    exposure_s=RECOVERY_SOLVE_EXPOSURE_S, blind=True)
+                    exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
             except Exception as e:  # noqa: BLE001
                 return (f"blind plate solve failed after restart ({e}) — refusing "
                         "to slew a mount whose true position is unknown")
