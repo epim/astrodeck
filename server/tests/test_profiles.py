@@ -507,3 +507,88 @@ def test_redact_profile_accepts_dict_and_is_noop_for_rows():
     out = redact_profile(row)
     assert out == row
     assert out is not row  # deep-copied, never the same object
+
+
+# --------------------------------------------------- clearing profile overrides
+#
+# #129. A profile's ``providers`` pins and its ``optics`` block are the layers
+# that BEAT global config the moment the profile is active. The provenance
+# readout can now name them; these tests pin the only way to remove one.
+
+
+def test_clear_overrides_drops_one_provider_pin(tmp_path):
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", providers={"polar_align": "sim", "solve": "astap"})
+    lib.save(p)
+    row = lib.clear_overrides(p.id, providers=["polar_align"])
+    # the row reports the survivor, and the file agrees with the row
+    assert row["providers"] == {"solve": "astap"}
+    assert lib.get(p.id).providers == {"solve": "astap"}
+
+
+def test_clear_overrides_collapses_the_last_pin_to_none(tmp_path):
+    """An empty dict and ``None`` mean the same thing to the resolver but not to
+    a human reading the JSON; persist the collapsed form."""
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", providers={"guide": "auto"})
+    lib.save(p)
+    lib.clear_overrides(p.id, providers=["guide"])
+    assert lib.get(p.id).providers is None
+
+
+def test_clear_overrides_ignores_inert_keys_instead_of_refusing(tmp_path):
+    """``providers`` is a bare dict that accepts anything an imported profile
+    file carried. Rejecting the request over a key nothing reads would leave the
+    user unable to clear the keys that ARE live."""
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", providers={"polar_align": "sim", "nonsense": "x"})
+    lib.save(p)
+    lib.clear_overrides(p.id, providers=["nonsense", "polar_align"])
+    # the live pin is gone; the inert key is untouched rather than silently eaten
+    assert lib.get(p.id).providers == {"nonsense": "x"}
+
+
+def test_clear_overrides_drops_the_whole_optics_block(tmp_path):
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", optics=Optics(focal_length_mm=250.0),
+                providers={"solve": "astap"})
+    lib.save(p)
+    lib.clear_overrides(p.id, optics=True)
+    fresh = lib.get(p.id)
+    assert fresh.optics is None
+    # clearing optics must not touch the provider pins
+    assert fresh.providers == {"solve": "astap"}
+
+
+def test_clear_overrides_preserves_at_rest_device_secrets(tmp_path):
+    """The reason this is a server-side mutation at all: a client read-modify-
+    write would have to start from the wire-REDACTED GET, and writing that back
+    would persist blanked credentials."""
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", providers={"guide": "sim"}, devices=[
+        ProfileDevice(role="camera", extra={"password": "hunter2",
+                                            "host": "10.0.0.5"})])
+    lib.save(p)
+    lib.clear_overrides(p.id, providers=["guide"])
+    kept = lib.get(p.id)
+    assert kept.devices[0].extra["password"] == "hunter2"
+    assert kept.devices[0].extra["host"] == "10.0.0.5"
+
+
+def test_clear_overrides_on_missing_profile_raises(tmp_path):
+    """The routes map KeyError -> 404; nothing here may 500."""
+    lib = _lib(tmp_path)
+    with pytest.raises((KeyError, FileNotFoundError)):
+        lib.clear_overrides(str(uuid.uuid4()), optics=True)
+
+
+def test_clear_overrides_with_an_empty_request_changes_nothing(tmp_path):
+    """A malformed/empty body must be inert, never destructive."""
+    lib = _lib(tmp_path)
+    p = Profile(name="Rig", providers={"guide": "sim"},
+                optics=Optics(focal_length_mm=250.0))
+    lib.save(p)
+    lib.clear_overrides(p.id)
+    fresh = lib.get(p.id)
+    assert fresh.providers == {"guide": "sim"}
+    assert fresh.optics is not None and fresh.optics.focal_length_mm == 250.0

@@ -49,6 +49,13 @@ import {
   wrapRaHours,
   type OpticsLike,
 } from "../lib/framing";
+import {
+  effectiveOptics,
+  entryOf,
+  isProfileOverride,
+  opticsKey,
+  overrideProfileName,
+} from "../lib/effective";
 import { adjustedPa } from "../lib/rotation";
 import { uid } from "../lib/ids";
 import { SkyCanvas } from "../components/atlas/SkyCanvas";
@@ -246,19 +253,28 @@ export default function AtlasView(): JSX.Element {
   const optics: Optics | null = config?.optics ?? null;
   const computed = config?.optics_computed ?? null;
 
-  // Merge for the FOV gate (wave-1 §3.1): config override wins (nonzero), else
-  // the camera-reported value from the live merged readout. Focal stays the
-  // config/draft value (focalOverride still applies via fovFromOptics).
+  // The optics the frame is DRAWN from (wave-1 §3.1).
+  //
+  // #129: this used to take `focal_length_mm` from the GLOBAL config block
+  // unconditionally, while pixel/sensor fell back to the live camera readout.
+  // But an active profile's optics block replaces the whole object server-side,
+  // and that replaced object is what the solve FOV hint sent to ASTAP is built
+  // from. So with a profile override the rectangle on the sky, the mosaic panel
+  // positions and the gear label all described a telescope the rig was not
+  // using — while the solver used the other one. `effectiveOptics` reads the
+  // WINNING layer and keeps the camera fallback underneath it for the bootstrap
+  // case where the provenance block has not arrived yet.
   const liveOptics = statusOptics ?? computed;
-  const mergedOptics: OpticsLike | null = useMemo(() => {
-    if (!optics) return null;
-    return {
-      focal_length_mm: optics.focal_length_mm,
-      pixel_size_um: optics.pixel_size_um || liveOptics?.pixel_size_um || 0,
-      sensor_width_px: optics.sensor_width_px || liveOptics?.sensor_width_px || 0,
-      sensor_height_px: optics.sensor_height_px || liveOptics?.sensor_height_px || 0,
-    };
-  }, [optics, liveOptics]);
+  const mergedOptics: OpticsLike | null = useMemo(
+    () => effectiveOptics(config, optics, liveOptics),
+    [config, optics, liveOptics],
+  );
+  // Which layer supplies the focal length, for the gear label + the note beside
+  // the inline fields. The inline fields below still EDIT global (they PUT
+  // /api/optics), so when a profile is in force the user has to be told that
+  // what they type is not what is being drawn.
+  const focalEntry = entryOf(config, opticsKey("focal_length_mm"));
+  const opticsPinned = isProfileOverride(focalEntry);
 
   const [focalDraft, setFocalDraft] = useState<string>("");
   const [savingFocal, setSavingFocal] = useState(false);
@@ -818,12 +834,24 @@ export default function AtlasView(): JSX.Element {
           type="button"
           className={`btn tap min-h-[36px] !px-2.5 shrink-0 ${opticsOpen ? "border-accent text-accent" : ""}`}
           aria-expanded={opticsOpen}
-          aria-label="Camera and telescope specs"
+          // #129: the gear label now reports the WINNING layer's numbers, so it
+          // can disagree with the boxes it opens. The accessible name says which
+          // profile put them there; the trailing "*" is the visible marker (a
+          // word-length one does not survive this header on a phone) and the
+          // banner inside the drawer is the footnote it points at.
+          aria-label={
+            opticsPinned
+              ? `Camera and telescope specs — ${opticsSummary}, pinned by equipment profile ${overrideProfileName(focalEntry) ?? "(unnamed)"}`
+              : "Camera and telescope specs"
+          }
           title={opticsSummary}
           onClick={() => setOpticsOpen((v) => !v)}
         >
           <Icon name="settings" size={14} />
-          <span className="ml-1.5 mono text-[11px] !normal-case">{opticsSummary}</span>
+          <span className="ml-1.5 mono text-[11px] !normal-case">
+            {opticsSummary}
+            {opticsPinned && <span aria-hidden>*</span>}
+          </span>
         </button>
         {opticsOpen && (
         <div className="grid grid-cols-2 gap-x-3 gap-y-2 w-full sm:contents">
@@ -1047,6 +1075,37 @@ export default function AtlasView(): JSX.Element {
           <span>
             Using a default location — set yours in Settings for accurate
             altitude and visibility.
+          </span>
+        </div>
+      )}
+
+      {/* #129 — the frame on the sky is drawn from the profile, the boxes above
+          edit global. Placed here rather than inside the optics drawer because
+          the rectangle is drawn whether or not the drawer is open, and this is
+          the row the eye lands on between the map and the controls. Names the
+          profile and the two focal lengths, because "overridden" alone would
+          leave the user comparing a number they can see against one they
+          cannot. Clearing it lives in Settings → Imaging train, which is where
+          the whole optics block (all seven fields) can be dropped at once. */}
+      {opticsPinned && (
+        <div className="flex items-start gap-1.5 text-[12px] text-warn border border-warn/60 border-dashed bg-raise px-2 py-1">
+          <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
+          <span>
+            This frame is drawn at{" "}
+            <span className="mono">
+              {Math.round(mergedOptics?.focal_length_mm ?? 0)}mm
+            </span>{" "}
+            from equipment profile “{overrideProfileName(focalEntry) ?? "(unnamed)"}”
+            {typeof focalEntry?.config === "number" &&
+              focalEntry.config !== focalEntry.value && (
+                <>
+                  , not the{" "}
+                  <span className="mono">{Math.round(focalEntry.config)}mm</span>{" "}
+                  in the box above
+                </>
+              )}
+            . The boxes above edit the global setting; drop the profile's optics
+            in Settings → Imaging train to make them take effect.
           </span>
         </div>
       )}

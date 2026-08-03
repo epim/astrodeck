@@ -722,6 +722,58 @@ export interface OpticsComputed {
   fov_diag_deg: number | null;
 }
 
+// ---------------------------------------------------------------- provenance
+// #129. `AppConfig` above is the GLOBAL block — and the global block is the
+// LOSING layer for every key an ACTIVE PROFILE overrides. Binding a form field
+// to it renders a value that is not what the rig is running, with no tell of
+// any kind; that is how a profile-pinned simulator drove the polar aligner for
+// twelve days while the console displayed "AstroDeck native".
+//
+// The server answers that with `config.effective` (server/astrodeck/provenance.py):
+// per overridable key, the value in force AND the identity of the layer that
+// supplied it, plus what each losing layer holds. Read the winner from here;
+// read `config.providers` / `config.optics` only when you specifically mean
+// "the global setting this form writes to".
+export type EffectiveLayer =
+  // the ACTIVE PROFILE supplied it — the override that has no other tell
+  | "profile"
+  // global AppConfig supplied it (a value that differs from the field default)
+  | "config"
+  // the CONNECTED CAMERA filled a zeroed optics field. A real winning layer:
+  // reporting `pixel_size_um: 0` while the rig runs 3.76 is the same lie moved.
+  | "camera"
+  // nobody pinned anything. Note a persisted value equal to the model default
+  // is indistinguishable from never having been set, so the server reports
+  // `default` there — it under-claims rather than over-claims.
+  | "default";
+
+/** One key's provenance. `value` is what the rig runs; every other field is a
+ *  layer's holding, `null` when that layer has nothing (never absent, so the
+ *  block renders generically). */
+export interface EffectiveEntry<T = unknown> {
+  value: T;
+  layer: EffectiveLayer;
+  /** what the ACTIVE profile holds (raw — a pin the server discarded as invalid
+   *  still shows up here, which is the only way to tell a dropped override from
+   *  one that was never written). */
+  profile: T | null;
+  /** what global AppConfig holds — i.e. what would run without the profile. */
+  config: T | null;
+  /** the model's built-in default. */
+  default: T | null;
+  profile_id: string | null;
+  profile_name: string | null;
+  /** a sentence naming the deciding branch. Reuses the `"override: "` prefix
+   *  convention from ProviderChoice.reason — that prefix is what let the user
+   *  find the polar bug. */
+  reason: string | null;
+}
+
+/** Dotted-key map: `providers.autofocus`, `optics.focal_length_mm`, … Exactly
+ *  eleven keys today, but typed open so a server-side addition needs no UI
+ *  change to reach the generic renderers. */
+export type EffectiveConfig = Record<string, EffectiveEntry>;
+
 export interface AppConfig {
   version: number;
   site: Site;
@@ -730,6 +782,10 @@ export interface AppConfig {
   // (hub.summary() seeds config without it, refreshed by the first `config`
   // event), so it must be optional to match the bootstrap reality.
   optics_computed?: OpticsComputed;
+  // #129: which LAYER won, per overridable key. Optional for exactly the same
+  // reason optics_computed is (the WS bootstrap omits it) — so every consumer
+  // must degrade to the raw global value rather than blanking the panel.
+  effective?: EffectiveConfig;
   active_profile_id: string | null;
   // --- automation (Batch-4b; additive — appended to the EXISTING config-backed
   //     AppConfig. Global safety/escalation/alerts live here, NOT on the plan;
@@ -1458,6 +1514,16 @@ export interface ProfileRow {
   devices_count: number;
   site_name: string | null;
   active: boolean;
+  // #129: the two blocks that BEAT global config when this profile is active.
+  // The row used to drop both, which made it structurally impossible for the
+  // Profiles tab to show that a profile pins a capability or a focal length —
+  // the list endpoint returns these rows and nothing on that screen fetches the
+  // full model. `providers` keeps a literal "auto" (it still beats a global
+  // "astap", so it IS an override); `optics` is the whole dump, because a
+  // profile optics block is swapped WHOLE and overrides every optics field at
+  // once, including the ones the profile left at its own defaults.
+  providers?: Partial<ProvidersConfig> | null;
+  optics?: Optics | null;
 }
 
 export interface ApplyResult {

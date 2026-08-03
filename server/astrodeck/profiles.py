@@ -13,6 +13,7 @@ at read time by the hub (it never stomps the global config).
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -367,6 +368,49 @@ class ProfileLibrary:
         """Mutate ``name`` in place — the id (slug/filename) never changes."""
         prof = self.get(profile_id)
         prof.name = name
+        return self.save(prof)
+
+    def clear_overrides(self, profile_id: str, *,
+                        providers: Iterable[str] = (),
+                        optics: bool = False) -> dict:
+        """Drop this profile's overrides IN PLACE and return the fresh row.
+
+        #129. A profile override is the layer that beats global config, and
+        until now nothing in the product could remove one: the Profiles tab has
+        no editor, and the only write route (``POST /api/profiles``) takes a
+        whole profile. So the console can now SHOW "profile X pins the
+        simulator" and the user's only recourse would be to delete the profile.
+
+        Why this lives on the server rather than as a client read-modify-write:
+        ``GET /api/profiles/{id}`` is wire-REDACTED — :func:`redact_profile`
+        blanks every secret-bearing device ``extra`` — so a UI that fetched a
+        profile, deleted one key and POSTed it back would persist the BLANKS and
+        cost the user their stored credentials. The mutation therefore runs
+        against the at-rest record, which is the only copy that still has them.
+
+        ``providers`` names capabilities to unpin; unknown names are ignored
+        rather than rejected, because a profile's ``providers`` dict is a bare
+        dict that can carry anything an imported profile file had in it, and
+        refusing the whole request over an inert key would leave the user unable
+        to clear the keys that ARE live. Clearing the last pin drops the dict to
+        ``None`` so the profile reads as "no provider override" rather than as
+        an empty override.
+
+        ``optics`` is all-or-nothing on purpose: ``resolve_optics`` swaps the
+        WHOLE block, so there is no such thing as clearing one optics field —
+        offering a per-field clear would imply a granularity the resolver does
+        not have.
+        """
+        prof = self.get(profile_id)
+        wanted = {c for c in providers if c in PROVIDER_CAPABILITIES}
+        if wanted and isinstance(prof.providers, dict):
+            kept = {k: v for k, v in prof.providers.items() if k not in wanted}
+            # An empty dict is not the same as None to a reader skimming the
+            # JSON, and ``override_providers`` already collapses empty -> None;
+            # persist the collapsed form so the file matches what the API says.
+            prof.providers = kept or None
+        if optics:
+            prof.optics = None
         return self.save(prof)
 
     def delete(self, profile_id: str) -> None:
