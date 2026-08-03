@@ -1,27 +1,27 @@
-// api/gallery.ts — typed wrappers for the ten /api/gallery/* routes (gallery
-// design 2026-08-03). Cookie auth is automatic; a non-2xx throws ApiError.
+// api/gallery.ts — typed wrappers for the /api/gallery/* routes this UI calls
+// (gallery design 2026-08-03). Cookie auth is automatic; a non-2xx throws
+// ApiError.
 //
-// The two BYTE-CARRYING routes are deliberately absent from this file:
-// `/api/gallery/file` and `/api/gallery/download.zip` are reached as plain
-// navigations (an <a href>), never through `api.get`. The session is a cookie,
-// so a navigation authenticates exactly as a fetch does — and fetching a bulk
-// download would land the whole archive in a Blob in memory, undoing the
-// streaming the server was built to do. lib/gallery.ts builds those two URLs;
-// this module only exposes the JSON.
+// THREE of the ten routes are deliberately absent, for two different reasons.
+//
+// The two BYTE-CARRYING ones — `/api/gallery/file` and
+// `/api/gallery/download.zip` — are reached as plain navigations (an <a href>),
+// never through `api.get`. The session is a cookie, so a navigation
+// authenticates exactly as a fetch does, and fetching a bulk download would land
+// the whole archive in a Blob in memory, undoing the streaming the server was
+// built to do. lib/gallery.ts builds those two URLs; this module only exposes
+// the JSON.
+//
+// `/api/gallery/summary` is absent because this UI already has its answer — see
+// the note where the wrapper would have gone.
 
 import { api } from "../api";
-import {
-  framesPath,
-  nightsPath,
-  summaryPath,
-  type GallerySelection,
-} from "../lib/gallery";
+import { framesPath, nightsPath } from "../lib/gallery";
 import type {
   GalleryFramesPage,
   GalleryNightsResponse,
   GalleryPurgeResult,
   GalleryRestoreResult,
-  GallerySummary,
   GalleryTrashListing,
   GalleryTrashResult,
 } from "../types";
@@ -49,11 +49,13 @@ export const listFrames = (o: FramesQuery = {}): Promise<GalleryFramesPage> =>
 export const listNights = (): Promise<GalleryNightsResponse> =>
   api.get<GalleryNightsResponse>(nightsPath());
 
-/** What a download of this exact selection would be. Takes the same parameters
- *  as download.zip so the number on the button and the bytes on the wire come
- *  from one resolver and cannot drift apart. */
-export const gallerySummary = (sel: GallerySelection): Promise<GallerySummary> =>
-  api.get<GallerySummary>(summaryPath(sel));
+// There is no wrapper for `/api/gallery/summary`, and its absence is a
+// decision. That route prices a selection for a caller that has no listing (a
+// script about to commit to a multi-GB stream). This UI always has a listing,
+// and `total`/`bytes` on it already describe the WHOLE filtered set from the
+// same server-side resolver download.zip uses — so a wrapper here would spend a
+// second library walk to re-learn the two numbers already on the button. Wiring
+// it "for symmetry" is how a surface ends up maintained and never called.
 
 /** Move frames to the trash (a rename inside CAPTURE_DIR — atomic, instant even
  *  for a 200 GB night). Paths are LIBRARY-relative. A POST body, not a query, so

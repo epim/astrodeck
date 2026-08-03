@@ -25,7 +25,12 @@
 //      hit this once (measured scrollHeight 877 vs clientHeight 818) and it was
 //      fixed by dropping the per-entry padding. Appending Gallery hit it again.
 //      The arithmetic below is the same arithmetic those two measurements pin,
-//      so a 16th entry fails HERE rather than on a tablet at 2am.
+//      and it is checked with ONE ENTRY OF HEADROOM: at 15 entries the rail is
+//      766px against 818, so a bare `railHeight <= 818` would have let a 16th
+//      entry through at 816 — 2px of slack against an arithmetic whose own
+//      measured error is 7px — and only failed on the 17th, one append AFTER the
+//      defect it exists to catch. Checking `railHeight + entry` makes the next
+//      append fail HERE rather than on a tablet at 2am.
 //
 // Reading the source rather than importing App.tsx is deliberate: App pulls in
 // the store, the websocket and every chrome component, and none of that is
@@ -167,7 +172,7 @@ const RAIL_OWN_PAD = 16;     // the <nav>'s own py-2
 const ENTRY_BODY = 38;       // icon + gap + label line, measured (62 - 2*12)
 const TOUCH_FLOOR = 44;      // touch spec R14
 
-test("the rail's per-entry padding is the one the arithmetic below assumes", () => {
+test("the rail fits at 1440x900, with room for the next append", () => {
   const m = appSrc.match(/flex flex-col items-center gap-1 py-([\d.]+) transition-colors/);
   assert(!!m, "could not find the nav button's padding class in App.tsx");
   const pad = Number(m![1]) * 4;   // Tailwind spacing unit = 4px
@@ -175,10 +180,15 @@ test("the rail's per-entry padding is the one the arithmetic below assumes", () 
   const railHeight = NAV.length * entry + RAIL_OWN_PAD;
   assert(entry >= TOUCH_FLOOR,
     `a nav entry is ${entry}px tall, below the ${TOUCH_FLOOR}px touch floor (touch spec R14)`);
-  assert(railHeight <= RAIL_CLIENT_H,
+  // The `+ entry` is the point: this must fail on the append that would put an
+  // entry AT the fold, not on the one after it. The arithmetic's own measured
+  // error is ~7px (predicted 772 for 14 entries at py-2, measured 765), so a
+  // check with single-digit slack is a check that passes the defect through.
+  assert(railHeight + entry <= RAIL_CLIENT_H,
     `${NAV.length} entries at py-${m![1]} come to ${railHeight}px against a ${RAIL_CLIENT_H}px rail at ` +
-    "1440x900. The last entry would sit below the fold of a scroll region with no visible " +
-    "affordance — a destination nobody finds. Reduce the padding (and re-measure) before appending");
+    `1440x900, leaving no room for a ${entry}px entry. The last one would sit at or below the fold ` +
+    "of a scroll region with no visible affordance — a destination nobody finds. Reduce the padding " +
+    "(and re-measure on a real 1440x900 viewport) before appending");
 });
 
 // ---------------------------------------------------------------- report

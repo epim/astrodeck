@@ -26,10 +26,10 @@
 import {
   LEDGER_ORPHAN_NOTE, PICKED_URL_BUDGET, TRASH_BATCH_CAP,
   deletedAgo, downloadPath, downloadPlan, filePath, fmtBytes, fmtCount,
-  fmtFrameCost, frameSubtitle, framesQuery, framesPath, localDate,
+  fmtFrameCost, frameSubtitle, framesQuery, framesPath,
   nightOptionLabel, nightRangeLabel, nightVsFilename, partialFailureNote,
   pickedTotals, purgeConfirmCopy, purgesIn, scanNote, selectionQuery,
-  summaryPath, thumbFailure, thumbPath, tileFailureCopy, togglePath,
+  thumbFailure, thumbPath, tileFailureCopy, togglePath,
   tonightHasFrames, trashBatchReason, trashConfirmCopy, truncatedNote,
   type GallerySelection,
 } from "../gallery";
@@ -67,6 +67,10 @@ function frame(over: Partial<GalleryFrame> = {}): GalleryFrame {
     folder: "M42",
     night: "2026-06-15",
     ts: 1781234000,
+    // Rig-local, from the server — never derived from `ts` on this side. See
+    // the night-vs-filename tests below for why the distinction is the feature.
+    local_date: "2026-06-15",
+    local_clock: "23:50",
     target: "M42",
     filter: "L",
     frame_type: "Light",
@@ -141,11 +145,6 @@ test("a picked selection repeats `path`, and spaces survive the round trip", () 
   eq(s, "?path=Barnard+33%2Fa.fits&path=M42%2Fb.fits");
   // "+" is form-encoding for a space, which Starlette's parse_qsl decodes back.
   eq(decodeURIComponent(s.split("path=")[1].split("&")[0].replace(/\+/g, " ")), "Barnard 33/a.fits");
-});
-
-test("summary and download take the IDENTICAL query — that is what stops them disagreeing", () => {
-  const sel: GallerySelection = { mode: "filter", q: "Ha", nightFrom: "2026-06-15", nightTo: "2026-06-17" };
-  eq(summaryPath(sel).split("?")[1], downloadPath(sel).split("?")[1]);
 });
 
 test("thumb and file URLs escape the path (a target folder can contain anything)", () => {
@@ -258,24 +257,43 @@ test("frameSubtitle prints what the header said, and says so when it said nothin
 // ========================================================= night vs filename
 
 test("a frame whose night and calendar date agree says nothing extra", () => {
-  const f = frame();
-  // Build a ts that is definitely on the frame's own local calendar date.
-  const cal = localDate(f.ts);
-  eq(nightVsFilename(frame({ ts: f.ts, night: cal })), null);
+  eq(nightVsFilename(frame({ local_date: "2026-06-15", night: "2026-06-15" })), null);
 });
 
 test("a frame that crossed midnight EXPLAINS itself", () => {
-  const f = frame();
-  const cal = localDate(f.ts);
-  const msg = nightVsFilename(frame({ ts: f.ts, night: "1999-01-01" }));
+  const msg = nightVsFilename(frame({
+    night: "2026-06-15", local_date: "2026-06-16", local_clock: "00:12",
+  }));
   assert(msg !== null, "a night/calendar mismatch must be explained, not left to look like a bug");
-  has(msg as string, "1999-01-01", "the night the frame is filed under");
-  has(msg as string, cal, "the calendar date its FILENAME carries");
+  has(msg as string, "2026-06-15", "the night the frame is filed under");
+  has(msg as string, "2026-06-16", "the calendar date its FILENAME carries");
+  has(msg as string, "00:12", "the clock it was actually shot at");
   has(msg as string, "noon to noon");
 });
 
-test("localDate is a YYYY-MM-DD calendar date", () => {
-  assert(/^\d{4}-\d{2}-\d{2}$/.test(localDate(1781234000)), `got ${localDate(1781234000)}`);
+test("the rollover sentence speaks the RIG's clock, never the browser's", () => {
+  // The sharp end of GROUNDED #1. `night` was computed with the RIG's
+  // localtime; a browser reaching the rig through the relay is in its own
+  // timezone. A UI that derived the calendar date from `ts` would, for a rig in
+  // Arizona and a user in London, put EVERY frame's date a day ahead of its
+  // night — announcing a rollover on the whole library, at a wall-clock time no
+  // frame was taken at. So `ts` here is deliberately absurd (the epoch) while
+  // the server-supplied rig-local pair is real: anything that reads `ts` prints
+  // 1970 and fails.
+  const msg = nightVsFilename(frame({
+    ts: 0, night: "2026-06-15", local_date: "2026-06-16", local_clock: "00:12",
+  }));
+  has(msg as string, "00:12 on 2026-06-16",
+    "the clock and date must be the ones the server sent");
+  assert(!(msg as string).includes("1970"),
+    "the sentence was derived from `ts` in the VIEWER's timezone — both dates in this " +
+    "comparison have to be the observatory's or the comparison means nothing");
+});
+
+test("a frame the server priced without a local date says nothing rather than guessing", () => {
+  // Defensive: an older server (or a hand-built row) has no local_date. Silence
+  // is the only honest answer — the alternative is inventing the browser's date.
+  eq(nightVsFilename(frame({ local_date: "" })), null);
 });
 
 // ================================================================ night filter
@@ -372,22 +390,43 @@ test("deletion times are relative, because 'when did I delete this' is a relativ
 
 // ============================================================== source guards
 
-test("NOTHING in the gallery UI parses a date out of a filename", () => {
-  // GROUNDED #1. The default naming template writes the CALENDAR date, so a
-  // filename-derived filter splits every real session at midnight and returns
-  // half a night while looking like it worked. The night always comes from the
-  // server, which derives it from the capture instant. A four-digit-year regex
-  // appearing anywhere in this UI is the tell that someone reached for the
-  // obvious implementation.
+test("NOTHING in the gallery UI derives a date from a filename or the browser's clock", () => {
+  // GROUNDED #1 has TWO ways to break, and the first spelling of this guard
+  // only watched one of them — which is why the other one shipped underneath it.
+  //
+  //   (a) PARSE THE NAME. The default template writes the CALENDAR date, so a
+  //       filename-derived filter splits every real session at midnight and
+  //       returns half a night while looking like it worked.
+  //   (b) FORMAT `ts` HERE. `night` was computed with the RIG's localtime. A
+  //       browser on the relay is in its own timezone, so a client-side
+  //       calendar date compares Arizona's night against London's date and
+  //       declares a rollover on every frame in the library.
+  //
+  // Both dates come from the server (`night` and `local_date`, computed one
+  // line apart from the same localtime). So neither a date-shaped pattern nor a
+  // Date field accessor belongs in these three files — and the previous check
+  // matched only the literal text `\d{4}`, which `[0-9]{4}`, a runtime-built
+  // RegExp, or a plain `f.name.split("_")[3]` all walk straight past.
+  const banned: [RegExp, string][] = [
+    [/\\d\{\d/, "a \\d{n} date-shaped regex"],
+    [/\[0-9\]/, "a [0-9] character class — the same regex, spelled around the last guard"],
+    [/new RegExp/, "a regex assembled at runtime, which no source scan can read"],
+    [/\.(name|path)\.split\(/, "a filename/path split — the likeliest parser of all (a)"],
+    [/getFullYear|getMonth\(|getDate\(|getHours|getMinutes/,
+      "the BROWSER's calendar/clock, which is not the observatory's (b)"],
+  ];
   for (const rel of ["../gallery.ts", "../../views/GalleryView.tsx", "../../components/gallery/FrameTile.tsx"]) {
     const src = fs.readFileSync(pathOf(rel), "utf8")
       // Strip comments: this file's own prose (and the view's header) explains
       // the trap at length, and that must not trip the check.
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
-    assert(!/\\d\{4\}|\\d\{2\}-\\d\{2\}/.test(src),
-      `${rel} contains a date-shaped regex. The observing night must come from the ` +
-      `server's night_key (capture instant), never from the frame's name.`);
+    for (const [re, why] of banned) {
+      assert(!re.test(src),
+        `${rel} contains ${why}. The observing night and the frame's local date must BOTH ` +
+        `come from the server (night_key / local_date) — they are the only two computed in ` +
+        `the observatory's timezone, and comparing them against anything else is meaningless.`);
+    }
   }
 });
 
