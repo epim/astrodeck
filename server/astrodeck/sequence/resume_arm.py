@@ -130,6 +130,23 @@ class ResumeArm:
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
             return
+        # STILL BOOTING IS NOT A REFUSAL.
+        #
+        # The boot sequence connects devices asynchronously, and this service's
+        # first tick can land in the gap before that finishes. Observed on the
+        # rig 2026-08-02: boot sweep at 21:50:43, this tick at 21:50:44, devices
+        # connected at 21:50:46 — a two-second window in which the recovery
+        # ladder's plate solve failed with "no camera connected", was read as a
+        # transient inability to verify the sky, and armed the ten-minute
+        # backoff. The rig then sat idle for ten minutes with clear sky, a
+        # working camera and an armed session, for no reason at all.
+        #
+        # So: no devices yet means come back on the NEXT 60s tick, with no
+        # backoff and no alarming log line. It is not a condition the operator
+        # needs to know about; it is the boot finishing.
+        if not self._devices_ready():
+            return
+
         # Make the rig's beliefs true again BEFORE it is allowed to move.
         refusal = await self._recover(armed)
         if refusal is not None:
@@ -227,6 +244,19 @@ class ResumeArm:
             except Exception as e:  # noqa: BLE001
                 return f"re-centering after restart failed: {e}"
         return None
+
+    def _devices_ready(self) -> bool:
+        """Are the devices a resume needs actually connected yet?
+
+        Checked BEFORE the recovery ladder so a half-finished boot never reads
+        as a hazard. Only the camera and telescope are required: those are what
+        the ladder and the run itself cannot proceed without.
+        """
+        for role in ("camera", "telescope"):
+            dev = self.hub.devices.get(role)
+            if dev is None or not getattr(dev, "connected", False):
+                return False
+        return True
 
     def _can_solve(self) -> bool:
         """Is a trustworthy plate solver available on this rig RIGHT NOW?
