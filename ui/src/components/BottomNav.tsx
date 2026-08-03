@@ -21,6 +21,15 @@ import NavMoreSheet, { OVERFLOW_VIEWS } from "./NavMoreSheet";
 import { haptics } from "../lib/haptics";
 
 const PRIMARY: { id: ViewName; label: string; icon: IconName }[] = [
+  // Stays "Equipment" even though this file's header calls the set "Rig, Align,
+  // Mount, Focus, Capture" and "Rig" would fit without an ellipsis. The
+  // first-run wizard sends a novice here BY NAME, and its copy contract
+  // (lib/__tests__/firstRunWizard.test.ts — "the view name a novice reads on
+  // the nav") asserts the step body says "Equipment". Renaming the tab alone
+  // would leave the wizard pointing at a word that is no longer on screen, and
+  // no test would catch it because that one reads the wizard, not the nav.
+  // Measured at 320px this truncates to "EQUIPME…"; the icon disambiguates, and
+  // an ellipsis is the cheaper cost than a broken instruction.
   { id: "connect", label: "Equipment", icon: "rig" },
   { id: "polar", label: "Align", icon: "align" },
   { id: "mount", label: "Mount", icon: "mount" },
@@ -47,6 +56,15 @@ function Tab({
   badge?: React.ReactNode;
   onClick: () => void;
 }) {
+  // The label's `w-full min-w-0 truncate` is load-bearing, not tidiness. A flex
+  // item's default `min-width:auto` refuses to shrink below its content, so at
+  // 320px the six tabs each got ~53px while "EQUIPMENT" measured ~72px at 11px
+  // uppercase. The label is centred, so the excess spilled EQUALLY to both
+  // sides — and on the leftmost tab that half went past x=0, off the viewport.
+  // Measured on the running app at 320px: the "E" was cut off. The document
+  // itself never overflowed (scrollWidth == clientWidth == 320), which is why
+  // no page-level overflow guard caught it, and why it reads as a rendering
+  // glitch rather than the layout bug it is.
   return (
     <button
       onClick={onClick}
@@ -60,7 +78,9 @@ function Tab({
       )}
       {/* filled-vs-outline feel via stroke weight (R21 — shape, not color alone) */}
       <Icon name={icon} size={24} strokeWidth={active ? 2.25 : 1.5} />
-      <span className="text-[11px] tracking-normal font-display uppercase leading-none">{label}</span>
+      <span className="w-full min-w-0 px-0.5 text-center truncate text-[11px] tracking-normal font-display uppercase leading-none">
+        {label}
+      </span>
       {subLabel && (
         <span className="text-[8px] text-accent/80 leading-none truncate max-w-[56px]">{subLabel}</span>
       )}
