@@ -37,7 +37,7 @@ import { PreviewStage } from "../components/preview/PreviewStage";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
 import { FrameStats } from "../components/preview/FrameStats";
-import { Field, LockedChip, LockedNote, Panel, Stat } from "../components/ui";
+import { Field, Led, LockedChip, LockedNote, Panel, Stat } from "../components/ui";
 import { accessPhrase, useCanControlCapture } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
@@ -469,6 +469,38 @@ export default function FocusView() {
   });
 
   return (
+    <>
+      {/* SAY WHO HAS THE CAMERA, at the top, before anything is greyed out.
+          A run holds the camera between frames as well as during them, so
+          arriving here mid-run finds every control dead with no explanation on
+          screen — the reason lived only in a disabled button's tooltip, which
+          never fires on the tablet this is used from. The run is not stopped
+          automatically: it is collecting the data of the night, and that is the
+          operator's call to make deliberately, from the screen that owns it. */}
+      {seqOwnsCamera && (
+        <div className="panel p-3 mb-4 flex items-start gap-2 border-warn/60" role="status">
+          <Led state="busy" label="sequence running" />
+          <div className="min-w-0">
+            <p className="text-warn text-sm font-medium">
+              A run has the camera{sequence.state === "paused" ? " (paused between frames)" : ""}
+            </p>
+            <p className="text-dim text-xs mt-0.5">
+              Focusing needs the camera to itself, so these controls stay locked
+              until the run stops. Stop or abort it on the Plan screen, then come
+              back — nothing here will interrupt it for you.
+            </p>
+          </div>
+        </div>
+      )}
+      {!seqOwnsCamera && looping && (
+        <div className="panel p-3 mb-4 flex items-start gap-2" role="status">
+          <Led state="on" label="live loop running" />
+          <p className="text-dim text-xs">
+            A live loop is running and feeding this preview. Taking a single
+            frame or starting autofocus takes the camera over and stops it.
+          </p>
+        </div>
+      )}
     <div className="grid gap-4 md:grid-cols-[1fr_300px]">
       <div className="flex flex-col gap-4">
         {/* live preview so manual focus is not blind (spec §10) */}
@@ -552,10 +584,18 @@ export default function FocusView() {
         </Panel>
       </div>
 
+      {/* ORDERED BY WHAT YOU TOUCH WHILE WATCHING THE IMAGE, not by narrative.
+          The DOM order (Result, Camera, Autofocus, Focuser) put the focuser
+          nudges fourth — below the fold on a 900px-tall screen — so the two
+          controls you actually alternate between, "take another frame" and
+          "move the focuser", could not both be on screen with the picture they
+          change. Focusing is a loop: shoot, look, nudge, repeat.
+          Camera then Focuser now sit beside the preview; Autofocus and the
+          Result read-out follow, because those you consult rather than drive.
+          Done with flex `order` so the reading order in this file still matches
+          the F5 design reference. */}
       <div className="flex flex-col gap-4">
-        {/* Result panel — the verdict-first outcome lives in the right column
-            above the Focuser, matching the design reference (F5). */}
-        <Panel title="Result" right={<ProviderBadge cap="autofocus" />}>
+        <Panel title="Result" className="order-4" right={<ProviderBadge cap="autofocus" />}>
           {running ? (
             <div className="text-accent text-sm blink">Measuring…</div>
           ) : afResult ? (
@@ -626,7 +666,7 @@ export default function FocusView() {
             bin 2 out of thin air. It sits directly above Autofocus because that
             is the order the two are used in, and the last line ties them
             together: what the sweep will copy is what this panel just shot. */}
-        <Panel title="Camera" right={!canFocus && <ReadOnlyBadge />}>
+        <Panel title="Camera" className="order-1" right={!canFocus && <ReadOnlyBadge />}>
           {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
           <div className="grid grid-cols-5 gap-1 mb-3">
             {FOCUS_EXPOSURE_PRESETS.map((s) => {
@@ -770,7 +810,7 @@ export default function FocusView() {
             the ACTION next, and the thumb row LAST because that is where a
             hand actually rests. Autofocus used to be the bottom-most panel,
             which on a phone is off the end of a scroll. */}
-        <Panel title="Autofocus" right={!canFocus && <ReadOnlyBadge />}>
+        <Panel title="Autofocus" className="order-3" right={!canFocus && <ReadOnlyBadge />}>
           {(() => {
             // The sweep is blocked when nothing has been measured for it to
             // copy (lib/focusCapture sweepReadiness) — ranked below permission
@@ -941,7 +981,7 @@ export default function FocusView() {
           </p>
         </Panel>
 
-        <Panel title="Focuser" right={!canFocus && <ReadOnlyBadge />}>
+        <Panel title="Focuser" className="order-2" right={!canFocus && <ReadOnlyBadge />}>
           {/* The header pill keeps its WHY in a `title=`; say it out loud here. */}
           {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
           <div className="flex items-end justify-between mb-4">
@@ -1072,5 +1112,6 @@ export default function FocusView() {
         </Panel>
       </div>
     </div>
+    </>
   );
 }
