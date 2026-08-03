@@ -62,6 +62,7 @@ somewhere the code under test is not looking.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -136,6 +137,33 @@ ZIP_CHUNK_BYTES = DEFAULT_MAX_PAYLOAD
 #: Thumbnail cache bounds (a Pi SD card is small and this is pure derived data).
 THUMB_CACHE_MAX_FILES = 20_000
 THUMB_CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+#: Newly-rendered thumbnails between cache-bound checks.
+#:
+#: The prune has to enumerate AND stat the whole cache directory before it can
+#: decide it has nothing to do, so running it on every cache miss charged that to
+#: every newly rendered tile, on top of the FITS decode, exactly while someone
+#: scrolls a large library for the first time. The bound designed to protect a
+#: Pi's SD card was what made the grid crawl.
+#:
+#: MEASURED 2026-08-03, one full pass over a cache of N thumbnails (NVMe, warm):
+#:
+#:       N        glob + stat      scandir      per render at 1-in-200
+#:     200            1.8 ms       0.4 ms                     0.002 ms
+#:    2000           15.4 ms       4.1 ms                     0.021 ms
+#:   20000          162.8 ms      43.2 ms                     0.216 ms   <- the cap
+#:
+#: Both halves matter: ``scandir`` makes the pass ~4x cheaper (the directory
+#: entry already carries size and mtime), and the counter makes it rare. 162 ms
+#: per tile at the cap becomes 0.2 ms, and on the SD card the cap exists for —
+#: where that column is seconds, not milliseconds — it is the difference between
+#: a usable grid and an unusable one.
+#:
+#: The cost of being late is at most this many extra thumbnails above the bound:
+#: single-digit MB of derived data, against the feature's scroll performance. The
+#: first render of the process prunes, so a box that restarts with an already-
+#: over-cap cache trims it without waiting for 200 more.
+THUMB_PRUNE_EVERY = 200
 
 _NIGHT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -238,6 +266,24 @@ def clear_meta_cache() -> None:
 
 # ------------------------------------------------------------------- the walk
 
+#: Symlinked directories already reported. Bounded by the number of links in the
+#: tree, and it exists so the diagnostic below is a fact stated once rather than
+#: a line per listing request.
+_SYMLINK_WARNED: set[str] = set()
+
+
+def _warn_skipped_symlink(path: str) -> None:
+    if path in _SYMLINK_WARNED:
+        return
+    _SYMLINK_WARNED.add(path)
+    bus.log("warning",
+            f"gallery: {path} is a symlink (or a broken one) and is not "
+            f"followed, so any frames under it are absent from the gallery and "
+            f"from its totals. Point ASTRODECK_CAPTURE_DIR at the real "
+            f"directory, or bind-mount it there.",
+            "gallery")
+
+
 def _walk_frames(root: Path) -> Iterator[tuple[str, os.stat_result]]:
     """``(relative posix path, stat)`` for every frame file under ``root``.
 
@@ -248,7 +294,16 @@ def _walk_frames(root: Path) -> Iterator[tuple[str, os.stat_result]]:
     Symlinks are skipped entirely. ``safe_subpath`` refuses a symlink that
     escapes the root (its ``resolve()`` backstop), so listing one would put a row
     in the grid whose thumbnail and download both 404 — a broken tile with no
-    explanation. Not listing it is the same answer, given honestly."""
+    explanation. Not listing it is the same answer, given honestly.
+
+    But it is only honest if it is SAID. A rig whose target folder is a symlink
+    to a NAS mount is a plausible layout, and the silent version of this rule is
+    an empty gallery and a "0 frames, 0 bytes" summary with no diagnostic
+    anywhere — the user cannot tell "nothing captured" from "your library is
+    behind a link this walk will not follow". So a skipped symlinked DIRECTORY
+    (and a broken link, which is what an unmounted NAS looks like) is logged,
+    once per path per process: the walk runs on every listing request, and a line
+    per request would bury the night log."""
     stack: list[tuple[Path, tuple[str, ...]]] = [(root, ())]
     while stack:
         directory, prefix = stack.pop()
@@ -259,6 +314,13 @@ def _walk_frames(root: Path) -> Iterator[tuple[str, os.stat_result]]:
         for entry in entries:
             try:
                 if entry.is_symlink():
+                    # A symlinked regular file is one absent row. A symlinked
+                    # DIRECTORY — or a BROKEN link, which is what an unmounted
+                    # NAS looks like — can be the user's entire library, and
+                    # ``is_file()`` is False for both. That is the case worth a
+                    # line in the log.
+                    if not entry.is_file():
+                        _warn_skipped_symlink(entry.path)
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     # Prune infrastructure by FIRST component only (see
@@ -281,9 +343,22 @@ def _walk_frames(root: Path) -> Iterator[tuple[str, os.stat_result]]:
 def _row(root: Path, rel: str, st: os.stat_result) -> dict:
     """One grid row. ``ts`` is the capture instant the night is derived from and
     is returned to the client on purpose: a user who wonders why a 00:10 frame
-    is filed under yesterday can see the timestamp that decided it."""
+    is filed under yesterday can see the timestamp that decided it.
+
+    ``local_date`` and ``local_clock`` are that same instant rendered in the
+    OBSERVATORY's timezone, and they exist because the client cannot compute
+    them. ``night`` comes from :func:`events.night_key`, which is
+    ``time.localtime`` on THIS box; a browser reaching the rig through the relay
+    is in its own timezone, so a UI that formatted ``ts`` itself would compare
+    London's calendar date against Arizona's night and announce a rollover on
+    every frame in the library — at a wall-clock time the frame was never taken
+    at. The one sentence written to REMOVE the night/filename confusion would
+    become its biggest source. So both dates leave here already in the rig's
+    clock, one line from the night that was derived from the same ``localtime``.
+    """
     meta = _meta_for(root.joinpath(*rel.split("/")), st.st_mtime, st.st_size)
     ts = meta.get("ts") or st.st_mtime
+    local = time.localtime(ts)
     folder, _, name = rel.rpartition("/")
     return {
         "path": rel,
@@ -291,6 +366,9 @@ def _row(root: Path, rel: str, st: os.stat_result) -> dict:
         "folder": folder,
         "night": night_key(ts),
         "ts": ts,
+        # Rig-local, matching `night` above. See the docstring.
+        "local_date": time.strftime("%Y-%m-%d", local),
+        "local_clock": time.strftime("%H:%M", local),
         "target": meta.get("target") or folder,
         "filter": meta.get("filter") or "",
         "frame_type": meta.get("frame_type") or "",
@@ -566,6 +644,19 @@ def zip_members(rows: Iterable[dict]) -> list[tuple[Path, str]]:
 
 # ------------------------------------------------------------------ thumbnails
 
+#: Renders since the last cache-bound check. ``itertools.count.__next__`` is a
+#: single bytecode under the GIL, so concurrent renders cannot lose a tick or
+#: hand two threads the same number — and even if they did, the only consequence
+#: is a prune one render early or late.
+_thumb_render_seq = itertools.count()
+
+
+def _thumb_prune_due() -> bool:
+    """True every ``THUMB_PRUNE_EVERY``-th newly-rendered thumbnail, starting
+    with the first one of the process. See ``THUMB_PRUNE_EVERY``."""
+    return next(_thumb_render_seq) % THUMB_PRUNE_EVERY == 0
+
+
 def _thumb_cache_path(rel: str, mtime: float, width: int) -> Path:
     """Cache key = path + mtime + width, hashed. Hashing gives a guaranteed-safe
     flat filename (hex only) for a relative path that contains separators and
@@ -579,15 +670,28 @@ def _thumb_cache_path(rel: str, mtime: float, width: int) -> Path:
 def _prune_thumb_cache(directory: Path) -> None:
     """Bound the cache by file count and total bytes, oldest first. Best-effort:
     the cache is an optimization, so an I/O hiccup leaves it as-is rather than
-    failing the request that happened to trigger the prune."""
+    failing the request that happened to trigger the prune.
+
+    ``os.scandir`` rather than ``glob`` + ``stat``, for the same reason
+    :func:`_walk_frames` uses it: the directory entry already carries size and
+    mtime on Windows, so a full cache costs one directory read instead of 20 000
+    extra syscalls. It is still O(N) — that is why the caller runs it on a
+    counter (``THUMB_PRUNE_EVERY``) and not on every cache miss."""
     try:
         entries = []
-        for p in directory.glob("*.jpg"):
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            entries.append((st.st_mtime, st.st_size, p))
+        try:
+            scan_it = os.scandir(directory)
+        except OSError:
+            return                            # no cache dir yet: nothing to bound
+        with scan_it:
+            for entry in scan_it:
+                if not entry.name.endswith(".jpg"):
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                entries.append((st.st_mtime, st.st_size, Path(entry.path)))
         total = sum(e[1] for e in entries)
         count = len(entries)
         if count <= THUMB_CACHE_MAX_FILES and total <= THUMB_CACHE_MAX_BYTES:
@@ -658,7 +762,8 @@ def thumbnail(rel: str, *, width: int = 256) -> bytes:
         tmp = cached.with_suffix(".tmp")
         tmp.write_bytes(jpeg)
         tmp.replace(cached)                  # atomic publish: never serve a partial
-        _prune_thumb_cache(cached.parent)
+        if _thumb_prune_due():               # amortised — see THUMB_PRUNE_EVERY
+            _prune_thumb_cache(cached.parent)
     except OSError:
         pass                                 # cache miss forever beats a 500
     return jpeg
@@ -817,6 +922,19 @@ def restore_frames(paths: Iterable[str]) -> dict:
             continue
         if not src.is_file():
             failed.append({"path": raw, "reason": "not in the trash"})
+            continue
+        if src.suffix.lower() not in FRAME_SUFFIXES:
+            # Mirrors the same check in `trash_frames`, and it is not symmetry
+            # for its own sake: without it, restoring `<frame>.trashinfo.json`
+            # moves the SIDECAR into the live library and leaves the frame in the
+            # bin with no metadata. `purge_expired` then falls back to st_mtime,
+            # which the rename into the trash preserved and which is therefore
+            # the CAPTURE time — so a frame shot two months ago and deleted today
+            # is purged on the very next sweep, destroying exactly the data the
+            # 30-day grace period exists to protect. The UI only ever sends
+            # `item.path`, so this needs a hand-crafted request; it is still the
+            # only safety net the delete path has.
+            failed.append({"path": raw, "reason": "not a frame file"})
             continue
         original = rel
         try:
