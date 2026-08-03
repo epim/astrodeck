@@ -146,8 +146,16 @@ class NativeSession:
         image_scale = 1.0
         image_scale_known = False
         try:
-            from ...config import config_store
-            guide_fl = config_store.cfg().optics.guide_focal_length_mm
+            # #129: this read GLOBAL config (config_store.cfg().optics) while
+            # every other optics consumer went through the profile-aware path, so
+            # a profile optics override moved the imaging scale and left the
+            # GUIDE scale behind — silently, because an unset guide focal length
+            # just degrades to the 1"/px pixel fallback. resolve_optics() applies
+            # the same PROFILE > GLOBAL rule the hub applies; active_profile() is
+            # the hub-free reader (a backend session holds no hub handle) and is
+            # defensive enough to return None against a stubbed config store.
+            from ...profiles import active_profile, resolve_optics
+            guide_fl = resolve_optics(active_profile()).guide_focal_length_mm
             px = getattr(gcam, "pixel_size_um", None)
             binning = 1
             if guide_fl and guide_fl > 0 and px and px > 0:
