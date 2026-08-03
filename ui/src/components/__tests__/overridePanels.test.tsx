@@ -102,7 +102,24 @@ const STATUS = {
     autofocus: { kind: "astrodeck", label: "AstroDeck native", reason: "native autofocus" },
     polar_align: { kind: "sim", label: "Simulator", reason: "override: built-in simulator" },
     solve: { kind: "astap", label: "ASTAP", reason: "the local ASTAP binary" },
-    guide: { kind: "astrodeck", label: "AstroDeck native", reason: "native guider" },
+    // The guide row as hub.poll_status sends it (providers.guide_provider_options):
+    // this rig has an imaging camera but NO guide camera assigned, so the native
+    // guider is NOT selectable — the case that used to be OFFERED anyway and then
+    // silently discarded by the resolver.
+    guide: {
+      kind: "backend", label: "PHD2",
+      reason: "no guide camera connected — using the PHD2 bridge",
+      eligible: ["auto", "backend"],
+      options: [
+        { value: "auto", eligible: true, reason: null },
+        {
+          value: "astrodeck", eligible: false,
+          reason: "AstroDeck native needs a guide camera assigned and connected — "
+            + "assign one to the guide camera role on Equipment",
+        },
+        { value: "backend", eligible: true, reason: null },
+      ],
+    },
   },
 };
 
@@ -160,12 +177,30 @@ test("a pinned row offers the way out", () => {
   assert(tasksText.includes("Clear the profile pin"), `offers the clear: ${tasksText}`);
 });
 
-test("a pinned select is inert rather than pretending to work", () => {
-  // It writes the GLOBAL block, which the profile beats — a save that succeeds
-  // and changes nothing that runs is worse than the lie being fixed.
+test("a pinned select is EDITABLE — the save is routed to the pin (#132)", () => {
+  // It used to be disabled, because the only write route targeted the GLOBAL
+  // block that the profile beats: a save that succeeded and changed nothing was
+  // worse than the display bug. There is now a route that writes the profile's
+  // own providers entry, so the row edits the layer it displays instead of
+  // making the user destroy the pin in order to change it.
   const row = tasksHtml.slice(tasksHtml.indexOf("Polar align"));
   const select = row.slice(row.indexOf("<select"), row.indexOf("</select>"));
-  assert(select.includes("disabled"), `the pinned select is disabled: ${select}`);
+  assert(!select.includes("disabled"), `the pinned select is live: ${select}`);
+});
+
+test("the pinned row SAYS where the save will land, before it is made", () => {
+  // The one fact a user cannot get any other way. Getting it wrong is how the
+  // original bug felt: pick, save, nothing changes, no explanation.
+  assert(
+    tasksText.includes("Saving changes the profile “Backyard rig”, not the global setting"),
+    `states the write target: ${tasksText}`,
+  );
+  // ...and only on the pinned row. Saying it under all four would be copy
+  // describing the default mental model, which is how a line stops being read.
+  assert(
+    (tasksText.match(/Saving changes the profile/g) ?? []).length === 1,
+    `stated exactly once: ${tasksText}`,
+  );
 });
 
 test("UNpinned rows stay editable and carry no override copy", () => {
@@ -176,6 +211,39 @@ test("UNpinned rows stay editable and carry no override copy", () => {
   assert(
     (tasksHtml.match(/layer-chip-profile/g) ?? []).length === 1,
     "only the pinned row is badged",
+  );
+});
+
+// ----------------------------------------------- the fourth row (UX-02)
+
+test("Equipment carries a GUIDING row — the fourth pinnable capability", () => {
+  // It existed only on the Guide view, i.e. nowhere on the screen whose entire
+  // subject is task routing. A user concluded the product could not guide.
+  assert(tasksText.includes("Guiding"), `the guide row renders: ${tasksText}`);
+  assert(
+    tasksHtml.includes('aria-label="Guide provider override"'),
+    "the guide choice group is present and named",
+  );
+});
+
+test("an ineligible guide provider is shown WITH ITS REASON, not omitted", () => {
+  // The correctness half: the offer used to accept the imaging camera while the
+  // resolver required a guide camera, so "AstroDeck native" was offered, the
+  // write succeeded, and the badge came back PHD2. Now it is offered as blocked,
+  // and the blocker says what to do about it.
+  assert(
+    tasksText.includes("AstroDeck native needs a guide camera assigned and connected"),
+    `the blocker is stated in words: ${tasksText}`,
+  );
+  const group = tasksHtml.slice(tasksHtml.indexOf('aria-label="Guide provider override"'));
+  const chip = group.slice(group.indexOf("astrodeck"));
+  assert(
+    /aria-disabled="true"/.test(group),
+    "the blocked chip is aria-disabled, not natively disabled",
+  );
+  assert(
+    !/<button[^>]*\sdisabled/.test(group.slice(0, chip.length + 800)),
+    "no native disabled attribute anywhere in the group",
   );
 });
 

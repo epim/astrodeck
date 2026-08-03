@@ -889,6 +889,18 @@ class ProfileClearOverridesBody(BaseModel):
     optics: bool = False
 
 
+class ProfileSetProvidersBody(BaseModel):
+    """#132: which of a profile's capability pins to WRITE, and to what.
+
+    The mirror image of ``ProfileClearOverridesBody``. A dict rather than a whole
+    ``ProvidersConfig`` because the caller edits ONE capability at a time and the
+    other three must not be dragged along: a body carrying all four would let a
+    client that read a stale config silently re-pin capabilities the user never
+    touched. Defaults to "change nothing" for the same reason clear-overrides
+    does — a malformed body is inert rather than destructive."""
+    providers: dict[str, str] = {}
+
+
 class ProfileApplyBody(BaseModel):
     force: bool = False
 
@@ -2687,6 +2699,50 @@ def create_app() -> FastAPI:
                 providers=body.providers, optics=body.optics)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "profile not found")
+        invalidate = getattr(hub, "invalidate_profile_cache", None)
+        if callable(invalidate):
+            invalidate()
+        bus.publish("config", config=redacted(config_store.cfg()))
+        return row
+
+    @app.post("/api/profiles/{profile_id}/set-providers",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def set_profile_providers(profile_id: str,
+                                    body: ProfileSetProvidersBody):
+        """Write capability pins into a profile — the EDIT half of #129/#132.
+
+        ``POST /api/config/providers`` writes the GLOBAL block, and the ACTIVE
+        PROFILE beats it inside ``providers.override_with_layer``. So the Tasks
+        dropdown, having been fixed to display the WINNING layer, could show
+        "pinned by profile Rig1" and then accept a change that went to the layer
+        the profile shadows: green toast, nothing different on the rig. This
+        route is where a save lands when the profile is the layer in force, so
+        the console edits the thing it is displaying.
+
+        Deliberately shaped like ``clear-overrides`` rather than as a second
+        convention: same cap, same at-rest mutation (never a client
+        read-modify-write — ``GET /api/profiles/{id}`` is wire-redacted and
+        round-tripping it would persist blanked device credentials), same cache
+        invalidation, same ``config`` broadcast, same row response.
+
+        The active-profile CACHE invalidation is load-bearing, not hygiene:
+        ``providers.override_with_layer`` reads that cache, so a stale entry
+        would leave the OLD pin resolving while the UI, having re-fetched
+        /api/config, displayed the new one — recreating the console-disagrees-
+        with-rig failure inside the fix for it. The ``config`` event then pushes
+        the corrected provenance to every other connected client so a second
+        tablet does not keep showing the previous pin.
+        """
+        try:
+            row = await asyncio.to_thread(
+                profiles.set_providers, profile_id, body.providers)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
+        except ValueError as e:
+            # Same 422 contract the global providers route has, so one client-side
+            # error path covers both layers.
+            raise HTTPException(422, str(e))
         invalidate = getattr(hub, "invalidate_profile_cache", None)
         if callable(invalidate):
             invalidate()

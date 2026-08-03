@@ -257,3 +257,96 @@ def test_eligible_providers_nina_rig_offers_backend_not_native(monkeypatch):
     elig = providers.guide_eligible_providers(h)
     assert "backend" in elig
     assert "astrodeck" not in elig
+
+
+# ------------------------------- the offer must match the resolver (#132 pt.2)
+#
+# The offer predicate used to accept ``guide_camera OR camera`` while
+# ``_resolve_guide`` computed ``native_ok`` from ``guide_camera`` ALONE. On a rig
+# with only the imaging camera connected the dropdown therefore OFFERED
+# "AstroDeck native", the write succeeded, and the resolver fell through to the
+# PHD2 bridge: the user picked native and the badge said PHD2, with nothing on
+# screen admitting the pick had been discarded.
+
+def _imaging_camera_only():
+    """A real rig with an imaging camera + mount and NO guide-camera role."""
+    return {"camera": FakeDev(backend="alpaca"), "telescope": FakeDev(backend="alpaca")}
+
+
+def test_imaging_camera_alone_does_not_make_native_selectable(monkeypatch):
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    h = _hub(devices=_imaging_camera_only())
+    assert "astrodeck" not in providers.guide_eligible_providers(h)
+
+
+def test_the_offer_never_promises_what_the_resolver_would_discard(
+        isolated_config, monkeypatch):
+    """The invariant, stated directly: if ``astrodeck`` is offered, an explicit
+    ``astrodeck`` override must actually resolve to the native guider. This is
+    the assertion that would have caught the original bug — the two predicates
+    agreeing today is not the property; the property is that they agree."""
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    isolated_config.set_providers(ProvidersConfig(guide="astrodeck"))
+    for devices in (_sim_devices(), _real_devices(), _imaging_camera_only(), {}):
+        h = _hub(devices=devices)   # no guider wired -> the pure "what WOULD
+        offered = "astrodeck" in providers.guide_eligible_providers(h)
+        resolved_native = providers.resolve("guide", h).kind in ("astrodeck", "sim")
+        assert offered == resolved_native, (sorted(devices), offered, resolved_native)
+
+
+def test_a_blocked_option_carries_a_reason_naming_the_fix(monkeypatch):
+    """A missing row tells the user nothing to act on, and on a rig that simply
+    has not been wired yet it reads as "this product cannot guide" — which is the
+    conclusion a real user reached. The blocked option is kept, with a sentence."""
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    h = _hub(devices=_imaging_camera_only())
+    opts = {o["value"]: o for o in providers.guide_provider_options(h)}
+    assert opts["astrodeck"]["eligible"] is False
+    assert "guide camera" in opts["astrodeck"]["reason"]
+    assert "auto" in opts and opts["auto"]["eligible"] is True
+
+
+def test_option_reasons_distinguish_the_blockers(monkeypatch):
+    """Four different situations produce four different sentences, because "not
+    available" is the copy that sends a user to the forum."""
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    def native_reason(**kw):
+        h = _hub(**kw)
+        return next(o for o in providers.guide_provider_options(h)
+                    if o["value"] == "astrodeck")["reason"]
+
+    assert "NINA" in native_reason(devices=_real_devices(), nina_client=object())
+    assert "guide camera" in native_reason(devices=_imaging_camera_only())
+    assert "mount" in native_reason(devices={"guide_camera": FakeDev(backend="alpaca")})
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", False)
+    assert "installed" in native_reason(devices=_real_devices())
+
+
+def test_every_blocked_reason_names_its_own_provider(monkeypatch):
+    """The UI renders these sentences WITHOUT prefixing the option's label,
+    because prefixing produced the stutter "AstroDeck native — AstroDeck native
+    needs a guide camera…". That only works while every sentence identifies its
+    own provider, so the requirement is pinned here, next to the strings, rather
+    than left as an assumption on the far side of the wire."""
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    rigs = (
+        dict(devices=_real_devices(), nina_client=object()),
+        dict(devices=_imaging_camera_only()),
+        dict(devices={"guide_camera": FakeDev(backend="alpaca")}),
+        dict(devices={}),
+    )
+    for kw in rigs:
+        for opt in providers.guide_provider_options(_hub(**kw)):
+            if opt["eligible"]:
+                continue
+            names = ("AstroDeck", "NINA", "PHD2")
+            assert any(n in opt["reason"] for n in names), (opt, kw)
+
+
+def test_eligible_is_derived_from_options_so_they_cannot_disagree(monkeypatch):
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    for devices in (_sim_devices(), _real_devices(), _imaging_camera_only(), {}):
+        h = _hub(devices=devices)
+        opts = providers.guide_provider_options(h)
+        assert providers.guide_eligible_providers(h) == [
+            o["value"] for o in opts if o["eligible"]]
