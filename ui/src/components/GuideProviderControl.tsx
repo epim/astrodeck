@@ -191,7 +191,7 @@ export default function GuideProviderControl({
   // The stored choice cannot run here: says so, so the three true-but-apparently
   // contradictory lines around it (badge, resolver reason, override disclosure)
   // read as one situation rather than as a console defect.
-  const blockedNote = blockedSelectionNote(rows, draft);
+  const blockedNote = blockedSelectionNote(rows, draft, choice?.kind);
 
   const chips = (
     <div
