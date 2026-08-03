@@ -215,6 +215,10 @@ class _RecFoc:
         self.moves.append(p)
 
 
+class _Connected:
+    connected = True
+
+
 class _RecHub:
     """Records what the ladder asked the rig to do. Nothing physical happens."""
 
@@ -224,7 +228,10 @@ class _RecHub:
         self._solve_raises = solve_raises
         self._center_raises = center_raises
         self.focuser = focuser or _RecFoc()
-        self.devices = {"focuser": self.focuser}
+        # A READY rig: the readiness gate requires camera + telescope connected,
+        # so a fake without them models a half-finished boot, not a working rig.
+        self.devices = {"focuser": self.focuser,
+                        "camera": _Connected(), "telescope": _Connected()}
         self.site = {}
 
     def require(self, role):
@@ -358,3 +365,47 @@ async def test_a_refusal_leaves_the_session_dormant_and_armed(fp, bus_lines, mon
     assert arm.engine.started == [], "must not resume on an unverified position"
     assert any("solve" in m.lower() for _l, m, _s in bus_lines), \
         "the operator must be told why the night is on hold"
+
+
+async def test_a_half_finished_boot_is_not_a_refusal(fp, bus_lines, monkeypatch):
+    """Observed on the rig 2026-08-02: boot sweep at 21:50:43, resume tick at
+    21:50:44, devices connected at 21:50:46. In that two-second window the
+    ladder's solve failed with 'no camera connected', which was read as a
+    transient inability to verify the sky and armed the TEN MINUTE backoff. The
+    rig then sat idle for ten minutes under clear sky with a working camera and
+    an armed session.
+
+    Still booting must cost one 60s tick, not ten minutes, and must not shout."""
+    _mk("dormant", auto_resume=True)
+
+    class _BootingHub(_RecHub):
+        def __init__(self):
+            super().__init__()
+            self.devices = {}          # nothing connected yet
+
+    hub = _BootingHub()
+    arm = _arm(hub)
+    monkeypatch.setattr(arm, "_window_open", lambda *a, **k: True)
+    await arm.tick()
+    assert arm._retry_at == 0.0, "a half-finished boot must not arm the backoff"
+    assert "solve" not in hub.calls, "must not try to solve before devices exist"
+    assert not any("refus" in m.lower() or "held" in m.lower()
+                   for _l, m, _s in bus_lines), \
+        "booting is not something to alarm the operator about"
+
+
+async def test_ready_devices_proceed_to_the_ladder(fp, monkeypatch):
+    """The readiness gate must not become a permanent block."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    _mk("dormant", auto_resume=True)
+
+    class _Dev:
+        connected = True
+
+    hub = _RecHub(focuser=_RecFoc(9935))
+    hub.devices = {"camera": _Dev(), "telescope": _Dev(), "focuser": hub.focuser}
+    arm = _arm(hub)
+    monkeypatch.setattr(arm, "_window_open", lambda *a, **k: True)
+    await arm.tick()
+    assert "solve" in hub.calls, "ready devices must reach the ladder"
