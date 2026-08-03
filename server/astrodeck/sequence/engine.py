@@ -1548,6 +1548,19 @@ class SequenceEngine:
         path = info.get("saved_path")
         if not path:
             return
+        # The docstring above stated the NINA rule from the day this was
+        # written; nothing enforced it. For a NINA rig `saved_path` is whatever
+        # string the imaging host returned (devices/nina.py pulls it straight
+        # out of the status payload), and this method then unlinks it — so a
+        # network peer at a user-typed host:port could name any file the service
+        # account can delete. It fires whenever a frame fails the HFR/eccentricity
+        # gate and the escalation action is `discard` or `retake`.
+        #
+        # The guard already existed and was already applied to the READ of this
+        # exact field: `_is_local_save` gates the FITS download route and the
+        # bundle's source selection. Only the delete side was missing it.
+        if not Hub._is_local_save(path):
+            return
         try:
             p = Path(path)
             if p.is_file():

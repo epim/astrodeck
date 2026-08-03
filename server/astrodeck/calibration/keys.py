@@ -69,7 +69,25 @@ def key_from_header(header: Mapping) -> CalKey | None:
 def key_index_id(key: CalKey, temp_bin_width: float) -> str:
     """Stable filesystem-safe id for a key's BUCKET (temp binned). e.g.
     'dark_e300.000_g100_o30_t-10_b1' / 'flat_g100_o30_b1_fHa'. Exposure/temp
-    omitted where irrelevant (BIAS: no exp; FLAT: no exp/temp)."""
+    omitted where irrelevant (BIAS: no exp; FLAT: no exp/temp).
+
+    "Filesystem-safe" was a claim, not a fact, until 2026-08-03. Every other
+    component here is a number this function formats itself, but ``filter`` is a
+    string copied verbatim out of a FITS ``FILTER`` card, and this id becomes a
+    FILENAME at ``library.py`` (``masters_dir() / f"{kid}.fits"``) on a path that
+    then does ``mkdir(parents=True)`` + ``writeto(overwrite=True)``. A filter
+    named ``../../../../pwned`` produced ``flat_g100_o30_b1_f../../../../pwned``
+    and resolved four levels above the masters directory — an arbitrary ``.fits``
+    write plus arbitrary directory creation.
+
+    Two ways a hostile value gets into that card, both ordinary operator
+    traffic: ``POST /api/filterwheel/names`` only ``.strip()``s what it is given
+    and the name is written to the header unsanitized, and the calibration
+    scanner ``rglob``s every ``*.fits`` under the capture dir and trusts headers
+    it did not write. So the name is sanitized HERE, at the point identity is
+    minted, and ``library`` additionally routes the write through
+    ``safe_id_path`` — the string check makes the id honest, the containment
+    check makes it enforced."""
     tb = temp_bin(key.temp_c, temp_bin_width)
     ts = "NA" if tb is None else f"{tb:g}"
     parts = [key.frame_type.lower()]
@@ -79,6 +97,11 @@ def key_index_id(key: CalKey, temp_bin_width: float) -> str:
     elif key.frame_type == "BIAS":
         parts += [f"g{key.gain}", f"o{key.offset}", f"t{ts}", f"b{key.binning}"]
     else:  # FLAT — filter + binning + gain; exposure/temp are not identity
+        # "strict" == alnum + -_ only, which is what a filter name legitimately
+        # is (L, R, G, B, Ha, Oiii, Sii all survive unchanged); anything that
+        # could steer a path does not.
+        from ..naming import sanitize_component
+        safe_filter = sanitize_component(key.filter, "strict")
         parts += [f"g{key.gain}", f"o{key.offset}", f"b{key.binning}",
-                  f"f{key.filter or 'none'}"]
+                  f"f{safe_filter or 'none'}"]
     return "_".join(parts)

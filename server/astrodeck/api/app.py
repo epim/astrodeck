@@ -44,7 +44,8 @@ from ..auth.rbac import assert_route_capabilities, declare
 # here as nested closures: app.py imports remote.relay_client, so relay_client
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
-                     _redact_session_for, _redact_site_for, _redact_ws_event)
+                     _redact_report_for, _redact_session_for, _redact_site_for,
+                     _redact_ws_event, report_csv_columns)
 from ..persist import safe_id_path, safe_subpath
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import survey_pack as survey_pack_mod
@@ -2400,21 +2401,26 @@ def create_app() -> FastAPI:
         """Newest-first session-report summaries (no frame detail)."""
         return await asyncio.to_thread(SessionReporter.list_reports)
 
-    @app.get("/api/reports/{report_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/reports/{report_id}")
     @declare(CAP_VIEW_STATUS)
-    async def get_report(report_id: str):
+    async def get_report(report_id: str,
+                         principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """One report + read-time-derived trend sparklines (404 if missing). The
         trends are computed from the frame records on read, never stored as
-        parallel arrays that could drift (C1-19)."""
+        parallel arrays that could drift (C1-19).
+
+        Frame paths are stripped for a caller without ``config.backend``, the
+        same holder rule ``/api/sessions/{id}`` applies to the same frames."""
         report = await asyncio.to_thread(SessionReporter.load, report_id)
         if report is None:
             raise HTTPException(404, "report not found")
         trends = SessionReporter.trends(report)
-        return report.model_dump() | {"trends": trends}
+        return _redact_report_for(report.model_dump(), principal) | {"trends": trends}
 
-    @app.get("/api/reports/{report_id}/frames.csv", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/reports/{report_id}/frames.csv")
     @declare(CAP_VIEW_STATUS)
-    async def report_frames_csv(report_id: str):
+    async def report_frames_csv(report_id: str,
+                                principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Append-only frame list as CSV (power-user export). 404 if missing.
 
         Carries EVERY field the JSON record carries (UX #49: gain / offset /
@@ -2426,9 +2432,13 @@ def create_app() -> FastAPI:
         if report is None:
             raise HTTPException(404, "report not found")
         buf = io.StringIO()
-        cols = ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
-                "gain", "offset", "binning", "accepted", "hfr", "ecc",
-                "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path"]
+        # A CSV export is not a loophole around the JSON route's redaction —
+        # same holder rule, same field, applied to the column list.
+        cols = report_csv_columns(
+            ["ts", "ts_utc", "target", "filter", "frame_type", "exposure_s",
+             "gain", "offset", "binning", "accepted", "hfr", "ecc",
+             "sensor_temp_c", "guide_rms_total", "altitude_deg", "saved_path"],
+            principal)
         import csv
         w = csv.writer(buf)
         w.writerow(cols)
@@ -2593,7 +2603,18 @@ def create_app() -> FastAPI:
     @app.delete("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
     @declare(CAP_CONFIG_BACKEND)
     async def delete_profile(profile_id: str):
-        await asyncio.to_thread(profiles.delete, profile_id)
+        # profiles.delete resolves through safe_id_path, which raises KeyError on
+        # a refused id, and both stores' docstrings already promise "routes map
+        # KeyError -> 404". This route never kept that promise: there is no
+        # global exception handler, so `DELETE /api/profiles/..%5Cx` returned a
+        # 500 with a full traceback (absolute paths included) while every sibling
+        # -- calibration masters, sessions, plan export -- returned 404. Nothing
+        # was ever deleted; the guard held. The 500 just confirmed the input
+        # reached an unhandled path, which is itself an answer worth denying.
+        try:
+            await asyncio.to_thread(profiles.delete, profile_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
         invalidate = getattr(hub, "invalidate_profile_cache", None)
         if callable(invalidate):
             invalidate()
@@ -2679,7 +2700,11 @@ def create_app() -> FastAPI:
     @app.delete("/api/plans/{plan_id}", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def delete_plan(plan_id: str):
-        await asyncio.to_thread(plan_library.delete, plan_id)
+        # Same 500-instead-of-404 as delete_profile above; same fix.
+        try:
+            await asyncio.to_thread(plan_library.delete, plan_id)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "plan not found")
         return {"deleted": plan_id}
 
     @app.get("/api/plans/{plan_id}/export", dependencies=[Depends(require(CAP_VIEW_STATUS))])
