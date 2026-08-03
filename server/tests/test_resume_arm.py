@@ -87,8 +87,15 @@ async def test_refusal_retries_after_10_minutes(sim_hub, monkeypatch):
     calls = {"n": 0}
 
     def refuse(role):
-        calls["n"] += 1
-        raise DeviceError("no camera")
+        # Count CAMERA acquisitions only. The counter stands for "how many times
+        # did the service attempt a resume", and since 2026-08-02 a tick also
+        # asks for the focuser (the post-restart recovery ladder reads its
+        # position to decide whether focus survived). Counting every require
+        # would make this assert on the ladder's internals rather than on the
+        # backoff it exists to test.
+        if role == "camera":
+            calls["n"] += 1
+        raise DeviceError(f"no {role}")
     monkeypatch.setattr(sim_hub, "require", refuse)
     await arm.tick()                                  # refusal
     assert calls["n"] == 1 and not engine.running

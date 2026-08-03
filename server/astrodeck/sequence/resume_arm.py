@@ -130,6 +130,13 @@ class ResumeArm:
                                f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
             self._retry_at = now + RETRY_INTERVAL_S
             return
+        # Make the rig's beliefs true again BEFORE it is allowed to move.
+        refusal = await self._recover(armed)
+        if refusal is not None:
+            bus.log("warning", f"auto-resume held: {refusal} — retrying in "
+                               f"{int(RETRY_INTERVAL_S / 60)} min", "sequence")
+            self._retry_at = now + RETRY_INTERVAL_S
+            return
         try:
             self.hub.require("camera")
             self.engine.start(armed.plan, session=armed)
@@ -139,4 +146,104 @@ class ResumeArm:
             self._retry_at = now + RETRY_INTERVAL_S
             return
         self._retry_at = 0.0
-        bus.log("info", f"auto-resume: '{armed.name}' resumed at dusk", "sequence")
+        bus.log("info", f"auto-resume: '{armed.name}' resumed", "sequence")
+
+    async def _recover(self, session) -> str | None:
+        """Re-establish what the rig cannot simply assume after a restart.
+
+        Returns None when the rig is fit to resume, otherwise a human-readable
+        reason the caller logs before arming the backoff. The session is left
+        dormant AND armed either way, so the next tick retries.
+
+        COOLING IS NOT HERE, deliberately. ``SequenceEngine._run`` already awaits
+        ``_cool_and_wait(plan.cool_to, plan.cool_timeout_s)`` under the
+        ``require_cooling``/``cooling_action`` policy, sharing the
+        ``COOLER_AT_TARGET_C`` band with the Monitor. A resumed run reuses the
+        same plan object, so it inherits that gate. A second wait here would
+        double the delay and let the two bands drift apart.
+        """
+        from ..devices import fingerprint as _fp
+
+        # 1. FOCUS — measure when the focuser lost count; never restore a number.
+        #    A focuser that disagrees with the record has forgotten its position
+        #    (the EAF does this on power loss), so its readout is a default, not
+        #    a measurement. Driving it back to the remembered value would be a
+        #    guess about a device that just said it does not know where it is.
+        pos = None
+        try:
+            foc = self.hub.require("focuser")
+            pos = await foc.get_position()
+        except Exception:  # noqa: BLE001 — no focuser is not a refusal
+            pos = None
+        if pos is not None and not _fp.verdict(focuser_position=pos).focus_trusted:
+            bus.log("info", "focuser lost its position across the restart — "
+                            "running autofocus before resuming", "sequence")
+            try:
+                await self._autofocus()
+            except Exception as e:  # noqa: BLE001
+                return f"autofocus after restart failed: {e}"
+
+        # 2. POINTING — ALWAYS re-measure. Never gated on the fingerprint.
+        #
+        #    The AM5 is a harmonic drive with NO BRAKE. A restart that preserved
+        #    every byte of software state still cannot rule out that the tube
+        #    sagged under gravity while the motors were unpowered, and the
+        #    mount's own encoders cannot report a shift that happened while it
+        #    was off. So "nothing changed in software" is not evidence about
+        #    where the telescope points; only the sky is.
+        #
+        #    If the solve fails — too few stars, heavy cloud — DO NOT MOVE. The
+        #    alternative is slewing an OTA whose true position is unknown, which
+        #    is how a tube meets a pier.
+        #    ONE EXCEPTION, and it is about configuration rather than conditions:
+        #    a rig with no solver at all cannot verify pointing on ANY night. It
+        #    slews on the mount's model every time it observes, by the owner's
+        #    standing choice. Refusing to resume such a rig would not make it
+        #    safer — it would just delete the feature for it, while leaving the
+        #    identical blind slew in place everywhere else. So "no solver
+        #    configured" degrades to the rig's normal behaviour with a warning,
+        #    while "there IS a solver and it could not solve" refuses: that is
+        #    cloud or too few stars, a transient inability to verify, and it is
+        #    exactly the case where moving is a gamble.
+        if not self._can_solve():
+            bus.log("warning", "resuming after a restart WITHOUT verifying where "
+                               "the telescope points — no plate solver is "
+                               "configured, so the mount's own position is taken "
+                               "on trust", "sequence")
+        else:
+            try:
+                await self.hub.solve_and_sync()
+            except Exception as e:  # noqa: BLE001
+                return (f"blind plate solve failed after restart ({e}) — refusing "
+                        "to slew a mount whose true position is unknown")
+
+        # 3. RE-CENTER on the first real target. Calibration-only sessions have
+        #    none and never slew, so they skip this; they still got the solve
+        #    above, which costs one exposure and confirms the sky is usable.
+        tgt = next((t for t in session.plan.targets if not t.calibration), None)
+        if tgt is not None:
+            try:
+                await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
+            except Exception as e:  # noqa: BLE001
+                return f"re-centering after restart failed: {e}"
+        return None
+
+    def _can_solve(self) -> bool:
+        """Is a trustworthy plate solver available on this rig RIGHT NOW?
+
+        Uses the same resolver the real solve path uses, so the two can never
+        disagree about what this rig can do. Any failure to resolve one means
+        no — the conservative reading, which degrades to a warning rather than a
+        refusal (see the call site).
+        """
+        try:
+            from .. import providers as _providers
+            return _providers.pick_solver(self.hub) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _autofocus(self) -> None:
+        """The rig's real autofocus path (native), not the legacy numpy one."""
+        from ..focus.native import run_native_autofocus
+        await run_native_autofocus(self.hub.require("camera"),
+                                   self.hub.require("focuser"))

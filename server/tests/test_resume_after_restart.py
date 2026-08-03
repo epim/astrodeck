@@ -197,3 +197,164 @@ async def test_poll_status_records_the_fingerprint(fp, monkeypatch):
     raw = fp.read_json_or(fp._path(), None)
     assert isinstance(raw, dict), "poll_status never wrote a fingerprint"
     assert "focuser_position" in raw and "parked" in raw
+
+
+# --------------------------------------------------------- recovery ladder
+
+class _RecFoc:
+    connected = True
+
+    def __init__(self, pos=9935):
+        self._pos = pos
+        self.moves: list[int] = []
+
+    async def get_position(self):
+        return self._pos
+
+    async def move_to(self, p):
+        self.moves.append(p)
+
+
+class _RecHub:
+    """Records what the ladder asked the rig to do. Nothing physical happens."""
+
+    def __init__(self, *, solve_raises=None, center_raises=None, focuser=None):
+        self.calls: list[str] = []
+        self.centered: list[tuple] = []
+        self._solve_raises = solve_raises
+        self._center_raises = center_raises
+        self.focuser = focuser or _RecFoc()
+        self.devices = {"focuser": self.focuser}
+        self.site = {}
+
+    def require(self, role):
+        if role == "focuser":
+            return self.focuser
+        if role == "camera":
+            return object()
+        raise RuntimeError(role)
+
+    async def solve_and_sync(self, exposure_s: float = 3.0):
+        self.calls.append("solve")
+        if self._solve_raises:
+            raise self._solve_raises
+        return {"ok": True}
+
+    async def goto_and_center(self, ra, dec, *a, **k):
+        self.calls.append("center")
+        if self._center_raises:
+            raise self._center_raises
+        self.centered.append((ra, dec))
+
+
+def _arm(hub, **kw):
+    from astrodeck.sequence.resume_arm import ResumeArm
+    return ResumeArm(_StubEngine(), hub, **kw)
+
+
+class _StubEngine:
+    running = False
+
+    def __init__(self):
+        self.started: list = []
+
+    def start(self, plan, *, session=None):
+        self.started.append(session)
+
+
+def _light_session() -> Session:
+    return _mk("dormant", auto_resume=True)
+
+
+async def test_the_blind_solve_runs_even_when_nothing_changed(fp):
+    """UNCONDITIONAL -- and this test exists to keep it that way.
+
+    The AM5 is a harmonic drive with no brake, so a restart that preserved every
+    byte of software state still cannot rule out that the tube sagged while the
+    motors were unpowered, and the encoders cannot report a shift that happened
+    while the mount was off. A later optimisation that skips verification
+    'because the fingerprint matched' would silently reintroduce exactly that
+    hazard -- so the PERFECTLY MATCHING fingerprint is the case asserted here."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    hub = _RecHub(focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    assert await arm._recover(_light_session()) is None
+    assert "solve" in hub.calls, "pointing must be re-measured even when nothing changed"
+
+
+async def test_a_failed_solve_refuses_to_move(fp):
+    """Too few stars under cloud. The alternative to refusing is slewing an OTA
+    whose true position is unknown, toward a pier."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    hub = _RecHub(solve_raises=RuntimeError("Not enough stars"),
+                  focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    reason = await arm._recover(_light_session())
+    assert reason is not None and "solve" in reason.lower()
+    assert hub.centered == [], "must not slew on an unverified position"
+
+
+async def test_untrusted_focus_runs_autofocus_and_never_restores_a_number(fp):
+    """Measure, do not guess: driving the focuser to a remembered position is a
+    guess about a device that just reported it lost count."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    foc = _RecFoc(0)                       # forgot its position
+    hub = _RecHub(focuser=foc)
+    arm = _arm(hub)
+    ran = []
+    arm._autofocus = lambda: (ran.append(1), None)[1] or _noop()
+    await arm._recover(_light_session())
+    assert ran == [1], "untrusted focus must be re-measured"
+    assert foc.moves == [], "must never drive the focuser to a remembered number"
+
+
+async def _noop():
+    return None
+
+
+async def test_trusted_focus_skips_autofocus(fp):
+    """A clean reboot preserved focus exactly; forcing an autofocus would spend
+    ten minutes of dark sky fixing a problem that did not happen."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    hub = _RecHub(focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    ran = []
+    arm._autofocus = lambda: (ran.append(1), None)[1] or _noop()
+    await arm._recover(_light_session())
+    assert ran == []
+
+
+async def test_a_calibration_only_session_never_centers(fp):
+    """Darks never slew. The solve still runs and is harmless."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=True, tracking=False)
+    s = _mk("dormant", auto_resume=True)
+    s.plan.targets[0].calibration = True
+    hub = _RecHub(focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    assert await arm._recover(s) is None
+    assert hub.centered == []
+
+
+async def test_a_refusal_leaves_the_session_dormant_and_armed(fp, bus_lines, monkeypatch):
+    """Fail safe: the next tick must retry, so the arming has to survive and the
+    session must NOT be handed to the engine."""
+    import astrodeck.sequence.resume_arm as ra
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    s = _mk("dormant", auto_resume=True)
+    hub = _RecHub(solve_raises=RuntimeError("Not enough stars"),
+                  focuser=_RecFoc(9935))
+    arm = _arm(hub)
+    monkeypatch.setattr(arm, "_window_open", lambda *a, **k: True)
+    await arm.tick()
+    assert session_store.load(s.id).status == "dormant"
+    assert session_store.load(s.id).auto_resume is True, "must stay armed to retry"
+    assert arm._retry_at > 0, "backoff must be armed"
+    assert arm.engine.started == [], "must not resume on an unverified position"
+    assert any("solve" in m.lower() for _l, m, _s in bus_lines), \
+        "the operator must be told why the night is on hold"
