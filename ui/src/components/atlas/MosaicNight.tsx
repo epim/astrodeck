@@ -29,6 +29,7 @@ import { useConfig, useFraming, useStore } from "../../store";
 import { useShallow } from "zustand/react/shallow";
 import type { MosaicResult } from "../../types";
 import { fovFromOptics, type OpticsLike } from "../../lib/framing";
+import { effectiveOptics } from "../../lib/effective";
 import { api, ApiError } from "../../api";
 import { LockedChip, LockedNote } from "../ui";
 import { Icon } from "../icons";
@@ -65,23 +66,20 @@ export const MosaicNight = memo(function MosaicNight({
   const config = useConfig();
   const statusOptics = useStore(useShallow((s) => s.status?.optics));
 
-  // The same merge AtlasView performs to size the frame on the canvas: the
-  // config override wins when nonzero, else the camera-reported value. It is
-  // duplicated rather than shared because the two live in different lanes this
-  // run — if they ever drift, the panel positions this asks about stop matching
-  // the rectangles the user is looking at, which is the whole reason the merge
-  // is written out longhand here instead of reaching for config.optics alone.
+  // The same optics AtlasView sizes the frame on the canvas from. This used to
+  // be a hand-copied merge, with a comment explaining that the copy must not
+  // drift from AtlasView's — and it drifted in the way the comment did not
+  // anticipate: BOTH copies read `config.optics`, the GLOBAL block, while an
+  // active profile's optics block replaces it server-side. So the panels these
+  // altitudes describe were positioned from one telescope and the rig imaged
+  // with another (#129). One shared resolver now, so there is nothing left to
+  // keep in sync by hand.
   const optics = config?.optics ?? null;
   const liveOptics = statusOptics ?? config?.optics_computed ?? null;
-  const mergedOptics: OpticsLike | null = useMemo(() => {
-    if (!optics) return null;
-    return {
-      focal_length_mm: optics.focal_length_mm,
-      pixel_size_um: optics.pixel_size_um || liveOptics?.pixel_size_um || 0,
-      sensor_width_px: optics.sensor_width_px || liveOptics?.sensor_width_px || 0,
-      sensor_height_px: optics.sensor_height_px || liveOptics?.sensor_height_px || 0,
-    };
-  }, [optics, liveOptics]);
+  const mergedOptics: OpticsLike | null = useMemo(
+    () => effectiveOptics(config, optics, liveOptics),
+    [config, optics, liveOptics],
+  );
   // No focal-length OVERRIDE here: the Atlas header's focal field is a draft
   // until it is committed, and an uncommitted number is not the rig. These
   // altitudes therefore describe the saved optics, and update when the draft is

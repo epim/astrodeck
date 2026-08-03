@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { CalibrationReport } from "../types";
 import { api, ApiError } from "../api";
-import { setProvidersConfig } from "../api/backends";
+import { clearProfileOverrides, setProvidersConfig } from "../api/backends";
 import {
   useStore, useStatus, useGuide, useConfig, useProviders, useGuideRmsByKind,
   useGuideAssistant,
@@ -24,6 +24,8 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { DEFAULT_PROVIDERS } from "../components/equipment/TasksPanel";
+import { OverrideNote, useClearOverride } from "../components/OverrideNote";
+import { entryOf, isProfileOverride, providerKey } from "../lib/effective";
 import { compareRmsWindows } from "../lib/rmsCompare";
 import { selectGuideWindows } from "../lib/guideRms";
 import { guideNarration } from "../lib/guideNarration";
@@ -391,10 +393,21 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
   const canConfig = useCanConfigBackend();
   const rmsByKind = useGuideRmsByKind();
 
-  const seed = config?.providers?.guide ?? "auto";
+  // #129: the fourth pinnable capability, and it had the same bug as the other
+  // three — this seeded from `config.providers.guide`, the GLOBAL block, which
+  // the ACTIVE PROFILE beats inside providers.override_with_layer. Read the
+  // WINNING value; keep the global one underneath only as the bootstrap
+  // fallback, since the WS `hello` config carries no provenance block.
+  const guideEntry = entryOf(config, providerKey("guide"));
+  const guidePinned = isProfileOverride(guideEntry);
+  const seed =
+    (typeof guideEntry?.value === "string" && guideEntry.value) ||
+    config?.providers?.guide ||
+    "auto";
   const [draft, setDraft] = useState(seed);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const { clear, clearing, error: clearErr } = useClearOverride();
 
   // Re-seed whenever a fresh config lands (our own save, another client's, or
   // a profile activate/load restoring its snapshot) — same idiom as
@@ -456,7 +469,11 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
             <select
               className="field"
               value={draft}
-              disabled={busy}
+              // Under a profile pin this select writes the global block, which
+              // the profile then beats — a save that succeeds and changes
+              // nothing that runs. Report instead of pretending; the note below
+              // carries the way out. Same rule as TasksPanel.
+              disabled={busy || guidePinned}
               onChange={(e) => void persist(e.target.value)}
               aria-label="Guide provider override"
             >
@@ -480,6 +497,24 @@ function GuideProviderPanel({ onToast }: { onToast: ToastFn }) {
           )}
         </label>
         {choice?.reason && <p className="text-[11px] text-dim leading-snug">{choice.reason}</p>}
+        <OverrideNote
+          entry={guideEntry}
+          format={(v) => guideProviderLabel(String(v))}
+          clearLabel="Clear the profile pin"
+          clearHint="Clearing it hands this dropdown back."
+          clearing={clearing}
+          error={clearErr}
+          onClear={
+            canConfig && guideEntry?.profile_id
+              ? () =>
+                  void clear(() =>
+                    clearProfileOverrides(guideEntry.profile_id as string, {
+                      providers: ["guide"],
+                    }),
+                  )
+              : undefined
+          }
+        />
         <p className="text-[11px] text-dim leading-snug">
           A switch takes effect at the next guiding start (it never swaps a
           running guider).

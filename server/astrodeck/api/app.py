@@ -864,6 +864,18 @@ class ProfileRenameBody(BaseModel):
     name: str
 
 
+class ProfileClearOverridesBody(BaseModel):
+    """#129: which of a profile's overrides to drop.
+
+    ``providers`` names capability pins ("polar_align", …); ``optics`` clears the
+    whole optics block, which is the only granularity that exists — the resolver
+    swaps the block WHOLE, so there is no such thing as clearing one field.
+    Both default to "change nothing" so a malformed body is inert rather than
+    destructive."""
+    providers: list[str] = []
+    optics: bool = False
+
+
 class ProfileApplyBody(BaseModel):
     force: bool = False
 
@@ -2609,6 +2621,42 @@ def create_app() -> FastAPI:
         invalidate = getattr(hub, "invalidate_profile_cache", None)
         if callable(invalidate):
             invalidate()
+        return row
+
+    @app.post("/api/profiles/{profile_id}/clear-overrides",
+              dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
+    async def clear_profile_overrides(profile_id: str,
+                                      body: ProfileClearOverridesBody):
+        """Remove a profile's provider pins and/or its optics block.
+
+        The counterpart to the ``effective`` provenance readout: that block can
+        now tell a user "profile X pins the simulator for polar alignment", and
+        this is the route that lets them undo it. Without it the disclosure is a
+        dead end — the Profiles tab has no editor and the only other write is a
+        whole-profile POST, whose payload the client can only obtain from a
+        wire-REDACTED GET (round-tripping it would persist blanked device
+        credentials).
+
+        The active-profile CACHE is invalidated the same way every other profile
+        write does it. That is load-bearing here rather than hygienic: the cache
+        is what ``providers.override_with_layer`` and ``profiles.resolve_optics``
+        read, so a stale entry would leave the cleared pin still winning while
+        the UI, having re-fetched /api/config, showed it as gone — the same
+        console-disagrees-with-rig failure this whole change exists to end. The
+        ``config`` event then pushes the corrected provenance to every other
+        connected client, so a second tablet does not keep displaying the pin.
+        """
+        try:
+            row = await asyncio.to_thread(
+                profiles.clear_overrides, profile_id,
+                providers=body.providers, optics=body.optics)
+        except (KeyError, FileNotFoundError):
+            raise HTTPException(404, "profile not found")
+        invalidate = getattr(hub, "invalidate_profile_cache", None)
+        if callable(invalidate):
+            invalidate()
+        bus.publish("config", config=redacted(config_store.cfg()))
         return row
 
     @app.delete("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
