@@ -20,9 +20,10 @@ from typing import Literal
 from uuid import uuid4
 
 import httpx
-from fastapi import (Depends, FastAPI, HTTPException, Request, WebSocket,
+from fastapi import (Depends, FastAPI, HTTPException, Query, Request, WebSocket,
                      WebSocketDisconnect)
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -76,6 +77,7 @@ from .. import hub as hub_module
 # the way `hub_module.CAPTURE_DIR` already is.
 from .. import config as config_module
 from .. import factory_reset as factory_reset_module
+from .. import gallery as gallery_module
 from ..hub import CAPTURE_DIR, TOUCH_MAX_RATE_DEG_S, hub
 from ..calibration import CalibrationLibrary, MatchTolerance
 from ..imaging import build_caption, compose_share_jpeg, fmt_share_date, to_png
@@ -118,6 +120,12 @@ engine.dispatcher = dispatcher
 # the AlertDispatcher; a disarm or any manual start stops its interest (it
 # re-checks state every tick and holds no long-lived assumptions).
 resume_arm = ResumeArm(engine, hub, weather=weather_service)
+
+# Gallery trash auto-purge (gallery design §Trash). Same lifespan-owned-task
+# shape as the three services above. Deliberately NOT hung off the
+# AlertDispatcher's wall-clock loop: that loop drives the external dead-man's
+# switch, and a directory walk that stalls it would fire a false "rig is down".
+trash_keeper = gallery_module.TrashKeeper()
 
 def _resolve_ui_dist() -> Path:
     """Where the built SPA lives, across every way AstroDeck is shipped.
@@ -299,6 +307,10 @@ async def _lifespan(app: "FastAPI"):
     # Started UNCONDITIONALLY: each tick no-ops unless cfg.weather.enabled AND
     # the site is set, so runtime config toggles take effect within one tick.
     weather_service.start()
+    # Gallery trash auto-purge — its own 6 h asyncio loop, first tick immediately
+    # so a box that reboots daily still reaches the 30-day horizon. A no-op (one
+    # `is_dir()`) until something has actually been deleted.
+    trash_keeper.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -352,6 +364,7 @@ async def _lifespan(app: "FastAPI"):
     finally:
         await weather_service.stop()
         await resume_arm.stop()
+        await trash_keeper.stop()
         await dispatcher.stop()
         task.cancel()
         try:
@@ -986,6 +999,27 @@ class WcsStampBody(BaseModel):
     IgnoreTonightBody below)."""
     solve_saved_lights: bool = False
     wcs_stamp: WcsStampConfig = Field(default_factory=WcsStampConfig)
+
+
+class GalleryPathsBody(BaseModel):
+    """Body for the gallery's delete / restore routes: relative frame paths.
+
+    A list rather than a path parameter because deleting a night is one action
+    the user took, and N separate DELETE calls would give N chances to half-fail
+    with no way to report which half. Module-level like every other ``*Body``
+    here (see ``IgnoreTonightBody`` for why a nested class silently 422s).
+
+    ``max_length`` is a denial-of-service bound, not a product limit: the whole
+    293-frame reference library is three orders of magnitude below it."""
+    paths: list[str] = Field(default_factory=list, max_length=50_000)
+
+
+class GalleryPurgeBody(GalleryPathsBody):
+    """Body for permanent deletion. ``all=True`` empties the bin; otherwise only
+    the listed paths go. Two separate spellings on purpose — "empty the trash"
+    must be something the client asked for in those words, never an empty
+    ``paths`` list that got there by accident."""
+    all: bool = False
 
 
 class IgnoreTonightBody(BaseModel):
@@ -4496,6 +4530,266 @@ def create_app() -> FastAPI:
             raise HTTPException(404, f"no persisted log for {n}")
         return Response(body, media_type=media, headers={
             "Content-Disposition": f'attachment; filename="astrodeck-{n}.log.{ext}"'})
+
+    # ----------------------------------------------------------------- gallery
+    # Browse / search / download / trash the capture library (gallery design,
+    # 2026-08-03). The store logic lives in ``astrodeck.gallery``; these routes
+    # are argument validation, capability gating and response shaping only.
+    #
+    # EVERY route here is authenticated, and none is anonymous, because every
+    # frame this server writes embeds SITELAT/SITELONG/SITEELEV (and OBJCTALT/
+    # AIRMASS, which disclose the site indirectly because they are computed from
+    # it). A gallery download hands over the observatory's location. The split
+    # follows the meanings ``capabilities.py`` already documents:
+    #
+    #   list / nights / summary / thumbnails  view.preview   ("downsized preview
+    #                                                          frames (NOT raw FITS)")
+    #   download FITS, single or bulk         view.media     ("raw FITS / full-res
+    #                                                          science (bulk)")
+    #   trash / restore / purge               control.capture (mutates the capture
+    #                                                          volume)
+    #
+    # A viewer therefore browses thumbnails and can neither download a frame nor
+    # learn where the rig is. An operator CAN delete, deliberately: control.capture
+    # is already the authority to fill this volume with frames, and an operator
+    # who can run the sequence that writes 200 GB but cannot remove a cloudy hour
+    # is a rig that fills its own disk. The 30-day trash is what makes that safe.
+
+    #: Bounds on one page. 500 is what an intersection-observer grid can hold
+    #: without the JSON itself becoming the slow part.
+    _GALLERY_PAGE_MAX = 500
+
+    def _gallery_nights_ok(*values: str) -> None:
+        """422 on a malformed night bound. Refusing beats coercing: a silently
+        ignored ``night_from=last week`` returns the WHOLE library and looks like
+        a filter that worked."""
+        for v in values:
+            if v and not gallery_module.valid_night(v):
+                raise HTTPException(
+                    422, f"night must be YYYY-MM-DD (got {v!r})")
+
+    async def _gallery_rows(q: str, night_from: str, night_to: str,
+                            paths: list[str] | None = None):
+        """The frame set a request refers to, plus per-path refusals.
+
+        Two ways to name a set, one resolver: an explicit ``path`` list (the user
+        ticked frames) wins over the filter (the user took what the filter
+        returned), so the summary and the download can be given IDENTICAL
+        parameters and are guaranteed to describe the same bytes. That identity
+        is the whole point of showing "1,284 frames, 38.2 GB" beforehand."""
+        # Validated even when a selection overrides them: a bad bound that is
+        # accepted because some other parameter happened to win is a 422 the
+        # caller will not get next time either.
+        _gallery_nights_ok(night_from, night_to)
+        if paths:
+            rows, failed = await asyncio.to_thread(
+                gallery_module.resolve_selection, paths)
+            return rows, failed, False
+        all_rows, truncated = await asyncio.to_thread(gallery_module.scan)
+        return (gallery_module.filter_rows(all_rows, q=q, night_from=night_from,
+                                           night_to=night_to),
+                [], truncated)
+
+    @app.get("/api/gallery/frames", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def gallery_frames(q: str = "", night_from: str = "", night_to: str = "",
+                             offset: int = 0, limit: int = 200):
+        """One page of the capture library, newest capture first.
+
+        ``night_from``/``night_to`` are INCLUSIVE noon-to-noon night keys, not
+        calendar dates, and they are matched against a night derived from each
+        frame's DATE-OBS — never from its filename. The default naming template
+        writes the calendar date, so a filename-based filter would file the 23:50
+        and 00:10 halves of one session under different days and silently return
+        half a night. See ``gallery.py`` GROUNDED 1.
+
+        ``total``/``bytes`` describe the WHOLE filtered set, not this page, so
+        the UI can show the download size without a second round trip."""
+        offset = max(0, int(offset))
+        limit = max(1, min(int(limit), _GALLERY_PAGE_MAX))
+        t0 = time.monotonic()
+        rows, _failed, truncated = await _gallery_rows(q, night_from, night_to)
+        totals = gallery_module.summarize(rows)
+        return {
+            "frames": rows[offset:offset + limit],
+            "total": totals["count"],
+            "bytes": totals["bytes"],
+            "offset": offset,
+            "limit": limit,
+            # True only when the walk hit its ceiling: the library is bigger than
+            # a walk should serve and the UI must say so rather than present a
+            # prefix as the whole thing.
+            "truncated": truncated,
+            "scan_ms": round((time.monotonic() - t0) * 1000, 1),
+        }
+
+    @app.get("/api/gallery/nights", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def gallery_nights():
+        """``{current, nights:[{night, frames, bytes}]}`` — which nights actually
+        exist, so the date filter offers real nights instead of a blank calendar
+        where most dates return nothing. ``current`` is tonight's key by the same
+        noon rollover, so "tonight" can be highlighted before dawn."""
+        rows, truncated = await asyncio.to_thread(gallery_module.scan)
+        return {"current": night_key(),
+                "nights": gallery_module.nights_index(rows),
+                "truncated": truncated}
+
+    @app.get("/api/gallery/summary", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def gallery_summary(q: str = "", night_from: str = "",
+                              night_to: str = "",
+                              path: list[str] = Query(default=[])):
+        """What a download of this exact selection would be: ``{count, bytes}``.
+
+        Takes the SAME parameters as ``/api/gallery/download.zip`` so the number
+        on the button and the bytes on the wire cannot disagree. "Download 1,284
+        frames, 38.2 GB" is information the user has no other way to obtain, and
+        it is the difference between a deliberate action and a surprise."""
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        return {**gallery_module.summarize(rows), "failed": failed}
+
+    @app.get("/api/gallery/thumb", dependencies=[Depends(require(CAP_VIEW_PREVIEW))])
+    @declare(CAP_VIEW_PREVIEW)
+    async def gallery_thumb(path: str, w: int = 256):
+        """Lazily-rendered, disk-cached JPEG thumbnail for one frame.
+
+        422 (not 404) when the file exists but cannot be decoded, so the grid can
+        draw a "no preview" tile that still lets the user download the frame —
+        a frame we cannot render is not a frame that is missing."""
+        try:
+            jpeg = await asyncio.to_thread(gallery_module.thumbnail, path, width=w)
+        except KeyError:
+            raise HTTPException(404, "frame not found")
+        except FileNotFoundError:
+            raise HTTPException(404, "frame not found")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        except OSError as e:
+            raise HTTPException(404, f"frame not readable: {e}")
+        # Immutable by construction: the cache key includes mtime, so a re-capture
+        # at the same path produces a different URL rather than a stale image.
+        return Response(jpeg, media_type="image/jpeg", headers=_PREVIEW_CACHE)
+
+    @app.get("/api/gallery/file", dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
+    async def gallery_file(path: str):
+        """Download ONE frame's raw FITS. ``view.media``, because the file embeds
+        the observatory's coordinates."""
+        try:
+            target = safe_subpath(hub_module.CAPTURE_DIR, path)
+        except KeyError:
+            raise HTTPException(404, "frame not found")
+        if (path.replace("\\", "/").split("/")[0] in gallery_module.SKIP_TOP_DIRS
+                or target.suffix.lower() not in gallery_module.FRAME_SUFFIXES
+                or not target.is_file()):
+            raise HTTPException(404, "frame not found")
+        # ``target.name`` comes from a path safe_subpath already refused
+        # separators/CR/LF/quotes in, so it cannot forge a Content-Disposition.
+        return FileResponse(target, media_type="application/fits",
+                            filename=target.name)
+
+    @app.get("/api/gallery/download.zip",
+             dependencies=[Depends(require(CAP_VIEW_MEDIA))])
+    @declare(CAP_VIEW_MEDIA)
+    async def gallery_download(q: str = "", night_from: str = "",
+                               night_to: str = "",
+                               path: list[str] = Query(default=[])):
+        """Bulk download as a STREAMED zip. Same parameters as the summary.
+
+        This is the first StreamingResponse in this server, and it has to be: a
+        filter result is routinely tens of GB, while the nearest precedent (the
+        report bundle) buffers a whole zip in memory and is safe only because it
+        deliberately contains no FITS. Nothing here is buffered — one 64 KiB
+        chunk and one open file handle, whatever the total size.
+
+        GET rather than POST so the browser can download it natively (the session
+        is a cookie, so a plain navigation authenticates) — a fetch-into-a-Blob
+        would put the whole 38 GB back in memory and undo the streaming.
+
+        ``X-Gallery-Frames``/``X-Gallery-Bytes`` carry the payload size the
+        summary route reported: there is no Content-Length on a streamed zip, so
+        without them a client has no way to draw a progress bar."""
+        rows, failed, _ = await _gallery_rows(q, night_from, night_to, path)
+        if not rows:
+            # 404, not an empty zip: an archive with nothing in it is a download
+            # that looks like it worked.
+            detail = "no frames matched"
+            if failed:
+                detail += f" ({failed[0]['reason']})"
+            raise HTTPException(404, detail)
+        totals = gallery_module.summarize(rows)
+        members = gallery_module.zip_members(rows)
+        if night_from and night_from == night_to:
+            stem = f"astrodeck-{_slug(night_from)}"
+        else:
+            stem = f"astrodeck-frames-{totals['count']}"
+        return StreamingResponse(
+            gallery_module.iter_zip(members),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{stem}.zip"',
+                "X-Gallery-Frames": str(totals["count"]),
+                "X-Gallery-Bytes": str(totals["bytes"]),
+                # The archive is generated per request; caching it would pin GBs
+                # in a proxy for a URL nobody re-fetches.
+                "Cache-Control": "no-store",
+            })
+
+    @app.post("/api/gallery/trash",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def gallery_trash_frames(body: GalleryPathsBody):
+        """Move frames to the trash (a RENAME inside CAPTURE_DIR, so it is atomic
+        and instant even for a 200 GB night).
+
+        Partial success is reported, never hidden: ``failed`` names each path and
+        why. Note the deliberate, documented consequence — deleting a FITS orphans
+        the session ledger and report rows that reference it. Nothing repairs
+        that today; the report renders such a frame as missing rather than as a
+        broken link, and fixing the ledger is a separate item."""
+        if not body.paths:
+            raise HTTPException(422, "no paths given")
+        return await asyncio.to_thread(gallery_module.trash_frames, body.paths)
+
+    @app.get("/api/gallery/trash",
+             dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def gallery_trash_list():
+        """What is in the bin, when each item auto-purges, and whether it can
+        still go back. Gated at ``control.capture`` with the rest of the trash
+        surface: only someone who can delete needs to read the bin."""
+        return await asyncio.to_thread(gallery_module.list_trash)
+
+    @app.post("/api/gallery/trash/restore",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def gallery_trash_restore(body: GalleryPathsBody):
+        """Put trashed frames back where they came from. ``paths`` are relative
+        to the TRASH root (what the trash listing returns), not to the library.
+
+        In scope even though the request never named it: a bin without restore is
+        a delayed delete, and "Trash" is a word that promises undo."""
+        if not body.paths:
+            raise HTTPException(422, "no paths given")
+        return await asyncio.to_thread(gallery_module.restore_frames, body.paths)
+
+    @app.post("/api/gallery/trash/purge",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def gallery_trash_purge(body: GalleryPurgeBody):
+        """Permanently delete trashed frames. Irreversible.
+
+        ``all=true`` empties the bin; otherwise only the listed trash-relative
+        paths go. Every path is resolved and re-checked against the trash root
+        before the unlink — a path that does not land inside the trash is
+        REFUSED and reported, never followed (``tests/test_path_traversal.py``
+        binds the shared attack corpus to this route)."""
+        if body.all:
+            return await asyncio.to_thread(gallery_module.purge_all)
+        if not body.paths:
+            raise HTTPException(422, "no paths given (send all=true to empty the trash)")
+        return await asyncio.to_thread(gallery_module.purge_paths, body.paths)
 
     # ----------------------------------------------------- identity / auth admin
     # W2.5 client seam + the admin.users-gated auth/remote/revoke surface. These

@@ -178,3 +178,69 @@ def test_spa_catch_all_still_serves_real_assets(tmp_path, monkeypatch):
         assert c.get("/").text == INDEX_SENTINEL
         # An unknown client-side route still gets the shell (SPA deep link).
         assert c.get("/capture").text == INDEX_SENTINEL
+
+
+# ------------------------------------------------------------ the gallery trash
+# The gallery's purge is the one IRREVERSIBLE file operation in the server: it
+# unlinks, with no bin behind it. Its input is a path relative to the trash root
+# that the client supplies. Bound to the SAME corpus above rather than a fresh
+# set of vectors, which is the point of keeping the table in one place.
+
+
+def _gallery_client(tmp_path, monkeypatch):
+    """Isolated app with CAPTURE_DIR under tmp, one LIVE frame in the library and
+    one canary OUTSIDE the capture root entirely. Both must survive every purge
+    attempt below: the first stands for the user's data one directory away from
+    the trash, the second for any file the server process can reach."""
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    import astrodeck.config as config_mod
+    import astrodeck.hub as hub_mod
+    from astrodeck import gallery
+    monkeypatch.setenv(app_module.NO_AUTOCONNECT_ENV_VAR, "1")
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    monkeypatch.setattr(hub_mod, "config_store", temp_store)
+    monkeypatch.setattr(app_module, "config_store", temp_store)
+    monkeypatch.delenv(app_module.AUTH_ENV_VAR, raising=False)
+    captures = tmp_path / "captures"
+    (captures / "M42").mkdir(parents=True)
+    monkeypatch.setattr(hub_mod, "CAPTURE_DIR", captures)
+
+    live = captures / "M42" / "keepme.fits"
+    live.write_text(CANARY, encoding="utf-8")
+    outside = tmp_path / "secret.fits"
+    outside.write_text(CANARY, encoding="utf-8")
+    # The trash must EXIST, so a refusal is a refusal and not just a missing dir.
+    (captures / gallery.TRASH_DIRNAME / "M42").mkdir(parents=True)
+    (captures / gallery.TRASH_DIRNAME / "M42" / "gone.fits").write_text(
+        "trashed", encoding="utf-8")
+    return app_module.create_app(), live, outside
+
+
+@pytest.mark.parametrize("candidate", TRAVERSAL)
+def test_gallery_purge_refuses_a_path_outside_the_trash_root(
+        tmp_path, monkeypatch, candidate):
+    app, live, outside = _gallery_client(tmp_path, monkeypatch)
+    with TestClient(app) as c:
+        r = c.post("/api/gallery/trash/purge", json={"paths": [candidate]})
+        assert r.status_code in (200, 422), r.text
+        if r.status_code == 200:
+            body = r.json()
+            assert body["purged"] == 0, f"{candidate} purged something"
+            assert body["failed"], f"{candidate} was neither purged nor refused"
+    assert live.exists(), f"{candidate} deleted a live frame"
+    assert outside.exists(), f"{candidate} deleted a file outside the capture root"
+
+
+@pytest.mark.parametrize("candidate", TRAVERSAL)
+def test_gallery_read_routes_refuse_the_same_corpus(tmp_path, monkeypatch,
+                                                    candidate):
+    """The read half: a thumbnail and a single-frame download are both
+    client-supplied paths joined to the capture root, so they get the corpus
+    too. 404 for every one of them — a distinct refusal code would confirm which
+    targets exist."""
+    app, _live, _outside = _gallery_client(tmp_path, monkeypatch)
+    with TestClient(app) as c:
+        for route in ("/api/gallery/thumb", "/api/gallery/file"):
+            r = c.get(route, params={"path": candidate})
+            assert r.status_code in (404, 422), f"{route} {candidate!r} -> {r.status_code}"
+            assert CANARY not in r.text
