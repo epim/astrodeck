@@ -13,7 +13,7 @@ at read time by the hub (it never stomps the global config).
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -368,6 +368,76 @@ class ProfileLibrary:
         """Mutate ``name`` in place — the id (slug/filename) never changes."""
         prof = self.get(profile_id)
         prof.name = name
+        return self.save(prof)
+
+    def set_providers(self, profile_id: str,
+                      providers: Mapping[str, str]) -> dict:
+        """Write per-capability provider pins into this profile IN PLACE.
+
+        #132, and the counterpart to :meth:`clear_overrides`. The console could
+        already SAY "profile Rig1 pins the simulator for polar alignment" and
+        could clear that pin — but there was no way to EDIT it, because the only
+        provider write in the product (``POST /api/config/providers``) targets
+        the GLOBAL block, which the profile then beats. A user who correctly read
+        "pinned by profile Rig1", opened the dropdown and saved changed nothing
+        that runs: the save succeeded, the toast was green, the rig kept using
+        the pin. The console told the truth and then quietly ignored the user,
+        which is a worse failure than the display bug it replaced.
+
+        The rule, decided by the owner: WRITE BACK TO THE LAYER YOU ARE READING
+        FROM. The client picks the route by asking which layer won (the
+        ``effective`` provenance block already reports that); this method is the
+        profile half of it.
+
+        Semantics are OVERWRITE, not merge: each named capability's value is
+        REPLACED. Capabilities the body does not name are untouched — that is the
+        same granularity ``clear_overrides`` already has, not a patch semantic
+        for the value itself.
+
+        Why this lives on the server rather than as a client read-modify-write —
+        the identical reason ``clear_overrides`` does, and it is worth restating
+        because getting it wrong destroys data rather than merely annoying
+        someone: ``GET /api/profiles/{id}`` is wire-REDACTED (:func:`redact_profile`
+        blanks every secret-bearing device ``extra``), so a UI that fetched a
+        profile, set one key and POSTed it back would persist the BLANKS and cost
+        the user their stored device credentials. The mutation therefore runs
+        against the at-rest record, which is the only copy that still has them.
+
+        Unknown capability names are REJECTED (``ValueError`` → the route maps it
+        to 422), where ``clear_overrides`` ignores them. The asymmetry is
+        deliberate: ignoring an unknown key on a CLEAR still leaves the user with
+        fewer pins than they started with, but ignoring one on a WRITE is a save
+        that reports success and changes nothing — the exact failure mode this
+        method exists to end. Values are validated against the SAME live
+        vocabulary ``ConfigStore.set_providers`` uses, so a typo'd or deleted
+        driver id cannot be parked in a profile where it would later be silently
+        discarded at resolve time with no signal anywhere.
+        """
+        # Imported inside the call, never at module scope: a module-level binding
+        # freezes whichever store existed at import time, so a redirected
+        # ``config.config_store`` (the test suite's isolation idiom) would leave
+        # this validating against a DIFFERENT config than the one that resolves
+        # the pin. See the long note at the bottom of this module.
+        from .config import config_store
+
+        unknown = [k for k in providers if k not in PROVIDER_CAPABILITIES]
+        if unknown:
+            raise ValueError(
+                f"unknown capability: {', '.join(sorted(unknown))} — valid "
+                f"capabilities are {', '.join(PROVIDER_CAPABILITIES)}")
+        valid = config_store.valid_override_values()
+        for cap, value in providers.items():
+            if not isinstance(value, str) or value not in valid:
+                raise ValueError(
+                    f"unknown provider for {cap}: {value!r} — valid values are "
+                    f"{', '.join(sorted(valid))}")
+
+        prof = self.get(profile_id)
+        # A profile with no ``providers`` dict yet gets one; existing keys the
+        # body does not name survive untouched.
+        current = dict(prof.providers) if isinstance(prof.providers, dict) else {}
+        current.update(providers)
+        prof.providers = current or None
         return self.save(prof)
 
     def clear_overrides(self, profile_id: str, *,

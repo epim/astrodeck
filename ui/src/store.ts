@@ -97,6 +97,13 @@ export interface ProviderChoiceView {
   // actually selectable on the connected rig, so the Guide view offers only
   // what applies (hub.poll_status → providers.guide_eligible_providers).
   eligible?: string[];
+  // The same answer with the BLOCKED values KEPT and a reason attached
+  // (hub.poll_status → providers.guide_provider_options). `eligible` alone
+  // forced the client to drop an unavailable provider silently, and a missing
+  // row reads as "this product cannot guide" rather than "assign a guide
+  // camera" — which is the conclusion a real user reached. Optional: an older
+  // server sends only `eligible`, so every consumer must degrade to that.
+  options?: { value: string; eligible: boolean; reason: string | null }[];
 }
 export interface ProvidersStatus {
   autofocus?: ProviderChoiceView;
