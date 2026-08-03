@@ -9,6 +9,25 @@
 //  - Download ▾: FITS only if saved_local (else locked + lock glyph + reason);
 //    stretched PNG; raw/lossless PNG (when has_lossless). §12.5 — never a 404.
 //
+// FONT-SIZE TRAP — why the `!` on every `!text-[11px]` below is load-bearing.
+// `.btn` sets font-size:12px in index.css, and index.css has NO @layer wrapper,
+// so `.btn` is UNLAYERED author CSS while Tailwind emits `.text-[11px]` inside
+// `@layer utilities`. Unlayered always beats layered, regardless of specificity
+// or source order — so a bare `text-[11px]` on a `.btn` is DEAD and the control
+// renders 12px. Measured on the shipped bundle: 12px on Fit, 100%, Magnifier
+// and Download; 11px only on the zoom readout, the one control here that is not
+// a `.btn`. That made this row ~1px per glyph wider than every comment in the
+// file assumed, and at 320px it put the "100%" button 0.02px past the cluster's
+// content edge, wrapping it to a second row. `!` is the working escape hatch in
+// this codebase (Tailwind v4 emits `!important` for it, which is why `!px-2.5`
+// has always worked here).
+//
+// THIS IS SYSTEMIC, and only the width-critical controls in this file are fixed:
+// ~59 lines across 20+ files combine `btn` with a bare `text-[11px]` and every
+// one of them renders 12px. Correcting them all is a visual change to many
+// surfaces and wants its own measured pass — the download-menu items below are
+// deliberately left alone for that reason.
+//
 // EVERY locked surface in this file goes through `LockedChip` (components/ui):
 // one dimming token app-wide, tabIndex={0} so a keyboard user lands on it rather
 // than tabbing straight past, aria-disabled (never the native `disabled`, which
@@ -35,7 +54,7 @@ import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
 
 /** Shared chrome for a locked toolbar affordance (LockedChip draws its own lock
  *  glyph, so callers pass only the label). */
-const LOCKED_BTN = "btn !px-2.5 text-[11px]";
+const LOCKED_BTN = "btn !px-2.5 !text-[11px]";
 
 /* The ENABLED controls had the same touch gap the locked ones had. Every
    `title=` below is still there for a mouse, but a fingertip never fires it —
@@ -102,7 +121,7 @@ function Toggle({
       aria-pressed={on}
       title={title}
       onClick={onClick}
-      className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px] ${
+      className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 !text-[11px] ${
         on ? "btn-accent" : ""
       }`}
     >
@@ -273,7 +292,14 @@ export function PreviewToolbar({
         <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom out" onClick={onZoomOut}>
           −
         </button>
-        <span className="mono text-[11px] text-dim w-12 text-center tabular-nums" aria-live="off">
+        {/* w-10, not w-12. Combined with the `!` fix above this buys the row
+            ~11px of slack at 320px; the `!` alone left 2.98px, which one font
+            metric change would eat again. Safe against the widest reading the
+            control can produce: usePreviewGestures caps zoom at MAX_SCALE_MULT
+            = 8, so the string is at most 4-5 characters, and "1600%" in IBM
+            Plex Mono at 11px measures ~33px inside the 40px box. This span is
+            NOT a .btn, so its 11px was always real. */}
+        <span className="mono text-[11px] text-dim w-10 text-center tabular-nums" aria-live="off">
           {scalePct}%
         </span>
         <button className="btn !px-2.5 min-w-11 min-h-11" aria-label="Zoom in" onClick={onZoomIn}>
@@ -282,10 +308,10 @@ export function PreviewToolbar({
         {/* min-w-11: at 43.3x44 this was the one primary in the cluster under the
             44px floor on a 390px phone — a rounding miss, but the floor is a
             floor. */}
-        <button className="btn !px-2.5 min-w-11 min-h-11 text-[11px]" onClick={onFit}>
+        <button className="btn !px-2.5 min-w-11 min-h-11 !text-[11px]" onClick={onFit}>
           Fit
         </button>
-        <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={onHundred} title="100% of the preview image">
+        <button className="btn !px-2.5 min-h-11 !text-[11px]" onClick={onHundred} title="100% of the preview image">
           100%
         </button>
         {/* ADVANCED (§1.4): the sensor-1:1 loupe. Off by default; a novice never
@@ -343,7 +369,7 @@ export function PreviewToolbar({
         ) : (
           <button
             type="button"
-            className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 text-[11px]"
+            className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 !text-[11px]"
             aria-haspopup="menu"
             aria-expanded={dlOpen}
             onClick={() => setDlOpen((v) => !v)}

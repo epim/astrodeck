@@ -1,0 +1,67 @@
+### The whole layering rule is 24 lines: providers._override() reads the active profile FIRST, config second
+  server/astrodeck/providers.py:99-122
+  `_override(cap, hub)` builds the valid vocabulary (`_valid_override_values()`, providers.py:90-96 → `config_store.valid_override_values()`, config.py:1006-1013 = `{auto, backend} | IMPLICIT_DRIVER_IDS | {d.id for d in cfg.drivers}`), then: (1) calls `hub._active_profile()` (hub.py:1458-1470, an id-keyed in-memory cache), reads `prof.providers` — a bare `dict | None`, profiles.py:99 — and RETURNS `pov.get(cap)` if it is a string in the vocabulary; (2) only then falls back to `config_store.cfg().providers.<cap>`; (3) otherwise `"auto"`. `_override_family()` (providers.py:125-138) then collapses a driver id to `backend` (type==nina) or `auto`. `resolve()` (providers.py:419-428) = `_RESOLVERS[cap](hub, _override_family(_override(cap, hub)))`. There is no third layer and no env layer for providers. Precedence, verbatim: PROFILE > GLOBAL CONFIG > "auto". Existing test that pins it: server/tests/test_providers.py:172 `test_profile_override_beats_config`; degradation pinned at :312 `test_deleted_driver_id_in_profile_degrades_to_auto`.
+
+### Every profile-overridable key, enumerated: exactly 6 (4 provider caps + optics + a dead site_name)
+  server/astrodeck/profiles.py:74-99
+  `Profile` has three fields that can beat global config, and only two of them actually do:
+1. `providers: dict | None` (profiles.py:99) — read per-capability by providers.py:99-122. Only these four keys are ever read: `autofocus`, `polar_align`, `solve`, `guide` (the loop in providers.py:436 and the validator loop in config.py:1023). Any other key in the dict is inert.
+2. `optics: Optics | None` (profiles.py:89) — read by `hub.effective_optics()` (hub.py:1477-1479: `if prof and prof.optics: o = prof.optics`). The whole `Optics` model is swapped, so all 8 fields ride along: `focal_length_mm`, `pixel_size_um`, `sensor_width_px`, `sensor_height_px`, `auto_from_camera`, `guide_focal_length_mm`, `telescope_name`.
+3. `site_name: str | None` (profiles.py:90) — VERIFIED DEAD as an override. Only written (hub.py:1852) and echoed in `row()` (profiles.py:189). No reader treats it as a site override; `hub.site` (hub.py:1429-1438) reads `config_store.cfg().site` unconditionally.
+Nothing else in `AppConfig` (safety, escalation, alerts, auth, remote, update, guide, rotator, survey, weather, naming, 
+
+### BLOCKER — providers.{autofocus,polar_align,solve,guide}: the dropdown is bound to the losing layer
+  ui/src/components/equipment/TasksPanel.tsx:49
+  `const seed: ProvidersConfig = { ...DEFAULT_PROVIDERS, ...(config?.providers ?? {}) }` — `config` is the store's `/api/config` payload, which is `redacted(config_store.cfg())` (server/astrodeck/api/app.py:1851-1852, route at :2047-2050). That dump is the GLOBAL `AppConfig.providers` block (config.py:545). The resolver never reads it when the active profile pins the cap. Same bug in the fourth row's own panel: ui/src/views/GuideView.tsx:394 `const seed = config?.providers?.guide ?? "auto"`.
+The write path makes it worse: `POST /api/config/providers` (app.py:1282-1292) writes GLOBAL only, so a user who sees "Auto", picks "Auto" again, and saves has changed nothing that runs. There is no route that writes the active profile's `providers`.
+The re-GET can never fix it: `hub.connect_profile` publishes `bus.publish("config", version=...)` after `set_active_profile` (hub.py:1814-1819) and the store's handler re-GETs `/api/config` unconditionally (ui/src/store.ts:1549-1551) — same global block.
+
+### BLOCKER — the same class, unfound, in optics: 5 keys where OpticsPanel shows global and the rig runs the profile
+  ui/src/components/settings/OpticsPanel.tsx:24
+  `const optics = config?.optics` seeds every editable field in the panel: `focal_length_mm` (:107), `telescope_name` (:122), `auto_from_camera` (:146), `pixel_size_um` (:166), `sensor_width_px` (:177), `sensor_height_px` (:189), `guide_focal_length_mm` (:209). All seven come from the GLOBAL block. But `hub.effective_optics()` (hub.py:1472-1508) swaps the ENTIRE object for `prof.optics` when the active profile has one, and effective_optics is what actually runs:
+- plate-solve FOV hint — hub.py:2197 `self.effective_optics().get("fov_h_deg")`
+- the FITS TELESCOP card — hub.py:2111 `self.effective_optics().get("telescope_name")`
+- HFR/scale-bar arcsec — hub.py:2301 `_pixel_scale_arcsec`
+- native TPPA — server/astrodeck/polar/native.py:232 `opt = hub.effective_optics()`
+- status/summary — hub.py:3475 and hub.py:1379.
+The ONLY profile-aware field in the entire `/api/config` payload is `optics_computed` (app.py:1853 `hub.effective_optics()`), and the panel uses it for exactly one thing: the ″/px chip in the header (OpticsPanel.tsx:83-87). So a profile optics override renders as a header numb
+
+### optics.guide_focal_length_mm splits the layer: the profile override is honored for imaging and IGNORED for guiding
+  server/astrodeck/devices/backends/native_backend.py:150
+  `guide_fl = config_store.cfg().optics.guide_focal_length_mm` — GLOBAL, read directly, bypassing `effective_optics()`. And `effective_optics()` does not return the key at all (its return dict, hub.py:1495-1508, has no `guide_focal_length_mm`), so there is no effective readout for it anywhere. Net: a profile whose `optics` block sets a guide focal length gets the imaging scale from the profile and the guide scale from global. The visible consequence is `image_scale_known=False` → guiding RMS reported in px at an assumed 1.0″/px (native_backend.py:146-158, and the note at server/astrodeck/guide/base.py:51) while the Optics panel shows a guide focal length that looks set.
+
+### optics.auto_from_camera reads global at connect and WRITES global, under a profile that shadows it
+  server/astrodeck/hub.py:1803-1813
+  `if cam and cam.connected and config_store.cfg().optics.auto_from_camera:` … `config_store.set_optics(new_optics)`. Both the gate and the target are GLOBAL. So with an active profile carrying an optics override: the profile's own `auto_from_camera` flag is never consulted; the camera-seeded pixel/sensor values are written into the global block; and the profile override then shadows those exact values on every read. The user watches the Optics panel fill in from the camera and none of it reaches the rig.
+
+### The Atlas FOV rectangle and the mosaic panel altitudes are drawn from the losing layer
+  ui/src/views/AtlasView.tsx:246-261
+  `const optics = config?.optics` (global) is merged with `liveOptics = statusOptics ?? computed` (both profile-aware) — `focal_length_mm` is taken from GLOBAL unconditionally (:256) while pixel/sensor fall back to the live values (:257-259). Duplicated deliberately in ui/src/components/atlas/MosaicNight.tsx:74-84 (its own comment at :68-73 says the two must not drift). Result: with a profile optics override the frame drawn on the sky, the mosaic panel positions, and the `opticsSummary` gear label (AtlasView.tsx:271-279, "530mm · 3.76µm") describe a telescope the rig is not using — while the solve FOV hint sent to ASTAP uses the profile's value.
+
+### The profile list row cannot carry the badge: Profile.row() drops both override blocks
+  server/astrodeck/profiles.py:183-191
+  `row()` returns only `{id, name, mode, devices_count, site_name, active}` — no `providers`, no `optics`. `GET /api/profiles` (app.py:2541-2547) returns those rows, so the Profiles tab literally cannot show "this profile overrides polar align". The data IS reachable: `GET /api/profiles/{id}` (app.py:2549-2558) returns the full model through `redact_profile`, which only scrubs `devices[].extra` (profiles.py:220-256) and leaves `providers`/`optics` intact. The typed client already models both (ui/src/types.ts:1446, :1451) and the only consumer is EquipmentView's load-assignments path (ui/src/views/EquipmentView.tsx:574). Implementer note: adding `providers`/`optics` presence to `row()` is the minimum server change; the ProfileRow TS type is ui/src/types.ts:1454-1461.
+
+### A profile can acquire an invisible override by IMPORT, with no editor and no reader anywhere
+  ui/src/lib/profileFile.ts:12-27
+  `parseProfileFile` validates only `typeof obj.name === "string" && Array.isArray(obj.devices)` and posts the rest straight through (ProfileList.tsx:331 `importProfile(raw)` → `POST /api/profiles`, app.py:2560-2571, which binds the full pydantic `Profile`). So `providers` and `optics` blocks ride in from a stranger's export file, are stored verbatim, and take effect the moment the profile is activated — and no screen in the product displays either one. This is also how the reported bug survived: a `polar_align: "sim"` pin written during a UX session in July persisted through every later save because ProfileList's "Update from current rig" (ProfileList.tsx:265-284) deliberately preserves `optics`/`providers` on the target (comment at :256-264).
+
+### Guide tuning: the drawer shows the persisted config, the engine runs what it latched at construction
+  server/astrodeck/api/app.py:3897-3910
+  `PUT /api/guide/settings` persists `AppConfig.guide` and its own docstring says "Takes effect on the next start_guiding (the guider reads it at construction)". The read side is `guide_algo_config()` (server/astrodeck/guide/native.py:117-136), called once when the guider object is built (native_backend.py:163 `**guide_algo_config()`) and folded into `_build_engine_config` (guide/native.py:726-766). Six keys are affected: `ra_algorithm`, `dec_algorithm`, `dec_guide_mode`, `blc_pulse_ms`, `ra_params`, `dec_params`. While guiding is running, the drawer (ui/src/views/GuideView.tsx:551-565 loads from `/api/guide/settings`) shows the new value and the engine uses the old one. The only signal is a transient toast: "Guide tuning saved — applies on the next start" (GuideView.tsx:646). Nothing persistent marks the drawer as diverged from the live engine.
+
+### ProviderBadge gives "Simulator" and "AstroDeck native" the SAME visual treatment — one word is the only channel
+  ui/src/components/ProviderBadge.tsx:42-47
+  `kind === "astrodeck" || kind === "sim" ? "" : kind === "backend" || kind === "astap" ? " prov-ext" : " prov-na"` — four resolver kinds collapse into two CSS classes, and `.prov-ext` / `.prov-na` are themselves byte-identical rules (ui/src/index.css:621-622: same border-color, color, background). So "TPPA · Simulator" is an accent-filled healthy-looking chip indistinguishable from "TPPA · AstroDeck native", and "Unavailable" is indistinguishable from "NINA". On PolarView the badge is the ONLY always-visible signal (ui/src/views/PolarView.tsx:105); `sourceLabel` ("simulator", PolarView.tsx:64-66) renders in the Phase panel which is gated on `showPhase = polar.state !== "idle"` (:51) — i.e. it does not exist until after you press Start. Per the standing night-mode rule this needs a non-hue channel (dash, shape, or a distinct chip form) between real and simulated.
+
+### The reason strings that already name the deciding branch — these are the load-bearing artifact
+  server/astrodeck/providers.py:79-81
+  `ProviderChoice.reason` is the field that let the user find the polar bug. The `"override: "` PREFIX is emitted ONLY from an explicit-override arm and appears at exactly nine sites: autofocus providers.py:182, :185; polar :217 ("override: built-in simulator" — the string that cracked the case), :219, :222; solve :259, :262; guide :383, :386. Every non-prefixed reason is an auto-resolution branch. `resolve_all` copies it verbatim into `status.providers[cap].reason` (providers.py:439; attached at hub.py:3490).
+It is rendered as permanent text in exactly ONE place — ui/src/components/equipment/TasksPanel.tsx:133-137 — plus GuideView.tsx:482. Everywhere else it is a hover `title` (ProviderBadge.tsx:59), which does not exist on the touch devices this product is used on.
+Sibling provenance strings worth reusing: `hub.effective_optics()["source"]` ∈ {config, camera, mixed, none} (hub.py:1487-1494) — the ONE existing per-key provenance marker in the codebase; `polar.state["source"]` ∈ {nina, native, sim} (server/astrodeck/polar/session.py:85/:93/:96); `SafetyReading.reason`/`.source` (hub.py
+
+### Proposed shape for an effective-config-with-provenance response, grounded in the two shapes that already exist
+  server/astrodeck/api/app.py:1831-1861
+  `_config_payload` is the single choke point every config read and every config-write echo passes through (its own docstring, :1841-1850, says so). Add one sibling key next to `optics_computed`, e.g.:
+  "effective": { "<dotted.key>": { "value": <winner>, "layer": "profile"|"config"|"env"|"device"|"default", "profile": <value|null>, "config": <value>, "profile_id": <str|null>, "profile_name": <str|null>, "reason": <str|null> } }
+covering exactly the six live keys: `providers.autofocus`, `providers.polar_align`, `providers.solve`, `providers.guide`, plus the `optics.*` fields. The winner for providers is already computable without new logic — `providers._override(cap, hub)` returns the winning VALUE and `resolve_all(hub)` returns the resolved kind/label/reason; the loser is `config_store.cfg().providers.<cap>`; the profile is `hub._active_profile()`. For optics the winner is `hub.effective_optics()` (which already carries a `source` field, hub.py:1487-1494 — extend that vocabulary rather than inventing a second one) and the loser is `config_store.cfg().optics`. Two existing precedents t
