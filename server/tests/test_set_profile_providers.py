@@ -202,3 +202,16 @@ def test_the_row_returned_is_the_fresh_one(client):
     row = c.post(f"/api/profiles/{pid}/set-providers",
                  json={"providers": {"solve": "sim"}}).json()
     assert row["providers"]["solve"] == "sim"
+
+
+def test_a_refused_profile_id_is_404_even_with_an_invalid_body(tmp_path, monkeypatch):
+    """The docstring promised 404 for a refused id and delivered 422, because the
+    body was judged before anyone asked whether the profile exists — so a caller
+    with BOTH problems learned about the wrong one. The existing 404 test only
+    ever sent valid bodies, so nothing caught it."""
+    from astrodeck.profiles import ProfileLibrary
+    lib = ProfileLibrary(directory=tmp_path / "profiles")
+    # KeyError is what the route maps to 404; ValueError is what it maps to 422.
+    # BOTH problems are present here, so this pins the ORDER they are judged in.
+    with pytest.raises(KeyError):
+        lib.set_providers("does-not-exist", {"site_name": "auto"})

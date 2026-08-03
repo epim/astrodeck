@@ -236,13 +236,20 @@ test("an ineligible guide provider is shown WITH ITS REASON, not omitted", () =>
     `the blocker is stated in words: ${tasksText}`,
   );
   const group = tasksHtml.slice(tasksHtml.indexOf('aria-label="Guide provider override"'));
-  const chip = group.slice(group.indexOf("astrodeck"));
   assert(
     /aria-disabled="true"/.test(group),
     "the blocked chip is aria-disabled, not natively disabled",
   );
+  // Scan the WHOLE group. This previously searched
+  // `group.slice(0, chip.length + 800)` where `chip` came from
+  // `group.indexOf("astrodeck")` — but the chips render LABELS, not values, so
+  // that indexOf was -1, `chip` was the whole group, and the window happened to
+  // land at 801 characters of a 2531-character group. It covered the first chip
+  // and a half, never reached the third, and passed by arithmetic accident. A
+  // test that cannot fail on the thing it names is worse than no test, because
+  // it is counted as coverage.
   assert(
-    !/<button[^>]*\sdisabled/.test(group.slice(0, chip.length + 800)),
+    !/<button[^>]*\sdisabled/.test(group),
     "no native disabled attribute anywhere in the group",
   );
 });

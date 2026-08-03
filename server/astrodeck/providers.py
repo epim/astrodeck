@@ -402,16 +402,29 @@ def _guide_native_blocker(hub: object) -> str | None:
 
 
 def _guide_backend_blocker(hub: object) -> str | None:
-    """Why the PHD2/NINA bridge cannot be OFFERED, or ``None``. Same
-    one-predicate rule as the native blocker above: the bridge is offered when a
-    bridge guider is genuinely reachable — a live NINA client, a bridge guider
-    already serving, or a retained PHD2/NINA session from the last connect."""
-    if (getattr(hub, "nina_client", None) is not None
-            or actual_guide_family(getattr(hub, "guider", None)) == "backend"
-            or _rig_has_bridge_session(hub)):
-        return None
-    return ("no PHD2 or NINA bridge is connected — add a PHD2 or NINA driver on "
-            "Equipment and connect it")
+    """Why the PHD2/NINA bridge cannot be OFFERED. Always ``None`` — it always
+    can be.
+
+    This used to refuse the bridge unless one was already reachable, which broke
+    the very rule the native blocker exists to keep: **the offer must be the same
+    predicate as the resolver**. ``_resolve_guide`` honours an explicit
+    ``backend`` override unconditionally, and says why in its own comment — the
+    legacy PHD2 socket is one the host can always attempt, so there is nothing to
+    be "connected" in advance.
+
+    Refusing it produced a screen that argued with itself on the DEFAULT rig
+    (imaging camera + mount, no guide camera, no bridge driver): one line read
+    "no PHD2 or NINA bridge is connected", the next read "no guide camera
+    connected — using the PHD2 bridge", and the badge read PHD2. Three
+    individually-true sentences that cannot all be about the same rig. It only
+    became visible when this change started RENDERING blocked reasons; before
+    that an ineligible value was simply absent from the select, so the sentence
+    did not exist to contradict anything.
+
+    Kept as a function rather than inlined so the symmetry with
+    ``_guide_native_blocker`` is legible at the call site, and so a future
+    genuine precondition has an obvious home."""
+    return None
 
 
 def guide_provider_options(hub: object) -> list[dict]:

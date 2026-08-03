@@ -224,9 +224,30 @@ export function guideProviderRows(
 export function blockedSelectionNote(
   rows: GuideOptionRow[],
   selected: string,
+  resolvedKind?: string | null,
 ): string | null {
   const row = rows.find((r) => r.value === selected);
-  if (!row || row.eligible) return null;
+  if (!row) return null;
+  // Derived from what the resolver actually RETURNED, not from whether the offer
+  // lists the value. Those are different questions, and the offer is deliberately
+  // the narrower of the two: `_resolve_guide` honours an explicit `backend`
+  // override unconditionally, and honours `astrodeck` on a NINA rig, while the
+  // offer excludes both. Offer ⊂ resolver is the safe direction for deciding
+  // what to let someone WRITE — but this sentence claims what will RUN, and
+  // reading it off the offer made it lie in exactly that gap: with `astrodeck`
+  // pinned on a NINA rig the offer blocks it, so the note said "it cannot run —
+  // guiding falls back to the provider on the badge", while the resolver was
+  // returning AstroDeck native and the badge said so too. Circular and false.
+  //
+  // So: say this only when the running provider genuinely differs from the
+  // stored one. When the caller has no resolved kind to compare against, fall
+  // back to the offer — degraded, but it cannot manufacture a contradiction the
+  // way the old unconditional form did.
+  if (resolvedKind != null && resolvedKind !== "") {
+    if (resolvedKind === selected) return null;
+  } else if (row.eligible) {
+    return null;
+  }
   return (
     `“${row.label}” stays saved, but it cannot run on the rig as connected — ` +
     `guiding falls back to the provider on the badge until the blocker above ` +

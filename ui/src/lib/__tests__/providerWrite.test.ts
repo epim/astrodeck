@@ -200,6 +200,40 @@ test("a blocked option with no server reason still gets a sentence", () => {
   assert(!!native.reason, "a dim row with no sentence is the dead end being fixed");
 });
 
+// ---------------------------------------- the note must describe what RUNS
+
+test("blockedSelectionNote is silent when the resolver honours the pin anyway", () => {
+  // NINA rig, guide camera + mount connected, profile pins guide: "astrodeck".
+  // The OFFER blocks astrodeck ("NINA owns guiding on a NINA rig") but
+  // _resolve_guide honours an explicit astrodeck override anyway, so the rig
+  // really is running the native guider and the badge says so. Reading this
+  // note off `row.eligible` made it print "it cannot run on the rig as
+  // connected — guiding falls back to the provider on the badge" while the
+  // badge read AstroDeck native. Circular and false.
+  //
+  // Offer ⊂ resolver is the safe direction for deciding what to let someone
+  // WRITE. It is the wrong source for copy that claims what RUNS.
+  const rows = [
+    { value: "auto", label: "Auto", eligible: true, reason: null, sticky: false },
+    { value: "astrodeck", label: "AstroDeck native", eligible: false,
+      reason: "NINA owns guiding on a NINA rig", sticky: false },
+  ];
+  assert(blockedSelectionNote(rows, "astrodeck", "astrodeck") === null,
+    "no note when the resolver runs the pinned value after all");
+});
+
+test("blockedSelectionNote speaks when the resolver really does run something else", () => {
+  const rows = [
+    { value: "auto", label: "Auto", eligible: true, reason: null, sticky: false },
+    { value: "astrodeck", label: "AstroDeck native", eligible: false,
+      reason: "needs a guide camera", sticky: false },
+  ];
+  const note = blockedSelectionNote(rows, "astrodeck", "backend");
+  assert(note !== null && note.includes("AstroDeck native"),
+    `the note names the stored value: ${note}`);
+});
+
+
 // ----------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

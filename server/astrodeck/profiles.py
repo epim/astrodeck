@@ -420,6 +420,13 @@ class ProfileLibrary:
         # the pin. See the long note at the bottom of this module.
         from .config import config_store
 
+        # Resolve the profile FIRST. Validating the body first meant a refused id
+        # answered 422 ("unknown capability") instead of 404, because the body
+        # was judged before anyone asked whether the thing being edited exists —
+        # so the caller learned about the wrong problem. The docstring promised
+        # 404 and the tests only ever sent valid bodies, so nothing caught it.
+        prof = self.get(profile_id)
+
         unknown = [k for k in providers if k not in PROVIDER_CAPABILITIES]
         if unknown:
             raise ValueError(
@@ -432,7 +439,6 @@ class ProfileLibrary:
                     f"unknown provider for {cap}: {value!r} — valid values are "
                     f"{', '.join(sorted(valid))}")
 
-        prof = self.get(profile_id)
         # A profile with no ``providers`` dict yet gets one; existing keys the
         # body does not name survive untouched.
         current = dict(prof.providers) if isinstance(prof.providers, dict) else {}

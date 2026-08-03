@@ -227,12 +227,26 @@ async def test_nina_rig_guider_left_untouched(isolated_config, monkeypatch):
 
 # ------------------------------------------------------ eligibility (review I1)
 
-def test_eligible_providers_sim_rig_offers_auto_and_native_only(monkeypatch):
+def test_eligible_providers_sim_rig_offers_auto_native_and_the_bridge(monkeypatch):
+    """The bridge IS offered here, and this assertion changed on 2026-08-03.
+
+    It used to read ``["auto", "astrodeck"]`` with the comment "no bridge -> no
+    backend". That rule was wrong in the same way the native offer was wrong,
+    only in the other direction: ``_resolve_guide`` honours an explicit
+    ``backend`` override unconditionally — the legacy PHD2 socket is one the host
+    can always attempt — so refusing to OFFER it made the offer disagree with the
+    resolver, and once blocked reasons started being rendered that disagreement
+    reached the screen as "no PHD2 or NINA bridge is connected" sitting directly
+    above "no guide camera connected — using the PHD2 bridge".
+
+    The invariant is not "these two lists happen to match today"; it is that the
+    offer and the resolver are the SAME predicate. Both directions now hold.
+    """
     monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
     native = FakeGuider("native", "AstroDeck native")
     h = _hub(guider=native, devices=_sim_devices())
     elig = providers.guide_eligible_providers(h)
-    assert elig == ["auto", "astrodeck"]            # no bridge -> no "backend"
+    assert elig == ["auto", "astrodeck", "backend"]
     assert "sim" not in elig                        # no-op value never offered
 
 
@@ -350,3 +364,32 @@ def test_eligible_is_derived_from_options_so_they_cannot_disagree(monkeypatch):
         opts = providers.guide_provider_options(h)
         assert providers.guide_eligible_providers(h) == [
             o["value"] for o in opts if o["eligible"]]
+
+
+# ---------------------------------------------- the screen must not argue with itself
+
+def test_the_bridge_is_always_offered_because_the_resolver_always_honours_it(monkeypatch):
+    """The offer must be the SAME predicate as the resolver, in both directions.
+
+    `_resolve_guide` honours an explicit `backend` override unconditionally — its
+    own comment says the legacy PHD2 socket is one the host can always attempt —
+    but the offer used to refuse it unless a bridge was already reachable. On the
+    default rig (imaging camera + mount, no guide camera, no bridge driver) that
+    put three individually-true sentences on one screen: "no PHD2 or NINA bridge
+    is connected", "no guide camera connected — using the PHD2 bridge", and a
+    badge reading PHD2. They cannot all be about the same rig.
+
+    It only became visible once blocked reasons were RENDERED; before that an
+    ineligible value was simply absent from the select, so the sentence did not
+    exist to contradict anything.
+    """
+    monkeypatch.setattr(providers, "NATIVE_AVAILABLE", True)
+    h = _hub(devices=_imaging_camera_only())          # the DEFAULT rig
+    assert providers._guide_backend_blocker(h) is None
+    rows = {o["value"]: o for o in providers.guide_provider_options(h)}
+    assert rows["backend"]["eligible"] is True
+    assert not rows["backend"].get("reason")
+    # and the contradiction it produced is gone: no rendered sentence may claim
+    # the bridge is absent while another says the bridge is guiding.
+    blocked = " ".join(o.get("reason") or "" for o in rows.values())
+    assert "no PHD2 or NINA bridge is connected" not in blocked
