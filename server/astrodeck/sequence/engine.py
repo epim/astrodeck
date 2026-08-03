@@ -301,8 +301,24 @@ class SequenceEngine:
         self.plan = plan
         resume = session is not None
         if session is None:
+            # ARMED BY DEFAULT. An opt-in flag that must be remembered before
+            # every night is a flag that is not set on the night it was needed
+            # -- and the night it is needed is the one where the PC restarts at
+            # 2am and nobody is awake to arm anything. Armed here rather than in
+            # the start route so every fresh-run path inherits it.
+            #
+            # Honours the same server-enforced singleton as the PATCH route:
+            # arming this one disarms the rest.
             session = Session(name=plan.name or "Tonight",
-                              created_ts=time.time(), status="active", plan=plan)
+                              created_ts=time.time(), status="active", plan=plan,
+                              auto_resume=True)
+            try:
+                for other in session_store.load_all():
+                    if other.id != session.id and other.auto_resume:
+                        other.auto_resume = False
+                        session_store.save(other)
+            except Exception:  # noqa: BLE001 - never block a run over bookkeeping
+                pass
         else:
             session.status = "active"
         self._session = session
