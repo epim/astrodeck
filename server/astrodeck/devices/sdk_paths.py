@@ -56,11 +56,25 @@ def platform_tag() -> str:
     return sys.platform
 
 
+# A vendor does not always use the same basename on every platform, and the
+# stems in this codebase were all taken from the Windows DLL. ZWO's focuser is
+# `EAF_focuser.dll` on Windows and `libEAFFocuser.so` on Linux — no
+# transformation of one yields the other, so the derived name would simply not
+# exist and the focuser would vanish with no log line, which is the exact silent
+# failure this module was written to prevent. Only names that genuinely differ
+# belong here; a stem absent from the map derives normally.
+_POSIX_STEM_ALIASES = {
+    "EAF_focuser": "EAFFocuser",
+}
+
+
 def library_names(stem: str) -> list[str]:
     """Candidate filenames for a library, most specific first.
 
     ``stem`` is the SDK's base name without any prefix, decoration or extension
-    — "ASICamera2", "PlayerOneCamera".
+    — "ASICamera2", "PlayerOneCamera". Where a vendor's POSIX basename is not a
+    transformation of its Windows one, ``_POSIX_STEM_ALIASES`` supplies the real
+    name and the derived name is kept as a fallback.
 
     The versioned Linux name comes first because that is the real file: vendors
     ship ``libFoo.so.3.10.0`` with ``libFoo.so`` as a symlink beside it, and a
@@ -70,9 +84,11 @@ def library_names(stem: str) -> list[str]:
     """
     if sys.platform == "win32":
         return [f"{stem}.dll"]
+    alias = _POSIX_STEM_ALIASES.get(stem)
+    stems = [alias, stem] if alias else [stem]
     if sys.platform == "darwin":
-        return [f"lib{stem}.dylib", f"{stem}.dylib"]
-    return [f"lib{stem}.so", f"{stem}.so"]
+        return [n for s in stems for n in (f"lib{s}.dylib", f"{s}.dylib")]
+    return [n for s in stems for n in (f"lib{s}.so", f"{s}.so")]
 
 
 def candidates(vendor: str, stem: str, *, env_var: str | None = None,

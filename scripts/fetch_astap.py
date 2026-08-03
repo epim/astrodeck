@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import platform
 import shutil
 import sys
 import tarfile
@@ -198,8 +199,25 @@ def main() -> int:
     elif args.platforms:
         platforms = args.platforms
     else:
-        plat = {"win32": "windows-x86_64", "darwin": "macos-aarch64"}.get(
-            sys.platform, "linux-x86_64")
+        # Keyed off the ARCHITECTURE as well as the OS. Keying off sys.platform
+        # alone meant running this script ON an arm64 board downloaded the
+        # x86_64 build and cheerfully announced it was fetching "linux-x86_64",
+        # which is the one platform that board cannot execute. The
+        # linux-aarch64 entry has been correct in BINARIES all along; nothing
+        # ever selected it.
+        machine = platform.machine().lower()
+        arm = machine in ("aarch64", "arm64")
+        if sys.platform == "win32":
+            plat = "windows-x86_64"
+        elif sys.platform == "darwin":
+            plat = "macos-aarch64" if arm else "macos-x86_64"
+        else:
+            plat = "linux-aarch64" if arm else "linux-x86_64"
+        if plat not in BINARIES:                    # e.g. macos-x86_64 absent
+            raise SystemExit(
+                f"no ASTAP build listed for this machine ({sys.platform}/"
+                f"{machine}); pass --platform explicitly from: "
+                f"{', '.join(BINARIES)}")
         platforms = [plat]
         print(f"(no --platform given; fetching {plat} only)")
     return fetch(platforms, args.db, Path(args.out))
