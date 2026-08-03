@@ -34,6 +34,10 @@ from .session import Session, session_store
 CHECK_INTERVAL_S = 60.0
 RETRY_INTERVAL_S = 600.0
 
+#: Exposure for the post-restart blind solve. Deliberately longer than
+#: solve_and_sync's 3 s default -- see the call site for the measurement.
+RECOVERY_SOLVE_EXPOSURE_S = 12.0
+
 
 class ResumeArm:
     def __init__(self, engine, hub, *, clock=time.time, weather=None):
@@ -229,7 +233,21 @@ class ResumeArm:
                                "on trust", "sequence")
         else:
             try:
-                await self.hub.solve_and_sync()
+                # A LONGER EXPOSURE THAN THE DEFAULT, ON PURPOSE.
+                #
+                # solve_and_sync defaults to 3 s at gain 200 bin 2, which suits
+                # centering — there the mount is already near the target and a
+                # solve happens several times per slew, so it is tuned for speed.
+                # Recovery is the opposite case: it runs once, nothing else is
+                # waiting on it, and failing costs a TEN MINUTE backoff.
+                #
+                # Measured on the rig 2026-08-02 pointing at a rich Lyra field
+                # under a sky the camera confirmed clear (170 stars at 5 s /
+                # gain 300): the 3 s default yielded just 16 detected stars and
+                # ASTAP returned "no solution", while the same sky at a longer
+                # exposure solved. Trading ten seconds against ten minutes is not
+                # a close call.
+                await self.hub.solve_and_sync(exposure_s=RECOVERY_SOLVE_EXPOSURE_S)
             except Exception as e:  # noqa: BLE001
                 return (f"blind plate solve failed after restart ({e}) — refusing "
                         "to slew a mount whose true position is unknown")
