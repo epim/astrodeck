@@ -90,7 +90,15 @@ export default function PolarView() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
+      {/* TWO COLUMNS FROM sm, NOT lg. Polar alignment is done crouched at the
+          mount with the phone in one hand, turning a bolt with the other, and a
+          phone in landscape is 667-932px wide — under lg's 1024, so the reticle
+          and the error readout used to stack and you had to scroll between the
+          thing you aim and the number that says whether you are winning.
+          sm (640) covers the narrowest phone landscape (SE, 667). The middle
+          band gets plain even columns; the fixed 360px sidebar only returns at
+          lg where there is room for it. Portrait is unchanged. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_360px]">
         <Panel title="Polar Alignment"
           right={
             <div className="flex items-center gap-2">
