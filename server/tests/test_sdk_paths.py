@@ -62,6 +62,34 @@ def test_library_names_follow_the_platform(fake_platform):
     assert library_names("ASICamera2")[0] == "libASICamera2.so"
 
 
+def test_the_zwo_focuser_resolves_to_its_real_posix_name(fake_platform):
+    """The stems in this codebase were all taken from the Windows DLL, and ZWO's
+    focuser is the one that does not survive the trip: `EAF_focuser.dll` on
+    Windows, `libEAFFocuser.so` on Linux. No transformation of the first yields
+    the second, so the derived name would simply not exist — and the failure is
+    the silent one this module was written to prevent: no library, no backend,
+    no device offered, no log line. On an arm64 appliance the mount and the
+    filter wheel would work and the focuser would be missing with no stated
+    cause."""
+    fake_platform("linux", "aarch64")
+    names = library_names("EAF_focuser")
+    assert names[0] == "libEAFFocuser.so"
+    # the derived name stays as a fallback for a system install that uses it
+    assert "libEAF_focuser.so" in names
+    fake_platform("darwin", "arm64")
+    assert library_names("EAF_focuser")[0] == "libEAFFocuser.dylib"
+    # Windows is untouched — a deployed rig must resolve exactly as before.
+    fake_platform("win32", "AMD64")
+    assert library_names("EAF_focuser") == ["EAF_focuser.dll"]
+
+
+def test_stems_without_an_alias_are_unchanged(fake_platform):
+    """The alias map is for names that genuinely differ, not a general hook."""
+    fake_platform("linux", "aarch64")
+    for stem in ("ASICamera2", "PlayerOneCamera", "CAARotator"):
+        assert library_names(stem) == [f"lib{stem}.so", f"{stem}.so"]
+
+
 # --------------------------------------------------------------- candidates
 
 def test_the_vendored_linux_library_is_found_on_a_pi(fake_platform):

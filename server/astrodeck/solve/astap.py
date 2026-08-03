@@ -46,12 +46,30 @@ _VENDOR_ASTAP = Path(__file__).resolve().parents[1] / "vendor" / "astap"
 DB_EXTENSIONS = (".290", ".1476", ".001")
 
 
+_ASTAP_EXE_NAMES = ("astap.exe", "astap_cli.exe", "astap", "astap_cli")
+
+
 def _bundled_candidates() -> list[Path]:
     # Checked FIRST so a bundled binary wins over a system install; names cover
     # the CLI and the renamed-to-astap form, per OS (closes the macOS gap, which
     # has no standard install path).
-    return [_VENDOR_ASTAP / n
-            for n in ("astap.exe", "astap_cli.exe", "astap", "astap_cli")]
+    #
+    # The PLATFORM SUBDIRECTORY is checked before the flat one, because that is
+    # where the fetcher actually puts the binary: scripts/fetch_astap.py writes
+    # `out / <platform>/astap_cli` while extracting the star database flat into
+    # `out`. Looking only at the flat path meant a correctly-fetched bundle
+    # produced a database the solver could see and a binary it could not, and it
+    # silently fell back to a system install — which on an appliance image is no
+    # install at all. The tag comes from the same helper the vendored SDK
+    # libraries use, so one layout convention covers every vendored binary.
+    try:
+        from ..devices.sdk_paths import platform_tag
+        tag = platform_tag()
+    except Exception:                       # never let discovery raise
+        tag = None
+    roots = [_VENDOR_ASTAP / tag] if tag else []
+    roots.append(_VENDOR_ASTAP)
+    return [root / n for root in roots for n in _ASTAP_EXE_NAMES]
 
 
 def _bundled_db_dir() -> Path | None:

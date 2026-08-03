@@ -80,3 +80,34 @@ def test_a_binary_only_bundle_is_not_mistaken_for_a_database(tmp_path, monkeypat
     monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
     (tmp_path / "astap_cli.exe").write_bytes(b"MZ")     # binary, no DB
     assert astap._bundled_db_dir() is None
+
+
+# ------------------------------------------------- the fetcher's actual layout
+
+def test_bundled_binary_is_found_in_the_platform_subdirectory(tmp_path, monkeypatch):
+    """scripts/fetch_astap.py writes the binary to ``out/<platform>/astap_cli``
+    while extracting the star database FLAT into ``out``. Discovery only ever
+    looked at the flat path, so a correctly-fetched bundle produced a database
+    the solver could see and a binary it could not — and it fell back silently
+    to a system install, which on an appliance image is no install at all.
+
+    Written with a fake platform tag rather than the host's so the test means
+    the same thing on every machine that runs it."""
+    monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
+    import astrodeck.devices.sdk_paths as sdk_paths
+    monkeypatch.setattr(sdk_paths, "platform_tag", lambda: "linux-aarch64")
+
+    assert astap._bundled_candidates()[0].parent.name == "linux-aarch64"
+
+    plat_dir = tmp_path / "linux-aarch64"
+    plat_dir.mkdir()
+    (plat_dir / "astap_cli").write_bytes(b"#!/bin/sh\n")
+    assert plat_dir / "astap_cli" in astap._bundled_candidates()
+
+
+def test_the_flat_layout_still_resolves(tmp_path, monkeypatch):
+    """A release staged the historical way — binary flat beside the database —
+    must keep working; the platform subdirectory is checked first, not instead."""
+    monkeypatch.setattr(astap, "_VENDOR_ASTAP", tmp_path)
+    (tmp_path / "astap_cli").write_bytes(b"#!/bin/sh\n")
+    assert tmp_path / "astap_cli" in astap._bundled_candidates()
