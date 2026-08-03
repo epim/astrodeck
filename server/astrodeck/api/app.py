@@ -2826,8 +2826,24 @@ def create_app() -> FastAPI:
             s.status = "abandoned"
             s.auto_resume = False
         if body.auto_resume is not None:
-            if body.auto_resume and s.status != "dormant":
-                raise HTTPException(409, "auto-resume arms only dormant sessions")
+            # ARMING AN ACTIVE SESSION IS THE POINT, NOT AN EDGE CASE.
+            #
+            # This was dormant-only, written for the feature's original purpose
+            # ("I have stopped for tonight, resume at dusk tomorrow"), where
+            # dormant is true by definition. But a restart destroys an ACTIVE
+            # session: boot_sweep then finds it dormant and UNARMED, and nobody
+            # is awake at 2am to arm it. So the run that most needed to come
+            # back was the exact run that could not be told to.
+            #
+            # Demonstrated on the rig 2026-08-02 by rebooting the observatory PC
+            # mid-sequence: the box auto-logged in, the server returned, every
+            # device reconnected and the boot sweep correctly rescued the run --
+            # which then sat dormant and idle all night, because of this line.
+            #
+            # 'complete'/'abandoned' stay refused: there is nothing left to resume.
+            if body.auto_resume and s.status not in ("dormant", "active"):
+                raise HTTPException(
+                    409, "auto-resume arms only dormant or active sessions")
             if body.auto_resume:
                 # server-enforced singleton (spec §5): arming here disarms others.
                 for other in await asyncio.to_thread(session_store.load_all):
