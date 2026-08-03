@@ -32,8 +32,11 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
+
+from ..auth import CAP_VIEW_STATUS, require
+from ..auth.rbac import declare
 
 from ..config import config_store
 from ..hub import CAPTURE_DIR
@@ -271,7 +274,18 @@ def _write_cache(path: Path, body: bytes) -> None:
     _evict_cache(path.parent)
 
 
-@router.get("/api/survey/cutout.jpg")
+# Gated as of 2026-08-03. This and the tile route were the ONLY /api GETs with
+# no capability — verified with a TestClient: every sibling returned 401 to an
+# anonymous caller and these two returned 200. The boot RBAC assertion could not
+# catch it because it only fails un-gated MUTATING routes, and these are GETs.
+# They are GETs that WRITE, though: both populate a cache inside the capture
+# volume and, with survey.online_fetch on, make outbound network requests — all
+# with no credential, and the relay exposes them off-LAN. Their paths were never
+# the problem (SHA-1 hex filenames here, registry slug + range-checked ints
+# there); the missing credential was.
+@router.get("/api/survey/cutout.jpg",
+            dependencies=[Depends(require(CAP_VIEW_STATUS))])
+@declare(CAP_VIEW_STATUS)
 async def survey_cutout(
     ra: float = Query(..., description="Right ascension in HOURS (ra_deg = ra*15)"),
     dec: float = Query(..., ge=-90.0, le=90.0, description="Declination in degrees"),

@@ -247,12 +247,49 @@ def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
     return {**payload, "frames": scrubbed}
 
 
+# ---------------------------------------------------- report frame-path redaction
+def _redact_report_for(payload: dict, principal: Principal | None) -> dict:
+    """The same holder rule as ``_redact_session_for``, for session REPORTS.
+
+    Reports predate that rule and were never brought under it: ``FrameRecord``
+    calls the field ``saved_path`` rather than ``path`` and carries the absolute
+    on-disk location, so ``GET /api/reports/{id}`` handed the observatory's
+    filesystem layout to any holder of ``view.status`` — a plain viewer — while
+    the session endpoint serving the same frames stripped it. One name, two
+    answers. Copies rows; never mutates ``payload`` in place."""
+    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    frames = payload.get("frames")
+    if not isinstance(frames, list):
+        return payload
+    scrubbed = []
+    for row in frames:
+        if isinstance(row, dict):
+            row = dict(row)
+            row.pop("saved_path", None)
+        scrubbed.append(row)
+    return {**payload, "frames": scrubbed}
+
+
+def report_csv_columns(cols: list[str], principal: Principal | None) -> list[str]:
+    """Column list for the frames CSV, minus ``saved_path`` for a caller without
+    ``config.backend``. Same rule as ``_redact_report_for``; a CSV export is not
+    a loophole around it."""
+    if principal is not None and principal.has(CAP_CONFIG_BACKEND):
+        return cols
+    return [c for c in cols if c != "saved_path"]
+
+
 __all__ = [
     "WS_AUTH_RECHECK_S",
     "_redact_site_for",
     "_redact_ws_event",
     "_redact_drivers_for",
     "_redact_session_for",
+    "_redact_report_for",
+    "report_csv_columns",
     "_strip_site",
     "_scrub_site_node",
     "_SITE_STRIP_KEYS",

@@ -16,8 +16,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
+
+from ..auth import CAP_VIEW_STATUS, require
+from ..auth.rbac import declare
 
 from ..config import config_store
 from . import survey_pack as pack_mod
@@ -92,7 +95,13 @@ def _write_tile(path: Path, body: bytes) -> None:
     tmp.replace(path)                          # atomic publish (survey_pack idiom)
 
 
-@router.get("/api/survey/tile/{slug}/{order}/{npix}.jpg")
+# Gated as of 2026-08-03 — see the note on survey_cutout. The module docstring
+# used to describe this route's open posture as deliberate ("matches the cutout
+# route"); the cutout route was itself un-gated by oversight, so the two were
+# consistent with each other and with nothing else in the API.
+@router.get("/api/survey/tile/{slug}/{order}/{npix}.jpg",
+            dependencies=[Depends(require(CAP_VIEW_STATUS))])
+@declare(CAP_VIEW_STATUS)
 async def survey_tile(slug: str, order: int, npix: int) -> Response:
     reg = pack_mod.SLUG_REGISTRY.get(slug)
     if reg is None:

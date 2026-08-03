@@ -177,7 +177,18 @@ class CalibrationLibrary:
         indexed = 0
         for kid, bucket in buckets.items():
             key = bucket.key
-            out = self.masters_dir() / f"{kid}.fits"
+            # ENFORCEMENT, not belt-and-braces. `kid` carries a filter name that
+            # came out of a FITS header this process did not necessarily write
+            # (_bucket_raw rglobs every *.fits under the capture dir), and the
+            # next two calls are mkdir(parents=True) + writeto(overwrite=True).
+            # key_index_id now sanitizes that component, but the delete path a
+            # few lines below has always routed through safe_id_path while this
+            # one did not — the write side is the dangerous half, so it gets the
+            # same guard. A refused bucket is skipped, never silently relocated.
+            try:
+                out = safe_id_path(self.masters_dir(), kid, ".fits")
+            except KeyError:
+                continue
             method = "median" if key.frame_type == "BIAS" else "sigma_clip"
             n = build_master_streamed(
                 bucket.paths, out, method=method, sigma=sigma,
