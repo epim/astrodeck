@@ -2939,7 +2939,8 @@ class Hub:
 
     # -------------------------------------------------------- solve & center
 
-    async def solve_and_sync(self, exposure_s: float = 3.0) -> dict:
+    async def solve_and_sync(self, exposure_s: float = 3.0, *,
+                             blind: bool = False) -> dict:
         """Plate-solve the current pointing and sync the mount to it.
 
         ONE real-solver path for every backend (P0-1). The old NINA branch called
@@ -2966,6 +2967,22 @@ class Hub:
             if ra_hint is not None:
                 ra_hint, dec_hint = await self.from_mount_frame(tel, ra_hint, dec_hint)
         except Exception:
+            ra_hint = dec_hint = None
+        if blind:
+            # DELIBERATELY THROW THE MOUNT'S HINT AWAY.
+            #
+            # The hint drives ASTAP's NEAR search, which is right for centering:
+            # the mount is already close, and a tight search is fast. It is
+            # exactly wrong after a restart, where the premise is that the
+            # mount's idea of where it points may be false. Hinting the search
+            # with a wrong position makes the solve fail precisely when it is
+            # needed most, and a failed solve is read as "cannot verify the sky".
+            #
+            # Measured on the rig 2026-08-02: after the server was killed while
+            # tracking, the mount reported RA 18h53.6m Dec +33d01', while ASTAP
+            # solved the very same frame at RA 18h35.2m Dec +33d39' -- about 4
+            # degrees out. The hinted solve had been failing with "no solution"
+            # while a hintless run on that identical file solved instantly.
             ra_hint = dec_hint = None
         async with self.exposure_guard("plate solve"):
             frame = await cam.expose(exposure_s, 200, 30, binning=2)
