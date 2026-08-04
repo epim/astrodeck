@@ -126,6 +126,23 @@ async def _drive(session: Any, hub: Any) -> None:
     # out after a restart).
     await _refuse_near_pole(await _mount_dec(tel), "the mount reports")
 
+    # TAKE THE CAMERA BEFORE THE FIRST SLEW. TPPA is a camera-owning MOUNT-MOTION
+    # path — it runs solve, rotate 12 deg in RA, solve, rotate 12 deg, solve — so
+    # losing the camera part-way does not merely fail, it abandons the tube 12 or
+    # 24 degrees from wherever the user pointed it, with the session dead and only
+    # a log line about a camera to explain it. A live loop with 30 s subs holds
+    # the capture lock most of the time, which makes that the LIKELY outcome
+    # rather than the unlucky one.
+    #
+    # Deliberately AFTER pick_solver and AFTER the mount-side pole refusal: both
+    # can end this run before a single exposure, and amputating someone's Live
+    # View for a run that was about to be refused anyway is its own small
+    # betrayal. It is a no-op when nothing is running.
+    #
+    # This covers the adjust-phase solves too — they reuse the same camera and
+    # the loop cannot restart itself.
+    await hub.yield_camera_for("polar alignment")
+
     # Motion fence (W3.7): snapshot the epoch; a STOP/abort/safety halt bumps it,
     # and we abandon rather than keep slewing a mount someone just halted.
     epoch = getattr(hub, "_motion_epoch", 0)
