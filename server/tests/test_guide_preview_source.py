@@ -369,18 +369,32 @@ def test_the_served_bytes_identify_a_constant_array_and_nothing_more():
     """The evidence, pinned, because the first repair over-read it and the
     over-reading was load-bearing: it chose the refusal's wording.
 
-    223 bytes at 512x288 says CONSTANT. It does not say which constant (0 and
+    A tiny PNG at 512x288 says CONSTANT. It does not say which constant (0 and
     700 encode identically) and it does not say what shape (1920x1080 and
     512x288 encode identically). The only value it rules out is full scale.
     Anyone tempted to write "the buffer was all zero" back into this module gets
-    stopped here."""
+    stopped here.
+
+    "Tiny" is measured against a real picture rather than pinned to a number.
+    This used to assert exactly 223 bytes, which is a property of the zlib the
+    encoder happened to link: the Windows dev box produces 223 and the Linux CI
+    runner produces 725 for the identical input, so the assertion passed locally
+    and failed the first time CI ran it. The claim was never about 223 — it is
+    that a frame carrying no picture encodes to almost nothing — and comparing
+    against an encoded picture states that directly."""
     from astrodeck.imaging.processing import to_png
 
     def enc(a):
         return to_png(a, stretch=True, max_width=512)
 
     served = enc(np.zeros((1080, 1920), dtype="uint16"))
-    assert len(served) == 223
+    # A deterministic frame that genuinely carries detail (no RNG — a flaky
+    # baseline would be worse than the magic number it replaces).
+    yy, xx = np.mgrid[0:1080, 0:1920]
+    picture = enc((((xx * 7 + yy * 13) % 251) * 257).astype("uint16"))
+    assert len(served) * 20 < len(picture), (
+        f"a constant frame must encode to almost nothing: {len(served)} B "
+        f"vs {len(picture)} B for a frame with detail")
     assert enc(np.full((1080, 1920), 700, dtype="uint16")) == served, \
         "the value of the constant is not recoverable from the response"
     assert enc(np.zeros((288, 512), dtype="uint16")) == served, \
