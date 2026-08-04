@@ -92,7 +92,11 @@ export function buildPreflight(
   const safety = status?.safety;
   if (!plan.safety_check)
     push("safety", "Safety", "skipped", {
-      detail: { value: "safety gate off in this plan" },
+      // Names what is off, because the toggle only governs the WEATHER gate —
+      // the mount's altitude floor, zenith keep-out and pier guard run on every
+      // slew regardless (engine._safety_gate). "Safety gate off" read as though
+      // the rig were entirely unguarded, which was both alarming and untrue.
+      detail: { value: "weather gate off in this plan (mount limits still apply)" },
     });
   else if (checking) push("safety", "Safety", "checking");
   else if (safety == null)

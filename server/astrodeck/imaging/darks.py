@@ -182,6 +182,20 @@ SOURCE_MIN = 12
 #: ``opaque_claim_refuted``.
 LIGHT_VERDICTS = frozenset({"saturated", "elevated", "stars"})
 
+#: Typographic characters this module's operator sentences use, mapped to the
+#: ASCII a FITS header can hold. Anything still outside printable ASCII after
+#: this is dropped rather than replaced with a marker: a stray '?' in the middle
+#: of an evidence sentence reads as corruption, and the numbers are what matter.
+_ASCII_FOLD = {"—": "-", "–": "-", "‘": "'", "’": "'",
+               "“": '"', "”": '"', "…": "...", "°": " deg",
+               "×": "x", "−": "-", "µ": "u", "σ": "sigma"}
+
+
+def _ascii_card(text: str) -> str:
+    """``text`` reduced to the printable ASCII a FITS header value permits."""
+    out = "".join(_ASCII_FOLD.get(ch, ch) for ch in str(text))
+    return "".join(ch for ch in out if " " <= ch <= "~")
+
 
 @dataclass
 class DarkResult:
@@ -239,11 +253,19 @@ class DarkResult:
         whose ``DARKOK`` is False and MUST default it to True when the card is
         absent, so every dark taken before this check existed still indexes.
         ``DARKWHY`` carries the operator sentence; astropy splits it over
-        CONTINUE cards when it exceeds one card's 68 characters."""
+        CONTINUE cards when it exceeds one card's 68 characters.
+
+        The sentence is ASCII-folded on the way out. ``reason`` is written for a
+        human and uses typographic punctuation; a FITS header value may hold
+        only printable ASCII, and astropy raises on anything else — so an
+        unfolded em dash would make the WRITE fail on exactly the frames this
+        check rejects. The frame would be saved with no verdict at all, or not
+        saved. Found by the first test that ran the check through a real
+        capture, which is the argument for having one."""
         return [
             ("DARKOK", bool(self.is_dark), "Dark-plausibility check passed"),
-            ("DARKCHK", self.verdict, "Dark check verdict"),
-            ("DARKWHY", self.reason, "Dark check evidence, in ADU"),
+            ("DARKCHK", _ascii_card(self.verdict), "Dark check verdict"),
+            ("DARKWHY", _ascii_card(self.reason), "Dark check evidence, in ADU"),
         ]
 
 

@@ -824,3 +824,47 @@ async def test_park_stops_tracking_before_commanding_it(fixed_env):
         f"tracking was never stopped before parking (sent: {fl.sent})")
     assert stop < fl.sent.index("hP"), (
         f"tracking must stop BEFORE :hP#, got {fl.sent}")
+
+
+# --------------------------------------------------------------- Home vs park
+#
+# ``find_home`` is park-then-unpark, because :hP# is the mount's ONE home
+# command. But ``park`` is idempotent: an already-parked mount short-circuits
+# and never sends :hP#. So pressing Home on a parked mount UNPARKED it and
+# nothing else — no motion, no error, and the docstring above the method saying
+# "go to the home position and come back usable".
+#
+# That is not a theoretical state on this rig. The AM5 is a harmonic drive with
+# NO BRAKE: after a power cut the tube was found 50 degrees out while the mount
+# still reported parked. Home is exactly the button you press then, and it was
+# the one call that would do nothing.
+
+async def test_home_commands_the_mount_even_when_it_reports_parked(fixed_env):
+    fl = FakeLink(_connect_script())                # Gps -> "2" (parked)
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    fl.sent.clear()
+    fl.script["Spu"] = "1"
+    # tracking is off (a parked mount), and it stays parked until :hP# lands.
+    fl.script["GAT"] = "0"
+    fl.script["Gps"] = lambda cmd: "2"
+
+    await tel.find_home()
+
+    assert "hP" in fl.sent, (
+        "Home must command the mount even when it already reports parked — "
+        f"a no-brake mount can be parked and 50 degrees from home. Sent: {fl.sent}")
+    assert "Spu" in fl.sent, "Home must leave the mount usable, not parked"
+    assert fl.sent.index("hP") < fl.sent.index("Spu"), (
+        f"Home must go home BEFORE unparking, got {fl.sent}")
+
+
+async def test_park_stays_idempotent(fixed_env):
+    """The counterpart: park() must keep short-circuiting. Re-sending :hP# to a
+    parked mount is a wasted 60 s poll on the dawn path."""
+    fl = FakeLink(_connect_script())
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    fl.sent.clear()
+    await tel.park()
+    assert "hP" not in fl.sent

@@ -148,3 +148,33 @@ async def test_no_limits_at_all_still_slews(_engine):
                                           target=_zenith_target(hub))
     finally:
         await hub.disconnect_all()
+
+
+async def test_the_mount_limits_survive_the_safety_toggle(_engine):
+    """A WEATHER toggle must not disarm a COLLISION guard.
+
+    ``_safety_gate`` returned early when ``safety.enabled`` or
+    ``plan.safety_check`` was off — and the mount-limit call sits after that
+    return, under a comment claiming the floor 'is enforced on every slew even
+    with NO safety device'. So unticking "Safety check" on a plan, whose tooltip
+    said only "Off runs without the safety abort", also silently disabled the
+    pier-collision guard and the zenith keep-out. Nothing about "I have no cloud
+    sensor" implies "my tripod moved".
+
+    Safe to enforce unconditionally because every one of these limits is INERT
+    until explicitly configured: min_alt_deg 0, max_alt_deg 90, horizon None,
+    nogo None, enforce_pier_limits False. A rig that never set them sees no
+    change; a rig that set them gets what it asked for."""
+    from astrodeck.sequence import SequencePlan
+
+    engine, hub = _engine
+    await hub.connect_sim()
+    try:
+        engine._cfg = AppConfig(safety=SafetyConfig(
+            enabled=False, min_alt_deg=0.0, max_alt_deg=80.0))
+        engine.plan = SequencePlan(name="p", targets=[], safety_check=False)
+        with pytest.raises(SafetyAbort, match="zenith keep-out"):
+            await engine._safety_gate(context="slew",
+                                      target=_zenith_target(hub))
+    finally:
+        await hub.disconnect_all()

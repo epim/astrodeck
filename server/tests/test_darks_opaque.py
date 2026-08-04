@@ -506,3 +506,103 @@ def test_the_judgement_never_mutates_the_caller_frame():
     before = frame.copy()
     judge_dark(frame, full_well=65535, exposure_s=300)
     assert np.array_equal(frame, before)
+
+
+# ------------------------------------------------------------------- the WIRING
+#
+# Everything above judges arrays. The judgement reached nothing: until 2026-08-04
+# ``judge_dark`` had NO caller anywhere in astrodeck/ — a fully built, carefully
+# tested detector, wired to nothing, with a docstring describing the incident it
+# was going to prevent. These pin the two ends of the path it needs:
+# capture STAMPS the verdict, and the library READS it.
+
+@pytest.mark.asyncio
+async def test_capture_stamps_the_verdict_into_a_white_dark(tmp_path, monkeypatch):
+    """A daylight "dark" comes back pinned at the ceiling. The saved FITS must
+    carry DARKOK=False, because the calibration library reads headers and
+    nothing else."""
+    from astropy.io import fits
+    import astrodeck.hub as hub_module
+    from astrodeck.hub import Hub
+
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        cam = h.devices["camera"]
+        real_expose = cam.expose
+
+        async def white(*a, **kw):
+            frame = await real_expose(*a, **kw)
+            frame.data = np.full(frame.data.shape, 65535, dtype=np.uint16)
+            frame.full_well = 65535
+            return frame
+        monkeypatch.setattr(cam, "expose", white)
+
+        info = await h.capture(1.0, 100, 30, 1, save=True, frame_type="Dark")
+        saved = Path(info["saved_path"] if "saved_path" in info
+                     else h.last_frame.saved_path)
+        hdr = fits.getheader(saved)
+        assert hdr["DARKOK"] is False, "a white frame was filed as a good dark"
+        assert hdr["DARKCHK"]
+        assert hdr["DARKWHY"]
+    finally:
+        await h.disconnect_all()
+
+
+@pytest.mark.asyncio
+async def test_capture_passes_a_real_dark(tmp_path, monkeypatch):
+    """The counterpart. A rejection that fires on ordinary darks is worse than
+    no check — it would train the operator to ignore it."""
+    from astropy.io import fits
+    import astrodeck.hub as hub_module
+    from astrodeck.hub import Hub
+
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        info = await h.capture(1.0, 100, 30, 1, save=True, frame_type="Dark")
+        saved = Path(info.get("saved_path") or h.last_frame.saved_path)
+        assert fits.getheader(saved)["DARKOK"] is True
+    finally:
+        await h.disconnect_all()
+
+
+@pytest.mark.asyncio
+async def test_a_light_frame_gets_no_dark_cards(tmp_path, monkeypatch):
+    """The check is about darks. A light is full of stars by design and must not
+    be judged against a dark's expectations."""
+    from astropy.io import fits
+    import astrodeck.hub as hub_module
+    from astrodeck.hub import Hub
+
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    h = Hub()
+    await h.connect_sim()
+    try:
+        info = await h.capture(1.0, 100, 30, 1, save=True, frame_type="Light")
+        hdr = fits.getheader(Path(info.get("saved_path") or h.last_frame.saved_path))
+        assert "DARKOK" not in hdr
+    finally:
+        await h.disconnect_all()
+
+
+def test_every_verdict_card_is_ascii():
+    """A FITS header value may hold only printable ASCII. The reasons are
+    written for a human and use typographic punctuation, so the fold has to
+    cover every verdict — not just the one that happened to be tested."""
+    frames = {
+        "saturated": np.full((64, 64), 65535, dtype=np.uint16),
+        "constant": np.full((64, 64), 500, dtype=np.uint16),
+        "elevated": (np.random.default_rng(3).normal(20000, 50, (64, 64))
+                     .astype(np.uint16)),
+        "dark": (np.random.default_rng(4).normal(500, 20, (64, 64))
+                 .astype(np.uint16)),
+    }
+    for label, arr in frames.items():
+        cards = judge_dark(arr, full_well=65535, exposure_s=1.0).fits_cards()
+        for keyword, value, _comment in cards:
+            if isinstance(value, str):
+                assert value.isascii() and value.isprintable(), \
+                    f"{label}/{keyword} is not header-safe: {value!r}"

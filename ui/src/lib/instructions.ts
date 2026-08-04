@@ -289,10 +289,11 @@ export function validateInstruction(i: Instruction): string[] {
 /** Options for the human summaries. `rmsArcsec` mirrors GuideStats.is_arcsec:
  *  the guider only reports arcseconds when the guide scope's focal length is
  *  known — otherwise its RMS is PIXELS, and printing ″ would be a lie (UX-15).
- *  Defaults true, matching GuideView's `stats?.is_arcsec !== false`. */
+ *  Defaults FALSE (px), matching GuideStats.is_arcsec's own default. The unit
+ *  that can mislead is the one that must be earned. */
 export interface DescribeOpts { rmsArcsec?: boolean }
 
-const rmsUnit = (o?: DescribeOpts) => (o?.rmsArcsec === false ? " px" : "\"");
+const rmsUnit = (o?: DescribeOpts) => (o?.rmsArcsec === true ? "\"" : " px");
 
 /** One leaf predicate as plain language (no leading "When"). */
 export function describePredicate(p: Predicate, opts?: DescribeOpts): string {

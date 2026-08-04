@@ -1571,12 +1571,34 @@ class SequenceEngine:
     # --------------------------------------------------------- safety gate (§1.9)
 
     async def _safety_gate(self, *, context: str, target: Target | None = None) -> None:
-        """Unified safety gate (§1.9-A). No-op unless the run requested safety
-        (``cfg.safety.enabled and plan.safety_check``). Fail-CLOSED: a connected
-        monitor whose cached reading is missing/stale is treated as UNSAFE. On a
-        slew it also enforces the mount-alt floor (independent of the device)."""
+        """Unified safety gate (§1.9-A).
+
+        TWO GATES, and they are not the same kind of thing:
+
+        * The MONITOR gate (rain, cloud, an unsafe verdict) is what
+          ``cfg.safety.enabled`` and ``plan.safety_check`` govern. Fail-CLOSED:
+          a connected monitor whose cached reading is missing or stale is
+          treated as UNSAFE.
+        * The MOUNT LIMITS (altitude floor, horizon, no-go wedges, pier
+          collision, zenith keep-out) are enforced on every slew regardless.
+          They describe the rig's own geometry, and nothing about "I have no
+          cloud sensor tonight" implies "my tripod moved".
+
+        That separation is what the comment below the limits call had always
+        claimed and the early return above it had always prevented: unticking a
+        plan's "Safety check" — whose tooltip said only "Off runs without the
+        safety abort" — silently disarmed the pier guard and the zenith
+        keep-out too. Safe to enforce unconditionally because every limit is
+        INERT until configured (min_alt 0, max_alt 90, horizon/nogo None, pier
+        limits off), so a rig that set none sees no change."""
         cfg = self._cfg
-        if cfg is None or not (cfg.safety.enabled and self.plan and self.plan.safety_check):
+        if cfg is None:
+            return
+        monitor_armed = bool(cfg.safety.enabled and self.plan
+                             and self.plan.safety_check)
+        if not monitor_armed:
+            if context == "slew" and target is not None:
+                await self._enforce_mount_floor(projected=True, target=target)
             return
 
         mon = self.hub.devices.get("safety")
@@ -1607,9 +1629,11 @@ class SequenceEngine:
                     self._unsafe_streak = 0
                     self._safe_streak += 1
 
-        # pier-collision / setting-target guard uses MOUNT-reported alt/az and is
-        # enforced on every slew even with NO safety device (the floor is
-        # independent of the safety monitor — §1.9-A).
+        # The mount limits — floor, horizon, no-go wedges, pier collision and
+        # the zenith keep-out. Enforced on every slew independently of the
+        # safety MONITOR and of the toggles that arm it; see the docstring, and
+        # the early-return branch above that runs this same call when the
+        # monitor gate is off.
         if context == "slew" and target is not None:
             await self._enforce_mount_floor(projected=True, target=target)
 

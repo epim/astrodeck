@@ -1206,7 +1206,7 @@ export default function SequenceView() {
                 safety monitor gate
                 <InfoDot
                   label="About the safety monitor gate"
-                  content="Honor the configured SafetyMonitor and the global altitude floor during unattended runs — pauses/parks when conditions go unsafe. Off runs without the safety abort."
+                  content="Honor the configured SafetyMonitor during unattended runs — pauses or parks when conditions go unsafe. Off means weather and cloud stop nothing. The mount's own limits (altitude floor, zenith keep-out, pier collision) apply either way: they describe your rig's geometry, not the sky."
                 />
               </span>
               <Toggle checked={plan.safety_check ?? true} onChange={(v) => setPlan({ ...plan, safety_check: v })}
