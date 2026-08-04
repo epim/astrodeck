@@ -113,6 +113,14 @@ async def test_drive_refuses_before_touching_the_mount(monkeypatch):
     monkeypatch.setattr(_pv, "pick_solver", lambda hub: object())
 
     s = _Session()
+    # The Rust wheel is imported guarded, and `run_native` checks NATIVE_AVAILABLE
+    # BEFORE reaching `_drive`, where the pole guard lives. On a host without the
+    # wheel — which is every CI runner in the `server` job, since only the
+    # `native` job builds it — this test therefore got "native engine not
+    # installed" and never exercised the guard at all. Faking the flag is the
+    # same substitution the hub, telescope and session already get, and it is
+    # what keeps a SAFETY guard under test on machines that cannot build Rust.
+    monkeypatch.setattr(nat, "NATIVE_AVAILABLE", True)
     await nat.run_native(s, _Hub())          # run_native maps DeviceError -> terminal
 
     assert slews == [], "must not move a mount it has already decided not to measure"

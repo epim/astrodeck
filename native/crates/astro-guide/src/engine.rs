@@ -1930,8 +1930,7 @@ mod tests {
             0.0,
             "0.17 > overridden min_move 0.15 must NOT be vetoed"
         );
-        let mut with_default =
-            make_algo(AlgoKind::Hysteresis, true, &AxisAlgoParams::default());
+        let mut with_default = make_algo(AlgoKind::Hysteresis, true, &AxisAlgoParams::default());
         assert_eq!(
             with_default.result(0.17),
             0.0,

@@ -146,7 +146,15 @@ def test_known_install_paths_come_last(fake_platform):
     not silently re-pointed at whatever version the user happens to have."""
     fake_platform("win32", "AMD64")
     got = candidates("zwo", "ASICamera2", extra=[r"C:\Program Files\ZWO\ASICamera2.dll"])
-    assert got[-1].name == "ASICamera2.dll" and "Program Files" in str(got[-1])
+    # Asserted on the STRING, not on Path.name. `fake_platform` can fake
+    # sys.platform but it cannot change how pathlib parses separators: under
+    # Linux CI these are PosixPaths, "\" is an ordinary character, and
+    # Path(r"C:\Program Files\ZWO\ASICamera2.dll").name is the WHOLE string.
+    # The old assertion therefore passed only on a Windows dev box and failed
+    # the moment CI ran it — a platform assumption hidden inside a test ABOUT
+    # platform handling.
+    last = str(got[-1])
+    assert last.endswith("ASICamera2.dll") and "Program Files" in last
     assert any("vendor" in str(p) for p in got[:-1])
 
 

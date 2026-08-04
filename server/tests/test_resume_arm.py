@@ -73,7 +73,19 @@ async def test_tick_resumes_when_window_open(sim_hub, monkeypatch):
     arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
     monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
     await arm.tick()
-    assert engine.running
+    # NOT `assert engine.running`. `running` is
+    # `_task is not None and not _task.done()`, which conflates "a run was
+    # started" with "the run has not finished yet" — and the sim plan here
+    # completes almost instantly. On a fast CI runner under xdist the task was
+    # already done by the time this line executed, so `running` read False while
+    # the very next assertion (state == "complete") passed. The test was
+    # asserting a transient the machine could blow straight through.
+    #
+    # `_retry_at == 0.0` is the deterministic signal for the property actually
+    # under test: tick() sets it to 0 only on the success path, and to
+    # now + RETRY_INTERVAL_S on every refusal. It distinguishes "resumed" from
+    # "refused and backed off" without depending on how fast the run is.
+    assert arm._retry_at == 0.0, "the tick resumed rather than backing off"
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
 
@@ -209,6 +221,18 @@ async def test_weather_veto_none_resumes(sim_hub, monkeypatch):
                     weather=_FakeWeather(None))
     monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
     await arm.tick()
-    assert engine.running
+    # NOT `assert engine.running`. `running` is
+    # `_task is not None and not _task.done()`, which conflates "a run was
+    # started" with "the run has not finished yet" — and the sim plan here
+    # completes almost instantly. On a fast CI runner under xdist the task was
+    # already done by the time this line executed, so `running` read False while
+    # the very next assertion (state == "complete") passed. The test was
+    # asserting a transient the machine could blow straight through.
+    #
+    # `_retry_at == 0.0` is the deterministic signal for the property actually
+    # under test: tick() sets it to 0 only on the success path, and to
+    # now + RETRY_INTERVAL_S on every refusal. It distinguishes "resumed" from
+    # "refused and backed off" without depending on how fast the run is.
+    assert arm._retry_at == 0.0, "the tick resumed rather than backing off"
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
