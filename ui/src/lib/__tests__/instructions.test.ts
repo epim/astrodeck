@@ -179,6 +179,32 @@ test("destructive actions are grouped last and flagged", () => {
     "the first group holds nothing destructive");
 });
 
+// ------------------------------------------------------- the RMS unit default
+//
+// GuideStats.is_arcsec defaults FALSE on the server: the guider reports true
+// arcsec only when a guide-scope focal length is configured, and pixels
+// otherwise. The client defaulted the other way (`!== false`), so a payload
+// missing the flag printed pixels with a ″ after them. On a 240 mm guide scope
+// that turns 0.90 px into "0.90″" — excellent-looking guiding, ~3.2″ in truth.
+// Neither direction was pinned by a test, which is how the two ends drifted.
+
+test("an ABSENT is_arcsec prints px, never arcsec", () => {
+  const inst = { ...defaultInstruction(), trigger: "on_guide_rms_above" as const,
+                 threshold: 0.9 };
+  const withNoFlag = describeInstruction(inst, [], undefined);
+  assert(withNoFlag.includes("px"),
+    `unknown units must read as px, got: ${withNoFlag}`);
+  assert(!withNoFlag.includes('"'),
+    `unknown units must not be printed as arcsec, got: ${withNoFlag}`);
+});
+
+test("an EXPLICIT is_arcsec:true prints arcsec", () => {
+  const inst = { ...defaultInstruction(), trigger: "on_guide_rms_above" as const,
+                 threshold: 0.9 };
+  const arc = describeInstruction(inst, [], { rmsArcsec: true });
+  assert(arc.includes('"'), `arcsec must be printed when earned, got: ${arc}`);
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

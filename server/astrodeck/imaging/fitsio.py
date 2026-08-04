@@ -56,7 +56,8 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
               filter_name: str = "", frame_type: str = "Light",
               ra_hours: float | None = None, dec_deg: float | None = None,
               telescope: str = "", instrument: str = "",
-              meta: "FrameMeta | None" = None) -> Path:
+              meta: "FrameMeta | None" = None,
+              extra_cards: "list[tuple[str, object, str]] | None" = None) -> Path:
     hdu = fits.PrimaryHDU(frame.data)
     hdr = hdu.header
     hdr["EXPTIME"] = (frame.exposure_s, "Exposure time (s)")
@@ -148,6 +149,16 @@ def save_fits(frame: CameraFrame, path: Path, *, target: str = "",
         _apply_wcs(hdr, m.wcs)
 
     hdr["SWCREATE"] = (f"AstroDeck {__version__}", "Creating software")
+
+    # Caller-supplied ``(keyword, value, comment)`` — the dark check's DARKOK /
+    # DARKCHK / DARKWHY verdict is the one user (see ``imaging.darks``). It has
+    # to reach the FILE and not just a log line, because the calibration library
+    # rebuilds masters by walking every *.fits under the capture root and reads
+    # nothing but headers: a frame judged and rejected, with no card on it, is
+    # stacked into a master dark exactly as if it had passed. Applied last so a
+    # verdict can never be shadowed by a metadata card written above.
+    for keyword, value, comment in (extra_cards or []):
+        hdr[keyword] = (value, comment)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     hdu.writeto(path, overwrite=True)

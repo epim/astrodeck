@@ -82,12 +82,14 @@ def test_calibration_build_skips_a_bucket_it_cannot_contain(tmp_path, monkeypatc
     captures = tmp_path / "captures"
     (captures / lib_mod.MASTERS_DIRNAME).mkdir(parents=True)
     lib = lib_mod.CalibrationLibrary(lambda: captures)
-    monkeypatch.setattr(lib, "_bucket_raw", lambda _w: {
+    # (buckets, rejected) — the second element carries the frames the dark
+    # check contradicted, which this test has none of.
+    monkeypatch.setattr(lib, "_bucket_raw", lambda _w: ({
         "../../escape": lib_mod._Bucket(
             key=CalKey(frame_type="BIAS", exposure_s=0.0, gain=0, offset=0,
                        temp_c=None, binning=1, filter=""),
             paths=[]),
-    })
+    }, []))
     report = lib.build()
     assert report.masters_built == 0, "a refused bucket must be skipped, not written"
     assert not list(tmp_path.rglob("escape*.fits"))

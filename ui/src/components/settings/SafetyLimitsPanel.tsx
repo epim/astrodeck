@@ -180,7 +180,7 @@ export default function SafetyLimitsPanel(): JSX.Element {
           <p className="text-[11px] text-dim max-w-md">
             {draft.enabled
               ? "On — a connected safety monitor can stop the run."
-              : "OFF — nothing here can stop a run. Rain, cloud and the altitude floor are all ignored."}
+              : "OFF — rain and cloud stop nothing. The mount limits below still apply on every slew."}
           </p>
         </div>
         <Toggle
@@ -199,8 +199,9 @@ export default function SafetyLimitsPanel(): JSX.Element {
             <span className="mono tracking-[0.12em] uppercase text-bad">
               Safety off
             </span>{" "}
-            — the settings below are stored but not enforced. An unattended run
-            has nothing watching it.
+            — nothing is watching the WEATHER. An unattended run will keep
+            imaging through rain and cloud. The altitude floor, zenith keep-out
+            and pier guard below are still enforced on every slew.
           </span>
         </div>
       )}
