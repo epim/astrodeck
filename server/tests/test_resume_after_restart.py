@@ -304,14 +304,24 @@ async def test_a_failed_solve_refuses_to_move(fp):
     assert hub.centered == [], "must not slew on an unverified position"
 
 
-async def test_untrusted_focus_runs_autofocus_and_never_restores_a_number(fp):
+async def test_untrusted_focus_runs_autofocus_and_never_restores_a_number(
+        fp, monkeypatch):
     """Measure, do not guess: driving the focuser to a remembered position is a
-    guess about a device that just reported it lost count."""
+    guess about a device that just reported it lost count.
+
+    Forces `_can_autofocus` true because THIS test is about what the ladder does
+    when it CAN autofocus. Since 2026-08-04 a rig with no autofocus provider
+    warns and resumes instead — a deliberate split, covered by its own test in
+    test_resume_arm.py — and without this the assertion silently changed meaning
+    on any host without the Rust wheel, which is every CI runner in the `server`
+    job.
+    """
     fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
               parked=False, tracking=True)
     foc = _RecFoc(0)                       # forgot its position
     hub = _RecHub(focuser=foc)
     arm = _arm(hub)
+    monkeypatch.setattr(arm, "_can_autofocus", lambda: True)
     ran = []
     arm._autofocus = lambda: (ran.append(1), None)[1] or _noop()
     await arm._recover(_light_session())
