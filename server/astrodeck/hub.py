@@ -2934,6 +2934,81 @@ class Hub:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await old
 
+    async def yield_camera_for(self, what: str) -> bool:
+        """Take the camera off the live preview loop so ``what`` — a path that
+        must plate-solve — can expose. Returns True if anything was stopped.
+
+        THE FAILURE THIS EXISTS FOR (observed on the rig, server log verbatim):
+
+            00:48:01  Live View on - stacking subs
+            00:50:45  goto cancelled
+            00:51:36  loop capture failed: camera is busy (plate solve); capture light refused
+            00:51:37  loop capture failed: camera is busy (plate solve); capture light refused
+            00:51:41  solve cancelled
+
+        ``exposure_guard`` is deliberately NON-blocking: whoever finds the lock
+        held gets a ``DeviceError`` instead of queueing behind it. That is the
+        right rule for two one-shot callers, but a free-running live loop is not
+        a one-shot caller — it comes back every few seconds, forever. So a
+        centering run and the loop simply trade the refusal back and forth, and
+        in ``goto_and_center`` a losing solve DEGRADES to "using raw GoTo": the
+        centering loop returns early and the slew stops wherever it happened to
+        be. The mount was left at Dec +10 deg, alt 24 deg — not the home
+        position the user had asked for, not the target, nowhere anyone chose.
+        A telescope parked on an arbitrary patch of sky is the harm; the log
+        lines above are only how it announced itself.
+
+        Plain motion is NOT affected and is deliberately left alone: with the
+        loop running, ``POST /api/mount/home`` returned 200 and logged "mount
+        homed" on the same rig, because homing never touches the camera. Only
+        the camera-owning paths need this.
+
+        THE LOOP DOES NOT RESTART AFTERWARDS — deliberately. Reasons, in order:
+
+        * It matches the one existing precedent for "a long job is taking the
+          camera now": ``POST /api/sequence/start`` (api/app.py) calls
+          ``stop_loop_and_wait()`` and never restarts the loop when the sequence
+          ends. Two different answers to the same question would be worse than
+          either answer.
+        * Restarting is not obviously right. ``goto_and_center`` repoints the
+          telescope; frames streaming in after it are of a DIFFERENT field, so a
+          silently-resumed Live View would look like the old target still
+          drifting. Handing the user a stopped loop and letting them press Live
+          again is the honest end state.
+        * Restarting is also not reliably possible: the loop's exposure/gain/
+          offset/binning live in the ``start_loop`` closure, not on the hub, so
+          "resume what was running" would mean inventing settings.
+
+        Because it stays stopped, it has to be VISIBLE — a live view that dies
+        without saying so is its own complaint. Two things make it visible:
+        ``stop_loop`` publishes ``capture_loop running=False`` (the Loop button
+        drops out immediately), and Live View is disarmed too. That second part
+        is load-bearing: the Capture screen's Live toggle renders from
+        ``status.live_stack_active`` (server truth), so leaving the stacker
+        armed while nothing feeds it would leave the button lit over a stack
+        that never grows again. This is exactly what ``POST
+        /api/capture/livestack/stop`` does — ``stop_loop`` then
+        ``stop_live_stack`` — so the user lands in a state the UI already knows
+        how to render. The log line below is the third: it names what took the
+        camera, so the disappearance has a stated cause."""
+        was_looping = self.looping
+        had_stack = self.live_stacker is not None
+        if not (was_looping or had_stack):
+            return False
+        if was_looping:
+            # AWAITED, not fire-and-forget: the loop's in-flight ``expose`` has
+            # to release the capture lock before we take it, or the very first
+            # solve races the corpse of the loop and 409s — which is the bug.
+            await self.stop_loop_and_wait()
+        if had_stack:
+            self.stop_live_stack()
+        label = "Live View" if had_stack else "Loop capture"
+        restart = "Live" if had_stack else "Loop"
+        bus.log("warning",
+                f"{label} stopped: {what} needs the camera to plate-solve. "
+                f"Press {restart} again when it finishes.", "capture")
+        return True
+
     @property
     def looping(self) -> bool:
         return self._loop_task is not None and not self._loop_task.done()
@@ -2990,6 +3065,12 @@ class Hub:
         # an exposure is wasted when nothing trustworthy can solve.
         from . import providers as _providers
         solver = _providers.pick_solver(self)
+        # Only NOW take the camera off the live loop. Ordering is deliberate:
+        # ``pick_solver`` raises in <1 ms on a rig that has nothing trustworthy
+        # to solve with, and killing the user's Live View for a solve that was
+        # never going to run would be a pointless amputation. Everything above
+        # this line either raises or is free.
+        await self.yield_camera_for("plate solve")
         # Pointing hint from the mount -- drives ASTAP's near search and lets a
         # refusing SimSolver fail without inventing a centered solution. The mount
         # reports JNOW on a real Alpaca mount, so bring it back to J2000 (the frame
@@ -3074,6 +3155,15 @@ class Hub:
         error = None
         orientation = None
         epoch = self._motion_epoch
+        # Same camera conflict as solve_and_sync: every attempt below exposes
+        # through ``exposure_guard``, so a free-running live loop would refuse
+        # them one by one and the rotate would raise "plate solve failed" with a
+        # perfectly healthy solver. Placed AFTER the epoch snapshot on purpose —
+        # snapshotting after an await would read an epoch an abort had already
+        # bumped, and the fence check at the top of the loop would then wave the
+        # aborted rotation through. (Normally a no-op: goto_and_center yields the
+        # camera before it calls us; this covers the direct /api/rotator route.)
+        await self.yield_camera_for("rotate to PA")
         for attempt in range(1, max_attempts + 1):
             # This fence gates only the NEXT attempt's dispatch below; it does
             # NOT cancel an in-flight ``rot.move_to`` from a PRIOR attempt —
@@ -3163,6 +3253,22 @@ class Hub:
         # it between attempts, so a STOP cancels the loop AND fences a slew that
         # was already mid-flight when the abort landed.
         epoch = self._motion_epoch
+        # Take the camera off the live loop BEFORE the mount moves, not lazily
+        # at the first solve. This is the fix for the half-finished slew: the
+        # centering loop treats a failed solve as "degrade to a raw GoTo and
+        # return", so if the loop is still holding the camera when attempt 1
+        # solves, ``goto_and_center`` gives up after one uncorrected slew and
+        # leaves the tube pointed wherever that landed. Stopping first means the
+        # solve fails only for real reasons (clouds, no stars, no solver).
+        #
+        # Deliberately AFTER the epoch snapshot above: snapshotting after this
+        # await would capture an epoch that an abort landing mid-teardown had
+        # already bumped, and the fence immediately below would then read
+        # "clean" and slew a mount the user had just stopped. Snapshot first,
+        # yield, then let the existing fence catch the abort. Deliberately after
+        # ``_check_solar`` too — a goto that is about to be refused for pointing
+        # near the Sun has no business killing the user's Live View first.
+        await self.yield_camera_for("centering (goto & plate solve)")
         async with self._motion_lock:
             if not self._motion_committed_clean(epoch):
                 bus.log("warning", "goto abandoned: aborted before motion", "mount")

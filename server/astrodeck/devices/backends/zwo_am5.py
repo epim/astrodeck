@@ -91,6 +91,11 @@ class ZwoAm5Telescope(Telescope):
         self._link = link
         self.firmware = ""
         self._last_pos: tuple[float, float] | None = None
+        #: True only between ":MS#" being accepted and the settle poll ending.
+        #: Initialized here (it used to exist only as a getattr default) because
+        #: it is now read on an ERROR path -- see _link_error, where an
+        #: AttributeError would replace an honest refusal with a crash.
+        self._slewing = False
         #: cache of the last-set drive rate -- the AM5's rate read-back is
         #: unreliable (no verified LX200 query for it), so get_tracking_rate
         #: returns this rather than round-tripping the mount.
@@ -119,18 +124,59 @@ class ZwoAm5Telescope(Telescope):
             f"{self.name}: {what} refused in current state — check limits / "
             "that a slew isn't already running (AM5 e14)")
 
+    def _link_error(self, what: str, exc: LinkError) -> DeviceError:
+        """Turn a transport failure into a refusal the OWNER can act on.
+
+        WHAT WENT WRONG (rig, same night as the capture/solve collision). The
+        user pressed tracking-on while a goto was still running and got:
+
+            409 - ZWO AM5 (native serial): tracking on failed: timeout waiting
+                  for ack on COM3
+
+        Every word of that is true and none of it is useful. It names a serial
+        port and an ack byte, so it reads as "your mount is broken / your cable
+        is bad" — when what actually happened is that the AM5 was busy driving
+        the axes and did not answer within the 1.5 s exchange window. The
+        mount's OTHER way of saying no (the ``e14#`` refusal) already gets an
+        honest sentence from ``_refused_error``; silence during a slew was the
+        one refusal channel still leaking the transport layer.
+
+        Note this is a REAL possibility only because ``/api/mount/tracking``
+        (and the other one-shot mount routes) do not take ``hub._motion_lock`` —
+        they can legitimately land in the middle of a slew this driver is still
+        settling.
+
+        DO NOT SWALLOW GENUINE FAULTS. The rewrite is gated on ``_slewing``,
+        which this driver sets only between an accepted ``:MS#`` and the end of
+        its settle poll. An unplugged cable, a dead port or a wedged mount with
+        NO slew in flight still surfaces the transport text verbatim, because
+        that text is the diagnosis in that case. The original ``LinkError`` is
+        chained either way, so the log/traceback keeps the wire detail."""
+        if self._slewing:
+            return DeviceError(
+                f"{self.name}: {what} refused — the mount is slewing and will "
+                "not answer until it stops. Wait for the goto to finish, or "
+                "press Stop.")
+        return DeviceError(f"{self.name}: {what} failed: {exc}")
+
     async def _cmd_ack(self, cmd: str, what: str) -> None:
         """Send an ack-class command; map e14 to the honest refusal error."""
         try:
             reply = await self._link.request(cmd, reply="ack")
         except LinkError as exc:
-            raise DeviceError(f"{self.name}: {what} failed: {exc}") from exc
+            raise self._link_error(what, exc) from exc
         if reply == lx200.REFUSED:
             raise await self._refused_error(what)
         if reply != lx200.ACK_OK:
             raise DeviceError(f"{self.name}: {what} rejected (reply {reply!r})")
 
     async def _get(self, cmd: str) -> str:
+        # NOT routed through _link_error, deliberately. The busiest caller of
+        # this method IS the settle poll inside slew() -- it reads GR/GD every
+        # 500 ms with _slewing True -- and that loop needs the transport truth
+        # to decide whether to halt the mount. Rewriting its own reads into "the
+        # mount is slewing" would be circular and would hide a link that died
+        # mid-goto. Reads keep reporting what the wire did.
         try:
             return await self._link.request(cmd, reply="hash")
         except LinkError as exc:
@@ -305,7 +351,15 @@ class ZwoAm5Telescope(Telescope):
         stays under SETTLE_DEG across two consecutive polls. Cancel-safe: a
         CancelledError (or timeout) halts the mount with :Q# first."""
         await self._set_target(ra_hours, dec_deg)
-        reply = await self._link.request("MS", reply="ack")
+        try:
+            reply = await self._link.request("MS", reply="ack")
+        except LinkError as exc:
+            # This raw ``request`` was the one ack-class send in the driver that
+            # bypassed _cmd_ack, so a silent mount here escaped as a LinkError —
+            # not a DeviceError — and the API's ``except DeviceError`` handlers
+            # let it through as a 500 instead of a 409. A second goto fired
+            # while the first is still settling lands exactly here.
+            raise self._link_error("goto", exc) from exc
         if reply == lx200.REFUSED:
             raise await self._refused_error("goto")
         # LX200 :MS# convention: '0' = slew accepted; anything else = refused.

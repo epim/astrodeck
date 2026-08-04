@@ -189,6 +189,119 @@ async def test_e14_refusal_is_labeled_honestly(fixed_env, gps, expect):
         assert "parked" not in str(exc.value)   # never send the user to unpark
 
 
+# ------------------------------------------- telescope: silence during a slew
+#
+# The AM5's OTHER way of saying no. ``e14#`` (above) is an explicit refusal and
+# already gets a plain-English sentence. A mount that is busy driving the axes
+# simply does not answer inside the 1.5 s exchange window, and that path used to
+# hand the user the transport text straight through. From the rig:
+#
+#     409 - ZWO AM5 (native serial): tracking on failed: timeout waiting for
+#           ack on COM3
+#
+# Every word true, none of it actionable: it names a COM port and an ack byte,
+# so it reads as "your mount is broken" when it means "the mount is busy
+# slewing". ``/api/mount/tracking`` does not take hub._motion_lock, so landing
+# mid-slew is an ordinary thing for a user to do.
+
+def _silent_ack(port: str = "COM3"):
+    """Script entry: mount never answers an ack-class command (rig's wording)."""
+    def _raise(cmd):
+        raise LinkError(f"timeout waiting for ack on {port}")
+    return _raise
+
+
+def _silent_read(port: str = "COM3"):
+    """Script entry: mount never answers a hash-class read."""
+    def _raise(cmd):
+        raise LinkError(f"timeout waiting for '#' on {port} (got b'')")
+    return _raise
+
+
+async def test_slewing_flag_starts_false(fixed_env):
+    """``_slewing`` is now read on an ERROR path, so it must exist from
+    construction — a getattr default is not enough once a real attribute lookup
+    can turn an honest refusal into an AttributeError."""
+    tel = am5.ZwoAm5Telescope(FakeLink(_connect_script()))
+    assert tel._slewing is False
+    assert await tel.is_slewing() is False
+
+
+async def test_ack_timeout_mid_slew_blames_the_slew_not_the_cable(fixed_env):
+    s = _connect_script()
+    s["Te"] = _silent_ack()
+    fl, tel = await _connected_tel(s)
+    tel._slewing = True                      # a goto is still settling
+    with pytest.raises(DeviceError) as exc:
+        await tel.set_tracking(True)
+    msg = str(exc.value)
+    assert "slewing" in msg and "Stop" in msg
+    # The serial layer must not be in the sentence the OWNER reads. (Matching on
+    # the phrase, not the bare word "ack" — "tracking" contains it.)
+    assert "COM3" not in msg
+    assert "waiting for ack" not in msg
+    # ...but it is still chained, so the log/traceback keeps the wire detail.
+    assert isinstance(exc.value.__cause__, LinkError)
+    assert "COM3" in str(exc.value.__cause__)
+
+
+async def test_ack_timeout_with_the_mount_idle_still_surfaces_the_serial_fault(fixed_env):
+    """The rewrite is gated on ``_slewing`` precisely so this case is untouched:
+    an unplugged cable / dead port with NO slew running is a genuine transport
+    fault, and the transport text IS the diagnosis."""
+    s = _connect_script()
+    s["Te"] = _silent_ack()
+    fl, tel = await _connected_tel(s)
+    assert tel._slewing is False
+    with pytest.raises(DeviceError) as exc:
+        await tel.set_tracking(True)
+    msg = str(exc.value)
+    assert "timeout waiting for ack on COM3" in msg
+    assert "slewing" not in msg
+
+
+async def test_goto_silence_is_a_device_error_not_a_raw_link_error(fixed_env):
+    """``slew``'s ``:MS#`` was the one ack-class send that bypassed ``_cmd_ack``,
+    so a silent mount escaped as a ``LinkError`` — which the API's
+    ``except DeviceError`` handlers do not catch, turning a busy mount into a
+    500 instead of a 409."""
+    s = _connect_script()
+    s["Sr11:00:00"] = "1"
+    s["Sd+45*00:00"] = "1"
+    s["MS"] = _silent_ack()
+    fl, tel = await _connected_tel(s)
+    with pytest.raises(DeviceError) as exc:
+        await tel.slew(11.0, 45.0)
+    assert not isinstance(exc.value, LinkError)
+    assert "timeout waiting for ack on COM3" in str(exc.value)   # idle: wire truth
+
+
+async def test_a_second_goto_while_the_first_is_settling_is_honest(fixed_env):
+    """Target-set is ack-class too, so a re-issued goto hits ``_cmd_ack`` before
+    it ever reaches ``:MS#``."""
+    s = _connect_script()
+    s["Sr11:00:00"] = _silent_ack()
+    fl, tel = await _connected_tel(s)
+    tel._slewing = True
+    with pytest.raises(DeviceError, match="slewing"):
+        await tel.slew(11.0, 45.0)
+
+
+async def test_reads_still_report_the_wire_even_mid_slew(fixed_env):
+    """Reads are deliberately NOT rewritten: the busiest caller of ``_get`` is
+    the settle poll INSIDE ``slew`` itself, and it needs the transport truth to
+    decide whether to halt the mount. Telling that loop "the mount is slewing"
+    would be circular and would hide a link that died mid-goto."""
+    s = _connect_script()
+    fl, tel = await _connected_tel(s)
+    tel._slewing = True
+    fl.script["GAT"] = _silent_read()
+    with pytest.raises(DeviceError) as exc:
+        await tel.get_tracking()
+    assert "read failed" in str(exc.value)
+    assert "COM3" in str(exc.value)
+
+
 # --------------------------------------------------------- telescope: tracking rate
 
 async def test_tracking_rate_sends_lx200_command_per_rate(fixed_env):
