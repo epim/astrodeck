@@ -264,3 +264,82 @@ async def test_an_abort_during_the_loop_teardown_still_fences_the_slew(sim_hub, 
 
     assert result["aborted"] is True
     assert slews == []
+
+
+# ------------------------------------------------------- the fourth caller: TPPA
+
+@pytest.mark.asyncio
+async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
+        sim_hub, _hang_the_loop, monkeypatch):  # noqa: F811
+    """The caller the first pass MISSED, and the worst one to miss.
+
+    Native TPPA is a camera-owning MOUNT-MOTION path: solve, rotate 12 deg in RA,
+    solve, rotate 12 deg, solve. Losing the camera part-way does not merely fail
+    the alignment -- it abandons the tube 12 or 24 degrees from wherever the user
+    pointed it, with the session dead and only a log line about a camera to say
+    why. With 30 s subs the loop holds the capture lock most of the time, so that
+    was the LIKELY outcome, not the unlucky one.
+
+    Drives the real `_drive` and records `hub.looping` at every RA rotation: the
+    property is that the loop is gone BEFORE the mount first moves, not merely at
+    some point during the run.
+    """
+    from astrodeck.polar import native as nat
+
+    looping_at_each_rotate = []
+
+    async def watching_rotate(hub, tel, epoch, result):
+        looping_at_each_rotate.append(hub.looping)
+
+    monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)
+    await _start_wedged_loop(sim_hub)
+    assert sim_hub.looping is True
+
+    # The stubbed rotation records instead of moving, so all three solves land on
+    # the same sky and the circle fit rejects them ("mount did not move between
+    # points"). That is expected and irrelevant: the subject here is the ORDERING
+    # of the camera yield against the first mount motion, and the run reaches the
+    # fit only by getting past every rotation first.
+    with pytest.raises(ValueError, match="did not move"):
+        await nat._drive(_FakeSession(), sim_hub)
+
+    assert looping_at_each_rotate, "the mount never rotated; the test proved nothing"
+    assert not any(looping_at_each_rotate), (
+        "the live loop was still running when TPPA moved the mount")
+    status = await sim_hub.poll_status()
+    assert status["looping"] is False
+    assert status["live_stack_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_polar_yield_is_ordered_after_the_pole_refusal(sim_hub, monkeypatch):  # noqa: F811
+    """Same rule the sun-cone test pins for goto: a run about to be refused must
+    not amputate someone's Live View on the way out. The mount-side pole check
+    runs BEFORE the yield, so a TPPA started at the parked position -- which is
+    where a mount usually sits -- leaves the loop alone."""
+    from astrodeck.polar import native as nat
+
+    yielded = []
+
+    async def spy(what):
+        yielded.append(what)
+        return True
+    monkeypatch.setattr(sim_hub, "yield_camera_for", spy)
+
+    async def at_the_pole(tel):
+        return 89.99
+    monkeypatch.setattr(nat, "_mount_dec", at_the_pole)
+
+    with pytest.raises(DeviceError):
+        await nat._drive(_FakeSession(), sim_hub)
+    assert yielded == [], "a run refused at the pole must not stop the loop"
+
+
+class _FakeSession:
+    """Minimal stand-in: _drive only ever calls _publish on it."""
+
+    def __init__(self):
+        self.published = []
+
+    def _publish(self, **kw):
+        self.published.append(kw)
