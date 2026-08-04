@@ -321,6 +321,38 @@ def test_monitor_snapshot_route(tmp_path, monkeypatch):
         body = r.json()
         assert set(body) >= {"sequence", "status", "preview_id", "guide_recent"}
         assert "running" in body["sequence"]   # live engine state, not just last
+        assert "polar" in body and "running" in body["polar"]
+    finally:
+        loop.run_until_complete(hub_module.hub.disconnect_all())
+        loop.close()
+
+
+def test_monitor_snapshot_carries_a_polar_refusal_across_a_reload(tmp_path,
+                                                                  monkeypatch):
+    """A refusal is the aligner state that MOST needs to survive a reload.
+
+    Polar reaches the client only as a bus event, and its terminal states —
+    "too close to the pole to measure", an error, a finished measurement —
+    publish exactly once with no history. So a page reload put the panel back on
+    the cold default: an idle aligner, no numbers, no reason. The user then
+    re-runs the run that had just refused and gets the same silence.
+    """
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(hub_module, "CAPTURE_DIR", tmp_path)
+    from astrodeck.api.app import create_app
+    client = TestClient(create_app())
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(hub_module.hub.connect_sim())
+        # the shape a refusal leaves behind on the hub
+        hub_module.hub.polar.state.update({
+            "state": "error",
+            "message": "too close to the pole to measure (dec 88.4°)",
+        })
+        body = client.get("/api/monitor/snapshot").json()
+        assert body["polar"]["state"] == "error"
+        assert "too close to the pole" in body["polar"]["message"], (
+            f"the reason must survive the reload, got {body['polar']}")
     finally:
         loop.run_until_complete(hub_module.hub.disconnect_all())
         loop.close()
