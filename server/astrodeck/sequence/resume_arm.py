@@ -197,12 +197,34 @@ class ResumeArm:
         except Exception:  # noqa: BLE001 — no focuser is not a refusal
             pos = None
         if pos is not None and not _fp.verdict(focuser_position=pos).focus_trusted:
-            bus.log("info", "focuser lost its position across the restart — "
-                            "running autofocus before resuming", "sequence")
-            try:
-                await self._autofocus()
-            except Exception as e:  # noqa: BLE001
-                return f"autofocus after restart failed: {e}"
+            # SAME CONFIGURATION-VERSUS-CONDITIONS SPLIT AS THE SOLVER BELOW, and
+            # it was missing here until CI found it. A rig with no autofocus
+            # provider at all — no native engine, no NINA — cannot autofocus on
+            # ANY night; its owner focuses by hand and images anyway. Treating
+            # that as a refusal did not make it safer, it deleted auto-resume for
+            # that rig entirely and silently: the tick refused, armed the
+            # ten-minute backoff, and did it again forever, with the real reason
+            # only in a log line nobody was reading.
+            #
+            # So "no autofocus provider configured" degrades to a warning and the
+            # run resumes at the focuser's current position, which is precisely
+            # what that rig would have been doing unattended anyway. "There IS a
+            # provider and it failed" still refuses — that is a real inability to
+            # recover focus, and resuming a night that will produce nothing but
+            # bloated stars is worse than waiting.
+            if not self._can_autofocus():
+                bus.log("warning",
+                        "the focuser lost its position across the restart and no "
+                        "autofocus provider is configured — resuming at its "
+                        "current position, so check focus before trusting "
+                        "tonight's frames", "sequence")
+            else:
+                bus.log("info", "focuser lost its position across the restart — "
+                                "running autofocus before resuming", "sequence")
+                try:
+                    await self._autofocus()
+                except Exception as e:  # noqa: BLE001
+                    return f"autofocus after restart failed: {e}"
 
         # 2. POINTING — ALWAYS re-measure. Never gated on the fingerprint.
         #
@@ -292,6 +314,29 @@ class ResumeArm:
         try:
             from .. import providers as _providers
             return _providers.pick_solver(self.hub) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _can_autofocus(self) -> bool:
+        """Can this rig autofocus at all RIGHT NOW?
+
+        The counterpart to :meth:`_can_solve`, and asked the same way: through
+        the provider resolver, so this and the real autofocus path can never
+        disagree about what the rig can do. ``_autofocus`` runs the NATIVE
+        engine, so the question reduces to whether that engine is importable —
+        a host without the Rust wheel has no autofocus, and answering "yes"
+        there would send the ladder into a refusal it can never clear.
+
+        Any failure to resolve reads as no, matching ``_can_solve``: the
+        conservative answer degrades to a warning at the call site, never to a
+        refusal.
+        """
+        try:
+            from .. import providers as _providers
+            if not getattr(_providers, "NATIVE_AVAILABLE", False):
+                return False
+            self.hub.require("focuser")
+            return True
         except Exception:  # noqa: BLE001
             return False
 
