@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from . import cooling
 from .config import config_store, fov_deg, image_scale_arcsec_px, redacted
 from .persist import read_json_or, write_json_atomic
 from .devices.base import (
@@ -361,6 +362,19 @@ class Hub:
         # with the wrong exposure metadata / InvalidOperation).
         self._capture_lock: asyncio.Lock = asyncio.Lock()
         self._capture_busy: str | None = None
+        # --- cooler warm-down ramp (2026-08-04) ---------------------------------
+        # The background task that walks the cooler setpoint up to ambient before
+        # switching the TEC off, and the state dict the Capture screen renders.
+        # The task lives on the HUB, not on the sequence engine, on purpose: the
+        # unattended ``abort_park_warm`` path fires when something is already
+        # wrong, so it must be able to START the warm and walk away — a wind-down
+        # that waited ten minutes for a ramp would delay the park and the roof
+        # close. _warm_lock serialises start/cancel so two warms cannot race and
+        # a "Cool" pressed mid-ramp wins cleanly instead of being overwritten by
+        # the next scheduled setpoint step.
+        self._warm_task: asyncio.Task | None = None
+        self._warm_state: dict | None = None
+        self._warm_lock: asyncio.Lock = asyncio.Lock()
         # --- guide-cam preview (guide_preview_png) ------------------------------
         # The exposure in flight, shared between overlapping callers: the panel
         # swaps a cache-busted <img src> every 2.5s whether or not the previous
@@ -926,6 +940,16 @@ class Hub:
         self.stop_wcs_worker()              # per-frame-wcs R1: never outlive the hub
         self.live_stacker = None            # NOV-1: release the accumulator on teardown
         self.bahtinov = None                # NOV-12: disarm the focus aid on teardown
+        # Warm ramp: FINALIZE (cooler off), do not merely cancel. The devices are
+        # about to be disconnected a few lines below, so a cancelled ramp would
+        # leave the camera holding whatever mid-ramp setpoint it happened to be
+        # on — a temperature nobody chose, on a camera nothing is talking to any
+        # more. Switching off IS the warm's intended destination, so completing
+        # it early is the only defined end state available here. Best-effort and
+        # bounded inside cancel_warm; a teardown must not be blockable by a
+        # wedged cooler.
+        with contextlib.suppress(Exception):
+            await self.cancel_warm("the rig is disconnecting", finalize=True)
         await self.polar.stop()
         if self._status_task and not self._status_task.done():
             self._status_task.cancel()
@@ -2698,6 +2722,414 @@ class Hub:
         return {"gain": int(gain), "egain": float(value), "applied": applied,
                 "learned": dict(self._egain_learned)}
 
+    # --------------------------------------------------- cooler warm-down ramp
+    #
+    # The bug this replaces (2026-08-04): "Warm" was one ``set_cooler(False)``.
+    # The owner heard the TEC stop and measured 8.3 → 11.8 °C in ~40 s on the
+    # live camera — ~5 °C/min, which is a cold sensor equalising with the room,
+    # not a controlled warm-up. Thermal shock across the sensor/cold-finger and
+    # condensation inside the chamber are the costs, and the path that did it
+    # most often (``abort_park_warm``) runs with nobody watching.
+    #
+    # Everything below is built around three constraints:
+    #   * NON-BLOCKING — the safety path fires when something is already wrong,
+    #     so ``warm_camera`` spawns and returns; it must never delay a park or a
+    #     roof close.
+    #   * INTERRUPTIBLE with a DEFINED end state — a cancel either hands the
+    #     cooler to a new owner (Cool) or completes the warm the fast way
+    #     (switch off). The camera is never left mid-ramp holding a setpoint
+    #     nobody chose.
+    #   * LOUD ON FALLBACK — if the sensor cannot be read, or config turned the
+    #     ramp off, we still switch the cooler off, but the log SAYS the ramp did
+    #     not run. A silent fallback to the bug is worse than the bug, because
+    #     SafetyLimitsPanel goes on promising a safe ramp.
+
+    async def _warm_read_temp(self, cam: Any) -> float | None:
+        """Bounded sensor read. None on timeout/driver error — the ramp treats
+        "cannot measure" as a hard reason NOT to pretend it is ramping."""
+        try:
+            value = await asyncio.wait_for(cam.get_temperature(),
+                                           cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        return None if value is None else float(value)
+
+    async def _warm_read_ambient(self, cam: Any) -> float | None:
+        """Rig-measured ambient, when the backend has it (most do not). Optional
+        seam via getattr so a device object that predates the hook — every test
+        fake, for one — is simply "cannot measure" rather than an AttributeError
+        on the safety path."""
+        getter = getattr(cam, "get_ambient_temperature", None)
+        if not callable(getter):
+            return None
+        try:
+            value = await asyncio.wait_for(getter(), cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return None
+        return None if value is None else float(value)
+
+    def warm_state(self) -> dict | None:
+        """The warm-ramp state for ``poll_status``, or None when there is nothing
+        to report. A FINISHED warm lingers for ``WARM_STATE_RETAIN_S`` so the
+        Capture screen can say "warm complete" — without it the panel snaps back
+        to a plain "Off" that looks identical to the old cut-it-dead bug, which
+        is exactly the ambiguity this whole change exists to remove."""
+        state = self._warm_state
+        if state is None:
+            return None
+        if not state.get("active"):
+            done_at = state.get("_finished_monotonic")
+            if done_at is None or (time.monotonic() - done_at) > cooling.WARM_STATE_RETAIN_S:
+                return None
+        # strip private bookkeeping; round so the WS diff is stable poll to poll
+        out = {k: v for k, v in state.items() if not k.startswith("_")}
+        for key in ("start_c", "ambient_c", "setpoint_c", "temp_c", "rate_c_per_min"):
+            if isinstance(out.get(key), (int, float)):
+                out[key] = round(float(out[key]), 2)
+        for key in ("elapsed_s", "eta_s"):
+            if isinstance(out.get(key), (int, float)):
+                out[key] = int(round(out[key]))
+        return out
+
+    async def cool_camera(self, target_c: float | None = None) -> None:
+        """Cool to ``target_c``. Cancels any warm ramp FIRST so the two cannot
+        fight: without the cancel, the ramp's next scheduled step (≤15 s away)
+        would quietly overwrite the setpoint the user just chose, and the Capture
+        screen would show a target the camera was not holding."""
+        cam: Camera = self.require("camera")
+        await self.cancel_warm("cooling was requested", finalize=False)
+        await cam.set_cooler(True, target_c)
+
+    async def cancel_warm(self, reason: str, *, finalize: bool) -> bool:
+        """Stop an in-flight warm ramp. Returns True if one was actually running.
+
+        ``finalize=True`` finishes the warm the fast way (cooler OFF) — for "stop
+        the ramp, I want it off now" and for rig teardown. ``finalize=False`` is
+        for a caller taking ownership of the cooler in the very next statement
+        (``cool_camera``); it is the ONLY case where leaving the TEC on is a
+        defined state, because the caller is about to define it."""
+        async with self._warm_lock:
+            was_running = await self._cancel_warm_locked(reason)
+            if was_running and finalize:
+                cam = self.devices.get("camera")
+                if cam is not None and getattr(cam, "connected", False):
+                    try:
+                        await asyncio.wait_for(cam.set_cooler(False),
+                                               cooling.WARM_CMD_TIMEOUT_S)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        bus.log("warning", f"could not switch the cooler off after "
+                                           f"stopping the warm ramp: {e}", "camera")
+            return was_running
+
+    async def _cancel_warm_locked(self, reason: str) -> bool:
+        """Cancel the ramp task and await its death. Caller holds ``_warm_lock``.
+
+        The CANCELLER does the device work (see ``cancel_warm``), never the
+        cancelled task: a task being torn down cannot be trusted to complete an
+        await against a USB driver, and "the cooler is off" is too important to
+        hang off that."""
+        task = self._warm_task
+        self._warm_task = None
+        if task is None or task.done():
+            return False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+        state = self._warm_state
+        if state is not None:
+            # Unconditionally, NOT gated on state["active"]: the task's own
+            # ``finally`` has already flipped that False on its way out and
+            # stamped its default "warm complete" note. Gating here left every
+            # cancelled ramp claiming, in the UI and the log, that it had
+            # finished — the one sentence a cancel must never produce.
+            state["active"] = False
+            state["note"] = f"stopped: {reason}"
+            state["_finished_monotonic"] = time.monotonic()
+        bus.log("info", f"camera warm ramp stopped — {reason}", "camera")
+        return True
+
+    async def warm_camera(self, *, source: str = "user", ramp: bool = True) -> dict:
+        """Warm the camera and return IMMEDIATELY with the warm state.
+
+        ``ramp=False`` is the deliberate escape hatch: switch the cooler off now,
+        no ramp, logged as such. Everything else runs the ramp in the background.
+
+        Never raises for "nothing to do" — a camera with no cooler, or one that is
+        already at ambient, returns an inactive state with the reason in ``note``.
+        It DOES raise DeviceError when there is no camera at all, so the route can
+        answer 400 rather than silently succeeding at nothing."""
+        cam: Camera = self.require("camera")
+        if not getattr(cam, "can_cool", False):
+            return self._warm_finished_state(source, f"{cam.name} has no cooler",
+                                             ramped=False)
+        async with self._warm_lock:
+            if self._warm_task is not None and not self._warm_task.done():
+                if ramp:
+                    # Two warms must not race. The second one JOINS the first
+                    # rather than starting a rival stepper on the same setpoint.
+                    bus.log("info", "warm already in progress — leaving it running",
+                            "camera")
+                    return self.warm_state() or {}
+                await self._cancel_warm_locked("an immediate warm was requested")
+
+            cfg = config_store.cfg()
+            if not ramp or not cooling.warm_ramp_enabled(cfg):
+                why = ("at the caller's request" if not ramp
+                       else "cooling.warm_ramp is turned off in config")
+                return await self._warm_now(cam, source, why, level="warning")
+
+            start_c = await self._warm_read_temp(cam)
+            if start_c is None:
+                # The measurement IS the ramp: without a starting temperature we
+                # cannot pick a setpoint schedule, and a made-up one could command
+                # the cooler COLDER than it is. Fall back — and say so, because
+                # the alternative is the product quietly doing the old thing.
+                return await self._warm_now(
+                    cam, source,
+                    "this camera cannot report its sensor temperature, so the "
+                    "setpoint ramp has nothing to follow", level="warning")
+
+            measured_ambient = await self._warm_read_ambient(cam)
+            ambient_c, ambient_from = cooling.warm_ambient_c(cfg, start_c,
+                                                             measured_ambient)
+            rate = cooling.warm_rate_c_per_min(cfg)
+            if cooling.warm_is_pointless(start_c, ambient_c):
+                return await self._warm_now(
+                    cam, source,
+                    f"the sensor is already at {start_c:.1f} °C, at or above "
+                    f"ambient — nothing to ramp", level="info")
+
+            duration_s = cooling.warm_duration_s(start_c, ambient_c, rate)
+            delegated = bool(getattr(cam, "self_warms", False))
+            self._warm_state = {
+                "active": True,
+                "source": source,
+                "ramped": True,
+                "delegated": delegated,
+                "start_c": start_c,
+                "ambient_c": ambient_c,
+                "ambient_from": ambient_from,
+                "setpoint_c": start_c,
+                "temp_c": start_c,
+                "rate_c_per_min": rate,
+                "elapsed_s": 0,
+                "eta_s": duration_s,
+                "note": "",
+                "_started_monotonic": time.monotonic(),
+                "_finished_monotonic": None,
+            }
+            if delegated:
+                # The backend owns the ramp (NINA). Hand it the DURATION our rate
+                # implies and track the clock so the UI still has a progress bar —
+                # two rampers stepping one setpoint would fight.
+                minutes = cooling.warm_minutes(start_c, ambient_c, rate)
+                warm_fn = getattr(cam, "warm", None)
+                try:
+                    if callable(warm_fn):
+                        await asyncio.wait_for(warm_fn(minutes),
+                                               cooling.WARM_CMD_TIMEOUT_S)
+                    else:
+                        await asyncio.wait_for(cam.set_cooler(False),
+                                               cooling.WARM_CMD_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._warm_state = None
+                    return await self._warm_now(
+                        cam, source, f"the backend refused the timed warm ({e})",
+                        level="warning")
+                bus.log("info", f"warming camera — {cam.name} is running its own "
+                                f"{minutes} min ramp from {start_c:.1f} °C toward "
+                                f"{ambient_c:.1f} °C ({ambient_from})", "camera")
+            else:
+                bus.log("info", f"warming camera — ramping the setpoint "
+                                f"{start_c:.1f} → {ambient_c:.1f} °C ({ambient_from}) "
+                                f"at {rate:g} °C/min, about "
+                                f"{duration_s / 60.0:.0f} min, in the background",
+                        "camera")
+            self._warm_task = asyncio.create_task(
+                self._warm_ramp(cam, delegated=delegated))
+            return self.warm_state() or {}
+
+    def _warm_finished_state(self, source: str, note: str, *,
+                             ramped: bool) -> dict:
+        """Record a warm that is already over (no ramp ran, or nothing to ramp)
+        so the UI and the log agree on what happened."""
+        self._warm_state = {
+            "active": False, "source": source, "ramped": ramped,
+            "delegated": False, "start_c": None, "ambient_c": None,
+            "ambient_from": None, "setpoint_c": None, "temp_c": None,
+            "rate_c_per_min": None, "elapsed_s": 0, "eta_s": None,
+            "note": note,
+            "_started_monotonic": time.monotonic(),
+            "_finished_monotonic": time.monotonic(),
+        }
+        return self.warm_state() or {}
+
+    async def _warm_now(self, cam: Any, source: str, why: str,
+                        *, level: str = "warning") -> dict:
+        """The un-ramped path: switch the cooler off immediately, and SAY SO.
+
+        This is the pre-fix behaviour, kept because there are real reasons to
+        reach it (no temperature readout, ramp disabled, already at ambient) —
+        but never silently. ``level="warning"`` routes through the alert
+        dispatcher, so an unattended rig that fell back to cutting the TEC dead
+        actually tells somebody."""
+        # A backend that owns its ramp needs to be told explicitly NOT to ramp:
+        # NinaCamera.set_cooler(False) now sends a computed duration, so calling
+        # it here would start a ten-minute warm on the "cut it now" path. 0 is
+        # NINA's own warm-IMMEDIATELY sentinel — the value that caused this bug,
+        # used here on purpose because immediately is what was asked for.
+        warm_fn = getattr(cam, "warm", None)
+        try:
+            if getattr(cam, "self_warms", False) and callable(warm_fn):
+                await asyncio.wait_for(warm_fn(0), cooling.WARM_CMD_TIMEOUT_S)
+            else:
+                await asyncio.wait_for(cam.set_cooler(False),
+                                       cooling.WARM_CMD_TIMEOUT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            bus.log("error", f"could not switch the cooler off: {e}", "camera")
+            return self._warm_finished_state(source, f"cooler command failed: {e}",
+                                             ramped=False)
+        if level == "info":
+            bus.log("info", f"cooler off — {why}", "camera")
+        else:
+            bus.log(level, f"cooler switched off WITHOUT a warm ramp — {why}. The "
+                           "sensor will equalise with ambient on its own (~5 °C/min "
+                           "measured on this rig)", "camera")
+        return self._warm_finished_state(source, why, ramped=False)
+
+    async def _warm_ramp(self, cam: Any, *, delegated: bool) -> None:
+        """The background ramp. Steps the SETPOINT toward ambient and switches
+        the TEC off only at the end (or when the sensor stops following, which is
+        the same thing: the cooler has nothing left to do).
+
+        Cancellation is expected, not exceptional — see ``_cancel_warm_locked``
+        for who does the device work in that case."""
+        state = self._warm_state or {}
+        start_c = float(state.get("start_c") or 0.0)
+        ambient_c = float(state.get("ambient_c") or 0.0)
+        rate = float(state.get("rate_c_per_min") or cooling.WARM_RATE_C_PER_MIN)
+        setpoint = start_c
+        lagging = 0
+        note = "warm complete"
+        # Absolute budget so a camera that never converges cannot leave a task
+        # (and a "warming…" chip) alive all night. 3x the schedule, floor 10 min,
+        # ceiling 1 h — generous, because ending EARLY is the failure mode that
+        # hurts hardware.
+        planned_s = cooling.warm_duration_s(start_c, ambient_c, rate)
+        budget_s = min(3600.0, max(600.0, planned_s * 3.0))
+        started = time.monotonic()
+        try:
+            while True:
+                await asyncio.sleep(cooling.WARM_STEP_S)
+                elapsed = time.monotonic() - started
+                temp = await self._warm_read_temp(cam)
+                if temp is not None:
+                    state["temp_c"] = temp
+                if delegated:
+                    # The backend is ramping; we only track time so the UI has a
+                    # bar and the log has an end. Its own setpoint is not ours to
+                    # step, and reading it back per-poll would cost an API call
+                    # per 15 s for no decision we would make differently.
+                    state["elapsed_s"] = elapsed
+                    state["eta_s"] = max(0.0, planned_s - elapsed)
+                    if elapsed >= planned_s:
+                        note = "warm complete (backend ramp)"
+                        break
+                    if elapsed > budget_s:
+                        note = "backend ramp overran its schedule"
+                        break
+                    continue
+                # The sensor no longer following the setpoint means the TEC has
+                # stopped being the thing setting the temperature — i.e. we have
+                # climbed past the REAL ambient. That is the ramp's natural end,
+                # and switching off there is thermally a no-op. Requiring two
+                # consecutive breaches rides out a stale reading right after a
+                # setpoint change.
+                if temp is not None and (setpoint - temp) > cooling.WARM_MAX_LEAD_C:
+                    lagging += 1
+                    if lagging >= cooling.WARM_LEAD_CHECKS:
+                        note = (f"sensor stopped following the setpoint at "
+                                f"{temp:.1f} °C — already at ambient")
+                        break
+                    continue          # hold the schedule; do not open the gap wider
+                lagging = 0
+                setpoint = cooling.warm_next_setpoint_c(setpoint, ambient_c, rate)
+                try:
+                    # ``True`` here is not a mistake: every step RE-ASSERTS the
+                    # cooler as on at the new setpoint. That is the whole
+                    # mechanism — the TEC stays engaged and does the warming,
+                    # under control, right up until the last line of this
+                    # routine. It also means a warm started against an
+                    # already-off cooler that is still cold re-engages the TEC to
+                    # walk it up, which is deliberate: a cold sensor is a cold
+                    # sensor however it got that way.
+                    await asyncio.wait_for(cam.set_cooler(True, setpoint),
+                                           cooling.WARM_CMD_TIMEOUT_S)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # A driver that will not take a setpoint cannot be ramped.
+                    # Finish the warm rather than sit here holding it cold.
+                    note = f"cooler refused a setpoint ({e}) — finishing the warm"
+                    bus.log("warning", f"warm ramp: {note}", "camera")
+                    break
+                state["setpoint_c"] = setpoint
+                state["elapsed_s"] = elapsed
+                state["eta_s"] = max(0.0, (ambient_c - setpoint) / rate * 60.0)
+                if setpoint >= ambient_c - 1e-6:
+                    if temp is None or temp >= ambient_c - cooling.WARM_MAX_LEAD_C:
+                        break
+                    # setpoint is at ambient but the sensor is still well below
+                    # it: keep polling — the lead check above ends this within
+                    # two more steps, and the budget backstops that.
+                if elapsed > budget_s:
+                    note = "warm ramp ran out of time — switching the cooler off"
+                    bus.log("warning", note, "camera")
+                    break
+            # Only NOW does the TEC actually stop. Everything above exists so
+            # that this line is a no-op thermally instead of a 5 °C/min plunge
+            # into the room.
+            try:
+                await asyncio.wait_for(cam.set_cooler(False),
+                                       cooling.WARM_CMD_TIMEOUT_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                note = f"ramp finished but the cooler would not switch off: {e}"
+                bus.log("error", note, "camera")
+            else:
+                bus.log("info", f"camera warm finished — {note}; cooler off",
+                        "camera")
+        except asyncio.CancelledError:
+            # The canceller owns the end state (cool_camera re-cools; cancel_warm
+            # with finalize switches off). Just record that we stopped.
+            raise
+        except Exception as e:
+            # Anything unexpected in here would otherwise die as an unretrieved
+            # task exception and leave the camera holding a mid-ramp setpoint
+            # forever, with the UI still saying "warming". The warm still ends.
+            note = f"warm ramp failed: {e}"
+            bus.log("error", f"{note} — switching the cooler off", "camera")
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(cam.set_cooler(False),
+                                       cooling.WARM_CMD_TIMEOUT_S)
+        finally:
+            if self._warm_state is state and state.get("active"):
+                state["active"] = False
+                state["note"] = note
+                state["eta_s"] = 0
+                state["_finished_monotonic"] = time.monotonic()
+
     async def learn_filter_offsets(self, ref_slot: int | None = None,
                                    exposure_s: float = 2.0, gain: int = 120,
                                    step: int = 350, steps_each_side: int = 4,
@@ -3883,6 +4315,15 @@ class Hub:
                         out["camera"]["cooler"] = cooler
             except Exception:
                 pass
+            # Warm-down ramp progress (2026-08-04). Deliberately OUTSIDE the try
+            # above: the cooler probe is the flakiest call in this block, and the
+            # one moment the user most needs to see "warming, 6 min to go" is the
+            # moment a camera is mid-teardown and answering slowly. Attached only
+            # when a camera dict was actually built, so the UI never receives a
+            # half-populated camera object.
+            warm = self.warm_state()
+            if warm is not None and "camera" in out:
+                out["camera"]["warm"] = warm
         if self.guider and self.guider.connected:
             out["guider"] = self.guider.stats().__dict__ | {"name": self.guider.name}
         # Additive guide-camera descriptor so ConnectView can show the guiding

@@ -107,6 +107,11 @@ export interface RigStatus {
     max_gain: number;
     max_bin?: number; // UX-27: bin ceiling; UI offers 1..max_bin (default 4)
     cooler?: CoolerInfo; // monitor (Batch-2) — null/absent when no cooler
+    // Warm-down ramp progress (2026-08-04). Absent when no warm has run recently:
+    // the server keeps a FINISHED warm on status for ~3 min so the panel can say
+    // "warm complete" instead of snapping back to a bare "Off", which is what the
+    // old cut-the-TEC-dead bug also looked like.
+    warm?: WarmInfo;
     // photometry/SNR design Task 7: e-/ADU at the current gain (native adapters
     // only; 0/absent = unknown). Optional — older servers omit the field.
     egain?: number;
@@ -498,6 +503,36 @@ export interface CoolerInfo {
   can_report_power: boolean; // false => ThermometerBar degrades to on/off + target
 }
 
+export interface WarmInfo {
+  // under RigStatus.camera.warm — server-side shape: Hub.warm_state()
+  /** True while the ramp is still stepping. False = finished/stopped/never ran. */
+  active: boolean;
+  /** Who asked: "user" (the Warm button) or "wind-down" (the unattended
+   *  abort_park_warm safety path). Worth showing: a warm nobody pressed is news. */
+  source: string;
+  /** FALSE means the cooler was switched off with NO ramp — no temperature
+   *  readout, the ramp disabled in config, or already at ambient. The reason is
+   *  in `note`. This flag exists so the UI can never present the fallback and a
+   *  real ramp identically; a silent fallback to the old behaviour is worse than
+   *  the old behaviour, because the product goes on promising a safe ramp. */
+  ramped: boolean;
+  /** TRUE when the camera backend owns the ramp (NINA warms on a duration). The
+   *  setpoint is then not ours to report — progress is the clock. */
+  delegated: boolean;
+  start_c: number | null;
+  /** Where the ramp is climbing to. */
+  ambient_c: number | null;
+  /** "configured" | "measured" | "assumed" — how ambient_c was arrived at. */
+  ambient_from: string | null;
+  setpoint_c: number | null;
+  temp_c: number | null;
+  rate_c_per_min: number | null;
+  elapsed_s: number;
+  eta_s: number | null;
+  /** Human sentence: why it ended, or why no ramp ran. */
+  note: string;
+}
+
 export type MeridianStatus =
   | "n_a_fork" // mount reports no flip needed (fork/non-GEM): informational
   | "flip_disabled" // plan.meridian_flip === false on a GEM: WARNING (pier risk)
@@ -798,6 +833,8 @@ export interface AppConfig {
   //     `deadman_url` is the external healthcheck ping target. Tokens are blanked
   //     server-side via ConfigStore.redacted() before they reach the client. ---
   safety: SafetyConfig;
+  // Optional for the WS-bootstrap reason above — never assume it is present.
+  cooling?: CoolingConfig;
   escalation: EscalationConfig;
   alerts: AlertSink[];
   // Master-library matching + stacking tolerances (PRO-1). Optional for the same
@@ -1176,6 +1213,18 @@ export interface SafetyConfig {
   // On ⇒ instead of ending the run, close the roof, wait for safe-again, REOPEN and
   // resume. Off (default) ⇒ close_dome_on_unsafe still aborts (byte-identical).
   reopen_dome_when_safe: boolean;
+}
+
+/** Cooler warm-down policy (server: config.CoolingConfig). Lives beside the
+ *  safety block and is gated on the SAME capability (config.safety), because
+ *  the sentence it makes true — "park, then warm the camera at a safe ramp" —
+ *  is a safety-panel promise. Optional on the wire: the WS `hello` bootstrap
+ *  and any older server omit it, and every consumer must degrade to "the
+ *  default 2 °C/min ramp is on" rather than blanking the control. */
+export interface CoolingConfig {
+  warm_ramp: boolean;            // false = cut the TEC dead (the pre-2026-08-04 bug, opt-in)
+  warm_rate_c_per_min: number;   // ramp rate; server clamps to 0.1..20
+  warm_ambient_c: number | null; // null = work it out (measured, else assumed 20 °C)
 }
 
 /** PRO-1 master-library matching + stacking tolerances. Mirrors backend

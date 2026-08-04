@@ -2271,7 +2271,19 @@ class SequenceEngine:
         self._set_state(state="running", detail=f"cooling to {target_c:g}°C")
         bus.log("info", f"cooling camera to {target_c:g}°C", "sequence")
         try:
-            await asyncio.wait_for(cam.set_cooler(True, target_c), COOLER_CMD_TIMEOUT_S)
+            # Through the hub, not straight at the device: a warm-down ramp from
+            # the last run can still be walking the setpoint up (it is a hub-owned
+            # background task and deliberately outlives the run that started it),
+            # and hub.cool_camera CANCELS it before commanding. Without that, the
+            # ramp's next step — at most 15 s away — would quietly raise the
+            # setpoint we just set, and the plan's cooling wait would sit there
+            # watching the sensor climb away from its target.
+            cooler = getattr(self.hub, "cool_camera", None)
+            if callable(cooler):
+                await asyncio.wait_for(cooler(target_c), COOLER_CMD_TIMEOUT_S)
+            else:
+                await asyncio.wait_for(cam.set_cooler(True, target_c),
+                                       COOLER_CMD_TIMEOUT_S)
         except (asyncio.TimeoutError, Exception) as e:
             bus.log("warning", f"cooler command failed: {e}", "sequence")
             return self._cooling_failed(require, action,
@@ -2816,9 +2828,52 @@ class SequenceEngine:
         if warm:
             cam = self.hub.devices.get("camera")
             if cam and cam.connected and getattr(cam, "can_cool", False):
-                bus.log("info", "warming camera", "sequence")
+                # THIS is the path the warm-ramp fix was written for. Until
+                # 2026-08-04 it was a bare set_cooler(False): the unattended
+                # "park and warm" teardown — the one SafetyLimitsPanel promises
+                # ramps safely, the one that runs when a rain trip ends a night
+                # with nobody there — cut the TEC dead and let the sensor
+                # equalise with the air at ~5 °C/min (measured on the rig).
+                #
+                # hub.warm_camera STARTS the ramp and returns: the ramp itself
+                # runs on a hub-owned background task that outlives this run.
+                # That ordering is not incidental. A wind-down fires when
+                # something is already wrong, and the mount park and roof close
+                # above it are the time-critical parts — a ten-minute blocking
+                # warm here would delay both.
+                warmer = getattr(self.hub, "warm_camera", None)
                 try:
-                    await asyncio.wait_for(cam.set_cooler(False), COOLER_CMD_TIMEOUT_S)
+                    if callable(warmer):
+                        state = await asyncio.wait_for(
+                            warmer(source="wind-down"), COOLER_CMD_TIMEOUT_S)
+                        # Report what actually started, including the fallbacks:
+                        # "warming camera" over a cooler that was just cut dead
+                        # is the log line that let this bug live in the product.
+                        if state.get("active") and state.get("ramped"):
+                            bus.log("info",
+                                    f"warming camera in the background — "
+                                    f"{state.get('start_c')} → "
+                                    f"{state.get('ambient_c')} °C at "
+                                    f"{state.get('rate_c_per_min')} °C/min "
+                                    f"(the wind-down does not wait for it)",
+                                    "sequence")
+                        else:
+                            bus.log("info", f"cooler off during wind-down — "
+                                            f"{state.get('note') or 'no ramp ran'}",
+                                    "sequence")
+                    else:
+                        # Defensive: a hub double (tests, an embedder) without the
+                        # routine still warms — just without the ramp, and it says so.
+                        bus.log("warning", "this hub has no warm-ramp routine — "
+                                           "switching the cooler off outright",
+                                "sequence")
+                        await asyncio.wait_for(cam.set_cooler(False),
+                                               COOLER_CMD_TIMEOUT_S)
                 except asyncio.TimeoutError:
                     bus.log("warning", "warm-cooler command timed out during "
                                        "wind-down — continuing", "sequence")
+                except Exception as e:
+                    # Never let the warm abort the rest of the wind-down (the
+                    # same rule the park block above follows).
+                    bus.log("warning", f"could not start the camera warm during "
+                                       f"wind-down: {e}", "sequence")

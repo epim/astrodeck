@@ -112,6 +112,19 @@ def _reset_hub_singleton_locks():
     h._connect_lock = asyncio.Lock()
     h._capture_lock = asyncio.Lock()
     h._motion_lock = asyncio.Lock()
+    # Same loop-affinity trap for the warm-down ramp's lock (2026-08-04). It is
+    # touched by every warm/cool/teardown path, so without this the FIRST test to
+    # warm a camera would poison the singleton for every later test on a
+    # different loop.
+    h._warm_lock = asyncio.Lock()
+    # A ramp task left running by an earlier test would also outlive it, holding a
+    # reference to that test's (now closed) loop and its camera double. Drop the
+    # task and the state so each test starts from "no warm has ever run".
+    task = h._warm_task
+    if task is not None and not task.done():
+        task.cancel()
+    h._warm_task = None
+    h._warm_state = None
     yield
 
 

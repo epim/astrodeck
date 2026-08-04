@@ -459,6 +459,29 @@ class CalibrationConfig(BaseModel):
     max_stack_frames: int = Field(100, ge=1, le=1000)
 
 
+class CoolingConfig(BaseModel):
+    """Camera cooler warm-down policy (2026-08-04 warm-ramp fix; appended — old
+    configs load fine and get the protective defaults).
+
+    Before this block existed, every warm path was a bare ``set_cooler(False)``
+    and the sensor equalised with the room at ~5 °C/min — thermal shock plus
+    in-chamber condensation, unattended, on the safety path. See
+    ``astrodeck/cooling.py`` for where 2 °C/min comes from.
+
+    ``warm_ambient_c = None`` means "work it out" (a rig-measured ambient if any
+    backend reports one, else the assumed fallback). Setting it is for someone
+    who KNOWS their observatory runs at, say, 8 °C in winter and wants the ramp
+    to stop climbing there instead of assuming a heated room.
+
+    ``warm_ramp = False`` restores the pre-fix cut-it-dead behaviour for a camera
+    whose driver mishandles setpoint changes mid-warm. The hub logs loudly when
+    it takes that path — an unannounced fallback to the bug is worse than the
+    bug, because the product goes on claiming a safe ramp."""
+    warm_ramp: bool = True
+    warm_rate_c_per_min: float = Field(2.0, gt=0, le=20)
+    warm_ambient_c: float | None = Field(None, ge=-50, le=60)
+
+
 class WeatherConfig(BaseModel):
     """Weather forecast + radar integration (sub-project C). enabled gates ALL
     weather upstream calls (Open-Meteo, Astrospheric, IEM tile proxy): False
@@ -564,6 +587,10 @@ class AppConfig(BaseModel):
     survey: SurveyConfig = Field(default_factory=SurveyConfig)
     # --- weather integration (sub-project C spec §2; appended — old configs load fine) ---
     weather: WeatherConfig = Field(default_factory=WeatherConfig)
+    # --- cooler warm-down ramp (2026-08-04; appended — old configs load fine and
+    #     inherit the ramp, which is the whole point: the rigs that need it most
+    #     are the ones nobody is going to go and enable it on) ---
+    cooling: CoolingConfig = Field(default_factory=CoolingConfig)
     # --- file-naming template (PRO-11; appended — old configs load fine) ---
     naming: NamingConfig = Field(default_factory=NamingConfig)
     # --- calibration master library (PRO-1; appended — old configs load fine) ---
@@ -932,6 +959,14 @@ class ConfigStore:
     def set_escalation(self, escalation: EscalationConfig) -> AppConfig:
         cfg = self.cfg()
         cfg.escalation = escalation
+        return self.bump_and_save()
+
+    def set_cooling(self, cooling: "CoolingConfig") -> AppConfig:
+        """Persist the cooler warm-down policy (rate / assumed ambient / whether
+        the ramp runs at all). Wholesale-replace, like set_safety — the UI echoes
+        the full block back with its edit applied."""
+        cfg = self.cfg()
+        cfg.cooling = cooling
         return self.bump_and_save()
 
     def set_alerts(self, alerts: list[AlertSink]) -> AppConfig:

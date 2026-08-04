@@ -17,8 +17,8 @@
 // echo, unchanged, which the server permits.
 
 import { useEffect, useState, type JSX } from "react";
-import type { SafetyConfig } from "../../types";
-import { setSafetyConfig } from "../../api/backends";
+import type { CoolingConfig, SafetyConfig } from "../../types";
+import { setCoolingConfig, setSafetyConfig } from "../../api/backends";
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { accessPhrase, useCan } from "../../lib/caps";
@@ -51,7 +51,7 @@ const PRESET_BLURB: Record<string, string> = {
   backyard:
     "You are nearby. A cloud or rain trip pauses and waits, and picks back up when it clears.",
   remote:
-    "Nobody is there. A trip ends the night: park the mount and warm the camera rather than wait.",
+    "Nobody is there. A trip ends the night: park the mount and ramp the camera's cooler back to ambient rather than wait.",
   custom: "Your own combination of the settings below.",
 };
 
@@ -59,7 +59,12 @@ const ON_UNSAFE: { value: SafetyConfig["on_unsafe"]; label: string; blurb: strin
   { value: "warn", label: "Warn only", blurb: "Keep shooting, just say so. For testing a new monitor." },
   { value: "pause", label: "Pause", blurb: "Stop starting new frames, hold, and resume when it clears." },
   { value: "park", label: "Park", blurb: "Park the mount. The camera stays cold, so you can restart quickly." },
-  { value: "abort_park_warm", label: "Park and warm", blurb: "End the night: park, then warm the camera at a safe ramp." },
+  // This blurb was FALSE until 2026-08-04. It promised a safe ramp while the
+  // code behind it (sequence/engine.py wind-down) called set_cooler(False) — the
+  // TEC cut dead, the sensor equalising with the air at ~5 °C/min, unattended.
+  // It is true now, and it says the two things that make it true: the ramp is
+  // real, and it does not hold up the park.
+  { value: "abort_park_warm", label: "Park and warm", blurb: "End the night: park the mount now, then warm the camera down to ambient on a slow ramp instead of switching the cooler off. The ramp runs in the background, so it never delays the park or a roof close." },
 ];
 
 const TWILIGHT: { value: number; label: string; blurb: string }[] = [
@@ -74,6 +79,13 @@ export default function SafetyLimitsPanel(): JSX.Element {
   const canEdit = useCan("config.safety");
 
   const [draft, setDraft] = useState<SafetyConfig | null>(null);
+  // The warm-down ramp is a SEPARATE config block with its own server setter, but
+  // it belongs on this panel: the "Park and warm" option above is the sentence
+  // that promises it, and a promise whose knob lives three screens away is how
+  // that sentence stayed false for so long. One Save button, two POSTs — only
+  // for the blocks that actually changed.
+  const cooling = config?.cooling;
+  const [coolDraft, setCoolDraft] = useState<CoolingConfig | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -84,6 +96,13 @@ export default function SafetyLimitsPanel(): JSX.Element {
     setErr(null);
     setSavedAt(null);
   }, [safety]);
+
+  // Seeded independently of `safety` so an older server (or the WS bootstrap,
+  // which omits the block) leaves the control absent rather than rendering it
+  // bound to undefined and writing a zero rate on the first save.
+  useEffect(() => {
+    if (cooling) setCoolDraft({ ...cooling });
+  }, [cooling]);
 
   if (!safety || !draft) {
     return (
@@ -104,14 +123,20 @@ export default function SafetyLimitsPanel(): JSX.Element {
   const applyPreset = (name: SafetyConfig["preset"]) =>
     setDraft((d) => (d ? { ...d, ...(PRESETS[name] ?? {}), preset: name } : d));
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify(safety);
+  const safetyDirty = JSON.stringify(draft) !== JSON.stringify(safety);
+  const coolingDirty = !!coolDraft && JSON.stringify(coolDraft) !== JSON.stringify(cooling);
+  const dirty = safetyDirty || coolingDirty;
 
   const save = async () => {
     if (busy || !dirty) return;
     setErr(null);
     setBusy(true);
     try {
-      await setSafetyConfig(draft);
+      // Sent as two calls because the server replaces each block wholesale and
+      // bumps the config version per write; sending an unchanged block would
+      // burn a version and race another panel's save for no reason.
+      if (coolingDirty && coolDraft) await setCoolingConfig(coolDraft);
+      if (safetyDirty) await setSafetyConfig(draft);
       await useStore.getState().loadConfig();
       setSavedAt(Date.now());
     } catch (e) {
@@ -371,6 +396,61 @@ export default function SafetyLimitsPanel(): JSX.Element {
         <p className="text-[11px] text-dim mt-1.5 max-w-xl">
           {ON_UNSAFE.find((o) => o.value === draft.on_unsafe)?.blurb}
         </p>
+
+        {/* ---- the ramp the blurb above promises. Same capability, same Save
+             button, deliberately next to the claim. Absent (not disabled) when
+             the server is too old to have the block — a control that cannot
+             reach anything is worse than no control. ---- */}
+        {coolDraft && (
+          <div className="grid gap-3 sm:grid-cols-2 mt-3">
+            <Field
+              label="Warm ramp °C/min"
+              hint="How fast the cooler's set-point is walked back to ambient before the TEC is switched off. This applies to the Warm button too, not just the unattended path."
+            >
+              <input
+                className="field"
+                type="number"
+                min={0.1}
+                max={20}
+                step={0.5}
+                value={coolDraft.warm_rate_c_per_min}
+                aria-label="Warm ramp rate in degrees C per minute"
+                disabled={busy || ro}
+                onChange={(e) =>
+                  setCoolDraft({
+                    ...coolDraft,
+                    warm_rate_c_per_min:
+                      Math.min(20, Math.max(0.1, Number(e.target.value) || 2)),
+                  })
+                }
+              />
+            </Field>
+            <div className="flex items-start justify-between gap-3 sm:pt-6">
+              <div className="min-w-0">
+                <div className="text-sm text-ink">Ramp at all</div>
+                <p className="text-[11px] text-dim max-w-md">
+                  {coolDraft.warm_ramp
+                    ? "On — the set-point is stepped up to ambient first, and only then is the cooler switched off."
+                    : "OFF — the cooler is switched off outright. The sensor equalises with the air on its own (measured at about 5 °C/min), which is thermal shock and a condensation risk inside the chamber."}
+                </p>
+              </div>
+              <Toggle
+                checked={coolDraft.warm_ramp}
+                onChange={(v) => setCoolDraft({ ...coolDraft, warm_ramp: v })}
+                disabled={busy || ro}
+                label="Warm ramp"
+                showState
+              />
+            </div>
+          </div>
+        )}
+        {coolDraft && !coolDraft.warm_ramp && (
+          <p className="text-[11px] text-warn mt-1.5 max-w-xl inline-flex items-start gap-1.5">
+            <Icon name="alert" size={13} className="shrink-0 mt-0.5" />
+            With the ramp off, "Park and warm" above cuts the cooler dead. It is
+            still logged as a warning every time, but nothing slows it down.
+          </p>
+        )}
 
         <div className="flex items-start justify-between gap-3 py-3 mt-2 border-t border-line">
           <div className="min-w-0">
