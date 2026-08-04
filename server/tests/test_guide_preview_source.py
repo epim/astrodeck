@@ -388,10 +388,15 @@ def test_the_served_bytes_identify_a_constant_array_and_nothing_more():
         return to_png(a, stretch=True, max_width=512)
 
     served = enc(np.zeros((1080, 1920), dtype="uint16"))
-    # A deterministic frame that genuinely carries detail (no RNG — a flaky
-    # baseline would be worse than the magic number it replaces).
-    yy, xx = np.mgrid[0:1080, 0:1920]
-    picture = enc((((xx * 7 + yy * 13) % 251) * 257).astype("uint16"))
+    # A SEEDED random frame, not a formula. The first attempt used
+    # ((x*7 + y*13) % 251) — which looks like detail and is in fact a regular
+    # diagonal ramp, so PNG's filters flattened it to 12 KB and a constant frame
+    # was only 17x smaller, not the 20x asserted. Noise is the honest baseline
+    # for "carries a picture" because it is the case the encoder cannot exploit;
+    # the fixed seed keeps it deterministic, so this is not a flaky assertion
+    # wearing a random number's clothes.
+    rng = np.random.default_rng(20260804)
+    picture = enc(rng.integers(0, 65536, size=(1080, 1920), dtype="uint16"))
     assert len(served) * 20 < len(picture), (
         f"a constant frame must encode to almost nothing: {len(served)} B "
         f"vs {len(picture)} B for a frame with detail")

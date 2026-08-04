@@ -66,7 +66,7 @@ async def test_tick_noop_when_window_closed(sim_hub, monkeypatch):
     assert not engine.running
 
 
-async def test_tick_resumes_when_window_open(sim_hub, monkeypatch):
+async def test_tick_resumes_when_window_open(sim_hub, monkeypatch, bus_lines):
     engine = SequenceEngine(sim_hub)
     sid = await _dormant_armed(sim_hub, engine)
     now = {"t": 1_700_000_000.0}
@@ -85,7 +85,9 @@ async def test_tick_resumes_when_window_open(sim_hub, monkeypatch):
     # under test: tick() sets it to 0 only on the success path, and to
     # now + RETRY_INTERVAL_S on every refusal. It distinguishes "resumed" from
     # "refused and backed off" without depending on how fast the run is.
-    assert arm._retry_at == 0.0, "the tick resumed rather than backing off"
+    assert arm._retry_at == 0.0, (
+        "the tick backed off instead of resuming. Every bus line it emitted:\n"
+        + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
 
@@ -210,7 +212,7 @@ async def test_weather_veto_blocks_resume_and_arms_retry(sim_hub, monkeypatch,
                for _lvl, m, _src in bus_lines), "veto warning must be logged"
 
 
-async def test_weather_veto_none_resumes(sim_hub, monkeypatch):
+async def test_weather_veto_none_resumes(sim_hub, monkeypatch, bus_lines):
     """veto_reason None (the real service's stale/disabled/ignored outcomes)
     -> the run starts. Constructor default weather=None (no service injected,
     back-compat) is covered by the existing resume tests above."""
@@ -233,6 +235,8 @@ async def test_weather_veto_none_resumes(sim_hub, monkeypatch):
     # under test: tick() sets it to 0 only on the success path, and to
     # now + RETRY_INTERVAL_S on every refusal. It distinguishes "resumed" from
     # "refused and backed off" without depending on how fast the run is.
-    assert arm._retry_at == 0.0, "the tick resumed rather than backing off"
+    assert arm._retry_at == 0.0, (
+        "the tick backed off instead of resuming. Every bus line it emitted:\n"
+        + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
