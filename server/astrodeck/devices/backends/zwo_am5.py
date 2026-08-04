@@ -96,6 +96,15 @@ class ZwoAm5Telescope(Telescope):
         #: it is now read on an ERROR path -- see _link_error, where an
         #: AttributeError would replace an honest refusal with a crash.
         self._slewing = False
+        #: "We told a mount that may still be moving to HALT, and it has not yet
+        #: proven it came to rest." Set by _note_halt (the :Q# senders), cleared
+        #: only by evidence -- never by a clock. See _note_halt for the failure
+        #: this exists for and _link_error for what it changes.
+        self._halting = False
+        #: Position at the previous read taken DURING a halt window; the pair
+        #: (this, the next read) is what proves the mount stopped moving.
+        #: Separate from _last_pos so the proof only ever uses post-halt reads.
+        self._halt_ref: tuple[float, float] | None = None
         #: cache of the last-set drive rate -- the AM5's rate read-back is
         #: unreliable (no verified LX200 query for it), so get_tracking_rate
         #: returns this rather than round-tripping the mount.
@@ -124,6 +133,43 @@ class ZwoAm5Telescope(Telescope):
             f"{self.name}: {what} refused in current state — check limits / "
             "that a slew isn't already running (AM5 e14)")
 
+    def _note_halt(self) -> None:
+        """Record that this driver just sent a whole-mount halt (``:Q#``).
+
+        THE HOLE THIS FILLS (carry-in from the review of 797588b). ``_slewing``
+        below is cleared by ``slew()``'s ``finally`` the instant the settle poll
+        exits — but on a CANCEL the mount is still physically decelerating when
+        that happens, because ``:Q#`` is fire-and-forget and the axes have mass.
+        The rig log shows exactly that ordering: "goto cancelled" at 00:50:45,
+        and the ``timeout waiting for ack on COM3`` 409 AFTER it. So the window
+        where the mount is least able to answer was the one window with no
+        explanation attached.
+
+        NO GRACE PERIOD IS INVENTED HERE, deliberately. Nobody has measured how
+        long an AM5 takes to stop from an R8 slew, and a made-up number would
+        either expire early (leaving the bug) or swallow a genuine COM timeout
+        for that long (much worse). The AM5's ``:GU#`` status word is not an
+        option either: docs/hardware/zwo-am5-lx200-protocol.md explicitly says
+        its slewing/parked bits are UNVERIFIED against live states, so decoding
+        one would be inventing knowledge rather than a number.
+
+        So the window ends on EVIDENCE, from the one observable this driver
+        already trusts to mean "the mount stopped": its reported position no
+        longer changing (``get_position``, same ``SETTLE_DEG`` criterion the
+        settle poll uses to call a goto finished). The hub's 2 s status loop
+        reads position continuously, so the flag clears on its own within a poll
+        or two of the mount actually coming to rest — no extra serial traffic,
+        no timer. A successful ack clears it too (``_cmd_ack``): a mount that
+        answers is by definition no longer too busy to answer.
+
+        WHOLE-MOUNT HALTS ONLY. ``:Q#`` (slew cancel/timeout, ``stop()``) sets
+        this; the per-direction stops do not. That exclusion is load-bearing for
+        ``pulse_guide``, which fires ``:Qn#``/``:Qw#``/... every few seconds all
+        night — pinning the flag on through a guided session would leave every
+        later error carrying a stop that had nothing to do with it."""
+        self._halting = True
+        self._halt_ref = None      # only reads taken AFTER this halt may prove rest
+
     def _link_error(self, what: str, exc: LinkError) -> DeviceError:
         """Turn a transport failure into a refusal the OWNER can act on.
 
@@ -151,12 +197,29 @@ class ZwoAm5Telescope(Telescope):
         its settle poll. An unplugged cable, a dead port or a wedged mount with
         NO slew in flight still surfaces the transport text verbatim, because
         that text is the diagnosis in that case. The original ``LinkError`` is
-        chained either way, so the log/traceback keeps the wire detail."""
+        chained either way, so the log/traceback keeps the wire detail.
+
+        THE THIRD CASE (the cancel window, added on the review of 797588b) sits
+        between the two: see ``_note_halt``. It gets its own sentence AND KEEPS
+        THE WIRE TEXT, which is the difference that matters. While ``_slewing``
+        is true the settle poll is reading GR/GD every 500 ms and succeeding, so
+        we have live proof the link is healthy and "busy" is the only remaining
+        explanation — the transport text there would be pure noise. After a halt
+        we have no such proof: the last thing we know is that we told the mount
+        to stop. It is probably decelerating, and it might equally have died at
+        that moment, so the honest form is the context PLUS what the wire
+        said."""
         if self._slewing:
             return DeviceError(
                 f"{self.name}: {what} refused — the mount is slewing and will "
                 "not answer until it stops. Wait for the goto to finish, or "
                 "press Stop.")
+        if self._halting:
+            return DeviceError(
+                f"{self.name}: {what} refused — the mount was told to stop and "
+                "has not yet reported coming to rest, so it is probably still "
+                "slowing down. Try again in a moment; if it keeps failing the "
+                f"link itself may be down (the link said: {exc})")
         return DeviceError(f"{self.name}: {what} failed: {exc}")
 
     async def _cmd_ack(self, cmd: str, what: str) -> None:
@@ -165,6 +228,13 @@ class ZwoAm5Telescope(Telescope):
             reply = await self._link.request(cmd, reply="ack")
         except LinkError as exc:
             raise self._link_error(what, exc) from exc
+        # ANY answer — even the e14 refusal below — ends a halt window on the
+        # spot: the flag's whole claim is "the mount may be too busy to answer",
+        # and a mount that just answered has disproven it. Cheaper and stronger
+        # evidence than waiting for the position to settle, so it is checked
+        # first; the position path in get_position covers the case where nothing
+        # sends the mount a command at all.
+        self._halting = False
         if reply == lx200.REFUSED:
             raise await self._refused_error(what)
         if reply != lx200.ACK_OK:
@@ -232,6 +302,20 @@ class ZwoAm5Telescope(Telescope):
                 f"{self.name}: unparseable position reply "
                 f"(RA={raw_ra!r} Dec={raw_dec!r})") from exc
         self._last_pos = (ra, dec)
+        # END OF A HALT WINDOW, measured rather than timed (see _note_halt).
+        # Two reads taken after the halt, one SETTLE_DEG apart or less, are the
+        # same evidence slew() accepts as "the mount stopped" — reusing that
+        # criterion means no new constant and no new claim about the hardware.
+        # ``_halt_ref`` starts at None so the comparison can never reach back to
+        # a pre-halt position. One stable pair is enough here (the settle poll
+        # demands two in a row because it is deciding whether a GOTO SUCCEEDED;
+        # this is only deciding how to word an error, and clearing early merely
+        # falls back to the plain wire text).
+        if self._halting:
+            prev, self._halt_ref = self._halt_ref, (ra, dec)
+            if prev is not None and max(abs(ra - prev[0]) * 15.0,
+                                        abs(dec - prev[1])) < SETTLE_DEG:
+                self._halting = False
         return ra, dec
 
     async def is_parked(self) -> bool:
@@ -387,12 +471,21 @@ class ZwoAm5Telescope(Telescope):
             # ANY abnormal settle exit — cancel, timeout, link/parse failure —
             # halts the mount before propagating (B review M3). :Q# is
             # write-only (cannot hang) and harmless if the goto already ended.
+            # Noted BEFORE the send, not after: the send is best-effort inside a
+            # try/except, and a mount that was mid-slew is decelerating (or not
+            # stopping at all) whether or not the halt byte got out — either way
+            # the next command has every reason to time out.
+            self._note_halt()
             try:
                 await self._link.request("Q", reply="none")
             except Exception:  # noqa: BLE001 - halt is best-effort on teardown
                 pass
             raise
         finally:
+            # Cleared here even on the cancel path, and that is what opens the
+            # window _note_halt covers: a cancelled goto stops being "slewing"
+            # by this driver's bookkeeping several seconds before the mount
+            # stops being slewing by physics.
             self._slewing = False
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
@@ -444,11 +537,19 @@ class ZwoAm5Telescope(Telescope):
             await self._link.request(_PULSE_STOP[d], reply="none")
 
     async def is_slewing(self) -> bool:
+        # DELIBERATELY not widened to include the halt window. "_halting" means
+        # "not yet proven at rest", which is not the same claim as "moving", and
+        # this flag feeds the status badge, the guider and the resume logic —
+        # they should not start treating an unproven state as motion on the
+        # strength of a wording fix.
         return bool(getattr(self, "_slewing", False))
 
     async def stop(self) -> None:
         """Emergency halt: :Q# goes out FIRST, no preamble. Whether :Q# also
         disturbs tracking on this firmware is an at-scope runbook item."""
+        # The rig's own sequence: POST /api/mount/stop cancels the goto task AND
+        # calls this. Both halt paths open the same window, so both note it.
+        self._note_halt()
         await self._link.request("Q", reply="none")
 
 

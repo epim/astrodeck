@@ -221,9 +221,11 @@ def _silent_read(port: str = "COM3"):
 async def test_slewing_flag_starts_false(fixed_env):
     """``_slewing`` is now read on an ERROR path, so it must exist from
     construction — a getattr default is not enough once a real attribute lookup
-    can turn an honest refusal into an AttributeError."""
+    can turn an honest refusal into an AttributeError. ``_halting`` is read on
+    the same path and gets the same guarantee."""
     tel = am5.ZwoAm5Telescope(FakeLink(_connect_script()))
     assert tel._slewing is False
+    assert tel._halting is False and tel._halt_ref is None
     assert await tel.is_slewing() is False
 
 
@@ -300,6 +302,137 @@ async def test_reads_still_report_the_wire_even_mid_slew(fixed_env):
         await tel.get_tracking()
     assert "read failed" in str(exc.value)
     assert "COM3" in str(exc.value)
+
+
+# ------------------------------------------------- telescope: the cancel window
+#
+# THE CARRY-IN from the review of 797588b. The rewrite above is gated on
+# ``_slewing``, and ``slew()``'s ``finally`` clears that flag the instant the
+# settle poll exits -- which on a CANCEL is while the mount is still physically
+# decelerating, because :Q# is fire-and-forget and the axes have mass. The rig
+# log has the ordering: "goto cancelled" at 00:50:45, then the 409 after it. So
+# the moment the mount was LEAST able to answer was the one moment with no
+# explanation attached.
+#
+# The fix invents no grace period (nobody has measured how long an AM5 takes to
+# stop, and a made-up number would either expire early or swallow a real COM
+# timeout for that long). It ends the window on evidence instead: the mount's
+# own reported position going still, or any successful ack.
+
+
+def _never_settles(s: dict) -> dict:
+    """Script GR/GD to alternate FOREVER, so a slew never settles on its own.
+    (Callables, not lists: FakeLink repeats a list's last element, which would
+    read as settled.)"""
+    n = {"ra": 0, "dec": 0}
+    s["GR"] = lambda cmd: ["10:00:00", "10:30:00"][
+        n.__setitem__("ra", n["ra"] + 1) or n["ra"] % 2]
+    s["GD"] = lambda cmd: ["+10*00:00", "+20*00:00"][
+        n.__setitem__("dec", n["dec"] + 1) or n["dec"] % 2]
+    return s
+
+
+async def _cancelled_mid_slew(fixed_env, monkeypatch):
+    """Drive the REAL cancel path and return (link, telescope) in the window."""
+    monkeypatch.setattr(am5, "SETTLE_POLL_S", 0.01)
+    s = _never_settles(_connect_script())
+    s["Sr11:00:00"] = "1"; s["Sd+45*00:00"] = "1"; s["MS"] = "0"
+    fl, tel = await _connected_tel(s)
+    task = asyncio.create_task(tel.slew(11.0, 45.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "Q" in fl.sent                    # the halt went out
+    # THE PRECONDITION FOR THE WHOLE BUG: the flag the mid-slew rewrite keys on
+    # is already gone, one line after the mount was told to stop.
+    assert tel._slewing is False
+    return fl, tel
+
+
+async def test_a_cancelled_goto_explains_the_409_it_causes(fixed_env, monkeypatch):
+    """The reported ordering, end to end: cancel a goto, then hit tracking-on
+    while the mount is still coming to a halt."""
+    fl, tel = await _cancelled_mid_slew(fixed_env, monkeypatch)
+    fl.script["Te"] = _silent_ack()
+
+    with pytest.raises(DeviceError) as exc:
+        await tel.set_tracking(True)
+
+    msg = str(exc.value)
+    assert "told to stop" in msg and "slowing down" in msg
+    # THE WIRE TEXT STAYS, unlike the mid-slew case. While _slewing is true the
+    # settle poll is reading GR/GD every 500 ms and succeeding, so the link is
+    # provably healthy and "busy" is the only explanation left. After a halt
+    # there is no such proof -- the mount may equally have died at that moment
+    # -- so the honest form is the context PLUS what the wire said.
+    assert "timeout waiting for ack on COM3" in msg
+    assert isinstance(exc.value.__cause__, LinkError)
+
+
+async def test_the_window_closes_when_the_mount_reports_it_has_stopped(
+        fixed_env, monkeypatch):
+    """The window is bounded by a MEASUREMENT, not a clock: two position reads
+    a settle-threshold apart or less are the same evidence ``slew`` accepts as
+    "the goto finished". The hub's 2 s status loop supplies them for free."""
+    fl, tel = await _cancelled_mid_slew(fixed_env, monkeypatch)
+    fl.script["GR"] = "11:00:00"          # the mount has come to rest
+    fl.script["GD"] = "+45*00:00"
+
+    await tel.get_position()              # first post-halt read: reference only
+    assert tel._halting is True, "one read cannot prove anything stopped"
+    await tel.get_position()              # second: unchanged -> at rest
+
+    assert tel._halting is False
+    fl.script["Te"] = _silent_ack()
+    with pytest.raises(DeviceError) as exc:
+        await tel.set_tracking(True)
+    # A mount that is standing still and still will not answer is a genuine
+    # transport fault again, and the transport text IS the diagnosis.
+    msg = str(exc.value)
+    assert "told to stop" not in msg
+    assert "timeout waiting for ack on COM3" in msg
+
+
+async def test_a_mount_still_moving_keeps_the_window_open(fixed_env, monkeypatch):
+    """The complement of the test above, and the reason the reference position
+    is a dedicated field: reads that keep CHANGING must not be mistaken for
+    evidence of standstill just because they succeeded."""
+    fl, tel = await _cancelled_mid_slew(fixed_env, monkeypatch)
+    for _ in range(4):                    # GR/GD still alternate: still moving
+        await tel.get_position()
+        assert tel._halting is True
+
+
+async def test_an_answer_from_the_mount_closes_the_window(fixed_env, monkeypatch):
+    """The cheaper evidence: the flag claims the mount may be too busy to
+    answer, and a mount that just answered has disproven it."""
+    fl, tel = await _connected_tel(_connect_script())
+    await tel.stop()                      # the Stop button's own :Q#
+    assert tel._halting is True
+    fl.script["Te"] = "1"
+
+    await tel.set_tracking(True)          # it answered
+
+    assert tel._halting is False
+    fl.script["Td"] = _silent_ack()
+    with pytest.raises(DeviceError) as exc:
+        await tel.set_tracking(False)
+    assert "timeout waiting for ack on COM3" in str(exc.value)
+    assert "told to stop" not in str(exc.value)
+
+
+async def test_guide_pulses_do_not_open_a_halt_window(fixed_env):
+    """Load-bearing exclusion. pulse_guide ends every pulse with a per-direction
+    :Qn#/:Qw#/... — several times a minute, all night. If those counted as
+    halts the flag would never be down during guiding, and every unrelated error
+    for the rest of the session would carry a stop that had nothing to do with
+    it. Only the whole-mount :Q# counts."""
+    fl, tel = await _connected_tel(_connect_script())
+    await tel.pulse_guide("n", 1)
+    assert "Qn" in fl.sent and tel._halting is False
+    await tel.move_axis("ra", 0.0)        # jog release: per-axis stops, same rule
+    assert "Qe" in fl.sent and tel._halting is False
 
 
 # --------------------------------------------------------- telescope: tracking rate
