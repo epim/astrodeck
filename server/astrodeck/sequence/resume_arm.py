@@ -4,9 +4,8 @@ One asyncio task started with the app (pattern: the AlertDispatcher lifespan
 task), 60s cadence. Arms via ``Session.auto_resume`` (the PATCH route enforces
 the singleton). When the engine is idle, exactly one armed dormant session
 exists, and tonight's window for any of its targets has opened (reusing
-``schedule.resolve_window``), it attempts the SAME code path as a manual
-resume — every existing safety gate (sun avoidance, safety monitor, horizon
-preflight) runs inside ``engine.start`` / the run itself. A refusal alerts and
+``schedule.resolve_window``), it runs the recovery ladder and then starts the
+run. A refusal alerts and
 retries every 10 minutes; when the window closes mid-backoff (dawn) it alerts
 one give-up and stays quiet until the window reopens (the next night). The
 run_start alert on success comes free from the AlertDispatcher's sequence
@@ -19,6 +18,16 @@ that reject an unbounded accepted-quota plan do NOT cover this path. So the
 service calls ``quota_unbounded(plan)`` itself before every attempt and refuses
 (alert + backoff, stay dormant) when it would run forever under persistent
 rejects.
+
+THE GATES RUN HERE, NOT ONLY IN THE RUN. This file used to say every safety
+gate ran inside ``engine.start`` / the run itself. That was accurate while the
+resume path WAS ``engine.start``; then ``_recover`` was added in front of it and
+the sentence stayed. The ladder plate-solves and re-centers — unattended motion,
+by a machine that has just rebooted — so gating only inside the run left exactly
+those slews unchecked. ``_recover`` now reads the safety monitor before it moves
+anything and puts the re-centering slew through the same altitude limits an
+in-run slew gets. Sun avoidance was always covered: it lives at the motion
+boundary inside ``goto_and_center``, not in the engine.
 """
 from __future__ import annotations
 
@@ -185,6 +194,36 @@ class ResumeArm:
         """
         from ..devices import fingerprint as _fp
 
+        cfg = config_store.cfg()
+
+        # 0. IS IT SAFE TO BE OUT AT ALL — before anything moves.
+        #
+        #    This module's header once said every safety gate "runs inside
+        #    engine.start / the run itself", and that was true when the resume
+        #    path WAS engine.start. The ladder below was added in front of it and
+        #    the sentence was not revisited: steps 2 and 3 plate-solve and
+        #    re-center, which is real unattended motion, ahead of every gate the
+        #    claim named. A rig that rebooted during the rain it had already
+        #    stopped for would slew back out into it.
+        #
+        #    Configuration versus conditions, the same split as the solver and
+        #    focus steps below: NO safety monitor is a standing choice and must
+        #    not delete auto-resume for that rig, so it proceeds. A monitor that
+        #    is present and says unsafe — or has gone stale, which is not
+        #    evidence of safety — holds, and the ten-minute backoff is exactly
+        #    right here because the sky may well clear.
+        if cfg.safety.enabled and self.hub.devices.get("safety") is not None:
+            reading = await self.engine.current_safety()
+            if reading is None:
+                return ("the safety monitor has not reported yet — not moving "
+                        "the mount on an unknown verdict")
+            if reading.stale:
+                return ("the safety monitor's reading is stale — a reading that "
+                        "stopped arriving is not evidence that it is safe")
+            if not reading.is_safe:
+                return (f"the safety monitor says it is not safe to observe "
+                        f"({reading.reason or 'no reason given'})")
+
         # 1. FOCUS — measure when the focuser lost count; never restore a number.
         #    A focuser that disagrees with the record has forgotten its position
         #    (the EAF does this on power loss), so its readout is a default, not
@@ -284,6 +323,16 @@ class ResumeArm:
         #    above, which costs one exposure and confirms the sky is usable.
         tgt = next((t for t in session.plan.targets if not t.calibration), None)
         if tgt is not None:
+            # The altitude floor, horizon, no-go wedges, pier limits and the
+            # zenith keep-out — the SAME gate every in-run slew passes. It lived
+            # only inside the run, so this slew, the one made unattended by a
+            # machine that just rebooted, was the single slew nothing checked.
+            # ``cfg`` is passed explicitly: with no run in flight the engine's
+            # own config snapshot is None, and the gate would no-op in silence.
+            try:
+                await self.engine.check_slew_limits(tgt, cfg=cfg)
+            except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
+                return f"re-centering after restart refused: {e}"
             try:
                 await self.hub.goto_and_center(tgt.ra_hours, tgt.dec_deg)
             except Exception as e:  # noqa: BLE001

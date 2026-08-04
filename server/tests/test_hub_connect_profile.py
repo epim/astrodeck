@@ -192,6 +192,67 @@ async def test_connect_rigspec_sim_connects_all_roles(hub_env):
     assert h.last_connect_result is not None
 
 
+async def test_capture_profile_round_trips_a_connected_rig(hub_env):
+    """The wiring behind the capture fix: connecting by RigSpec retains that
+    spec, capture writes it down, and the captured profile brings the SAME roles
+    back up. Without the retained spec this profile is empty, and an empty
+    profile resolves to primary="sim" — which on a native rig means boot
+    auto-connect silently comes up on simulators."""
+    h, _store, _lib = hub_env
+    await h.connect_rigspec(RigSpec(primary="sim"))
+    assert h._last_rigspec is not None, "the connect path must retain its spec"
+    # every LIVE role, which includes the engine-served guider (it has no
+    # h.devices entry, and dropping it from the profile would silently retire
+    # guiding on the next activate).
+    from astrodeck.devices.backend import ROLES
+    before = {r for r in ROLES if h._role_live_connected(r)}
+    assert "guider" in before and "camera" in before
+
+    p = await h.capture_profile("captured sim")
+    assert {d.role for d in p.devices} == before
+    assert p.primary_backend == "sim"
+
+    # and it reconnects to the same rig from the written-down profile alone.
+    devices_before = set(h.devices)
+    await h.disconnect_all()
+    assert h._last_rigspec is None, "teardown must not leave a stale spec"
+    await h.connect_profile_id(p.id)
+    assert set(h.devices) == devices_before
+    assert h.guider is not None and h.guider.connected
+
+
+async def test_boot_says_so_when_the_active_profile_is_empty(hub_env, bus_lines):
+    """Boot is unattended. An empty profile brings the whole rig up on
+    simulators — a SafetyMonitor included — with the console showing a connected
+    rig. Capture no longer writes such a profile, but one already on disk still
+    activates, so boot has to say it out loud."""
+    h, store, lib = hub_env
+    prof = Profile(name="my rig")          # no device rows: resolves to sim
+    lib.save(prof)
+    store.set_active_profile(prof.id)
+
+    await h.connect_active()
+
+    warnings = [msg for lvl, msg, _s in bus_lines if lvl == "warning"]
+    assert any("SIMULATED" in m and "my rig" in m for m in warnings), \
+        f"boot must name the profile and say the rig is simulated, got {warnings}"
+
+
+async def test_boot_is_quiet_for_a_profile_with_real_equipment(hub_env, bus_lines):
+    """The counterpart: a profile that actually records devices must NOT be
+    warned about, or the warning becomes noise and stops being read."""
+    h, store, lib = hub_env
+    prof = Profile(name="real rig", primary_backend="sim",
+                   devices=[ProfileDevice(role="camera", backend="sim")])
+    lib.save(prof)
+    store.set_active_profile(prof.id)
+
+    await h.connect_active()
+
+    assert not [m for lvl, m, _s in bus_lines
+                if lvl == "warning" and "SIMULATED" in m]
+
+
 async def test_connect_profile_id_sets_active_and_connects(hub_env):
     h, store, lib = hub_env
     prof = Profile(name="sim rig", primary_backend="sim")

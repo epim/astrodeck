@@ -255,7 +255,7 @@ export default function ProfileList(): JSX.Element {
   // than leaving it behind.
   //
   // The merge starts from the TARGET profile and pulls ONLY the fields
-  // hub.capture_profile actually populates (hub.py:1180-1207: devices,
+  // hub.capture_profile actually populates (see Hub.capture_profile: devices,
   // primary_backend, nina_host, site_name) — enumerated explicitly, never a
   // spread from the capture, so the target's optics / providers / phd2_host /
   // phd2_port / nina_port survive (the capture leaves all five unset, and a

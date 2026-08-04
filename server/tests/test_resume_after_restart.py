@@ -261,13 +261,30 @@ def _arm(hub, **kw):
 
 
 class _StubEngine:
+    """The engine surface the recovery ladder actually uses.
+
+    ``current_safety`` and ``check_slew_limits`` are part of it because the
+    ladder MOVES THE MOUNT before ``start`` runs, so the gates that used to live
+    only inside the run have to be reachable from out here. Permissive by
+    default (safe verdict, limits pass) — the tests that care about a refusal
+    override them per-case, and a stub that silently lacked them would let the
+    ladder's gating rot without a single test noticing."""
+
     running = False
 
     def __init__(self):
         self.started: list = []
+        self.limit_checks: list = []
 
     def start(self, plan, *, session=None):
         self.started.append(session)
+
+    async def current_safety(self):
+        from astrodeck.devices.base import SafetyReading
+        return SafetyReading(is_safe=True, source="stub")
+
+    async def check_slew_limits(self, target, *, cfg=None, projected=True):
+        self.limit_checks.append(target)
 
 
 def _light_session() -> Session:
