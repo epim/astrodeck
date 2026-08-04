@@ -240,3 +240,47 @@ async def test_weather_veto_none_resumes(sim_hub, monkeypatch, bus_lines):
         + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
+
+
+async def test_no_autofocus_provider_warns_and_resumes_anyway(sim_hub, monkeypatch,
+                                                              bus_lines):
+    """A rig with NO autofocus provider must still auto-resume.
+
+    Found by CI, not locally, and it was a product hole rather than a test
+    artefact. The recovery ladder gave the SOLVER step a
+    configuration-versus-conditions split — "no solver configured" warns and
+    proceeds, "the solver failed" refuses — and never gave the focus step the
+    same. So on a host with no native engine (no Rust wheel, no NINA) a restart
+    that cost the focuser its position refused, armed the ten-minute backoff, and
+    did it again forever. The feature was silently deleted for that class of rig,
+    with the real reason only in a bus line nobody reads.
+
+    This reproduces that host by turning NATIVE_AVAILABLE off, which is exactly
+    what the CI `server` job is: only the `native` job builds the wheel.
+    """
+    import astrodeck.providers as _providers
+    from astrodeck.devices import fingerprint as _fp
+    monkeypatch.setattr(_providers, "NATIVE_AVAILABLE", False)
+    # Force the "focuser forgot where it was" branch — the one that reaches
+    # autofocus at all.
+    monkeypatch.setattr(_fp, "verdict",
+                        lambda **kw: _fp.Verdict(focus_trusted=False))
+
+    engine = SequenceEngine(sim_hub)
+    sid = await _dormant_armed(sim_hub, engine)
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert arm._retry_at == 0.0, (
+        "a rig that cannot autofocus must still resume. Bus lines:\n"
+        + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
+    # ...and it must SAY so, because the frames may be soft and only the user
+    # can judge that.
+    warned = [m for lv, m, _ in bus_lines
+              if lv == "warning" and "autofocus provider is configured" in m]
+    assert warned, f"the resume must warn about unverified focus: {bus_lines}"
+    assert "check focus" in warned[0]
+    assert await wait_for(lambda: engine.state.get("state") == "complete")
+    assert session_store.load(sid).status == "complete"
