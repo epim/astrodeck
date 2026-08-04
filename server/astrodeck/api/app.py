@@ -4277,10 +4277,19 @@ def create_app() -> FastAPI:
     async def monitor_snapshot():
         """One-shot cold-load hydration for the Monitor view (monitor spec §8).
         Non-fatal: the WS catches up within ~2s, so the view never blocks on it.
-        Uses the live engine state (running/paused), not just the last snapshot."""
+        Uses the live engine state (running/paused), not just the last snapshot.
+
+        POLAR RIDES HERE for the same reason ``sequence`` does: its state reaches
+        the client only as a bus event, and its most important states are TERMINAL
+        — a refusal ("too close to the pole to measure"), an error, a finished
+        run. Those publish exactly once and the bus keeps no history, so a page
+        reload or a dropped socket left the client on the cold default, showing
+        an idle aligner and no reason. The user then re-runs the thing that just
+        refused, and gets the same silence."""
         snap = await hub.monitor_snapshot()
         snap["sequence"] = engine.state | {
             "running": engine.running, "paused": engine.paused}
+        snap["polar"] = hub.polar.state | {"running": hub.polar.running}
         return snap
 
     @app.get("/api/sequence/preflight", dependencies=[Depends(require(CAP_VIEW_STATUS))])
