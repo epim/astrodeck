@@ -83,7 +83,19 @@ export function LivePreview() {
   const clipAvailable = !!shown && shown.data_is_linear && shown.full_well != null;
 
   return (
-    <Panel title="Live Preview" right={
+    // min-w-0 on the panel itself: this panel is the `1fr` item of CaptureView's
+    // `md:grid-cols-[1fr_320px]`, and a grid item's default `min-width:auto`
+    // means the track can never resolve narrower than the panel's min-content —
+    // when that floor exceeds the track, the grid does not shrink, it OVERFLOWS,
+    // which slides the 320px controls column off the right of a <main> that
+    // clips (`overflow-x:hidden`) and therefore cannot be scrolled back to.
+    // Measured today: the panel's min-content is 194px against a 312px track at
+    // the md breakpoint, so the floor is not biting yet and this is insurance,
+    // not a repair — but the failure it insures against is precisely the one
+    // reported ("the width of the page got wider and now I can't see controls"),
+    // and the histogram's own SVG (72px tall with a 256x72 viewBox) carries a
+    // 256px intrinsic-ratio min-content contribution that keeps that floor high.
+    <Panel className="min-w-0" title="Live Preview" right={
       <span className="flex items-center gap-3">
         <LiveStackReadout preview={shown} />
         <PreviewMeta preview={shown} />

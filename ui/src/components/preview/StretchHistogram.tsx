@@ -162,6 +162,29 @@ export function StretchHistogram({
     const adu = Math.round(v * 65535);
     const isActive = active === which;
     const isClip = which === "white" && clipped;
+    // Where a chip hangs off this handle. MEASURED (Chromium + WebKit, real app
+    // shell, frame seeded into the store): a `left-1/2 -translate-x-1/2` chip is
+    // centred on the handle's value, so at white=1.0 — the DEFAULT in Auto mode,
+    // i.e. the ordinary case — half of it lands outside the track. With the
+    // "⚠ CLIPPED" tag (68px) that was 34px past the track and 17px past the
+    // panel's border on a 364px panel; main's `overflow-x:hidden` then SLICED it,
+    // which is the half of the report you can see ("I can't see controls") while
+    // the other half (`main.scrollWidth` 1px over `clientWidth` in the
+    // single-column layouts) is the page trying to widen.
+    //
+    // Fix: anchor the chip AT the value and let it grow inward — right edge on
+    // the value near the top of the range, left edge on the value near the
+    // bottom, centred in between. The handle box is 32px wide with the value at
+    // its centre, so "16px in from the box's right edge" IS the value; hence
+    // right-4 / left-4 rather than right-0 / left-0.
+    //
+    // 25/75 and not 5/95: the widest chip here is the drag readout
+    // ("100% · 65535", ~84px, so ~42px of half-width) and the narrowest track we
+    // render into is the panel's 194px min-content floor (~162px of track), where
+    // 25% is 40px. Any looser and the centred form would still hang out at the
+    // ends of a narrow panel.
+    const chipAnchor =
+      pct >= 75 ? "right-4" : pct <= 25 ? "left-4" : "left-1/2 -translate-x-1/2";
     return (
       <div
         role="slider"
@@ -206,12 +229,12 @@ export function StretchHistogram({
           }}
         />
         {isClip && (
-          <span className="absolute -top-5 left-1/2 -translate-x-1/2 whitespace-nowrap preview-chip text-warn flex items-center gap-0.5">
+          <span className={`absolute -top-5 ${chipAnchor} whitespace-nowrap preview-chip text-warn flex items-center gap-0.5`}>
             <Icon name="alert" size={10} /> CLIPPED
           </span>
         )}
         {isActive && (
-          <span className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap preview-chip mono">
+          <span className={`absolute -bottom-5 ${chipAnchor} whitespace-nowrap preview-chip mono`}>
             {Math.round(pct)}% · {adu}
           </span>
         )}
@@ -228,38 +251,68 @@ export function StretchHistogram({
         </span>
       </div>
 
-      {/* histogram + handles */}
-      <div className="relative select-none" style={{ touchAction: "none" }}>
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${W} ${H}`}
-          className="w-full block bg-black/40 border border-line"
-          style={{ height: H }}
-          onPointerDown={onTrackPointerDown}
-          onPointerMove={onTrackPointerMove}
-          onPointerUp={endDrag}
-          onPointerCancel={endDrag}
-        >
-          {histPath && <path d={histPath} fill="var(--accent)" opacity={0.7} />}
-          {clipped && (
-            <line x1={W - 1} y1={0} x2={W - 1} y2={H} stroke="var(--warn)" strokeWidth={2} strokeDasharray="3 2" />
+      {/* histogram + handles.
+          The outer box is the CONTAINMENT box, and it is load-bearing — this is
+          the fix for "I put the histogram into advanced mode and the width of the
+          page got wider and now I can't see controls".
+          Advanced adds three absolutely-positioned handles; an absolutely
+          positioned box that sticks out of its container does not stretch that
+          container, it PROPAGATES its overflow up the ancestor chain until
+          something clips or scrolls. Here the first thing that clips is <main>
+          (`overflow-x:hidden` in App.tsx), several ancestors up: so the panel
+          silently spilled and whatever spilled was cut off rather than reachable.
+          Measured, Chromium AND WebKit, real app shell: opening Advanced put
+          content 17px past the Live Preview panel's right edge on a 364px panel,
+          and took main.scrollWidth 1px past clientWidth at 320–700px. In any
+          ancestor that scrolls instead of clipping, that same escape is a
+          horizontally scrolling page.
+          `overflow-x:clip` stops the propagation dead (unlike `hidden` it makes
+          no scroll container, so nothing here can be scrolled to a place the
+          layout does not go). `overflow-y:visible` is the point of using clip: it
+          is legal ONLY next to clip (next to hidden it would be coerced to auto),
+          and the chips are drawn ABOVE and BELOW the track (-top-5/-bottom-5), so
+          a plain `overflow:hidden` would eat them.
+          `-mx-4 px-4` puts the clip edge at the PANEL's border rather than at the
+          track's edge, borrowing back the panel's own p-4: the handle boxes are
+          32px wide and centred on their value, so at 0%/100% they legitimately use
+          8px of that padding, and clipping at the track would have sliced the grip
+          caps in half at exactly the two values Auto always uses. Nothing is
+          actually cut here today — the chips are anchored inward (see chipAnchor)
+          — this is the guarantee that no future chip, handle or longer readout can
+          push the page sideways again. */}
+      <div className="-mx-4 px-4 overflow-x-clip overflow-y-visible">
+        <div className="relative select-none" style={{ touchAction: "none" }}>
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${W} ${H}`}
+            className="w-full block bg-black/40 border border-line"
+            style={{ height: H }}
+            onPointerDown={onTrackPointerDown}
+            onPointerMove={onTrackPointerMove}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+          >
+            {histPath && <path d={histPath} fill="var(--accent)" opacity={0.7} />}
+            {clipped && (
+              <line x1={W - 1} y1={0} x2={W - 1} y2={H} stroke="var(--warn)" strokeWidth={2} strokeDasharray="3 2" />
+            )}
+            {curvePath && (
+              <path d={curvePath} fill="none" stroke="#e8eefc" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+            )}
+          </svg>
+          {/* draggable handles overlaid (linear path; disabled lines on NINA).
+              On NINA the handles are truly fixed "at the source": pin them to the
+              neutral 0 / 0.5 / 1 positions independent of effectiveLevels(brightness)
+              so dragging the NINA Brightness slider does NOT slide the disabled
+              handles (honors the component's "fixed at the source" contract — P2-4). */}
+          {stretch.advancedOpen && (
+            <>
+              <Handle which="black" v={isNina ? 0 : lv.black} color={isNina ? "var(--text-faint)" : "#9aa7bd"} />
+              <Handle which="mid" v={isNina ? 0.5 : lv.mid} color={isNina ? "var(--text-faint)" : "var(--accent)"} />
+              <Handle which="white" v={isNina ? 1 : lv.white} color={isNina ? "var(--text-faint)" : "#e8eefc"} />
+            </>
           )}
-          {curvePath && (
-            <path d={curvePath} fill="none" stroke="#e8eefc" strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-          )}
-        </svg>
-        {/* draggable handles overlaid (linear path; disabled lines on NINA).
-            On NINA the handles are truly fixed "at the source": pin them to the
-            neutral 0 / 0.5 / 1 positions independent of effectiveLevels(brightness)
-            so dragging the NINA Brightness slider does NOT slide the disabled
-            handles (honors the component's "fixed at the source" contract — P2-4). */}
-        {stretch.advancedOpen && (
-          <>
-            <Handle which="black" v={isNina ? 0 : lv.black} color={isNina ? "var(--text-faint)" : "#9aa7bd"} />
-            <Handle which="mid" v={isNina ? 0.5 : lv.mid} color={isNina ? "var(--text-faint)" : "var(--accent)"} />
-            <Handle which="white" v={isNina ? 1 : lv.white} color={isNina ? "var(--text-faint)" : "#e8eefc"} />
-          </>
-        )}
+        </div>
       </div>
 
       {isNina && (
@@ -276,15 +329,25 @@ export function StretchHistogram({
         <span className="text-[10px] text-dim">{stretch.auto ? "tracking each frame" : "manual"}</span>
       </div>
 
+      {/* w-24, not w-20: MEASURED at 1024px — the span's own content is 88px
+          (".label" upper-cases, so this reads BRIGHTNESS) inside an 80px box, so
+          the word spilled the full 8px of the row's gap and touched the slider.
+          Contrast uses the same width so the two rows stay aligned.
+          min-w-0 on the range is the load-bearing half: a flex item's default
+          min-width:auto refuses to shrink past its content, and a range input's
+          intrinsic width is 129px (measured), which is exactly the kind of
+          un-shrinkable floor that makes a panel push its column instead of
+          fitting in it. With min-w-0 the slider gives way; without it, it is the
+          row that has to grow. */}
       <label className="flex items-center gap-2">
-        <span className="label w-20 shrink-0">Brightness</span>
+        <span className="label w-24 shrink-0">Brightness</span>
         <input
           type="range"
           min={-1}
           max={1}
           step={0.02}
           value={stretch.brightness}
-          className="w-full accent-(--accent) cursor-pointer"
+          className="w-full min-w-0 accent-(--accent) cursor-pointer"
           aria-label="Brightness"
           onChange={(e) => onStretch(brightnessUpdate(Number(e.target.value)))}
         />
@@ -292,14 +355,14 @@ export function StretchHistogram({
 
       {isNina && (
         <label className="flex items-center gap-2">
-          <span className="label w-20 shrink-0">Contrast</span>
+          <span className="label w-24 shrink-0">Contrast</span>
           <input
             type="range"
             min={-1}
             max={1}
             step={0.02}
             value={stretch.contrast}
-            className="w-full accent-(--accent) cursor-pointer"
+            className="w-full min-w-0 accent-(--accent) cursor-pointer"
             aria-label="Contrast"
             onChange={(e) => onStretch({ contrast: Number(e.target.value) })}
           />
