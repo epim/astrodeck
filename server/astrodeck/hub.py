@@ -345,6 +345,15 @@ class Hub:
         # a manual disconnect. The legacy connect_sim/connect_nina/connect_alpaca_device
         # paths leave it None (they predate this surface and report via self.devices).
         self.last_connect_result: ConnectResult | None = None
+        # the RigSpec this rig was actually connected with, retained so
+        # ``capture_profile`` can write down HOW each role connects. Nothing else
+        # knows: a live native device object carries its driver's own backend name
+        # and its display name, but not the serial port / driver_id / dev_num it
+        # was opened on. Held PRE-driver-resolution so a captured profile keeps
+        # the symbolic ``driver_id`` (edit the driver in Equipment and the profile
+        # follows) instead of freezing tonight's host/port. None until the first
+        # RigSpec connect and after any teardown.
+        self._last_rigspec: "RigSpec | None" = None
         # per-role BackendSession opened by the legacy single-role Alpaca connect
         # path (connect_alpaca_device). Retained so the httpx client each one owns
         # is aclosed when the role is replaced or the rig is torn down, instead of
@@ -738,6 +747,9 @@ class Hub:
         # addressing. Missing/disabled drivers pre-fail their role HONESTLY —
         # they surface as attempted+failed RoleResults below, never vanish.
         from . import drivers as drivers_mod
+        # retained BEFORE resolution, so a captured profile keeps the symbolic
+        # driver_id rather than tonight's resolved address (see _last_rigspec).
+        self._last_rigspec = spec
         spec, role_to_driver, prefailed = drivers_mod.resolve_driver_ids(spec)
         result = await connect_profile(spec)
         if prefailed:
@@ -785,6 +797,21 @@ class Hub:
         pid = config_store.cfg().active_profile_id
         if not pid:
             return None
+        # Boot is UNATTENDED, so an all-simulator rig has to announce itself
+        # here. A profile with no device rows resolves every role to the sim
+        # backend — including a SafetyMonitor that reports safe from nothing —
+        # while the console shows a connected rig. Saving such a profile is now
+        # prevented at the source (capture_profile), but one already on disk
+        # still activates, and silence is what made that dangerous.
+        with contextlib.suppress(Exception):
+            prof = await asyncio.to_thread(profiles.get, pid)
+            if not prof.devices and (prof.primary_backend or
+                                     prof._derived_primary()) == "sim":
+                bus.log("warning",
+                        f"profile '{prof.name}' has no equipment saved in it, so "
+                        f"this rig is coming up SIMULATED — nothing you see on it "
+                        f"is your hardware. Connect the rig on Equipment and save "
+                        f"the profile again.", "hub")
         return await self.connect_profile_id(pid)
 
     async def _apply_connect_result(self, result: "ConnectResult", *, primary: str,
@@ -1015,6 +1042,7 @@ class Hub:
         self.mode = "none"
         # a manual disconnect clears the boot-LED grid (no stale tri-state).
         self.last_connect_result = None
+        self._last_rigspec = None
         bus.log("info", "all equipment disconnected", "hub")
 
     def require(self, role: str):
@@ -1880,9 +1908,77 @@ class Hub:
         return {"summary": await self.poll_status(), "results": results,
                 "connected": ok, "total": len(results)}
 
-    async def capture_profile(self, name: str) -> Profile:
-        """Build a profile from the currently-connected devices (uses the
-        device-identity contract) and save it."""
+    @staticmethod
+    def _capturable_extra(conn: "ConnSpec") -> dict:
+        """``conn.extra`` reduced to what a PROFILE may hold: JSON-able values
+        only, minus the derived ``name`` key (``Profile.to_rigspec`` folds the
+        display name in there on the way out; the row carries it in its own
+        field, so writing it back would duplicate it and let the two disagree).
+
+        A runtime injection like NINA's ``build_rig`` callable lives in ``extra``
+        and must never reach disk — dropping non-serializable values here is what
+        keeps ``profiles.save`` from raising on a bridged rig."""
+        out: dict = {}
+        for k, v in (conn.extra or {}).items():
+            if k == "name":
+                continue
+            try:
+                json.dumps(v)
+            except (TypeError, ValueError):
+                continue
+            out[k] = v
+        return out
+
+    def _capture_from_rigspec(self, spec: "RigSpec") -> tuple[list[ProfileDevice], str]:
+        """Device rows + primary for a rig connected through a ``RigSpec``.
+
+        The spec is the ONLY place the connection coordinates survive: a live
+        native device object knows its driver's backend name and its display
+        name, but not the serial port, ``dev_num`` or ``driver_id`` it was opened
+        on. Reading the devices instead is what made this capture write an EMPTY
+        profile on a rig of native drivers.
+
+        Only roles that are LIVE are recorded — via ``_role_live_connected``, so
+        an engine-served role (the native guider, which has no ``self.devices``
+        entry) is captured too rather than silently dropped."""
+        devs: list[ProfileDevice] = []
+        for role in ROLES:
+            if not self._role_live_connected(role):
+                continue
+            conn = spec.resolve(role)
+            dev = self.devices.get(role)
+            dev_name = getattr(dev, "name", "") if dev is not None else ""
+            devs.append(ProfileDevice(
+                role=role,
+                backend=conn.backend,
+                host=conn.host or "",
+                port=conn.port or 0,
+                dev_type=conn.dev_type or "",
+                dev_num=conn.dev_num or 0,
+                name=dev_name or (conn.extra or {}).get("name", "") or "",
+                driver_id=conn.driver_id or "",
+                transport=conn.transport,
+                port_path=conn.port_path or "",
+                extra=self._capturable_extra(conn),
+            ))
+        # Say what was left out. A role the operator explicitly assigned but that
+        # is not up right now is NOT written down (a profile must not claim
+        # hardware the rig does not have) — but a profile that silently came back
+        # narrower than the one being replaced is the same defect in a new
+        # costume, so it is reported rather than inferred from a diff.
+        missing = sorted(r for r in spec.roles if not self._role_live_connected(r))
+        if missing:
+            bus.log("warning",
+                    f"not saved to the profile — {', '.join(missing)} "
+                    f"{'is' if len(missing) == 1 else 'are'} not connected right "
+                    f"now, so there is no working configuration to record",
+                    "hub")
+        return devs, spec.primary
+
+    def _capture_legacy(self) -> tuple[list[ProfileDevice], str]:
+        """Device rows + primary for the pre-RigSpec connect paths
+        (``connect_alpaca_device`` per role, ``connect_nina``, ``connect_sim``),
+        which retain no spec. Unchanged behavior for those rigs."""
         devs: list[ProfileDevice] = []
         for role, d in self.devices.items():
             if role not in ROLES:
@@ -1903,6 +1999,14 @@ class Hub:
             primary = "native"
         else:
             primary = "sim" if self.mode == "sim" else ""
+        return devs, primary
+
+    async def capture_profile(self, name: str) -> Profile:
+        """Build a profile from the currently-connected rig and save it."""
+        if self._last_rigspec is not None:
+            devs, primary = self._capture_from_rigspec(self._last_rigspec)
+        else:
+            devs, primary = self._capture_legacy()
         p = Profile(name=name, devices=devs, primary_backend=primary,
                     nina_host=(self.nina_client.host if self.nina_client else None),
                     site_name=self.site.get("name"))

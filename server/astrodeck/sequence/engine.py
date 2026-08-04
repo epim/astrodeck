@@ -1966,7 +1966,28 @@ class SequenceEngine:
         except (asyncio.TimeoutError, Exception):
             pass
 
-    async def _enforce_mount_floor(self, *, projected: bool, target: Target) -> None:
+    async def current_safety(self):
+        """The cached safety verdict, seed-wait included — the same read this
+        class gates a run on, exposed for callers that MOVE THE MOUNT before
+        ``start()`` runs. ResumeArm's recovery ladder is one: it plate-solves and
+        re-centers first, so gating only inside the run left those motions
+        unguarded."""
+        return await self._read_safety()
+
+    async def check_slew_limits(self, target: Target, *, cfg=None,
+                                projected: bool = True) -> None:
+        """Raise ``SafetyAbort`` if slewing to ``target`` breaks the altitude
+        floor, horizon, no-go wedges, pier limits or the zenith keep-out.
+
+        The public seam over :meth:`_enforce_mount_floor`, which reads the run's
+        config snapshot. Pass ``cfg`` when there is no run yet (recovery after a
+        restart) so the gate uses live configuration instead of ``None`` — which
+        is a silent no-op."""
+        await self._enforce_mount_floor(projected=projected, target=target,
+                                        cfg=cfg)
+
+    async def _enforce_mount_floor(self, *, projected: bool, target: Target,
+                                   cfg=None) -> None:
         """Mount-altitude floor + pier guard before a slew (§1.9-A/E).
 
         Evaluates the slew DESTINATION (``target.ra_hours``/``dec_deg``) → alt/az
@@ -1979,8 +2000,11 @@ class SequenceEngine:
         Historically this read the mount's CURRENT pointing (``get_position``),
         which is the WRONG end of the slew: it could pass a slew to a low target
         (mount currently high) AND abort the whole night when the mount was parked
-        horizon-pointing (alt ~0). Guarding the destination fixes both."""
-        cfg = self._cfg
+        horizon-pointing (alt ~0). Guarding the destination fixes both.
+
+        ``cfg`` overrides the run's config snapshot for callers that gate a slew
+        with no run in flight (see :meth:`check_slew_limits`)."""
+        cfg = cfg if cfg is not None else self._cfg
         if cfg is None:
             return
         floor_base = float(cfg.safety.min_alt_deg or 0.0)
@@ -2014,8 +2038,18 @@ class SequenceEngine:
                     f"slew to {target.name} would require a pier flip but meridian "
                     "flip is disabled")
 
-        if floor_base <= 0.0 and not horizon and not nogo:
-            return      # no floor configured → nothing to enforce
+        # The CEILING is read here, alongside the floor, because the early return
+        # below used to sit between the two: a rig with no floor configured
+        # (min_alt_deg = 0 — "I have no tree line", an ordinary setting) returned
+        # before the ceiling check and had its zenith keep-out silently disarmed,
+        # while the Settings panel went on promising it. The two ends of the sky
+        # are independent limits and neither may gate the other.
+        ceiling = schedule.effective_ceiling(
+            getattr(getattr(cfg, "safety", None), "max_alt_deg", None))
+        has_floor = floor_base > 0.0 or bool(horizon) or bool(nogo)
+        has_ceiling = ceiling < schedule.NO_CEILING_DEG
+        if not has_floor and not has_ceiling:
+            return      # neither end configured → nothing to enforce
 
         # DESTINATION alt/az now (and projected forward across the slew+solve), so
         # the guard blocks a slew TO a low target and never trips on where the
@@ -2036,14 +2070,12 @@ class SequenceEngine:
             raise SafetyAbort(
                 f"target {target.name} altitude {worst_alt:.0f}° below safety floor "
                 f"{floor:.0f}° (az {worst_az:.0f}°)")
-        # And a CEILING. A mount can foul its own tripod at HIGH altitude with
+        # And the CEILING. A mount can foul its own tripod at HIGH altitude with
         # the optics still on open sky; every other limit here is a minimum, so
         # nothing had an opinion about it (#101, observed on the AM5N). Checked
         # against the HIGHEST altitude across the slew window, which is the
         # opposite end from the floor's worst case — a target rising toward the
         # keep-out must be refused before it gets there, not after.
-        ceiling = schedule.effective_ceiling(
-            getattr(getattr(self._cfg, "safety", None), "max_alt_deg", None))
         best_alt, best_az = alt_now, az_now
         if projected:
             alt_p, az_p = altaz(ra, dec, lat, lon, now + SLEW_PROJECT_S)

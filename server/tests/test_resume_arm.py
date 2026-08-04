@@ -242,6 +242,95 @@ async def test_weather_veto_none_resumes(sim_hub, monkeypatch, bus_lines):
     assert session_store.load(sid).status == "complete"
 
 
+# ------------------------------------------------------- the ladder moves FIRST
+#
+# This module's own header used to say every safety gate "runs inside
+# engine.start / the run itself". That was true when the resume path WAS
+# engine.start. Then the recovery ladder was added ahead of it, and the ladder
+# plate-solves and RE-CENTERS — real motion, unattended, before a single gate the
+# claim named has run. These two pin the gates onto the ladder.
+
+def _force_unsafe(hub, reason="rain"):
+    from astrodeck.devices.base import SafetyReading
+    mon = hub.devices.get("safety")
+    if mon is not None:
+        mon.force_unsafe(reason)
+    hub._safety_reading = SafetyReading(is_safe=False, reason=reason,
+                                        source="Sim Safety Monitor")
+
+
+def _record_motion(hub, monkeypatch) -> list[str]:
+    """Record the ladder's motion calls instead of raising from them.
+
+    A stub that raises passes this test for the WRONG reason: the ladder wraps
+    both calls in ``except Exception`` and turns any failure into the same
+    ten-minute hold, so "it refused" is indistinguishable from "it moved and the
+    move blew up". Recording separates the two."""
+    calls: list[str] = []
+
+    def _stub(label, result=None):
+        async def _f(*a, **kw):
+            calls.append(label)
+            return result
+        return _f
+
+    monkeypatch.setattr(hub, "goto_and_center", _stub("goto", {}))
+    monkeypatch.setattr(hub, "solve_and_sync", _stub("solve", {}))
+    return calls
+
+
+async def test_recovery_refuses_to_move_while_the_monitor_says_unsafe(
+        sim_hub, monkeypatch, bus_lines):
+    """Rain, and the rig has just rebooted. The ladder must not slew."""
+    engine = SequenceEngine(sim_hub)
+    await _dormant_armed(sim_hub, engine)
+    _force_unsafe(sim_hub)
+    moved = _record_motion(sim_hub, monkeypatch)
+
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert arm._retry_at == now["t"] + RETRY_INTERVAL_S, (
+        "an unsafe monitor must hold the resume and arm the backoff. Bus lines:\n"
+        + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
+    assert moved == [], f"the rig moved while the monitor said unsafe: {moved}"
+    assert not engine.running
+    assert any("rain" in m for _lv, m, _s in bus_lines), \
+        f"the hold must name what the monitor reported: {bus_lines}"
+
+
+async def test_recovery_refuses_a_recenter_that_breaks_the_altitude_limits(
+        sim_hub, monkeypatch, bus_lines):
+    """The re-centering slew is a slew. It gets the same floor and zenith
+    keep-out every in-run slew gets — the ladder ran ahead of the only place
+    those were enforced."""
+    engine = SequenceEngine(sim_hub)
+    await _dormant_armed(sim_hub, engine)
+    # a floor above anything the plan's target can reach.
+    safety = hub_module.config_store.cfg().safety
+    monkeypatch.setattr(safety, "enabled", True)
+    monkeypatch.setattr(safety, "min_alt_deg", 89.0)
+    moved = _record_motion(sim_hub, monkeypatch)
+
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert arm._retry_at == now["t"] + RETRY_INTERVAL_S, (
+        "a re-center outside the altitude limits must hold the resume. Lines:\n"
+        + "\n".join(f"  [{lv}] {msg}" for lv, msg, _src in bus_lines))
+    assert "goto" not in moved, \
+        "the ladder slewed to a target below the altitude floor"
+    assert not engine.running
+    # and for the RIGHT reason — the limits gate, not some other refusal that
+    # happened to land first.
+    assert any("below safety floor" in m for _lv, m, _s in bus_lines), \
+        f"expected the altitude-limit refusal, got: {bus_lines}"
+
+
 async def test_no_autofocus_provider_warns_and_resumes_anyway(sim_hub, monkeypatch,
                                                               bus_lines):
     """A rig with NO autofocus provider must still auto-resume.

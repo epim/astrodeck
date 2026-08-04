@@ -436,6 +436,103 @@ async def test_capture_profile_stamps_sim_primary_for_sim_rig(tmp_path, monkeypa
     assert lib.get(p.id).primary_backend == "sim"
 
 
+class _FakeNativeDev:
+    """A connected NATIVE-driver device. Each native driver stamps its OWN
+    backend name (``zwo-am5``, ``player-one``, ...) — never ``alpaca`` — which
+    is precisely why the old alpaca-only capture recorded nothing on this rig."""
+    def __init__(self, backend: str, name: str):
+        self.backend = backend
+        self.name = name
+        self.connected = True
+
+
+def _native_hub(tmp_path, monkeypatch):
+    """A Hub with the module singletons pointed at ``tmp_path`` (never the real
+    server/config dir), returned with the temp ProfileLibrary."""
+    import astrodeck.config as config_mod
+    import astrodeck.hub as hub_mod
+    import astrodeck.profiles as profiles_mod
+    from astrodeck.config import ConfigStore
+    from astrodeck.hub import Hub
+
+    lib = ProfileLibrary(directory=tmp_path / "profiles")
+    monkeypatch.setattr(profiles_mod, "profiles", lib)
+    monkeypatch.setattr(hub_mod, "profiles", lib)
+    temp_store = ConfigStore(path=tmp_path / "astrodeck.json")
+    monkeypatch.setattr(hub_mod, "config_store", temp_store)
+    monkeypatch.setattr(config_mod, "config_store", temp_store)
+    return Hub(), lib
+
+
+@pytest.mark.asyncio
+async def test_capture_profile_records_a_native_rig(tmp_path, monkeypatch):
+    """THE blocker this guards: on a rig of native drivers, capture used to
+    record ZERO device rows (it only looked at ``backend == "alpaca"``), and an
+    empty profile resolves to ``primary="sim"`` — so boot auto-connect would
+    bring the rig up on SIMULATORS, including a fail-open sim SafetyMonitor,
+    with the console showing a connected rig.
+
+    Capture reads the RigSpec the rig was actually connected with, so serial
+    addressing (``transport``/``port_path``) and ``driver_id`` references
+    survive the round trip."""
+    from astrodeck.devices.backend import ConnSpec, RigSpec
+
+    hub, lib = _native_hub(tmp_path, monkeypatch)
+    hub._last_rigspec = RigSpec(primary="none", roles={
+        "telescope": ConnSpec(backend="zwo-am5", role="telescope",
+                              transport="serial", port_path="COM3"),
+        "camera": ConnSpec(backend="player-one", role="camera",
+                           driver_id="drv-poa", extra={"name": "Poseidon-C"}),
+        "focuser": ConnSpec(backend="zwo-usb", role="focuser"),
+    })
+    hub.devices = {
+        "telescope": _FakeNativeDev("zwo-am5", "AM5N"),
+        "camera": _FakeNativeDev("player-one", "Poseidon-C"),
+        "focuser": _FakeNativeDev("zwo-usb", "EAF"),
+    }
+    hub.mode = "alpaca"
+
+    p = await hub.capture_profile("Native Rig")
+
+    rows = {d.role: d for d in p.devices}
+    assert set(rows) == {"telescope", "camera", "focuser"}, \
+        "a native rig must capture its devices, not an empty profile"
+    assert rows["telescope"].backend == "zwo-am5"
+    assert rows["telescope"].transport == "serial"
+    assert rows["telescope"].port_path == "COM3"
+    assert rows["camera"].driver_id == "drv-poa"
+    assert rows["camera"].name == "Poseidon-C"
+    # the derived ``name`` key to_rigspec folds INTO extra is not written back
+    # as extra — the row carries it in its own field.
+    assert rows["camera"].extra == {}
+    # and the primary must never be the simulator on a rig of real devices.
+    assert p.primary_backend != "sim"
+    assert {d.role for d in lib.get(p.id).devices} == {"telescope", "camera", "focuser"}
+
+
+@pytest.mark.asyncio
+async def test_capture_profile_skips_roles_that_did_not_come_up(tmp_path, monkeypatch,
+                                                                bus_lines):
+    """A role in the spec that is NOT live is left out — capturing it would
+    persist a device the rig does not have. Saying so out loud is the point:
+    a silently narrower profile is the same defect class in a new costume."""
+    from astrodeck.devices.backend import ConnSpec, RigSpec
+
+    hub, _lib_ = _native_hub(tmp_path, monkeypatch)
+    hub._last_rigspec = RigSpec(primary="none", roles={
+        "camera": ConnSpec(backend="player-one", role="camera"),
+        "safety": ConnSpec(backend="zwo-usb", role="safety"),
+    })
+    hub.devices = {"camera": _FakeNativeDev("player-one", "Poseidon-C")}
+    hub.mode = "alpaca"
+
+    p = await hub.capture_profile("Half A Rig")
+
+    assert {d.role for d in p.devices} == {"camera"}
+    assert any("safety" in msg for _lvl, msg, _src in bus_lines), \
+        f"the skipped role must be reported, got {bus_lines}"
+
+
 # ------------------------------------------------- W2: extra-secret wire redaction
 #
 # A device row's ``extra`` (ConnSpec options) carries no credential in Stage B,
