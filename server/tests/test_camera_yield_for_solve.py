@@ -147,6 +147,107 @@ async def test_yield_camera_for_disarms_live_view_too(sim_hub, _hang_the_loop,  
     assert said and said[0].startswith("Live View stopped")
 
 
+# ------------------------------------------------- the Bahtinov focus aid (carry-in)
+#
+# The aid is the OTHER camera-owning path: POST /api/focuser/bahtinov/start arms
+# the per-frame analysis and starts the capture loop if one is not already
+# running. The first pass left it out of the yield, so a solve stopped the loop
+# that fed it and left `bahtinov_active` true over a verdict that would never
+# update again.
+#
+# The deliberate decision (justified at length in yield_camera_for's docstring):
+# YIELD it like Live View rather than let it 409 the other job the way autofocus
+# and coarse focus do. The deciding argument is that the yield-class callers are
+# not all interactive -- goto_and_center is called by the sequence engine and by
+# meridian_flip -- so a "protect the aid" refusal would let a focus aid somebody
+# forgot to disarm abort a target or strand the tube at a flip.
+
+@pytest.mark.asyncio
+async def test_yield_camera_for_disarms_the_bahtinov_aid_too(sim_hub, _hang_the_loop,  # noqa: F811
+                                                             log_lines):
+    """A frozen focus VERDICT is worse than a frozen picture: it looks like a
+    live reading that has stopped responding to the focuser, and it is a number
+    the user turns a knob against. Server truth has to stop claiming it."""
+    sim_hub.arm_bahtinov()
+    await _start_wedged_loop(sim_hub)
+    assert (await sim_hub.poll_status())["bahtinov_active"] is True
+
+    assert await sim_hub.yield_camera_for("plate solve") is True
+
+    assert sim_hub.bahtinov is None
+    status = await sim_hub.poll_status()
+    assert status["bahtinov_active"] is False
+    assert status["looping"] is False
+    said = [m for m in log_lines() if "needs the camera" in m]
+    assert said and said[0].startswith("Bahtinov focus aid stopped")
+
+
+@pytest.mark.asyncio
+async def test_the_aid_is_yielded_even_after_its_loop_already_died(sim_hub,  # noqa: F811
+                                                                   log_lines):
+    """The aid outlives the loop that feeds it (POST /api/capture/stop leaves it
+    armed), and in that state it is ALREADY reporting active over a dead frame
+    source. So the aid alone is enough to make the yield do something."""
+    sim_hub.arm_bahtinov()
+    assert sim_hub.looping is False and sim_hub.live_stacker is None
+
+    assert await sim_hub.yield_camera_for("plate solve") is True
+
+    assert sim_hub.bahtinov is None
+    assert [m for m in log_lines() if "Bahtinov focus aid stopped" in m]
+
+
+@pytest.mark.asyncio
+async def test_both_casualties_are_named_when_both_were_running(sim_hub,  # noqa: F811
+                                                                _hang_the_loop,
+                                                                log_lines):
+    """"Live View stopped" while a Bahtinov readout also went dark is a
+    half-truth, and the half it leaves out is the one the user's hand was on."""
+    sim_hub.arm_bahtinov()
+    sim_hub.start_live_stack()
+    await _start_wedged_loop(sim_hub)
+
+    await sim_hub.yield_camera_for("plate solve")
+
+    said = [m for m in log_lines() if "needs the camera" in m]
+    assert said and said[0].startswith("Bahtinov focus aid and Live View stopped")
+
+
+@pytest.mark.asyncio
+async def test_an_armed_aid_does_not_refuse_the_run_that_needs_the_camera(
+        sim_hub, _hang_the_loop):  # noqa: F811
+    """THE DECISION, pinned. The alternative was a 409 that protects the aid --
+    but ``goto_and_center`` runs unattended from the sequence engine and from
+    meridian_flip, where a refusal aborts a target or strands the tube on the
+    wrong side of the pier. A focus aid nobody remembered to disarm must not be
+    able to cost a night, so the run wins and the aid is stopped and named."""
+    sim_hub.arm_bahtinov()
+    await _start_wedged_loop(sim_hub)
+
+    result = await sim_hub.goto_and_center(5.0, 10.0)
+
+    assert result["centered"] is True
+    assert sim_hub.bahtinov is None and sim_hub.looping is False
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_never_starts_leaves_the_aid_armed(sim_hub, monkeypatch):  # noqa: F811
+    """Same ordering rule the sun-cone and pole cases pin for Live View: the
+    yield sits after every refusal, so a solve that was never going to run does
+    not take a focus aid down on its way out."""
+    import astrodeck.providers as providers_module
+
+    def no_solver(hub):
+        raise DeviceError("no solver configured")
+    monkeypatch.setattr(providers_module, "pick_solver", no_solver)
+    sim_hub.arm_bahtinov()
+
+    with pytest.raises(DeviceError):
+        await sim_hub.solve_and_sync(exposure_s=0.05)
+
+    assert sim_hub.bahtinov is not None
+
+
 # ------------------------------------------------------------- solve_and_sync
 
 @pytest.mark.asyncio

@@ -2990,10 +2990,52 @@ class Hub:
         /api/capture/livestack/stop`` does — ``stop_loop`` then
         ``stop_live_stack`` — so the user lands in a state the UI already knows
         how to render. The log line below is the third: it names what took the
-        camera, so the disappearance has a stated cause."""
+        camera, so the disappearance has a stated cause.
+
+        THE BAHTINOV FOCUS AID IS YIELDED TOO, AND THAT WAS A CLOSE CALL (carry-
+        in from the review of 797588b, which left it out). ``POST
+        /api/focuser/bahtinov/start`` starts the capture loop if one is not
+        already running, so the aid is a camera-owning path exactly like Live
+        View — but the user's relationship to it is the opposite. Live View is
+        scenery someone forgets is running; the Bahtinov aid is a number they
+        are staring at with a hand on the focuser, and stopping that under them
+        is not obviously a kindness. The alternative was the answer autofocus
+        and coarse focus give: refuse the OTHER job with a 409 and let the aid
+        keep the camera. It was rejected for four reasons, in order of weight:
+
+        * The yield-class callers are not all interactive. ``goto_and_center``
+          is called by the sequence engine and by ``meridian_flip``, both
+          unattended and both mid-night. Refusing there is not a polite "not
+          now" — it aborts a target, or strands the tube on the wrong side of
+          the pier at the flip. A focus aid somebody forgot to disarm must never
+          be able to cost a night; that is the same harm 797588b and b670856
+          were written to stop, and protecting the aid would have reintroduced
+          it on the paths that matter most.
+        * Refusing would not even be a smaller action. The aid has no camera of
+          its own — it rides the live loop's frames — so anything that stops the
+          loop stops the aid regardless. The choice was never "stop the aid or
+          not"; it was "stop the whole run, or stop the aid and say so".
+        * An aid left ARMED while nothing feeds it is worse here than for Live
+          View. A frozen picture looks frozen; a frozen focus verdict looks like
+          a live reading that has stopped responding to the focuser, and that is
+          a number the user acts on. ``status.bahtinov_active`` staying true
+          would be the lie.
+        * The 409 answer already exists where it belongs, and the aid already
+          wins it: autofocus and coarse focus refuse on ``hub.looping``, and an
+          armed aid is looping. Nothing is given up by not adding a second one.
+
+        (A Bahtinov MASK on the aperture would very likely make the solve that
+        takes the camera fail anyway. That is not a reason to refuse: nothing
+        here can tell whether the mask is physically on the scope, only that the
+        aid is armed, and a failed solve already degrades to a raw GoTo.)"""
         was_looping = self.looping
         had_stack = self.live_stacker is not None
-        if not (was_looping or had_stack):
+        had_bahtinov = self.bahtinov is not None
+        # The aid is included in the "is there anything to do" test, not just in
+        # the teardown: it can outlive the loop that fed it (POST
+        # /api/capture/stop leaves it armed), and in that state it is already
+        # reporting active over a dead frame source.
+        if not (was_looping or had_stack or had_bahtinov):
             return False
         if was_looping:
             # AWAITED, not fire-and-forget: the loop's in-flight ``expose`` has
@@ -3002,11 +3044,24 @@ class Hub:
             await self.stop_loop_and_wait()
         if had_stack:
             self.stop_live_stack()
-        label = "Live View" if had_stack else "Loop capture"
-        restart = "Live" if had_stack else "Loop"
+        if had_bahtinov:
+            self.disarm_bahtinov()
+        # Name everything that stopped. "Live View stopped" while a Bahtinov
+        # readout also went dark would be a half-truth, and the half it leaves
+        # out is the one the user's hand was on.
+        names = [n for n, on in (("Bahtinov focus aid", had_bahtinov),
+                                 ("Live View", had_stack)) if on] or ["Loop capture"]
+        # How to get it back. The aid is armed over the API (there is no button
+        # for it on the Focus screen today), so it gets "arm it again" rather
+        # than the name of a control that is not on screen to be pressed.
+        back = ("arm the Bahtinov focus aid again" if had_bahtinov
+                else "press Live again" if had_stack else "press Loop again")
         bus.log("warning",
-                f"{label} stopped: {what} needs the camera to plate-solve. "
-                f"Press {restart} again when it finishes.", "capture")
+                f"{' and '.join(names)} stopped: {what} needs the camera to "
+                f"plate-solve — {back} when it finishes.",
+                # Routed to the focus channel when the aid was the casualty, so
+                # the explanation lands next to "Bahtinov focus aid on".
+                "focus" if had_bahtinov else "capture")
         return True
 
     @property
