@@ -54,6 +54,33 @@ Other safety knobs (defaults):
 - **twilight_deg** — the twilight angle used for dusk/dawn windows, default
   **-12°** (nautical).
 
+### Warming the camera
+
+"Park and warm" does not switch the cooler off. It walks the **set-point** back
+up toward ambient and only then cuts the TEC, because a cooled sensor released
+straight to room temperature is a thermal-shock and in-chamber condensation risk
+— measured on an AM5N rig at about **5 °C/min** of uncontrolled equalisation.
+
+The ramp runs on a **background task**, so an unsafe trip parks the mount and
+closes the roof immediately and warms afterwards; nothing waits ten minutes for
+a cooler. Pressing **Cool** during a ramp cancels it and the new set-point wins;
+the Capture screen shows progress and offers **Stop ramp** (which switches the
+cooler off at once, the old behaviour, deliberately).
+
+Config lives in `cooling` (`config.safety` to change, next to the preset it
+belongs to on *Settings → Safety → Safety limits*):
+
+- **warm_rate_c_per_min** — default **2**. About 12 minutes from −10 °C to a
+  +15 °C ambient. Chosen to sit under both the ~5 °C/min free-running rate and
+  the ~2.5 °C/min implied by NINA's 10-minute warm default; it is a policy
+  default, not a measured per-sensor limit.
+- **warm_ambient_c** — `null` (default) means work it out: a backend-reported
+  ambient if there is one, otherwise assume a warm room and stop early when the
+  sensor stops following the set-point (which is the real ambient).
+- **warm_ramp** — set `false` to restore the old cut-it-dead behaviour. Every
+  warm then logs a warning, because the sentence above would otherwise be
+  false.
+
 The safety monitor is **fail-closed**: a wrong device in the `safety` role, or a
 stale/unreadable reading, is treated as *unsafe*. That's why AstroDeck refuses to
 put a non-`safetymonitor` device into the `safety` role.

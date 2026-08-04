@@ -55,7 +55,7 @@ from ..catalog.tiles import router as tiles_router
 from ..catalog.framing import router as framing_router
 from ..catalog.visibility import router as visibility_router
 from ..config import (AlertSink, AuthConfig, CalibrationConfig,
-                      ConfigVersionConflict,
+                      ConfigVersionConflict, CoolingConfig,
                       EscalationConfig, GuideConfig, NamingConfig, Optics,
                       ProvidersConfig, RotatorConfig, SafetyConfig, Site,
                       SurveyConfig, UpdateConfig, WcsStampConfig, WeatherConfig,
@@ -758,6 +758,14 @@ class SwitchBody(BaseModel):
 class CoolerBody(BaseModel):
     on: bool
     target_c: float | None = None
+    #: ``on=False`` now runs a background WARM RAMP (setpoint stepped toward
+    #: ambient, TEC switched off only at the end) instead of cutting the cooler
+    #: dead. ``ramp=False`` is the explicit escape hatch — "stop the ramp and
+    #: switch it off NOW" from the Capture screen, or a scripted caller that
+    #: knows what it is asking for. It defaults to True because the callers that
+    #: most need the ramp (the unattended safety wind-down) are the ones nobody
+    #: is going to go back and add a flag to. Ignored when ``on`` is True.
+    ramp: bool = True
 
 
 class DewBody(BaseModel):
@@ -949,6 +957,12 @@ class ConfigPatchBody(BaseModel):
     escalation: EscalationConfig | None = None
     alerts: list[AlertSink] | None = None
     deadman_url: str | None = None
+    # Cooler warm-down policy (2026-08-04). It rides this route, and is gated on
+    # config.safety rather than a cap of its own, because the setting it governs
+    # is a hardware-protection policy the SafetyLimitsPanel already claims in
+    # words: "park, then warm the camera at a safe ramp". The knob belongs next
+    # to the sentence that promises it.
+    cooling: CoolingConfig | None = None
 
 
 class SafetySimulateBody(BaseModel):
@@ -2040,6 +2054,8 @@ def create_app() -> FastAPI:
             config_store.set_safety(body.safety)
         if body.escalation is not None:
             config_store.set_escalation(body.escalation)
+        if body.cooling is not None:
+            config_store.set_cooling(body.cooling)
         if body.alerts is not None:
             config_store.set_alerts(_merge_alert_verified(body.alerts))
         if body.deadman_url is not None:
@@ -2067,6 +2083,7 @@ def create_app() -> FastAPI:
           site                 -> config.site_optics
           site.horizon_min_deg -> ALSO config.safety (a safety floor)
           safety               -> config.safety
+          cooling              -> config.safety   (warm-down ramp = hardware protection)
           escalation           -> config.alerts   (notification/recovery policy)
           alerts               -> config.alerts
           deadman_url          -> config.alerts
@@ -2077,6 +2094,7 @@ def create_app() -> FastAPI:
         block_caps = {
             "site": CAP_CONFIG_SITE_OPTICS,
             "safety": CAP_CONFIG_SAFETY,
+            "cooling": CAP_CONFIG_SAFETY,
             "escalation": CAP_CONFIG_ALERTS,
             "alerts": CAP_CONFIG_ALERTS,
             "deadman_url": CAP_CONFIG_ALERTS,
@@ -3337,10 +3355,26 @@ def create_app() -> FastAPI:
     @app.post("/api/camera/cooler", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
     @declare(CAP_CONTROL_CAPTURE)
     async def cooler(body: CoolerBody):
+        """Cool to a setpoint, or start the warm-down RAMP.
+
+        Warming used to be ``set_cooler(False)`` straight through to the driver.
+        Measured on the rig 2026-08-04, that took the sensor 8.3 → 11.8 °C in
+        ~40 s: thermal shock plus in-chamber condensation, every time anyone
+        pressed Warm. It now hands off to the hub, which walks the SETPOINT up to
+        ambient in the background and only then switches the TEC off — so this
+        route still answers in milliseconds and the caller gets the ramp state to
+        render, not a ten-minute blocking request.
+
+        Cooling routes through the hub too, because it has to CANCEL a ramp in
+        flight: without that, the ramp's next setpoint step (≤15 s away) would
+        silently overwrite the target the user just typed."""
         try:
-            cam = hub.require("camera")
-            await cam.set_cooler(body.on, body.target_c)
-            return {"ok": True}
+            hub.require("camera")           # 400 when there is no camera at all
+            if body.on:
+                await hub.cool_camera(body.target_c)
+                return {"ok": True}
+            return {"ok": True, "warm": await hub.warm_camera(source="user",
+                                                              ramp=body.ramp)}
         except DeviceError as e:
             raise _err(e)
 
