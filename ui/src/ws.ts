@@ -83,6 +83,14 @@ export function connectWs(): void {
       const ts = Date.now() / 1000;
       if (snap.status) st.handleEvent({ type: "status", data: snap.status as unknown as Record<string, unknown>, ts });
       if (snap.sequence) st.handleEvent({ type: "sequence", data: snap.sequence as unknown as Record<string, unknown>, ts });
+      // Polar, for the same reason as sequence above. The aligner's terminal
+      // states are its most important ones — "too close to the pole to measure",
+      // an error, a finished measurement — and each publishes exactly once with
+      // no bus history. A reload put the panel back on the cold default: an idle
+      // aligner, no numbers, no reason, and a user who re-runs the run that had
+      // just refused. Routed through handleEvent so the WS path stays the single
+      // place that decides how this state is applied.
+      if (snap.polar) st.handleEvent({ type: "polar", data: snap.polar as unknown as Record<string, unknown>, ts });
       // Focus has the SAME failure mode the sequence rehydration above exists
       // for, and it bit a real session on 2026-07-30: the sweep failed at
       // 23:13, the phone kept showing "measuring…" until Halt at 23:52, and

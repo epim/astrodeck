@@ -559,6 +559,12 @@ export interface MonitorSnapshot {
    *  live events, which publish their terminal tick exactly once — so this is
    *  how a client that was disconnected across that tick finds out. */
   busy?: string[];
+  /** The aligner's current state, for the same reason `sequence` is here: its
+   *  terminal states — a refusal, an error, a completed measurement — publish
+   *  once on the bus and are never replayed, so a reload showed an idle aligner
+   *  with no trace of the refusal that had just happened. Optional: an older
+   *  server does not send it. */
+  polar?: PolarState;
 }
 
 export interface LogLine {
