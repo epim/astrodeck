@@ -149,10 +149,29 @@ class Camera(Device):
     @abstractmethod
     async def abort_exposure(self) -> None: ...
 
+    #: capability flag (warm-ramp fix, 2026-08-04) — True only for backends that
+    #: run their OWN warm-down ramp when told to switch the cooler off (today:
+    #: the NINA bridge, whose ``/equipment/camera/warm`` takes a duration and
+    #: ramps internally). The hub's ramp then does NOT step the setpoint itself —
+    #: two ramps fighting over one setpoint is worse than either — it hands the
+    #: duration down and tracks the ETA so the UI can still show progress.
+    self_warms: bool = False
+
     async def set_cooler(self, on: bool, target_c: float | None = None) -> None:
         raise DeviceError(f"{self.name} has no cooler")
 
     async def get_temperature(self) -> float | None:
+        return None
+
+    async def get_ambient_temperature(self) -> float | None:
+        """Ambient (heat-sink / air) temperature in °C, or None when this backend
+        cannot measure it — which is the common case, hence the inert default.
+
+        The warm-down ramp climbs the setpoint TOWARD ambient; a backend that
+        actually knows the number turns "warming to 20 °C (assumed)" into
+        "warming to 11 °C (measured)". Nothing depends on it: with None the ramp
+        assumes a warm room and ends itself as soon as the sensor stops following
+        the setpoint, which IS the real ambient (see astrodeck/cooling.py)."""
         return None
 
     async def set_dew_heater(self, power: int) -> None:

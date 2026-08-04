@@ -27,6 +27,7 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { Icon } from "../components/icons";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import { filterMotion, type FilterCommand } from "../lib/filterSlots";
+import { warmReadout } from "../lib/cooling";
 import { HELP } from "../help";
 
 // ---------------------------------------------------------------- capture phase
@@ -184,6 +185,10 @@ export default function CaptureView() {
   const maxBin = Math.min(8, Math.max(1, cam?.max_bin ?? 4));
   const binOptions = Array.from({ length: maxBin }, (_, i) => i + 1);
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
+  // Warm-down ramp (2026-08-04). Warming now takes ~10 minutes instead of being
+  // instantaneous, so the panel has to show it: a Warm button that looks like it
+  // did nothing gets pressed again, or gets "fixed" by pressing Cool.
+  const warm = warmReadout(cam?.warm);
   // UX-28: only send a finite, in-range set-point. Number("") is 0 and
   // Number("x") is NaN (→ null over JSON); guard both so "Cool" never posts
   // target_c:null with on:true.
@@ -528,8 +533,14 @@ export default function CaptureView() {
     readOnlyReason ?? (coolerTargetInvalid
       ? `Target must be a number between ${COOLER_MIN_C} and ${COOLER_MAX_C} °C`
       : null);
+  // While a ramp is running the cooler is still ON (its setpoint is climbing),
+  // so the old "already off" test would leave Warm live and re-pressable — which
+  // is exactly the double-press the server now has to defend against. During a
+  // ramp the button becomes Stop instead (see the panel below), so this reason
+  // only has to cover the genuinely-idle case.
   const warmReason =
-    readOnlyReason ?? (cooler != null && !cooler.on ? "The cooler is already off" : null);
+    readOnlyReason ?? (!warm?.active && cooler != null && !cooler.on
+      ? "The cooler is already off" : null);
 
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_320px] xl:grid-cols-[1fr_360px]">
@@ -1148,7 +1159,16 @@ export default function CaptureView() {
                 {cooler?.on && cooler.can_report_power && cooler.power != null && (
                   <span className="mono text-xs text-dim">{Math.round(cooler.power)}%</span>
                 )}
-                {cooler?.on && cooler.at_target && (
+                {/* A ramping cooler IS on and IS holding a setpoint, so the LED
+                    and the "at target" chip both read normally — and both would
+                    be describing a setpoint that is deliberately walking away
+                    from the one the user chose. The warming chip is what tells
+                    them apart, and it outranks "at target" for the same reason. */}
+                {warm?.active ? (
+                  <span className="px-1.5 py-0.5 text-[10px] tracking-wider uppercase border border-accent/50 text-accent">
+                    warming
+                  </span>
+                ) : cooler?.on && cooler.at_target && (
                   <span className="px-1.5 py-0.5 text-[10px] tracking-wider uppercase border border-good/50 text-good">
                     at target
                   </span>
@@ -1197,7 +1217,25 @@ export default function CaptureView() {
                   {cooler?.on ? "Set" : "Cool"}
                 </button>
               )}
-              {warmReason ? (
+              {/* Warming is no longer instantaneous — it is a ~10 minute ramp
+                  (see lib/cooling.ts). So the button has two jobs: start one,
+                  and get out of one. `ramp:false` is the server's explicit
+                  "switch it off NOW" escape hatch; it is the OLD behaviour, and
+                  it is offered because a user who wants the camera off their
+                  mount in the next thirty seconds is entitled to that call —
+                  deliberately, with the title saying what it costs, not by
+                  accident the way the whole product used to do it. */}
+              {warm?.active ? (
+                <button
+                  className="btn tap min-h-[44px] w-full border-accent text-accent"
+                  title="Stop the ramp and switch the cooler off now. The sensor will then equalise with the air on its own."
+                  onClick={() => act(async () => {
+                    await api.post("/api/camera/cooler", { on: false, ramp: false });
+                    showToast("info", "Warm ramp stopped — cooler off");
+                  })}>
+                  Stop ramp
+                </button>
+              ) : warmReason ? (
                 <LockedChip reason={warmReason} className="btn tap min-h-[44px] w-full justify-center">
                   Warm
                 </LockedChip>
@@ -1209,6 +1247,39 @@ export default function CaptureView() {
                 </button>
               )}
             </div>
+            {/* ---- warm-down ramp progress (2026-08-04). The panel's only
+                 previous answer to "is it warming?" was the cooler LED going
+                 off, which happened instantly because the TEC was being cut
+                 dead. Now there is a ten-minute process to report, and the
+                 finished state lingers ~3 min on status so this does not blink
+                 out the moment it completes. ---- */}
+            {warm && (
+              <div className="mt-3 border-t border-line pt-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className={`text-xs ${warm.unramped ? "text-warn" : "text-ink"}`}>
+                    {warm.headline}
+                  </span>
+                  {warm.active && (
+                    <span className="mono text-[11px] text-dim">{warm.pct}%</span>
+                  )}
+                </div>
+                {warm.active && (
+                  <div className="h-2 bg-black/30 border border-line2 mt-1.5"
+                       role="progressbar" aria-valuenow={warm.pct}
+                       aria-valuemin={0} aria-valuemax={100}
+                       aria-label="Camera warm-down progress">
+                    <div className="h-full bg-[var(--accent)]"
+                         style={{ width: `${warm.pct}%` }} />
+                  </div>
+                )}
+                {warm.detail && (
+                  <p className={`text-[11px] mt-1.5 ${warm.unramped ? "text-warn" : "text-dim"}`}>
+                    {warm.detail}
+                  </p>
+                )}
+              </div>
+            )}
+
             {coolerTargetInvalid && (
               <p className="text-[11px] text-bad mt-2">
                 Target must be a number between {COOLER_MIN_C} and {COOLER_MAX_C} °C

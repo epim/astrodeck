@@ -326,6 +326,12 @@ class SimCamera(Camera):
 
     FOV_DEG = 1.4  # diagonal field of view at bin 1
     AMBIENT_C = 12.3  # uncooled sensor temperature; also the cooler-power baseline
+    #: how fast the simulated sensor follows the TEC (°C per REAL second), and
+    #: how fast it drifts back up when nothing is holding it. The upward figure
+    #: is the one measured on the owner's camera the night the warm bug was
+    #: reported: 8.3 → 11.8 °C in about 40 s ≈ 5 °C/min ≈ 0.083 °C/s.
+    SIM_TEC_SLEW_C_PER_S = 0.5
+    SIM_PASSIVE_SLEW_C_PER_S = 0.083
     SIM_EGAIN = 0.8  # e-/ADU: a plausible constant so EGAIN is exercised end-to-end
 
     #: the sim is the one backend that reports a real cooler-power number so the
@@ -349,6 +355,13 @@ class SimCamera(Camera):
         self._dew_power = 0
         self._cooler_on = False
         self._target_c = -10.0
+        # --- thermal model (warm-ramp fix, 2026-08-04) -------------------------
+        # ``None`` = nobody has touched the cooler yet, so reads report the same
+        # constants as before. Once the cooler is commanded, the sensor MOVES,
+        # which is the only way the warm ramp is observable on a sim rig — and a
+        # ramp you cannot watch is a ramp nobody will notice regressing.
+        self._temp_c: float | None = None
+        self._temp_ts: float = time.monotonic()
         self._abort = asyncio.Event()
         self.can_report_cooler_power = True
         self.full_well = 65535
@@ -364,12 +377,60 @@ class SimCamera(Camera):
         self._abort.set()
 
     async def set_cooler(self, on: bool, target_c: float | None = None) -> None:
+        # Settle the model to "now" BEFORE the setpoint changes, so the elapsed
+        # time since the last read is credited to the OLD goal. Without it, a
+        # warm ramp's 15 s steps would each be integrated against the newest
+        # setpoint and the sensor would appear to lead the ramp it is following.
+        self._advance_temp()
         self._cooler_on = on
         if target_c is not None:
             self._target_c = target_c
 
     async def get_temperature(self) -> float | None:
-        return self.rig.sensor_temp if self._cooler_on else self.AMBIENT_C
+        return self._advance_temp()
+
+    def _advance_temp(self) -> float:
+        """Move the simulated sensor toward whatever the cooler is asking for.
+
+        Two rates, because the two directions are different physics and the
+        difference is the whole point of this feature:
+
+          * DOWN (or held) is the TEC doing work — fast.
+          * UP is heat leaking back in. The rig measurement that started all
+            this (8.3 → 11.8 °C in ~40 s with the TEC off) is ~5 °C/min, so
+            that is the ceiling on the upward rate here. It means the sim
+            reproduces the BUG faithfully too: turn the ramp off in config and
+            the sim sensor jumps for ambient at the same rate the real one did.
+
+        Under the test fast-path the model is inert and the historical constants
+        are returned unchanged — ``_sim_delay``'s rule (no simulated VALUE may
+        depend on elapsed wall-clock) still holds for the suite, which is what
+        keeps every existing cooler/telemetry test byte-identical. The live sim
+        is the one place the clock is real, and the one place a human is
+        watching the number move."""
+        now = time.monotonic()
+        dt = max(0.0, now - self._temp_ts)
+        self._temp_ts = now
+        if _sim_delay(1.0) == 0.0:      # fast-test: frozen, pre-model behaviour
+            return self.rig.sensor_temp if self._cooler_on else self.AMBIENT_C
+        if self._temp_c is None:
+            self._temp_c = self.rig.sensor_temp if self._cooler_on else self.AMBIENT_C
+        # The TEC can pull below ambient but has no heater: it can never drive
+        # the sensor ABOVE the room. A setpoint above ambient therefore parks the
+        # sensor AT ambient — which is exactly the condition the hub ramp watches
+        # for to decide it has arrived and may switch off.
+        goal = min(self._target_c, self.AMBIENT_C) if self._cooler_on else self.AMBIENT_C
+        rate = self.SIM_TEC_SLEW_C_PER_S if goal < self._temp_c             else self.SIM_PASSIVE_SLEW_C_PER_S
+        step = rate * dt
+        if abs(goal - self._temp_c) <= step:
+            self._temp_c = goal
+        else:
+            self._temp_c += step if goal > self._temp_c else -step
+        # Keep the rig's shared ground truth in step: SimGuideCamera reports it
+        # too, and two sim cameras in one box disagreeing about the temperature
+        # would be a bug report of its own.
+        self.rig.sensor_temp = self._temp_c
+        return self._temp_c
 
     async def get_cooler(self) -> dict | None:
         """A trivial power model so the Monitor cooler readout is non-trivial:

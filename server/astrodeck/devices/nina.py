@@ -34,6 +34,13 @@ import httpx
 import numpy as np
 from PIL import Image
 
+from ..config import config_store
+from ..cooling import (
+    WARM_FALLBACK_AMBIENT_C,
+    warm_ambient_c,
+    warm_minutes,
+    warm_rate_c_per_min,
+)
 from ..events import bus
 from .alpaca import AlpacaScanError, validate_scan_host
 from .base import (
@@ -317,13 +324,47 @@ class NinaCamera(_NinaDevice, Camera):
         except DeviceError:
             pass
 
+    #: NINA owns a warm-down ramp of its own (``/equipment/camera/warm`` takes a
+    #: DURATION and walks the setpoint itself), so the hub must not also step the
+    #: setpoint — two rampers fighting over one control is worse than either.
+    #: See Hub.warm_camera's delegated branch.
+    self_warms = True
+
+    async def warm(self, minutes: int | None = None) -> None:
+        """Warm the camera through NINA's own ramp.
+
+        ``minutes=0`` is NINA's warm-IMMEDIATELY sentinel — it cuts the TEC dead,
+        which is precisely the 2026-08-04 bug (measured ~5 °C/min of uncontrolled
+        equalisation on the rig). It is still reachable, but ONLY when a caller
+        explicitly asks for it; ``None`` means "work out a sane duration from the
+        configured ramp rate and the current sensor temperature", which is what
+        every implicit caller now gets.
+
+        If the sensor temperature cannot be read we cannot compute a duration, so
+        we send the ramp rate's own default 10-minute-ish figure rather than 0 —
+        an over-long warm costs nothing but time; a zero-length one costs
+        hardware."""
+        if minutes is None:
+            temp = await self.get_temperature()
+            if temp is None:
+                minutes = warm_minutes(0.0, WARM_FALLBACK_AMBIENT_C)
+            else:
+                cfg = config_store.cfg()
+                ambient, _from = warm_ambient_c(cfg, float(temp))
+                minutes = warm_minutes(float(temp), ambient, warm_rate_c_per_min(cfg))
+        await self.client.get("/equipment/camera/warm", minutes=max(0, int(minutes)))
+
     async def set_cooler(self, on: bool, target_c: float | None = None) -> None:
         if on:
             await self.client.get("/equipment/camera/cool",
                                   temperature=(target_c if target_c is not None else -10),
                                   minutes=0)
         else:
-            await self.client.get("/equipment/camera/warm", minutes=0)
+            # Was ``minutes=0`` — NINA's warm-IMMEDIATELY. Any legacy caller that
+            # still reaches set_cooler(False) directly (rather than through
+            # Hub.warm_camera) now gets the ramped warm too, because the path that
+            # was cutting the TEC dead unattended was exactly this one.
+            await self.warm()
 
     async def get_temperature(self) -> float | None:
         return _maybe_float(pick(await self.info(), "Temperature"))
