@@ -64,9 +64,17 @@ export default function GuideView() {
 
   // UX-15: when no guide-scope focal length is configured the native guider
   // reports RMS in guide-camera PIXELS, not arcsec. Label the unit honestly
-  // (px vs ″) instead of stamping "arcsec" on raw pixels. Absent flag ⇒ arcsec
-  // (older payload / the prior default) — only an explicit false means px.
-  const isArcsec = stats?.is_arcsec !== false;
+  // (px vs ″) instead of stamping "arcsec" on raw pixels.
+  //
+  // ABSENT ⇒ PIXELS, matching GuideStats.is_arcsec's own default. This used to
+  // read `!== false`, so a payload missing the field defaulted to ARCSEC —
+  // fail-open on the client while the server fails closed. The two ends
+  // disagreeing about the safe direction is how 0.90 px comes to be shown as
+  // 0.90″, which on a 240 mm guide scope reads as excellent guiding when the
+  // true figure is ~3.2″. Every live payload does carry the flag (it is a
+  // dataclass field, spread into both the status poll and the guide event), so
+  // this is the boundary being made honest rather than a bug being chased.
+  const isArcsec = stats?.is_arcsec === true;
   // UX-35: the true prime glyph (″), not an ASCII quote, to match arcsec/arcmin
   // typography elsewhere in the app.
   const unit = isArcsec ? "″" : "px";

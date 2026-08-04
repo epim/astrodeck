@@ -582,11 +582,12 @@ export default function InstructionsPanel({ plan, setPlan, canWrite }: {
   const instructions = plan.instructions ?? [];
   const targetNames = plan.targets.map((t) => t.name).filter(Boolean);
   // The guider only reports arcseconds when the guide scope's focal length is
-  // known (native.py:1093-1109) — otherwise its RMS is PIXELS, and printing ″
-  // would be a lie. Same default as GuideView: unknown reads as arcsec.
+  // known — otherwise its RMS is PIXELS, and printing ″ would be a lie. Same
+  // default as GuideView and as GuideStats itself: unknown reads as PIXELS,
+  // because the failure that matters is calling a pixel figure arcsec.
   const guideStats = useGuideRms();
   const descOpts = useMemo<DescribeOpts>(
-    () => ({ rmsArcsec: guideStats?.is_arcsec !== false }), [guideStats?.is_arcsec]);
+    () => ({ rmsArcsec: guideStats?.is_arcsec === true }), [guideStats?.is_arcsec]);
 
   const patchAt = (idx: number, patch: Partial<Instruction>) =>
     setPlan({

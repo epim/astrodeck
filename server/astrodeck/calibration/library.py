@@ -18,6 +18,7 @@ from typing import Callable
 
 import numpy as np
 
+from ..events import bus
 from ..gallery import THUMBS_DIRNAME, TRASH_DIRNAME
 from ..persist import read_json_or, safe_id_path, write_json_atomic
 from .keys import CAL_FRAME_TYPES, CalKey, key_from_header, key_index_id
@@ -42,8 +43,34 @@ MANIFEST_NAME = "masters.json"
 EXCLUDE_DIRS = {MASTERS_DIRNAME, "_solve", TRASH_DIRNAME, THUMBS_DIRNAME}
 MANIFEST_SCHEMA = 1
 
+#: The card ``imaging.darks`` stamps on a calibration frame it judged.
+#:
+#: FALSE means the frame was measured and contradicted: a "dark" pinned at the
+#: sensor ceiling, or full of stars — a light leak, a slot flagged opaque that
+#: is not. Such a frame is skipped here. Subtracting a master built from white
+#: frames does not merely degrade a light, it erases it.
+#:
+#: ABSENT means unjudged, and MUST read as usable. Every dark taken before the
+#: check existed lacks the card, and defaulting the other way would silently
+#: delete a working library on upgrade day.
+DARK_OK_CARD = "DARKOK"
+
 _MASTER_FIELDS = ("id", "frame_type", "exposure_s", "gain", "offset", "temp_c",
                   "binning", "filter", "frame_count", "path", "built_ts")
+
+
+def _rejected_by_dark_check(header) -> bool:
+    """True when this frame's header says the dark check CONTRADICTED it.
+
+    Only an explicit false reads as a rejection. A missing card is an unjudged
+    frame, not a bad one, and astropy gives a FITS logical card back as a
+    ``bool`` — but a header hand-written by another tool may carry ``0`` or
+    ``"F"``, so those are honoured too rather than silently passing through as
+    truthy strings."""
+    val = header.get(DARK_OK_CARD, True)
+    if isinstance(val, str):
+        return val.strip().upper() in ("F", "FALSE", "0", "NO")
+    return val is False or val == 0
 
 
 @dataclass(frozen=True)
@@ -157,21 +184,34 @@ class CalibrationLibrary:
     def _manifest_path(self) -> Path:
         return self.masters_dir() / MANIFEST_NAME
 
-    def _bucket_raw(self, temp_bin_width: float) -> dict[str, _Bucket]:
+    def _bucket_raw(self, temp_bin_width: float
+                    ) -> tuple[dict[str, _Bucket], list[tuple[Path, str]]]:
+        """``(buckets, rejected)`` — the frames that will be stacked, and the
+        ones the dark check contradicted, each with the evidence sentence off
+        its own header. The rejects are RETURNED rather than dropped so the
+        caller can say what it left out; a scanner that silently indexes fewer
+        frames than the folder holds is how a bad library looks healthy."""
         from astropy.io import fits
         root = self._capture_dir()
         buckets: dict[str, _Bucket] = {}
+        rejected: list[tuple[Path, str]] = []
         if not root.exists():
-            return buckets
+            return buckets, rejected
         for p in sorted(root.rglob("*.fits")):
             rel = p.relative_to(root)
             if any(part in EXCLUDE_DIRS for part in rel.parts):
                 continue
             try:
-                key = key_from_header(fits.getheader(p))
+                header = fits.getheader(p)
+                key = key_from_header(header)
             except Exception:
                 continue
             if key is None or key.frame_type not in CAL_FRAME_TYPES:
+                continue
+            # The dark check's verdict, read off the file — no extra I/O, since
+            # the header is already open. See DARK_OK_CARD: absent = usable.
+            if _rejected_by_dark_check(header):
+                rejected.append((p, str(header.get("DARKWHY", "")).strip()))
                 continue
             kid = key_index_id(key, temp_bin_width)
             b = buckets.get(kid)
@@ -179,14 +219,24 @@ class CalibrationLibrary:
                 buckets[kid] = _Bucket(key=key, paths=[p])
             else:
                 b.paths.append(p)
-        return buckets
+        return buckets, rejected
 
     def scan_raw(self, temp_bin_width: float) -> dict[str, list[Path]]:
-        return {kid: b.paths for kid, b in self._bucket_raw(temp_bin_width).items()}
+        buckets, _rejected = self._bucket_raw(temp_bin_width)
+        return {kid: b.paths for kid, b in buckets.items()}
 
     def build(self, *, sigma: float = 3.0, temp_bin_width: float = 5.0,
               max_frames: int = 100, strip_rows: int = 64) -> BuildReport:
-        buckets = self._bucket_raw(temp_bin_width)
+        buckets, rejected = self._bucket_raw(temp_bin_width)
+        if rejected:
+            # Named, not counted. "3 frames skipped" tells the operator nothing
+            # they can act on; the evidence sentence off the frame's own header
+            # is what identifies an empty slot ticked opaque.
+            why = rejected[0][1] or "the dark check contradicted it"
+            bus.log("warning",
+                    f"{len(rejected)} calibration frame(s) left out of the "
+                    f"masters because they are not darks — e.g. "
+                    f"{rejected[0][0].name}: {why}", "calibration")
         records: list[MasterRecord] = []
         indexed = 0
         for kid, bucket in buckets.items():

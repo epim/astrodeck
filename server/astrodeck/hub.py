@@ -2103,6 +2103,72 @@ class Hub:
                                "using raw coordinates", "mount")
             return ra_hours, dec_deg
 
+    def _judge_dark_frame(self, frame, frame_type: str, filter_name: str,
+                          opaque_slot: int | None
+                          ) -> list[tuple[str, object, str]] | None:
+        """Judge a DARK/BIAS frame against its own pixels and return the FITS
+        cards recording the verdict (``None`` for a light or a flat, and for
+        anything that goes wrong — a header check must never fail a save).
+
+        Runs on the save thread, alongside the FITS write it feeds, because
+        ``detect_stars`` on a full frame is not free and the event loop has a
+        guide loop on it.
+
+        The verdict reaches THREE places, and it needs all three: the file (the
+        calibration library reads headers and nothing else, so an uncarded
+        reject is stacked as if it passed), a log line for the operator that
+        night, and — when the frame contradicts a slot the operator ticked
+        opaque — the sentence naming that flag. Finding out in March that
+        January's darks were white frames is not a recovery."""
+        if (frame_type or "").upper() not in ("DARK", "BIAS"):
+            return None
+        try:
+            from .imaging.darks import judge_dark, opaque_claim_refuted
+            data = getattr(frame, "data", None)
+            if data is None:
+                return None
+            # ``opaque_slot`` is resolved by the CALLER, on the event loop: the
+            # wheel's position read is async and this method runs on a worker
+            # thread. Telling judge_dark the slot ONLY when the operator flagged
+            # it opaque is what turns "light reached the sensor" into "the flag
+            # you ticked is contradicted", the sentence that closes the loop.
+            result = judge_dark(
+                data,
+                full_well=getattr(frame, "full_well", None),
+                exposure_s=getattr(frame, "exposure_s", None),
+                opaque_slot=opaque_slot,
+                filter_name=filter_name)
+            if not result.is_dark:
+                bus.log("warning", result.reason, "capture")
+                if opaque_claim_refuted(result) is not None:
+                    bus.log("warning",
+                            "this frame contradicts the blackout flag on that "
+                            "filter slot — until it is retracted or the slot is "
+                            "blanked, every dark and bias shot through it is "
+                            "suspect", "capture")
+            return result.fits_cards()
+        except Exception as e:  # noqa: BLE001 — never fail a save over a check
+            bus.log("warning", f"dark check skipped: {e}", "capture")
+            return None
+
+    async def _opaque_slot_in_beam(self) -> int | None:
+        """The wheel's current slot when the operator has flagged it opaque,
+        else None. Never raises: no wheel, an unreadable position or a missing
+        flag list all mean "we cannot say which slot", which is not the same as
+        "the slot is fine" — the frame is still judged on its pixels, the
+        rejection just cannot name a flag to retract."""
+        try:
+            fw = self.devices.get("filterwheel")
+            if not fw or not getattr(fw, "connected", False):
+                return None
+            flags = list(getattr(fw, "filter_opaque", []) or [])
+            pos = await fw.get_position()
+            if pos is None or pos < 0 or pos >= len(flags):
+                return None
+            return int(pos) if flags[pos] else None
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _frame_meta(self, frame, ra_hours: float | None,
                           dec_deg: float | None) -> "FrameMeta":
         """Best-effort telemetry snapshot for the FITS header (spec §8/§9). Every
@@ -2275,10 +2341,21 @@ class Hub:
             # Offloaded so a 25-120 MB uint16 FITS write to the Pi's SD card never
             # freezes the event loop for seconds every frame (WS/preview stall,
             # queued guide events, delayed STOP) — same as solve_and_sync's write.
+            # IS THIS "DARK" ACTUALLY DARK? Measured here, against the pixels,
+            # and stamped into the file. ``imaging.darks`` was written for the
+            # 2026-08-01 incident — a wheel slot ticked ``filter_opaque`` that
+            # was EMPTY, and three daylight darks at median 65535 filed as a
+            # dark library — and until now nothing called it. A detector with no
+            # caller protects nothing; this is that caller.
+            opaque_slot = (await self._opaque_slot_in_beam()
+                           if frame_type.upper() in ("DARK", "BIAS") else None)
+            dark_cards = await asyncio.to_thread(
+                self._judge_dark_frame, frame, frame_type, filt, opaque_slot)
             await asyncio.to_thread(
                 save_fits, frame, local_save_path, target=target, filter_name=filt,
                 frame_type=frame_type, ra_hours=ra, dec_deg=dec,
-                telescope=telescope_name, instrument=cam.name, meta=meta)
+                telescope=telescope_name, instrument=cam.name, meta=meta,
+                extra_cards=dark_cards)
             # carry the path on the frame so _publish_preview reports a correct
             # saved_path/saved_local in the very first event (no stale re-publish).
             frame.saved_path = str(local_save_path)
