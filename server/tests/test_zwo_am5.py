@@ -584,7 +584,7 @@ async def test_stop_sends_halt_first_and_only(fixed_env):
 
 async def test_pulse_guide_direction_strategies(fixed_env):
     """Native :Mg*# is inert; :M<dir># REPLACES tracking (at-scope 2026-07-20)
-    — so east suspends tracking, west drives R3+Mw, n/s use R1 moves."""
+    — so east suspends tracking, west drives R2+Mw, n/s use R1 moves."""
     fl, tel = await _connected_tel(_connect_script())
     await tel.pulse_guide("north", 50)
     assert fl.sent == ["R1", "Mn", "Qn"]

@@ -233,21 +233,6 @@ class _Totals:
         return t
 
 
-def build_breakdowns(frames: list[FrameRecord]) -> tuple[
-        list[FilterBreakdown], list[TargetBreakdown], int, int, float]:
-    """Derive the plan-wide per-filter totals, per-target breakdown, and the
-    headline counters from a frame list. Pure.
-
-    Used to re-derive totals from a FULL (un-downsampled) frame list — e.g. when
-    re-hydrating a reporter. The live reporter instead folds each frame into a
-    running :class:`_Totals` before downsampling, so its headline never depends on
-    the downsampled detail list."""
-    totals = _Totals()
-    for fr in frames:
-        totals.add(fr)
-    return totals.breakdowns()
-
-
 # ------------------------------------------------------------------------ reporter
 
 class SessionReporter:
