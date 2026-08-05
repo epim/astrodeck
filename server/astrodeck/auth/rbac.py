@@ -164,13 +164,51 @@ def _route_is_identity(route) -> bool:
     return bool(getattr(endpoint, IDENTITY_ATTR, False))
 
 
+def iter_app_routes(app):
+    """Every route the app will actually serve, INCLUDING the ones behind an
+    ``include_router``.
+
+    ``app.routes`` stopped being a flat list. FastAPI 0.141 made
+    ``include_router`` append a single lazy ``_IncludedRouter`` marker instead of
+    copying the child's routes up, so a naive walk sees one opaque object where
+    there used to be a dozen graded routes. Nothing in this file raised: the
+    invariants simply stopped applying to /auth/*, /api/visibility, /api/framing,
+    /api/survey and /api/tiles -- five whole routers, silently, on any install
+    that resolved a new enough FastAPI. ``pyproject`` says ``fastapi>=0.115``, so
+    that is every fresh environment: CI first, then the next deploy.
+
+    A security invariant that quietly narrows its own scope when a dependency
+    moves is worse than one that was never written, because the passing assertion
+    is what stops anyone looking. So this walks the marker's ``original_router``
+    and keeps recursing. Older FastAPI has no marker and the loop degrades to the
+    flat list it always was -- both shapes are exercised by the tests.
+    """
+    seen: set[int] = set()
+
+    def _walk(routes):
+        for route in routes or ():
+            inner = getattr(route, "original_router", None)
+            if inner is not None and getattr(inner, "routes", None) is not None:
+                if id(inner) in seen:       # a router included twice is one router
+                    continue
+                seen.add(id(inner))
+                yield from _walk(inner.routes)
+                continue
+            yield route
+
+    yield from _walk(getattr(app, "routes", ()))
+
+
 def assert_route_capabilities(app, *, exempt_paths: "set[str] | None" = None,
                               exempt_prefixes: "tuple[str, ...]" = ()) -> None:
-    """Enforce the four RBAC route invariants against ``app.routes``.
+    """Enforce the four RBAC route invariants against every served route.
 
     Raises ``RouteCapabilityError`` on the first violation (fails ``create_app``).
     ``exempt_paths`` / ``exempt_prefixes`` cover the genuinely-open shell + the
-    auth login dance (which must be reachable pre-session)."""
+    auth login dance (which must be reachable pre-session).
+
+    Iterates ``iter_app_routes`` rather than ``app.routes`` -- see its docstring
+    for why the difference is load-bearing."""
     exempt = set(exempt_paths or ())
 
     def _is_exempt(path: str) -> bool:
@@ -178,7 +216,7 @@ def assert_route_capabilities(app, *, exempt_paths: "set[str] | None" = None,
             return True
         return any(path == p or path.startswith(p) for p in exempt_prefixes)
 
-    for route in app.routes:
+    for route in iter_app_routes(app):
         path = getattr(route, "path", "") or ""
         methods = getattr(route, "methods", None) or set()
 

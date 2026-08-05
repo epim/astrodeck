@@ -16,7 +16,8 @@ from astrodeck.auth import (CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
                             CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT,
                             CAP_VIEW_STATUS, require)
 from astrodeck.auth.rbac import (IDENTITY_SELF_GATED, RouteCapabilityError,
-                                 assert_route_capabilities, declare)
+                                 assert_route_capabilities, declare,
+                                 iter_app_routes)
 
 
 def test_mutating_route_without_cap_fails():
@@ -286,6 +287,37 @@ def test_live_app_passes_assertion():
         exempt_paths={"/{path:path}"},
         exempt_prefixes=("/assets", "/auth"))
     # The two identity GETs are actually present -- an assertion that passes
-    # because the routes vanished would be worthless.
-    paths = {getattr(r, "path", "") for r in app.routes}
+    # because the routes vanished would be worthless. Walk them the way the
+    # assertion does: on FastAPI >= 0.141 `app.routes` carries a lazy
+    # _IncludedRouter marker instead of the child's routes, and a naive walk
+    # sees NEITHER /auth/me nor any other included router (CI caught exactly
+    # this). See iter_app_routes.
+    paths = {getattr(r, "path", "") for r in iter_app_routes(app)}
     assert {"/api/me", "/auth/me"} <= paths
+
+
+def test_the_assertion_sees_through_an_included_router():
+    """The regression CI found: a FastAPI upgrade silently emptied the scope of
+    every invariant in this file.
+
+    0.141 made `include_router` append one lazy marker rather than copying the
+    child's routes up, so iterating `app.routes` graded the marker and skipped
+    the routes. Five whole routers (/auth/*, visibility, framing, survey, tiles)
+    stopped being checked, and NOTHING failed -- the assertion still passed,
+    which is what stops anyone looking. Pinned here on a hand-built app so it
+    holds on both the old flat shape and the new lazy one."""
+    from fastapi import FastAPI, APIRouter
+
+    child = APIRouter()
+
+    @child.get("/api/child/thing")
+    async def _thing():
+        return {}
+
+    app = FastAPI()
+    app.include_router(child)
+
+    paths = {getattr(r, "path", "") for r in iter_app_routes(app)}
+    assert "/api/child/thing" in paths, (
+        "the walk must see through include_router, or every invariant in this "
+        "file silently stops applying to included routers")
