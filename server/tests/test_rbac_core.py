@@ -153,6 +153,40 @@ def test_get_principal_returns_resolved_identity():
     assert r.json()["role"] == "operator"
 
 
+# ---------------------------------------------------- declare() route markers
+
+def test_declare_stamps_caps_reaches_and_identity():
+    """``declare`` is the label the boot assertion reads back. All three marker
+    attrs must land on the endpoint function, and ``identity`` must default to
+    False so an ordinary route is not swept into invariant (4)."""
+    from astrodeck.auth.rbac import (CAP_ATTR, IDENTITY_ATTR, REACHES_ATTR,
+                                     declare)
+
+    @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.slew"})
+    async def slew():
+        return None
+
+    assert getattr(slew, CAP_ATTR) == frozenset({CAP_CONTROL_MOUNT})
+    assert getattr(slew, REACHES_ATTR) == frozenset({"Telescope.slew"})
+    assert getattr(slew, IDENTITY_ATTR) is False
+
+    @declare(CAP_VIEW_STATUS, identity=True)
+    async def whoami():
+        return None
+
+    assert getattr(whoami, IDENTITY_ATTR) is True
+    # identity is orthogonal to reaches -- an identity route reaches nothing.
+    assert getattr(whoami, REACHES_ATTR) == frozenset()
+
+
+def test_require_dependency_carries_the_cap_the_boot_assertion_reads():
+    """The boot assertion's enforcement truth is ``_rbac_cap`` on the dependency
+    callable, and each ``require()`` must stamp its OWN cap (not a shared one)."""
+    a, b = require(CAP_VIEW_STATUS), require(CAP_CONTROL_MOUNT)
+    assert a._rbac_cap == CAP_VIEW_STATUS
+    assert b._rbac_cap == CAP_CONTROL_MOUNT
+
+
 # ---------------------------------------------------- providers
 
 async def test_none_provider_always_admin():
