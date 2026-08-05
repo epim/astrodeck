@@ -1646,13 +1646,12 @@ def create_app() -> FastAPI:
         """Server-side proxy for a manual Alpaca host/port scan (the browser
         can't do this directly — CORS). 502 with a differentiated cause so a
         beginner who typo'd the IP gets a useful message."""
-        # SSRF guard (FIX-A): reject loopback/private/link-local/metadata hosts,
-        # malformed host strings and bad ports before any outbound request. A
-        # rejected host raises AlpacaScanError, handled identically below.
+        # SSRF guard: query_server is the single chokepoint — it validates the
+        # host AND dials the address its own check approved. This route used to
+        # pre-validate here as well and throw the result away, which cost a
+        # second DNS lookup and, worse, made it look as though the guard lived
+        # at the route rather than at the connection.
         try:
-            validate = getattr(alpaca_backend, "validate_scan_host", None)
-            if callable(validate):
-                validate(host, port)
             return await alpaca_backend.query_server(host, port)
         except alpaca_backend.AlpacaScanError as e:
             # do NOT echo any upstream HTTP status here — that turned the 502
