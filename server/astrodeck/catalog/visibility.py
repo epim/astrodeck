@@ -47,7 +47,7 @@ from astropy.coordinates import (
 from astropy.coordinates.baseframe import NonRotationTransformationWarning
 from astropy.time import Time
 
-from ..auth import CAP_VIEW_STATUS, require
+from ..auth import CAP_VIEW_SITE_DERIVED, require
 from ..auth.rbac import declare
 from ..hub import hub
 
@@ -659,8 +659,8 @@ def transit_alt_for(
 
 # ----------------------------------------------------------------- routes
 
-@router.get("/api/visibility", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-@declare(CAP_VIEW_STATUS)
+@router.get("/api/visibility", dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+@declare(CAP_VIEW_SITE_DERIVED)
 async def get_visibility(
     ra: float = Query(..., ge=0, lt=24),
     dec: float = Query(..., ge=-90, le=90),
@@ -684,8 +684,8 @@ async def get_visibility(
 
 
 @router.post("/api/visibility/order",
-             dependencies=[Depends(require(CAP_VIEW_STATUS))])
-@declare(CAP_VIEW_STATUS)
+             dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+@declare(CAP_VIEW_SITE_DERIVED)
 async def post_order(body: OrderBody):
     """Annotate each target with its visibility and return a group-atomic
     ``recommended_order`` (indices into the request list).

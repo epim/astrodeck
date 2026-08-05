@@ -591,14 +591,43 @@ def test_ws_valid_principal_survives_recheck(tmp_path, monkeypatch):
 # ============================== site/sky geolocator strip + visibility gating
 
 def test_site_sky_strips_geolocators_for_viewer(tmp_path, monkeypatch):
-    """A viewer lacks view.site_precise -> /api/site/sky omits place_hint and
-    lst_str but keeps sun_alt_deg + dark_window (ephemeris kept by decision)."""
+    """A viewer gets NOTHING from /api/site/sky.
+
+    This used to keep sun_alt_deg + dark_window for a viewer, on the reasoning
+    that an ephemeris is not a geolocator. It is: solar altitude sampled over a
+    night gives latitude, and the dark-window boundaries give longitude to
+    within minutes — the same two facts as the place_hint and lst_str withheld
+    beside them, reached by arithmetic instead of by name. That is the whole
+    shape of this leak class, and the audit measured it at 2.9 km."""
     store, app = _make_client(tmp_path, monkeypatch)
     _install(principal_for_role("viewer"))
     with TestClient(app) as c:
         r = c.get("/api/site/sky").json()
         assert "place_hint" not in r and "lst_str" not in r
+        assert "sun_alt_deg" not in r and "dark_window" not in r
+
+
+def test_site_sky_keeps_the_ephemeris_for_an_operator(tmp_path, monkeypatch):
+    """An operator holds view.site_derived — they plan and run sequences here
+    and cannot do either blind. Same line the owner already drew for the radar
+    map: an operator may learn the site REGION, not the precise fix."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        r = c.get("/api/site/sky").json()
         assert "sun_alt_deg" in r and "dark_window" in r
+        assert "place_hint" not in r and "lst_str" not in r
+
+
+def test_site_sky_refuses_caller_named_coordinates_for_a_non_holder(tmp_path,
+                                                                    monkeypatch):
+    """The lat/lon overrides make this an oracle regardless of what the default
+    path returns: a caller sweeps candidates and keeps whichever reproduces the
+    readings it already has."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        assert c.get("/api/site/sky?lat=40&lon=-74").status_code == 403
 
 
 def test_site_sky_full_for_admin(tmp_path, monkeypatch):
@@ -622,10 +651,25 @@ def test_visibility_fail_closed_for_unauthenticated(tmp_path, monkeypatch):
                       json={"targets": []}).status_code in (401, 403)
 
 
-def test_visibility_allows_viewer(tmp_path, monkeypatch):
-    """A viewer (view.status) gets 200 from the visibility ephemeris."""
+def test_visibility_is_closed_to_a_viewer(tmp_path, monkeypatch):
+    """A viewer no longer gets the visibility ephemeris.
+
+    The route exists to answer a site-RELATIVE question, so there is nothing
+    left of it once the site-derived part is removed — it is gated rather than
+    redacted. A viewer can still see WHAT is in the sky (the catalog rows
+    remain); it just cannot learn where the sky is being observed from."""
     store, app = _make_client(tmp_path, monkeypatch)
     _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.get("/api/visibility?ra=5&dec=10").status_code == 403
+        assert c.post("/api/visibility/order",
+                      json={"targets": []}).status_code == 403
+
+
+def test_visibility_allows_an_operator(tmp_path, monkeypatch):
+    """An operator holds view.site_derived and plans targets here."""
+    store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
     with TestClient(app) as c:
         assert c.get("/api/visibility?ra=5&dec=10").status_code == 200
         assert c.post("/api/visibility/order",
@@ -884,7 +928,7 @@ def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
     Asserted against the SAME fail-closed provider that closes /api/visibility, so
     the two read surfaces cannot drift apart again.
     """
-    from astrodeck.auth import CAP_VIEW_STATUS
+    from astrodeck.auth import CAP_VIEW_SITE_DERIVED
     _store, app = _make_client(tmp_path, monkeypatch)
     body = {"ra_hours": 5.0, "dec_deg": 10.0, "rows": 2, "cols": 2,
             "fov_x_deg": 1.0, "fov_y_deg": 1.0, "overlap": 0.1,
@@ -895,7 +939,7 @@ def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
     # gate and 422 without it -- a test that passes both ways for the wrong
     # reason. Establish first that this exact body really does produce
     # altitudes for a caller who IS entitled to them.
-    _install(_principal_with(CAP_VIEW_STATUS))
+    _install(_principal_with(CAP_VIEW_SITE_DERIVED))
     with TestClient(app) as c:
         ok = c.post("/api/framing/mosaic", json=body)
     assert ok.status_code == 200, ok.text
@@ -912,6 +956,14 @@ def test_mosaic_transit_alt_needs_a_principal(tmp_path, monkeypatch):
         "site-derived transit altitudes were served to a caller with no "
         f"principal (got {r.status_code}); the observing latitude is "
         "recoverable from these numbers")
+
+    # ...and closed to a VIEWER too, which is the residual this test's own
+    # reasoning implied and did not assert: "sweep dec, read off where
+    # transit_alt maximises, and you have the site" is true of anyone who can
+    # call it, not only of an anonymous caller.
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.post("/api/framing/mosaic", json=body).status_code == 403
 
 
 def test_no_precise_coords_in_logs(tmp_path, monkeypatch, bus_lines):
@@ -1197,3 +1249,75 @@ def test_astrospheric_key_scrubbed_everywhere(tmp_path, monkeypatch):
             "version": 1})                           # stale token -> 409
         assert r2.status_code == 409
         assert "SECRET-KEY-XYZ" not in r2.text
+
+
+# =============================================== site-DERIVED values (2026-08-04)
+#
+# view.site_precise was implemented as a filter on four KEY NAMES. That cannot
+# withhold f(latitude, longitude): given the mount's RA/Dec — which a viewer
+# holds, it is not site data — an ALTITUDE pins the observer to a circle on the
+# Earth, and a second sample collapses it to a point. The audit recovered the
+# observatory to 2.9 km from three requests a plain viewer is entitled to make,
+# none of which contained the word "latitude".
+
+def test_a_viewer_gets_no_mount_altaz(tmp_path, monkeypatch):
+    from astrodeck.api.redact import _redact_site_for
+    payload = {"site": {"latitude": 40.0, "longitude": -74.0, "is_default": False},
+               "mount": {"ra_hours": 5.0, "dec_deg": 10.0, "alt": 46.2, "az": 131.7}}
+    out = _redact_site_for(dict(payload), principal_for_role("viewer"))
+    assert "latitude" not in out["site"]
+    assert "alt" not in out["mount"] and "az" not in out["mount"], (
+        f"a viewer can localize the rig from these: {out['mount']}")
+    # RA/Dec stay — they say where the telescope LOOKS, not where it stands.
+    assert out["mount"]["ra_hours"] == 5.0 and out["mount"]["dec_deg"] == 10.0
+
+
+def test_an_operator_keeps_altaz_but_not_coordinates(tmp_path, monkeypatch):
+    """The two caps are independent. Keyed on site_precise alone this would
+    strip an operator's alt/az; keyed on site_derived alone it would hand a
+    viewer the coordinates."""
+    from astrodeck.api.redact import _redact_site_for
+    payload = {"site": {"latitude": 40.0, "longitude": -74.0, "is_default": False},
+               "mount": {"ra_hours": 5.0, "alt": 46.2, "az": 131.7}}
+    out = _redact_site_for(dict(payload), principal_for_role("operator"))
+    assert out["mount"]["alt"] == 46.2 and out["mount"]["az"] == 131.7
+    assert "latitude" not in out["site"] and "longitude" not in out["site"]
+
+
+def test_the_ws_push_strips_altaz_without_mutating_the_shared_event():
+    """Event.data is shared across every subscriber, so stripping in place would
+    remove the values from the ADMIN's copy too — the same reason the site node
+    is copied before it is scrubbed."""
+    from astrodeck.api.redact import _redact_ws_event
+    ev = {"type": "status",
+          "data": {"mount": {"ra_hours": 5.0, "alt": 46.2, "az": 131.7}}}
+    viewer = _redact_ws_event(ev, principal_for_role("viewer"))
+    assert "alt" not in viewer["data"]["mount"]
+    assert ev["data"]["mount"]["alt"] == 46.2, "the shared event was mutated"
+    admin = _redact_ws_event(ev, principal_for_role("admin"))
+    assert admin["data"]["mount"]["alt"] == 46.2
+
+
+def test_the_catalog_still_lists_targets_for_a_viewer_without_altaz(tmp_path,
+                                                                    monkeypatch):
+    """A viewer can still see WHAT is in the sky; it just cannot learn where the
+    sky is being observed from. Each row is f(site, target) and the CALLER picks
+    the target, so a search box is an oracle with as many samples as it likes."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get("/api/catalog?q=M42")
+    assert r.status_code == 200
+    rows = r.json()
+    assert rows, "the catalog must still answer — only the derived fields go"
+    assert all("alt" not in row and "az" not in row for row in rows), rows[0]
+
+
+def test_preflight_is_closed_to_a_viewer(tmp_path, monkeypatch):
+    """Stripping alt/az leaves `verdict`, a 3-level channel a caller can
+    binary-search on dec. Nothing useful survives redaction, so it is gated."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        assert c.get("/api/sequence/preflight?ra_hours=5&dec_deg=10"
+                     ).status_code == 403
