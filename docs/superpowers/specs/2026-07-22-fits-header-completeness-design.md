@@ -103,8 +103,8 @@ primary hook (§6).
 
 ## 4. Global Constraints (verbatim from program brief §2 — binding on every task)
 
-- **Privacy:** real observing-site coordinates **37.348110 N / 121.801704 W** and the label
-  **"My Backyard"** must NEVER appear in code, tests, docs, or fixtures. Site default stays
+- **Privacy:** real observing-site coordinates **<REDACTED-LAT> N / <REDACTED-LON> W** and the label
+  **"<REDACTED-SITE-LABEL>"** must NEVER appear in code, tests, docs, or fixtures. Site default stays
   **"My Observatory"**, coords `0.0`. (Both prior review privacy scans were clean — keep it
   that way.) — *Directly relevant here:* SITELAT/SITELONG tests MUST use invented coords
   (e.g. `40.0 / -105.0`), never the developer's real site.
@@ -421,7 +421,7 @@ coords (e.g. `40.0 / -105.0`), never the developer's real site.**
 10. (If open decision 3 = convert) `test_capture_radec_is_j2000` — a JNow-reporting mock mount
     ⇒ written `RA`/`DEC` equal the `from_mount_frame` (J2000) values, with `EQUINOX==2000.0`.
 
-**Privacy scan:** grep the diff for `37.348110` / `121.801704` / `My Backyard` → must be clean.
+**Privacy scan:** grep the diff for `<REDACTED-LAT>` / `<REDACTED-LON>` / `<REDACTED-SITE-LABEL>` → must be clean.
 
 ---
 

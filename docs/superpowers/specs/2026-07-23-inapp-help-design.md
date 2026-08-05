@@ -147,8 +147,8 @@ by tests, not by hope.
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy — real coordinates 37.348110 / 121.801704 and the label
-  "My Backyard" must NEVER appear in code, tests, or docs.** The site default is
+- **Privacy — real coordinates <REDACTED-LAT> / <REDACTED-LON> and the label
+  "<REDACTED-SITE-LABEL>" must NEVER appear in code, tests, or docs.** The site default is
   "My Observatory" / 0.0. This feature ships only generic astronomy copy; a
   `troubleshoot.test.ts` assertion greps the serialized `HELP` + `TROUBLESHOOTING`
   for the forbidden substrings as a belt-and-braces guard.
@@ -529,7 +529,7 @@ test("getTroubleshootEntry: null/undefined → undefined", () => {
 // --- privacy guard (Global Constraints)
 test("privacy: no real coords/label in help content", () => {
   const blob = JSON.stringify(HELP) + JSON.stringify(TROUBLESHOOTING);
-  for (const bad of ["37.348","121.801","My Backyard"]) assert(!blob.includes(bad), `leaked ${bad}`);
+  for (const bad of ["37.348","121.801","<REDACTED-SITE-LABEL>"]) assert(!blob.includes(bad), `leaked ${bad}`);
 });
 ```
 (Fold the T1 HELP assertions into this file too — one `npx tsx` run covers both.)

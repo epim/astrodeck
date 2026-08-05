@@ -213,8 +213,8 @@ for the "color by ecc" alternative from the brief.
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy.** The real site coordinates `37.348110` / `121.801704` and the label
-  `"My Backyard"` must NEVER appear in code, tests, or docs. The site default is
+- **Privacy.** The real site coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must NEVER appear in code, tests, or docs. The site default is
   `"My Observatory"` / `0.0`. (This feature touches none of it — no coordinate,
   no site label anywhere in the diff. Stated to remain binding.)
 - **Never `git add -A`.** Stage named paths only.

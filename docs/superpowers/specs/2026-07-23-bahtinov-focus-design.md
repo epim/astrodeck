@@ -124,8 +124,8 @@ by hand or with those buttons; Bahtinov only *reads* frames.
 
 ## 2. Global Constraints (verbatim — apply to every task)
 
-- **Privacy.** The real coordinates `37.348110` / `121.801704` and the label
-  `"My Backyard"` must NEVER appear in code, tests, or docs. Site defaults are
+- **Privacy.** The real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must NEVER appear in code, tests, or docs. Site defaults are
   `"My Observatory"` / `0.0`. (This feature touches no site/location data — keep
   it that way.)
 - **Never `git add -A`.** Stage only the specific files you changed, by path.

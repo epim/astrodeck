@@ -83,7 +83,7 @@ Client readout copy (via `formatLiveStack`): headline **"12 frames · 24 min int
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy.** The real observing site — latitude **37.348110**, longitude **121.801704**, and the label **"My Backyard"** — must NEVER appear in code, tests, or docs. The site default in any fixture/example is **"My Observatory"** at **0.0 / 0.0**. Live View touches no site data, but synthetic test frames and any example must honor this.
+- **Privacy.** The real observing site — latitude **<REDACTED-LAT>**, longitude **<REDACTED-LON>**, and the label **"<REDACTED-SITE-LABEL>"** — must NEVER appear in code, tests, or docs. The site default in any fixture/example is **"My Observatory"** at **0.0 / 0.0**. Live View touches no site data, but synthetic test frames and any example must honor this.
 - **Never `git add -A`.** Stage only the files this plan names, explicitly, by path.
 - **UI typecheck gate:** `cd ui && npx tsc -b` must pass — it is the render-layer's correctness gate (there is no jsdom).
 - **NO jsdom.** Pure logic is tested via `npx tsx` inline-assert modules (the `ui/src/lib/__tests__/eta.test.ts` idiom); thin render is verified only by the typechecker.

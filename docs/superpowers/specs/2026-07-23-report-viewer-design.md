@@ -120,8 +120,8 @@ screen). CSV is a plain cookie-carrying `<a download>` to
 
 ## 2. Global Constraints (verbatim, binding)
 
-* **Privacy.** The real coordinates `37.348110` / `121.801704` and the label
-  `"My Backyard"` must **NEVER** appear in code, tests, or docs. The site default
+* **Privacy.** The real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must **NEVER** appear in code, tests, or docs. The site default
   is `"My Observatory"` / `0.0`. (Reports carry no coordinates — frames, filters,
   targets, timestamps only — so this feature never handles site location; the
   constraint still binds any fixture/example values.)

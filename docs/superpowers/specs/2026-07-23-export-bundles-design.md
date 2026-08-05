@@ -260,7 +260,7 @@ Task 3).
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy** — real coords `37.348110` / `121.801704` and label `"My Backyard"`
+- **Privacy** — real coords `<REDACTED-LAT>` / `<REDACTED-LON>` and label `"<REDACTED-SITE-LABEL>"`
   NEVER in code/tests/docs; site default `"My Observatory"`/`0.0`.
 - Never `git add -A`.
 - UI gate: `cd ui && npx tsc -b`.

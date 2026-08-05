@@ -228,8 +228,8 @@ no dome is connected. A pure `domeStatusLabel(state)` formatter is tsx-tested.
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy.** The real site coordinates `37.348110` / `121.801704` and the
-  label "My Backyard" NEVER appear in code, tests, or docs. Site default is
+- **Privacy.** The real site coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the
+  label "<REDACTED-SITE-LABEL>" NEVER appear in code, tests, or docs. Site default is
   "My Observatory" / `0.0`.
 - **Never `git add -A`.** Stage explicit paths only.
 - **UI gate:** `cd ui && npx tsc -b` must pass.

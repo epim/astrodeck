@@ -168,7 +168,7 @@ The **no-double-fire** semantics (the subtle part):
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy** — the real site coords `37.348110` / `121.801704` and the label `My Backyard`
+- **Privacy** — the real site coords `<REDACTED-LAT>` / `<REDACTED-LON>` and the label `<REDACTED-SITE-LABEL>`
   must NEVER appear in code, tests, or docs. The site default is `"My Observatory"` / `0.0`.
   (Instruction tests use synthetic thresholds/times and need no coordinates.)
 - **Never `git add -A`.** Stage only the files each task names.

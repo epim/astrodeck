@@ -186,8 +186,8 @@ pure/stdlib-`math`, no astropy:
 
 ## 2. Global Constraints (verbatim — apply to EVERY task)
 
-- **Privacy.** The real site coordinates `37.348110` / `121.801704` and the label
-  `"My Backyard"` must **NEVER** appear in code, tests, or docs. The site default
+- **Privacy.** The real site coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must **NEVER** appear in code, tests, or docs. The site default
   is `"My Observatory"` / `0.0`. Tests use deterministic non-default sites (e.g.
   `MID = {latitude: 40.0, longitude: -74.0, …}` already in
   `server/tests/test_schedule.py:19-21`).

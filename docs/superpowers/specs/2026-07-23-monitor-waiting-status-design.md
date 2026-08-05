@@ -140,7 +140,7 @@ function ScheduleChip({ schedule }: { schedule: NonNullable<SequenceState["sched
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy.** The real coordinates **37.348110 / 121.801704** and the label **"My Backyard"** must NEVER appear in code, tests, or docs. The site default is **"My Observatory" / 0.0**. This feature reads only `schedule`/`live` (no coordinates); tests use synthetic epoch integers and generic reason strings only.
+- **Privacy.** The real coordinates **<REDACTED-LAT> / <REDACTED-LON>** and the label **"<REDACTED-SITE-LABEL>"** must NEVER appear in code, tests, or docs. The site default is **"My Observatory" / 0.0**. This feature reads only `schedule`/`live` (no coordinates); tests use synthetic epoch integers and generic reason strings only.
 - **Never `git add -A`.** Stage only the files this plan names.
 - **CI gate:** `cd ui && npx tsc -b` must pass. This is the type-check gate for every task.
 - **No jsdom / DOM harness.** Pure logic is tested via `npx tsx` inline-assert scripts (idioms: `ui/src/components/ui/__tests__/SegmentedControl.test.tsx`, `ui/src/components/__tests__/healthStrip.test.ts`, `ui/src/lib/__tests__/eta.test.ts`). The formatter is a pure function with a real `tsx` test; the `MonitorView` wiring is a thin render verified only by `tsc -b` (no DOM test).

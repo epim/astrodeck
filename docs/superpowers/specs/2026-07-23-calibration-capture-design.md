@@ -173,8 +173,8 @@ route, or nav entry.
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy.** The real coordinates `37.348110` / `121.801704` and the label
-  "My Backyard" must **NEVER** appear in code, tests, or docs. Site default is
+- **Privacy.** The real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  "<REDACTED-SITE-LABEL>" must **NEVER** appear in code, tests, or docs. Site default is
   "My Observatory" / `0.0`. (This feature touches neither site nor coordinates.)
 - **Never `git add -A`.** Stage named paths only.
 - **UI gate:** `cd ui && npx tsc -b`.
