@@ -9,8 +9,10 @@ DATA in a ``RigSpec`` instead of an ``if/elif`` in the hub.
 
 PHD2 is guider-only: ``roles = ("guider",)``. It exposes no native plate solver
 (``native_solver()`` returns None -- the hub picks a solver via ``solve.get_solver``).
-It is not auto-discovered over the network (``discoverable = False``): the PHD2
-socket is a fixed local endpoint, not a UDP-discoverable Alpaca/NINA service.
+Its socket is a fixed local endpoint, not a UDP-discoverable Alpaca/NINA service --
+but ``discoverable = True``, because the BINARY is findable on this machine: a scan
+offers PHD2 with ``verified=False`` (installed, not necessarily running), and the
+probe still decides reachability (see ``discover()`` below).
 
 NOT BUILDING the managed/supervised PHD2 lifecycle (decided 2026-07-26). The
 Stage-A note here used to carry it as a follow-on: auto-launch a headless phd2
@@ -136,8 +138,8 @@ class Phd2Backend:
     """The PHD2 guider vendor adapter.
 
     ``open()`` constructs a ``PHD2Guider`` at the ConnSpec's host/port (defaulting
-    to 127.0.0.1:4400), connects it, and wraps it in a ``Phd2Session``. Guider-only
-    and not discoverable.
+    to 127.0.0.1:4400), connects it, and wraps it in a ``Phd2Session``. Guider-only,
+    and discoverable only in the local-binary sense (never over the network).
     """
 
     name = "phd2"
