@@ -121,10 +121,32 @@ of every coordinate for such users, and the saved-locations routes refuse them.
 The `is_default` flag and the horizon limit are kept (neither reveals a
 location), so the default-site nudge and the altitude-limit display still work.
 
-This is enforced at one server seam, so there is no surface anywhere that leaks
-the coordinates to a low-role user. Weather, which is derived from the site, is
-hidden from the same users. See
-[remote-access-and-roles.md](remote-access-and-roles.md).
+### Values computed from your position
+
+Removing those four fields is necessary and is **not** sufficient, and until
+2026-08-04 it was all that happened. A great many answers are computed *from*
+your coordinates without containing them: the mount's altitude and azimuth, a
+target's altitude verdict, the sun's altitude, tonight's dark window, every
+visibility and framing answer. Combined with the telescope's RA and Dec — which
+is not site data and is not hidden — an altitude places the observer on a circle
+around the Earth, and a second reading narrows that circle to a point. An audit
+recovered this rig's position to within **2.9 km** using three ordinary requests
+a viewer is entitled to make, none of which contained the word "latitude".
+
+Rounding them off does not help: averaging many coarse samples recovers the
+precise value, which is exactly how that 2.9 km figure was produced.
+
+So those computed values are governed by a second capability,
+**`view.site_derived`**, held by **operators and admins**:
+
+- **Viewers** — including anyone you hand a relay link to — get none of them.
+  They still see the image, the status, and what is in the sky; they cannot work
+  out where the sky is being observed from.
+- **Operators** keep them, because you cannot plan or run a session blind. This
+  is the same line already drawn for the radar map: an operator may learn the
+  region, never the exact fix.
+
+See [remote-access-and-roles.md](remote-access-and-roles.md).
 
 ---
 
