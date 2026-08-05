@@ -268,7 +268,18 @@ export default function SlewPad() {
       ? key(slewState.axis, slewState.dir)
       : null;
 
-  const Arrow = ({ axis, dir }: { axis: Axis; dir: Dir }) => {
+  // A render FUNCTION, deliberately not a component. Declared as a component
+  // inside this body it was a NEW element type on every render, and React does
+  // not re-render a node whose type changed — it unmounts it and mounts a fresh
+  // one. That destroys the <button> the thumb is on, which implicitly releases
+  // the pointer capture taken in onPointerDown; capture is the ONLY thing
+  // binding the slew to the finger (there is no onPointerLeave, by design —
+  // R3). Sliding off the button then fired pointerup on a dead node, endPress
+  // never ran, and the KEEPALIVE_MS=600 tick kept feeding the server's 1200ms
+  // deadman: the mount kept slewing with nothing left to stop it. Called as a
+  // function, React sees a <button> at each slot — a host type, which cannot
+  // change between renders — so the node, and its capture, survive the press.
+  const arrow = (axis: Axis, dir: Dir) => {
     const k = key(axis, dir);
     const active = activeKey === k;
     return (
@@ -350,10 +361,10 @@ export default function SlewPad() {
             style={{ gap: "var(--tap-gap, 8px)" }}
           >
             <span />
-            <Arrow axis="dec" dir={1} />
+            {arrow("dec", 1)}
             <span />
 
-            <Arrow axis="ra" dir={-1} />
+            {arrow("ra", -1)}
             {/* center cell: rate selector (replaces STOP-in-center, R10) */}
             <div
               className="flex flex-col items-stretch gap-1 w-full"
@@ -379,10 +390,10 @@ export default function SlewPad() {
                 </button>
               ))}
             </div>
-            <Arrow axis="ra" dir={1} />
+            {arrow("ra", 1)}
 
             <span />
-            <Arrow axis="dec" dir={-1} />
+            {arrow("dec", -1)}
             <span />
           </div>
 
