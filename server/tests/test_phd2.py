@@ -321,6 +321,108 @@ async def test_can_flip_calibration_flag():
     assert g.can_flip_calibration is True
 
 
+# ------------------------------------------------ pixel-scale honesty (audit #20)
+#
+# PHD2 reports guide error in PIXELS. The old code multiplied by a hardcoded
+# 2.0 "/px constant that no product path ever set and always stamped
+# is_arcsec=True — a fabricated arcsec number. These tests pin the fail-closed
+# replacement: unknown scale -> raw pixels + is_arcsec=False, and a scale
+# PHD2 itself reports via get_pixel_scale (or an explicit ctor override) is
+# used honestly.
+
+async def test_ctor_default_scale_is_unknown():
+    g = PHD2Guider()
+    assert g.pixel_scale == 1.0
+    assert g._scale_known is False
+
+
+async def test_ctor_with_explicit_scale_marks_known():
+    g = PHD2Guider(pixel_scale_arcsec=1.4)
+    assert g.pixel_scale == 1.4
+    assert g._scale_known is True
+
+
+async def test_unknown_scale_publishes_raw_pixels_not_is_arcsec(phd2):
+    """The fake server answers an unset RPC with result 0 (see FakePHD2._handle),
+    so get_pixel_scale comes back unknown on connect — the guider must NOT fall
+    back to an invented arcsec/px constant. Raw PHD2 pixel deltas pass through
+    unscaled and the stream is stamped is_arcsec=False, image_scale=0.0,
+    matching guide/native.py and devices/nina.py's fail-closed behavior."""
+    srv, g = phd2
+    await g.connect()
+    assert "get_pixel_scale" in srv.methods
+    assert g._scale_known is False
+    await srv.push_event({"Event": "GuideStep", "RADistanceRaw": 0.4,
+                          "DECDistanceRaw": -0.3, "SNR": 15})
+    assert await _wait(lambda: g.stats().guiding is True)
+    s = g.stats()
+    assert s.is_arcsec is False
+    assert s.image_scale == 0.0
+    # raw pixels, NOT multiplied by any invented arcsec/px constant
+    assert g._samples[-1]["ra"] == pytest.approx(0.4)
+    assert g._samples[-1]["dec"] == pytest.approx(-0.3)
+
+
+async def test_known_scale_from_get_pixel_scale_rpc_converts_to_arcsec(phd2):
+    """When PHD2 answers get_pixel_scale with a real value, use IT (not a
+    hardcoded constant) to convert raw pixel errors to arcsec, and stamp the
+    stream honestly."""
+    srv, g = phd2
+    srv.rpc_result_for["get_pixel_scale"] = 2.5
+    await g.connect()
+    assert "get_pixel_scale" in srv.methods
+    assert g._scale_known is True
+    await srv.push_event({"Event": "GuideStep", "RADistanceRaw": 0.4,
+                          "DECDistanceRaw": -0.2, "SNR": 15})
+    assert await _wait(lambda: g.stats().guiding is True)
+    s = g.stats()
+    assert s.is_arcsec is True
+    assert s.image_scale == 2.5
+    assert g._samples[-1]["ra"] == pytest.approx(1.0)     # 0.4 * 2.5
+    assert g._samples[-1]["dec"] == pytest.approx(-0.5)   # -0.2 * 2.5
+
+
+async def test_explicit_scale_survives_get_pixel_scale_rpc():
+    """A caller-supplied pixel_scale_arcsec (the phd2_backend.py conn.extra
+    override path) counts as KNOWN before connect, and get_pixel_scale's own
+    answer from PHD2 must never clobber it."""
+    srv = FakePHD2()
+    await srv.start()
+    srv.rpc_result_for["get_pixel_scale"] = 9.9
+    g = PHD2Guider(host="127.0.0.1", port=srv.port, pixel_scale_arcsec=3.3)
+    try:
+        await g.connect()
+        assert "get_pixel_scale" in srv.methods   # still asked (best-effort)...
+        assert g.pixel_scale == 3.3               # ...but never applied
+        assert g._scale_known is True
+    finally:
+        await g.disconnect()
+        await srv.stop()
+
+
+async def test_get_pixel_scale_rpc_error_never_raises_out_of_connect(phd2):
+    srv, g = phd2
+    srv.rpc_error_for["get_pixel_scale"] = "not implemented"
+    await g.connect()   # must not raise
+    assert g.connected is True
+    assert g._scale_known is False
+
+
+async def test_reconnect_also_refreshes_pixel_scale(phd2):
+    """The reconnect path must call _refresh_pixel_scale too (mirrors
+    _refresh_app_state's own reconnect call) so a mid-session reconnect can
+    pick up a scale PHD2 didn't have available on the very first connect."""
+    srv, g = phd2
+    await g.connect()
+    assert g._scale_known is False   # unanswered/zero on first connect
+    srv.drop_client()
+    assert await _wait(lambda: g.connected is False)
+    srv.rpc_result_for["get_pixel_scale"] = 4.2
+    assert await _wait(lambda: g.connected is True, timeout=5.0)
+    assert await _wait(lambda: g._scale_known is True)
+    assert g.pixel_scale == 4.2
+
+
 async def test_dither_merges_settle_overrides():
     """UX-24: caller settle overrides merge over the PHD2 defaults; unset fields
     keep the default."""

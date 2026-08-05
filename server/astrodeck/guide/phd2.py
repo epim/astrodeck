@@ -61,9 +61,15 @@ class PHD2Guider(Guider):
     _RECONNECT_BACKOFF = (1, 2, 5, 10, 20, 30)
 
     def __init__(self, host: str = "127.0.0.1", port: int = 4400,
-                 pixel_scale_arcsec: float = 2.0):
+                 pixel_scale_arcsec: float | None = None):
         self.host, self.port = host, port
-        self.pixel_scale = pixel_scale_arcsec
+        self.pixel_scale = float(pixel_scale_arcsec) if pixel_scale_arcsec else 1.0
+        # True only when the caller supplied a real scale (the phd2_backend.py
+        # conn.extra['pixel_scale_arcsec'] path) or a later get_pixel_scale RPC
+        # answered with a positive value (see _refresh_pixel_scale). Until then
+        # we do not know PHD2's arcsec/px — audit #20: a made-up 2.0 constant
+        # used to be stamped as fact on every guide sample.
+        self._scale_known = bool(pixel_scale_arcsec and pixel_scale_arcsec > 0)
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._rpc_id = itertools.count(1)
@@ -96,6 +102,7 @@ class PHD2Guider(Guider):
         self._listen_task = asyncio.create_task(self._listen())
         self.connected = True
         await self._refresh_app_state()
+        await self._refresh_pixel_scale()
         bus.log("info", f"connected to PHD2 at {self.host}:{self.port}", "guide")
 
     async def _refresh_app_state(self) -> None:
@@ -111,6 +118,24 @@ class PHD2Guider(Guider):
             return
         if isinstance(state, str) and state:
             self._app_state = state
+
+    async def _refresh_pixel_scale(self) -> None:
+        """Ask PHD2 for the pixel scale it already knows via ``get_pixel_scale``
+        (audit #20). PHD2 never pushes this as an event, only answers it on
+        request, so we ask on every (re)connect the same way ``_refresh_app_state``
+        asks for the state. A positive answer is applied only if the scale is
+        not already known (an explicit ``pixel_scale_arcsec`` constructor arg —
+        the phd2_backend.py conn.extra path — must never be clobbered by what
+        PHD2 reports). Best-effort: a backend that doesn't answer, or answers
+        with something unusable, just leaves the scale unknown (never raises
+        out of connect)."""
+        try:
+            scale = await self._rpc("get_pixel_scale", timeout=5)
+        except Exception:
+            return
+        if isinstance(scale, (int, float)) and scale > 0 and not self._scale_known:
+            self.pixel_scale = float(scale)
+            self._scale_known = True
 
     async def disconnect(self) -> None:
         self._closing = True
@@ -226,6 +251,7 @@ class PHD2Guider(Guider):
             self._listen_task = asyncio.create_task(self._listen())
             self.connected = True
             await self._refresh_app_state()
+            await self._refresh_pixel_scale()
             bus.log("info", f"reconnected to PHD2 at {self.host}:{self.port}",
                     "guide")
             return
@@ -240,8 +266,12 @@ class PHD2Guider(Guider):
             # all night even as the graph updates (breaking per-frame recovery
             # and meridian-flip guiding restart).
             self._app_state = "Guiding"
-            ra = float(ev.get("RADistanceRaw", 0)) * self.pixel_scale
-            dec = float(ev.get("DECDistanceRaw", 0)) * self.pixel_scale
+            # Convert by the REAL scale only when we have one (audit #20); an
+            # unknown scale must publish PHD2's raw pixel deltas, not pixels
+            # scaled by a guessed arcsec/px constant.
+            scale = self.pixel_scale if self._scale_known else 1.0
+            ra = float(ev.get("RADistanceRaw", 0)) * scale
+            dec = float(ev.get("DECDistanceRaw", 0)) * scale
             self._snr = float(ev.get("SNR", 0))
             sample = {"t": time.time(), "ra": ra, "dec": dec}
             self._samples.append(sample)
@@ -374,9 +404,13 @@ class PHD2Guider(Guider):
             rms_ra=round(rms_ra, 2), rms_dec=round(rms_dec, 2),
             rms_total=round(math.hypot(rms_ra, rms_dec), 2),
             snr=self._snr, recent=recent[-120:],
-            # PHD2 multiplies its raw px errors by pixel_scale (see _handle_event),
-            # so this stream is always arcsec (UX-15).
-            is_arcsec=True, image_scale=round(self.pixel_scale, 3),
+            # Only arcsec when the scale is KNOWN (an explicit conn.extra
+            # override, or a successful get_pixel_scale RPC on connect) — see
+            # _handle_event. Otherwise this stream is raw PHD2 pixels and must
+            # say so, or the UI unit label / narration verdict / guide-RMS gate
+            # all read pixels as if they were arcsec (audit #20 / UX-15).
+            is_arcsec=self._scale_known,
+            image_scale=round(self.pixel_scale, 3) if self._scale_known else 0.0,
         )
 
     async def guide_frame(self) -> bytes | None:
