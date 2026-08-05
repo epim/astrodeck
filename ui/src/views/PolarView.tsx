@@ -14,7 +14,14 @@ import { useState } from "react";
    canonical `polar` payload beyond PolarState. The store forwards the whole
    event object, so they're present at runtime; typed here (this view owns the
    wizard) since the shared PolarState is intentionally backend-agnostic. */
-type NativePolar = PolarState & {
+type NativePolar = Omit<PolarState, "state"> & {
+  /* "pausing" — Pause has been ASKED FOR but the rig has not stopped yet. The
+     server's pause is a flag the drivers read between steps, so a 12° RA slew
+     already in flight runs on for another 5-15 s; it publishes "pausing" on the
+     POST and only "paused" once a driver has actually parked
+     (server/astrodeck/polar/session.py). This view is the one that must not
+     round that up: the user is at the mount with a hex key. */
+  state: PolarState["state"] | "pausing";
   phase?: "measuring" | "adjusting";
   point_index?: number;
   az_direction?: KnobDir | null;
@@ -29,7 +36,11 @@ export default function PolarView() {
   const canMount = useCanControlMount(); // polar alignment slews the mount
   // UX-04: warn when the resolved polar provider is the SIMULATOR (fabricated az/alt).
   const isSimProvider = useProviders()?.polar_align?.kind === "sim";
-  const running = polar.state === "running" || polar.state === "paused";
+  // "pausing" is still a LIVE run — the driver holds the camera and the mount
+  // may be mid-slew — so Stop stays armed and Start stays locked out.
+  const running = polar.state === "running" || polar.state === "paused"
+    || polar.state === "pausing";
+  const pausing = polar.state === "pausing";
 
   const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
   const src = polar.source as string | null;
@@ -112,12 +123,16 @@ export default function PolarView() {
           right={
             <div className="flex items-center gap-2">
               <ProviderBadge cap="polar_align" />
+              {/* "pausing" keeps the blink: something is still MOVING, and the
+                  blink is the channel that survives a red-light screen where
+                  hue barely reads. */}
               <span className={`text-[11px] tracking-widest uppercase ${
                 polar.state === "done" ? "text-good"
                   : polar.state === "running" ? "text-accent blink"
+                  : pausing ? "text-warn blink"
                   : polar.state === "paused" ? "text-warn"
                   : polar.state === "error" ? "text-bad" : "text-dim"}`}>
-                {polar.state}
+                {pausing ? "stopping" : polar.state}
               </span>
             </div>
           }>
@@ -253,13 +268,33 @@ export default function PolarView() {
                 Bundle or install a plate solver (ASTAP) for a real polar alignment.
               </p>
             )}
+            {/* The gap Pause cannot close. The server's pause is a flag the
+                driver reads BETWEEN steps, so the slew or exposure already
+                running has to finish first — and this is the screen where the
+                user's hands are on the mount, so "paused" arriving early is not
+                a cosmetic lie. Say what is still true and name the way out. */}
+            {pausing && (
+              <p className="text-xs text-warn mb-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2"
+                role="alert">
+                Stopping — the exposure or RA rotation already under way has to finish
+                first, usually 5–15 s. <strong className="font-medium">The mount may still be
+                moving: keep clear of the bolts</strong> until this says paused. Stop aborts it
+                now if you need it stopped sooner.
+              </p>
+            )}
             <div className="flex flex-col gap-2">
               <button className="btn btn-accent" disabled={!canMount || running || busy}
                 onClick={() => act(() => api.post("/api/polar/start"))}>
                 <Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Start Alignment
               </button>
               <div className="grid grid-cols-2 gap-2">
-                {polar.state === "paused" ? (
+                {pausing ? (
+                  /* Neither Pause (already asked) nor Resume (nothing has
+                     stopped yet, so resuming would be resuming a run that never
+                     paused) — the button reports, and stays dead until the
+                     driver acks. Stop beside it is the live escape. */
+                  <button className="btn" disabled aria-live="polite">Stopping…</button>
+                ) : polar.state === "paused" ? (
                   <button className="btn" disabled={!canMount || !running || busy}
                     onClick={() => act(() => api.post("/api/polar/resume"))}>Resume</button>
                 ) : (
