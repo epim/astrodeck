@@ -114,6 +114,15 @@ DOME_QUERY_TIMEOUT_S = 30.0    # a single shutter_state query during reopen
 # ready target's _setup_target restores tracking + re-slews (review §1.9).
 WAIT_TEARDOWN_S = 120.0
 
+# --- "if missed: skip" grace (Schedule.on_missed, C1-25) -------------------
+# How far a target's frozen start may already be in the past before "skip if
+# missed" drops it. MUST be non-zero: a target selected at the very instant its
+# window opens is not missed, and float jitter / the 5 s re-evaluation cadence
+# must not eat it. Minutes, not seconds, because the PREVIOUS target's last
+# exposure + download legitimately runs a few minutes past this one's start —
+# a window missed by three minutes is not a missed night.
+MISSED_GRACE_S = 300.0
+
 # --- review-thumbnail back-pressure (Task 6 review, Important #2) ----------
 # Thumbs are best-effort and MUST NEVER block the capture loop, so there is no
 # queue to wait on: once this many renders are already in flight, ``_spawn_
@@ -896,8 +905,23 @@ class SequenceEngine:
 
             if ready is not None:
                 ti = index_of[id(ready)]
+                complete = self._target_complete(ti, ready)
+                # "if missed: skip" (Schedule.on_missed). The target is runnable
+                # NOW, but its own window opened long ago and the night moved on —
+                # the user asked us to move on with it. Pure list surgery, no
+                # device I/O, so it is safe here. An already-complete target is
+                # reported as complete, not as missed.
+                if not complete and self._missed_start(ready, now, site, twilight):
+                    late_min = (now - (frozen[id(ready)][0] or now)) / 60.0
+                    bus.log("info", f"{ready.name}: start window opened "
+                                    f"{late_min:.0f} min ago — skipping (if missed: "
+                                    f"skip)", "sequence")
+                    if self.reporter:
+                        self.reporter.mark_skipped(ready)
+                    remaining.remove(ready)
+                    continue
                 try:
-                    if self._target_complete(ti, ready):
+                    if complete:
                         bus.log("info", f"{ready.name}: already complete — skipping",
                                 "sequence")
                     elif ready.calibration:
@@ -1120,6 +1144,53 @@ class SequenceEngine:
         if stop_ts is not None and time.time() >= stop_ts:
             raise StopTarget("observing window closed (stop time / max run / dawn)")
 
+    def _missed_start(self, target: Target, now: float, site: dict,
+                      twilight_deg: float) -> bool:
+        """Whether ``target``'s start window opened long enough ago that its
+        ``on_missed="skip"`` applies (C1-25). ``"wait"`` — the default — always
+        answers False; that path is untouched.
+
+        Reads the FROZEN window, never a re-resolved one: re-resolving rolls a
+        past dusk forward to tomorrow, which puts the start in the FUTURE and
+        makes this branch unreachable (the §1.6 bug).
+
+        Two starts are not "missed", and both are reachable from the shipped UI
+        (the toggle is offered for every start mode):
+
+        * ``start_mode="now"`` freezes its start at RUN start, so in a 5-target
+          all-now plan every target after the first is hours "late" by
+          construction. Now has no window to miss — the user's out-of-night
+          control is ``stop_mode``/``max_run_min``.
+        * a target still climbing to its own ``min_altitude_deg`` (or held by a
+          moon/hour-angle constraint) when its clock window opened. The engine
+          was waiting for it exactly as configured; only a target that was
+          RUNNABLE at its frozen start and did not get run was missed.
+
+        A target with frames already in the ledger is likewise not missed: a
+        RESUMED session re-freezes its windows at the new run start, so a target
+        that was shooting when the app died has an hours-old start by
+        construction, and dropping half a target on restart is not what "skip the
+        ones we missed" means.
+        """
+        if target.schedule.on_missed != "skip":
+            return False
+        if target.schedule.start_mode == "now":
+            return False
+        if any(self._done.get(f"{target.id}:{s.id}", 0) for s in target.steps):
+            return False
+        win = self._frozen.get(id(target))
+        st = win[0] if win else None
+        if st is None or now - st <= MISSED_GRACE_S:
+            return False
+        try:
+            was_open = schedule.gating_status(target, site, twilight_deg, st,
+                                              window=win)["state"] == "ready"
+        except Exception:
+            # never drop a target over a failed gate computation — "wait" is the
+            # safe default and the shipped one.
+            return False
+        return was_open
+
     async def _setup_target(self, ti: int, target: Target) -> None:
         # A slew + plate-solve + initial autofocus legitimately produces no frames
         # for minutes; keep the no-progress watchdog quiet until capture begins.
@@ -1317,52 +1388,66 @@ class SequenceEngine:
             solved_exp = None
             flat_auto = (step.frame_type.upper() == "FLAT" and step.adu_target > 0)
             panel_lit = False
-            if flat_auto and "covercalibrator" in self.hub.devices:
-                if step.panel_brightness is not None:
-                    await _bounded(self.hub.calibrator_on(step.panel_brightness),
-                                   CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
-                    panel_lit = True
-                    cc = self.hub.calibrator
-                    if getattr(cc, "has_cover", False):
-                        await _bounded(self.hub.open_cover(),
-                                       CALIBRATOR_CMD_TIMEOUT_S, "open cover")
-                self._set_state(detail=f"{target.name}: solving flat exposure")
-                solved_exp, _ = await self._solve_flat_exposure(step, target)
-            key = f"{target.id}:{step.id}"
-            for i in range(self._done.get(key, 0), step.count):
-                await self._checkpoint()
-                # WEATHER APPLIES TO CALIBRATION TOO. This was the one capture
-                # loop with a _checkpoint and no _safety_gate, while the module
-                # docstring promised the gate ran "after every frame-boundary
-                # _checkpoint" — and every unsafe ACTUATION (park-hold, the
-                # SafetyAbort wind-down, close_dome_on_unsafe) lives only behind
-                # this call, so a calibration block ran weather-blind from its
-                # first frame to its last. Flats are shot with the roof open at
-                # dusk and a dark set can run for hours.
-                #
-                # context="frame", not "slew": calibration produces no mount
-                # motion, so the mount-limit half stays inert (it is reached
-                # only under context == "slew") while the monitor half runs.
-                await self._safety_gate(context="frame", target=target)
-                # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
-                await self._frame_alerts_tick()
-                exp = solved_exp if solved_exp is not None else step.exposure_s
-                self._begin_frame(ti, si, exp)
-                self._set_state(state="running",
-                                detail=f"{target.name}: {step.frame_type} {exp:g}s "
-                                       f"[{i + 1}/{step.count}]")
-                info = await self._capture(step, target, exposure_s=solved_exp)
-                # calibration frames always record + advance (no quality gate on
-                # darks/bias/flats) — but they still go in the report.
-                accepted = self._check_quality(info, calibration=True)
-                self._reporter_record(target, step, info, accepted=accepted)
-                if accepted:
-                    self._record_frame(key, i, target, step, info)
-                else:
-                    if not await self._handle_reject(info, key, i, target, step):
-                        self._record_frame(key, i, target, step, info, accepted=False)
-            if panel_lit:
-                await self._panel_off_safe()
+            # try/finally, not a trailing call: the frame loop below can leave via
+            # StopTarget (the stop boundary), which the SCHEDULER CATCHES — the
+            # night carries on to the next target, so the abort/teardown
+            # _panel_off_safe never runs and the panel would burn through every
+            # following target's frames.
+            try:
+                if flat_auto and "covercalibrator" in self.hub.devices:
+                    if step.panel_brightness is not None:
+                        await _bounded(self.hub.calibrator_on(step.panel_brightness),
+                                       CALIBRATOR_CMD_TIMEOUT_S, "calibrator on")
+                        panel_lit = True
+                        cc = self.hub.calibrator
+                        if getattr(cc, "has_cover", False):
+                            await _bounded(self.hub.open_cover(),
+                                           CALIBRATOR_CMD_TIMEOUT_S, "open cover")
+                    self._set_state(detail=f"{target.name}: solving flat exposure")
+                    solved_exp, _ = await self._solve_flat_exposure(step, target)
+                key = f"{target.id}:{step.id}"
+                for i in range(self._done.get(key, 0), step.count):
+                    await self._checkpoint()
+                    # CALIBRATION HAS A STOP BOUNDARY TOO (§1.6). Same per-FRAME
+                    # placement as _run_step: the frozen dawn / stop-time / max-run
+                    # boundary was consulted only when the scheduler SELECTED this
+                    # target, so a 200-frame dark set shot every remaining frame
+                    # hours past it (and a flat block ran on into daylight). Per
+                    # step is not enough — one step IS the whole 200 frames.
+                    self._enforce_stop_boundary(target)
+                    # WEATHER APPLIES TO CALIBRATION TOO. This was the one capture
+                    # loop with a _checkpoint and no _safety_gate, while the module
+                    # docstring promised the gate ran "after every frame-boundary
+                    # _checkpoint" — and every unsafe ACTUATION (park-hold, the
+                    # SafetyAbort wind-down, close_dome_on_unsafe) lives only behind
+                    # this call, so a calibration block ran weather-blind from its
+                    # first frame to its last. Flats are shot with the roof open at
+                    # dusk and a dark set can run for hours.
+                    #
+                    # context="frame", not "slew": calibration produces no mount
+                    # motion, so the mount-limit half stays inert (it is reached
+                    # only under context == "slew") while the monitor half runs.
+                    await self._safety_gate(context="frame", target=target)
+                    # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
+                    await self._frame_alerts_tick()
+                    exp = solved_exp if solved_exp is not None else step.exposure_s
+                    self._begin_frame(ti, si, exp)
+                    self._set_state(state="running",
+                                    detail=f"{target.name}: {step.frame_type} {exp:g}s "
+                                           f"[{i + 1}/{step.count}]")
+                    info = await self._capture(step, target, exposure_s=solved_exp)
+                    # calibration frames always record + advance (no quality gate on
+                    # darks/bias/flats) — but they still go in the report.
+                    accepted = self._check_quality(info, calibration=True)
+                    self._reporter_record(target, step, info, accepted=accepted)
+                    if accepted:
+                        self._record_frame(key, i, target, step, info)
+                    else:
+                        if not await self._handle_reject(info, key, i, target, step):
+                            self._record_frame(key, i, target, step, info, accepted=False)
+            finally:
+                if panel_lit:
+                    await self._panel_off_safe()
 
     async def _run_step(self, ti: int, si: int, target: Target, step) -> None:
         plan = self.plan
@@ -2642,11 +2727,20 @@ class SequenceEngine:
             return False
         if plan.autofocus_every and self._frames_since_focus >= plan.autofocus_every:
             return True
-        if plan.refocus_on_temp_delta_c > 0 and self._last_focus_temp is not None:
+        if plan.refocus_on_temp_delta_c > 0:
             try:
                 t = await self.hub.require("focuser").get_temperature()
             except Exception:
                 t = None
+            if t is not None and self._last_focus_temp is None:
+                # SEED ON FIRST USE. The baseline used to be writable only by a
+                # completed autofocus, so a plan with autofocus_every = 0 and no
+                # target running an initial AF had nothing to compare against and
+                # the drift trigger sat dead all night. For a user who focused by
+                # hand, "refocus when the focuser drifts this much" means drift
+                # from where it is NOW — arm from the first reading.
+                self._last_focus_temp = t
+                return False
             if t is not None and abs(t - self._last_focus_temp) >= plan.refocus_on_temp_delta_c:
                 bus.log("info", f"focuser temp drifted to {t:.1f}°C — refocusing", "sequence")
                 return True
@@ -2830,6 +2924,18 @@ class SequenceEngine:
             self._recent_hfr = self._recent_hfr[-12:]
         return accepted
 
+    async def _capture_focus_temp(self) -> None:
+        """Re-anchor the temperature-drift baseline to the focuser's CURRENT
+        reading. Called after every autofocus ATTEMPT, successful or not: the
+        trigger's question is "how far has it drifted since we last tried", not
+        "since we last succeeded". Requires the focuser itself (the caller's may
+        be unbound on the error path) and swallows everything — a focuser with no
+        temperature probe leaves the baseline exactly as it was."""
+        try:
+            self._last_focus_temp = await self.hub.require("focuser").get_temperature()
+        except Exception:
+            pass
+
     async def _autofocus(self, label: str) -> None:
         self._set_state(detail=label)
         _t0 = time.time()
@@ -2843,15 +2949,16 @@ class SequenceEngine:
                 failed_reason = result.message or "autofocus failed"
             self._frames_since_focus = 0
             self._record_event_cost("autofocus", time.time() - _t0)
-            try:
-                self._last_focus_temp = await foc.get_temperature()
-            except Exception:
-                pass
+            await self._capture_focus_temp()
         except SafetyAbort:
             raise
         except Exception as e:
             bus.log("warning", f"{label} error: {e}", "sequence")
             failed_reason = str(e)
+            # A RAISED autofocus must re-anchor the baseline too — otherwise the
+            # drift that triggered it is still there at the next frame boundary
+            # and the same failing autofocus fires between every single frame.
+            await self._capture_focus_temp()
         # P1-7: honor cfg.escalation.af_failure_action on a failed/errored focus.
         # Default "warn" is the legacy behavior (log above + continue). "abort"
         # tears the night down; "skip" advances the scheduler past this target
