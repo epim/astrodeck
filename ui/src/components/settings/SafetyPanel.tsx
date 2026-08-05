@@ -113,8 +113,11 @@ export default function SafetyPanel(): JSX.Element {
 
   // Persist: echo the FULL current safety block with our two edits applied. The
   // server replaces SafetyConfig wholesale, so anything we omit would be lost.
+  // Returns TRUE only when the server accepted the write. The interlock toggle
+  // uses that to put itself back where the SERVER is on a refusal — see
+  // onToggle. Callers that own a typed draft (the cone field) ignore it.
   const persist = async (next: { avoidance: boolean; cone: number }) => {
-    if (busy) return;
+    if (busy) return false;
     setErr(null);
     setBusy(true);
     try {
@@ -127,9 +130,17 @@ export default function SafetyPanel(): JSX.Element {
       // Re-hydrate the config slice so this panel + any cone banner re-seed.
       await useStore.getState().loadConfig();
       setSavedAt(Date.now());
+      return true;
     } catch (e) {
-      // 403 = the override cap was lost mid-session (e.g. signed out). Keep the
-      // draft so the user sees what they tried; never silently revert.
+      // Keep the typed CONE draft so the user sees what they tried -- never
+      // silently revert a number someone entered. That reasoning does NOT
+      // extend to the avoidance BOOLEAN: it is not a draft, it is a readout of
+      // whether the interlock is armed, and this panel is the only surface in
+      // the app that renders it. Left optimistic, a refused write showed the
+      // switch ON and hid the red SUN AVOIDANCE OFF banner while the server
+      // still allowed a slew at the Sun -- failing in the dangerous direction
+      // on the guard that protects the camera and anyone at the eyepiece.
+      // onToggle restores it from the server on a false return.
       const msg =
         e instanceof ApiError
           ? e.status === 403
@@ -137,6 +148,7 @@ export default function SafetyPanel(): JSX.Element {
             : e.message || "Could not save."
           : "Could not save.";
       setErr(msg);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -227,11 +239,26 @@ export default function SafetyPanel(): JSX.Element {
       });
       if (!ok) return; // user backed out — leave avoidance ON, no save
       setAvoidance(false);
-      await persist({ avoidance: false, cone: coneDeg });
+      // A REFUSED disarm must snap back to armed: the server still has the cone
+      // enforced, and showing OFF would invite someone to point unfiltered
+      // optics at the Sun on the strength of a write that never landed. The
+      // safe direction here happens to be the honest one.
+      if (!(await persist({ avoidance: false, cone: coneDeg }))) {
+        setAvoidance(safety.solar_avoidance);
+      }
     } else {
       // Re-arming protection — always safe, no confirm.
       setAvoidance(true);
-      await persist({ avoidance: true, cone: coneDeg });
+      // ...but "safe to ATTEMPT" is not "certain to SUCCEED". A 403 (the
+      // override cap lost mid-session), a 409 or a dropped connection all leave
+      // the server unprotected, and an optimistic switch would report Armed
+      // with the danger banner gone. An interlock has to fail VISIBLY CLOSED:
+      // show what the server actually has, with the error beside it. `safety`
+      // is the stored config, which a failed write left untouched — so it IS
+      // the server's truth.
+      if (!(await persist({ avoidance: true, cone: coneDeg }))) {
+        setAvoidance(safety.solar_avoidance);
+      }
     }
   };
 
