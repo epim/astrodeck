@@ -264,6 +264,15 @@ class ResumeArm:
                     await self._autofocus()
                 except Exception as e:  # noqa: BLE001
                     return f"autofocus after restart failed: {e}"
+                # An autofocus is the MEASUREMENT the fingerprint could not
+                # make, so record where it left the drawtube. Without this the
+                # next step's refusal (cloud, no solve) sends the whole ladder
+                # back through autofocus on every ten-minute retry, because
+                # nothing else can re-establish trust once a gap has opened.
+                try:
+                    _fp.vouch(focuser_position=await foc.get_position())
+                except Exception:  # noqa: BLE001 — bookkeeping, never a refusal
+                    pass
 
         # 2. POINTING — ALWAYS re-measure. Never gated on the fingerprint.
         #
