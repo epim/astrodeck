@@ -135,6 +135,26 @@ JOG_DURATION_S = 2
 #: without masking real motion.
 SETTLE_EPS_DEG = 0.01
 
+#: How close to the COMMANDED coordinates counts as arrived, in degrees of sky.
+#: Deliberately loose: this is an arrival check ("did the mount go where it was
+#: told?"), not a centring check. Centring is the caller's job (see ``slew``),
+#: and a tight value here would turn every ordinary pointing error into a failed
+#: slew.
+ARRIVE_EPS_DEG = 1.0
+
+#: Consecutive stopped samples before a wait calls the mount settled. TWO while
+#: ``move_status`` is being reported, because then two independent signals agree.
+#: When the box omits the field entirely there is only ONE signal (position
+#: stability), so the run has to be longer — a missing field is not a reading.
+STOPPED_SAMPLES = 2
+STOPPED_SAMPLES_NO_STATUS = 4
+
+#: How close the focuser must land to count as arrived. The EAF is an
+#: exact-step device, so this is a guard against an off-by-one in the box's
+#: read-back, not a real tolerance. Same 2 steps as zwo_usb.py and
+#: ui/src/lib/focusMove.ts, which drive the same hardware.
+ARRIVAL_TOLERANCE_STEPS = 2
+
 _LIBASI_HINT = (
     "libasi is not installed. AstroDeck talks to an ASIAIR through libasi "
     "(MIT, https://github.com/jewzaam/libasi); it is not on PyPI, so install "
@@ -431,8 +451,12 @@ class AsiairTelescope(_AsiairDevice, Telescope):
         return str(raw.get("park_status", "")).lower() == "parked"
 
     async def is_slewing(self) -> bool:
+        # The status readout needs a yes/no, and a box that never reports
+        # move_status would otherwise read "slewing" forever. UNKNOWN therefore
+        # shows as not-slewing here; the waits are where the missing signal is
+        # made up for (see _wait_stopped).
         raw = await self._info()
-        return _is_moving(raw)
+        return bool(_is_moving(raw))
 
     async def pier_side(self) -> PierSide:
         raw = await self._info()
@@ -466,7 +490,8 @@ class AsiairTelescope(_AsiairDevice, Telescope):
     # -- motion ------------------------------------------------------------
 
     async def slew(self, ra_hours: float, dec_deg: float) -> None:
-        """Blind slew (``scope_goto``) then WAIT for the mount to stop.
+        """Blind slew (``scope_goto``) then WAIT for the mount to stop AT the
+        commanded coordinates -- roughly, to ``ARRIVE_EPS_DEG``.
 
         Deliberately NOT the ASIAIR's plate-solve ``start_auto_goto``: AstroDeck
         owns centring (its own solve/centre loop, its own framing rotation), and
@@ -485,7 +510,10 @@ class AsiairTelescope(_AsiairDevice, Telescope):
         await self._link.call(self._link.client.mount.scope_goto,
                               float(ra_hours), float(dec_deg), force=True,
                               what="slew")
-        await self._wait_stopped(SLEW_TIMEOUT_S, "slew")
+        # The commanded destination goes into the wait: "settled" has to mean
+        # settled THERE, or a mount that never moved satisfies it instantly.
+        await self._wait_stopped(SLEW_TIMEOUT_S, "slew",
+                                 (float(ra_hours), float(dec_deg)))
 
     async def sync(self, ra_hours: float, dec_deg: float) -> None:
         self._require_cap("sync", "sync")
@@ -575,17 +603,31 @@ class AsiairTelescope(_AsiairDevice, Telescope):
 
     # -- settle ------------------------------------------------------------
 
-    async def _wait_stopped(self, timeout_s: float, what: str) -> None:
-        """Wait until the mount has genuinely STOPPED, then return.
+    async def _wait_stopped(self, timeout_s: float, what: str,
+                            target: tuple[float, float] | None = None) -> None:
+        """Wait until the mount has STOPPED AT ``target`` (ra_hours, dec_deg).
 
-        Two independent signals, because only one of them is wire-confirmed:
-        ``move_status`` (confirmed present, reading ``"none"`` at rest -- its
-        in-motion vocabulary was NOT observed, so anything other than
-        none/empty counts as moving, which is the fail-safe direction) AND
-        position stability (RA/Dec is a fixed frame, so a settled mount reads a
-        constant RA/Dec whether or not it is tracking). Requires two consecutive
-        stopped samples so a poll landing before the motors engage cannot report
-        a settled slew that never started.
+        ARRIVAL, not absence-of-motion. A mount that never left the origin is
+        stationary from the first poll, so no number of "it is not moving"
+        samples can distinguish it from one that finished the slew — that is
+        what the old two-sample rule claimed and could not deliver. What closes
+        the window is the destination: with a ``target`` this returns only once
+        the reported RA/Dec is within ``ARRIVE_EPS_DEG`` of it, so a slew that
+        never started keeps polling to the honest timeout below. The tolerance
+        is loose on purpose (``ARRIVE_EPS_DEG``); centring is the caller's job.
+
+        Stillness is then confirmed from two signals, because only one of them
+        is wire-confirmed: ``move_status`` (confirmed present, reading ``"none"``
+        at rest -- its in-motion vocabulary was NOT observed, so anything other
+        than none/empty counts as moving, the fail-safe direction) AND position
+        stability (RA/Dec is a fixed frame, so a settled mount reads a constant
+        RA/Dec whether or not it is tracking). When the box does not report
+        ``move_status`` at all only the second signal exists, so a longer stable
+        run is required (``STOPPED_SAMPLES_NO_STATUS``) rather than treating the
+        missing field as a stopped reading.
+
+        Without a ``target`` (no commanded destination to check against) this
+        can only report stillness, and says so here rather than in a promise.
 
         On timeout or cancellation the mount is STOPPED before the error
         propagates -- never left driving."""
@@ -597,17 +639,27 @@ class AsiairTelescope(_AsiairDevice, Telescope):
                 await asyncio.sleep(POLL_S)
                 raw = await self._info()
                 pos = (float(raw.get("RA", 0.0)), float(raw.get("Dec", 0.0)))
-                moving = _is_moving(raw)
+                reported = _is_moving(raw)          # None = the box did not say
+                moving = bool(reported)
                 if prev is not None and not moving:
                     moving = _sky_delta_deg(prev, pos) > SETTLE_EPS_DEG
                 prev = pos
                 stopped = stopped + 1 if not moving else 0
-                if stopped >= 2:
+                need = (STOPPED_SAMPLES if reported is not None
+                        else STOPPED_SAMPLES_NO_STATUS)
+                if stopped >= need and (
+                        target is None
+                        or _sky_delta_deg(pos, target) <= ARRIVE_EPS_DEG):
                     return
                 if asyncio.get_running_loop().time() > deadline:
                     raise DeviceError(
                         f"{self.name}: {what} did not settle within "
-                        f"{timeout_s:.0f}s — stopped the mount")
+                        f"{timeout_s:.0f}s — stopped the mount. Last read "
+                        f"RA {pos[0]:.4f}h Dec {pos[1]:+.4f}deg"
+                        + ("" if target is None else
+                           f", {_sky_delta_deg(pos, target):.2f}deg from the "
+                           f"requested RA {target[0]:.4f}h "
+                           f"Dec {target[1]:+.4f}deg"))
         except BaseException:
             try:
                 await self._link.call(self._link.client.mount.stop,
@@ -617,16 +669,23 @@ class AsiairTelescope(_AsiairDevice, Telescope):
             raise
 
 
-def _is_moving(raw: dict) -> bool:
-    """Mount-in-motion from ``scope_get_info``.
+def _is_moving(raw: dict) -> bool | None:
+    """Mount-in-motion from ``scope_get_info``. TRI-STATE: True / False / None,
+    where None means the box did not report on it at all.
 
     ``move_status`` is wire-confirmed present and reads ``"none"`` at rest; its
     IN-MOTION vocabulary was never captured, so any other value reads as moving
-    — the fail-safe direction. A field missing entirely (older firmware) reads
-    as not-moving, which is why ``_wait_stopped`` never relies on this alone and
-    also requires the reported position to have stopped changing."""
-    status = str(raw.get("move_status", "none") or "none").strip().lower()
-    return bool(raw.get("is_parking", False)) or status not in ("none", "")
+    — the fail-safe direction. A field missing entirely (older firmware) is
+    UNKNOWN, not stopped: defaulting it to ``"none"`` manufactured a stopped
+    reading out of a measurement nobody took, and callers that count stopped
+    samples were counting that phantom. ``is_parking`` is a separate flag and
+    still answers True on its own."""
+    if raw.get("is_parking", False):
+        return True
+    if "move_status" not in raw:
+        return None
+    status = str(raw.get("move_status") or "none").strip().lower()
+    return status not in ("none", "")
 
 
 def _sky_delta_deg(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -698,31 +757,57 @@ class AsiairFocuser(_AsiairDevice, Focuser):
             return None
 
     async def move_to(self, position: int) -> None:
-        """Absolute move, then wait for the EAF to report ``state == "idle"``
-        twice running. Halts on ANY abnormal exit (timeout, cancellation, link
-        failure) so a cancelled autofocus step never leaves the motor driving."""
+        """Absolute move, then wait for the drawtube to REACH ``position``.
+
+        Halts on ANY abnormal exit (timeout, cancellation, link failure) so a
+        cancelled autofocus step never leaves the motor driving."""
         position = int(position)
         if not (0 <= position <= self.max_position):
             raise DeviceError(
                 f"{self.name}: target {position} out of range "
                 f"0..{self.max_position}")
         await self._link.require_idle("a focuser move", allow_guiding=True)
+        start = await self.get_position()      # so a failure can say where it began
         await self._link.call(self._link.client.focuser.move_to, position,
                               what="move focuser")
         deadline = asyncio.get_running_loop().time() + FOCUS_MOVE_TIMEOUT_S
-        settled = 0
+        last = start
+        idle_polls = 0
         try:
+            # ARRIVAL, not absence-of-motion — the same rewrite zwo_usb.py's
+            # EafFocuser got after 2026-07-31, when the EAF refused every move
+            # above position 360 and this shape of loop returned SUCCESS every
+            # time: an idle focuser is idle from the first poll, so "idle twice
+            # running" is satisfied before the motor has been asked to do
+            # anything. A move that did not move must never look like a move
+            # that did.
             while True:
                 await asyncio.sleep(POLL_S)
                 info = await self._info()
+                pos = int(getattr(info, "position", 0) or 0)
+                # The same idle test is_moving() uses — one source of truth.
                 moving = str(getattr(info, "state", "") or "").lower() != "idle"
-                settled = 0 if moving else settled + 1
-                if settled >= 2:
-                    return
+                if abs(pos - position) <= ARRIVAL_TOLERANCE_STEPS:
+                    return                                   # actually arrived
+                if pos != last:
+                    last, idle_polls = pos, 0                # making progress
+                else:
+                    # Not at the target and not advancing. TWO polls of that
+                    # with the box reporting idle before it counts, so a slow
+                    # motor start cannot cry wolf.
+                    idle_polls = idle_polls + 1 if not moving else 0
+                    if idle_polls >= 2:
+                        raise DeviceError(
+                            f"{self.name}: move to {position} did not happen — "
+                            f"the focuser stopped at {pos} (started from "
+                            f"{start}) and is no longer moving. It is probably "
+                            "at a mechanical limit or the drawtube is jammed; "
+                            "try a smaller move in the other direction.")
                 if asyncio.get_running_loop().time() > deadline:
                     raise DeviceError(
                         f"{self.name}: move to {position} did not settle within "
-                        f"{FOCUS_MOVE_TIMEOUT_S:.0f}s — halted")
+                        f"{FOCUS_MOVE_TIMEOUT_S:.0f}s — halted, stopped at "
+                        f"{pos} (started from {start})")
         except BaseException:
             try:
                 await self.halt()
