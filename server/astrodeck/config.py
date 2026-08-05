@@ -93,7 +93,17 @@ class Optics(BaseModel):
 # at rest is an optional Telegram bot token, which ``redacted()`` blanks before
 # the config is sent over WS/REST.
 
-# Named safety presets. ``preset == "custom"`` => user-edited numerics, no patch.
+# Named safety presets. Each entry is the exact subset of SafetyConfig's
+# numeric/advanced fields that DEFINES membership in that preset -- not a
+# template that gets applied to a config, but the match criteria used to LABEL
+# one. SafetyConfig._derive_preset_label (below) is the only code that reads
+# this dict: on every construction (disk load, API body, direct construction)
+# it compares the instance's fields named here against each entry and sets
+# ``preset`` to the first name whose values all match, or "custom" if none do.
+# There is deliberately no reverse direction -- nothing ever copies THESE
+# values onto a SafetyConfig -- so editing this dict changes what future reads
+# are LABELED, never any already-saved numerics (see the hazard note on
+# _derive_preset_label for why a write-time patch was rejected).
 SAFETY_PRESETS: dict[str, dict] = {
     "backyard": dict(on_unsafe="pause", unsafe_consecutive=3,
                      resume_when_safe=True, resume_safe_consecutive=3,
@@ -128,7 +138,12 @@ class SafetyConfig(BaseModel):
     # these keys deserialize with the protective defaults (avoidance ON).
     solar_avoidance: bool = True           # master enable; True = cone armed (deep-sky default)
     solar_exclusion_deg: float = Field(30.0, ge=0, le=90)  # cone half-angle; <=0 = inert
-    # advanced (driven by the active preset unless preset == "custom")
+    # advanced numeric knobs. These VALUES are the source of truth; ``preset``
+    # above is a READ-DERIVED label, not a switch that drives them (see
+    # _derive_preset_label below) -- it reports the name of whichever
+    # SAFETY_PRESETS entry these five fields match exactly, or "custom" if
+    # none do. Editing them directly (the Advanced UI) needs no companion edit
+    # to ``preset``; the label corrects itself on the next read.
     on_unsafe: str = "pause"               # abort_park_warm | park | pause | warn
     unsafe_consecutive: int = 3
     resume_when_safe: bool = True
@@ -154,6 +169,33 @@ class SafetyConfig(BaseModel):
     # after max_pause_min it SafetyAborts with the roof left CLOSED (fail-safe). Left
     # out of SAFETY_PRESETS on purpose (advanced opt-in, no surprise roof cycling).
     reopen_dome_when_safe: bool = False
+
+    @model_validator(mode="after")
+    def _derive_preset_label(self) -> "SafetyConfig":
+        """READ-TIME derivation ONLY -- this NEVER writes a preset's numerics
+        onto ``self``; it only ever corrects the ``preset`` string. Runs on
+        every construction (disk load via ``AppConfig(**raw)``, an API request
+        body, a bare ``SafetyConfig(...)`` in a test), so a stale/incoming
+        label can't survive a read.
+
+        An earlier draft of this fix did the opposite -- on write, if
+        ``preset != "custom"``, copy ``SAFETY_PRESETS[preset]`` onto the
+        instance. That is rejected: ``SAFETY_PRESETS["backyard"]`` equals this
+        class's own field defaults exactly, so the patch is a silent no-op for
+        an untouched config and a silent DESTRUCTIVE overwrite for anyone who
+        hand-tuned ``on_unsafe``/``max_pause_min`` while leaving the label at
+        "backyard" -- these numbers decide whether the roof closes over a
+        running sequence. Deriving the label instead can never lose a user's
+        values; the worst it does is report "custom" honestly.
+        """
+        for name, values in SAFETY_PRESETS.items():
+            if all(getattr(self, field) == want for field, want in values.items()):
+                if self.preset != name:
+                    object.__setattr__(self, "preset", name)
+                return self
+        if self.preset != "custom":
+            object.__setattr__(self, "preset", "custom")
+        return self
 
 
 class EscalationConfig(BaseModel):
