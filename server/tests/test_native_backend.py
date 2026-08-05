@@ -227,6 +227,107 @@ async def test_native_guider_built_over_guide_camera_and_mount(fake_alpaca):
     assert s.native_guider() is g               # cached / same instance
 
 
+# ------------------------------------------- #24: which profile is it keyed on
+#
+# The native guider persists its calibration and its trained PPEC model to
+# CONFIG_DIR/guider/<profile>.json, and every one of those six code paths starts
+# `if not self.profile_id: return`. This is the ONLY site that builds a guider
+# for a real rig, and it passed `profile_id=None` — so on every Alpaca rig the
+# whole persistence layer was inert: a ~20+ s calibration walk every single
+# start, and a PPEC model thrown away at every stop, both silently.
+#
+# WHEN the id is read is not a detail. `native_guider()` runs inside
+# `connect_profile()` (orchestrator.py:260), and `set_active_profile` lands
+# AFTER that returns (hub.py:754 then :771) — so an id captured at construction
+# is the OUTGOING profile's on every profile switch, which is worse than None.
+
+
+class _Profile:
+    def __init__(self, pid): self.id = pid
+
+
+async def _session_with_guider_devices():
+    s = NativeSession("h")
+    await s.get_device("guide_camera",
+                       ConnSpec(backend="native", host="h", port=11111,
+                                dev_num=1, role="guide_camera"))
+    await s.get_device("telescope",
+                       ConnSpec(backend="native", host="h", port=11111,
+                                dev_num=0, role="telescope"))
+    return s
+
+
+def _require_wheel():
+    from astrodeck.providers import NATIVE_AVAILABLE
+    if not NATIVE_AVAILABLE:
+        pytest.skip("native guide engine wheel not installed")
+
+
+@pytest.mark.asyncio
+async def test_the_guider_is_keyed_on_the_active_profile(fake_alpaca, monkeypatch):
+    """THE defect: a real rig's guider carried no profile key at all."""
+    _require_wheel()
+    import astrodeck.profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "active_profile",
+                        lambda: _Profile("prof-A"))
+
+    s = await _session_with_guider_devices()
+    assert s.native_guider().profile_id == "prof-A"
+
+
+@pytest.mark.asyncio
+async def test_the_id_is_read_when_it_is_used_not_when_the_session_is_built(
+        fake_alpaca, monkeypatch):
+    """The ordering, in the sequence hub.py actually runs it: the session (and
+    its guider) is built while the OUTGOING profile is still the active one, and
+    the incoming profile becomes active only after the connect returns. Reading
+    the id at construction gives the wrong profile — or, on a first connect,
+    None — so it is read at use."""
+    _require_wheel()
+    import astrodeck.profiles as profiles_mod
+    live = {"p": None}                       # nothing active yet: a first connect
+    monkeypatch.setattr(profiles_mod, "active_profile", lambda: live["p"])
+
+    s = await _session_with_guider_devices()
+    g = s.native_guider()                    # built inside connect_profile()
+    live["p"] = _Profile("prof-B")           # set_active_profile, one line later
+    assert g.profile_id == "prof-B"
+
+
+@pytest.mark.asyncio
+async def test_a_profileless_connect_still_guides_it_just_persists_nothing(
+        fake_alpaca, monkeypatch):
+    """None-safe by requirement: with no active profile the behaviour has to be
+    byte-identical to today — guiding works, nothing is written, and the six
+    `if not self.profile_id` gates degrade exactly as they were designed to."""
+    _require_wheel()
+    import astrodeck.profiles as profiles_mod
+    monkeypatch.setattr(profiles_mod, "active_profile", lambda: None)
+
+    s = await _session_with_guider_devices()
+    g = s.native_guider()
+    assert g.profile_id is None
+    assert g.clear_calibration() is False
+    assert g._load_persisted_calibration() is None
+
+
+@pytest.mark.asyncio
+async def test_a_config_store_that_cannot_answer_does_not_break_guiding(
+        fake_alpaca, monkeypatch):
+    """`active_profile()` is documented as defensive, but this seam sits in a
+    connect path where a raise would surface as a device that mysteriously will
+    not connect. Belt and braces: a resolver that throws leaves the id None."""
+    _require_wheel()
+    import astrodeck.profiles as profiles_mod
+
+    def _boom():
+        raise RuntimeError("config store is a stub in this test")
+
+    monkeypatch.setattr(profiles_mod, "active_profile", _boom)
+    s = await _session_with_guider_devices()
+    assert s.native_guider().profile_id is None
+
+
 @pytest.mark.asyncio
 async def test_health_reports_per_host(fake_alpaca):
     s = NativeSession("h")
