@@ -134,3 +134,48 @@ def test_compound_condition_is_edge_triggered(op, terms, frames, expect):
         fired, st = _fire([i], TriggerContext(now_ts=100.0 + n, **kw), st)
         got.append(len(fired))
     assert got == expect
+
+
+# ---------------------------------------------------- at_time across midnight
+#
+# `parse_hhmm` resolved HH:MM against the current CALENDAR day, which splits an
+# observing night down the middle. An evening run starting at 21:00 resolved a
+# "03:00" rule to 03:00 THAT MORNING — eighteen hours in the past — so the rule
+# was true on the very first sub. "At 03:00 -> stop the session", rendered in
+# the UI as exactly that, ended the night at 21:00. The mirror case is quieter
+# and just as wrong: "23:00" in a run that started at 00:30 resolved to 23:00
+# tomorrow and never fired.
+
+def _local(y, mo, d, hh, mm):
+    return time.mktime((y, mo, d, hh, mm, 0, 0, 0, -1))
+
+
+def test_a_post_midnight_rule_does_not_fire_in_the_evening():
+    evening = _local(2026, 8, 4, 21, 0)          # 21:00, run starts
+    ts = parse_hhmm("03:00", evening)
+    assert ts is not None
+    assert ts > evening, (
+        "03:00 must resolve to the COMING 03:00, not this morning's — "
+        f"got {time.ctime(ts)} from a 21:00 start")
+    assert ts - evening == pytest.approx(6 * 3600, abs=3600)
+
+
+def test_an_evening_rule_seen_after_midnight_resolves_to_the_night_just_gone():
+    after_midnight = _local(2026, 8, 5, 0, 30)   # 00:30, run in progress
+    ts = parse_hhmm("23:00", after_midnight)
+    assert ts is not None
+    assert ts < after_midnight, (
+        "23:00 seen at 00:30 belongs to the night in progress, not +23h "
+        f"tomorrow — got {time.ctime(ts)}")
+
+
+def test_a_time_close_to_now_still_resolves_to_now():
+    t = _local(2026, 8, 4, 22, 0)
+    assert parse_hhmm("22:05", t) == pytest.approx(t + 300, abs=1)
+    assert parse_hhmm("21:55", t) == pytest.approx(t - 300, abs=1)
+
+
+def test_malformed_input_is_still_refused():
+    t = _local(2026, 8, 4, 22, 0)
+    for bad in ("", None, "25:00", "nope", "22", "22:61"):
+        assert parse_hhmm(bad, t) is None, f"{bad!r} must not parse"
