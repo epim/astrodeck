@@ -51,6 +51,16 @@ jobs:
       # enough to consistently trip wall-clock perf gates (test_render_perf_768).
       - run: pytest -q -n auto
 
+  # The one job with no paths-ignore exemption in spirit: a docs-only commit is
+  # exactly how the site values got in (26 spec files, pasted by the boilerplate
+  # that forbids them). Cheap enough to always run.
+  privacy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python tools/privacy_scan.py
+
   relay:
     runs-on: ubuntu-latest
     timeout-minutes: 30

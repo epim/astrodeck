@@ -1,0 +1,22 @@
+#!/bin/sh
+# Refuse a commit that carries the real observing site.
+#
+# Enable once per clone (hooks are not versioned by git itself):
+#   git config core.hooksPath .githooks
+#
+# CI runs the same scanner, but CI catches it AFTER it is already in a commit,
+# and a commit is history -- which on 2026-08-04 meant a rewrite decision over
+# 302 commits. Catching it here is the difference between an edit and a mirror
+# force-push.
+set -e
+
+if command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v python3 >/dev/null 2>&1; then
+    PY=python3
+else
+    echo "pre-commit: no python found, skipping the privacy scan" >&2
+    exit 0
+fi
+
+exec "$PY" tools/privacy_scan.py --staged
