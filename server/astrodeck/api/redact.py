@@ -308,6 +308,70 @@ def _redact_drivers_for(payload: dict, principal: Principal | None) -> dict:
     return {**payload, "drivers": scrubbed}
 
 
+# ------------------------------------------------------ profile-row redaction
+# A device row's addressing, plus the two top-level rig endpoints a profile
+# carries outside ``devices[]``. Same split as the driver rule: the LEFT column
+# is where a device is reachable, the right-hand keys we keep (role/backend/
+# name/dev_type/dev_num/transport/driver_id) are which device it is.
+_PROFILE_DEVICE_ADDRESS_KEYS = ("host", "port", "port_path", "extra")
+_PROFILE_ADDRESS_KEYS = ("nina_host", "nina_port", "phd2_host", "phd2_port")
+
+
+def _redact_profile_for(payload: dict, principal: Principal | None) -> dict:
+    """Scrub the addressing out of a profile record for a caller lacking
+    ``config.backend``, and the ``site_name`` for one lacking
+    ``view.site_precise``.
+
+    A profile is a saved CONNECTION INTENT, so it is a driver list by another
+    name: every ``devices[]`` row carries the LAN ``host``/``port`` (or the
+    serial ``port_path``) of a real box, and the record carries the NINA and
+    PHD2 endpoints at its top level. ``GET /api/profiles/{id}`` is gated on
+    ``view.status``, which a VIEWER and a relay viewer-link both hold, and the
+    only redaction it ran was ``profiles.redact_profile`` -- a key-NAME filter
+    over ``devices[].extra``, which blanks ``password``-ish keys and has nothing
+    to say about a host:port. So the same endpoint detail ``_redact_drivers_for``
+    strips off /api/drivers was readable one route over. ``extra`` goes whole,
+    for the same reason it does there: it is backend-specific connection options
+    and a name filter is not a containment argument.
+
+    TWO CAPS, EVALUATED INDEPENDENTLY (see ``_redact_site_for``): the addressing
+    is gated on ``config.backend`` (the cap that can WRITE these endpoints) and
+    ``site_name`` on ``view.site_precise``. A saved site NAME is PRECISE-tier,
+    not derived-tier -- "Ridge Road Pad" geolocates the rig as well as the
+    coordinates do -- so it belongs with ``_SITE_STRIP_KEYS``' ``name``, and an
+    operator (site_derived, never site_precise) does not get it.
+
+    Copies the record and each device row; never mutates ``payload`` in place.
+    Used for BOTH the detail payload and each picker row from
+    ``ProfileLibrary.list`` (a row has ``site_name`` and no ``devices``, so the
+    device branch is a no-op there)."""
+    has_backend = principal is not None and principal.has(CAP_CONFIG_BACKEND)
+    has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
+    if has_backend and has_precise:
+        return payload  # holder of both: the full record, untouched
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    if not has_precise:
+        out.pop("site_name", None)
+    if not has_backend:
+        for key in _PROFILE_ADDRESS_KEYS:
+            out.pop(key, None)
+        devices = out.get("devices")
+        if isinstance(devices, list):
+            scrubbed = []
+            for row in devices:
+                if not isinstance(row, dict):
+                    scrubbed.append(row)
+                    continue
+                row = dict(row)
+                for key in _PROFILE_DEVICE_ADDRESS_KEYS:
+                    row.pop(key, None)
+                scrubbed.append(row)
+            out["devices"] = scrubbed
+    return out
+
+
 # ---------------------------------------------------- session frame-path redaction
 def _redact_session_for(payload: dict, principal: Principal | None) -> dict:
     """Strip the filesystem ``path`` from every session-ledger frame unless the
@@ -370,6 +434,7 @@ __all__ = [
     "_redact_site_for",
     "_redact_ws_event",
     "_redact_drivers_for",
+    "_redact_profile_for",
     "_redact_session_for",
     "_redact_report_for",
     "report_csv_columns",

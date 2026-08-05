@@ -46,8 +46,9 @@ from ..auth.rbac import assert_route_capabilities, declare
 # here as nested closures: app.py imports remote.relay_client, so relay_client
 # importing them back out of app.py would be a circular import.
 from .redact import (WS_AUTH_RECHECK_S, _redact_drivers_for,  # re-exported at module scope
-                     _redact_report_for, _redact_session_for, _redact_site_for,
-                     _redact_ws_event, report_csv_columns)
+                     _redact_profile_for, _redact_report_for,
+                     _redact_session_for, _redact_site_for, _redact_ws_event,
+                     report_csv_columns)
 from ..persist import safe_id_path, safe_subpath
 from ..catalog import search          # rows AND the reasons for what is missing
 from ..catalog import survey_pack as survey_pack_mod
@@ -2443,18 +2444,16 @@ def create_app() -> FastAPI:
         (tokens blanked)."""
         alerts = list(config_store.cfg().alerts)
         idx = next((i for i, s in enumerate(alerts) if s.id == sink.id), None)
+        # ONE implementation of the merge rule. This route used to carry a second
+        # copy that compared the delivery identity BEFORE restoring the blanked
+        # token — and since the client is only ever served ``token: ""``, every
+        # save of a credential-bearing sink echoed a blank back, read as a
+        # re-point, and silently cleared ``verified``. ``_merge_alert_verified``
+        # restores first and resets second. It looks the old sink up in the
+        # STORE (not this local list) and is a no-op for a brand-new id, so it
+        # must run BEFORE the assignment and is correct for the append branch.
+        sink = _merge_alert_verified([sink])[0]
         if idx is not None:
-            old = alerts[idx]
-            if (old.url != sink.url or old.token != sink.token
-                    or old.chat_id != sink.chat_id or old.kind != sink.kind
-                    or old.smtp_host != sink.smtp_host or old.smtp_port != sink.smtp_port
-                    or old.smtp_user != sink.smtp_user or old.smtp_from != sink.smtp_from
-                    or old.smtp_to != sink.smtp_to):
-                sink = sink.model_copy(update={"verified": False})
-            # an empty token on update means "unchanged" — never blank a stored
-            # secret just because the redacted client echoed it back.
-            if not sink.token and old.token:
-                sink = sink.model_copy(update={"token": old.token})
             alerts[idx] = sink
         else:
             alerts.append(sink)
@@ -2650,22 +2649,31 @@ def create_app() -> FastAPI:
 
     # ----------------------------------------------------------------- profiles
 
-    @app.get("/api/profiles", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/profiles")
     @declare(CAP_VIEW_STATUS)
-    async def list_profiles():
+    async def list_profiles(principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         # Rows carry no device ``extra`` today, but redact defensively so no
         # secret-bearing ``extra`` value can ever cross the wire from this route.
-        return [redact_profile(r)
+        # A picker row also carries ``site_name``, which is PRECISE-tier site
+        # data (a pad name geolocates as well as the coordinates do), so it goes
+        # for anyone without view.site_precise.
+        return [_redact_profile_for(redact_profile(r), principal)
                 for r in profiles.list(config_store.cfg().active_profile_id)]
 
-    @app.get("/api/profiles/{profile_id}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/profiles/{profile_id}")
     @declare(CAP_VIEW_STATUS)
-    async def get_profile(profile_id: str):
+    async def get_profile(profile_id: str,
+                          principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         try:
             # Wire-redaction (W2): scrub secret-bearing device ``extra`` values
             # before this VIEWER-visible read leaves the server; the at-rest
             # profile keeps the real value so the rig can still connect.
-            return redact_profile(profiles.get(profile_id))
+            # RBAC redaction: that is a key-NAME filter and a profile is a saved
+            # connection intent, so every device's host/port/port_path and the
+            # top-level NINA/PHD2 endpoints are the SAME addressing /api/drivers
+            # strips for a caller without config.backend.
+            return _redact_profile_for(
+                redact_profile(profiles.get(profile_id)), principal)
         except (KeyError, FileNotFoundError):
             raise HTTPException(404, "profile not found")
 

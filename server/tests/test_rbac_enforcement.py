@@ -1351,3 +1351,119 @@ def test_saving_relay_settings_does_not_wipe_the_auth_secrets(tmp_path,
         "the session signing key was rotated by a relay-settings save — every "
         "signed-in user is now logged out")
     assert after.relay_pubkey == "new-relay-key", "the actual edit must land"
+
+
+# ================================================ profile addressing (2026-08-04)
+#
+# GET /api/profiles/{id} is gated on view.status — a VIEWER holds that — and the
+# only redaction it ran was ``redact_profile``, a key-NAME filter over
+# ``devices[].extra``. A profile is a saved CONNECTION INTENT, so the record it
+# hands back is every device's host:port (or COM path) plus the NINA/PHD2
+# endpoints: exactly the addressing ``config.backend`` is required to WRITE, and
+# exactly what /api/drivers already strips for the same caller.
+
+def _seed_profile(tmp_path, monkeypatch):
+    """One profile on disk, in an isolated directory, carrying every kind of
+    addressing a real record does. Returns it."""
+    from astrodeck.profiles import Profile, ProfileDevice
+    from astrodeck.profiles import profiles as profile_lib
+    monkeypatch.setattr(profile_lib, "_dir", tmp_path / "profiles")
+    p = Profile(name="Rig 1", nina_host="10.42.0.9", nina_port=1888,
+                phd2_host="10.42.0.9", phd2_port=4400,
+                site_name="Ridge Road Pad",
+                devices=[
+                    ProfileDevice(role="camera", backend="alpaca",
+                                  host="10.42.0.5", port=11111,
+                                  dev_type="camera", dev_num=0, name="ASI2600"),
+                    ProfileDevice(role="focuser", backend="native",
+                                  transport="serial", port_path="COM7",
+                                  driver_id="drv-1", name="EAF"),
+                ])
+    profile_lib.save(p)
+    return p
+
+
+def test_a_viewer_gets_no_device_addressing_from_a_profile(tmp_path, monkeypatch):
+    p = _seed_profile(tmp_path, monkeypatch)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        r = c.get(f"/api/profiles/{p.id}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in ("nina_host", "nina_port", "phd2_host", "phd2_port", "site_name"):
+        assert key not in body, f"{key} reached a viewer: {body}"
+    for row in body["devices"]:
+        assert "host" not in row and "port" not in row and "port_path" not in row, row
+    # the whole record, not just the keys we name: no reachable address survives.
+    assert "10.42.0.5" not in r.text and "10.42.0.9" not in r.text
+    assert "COM7" not in r.text
+    # availability/identity survives — a viewer may still see WHAT is in the rig.
+    assert [row["role"] for row in body["devices"]] == ["camera", "focuser"]
+    assert body["devices"][0]["name"] == "ASI2600"
+    assert body["devices"][0]["backend"] == "alpaca"
+    assert body["devices"][1]["driver_id"] == "drv-1"
+    assert body["devices"][1]["transport"] == "serial"
+    assert body["name"] == "Rig 1"
+
+
+def test_an_admin_still_gets_the_whole_profile(tmp_path, monkeypatch):
+    """The redaction is a holder rule, not a schema change: config.backend can
+    WRITE these endpoints, so it reads them back verbatim."""
+    p = _seed_profile(tmp_path, monkeypatch)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        r = c.get(f"/api/profiles/{p.id}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["nina_host"] == "10.42.0.9" and body["phd2_port"] == 4400
+    assert body["site_name"] == "Ridge Road Pad"
+    assert body["devices"][0]["host"] == "10.42.0.5"
+    assert body["devices"][0]["port"] == 11111
+    assert body["devices"][1]["port_path"] == "COM7"
+
+
+def test_the_profile_404_still_covers_a_traversal_id(tmp_path, monkeypatch):
+    """``safe_id_path`` raises KeyError on a traversal id and the route maps it
+    to a plain 404 — that mapping is the guard's cover story, so it has to
+    survive the signature change."""
+    _seed_profile(tmp_path, monkeypatch)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        assert c.get("/api/profiles/nope").status_code == 404
+        assert c.get("/api/profiles/..%2F..%2Fastrodeck").status_code == 404
+
+
+def test_the_profile_list_withholds_the_site_name_from_an_operator(tmp_path,
+                                                                   monkeypatch):
+    """A saved site NAME is precise-tier, not derived-tier: "Ridge Road Pad"
+    geolocates the rig as well as the coordinates do, and an operator (who holds
+    view.site_derived and never view.site_precise) must not read it off the
+    picker rows."""
+    _seed_profile(tmp_path, monkeypatch)
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        r = c.get("/api/profiles")
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert rows, "the picker must still list profiles — only the site name goes"
+    assert all("site_name" not in row for row in rows), rows
+    assert "Ridge Road Pad" not in r.text
+    assert rows[0]["name"] == "Rig 1"        # the profile's own name is not a site
+
+
+def test_the_profile_redaction_never_mutates_its_input(tmp_path, monkeypatch):
+    """Same reason ``_redact_drivers_for`` copies: a payload can alias state a
+    holder is about to be served from, so an in-place ``pop`` here would strip
+    the admin's copy too."""
+    from astrodeck.api.redact import _redact_profile_for
+    payload = {"name": "Rig 1", "site_name": "Ridge Road Pad",
+               "nina_host": "10.42.0.9",
+               "devices": [{"role": "camera", "host": "10.42.0.5", "port": 11111}]}
+    out = _redact_profile_for(payload, principal_for_role("viewer"))
+    assert "host" not in out["devices"][0]
+    assert payload["devices"][0]["host"] == "10.42.0.5", "the input was mutated"
+    assert payload["nina_host"] == "10.42.0.9" and "site_name" in payload
