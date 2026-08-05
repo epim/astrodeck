@@ -22,15 +22,34 @@ from ..providers import resolve
 # shows otherwise.)
 _DEG_TO_MIN = 60.0
 
+# How often a paused driver re-checks the flag. Short enough that Resume feels
+# instant; it is also the ONLY await point a paused driver has, so it is the
+# cancellation point ``stop()`` relies on to unwind a paused session.
+_PAUSE_POLL_S = 0.1
+
+
+async def wait_if_paused(session: Any) -> None:
+    """Block while ``session`` is paused (the user hit Pause mid-run).
+
+    The one pause primitive both first-party drivers poll — the native TPPA
+    engine (``polar/native.py``) and the simulator below. Kept module-level and
+    tolerant of a stub ``session`` (``getattr`` default) because the native
+    driver is driven with fake sessions in tests. ``stop()`` cancels the driver
+    task, so the sleep here is what lets a paused session still unwind.
+    """
+    while getattr(session, "_native_paused", False):
+        await asyncio.sleep(_PAUSE_POLL_S)
+
 
 class PolarAlignSession:
     def __init__(self, hub: Any):
         self.hub = hub
         self._task: asyncio.Task | None = None
         self._ws: Any = None
-        # Pause flag polled ONLY by the native driver (``polar/native.py``): the
-        # NINA/sim drivers pause via their own mechanism (a ws message / ignored),
-        # so this stays False for them and changes nothing about their behavior.
+        # Pause flag polled by the FIRST-PARTY drivers — the native TPPA engine
+        # (``polar/native.py``) and ``_run_sim`` below — via ``wait_if_paused``.
+        # NINA has its own mechanism (a ws "pause-alignment" action), so this
+        # stays False for it and changes nothing about its behavior.
         self._native_paused = False
         self.state: dict[str, Any] = self._idle()
 
@@ -44,6 +63,16 @@ class PolarAlignSession:
         return self._task is not None and not self._task.done()
 
     def _publish(self, **kw: Any) -> None:
+        # An explicit Pause is the USER's state; a driver may not downgrade it.
+        # The native driver publishes state:"running" on every solve it had
+        # already started, which landed AFTER pause() wrote state:"paused" and
+        # flipped the UI's Resume button back to Pause — so the run looked live
+        # while it was, in fact, waiting on the flag. Drop only the "running"
+        # key; every other field (progress / az_error / *_direction / message)
+        # still streams, and the TERMINAL states must still land or a session
+        # that finishes while paused would stick on "paused" forever.
+        if self._native_paused and kw.get("state") == "running":
+            kw = {k: v for k, v in kw.items() if k != "state"}
         self.state = {**self.state, **kw}
         if "az_error" in kw or "alt_error" in kw:
             self.state["total_error"] = round(
@@ -113,9 +142,18 @@ class PolarAlignSession:
         self._publish(state="idle", message="stopped", progress=0.0)
 
     async def pause(self) -> None:
-        # Native driver: raise the pause flag it polls so it stops capturing
-        # (a no-op for NINA/sim, which don't read it).
+        # Nothing to pause: publishing state:"paused" with no session would
+        # STRAND the UI, which derives "a run is live" from that state string
+        # (PolarView.tsx) — Resume/Stop would light up over nothing and Start
+        # would be disabled, with no driver left to clear it.
+        if not self.running:
+            return
+        # First-party drivers (native + sim): raise the flag they poll in
+        # ``wait_if_paused`` so they stop capturing at the next yield point.
         self._native_paused = True
+        # NINA runs its own alignment loop and ignores the flag; ask it over the
+        # websocket instead. Best-effort — the plugin's acceptance of the action
+        # is unverified against a live TPPA (no rig has confirmed it).
         if self._ws is not None:
             try:
                 await self._ws.send(json.dumps({"Action": "pause-alignment"}))
@@ -124,6 +162,8 @@ class PolarAlignSession:
         self._publish(state="paused", message="paused")
 
     async def resume(self) -> None:
+        if not self.running:
+            return
         self._native_paused = False
         if self._ws is not None:
             try:
@@ -230,6 +270,7 @@ class PolarAlignSession:
                           message="slewing to first point")
             await asyncio.sleep(_sim_delay(1.2))
             for i in range(1, 4):
+                await wait_if_paused(self)
                 self._publish(message=f"measuring point {i}/3", progress=0.1 + 0.2 * i)
                 await asyncio.sleep(_sim_delay(1.0))
 
@@ -241,7 +282,12 @@ class PolarAlignSession:
             # Converge (as if the user were turning the bolts) so the whole
             # reticle/vector/auto-zoom flow is visible end to end.
             while math.hypot(az, alt) > 0.4:
+                await wait_if_paused(self)
                 await asyncio.sleep(_sim_delay(1.0))
+                # Pause can land DURING that tick; re-check before publishing,
+                # so a paused sim goes quiet at once instead of streaming one
+                # more "adjust the mount" reading the user didn't ask for.
+                await wait_if_paused(self)
                 az = az * 0.82 + random.uniform(-0.2, 0.2)
                 alt = alt * 0.82 + random.uniform(-0.2, 0.2)
                 self._publish(az_error=round(az, 2), alt_error=round(alt, 2),
