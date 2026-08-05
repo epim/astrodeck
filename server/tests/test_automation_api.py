@@ -94,11 +94,17 @@ def test_post_config_partial_merge_persists_and_blanks_tokens(client):
 
 def test_post_config_safety_preset_round_trips(client):
     c, store = client
+    # Every field SAFETY_PRESETS["remote"] names, because `preset` is DERIVED
+    # from the numerics on read (2026-08-04) rather than stored as sent. This
+    # body is what the fixed SafetyLimitsPanel posts; the version without
+    # close_dome_on_unsafe was copied from the panel's table back when the table
+    # was missing it, and would now correctly come back labelled "custom".
     patch = {"safety": {
         "enabled": True, "preset": "remote", "min_alt_deg": 10.0,
         "twilight_deg": -15.0, "on_unsafe": "abort_park_warm",
         "unsafe_consecutive": 2, "resume_when_safe": False,
         "resume_safe_consecutive": 3, "max_pause_min": 0,
+        "close_dome_on_unsafe": True,
     }}
     r = c.post("/api/config", json=patch)
     assert r.status_code == 200, r.text
