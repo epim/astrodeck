@@ -5175,11 +5175,23 @@ def create_app() -> FastAPI:
     # (auth/routes.py). Include it if present so the apply-lane and the
     # provider-lane never fight over app.py. Absent today -> a no-op import guard
     # (the seam is reserved; the login paths are already in _AUTH_OPEN_PREFIXES).
+    #
+    # The guard is NARROW on purpose. It used to be a bare `except Exception:
+    # pass`, which meant any error anywhere inside auth/routes.py silently shipped
+    # an app with NO LOGIN SURFACE AT ALL -- no /auth/me, no OIDC callback, no
+    # local login -- and nothing anywhere said so. Under a real provider that is
+    # not a degraded app, it is an unusable one, and the only symptom is a 404 on
+    # a route the docs say exists. Absent module = the reserved seam, still
+    # silent. Anything else is a broken build and now says so and stops.
     try:
         from ..auth.routes import router as auth_router  # type: ignore
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").startswith("astrodeck.auth.routes"):
+            auth_router = None          # seam reserved: no auth lane in this build
+        else:
+            raise                       # a DEPENDENCY of the auth lane is missing
+    if auth_router is not None:
         app.include_router(auth_router)
-    except Exception:  # noqa: BLE001 - router not present yet; seam reserved
-        pass
 
     # ------------------------------------------------------------ static UI
 
