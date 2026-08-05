@@ -78,22 +78,34 @@ class FiredAction:
 
 
 def parse_hhmm(at_time: str | None, now_ts: float) -> float | None:
-    """"HH:MM" 24h local -> today's epoch ts in LOCAL time, or None if
-    malformed/absent. Pure (uses ``now_ts`` for today's date only)."""
+    """"HH:MM" 24h local -> the epoch ts of the occurrence NEAREST ``now_ts``
+    (within ±12 h), or None if malformed/absent. Pure.
+
+    THE NEAREST OCCURRENCE, NOT TODAY'S. This resolved HH:MM against the
+    current CALENDAR day, which splits every observing night down the middle:
+    an evening run that starts at 21:00 resolved a "03:00" rule to 03:00 THAT
+    MORNING — eighteen hours in the past — so the rule was true on the very
+    first sub. A user who wrote "At 03:00 → stop the session", and whose UI
+    rendered exactly that, had the night end immediately. The mirror case is as
+    bad and quieter: a "23:00" rule in a run that started at 00:30 resolves to
+    23:00 tomorrow and never fires at all.
+
+    The ±12 h snap is the same rule ``schedule._clock_time_near_now`` already
+    applies to window boundaries, delegated rather than reimplemented so the
+    sequencer's two notions of "tonight at HH:MM" cannot drift apart. Parsing
+    stays here because ``strptime`` rejects malformed input the split-on-colon
+    form accepts.
+    """
     if not at_time:
         return None
     try:
         parsed = time.strptime(at_time, "%H:%M")
     except (ValueError, TypeError):
         return None
-    lt = time.localtime(now_ts)
+    from .schedule import _clock_time_near_now
     try:
-        # today's local date at the parsed H:M; isdst=-1 lets mktime infer DST.
-        stamp = time.struct_time((
-            lt.tm_year, lt.tm_mon, lt.tm_mday,
-            parsed.tm_hour, parsed.tm_min, 0,
-            lt.tm_wday, lt.tm_yday, -1))
-        return time.mktime(stamp)
+        return _clock_time_near_now(
+            f"{parsed.tm_hour:02d}:{parsed.tm_min:02d}", now_ts)
     except (ValueError, OverflowError):
         return None
 

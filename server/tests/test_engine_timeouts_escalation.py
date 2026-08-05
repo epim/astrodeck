@@ -228,3 +228,40 @@ async def test_af_failure_action_abort(sim_hub, temp_store, monkeypatch):
     assert await wait_for(lambda: not engine.running, timeout=15), engine.state
     assert engine.state.get("state") == "aborted"
     assert engine.state.get("end_reason") == "unsafe"
+
+
+async def test_require_guiding_aborts_when_NO_guider_is_connected(sim_hub,
+                                                                  monkeypatch):
+    """The one state ``require_guiding`` advertises is the one it could not see.
+
+    The escalation lived entirely inside ``if plan.guide and hub.guider and
+    hub.guider.connected``, so it fired only when a guider existed, was
+    connected, and start_guiding() then threw. A guider that is ABSENT or never
+    came up — "guiding is unavailable", the setting's whole purpose — skipped
+    the block in silence and shot the night unguided.
+    """
+    from astrodeck.config import AppConfig, EscalationConfig
+    from astrodeck.sequence import SequenceEngine
+    from astrodeck.sequence.engine import SafetyAbort
+
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(escalation=EscalationConfig(
+        require_guiding=True, guiding_action="abort"))
+    engine.plan = light_plan(guide=True)
+    sim_hub.guider = None                      # never came up
+
+    with pytest.raises(SafetyAbort, match="guiding required"):
+        await engine._setup_target(0, engine.plan.targets[0])
+
+
+async def test_no_guider_without_require_guiding_still_runs(sim_hub, monkeypatch):
+    """Default is warn-and-continue — the fix must not start refusing nights
+    that ran fine yesterday."""
+    from astrodeck.config import AppConfig, EscalationConfig
+    from astrodeck.sequence import SequenceEngine
+
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(escalation=EscalationConfig(require_guiding=False))
+    engine.plan = light_plan(guide=True)
+    sim_hub.guider = None
+    await engine._setup_target(0, engine.plan.targets[0])      # must not raise

@@ -961,9 +961,20 @@ class SequenceEngine:
                 # the pier/tripod for hours; the next ready target's _setup_target
                 # re-slews + restores tracking. Skip the teardown for short re-eval
                 # waits (the mount is about to move again).
-                if start_ts - now > WAIT_TEARDOWN_S:
+                # THE ANCHOR MAY ALREADY BE PAST. ``start_ts`` is when the
+                # target's window OPENED, and a target can sit un-ready long
+                # after that — its time window is open while it is still below
+                # its altitude gate. Waiting until an opening that has already
+                # happened is not a wait, so fall forward onto the scheduler's
+                # own estimate of when the target becomes usable.
+                wait_ts = max(start_ts, now + float(gs.get("eta_s") or 0.0))
+                # Teardown keys off the EFFECTIVE wait for the same reason: with
+                # the past anchor this test read "0 seconds from now" and never
+                # park-held, so the mount kept tracking a finished target while
+                # the scheduler span.
+                if wait_ts - now > WAIT_TEARDOWN_S:
                     await self._park_hold()
-                await self._wait_until(start_ts)
+                await self._wait_until(wait_ts)
             else:
                 # waiting but no resolvable start_ts (e.g. below-alt with unknown
                 # ETA): a short bounded, cancel-responsive sleep then re-evaluate.
@@ -1051,18 +1062,42 @@ class SequenceEngine:
         the safety gate every tick — a wait used to be a safety blind spot (the gate
         only ran per frame/slew), so rain during a multi-hour inter-target wait
         produced no reaction. No frames flow while waiting, so clear the watchdog's
-        progress-expected flag (else it pages a false 'no progress' UNSAFE)."""
+        progress-expected flag (else it pages a false 'no progress' UNSAFE).
+
+        AT LEAST ONE PASS, ALWAYS — a do-while, not a while. This used to test
+        the deadline first, so a deadline already in the PAST returned instantly
+        with no sleep, no checkpoint and no safety gate. The scheduler's
+        earliest-waiter branch passes the window's ``start_ts``, which is in the
+        past whenever a target's time window has opened while the target is
+        still below its altitude gate; the scheduler then re-evaluated, found
+        the same waiter with the same past anchor, and called straight back in.
+        Measured: 14,729 calls in 2 s, zero safety-gate calls, and the event
+        loop starved — which takes down the safety poller this very function
+        exists to consult. One target is enough to reach it.
+
+        The single guaranteed sleep is what makes the loop impossible to spin,
+        and the guaranteed gate is what keeps a wait from being a weather blind
+        spot no matter how the caller computed its deadline."""
         self._progress_expected = False
-        while time.time() < deadline_ts:
+        first = True
+        while first or time.time() < deadline_ts:
+            first = False
             await self._checkpoint()
             # weather still matters while idle between targets — pause/abort on a
             # sustained unsafe reading at the poll cadence (target=None: no floor
             # check, nothing to re-acquire yet).
             await self._safety_gate(context="frame")
+            # A FLOOR ON THE SLEEP, not an early return. Returning here on a
+            # non-positive remainder is what let a past deadline spin: the
+            # caller's next re-evaluation lands on the same anchor immediately.
+            # Yielding for one step instead turns that into a 5 s re-evaluation
+            # cadence — which is what the scheduler wanted from it all along.
             remaining = deadline_ts - time.time()
+            step = SCHEDULE_WAIT_STEP_S if remaining <= 0 else min(
+                SCHEDULE_WAIT_STEP_S, remaining)
+            await asyncio.sleep(step)
             if remaining <= 0:
                 return
-            await asyncio.sleep(min(SCHEDULE_WAIT_STEP_S, remaining))
 
     def _target_complete(self, ti: int, target: Target) -> bool:
         total = sum(s.count for s in target.steps)
@@ -1147,32 +1182,60 @@ class SequenceEngine:
         if target.autofocus_first and "focuser" in self.hub.devices:
             await self._autofocus("initial autofocus")
 
-        if self.plan.guide and self.hub.guider and self.hub.guider.connected:
-            self._set_state(detail="starting guiding")
-            # P1-7: honor escalation.require_guiding / guiding_action. The
-            # start is bounded (P0-2) so a guider that never settles can't hang
-            # the night. The default action is "warn" → log + continue unguided
-            # (legacy behavior unchanged). "abort" → SafetyAbort (no all-night
-            # trailed run). "skip" → skip this target's guiding-dependent run.
+        # THE DECISION IS MADE WHENEVER THE PLAN ASKED FOR GUIDING — not only
+        # when a guider happens to be present. This whole block used to sit
+        # inside ``and self.hub.guider and self.hub.guider.connected``, so
+        # ``require_guiding`` fired ONLY when a guider existed, was connected,
+        # and start_guiding() then threw. The one state the setting advertises
+        # — "guiding is unavailable" — is a guider that is absent or never came
+        # up, and that state skipped the entire block in silence and shot the
+        # night unguided. The abort existed for the case it could not see.
+        if self.plan.guide:
             cfg = self._cfg
             require_guiding = bool(cfg and cfg.escalation.require_guiding)
             action = (cfg.escalation.guiding_action if cfg else "warn")
-            try:
-                await _bounded(self.hub.guider.start_guiding(),
-                               GUIDE_START_TIMEOUT_S, "start guiding")
-            except SafetyAbort:
-                raise
-            except Exception as e:
+            guider = self.hub.guider
+            if guider is None or not getattr(guider, "connected", False):
+                why = ("no guider is connected" if guider is None else
+                       f"the guider ({getattr(guider, 'name', 'guider')}) "
+                       "is not connected")
                 if require_guiding and action == "abort":
-                    bus.log("error", f"guiding required but failed to start: {e}",
-                            "sequence")
-                    raise SafetyAbort(f"guiding required but failed to start: {e}")
+                    bus.log("error", f"guiding required but {why}", "sequence")
+                    raise SafetyAbort(f"guiding required but {why}")
                 if require_guiding and action == "skip":
-                    bus.log("warning", f"guiding required but failed to start: {e}"
-                                       f" — skipping {target.name}", "sequence")
-                    raise StopTarget("guiding required but could not start")
-                bus.log("warning", f"guiding failed to start: {e} — continuing unguided",
-                        "sequence")
+                    bus.log("warning", f"guiding required but {why} — skipping "
+                                       f"{target.name}", "sequence")
+                    raise StopTarget(f"guiding required but {why}")
+                # Falls through to the meridian-flip arming below: the target
+                # still runs (unguided), and a GEM crossing the meridian still
+                # needs its flip armed. An early return here would have traded
+                # one silent hazard for another.
+                bus.log("warning", f"this plan asks for guiding but {why} — "
+                                   "continuing UNGUIDED", "sequence")
+            else:
+                self._set_state(detail="starting guiding")
+                # P1-7: honor escalation.require_guiding / guiding_action. The
+                # start is bounded (P0-2) so a guider that never settles can't
+                # hang the night. The default action is "warn" → log + continue
+                # unguided (legacy behavior unchanged). "abort" → SafetyAbort
+                # (no all-night trailed run). "skip" → skip this target.
+                try:
+                    await _bounded(self.hub.guider.start_guiding(),
+                                   GUIDE_START_TIMEOUT_S, "start guiding")
+                except SafetyAbort:
+                    raise
+                except Exception as e:
+                    if require_guiding and action == "abort":
+                        bus.log("error", f"guiding required but failed to start: {e}",
+                                "sequence")
+                        raise SafetyAbort(
+                            f"guiding required but failed to start: {e}")
+                    if require_guiding and action == "skip":
+                        bus.log("warning", f"guiding required but failed to start: "
+                                           f"{e} — skipping {target.name}", "sequence")
+                        raise StopTarget("guiding required but could not start")
+                    bus.log("warning", f"guiding failed to start: {e} — continuing "
+                                       "unguided", "sequence")
 
         # Arm the meridian flip for THIS target iff we acquired it east of the
         # meridian (server HA countdown > 0), so a GEM tracking east→west across
@@ -1268,6 +1331,19 @@ class SequenceEngine:
             key = f"{target.id}:{step.id}"
             for i in range(self._done.get(key, 0), step.count):
                 await self._checkpoint()
+                # WEATHER APPLIES TO CALIBRATION TOO. This was the one capture
+                # loop with a _checkpoint and no _safety_gate, while the module
+                # docstring promised the gate ran "after every frame-boundary
+                # _checkpoint" — and every unsafe ACTUATION (park-hold, the
+                # SafetyAbort wind-down, close_dome_on_unsafe) lives only behind
+                # this call, so a calibration block ran weather-blind from its
+                # first frame to its last. Flats are shot with the roof open at
+                # dusk and a dark set can run for hours.
+                #
+                # context="frame", not "slew": calibration produces no mount
+                # motion, so the mount-limit half stays inert (it is reached
+                # only under context == "slew") while the monitor half runs.
+                await self._safety_gate(context="frame", target=target)
                 # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
                 await self._frame_alerts_tick()
                 exp = solved_exp if solved_exp is not None else step.exposure_s
