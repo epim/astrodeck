@@ -446,3 +446,54 @@ async def test_finalize_does_not_race_snapshot_write(temp_store, tmp_path, monke
     await asyncio.sleep(0.12)
 
     assert conc["max"] == 1, f"finalize raced the snapshot write (peak {conc['max']})"
+
+
+# ------------------------------------------------- a wait that does not wait
+#
+# `_wait_until` ran `while time.time() < deadline_ts`, so a deadline already in
+# the PAST returned instantly — no sleep, no checkpoint, no safety gate. The
+# scheduler's earliest-waiter branch hands it `gs["start_ts"]`, the window's
+# start, which is in the past whenever a target's TIME window has opened but the
+# target is still below its altitude gate. The scheduler then re-evaluates,
+# finds the same waiter with the same past anchor, and calls again: a tight
+# non-yielding loop that starves the event loop the safety poller runs on.
+# Measured before the fix: 14,729 calls in 2 s and zero safety-gate calls.
+#
+# One target is enough to reach it. It does not need a multi-target plan.
+
+async def test_a_past_deadline_still_yields_and_still_gates(sim_hub, monkeypatch):
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(safety=SafetyConfig(enabled=True))
+    engine.plan = SequencePlan(name="p", targets=[], safety_check=True)
+
+    gated = {"n": 0}
+
+    async def count_gate(*, context, target=None):
+        gated["n"] += 1
+    monkeypatch.setattr(engine, "_safety_gate", count_gate)
+
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def spy_sleep(d, *a, **kw):
+        slept.append(d)
+        return await real_sleep(0)
+    monkeypatch.setattr(engine_mod.asyncio, "sleep", spy_sleep)
+
+    await engine._wait_until(time.time() - 3600.0)     # an hour in the PAST
+
+    assert gated["n"] >= 1, (
+        "a wait that returns without gating is the safety blind spot this "
+        "function exists to close")
+    assert slept, "a wait that never yields starves the event loop it runs on"
+
+
+async def test_a_future_deadline_still_returns_at_the_deadline(sim_hub, monkeypatch):
+    """The fix must not turn a bounded wait into an unbounded one."""
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(safety=SafetyConfig(enabled=False))
+    engine.plan = SequencePlan(name="p", targets=[], safety_check=False)
+    monkeypatch.setattr(engine_mod, "SCHEDULE_WAIT_STEP_S", 0.01)
+    t0 = time.time()
+    await engine._wait_until(time.time() + 0.05)
+    assert time.time() - t0 < 5.0, "the wait overran its deadline"

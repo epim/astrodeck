@@ -415,3 +415,35 @@ async def test_mount_floor_blocks_slew_below_floor(sim_hub, temp_store):
     assert engine.state.get("end_reason") == "unsafe"
     rep = SessionReporter.load(engine.reporter.id)
     assert rep is not None and rep.end_reason == "unsafe"
+
+
+async def test_calibration_frames_are_weather_gated(sim_hub, monkeypatch):
+    """The one capture loop that had a _checkpoint and no _safety_gate.
+
+    The engine's module docstring promises the gate runs "after every
+    frame-boundary _checkpoint", and every unsafe ACTUATION — park-hold, the
+    SafetyAbort wind-down, close_dome_on_unsafe — lives only behind that call.
+    So a calibration block ran weather-blind from its first frame to its last,
+    which matters: flats are shot with the roof open at dusk, and a dark set can
+    run for hours.
+    """
+    from astrodeck.sequence import ExposureStep, SequenceEngine, SequencePlan, Target
+
+    engine = SequenceEngine(sim_hub)
+    seen: list = []
+
+    async def spy(*, context, target=None):
+        seen.append(context)
+    monkeypatch.setattr(engine, "_safety_gate", spy)
+
+    plan = SequencePlan(name="cal", guide=False, dither_every=0,
+                        autofocus_every=0, meridian_flip=False, targets=[
+                            Target(name="Darks", calibration=True, center=False,
+                                   autofocus_first=False, ra_hours=0.0, dec_deg=0.0,
+                                   steps=[ExposureStep(filter="", exposure_s=0.02,
+                                                       frame_type="Dark", count=2)])])
+    engine.start(plan)
+    assert await wait_for(lambda: engine.state.get("state") in ("complete", "error"),
+                          timeout=30)
+    assert seen.count("frame") >= 2, (
+        f"each calibration frame must pass the weather gate, saw {seen}")
