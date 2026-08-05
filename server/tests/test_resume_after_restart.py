@@ -133,13 +133,30 @@ def fp(tmp_path, monkeypatch):
     return _fp
 
 
+def _record_then_restart(fp, position: int = 9935) -> None:
+    """What the rig recorded BEFORE the cut, and then the cut.
+
+    The restart is load-bearing in every ladder test below. A number THIS
+    process recorded is this boot's own reading of the device, so comparing the
+    device against it says 'nothing changed' whatever happened while the power
+    was off; only a record that predates the process is evidence."""
+    fp.record(focuser_position=position, filter_slot=0, ra_hours=1.0,
+              dec_deg=2.0, parked=False, tracking=True)
+    fp.reset_for_tests()
+
+
 def test_focus_is_untrusted_when_the_focuser_forgot_its_position(fp):
     """The EAF forgets its position on power loss, so a focuser reporting a
     different number than we last recorded is reporting a DEFAULT, not a
     measurement. That mismatch IS the power-loss tell -- and it catches a yanked
-    USB hub too, which no OS shutdown event would."""
+    USB hub too, which no OS shutdown event would.
+
+    The restart in the middle is not decoration: what a process recorded itself
+    is not evidence about a cut, so the record has to come from BEFORE this
+    process started."""
     fp.record(focuser_position=9935, filter_slot=7, ra_hours=1.0,
               dec_deg=2.0, parked=True, tracking=False)
+    fp.reset_for_tests()                    # the restart; the file survives it
     assert fp.verdict(focuser_position=9935).focus_trusted is True
     assert fp.verdict(focuser_position=0).focus_trusted is False
 
@@ -158,18 +175,42 @@ def test_an_unreadable_fingerprint_trusts_nothing(fp, tmp_path):
 
 def test_writes_are_coalesced(fp, monkeypatch):
     """The status poll runs several times a second for a value that rarely
-    changes; without coalescing this rewrites the file continuously."""
+    changes; without coalescing this rewrites the file continuously. Asserted
+    against the FILE, which is the thing being spared."""
     now = [1000.0]
     monkeypatch.setattr(fp, "_now", lambda: now[0])
     fp.record(focuser_position=1, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
               parked=True, tracking=False)
     fp.record(focuser_position=2, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
               parked=True, tracking=False)
-    assert fp.verdict(focuser_position=1).focus_trusted is True   # 2nd coalesced
+    assert fp.read_json_or(fp._path(), None)["focuser_position"] == 1  # coalesced
     now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
     fp.record(focuser_position=2, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
               parked=True, tracking=False)
-    assert fp.verdict(focuser_position=2).focus_trusted is True
+    assert fp.read_json_or(fp._path(), None)["focuser_position"] == 2
+
+
+def test_coalescing_does_not_hide_a_drop(fp, monkeypatch):
+    """The WRITE is coalesced; the watching is not.
+
+    A focuser that vanished and came back inside one 10 s window would look
+    continuous to anything sampling at the write interval, and its post-reset
+    default would be adopted as the remembered number — the module would then
+    vouch for the exact event it exists to catch."""
+    now = [1000.0]
+    monkeypatch.setattr(fp, "_now", lambda: now[0])
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    fp.reset_for_tests()
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    now[0] += 3.0                            # inside the window: never written
+    fp.record(focuser_position=None, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=0, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
+              parked=True, tracking=False)
+    assert fp.verdict(focuser_position=0).focus_trusted is False
 
 
 def test_recording_never_raises(fp, monkeypatch):
@@ -179,6 +220,129 @@ def test_recording_never_raises(fp, monkeypatch):
     monkeypatch.setattr(fp, "write_json_atomic", _boom)
     fp.record(focuser_position=1, filter_slot=0, ra_hours=0.0, dec_deg=0.0,
               parked=True, tracking=False)   # must not raise
+
+
+async def test_the_boot_poll_does_not_destroy_the_power_cut_record(fp):
+    """THE RECORD MUST OUTLIVE THE BOOT IT EXISTS TO DESCRIBE.
+
+    The status poll runs every ~2 s and records the focuser's live position, so
+    within seconds of connect the file holds the POST-restart reading. A reader
+    consulting the file then is comparing this boot against itself: it answers
+    'trusted' after a cut that moved nothing AND after one that moved
+    everything. The comparison basis has to predate the boot, which is the same
+    read-before-write shape zwo_usb._check_position_reference uses.
+
+    Driven through the REAL recorder (hub.poll_status), not a stub, because the
+    whole defect lives in WHEN that caller runs relative to the reader."""
+    import astrodeck.hub as hubmod
+    before_the_cut = 9935
+    fp.record(focuser_position=before_the_cut, filter_slot=0, ra_hours=1.0,
+              dec_deg=2.0, parked=False, tracking=True)
+    fp.reset_for_tests()          # the cut: the file survives, the process does not
+    h = hubmod.Hub()
+    await h.connect_sim()
+    try:
+        out = await h.poll_status()
+    finally:
+        await h.disconnect_all()
+    live = (out.get("focuser") or {}).get("position")
+    assert live is not None and live != before_the_cut, (
+        "the rig came back reading the pre-cut number, so this test proves "
+        "nothing — pick a different pre-cut position")
+    assert fp.verdict(focuser_position=live).focus_trusted is False, (
+        "the boot's own poll overwrote the evidence it was meant to be "
+        "compared against")
+    assert fp.verdict(focuser_position=before_the_cut).focus_trusted is True, (
+        "the pre-cut number must still be the basis — a blanket 'untrusted' "
+        "would pass the assertion above while remembering nothing")
+    raw = fp.read_json_or(fp._path(), None)
+    assert raw["focuser_position"] == live, (
+        "the file still records what the device reports; only the COMPARISON "
+        "basis is frozen at boot")
+
+
+def test_a_disconnected_focuser_does_not_blank_the_remembered_number(
+        fp, monkeypatch):
+    """A USB drop at 3am must not erase the only evidence of where the focuser
+    was. Writing the None straight through would leave the next boot with
+    nothing to compare against — the power cut would become undetectable
+    because of an unrelated cable."""
+    now = [1000.0]
+    monkeypatch.setattr(fp, "_now", lambda: now[0])
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=None, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    raw = fp.read_json_or(fp._path(), None)
+    assert raw["focuser_position"] == 9935
+
+
+def test_a_focuser_that_drops_and_comes_back_changed_is_untrusted(
+        fp, monkeypatch):
+    """The in-process half of the same event, which the header promises: a
+    browned-out powered hub resets the EAF while the PC stays up. Moves we
+    WATCHED are legitimate — the focuser was never out of sight — but the first
+    reading after it disappears has to match what it held or it is a default,
+    not a measurement."""
+    now = [1000.0]
+    monkeypatch.setattr(fp, "_now", lambda: now[0])
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    fp.reset_for_tests()                    # boot with 9935 already on disk
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    assert fp.verdict(focuser_position=9935).focus_trusted is True
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=10500, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)  # autofocus, watched the whole way
+    assert fp.verdict(focuser_position=10500).focus_trusted is True
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=None, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)  # the hub browns out
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=0, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)  # back, and it forgot
+    assert fp.verdict(focuser_position=0).focus_trusted is False
+    assert fp.verdict(focuser_position=10500).focus_trusted is True, (
+        "the carried number must survive the drop, not be replaced by the "
+        "device's post-reset default")
+
+
+def test_reset_for_tests_drops_the_boot_snapshot(fp):
+    """Asserted rather than assumed: a boot snapshot that leaked into the next
+    test in the worker would read as trust that test never established, and it
+    would only show up as an order-dependent flake in the full suite."""
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    fp.reset_for_tests()
+    assert fp._boot is None and fp._boot_loaded is False
+    assert fp._boot_path is None
+    assert fp._known is None and fp._last_pos is None
+    assert fp._confirmed is False
+
+
+def test_the_snapshot_does_not_follow_the_state_dir(fp, tmp_path, monkeypatch):
+    """A snapshot describes ONE state directory. Left keyed to nothing, the
+    first test in a worker would freeze a reference every later test inherited
+    — the same shared-state flake _path() was uncached to kill, and it would
+    show up only in the full suite."""
+    now = [1000.0]
+    monkeypatch.setattr(fp, "_now", lambda: now[0])
+    _record_then_restart(fp)
+    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
+              parked=False, tracking=True)
+    assert fp.verdict(focuser_position=9935).focus_trusted is True
+    # A different state dir, as the next test in the same worker would have.
+    monkeypatch.setattr(fp, "_PATH", tmp_path / "elsewhere.json")
+    assert fp.verdict(focuser_position=9935).focus_trusted is False, (
+        "a directory with no record trusts nothing, whatever this process "
+        "happens to remember about a different one")
+    now[0] += fp.FINGERPRINT_WRITE_INTERVAL_S + 1
+    fp.record(focuser_position=1234, filter_slot=0, ra_hours=1.0,
+              dec_deg=2.0, parked=False, tracking=True)
+    assert fp.read_json_or(fp._path(), None)["focuser_position"] == 1234
+    assert fp._boot is None, "the new directory had no record to inherit"
 
 
 async def test_poll_status_records_the_fingerprint(fp, monkeypatch):
@@ -303,8 +467,7 @@ async def test_the_blind_solve_runs_even_when_nothing_changed(fp):
     while the mount was off. A later optimisation that skips verification
     'because the fingerprint matched' would silently reintroduce exactly that
     hazard -- so the PERFECTLY MATCHING fingerprint is the case asserted here."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     hub = _RecHub(focuser=_RecFoc(9935))
     arm = _arm(hub)
     assert await arm._recover(_light_session()) is None
@@ -314,8 +477,7 @@ async def test_the_blind_solve_runs_even_when_nothing_changed(fp):
 async def test_a_failed_solve_refuses_to_move(fp):
     """Too few stars under cloud. The alternative to refusing is slewing an OTA
     whose true position is unknown, toward a pier."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     hub = _RecHub(solve_raises=RuntimeError("Not enough stars"),
                   focuser=_RecFoc(9935))
     arm = _arm(hub)
@@ -336,8 +498,7 @@ async def test_untrusted_focus_runs_autofocus_and_never_restores_a_number(
     on any host without the Rust wheel, which is every CI runner in the `server`
     job.
     """
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     foc = _RecFoc(0)                       # forgot its position
     hub = _RecHub(focuser=foc)
     arm = _arm(hub)
@@ -353,11 +514,38 @@ async def _noop():
     return None
 
 
+async def test_autofocus_is_not_repeated_on_every_retry(fp, monkeypatch):
+    """The ladder autofocuses, then the solve fails under cloud and the tick
+    refuses. Ten minutes later it ticks again — and the focuser has now been
+    MEASURED, so autofocus must not run a second time.
+
+    Nothing inside the fingerprint can re-establish trust once a gap has opened,
+    which is correct (a number the device reports after a power cut is a
+    default, not a measurement). An autofocus IS the measurement, so the ladder
+    says so. Without that, every retry spends minutes of mount time and focuser
+    travel re-solving a problem it already solved, under exactly the conditions
+    that caused the retry."""
+    _record_then_restart(fp)
+    foc = _RecFoc(0)                       # forgot its position across the cut
+    hub = _RecHub(solve_raises=RuntimeError("Not enough stars"), focuser=foc)
+    arm = _arm(hub)
+    monkeypatch.setattr(arm, "_can_autofocus", lambda: True)
+    ran = []
+    arm._autofocus = lambda: (ran.append(1), None)[1] or _noop()
+
+    first = await arm._recover(_light_session())
+    assert first is not None and "solve" in first.lower()
+    assert ran == [1], "the first tick must measure the focus it cannot trust"
+
+    second = await arm._recover(_light_session())
+    assert second is not None and "solve" in second.lower()
+    assert ran == [1], "the focuser was measured on the first tick — not again"
+
+
 async def test_trusted_focus_skips_autofocus(fp):
     """A clean reboot preserved focus exactly; forcing an autofocus would spend
     ten minutes of dark sky fixing a problem that did not happen."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     hub = _RecHub(focuser=_RecFoc(9935))
     arm = _arm(hub)
     ran = []
@@ -368,8 +556,7 @@ async def test_trusted_focus_skips_autofocus(fp):
 
 async def test_a_calibration_only_session_never_centers(fp):
     """Darks never slew. The solve still runs and is harmless."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=True, tracking=False)
+    _record_then_restart(fp)
     s = _mk("dormant", auto_resume=True)
     s.plan.targets[0].calibration = True
     hub = _RecHub(focuser=_RecFoc(9935))
@@ -382,8 +569,7 @@ async def test_a_refusal_leaves_the_session_dormant_and_armed(fp, bus_lines, mon
     """Fail safe: the next tick must retry, so the arming has to survive and the
     session must NOT be handed to the engine."""
     import astrodeck.sequence.resume_arm as ra
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     s = _mk("dormant", auto_resume=True)
     hub = _RecHub(solve_raises=RuntimeError("Not enough stars"),
                   focuser=_RecFoc(9935))
@@ -427,8 +613,7 @@ async def test_a_half_finished_boot_is_not_a_refusal(fp, bus_lines, monkeypatch)
 
 async def test_ready_devices_proceed_to_the_ladder(fp, monkeypatch):
     """The readiness gate must not become a permanent block."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     _mk("dormant", auto_resume=True)
 
     class _Dev:
@@ -448,8 +633,7 @@ async def test_the_recovery_solve_keeps_the_mount_hint(fp):
     search tractable. Dropping it was tried that night and regressed: a true
     all-sky search failed outright on a sparse field that solved instantly once
     bounded. Generous bounds beat none."""
-    fp.record(focuser_position=9935, filter_slot=0, ra_hours=1.0, dec_deg=2.0,
-              parked=False, tracking=True)
+    _record_then_restart(fp)
     hub = _RecHub(focuser=_RecFoc(9935))
     arm = _arm(hub)
     await arm._recover(_light_session())
