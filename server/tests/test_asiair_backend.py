@@ -8,7 +8,8 @@ What they DO pin is everything that is ours to get right regardless of the box:
   * the single-lock discipline (no two coroutines inside the transport at once);
   * busy/contention behaviour (a stated-reason refusal; abort paths never gated);
   * settle/read-back honesty (no success return on an unverified write, no
-    "slew complete" for a mount that never stopped);
+    "slew complete" for a mount that never stopped -- or never started, and no
+    "moved" for a focuser that never left where it was);
   * degradation with libasi absent (backend simply not offered).
 
 What they CANNOT pin is the ASIAIR's own wire behaviour. The fake answers the
@@ -89,6 +90,10 @@ class FakeAsiair:
         self.port_write_honoured = True
         self.focus_states: list[str] = []
         self.focus_position = 18500
+        #: Scripted read-back, one entry per ``focuser.info`` poll. Empty means
+        #: the drawtube lands the instant ``move_to`` is called; a script is how
+        #: a test spells a motor that ramps, jams, or never engages at all.
+        self.focus_positions: list[int] = []
         self.controls_written: dict[str, int] = {}
         self.wired()
 
@@ -187,6 +192,8 @@ class FakeAsiair:
                 fake._rec("focuser.info")
                 state = (fake.focus_states.pop(0) if fake.focus_states
                          else "idle")
+                if fake.focus_positions:
+                    fake.focus_position = fake.focus_positions.pop(0)
                 return SimpleNamespace(position=fake.focus_position,
                                        temperature=18.2, max_step=60000,
                                        model="EAF-0-0", firmware="3.3.8",
@@ -194,7 +201,8 @@ class FakeAsiair:
 
             def move_to(self, pos):
                 fake._rec("focuser.move_to", pos)
-                fake.focus_position = pos
+                if not fake.focus_positions:
+                    fake.focus_position = pos      # no script: lands instantly
 
             def stop(self):
                 fake._rec("focuser.stop")
@@ -592,6 +600,7 @@ async def test_slew_waits_for_the_mount_to_actually_stop(fake, monkeypatch):
         seen["n"] += 1
         if seen["n"] >= 4:                      # box reports motion for a while
             fake.raw["move_status"] = "none"
+            fake.raw["RA"], fake.raw["Dec"] = 6.0, 32.0     # arrived
         else:
             fake.raw["RA"] = 5.9 + 0.1 * seen["n"]
         return base_info()
@@ -600,6 +609,60 @@ async def test_slew_waits_for_the_mount_to_actually_stop(fake, monkeypatch):
     await tel.slew(6.0, 32.0)
     assert "mount.scope_goto" in fake.labels
     assert seen["n"] >= 5, "returned before two consecutive stopped samples"
+    await session.close()
+
+
+async def test_a_mount_that_never_left_the_origin_is_not_reported_as_settled(
+        fake, monkeypatch):
+    """The defect this closes: a stationary mount is stopped from the first
+    poll, so "stopped twice running" was satisfied before the motors ever
+    engaged and a slew that never happened returned SUCCESS. Settled now means
+    settled AT THE TARGET, so a mount still sitting on the origin keeps polling
+    until the honest timeout."""
+    monkeypatch.setattr(ab, "POLL_S", 0.001)
+    monkeypatch.setattr(ab, "SLEW_TIMEOUT_S", 0.05)
+
+    def never_starts():
+        raw = dict(fake.raw)
+        raw["move_status"] = "none"      # the box insists the mount is stopped
+        return SimpleNamespace(raw=raw)  # ...at RA 5.9 / Dec 32.5, forever
+
+    monkeypatch.setattr(fake.mount, "info", never_starts)
+    session = await _open()
+    tel = await session.get_device("telescope", _conn())
+    with pytest.raises(DeviceError) as ei:
+        await tel.slew(12.0, -20.0)
+    msg = str(ei.value)
+    assert "did not settle" in msg
+    # Both numbers, so the message explains itself: where it is AND where it
+    # was asked to go.
+    assert "5.9" in msg and "32.5" in msg and "12.0" in msg and "-20.0" in msg
+    assert "mount.stop" in fake.labels
+    await session.close()
+
+
+async def test_a_missing_move_status_needs_more_evidence_not_less(
+        fake, monkeypatch):
+    """A field that is not there is not a measurement. On firmware that omits
+    ``move_status`` the wait has ONE signal (position stability), so it must
+    demand a longer stable run rather than counting the absent field as a
+    stopped sample."""
+    monkeypatch.setattr(ab, "POLL_S", 0.001)
+    session = await _open()
+    tel = await session.get_device("telescope", _conn())
+    polls = []
+
+    def no_status():
+        raw = dict(fake.raw)
+        raw.pop("move_status", None)             # older firmware: field absent
+        raw["RA"], raw["Dec"] = 5.9, 32.5        # already parked on the target
+        polls.append(1)
+        return SimpleNamespace(raw=raw)
+
+    monkeypatch.setattr(fake.mount, "info", no_status)
+    await tel.slew(5.9, 32.5)
+    assert len(polls) >= ab.STOPPED_SAMPLES_NO_STATUS > ab.STOPPED_SAMPLES, (
+        f"settled on {len(polls)} samples with no move_status to corroborate")
     await session.close()
 
 
@@ -652,6 +715,15 @@ def test_unknown_move_status_reads_as_moving_not_settled():
     assert ab._is_moving({"move_status": "slewing"}) is True
     assert ab._is_moving({"move_status": "whatever-firmware-says"}) is True
     assert ab._is_moving({"move_status": "none", "is_parking": True}) is True
+
+
+def test_an_absent_move_status_reads_as_unknown_not_as_stopped():
+    """Tri-state. ``raw.get("move_status", "none")`` used to manufacture a
+    stopped reading out of a field the box never sent."""
+    assert ab._is_moving({}) is None
+    assert ab._is_moving({"RA": 5.9, "Dec": 32.5}) is None
+    # is_parking is its own signal and still wins when the field is missing.
+    assert ab._is_moving({"is_parking": True}) is True
 
 
 async def test_park_waits_for_parked_and_times_out_honestly(fake, monkeypatch):
@@ -745,14 +817,55 @@ async def test_focuser_reads_limits_from_the_box(fake):
     await session.close()
 
 
-async def test_focuser_move_waits_for_two_idle_samples(fake, monkeypatch):
+async def test_focuser_move_returns_only_once_the_position_arrives(
+        fake, monkeypatch):
+    """ARRIVAL, not absence-of-motion. The drawtube ramps and the box reports
+    "idle" for a poll in the middle of it; neither may end the wait early —
+    only reaching the commanded step does."""
     monkeypatch.setattr(ab, "POLL_S", 0.001)
-    fake.focus_states = ["moving", "moving", "idle", "moving", "idle", "idle"]
     session = await _open()
     foc = await session.get_device("focuser", _conn())
+    # Scripted after connect, so the entries below are exactly the move's own
+    # polls: one read for the start position, then the ramp.
+    fake.focus_states = ["moving", "idle", "idle", "moving", "moving", "idle"]
+    fake.focus_positions = [18500, 18600, 18700, 18800, 18900, 19000]
     await foc.move_to(19000)
     assert fake.focus_position == 19000
-    assert fake.focus_states == [], "returned before the motor truly settled"
+    assert fake.focus_positions == [], "returned before the drawtube arrived"
+    await session.close()
+
+
+async def test_focuser_move_that_never_happens_fails_instead_of_succeeding(
+        fake, monkeypatch):
+    """The 2026-07-31 defect, in this backend: the EAF refuses the move (a
+    mechanical stop, a jam), the box reports idle, and the old loop returned
+    SUCCESS on the second idle poll without ever comparing position to target.
+    A move that did not move must never look like a move that did."""
+    monkeypatch.setattr(ab, "POLL_S", 0.001)
+    session = await _open()
+    foc = await session.get_device("focuser", _conn())
+    fake.focus_states = ["idle"] * 50
+    fake.focus_positions = [18500] * 50          # drawtube does not budge
+    with pytest.raises(DeviceError) as ei:
+        await foc.move_to(22000)
+    msg = str(ei.value)
+    assert "did not happen" in msg
+    assert "22000" in msg and "18500" in msg, msg   # asked for, and reached
+    assert "focuser.stop" in fake.labels            # halted on the way out
+    await session.close()
+
+
+async def test_focuser_move_tolerates_an_off_by_one_read_back(fake, monkeypatch):
+    """The EAF is an exact-step device, so the tolerance guards an SDK/firmware
+    read-back off-by-one — not a real slop budget. Same 2 steps zwo_usb.py and
+    ui/src/lib/focusMove.ts use."""
+    monkeypatch.setattr(ab, "POLL_S", 0.001)
+    assert ab.ARRIVAL_TOLERANCE_STEPS == 2
+    session = await _open()
+    foc = await session.get_device("focuser", _conn())
+    fake.focus_states = ["idle"] * 50
+    fake.focus_positions = [18999] * 50          # one step short, forever
+    await foc.move_to(19000)
     await session.close()
 
 
@@ -770,12 +883,17 @@ async def test_focuser_move_out_of_range_refuses_before_touching_the_box(fake):
 async def test_focuser_move_timeout_halts(fake, monkeypatch):
     monkeypatch.setattr(ab, "POLL_S", 0.001)
     monkeypatch.setattr(ab, "FOCUS_MOVE_TIMEOUT_S", 0.02)
-    fake.focus_states = ["moving"] * 10_000
     session = await _open()
     foc = await session.get_device("focuser", _conn())
+    fake.focus_states = ["moving"] * 10_000
+    # Crawling, and still short of 19000 when the clock runs out — the idle
+    # branch must not fire, so this is the timeout path proper.
+    fake.focus_positions = [18500 + i for i in range(10_000)]
     with pytest.raises(DeviceError) as ei:
         await foc.move_to(19000)
-    assert "did not settle" in str(ei.value)
+    msg = str(ei.value)
+    assert "did not settle" in msg
+    assert "stopped at" in msg and "started from 18500" in msg, msg
     assert "focuser.stop" in fake.labels
     await session.close()
 
