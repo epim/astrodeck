@@ -330,7 +330,13 @@ class ResumeArm:
             # ``cfg`` is passed explicitly: with no run in flight the engine's
             # own config snapshot is None, and the gate would no-op in silence.
             try:
-                await self.engine.check_slew_limits(tgt, cfg=cfg)
+                # ``plan`` as well as ``cfg``: the pier-collision branch reads
+                # plan.meridian_flip, and in this fresh post-reboot process the
+                # engine's own plan is still None — so without it the pier half
+                # of the gate was inert while the altitude half ran. Same object
+                # engine.start receives below, so both gates read one setting.
+                await self.engine.check_slew_limits(tgt, cfg=cfg,
+                                                    plan=session.plan)
             except Exception as e:  # noqa: BLE001 — SafetyAbort or a bad target
                 return f"re-centering after restart refused: {e}"
             try:
