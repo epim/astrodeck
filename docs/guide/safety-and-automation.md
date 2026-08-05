@@ -47,6 +47,15 @@ Safety behaviour is configured through named **presets** (server config;
 | **remote** | abort, park, warm | 2 readings | no | none |
 | **custom** | your own numeric values | — | — | — |
 
+`preset` is a **derived label**, not a separate switch: the server checks the
+underlying numeric fields (`on_unsafe`, `unsafe_consecutive`, `resume_when_safe`,
+`resume_safe_consecutive`, `max_pause_min`, and — for **remote** —
+`close_dome_on_unsafe`) on every read against the table above, and reports
+whichever preset's values they match exactly, or **custom** if they match none.
+Hand-editing any of those fields (the Advanced fields on the same panel) always
+leaves an honest label behind — there is no way to save "backyard" numerics
+under a "remote" label, or vice versa.
+
 Other safety knobs (defaults):
 
 - **enabled** — safety monitoring on/off (default on).

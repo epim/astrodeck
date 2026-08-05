@@ -25,11 +25,23 @@ import { accessPhrase, useCan } from "../../lib/caps";
 import { Panel, Field, Toggle } from "../ui";
 import { Icon } from "../icons";
 
-/** The preset table, mirroring server `config.SAFETY_PRESETS`. Picking one fills
- *  the advanced fields below; touching any of them afterwards flips the preset to
- *  "custom", because a preset label that no longer describes the values is worse
- *  than no label. Kept in the UI because the server stores `preset` but never
- *  applies it — the values themselves are the truth either way. */
+/** The preset table, mirroring server `config.SAFETY_PRESETS` (astrodeck/config.py).
+ *  Picking one fills the advanced fields below; touching any of them afterwards
+ *  flips the preset to "custom" locally, matching what the server will now
+ *  compute for itself.
+ *
+ *  As of 2026-08-04 the server is the source of truth for what `preset` MEANS:
+ *  `SafetyConfig._derive_preset_label` re-derives the label from the numeric
+ *  fields on every read, forcing it to "custom" whenever they match no entry
+ *  here. It never goes the other direction (it does not apply a preset's
+ *  numerics for you), so this client-side copy is still needed to fill the
+ *  advanced fields when a preset is picked — but it can no longer make the
+ *  label LIE, only go briefly stale: if this table ever drifts from the
+ *  server's, the symptom is visible and self-correcting (Save, then the badge
+ *  reads "Custom" instead of the preset you picked) rather than a silent wrong
+ *  value. There is no endpoint that serves SAFETY_PRESETS today, so keeping
+ *  these two tables byte-identical by hand is still on us — check
+ *  astrodeck/config.py's SAFETY_PRESETS dict when editing either one. */
 const PRESETS: Record<string, Partial<SafetyConfig>> = {
   backyard: {
     on_unsafe: "pause",
