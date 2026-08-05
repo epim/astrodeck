@@ -1998,7 +1998,7 @@ class SequenceEngine:
         unguarded."""
         return await self._read_safety()
 
-    async def check_slew_limits(self, target: Target, *, cfg=None,
+    async def check_slew_limits(self, target: Target, *, cfg=None, plan=None,
                                 projected: bool = True) -> None:
         """Raise ``SafetyAbort`` if slewing to ``target`` breaks the altitude
         floor, horizon, no-go wedges, pier limits or the zenith keep-out.
@@ -2006,12 +2006,19 @@ class SequenceEngine:
         The public seam over :meth:`_enforce_mount_floor`, which reads the run's
         config snapshot. Pass ``cfg`` when there is no run yet (recovery after a
         restart) so the gate uses live configuration instead of ``None`` — which
-        is a silent no-op."""
+        is a silent no-op.
+
+        PASS ``plan`` FOR THE SAME REASON, and it is not optional in practice
+        for a no-run caller: the pier-collision branch reads
+        ``plan.meridian_flip``, so with ``self.plan`` still None in a fresh
+        post-reboot process the pier half of this gate silently did nothing
+        while the altitude half ran — a partial guard that looks like a whole
+        one. ResumeArm has the plan in hand and passes it."""
         await self._enforce_mount_floor(projected=projected, target=target,
-                                        cfg=cfg)
+                                        cfg=cfg, plan=plan)
 
     async def _enforce_mount_floor(self, *, projected: bool, target: Target,
-                                   cfg=None) -> None:
+                                   cfg=None, plan=None) -> None:
         """Mount-altitude floor + pier guard before a slew (§1.9-A/E).
 
         Evaluates the slew DESTINATION (``target.ra_hours``/``dec_deg``) → alt/az
@@ -2026,9 +2033,10 @@ class SequenceEngine:
         (mount currently high) AND abort the whole night when the mount was parked
         horizon-pointing (alt ~0). Guarding the destination fixes both.
 
-        ``cfg`` overrides the run's config snapshot for callers that gate a slew
-        with no run in flight (see :meth:`check_slew_limits`)."""
+        ``cfg`` and ``plan`` override the run's snapshots for callers that gate
+        a slew with no run in flight (see :meth:`check_slew_limits`)."""
         cfg = cfg if cfg is not None else self._cfg
+        plan = plan if plan is not None else self.plan
         if cfg is None:
             return
         floor_base = float(cfg.safety.min_alt_deg or 0.0)
@@ -2056,7 +2064,12 @@ class SequenceEngine:
                 cur = PierSide.UNKNOWN
             if (side in (PierSide.EAST, PierSide.WEST)
                     and cur in (PierSide.EAST, PierSide.WEST)
-                    and side != cur and self.plan and not self.plan.meridian_flip):
+                    # `plan is not None`, NOT truthiness: a plan object that
+                    # happens to be falsy would silently disarm this guard the
+                    # same way `self.plan` being None already did on the
+                    # post-restart recovery path.
+                    and side != cur
+                    and plan is not None and not plan.meridian_flip):
                 # a pier-side change with flips disabled is a collision risk.
                 raise SafetyAbort(
                     f"slew to {target.name} would require a pier flip but meridian "

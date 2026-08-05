@@ -839,24 +839,36 @@ async def test_park_stops_tracking_before_commanding_it(fixed_env):
 # still reported parked. Home is exactly the button you press then, and it was
 # the one call that would do nothing.
 
-async def test_home_commands_the_mount_even_when_it_reports_parked(fixed_env):
+async def test_home_unparks_BEFORE_commanding_home(fixed_env):
+    """A PARKED AM5 REFUSES :hP#.
+
+    Captured wire truth, not inference — docs/hardware/zwo-am5-lx200-protocol.md
+    records the whole motion class (``:hP#`` included) answering ``e14#`` while
+    parked, and ``:Spu#`` clearing all of it. Because ``:hP#`` is
+    fire-and-forget there is no ack to notice the refusal by, so commanding home
+    on a parked mount looks exactly like success. The first fix for the
+    already-parked case did precisely that."""
     fl = FakeLink(_connect_script())                # Gps -> "2" (parked)
     tel = am5.ZwoAm5Telescope(fl)
     await tel.connect()
     fl.sent.clear()
     fl.script["Spu"] = "1"
-    # tracking is off (a parked mount), and it stays parked until :hP# lands.
     fl.script["GAT"] = "0"
-    fl.script["Gps"] = lambda cmd: "2"
+    # Parked until :Spu#; unparked after it; parked again once :hP# lands —
+    # which is the mount's own completion signal. :hP# would be REFUSED before
+    # the unpark, which is the whole reason for the ordering.
+    fl.script["Gps"] = lambda cmd: (
+        "2" if ("hP" in fl.sent or "Spu" not in fl.sent) else "0")
 
     await tel.find_home()
 
     assert "hP" in fl.sent, (
         "Home must command the mount even when it already reports parked — "
         f"a no-brake mount can be parked and 50 degrees from home. Sent: {fl.sent}")
-    assert "Spu" in fl.sent, "Home must leave the mount usable, not parked"
-    assert fl.sent.index("hP") < fl.sent.index("Spu"), (
-        f"Home must go home BEFORE unparking, got {fl.sent}")
+    assert fl.sent.index("Spu") < fl.sent.index("hP"), (
+        f"the unpark must clear the e14 refusal BEFORE :hP#, got {fl.sent}")
+    assert fl.sent.count("Spu") >= 2, (
+        f"and Home must still leave the mount usable afterwards, got {fl.sent}")
 
 
 async def test_park_stays_idempotent(fixed_env):

@@ -347,9 +347,20 @@ class ZwoAm5Telescope(Telescope):
         error, and this docstring claiming otherwise. On a harmonic drive with
         no brake that is the exact case that matters: after a power cut the
         tube was found 50° out while the mount still reported parked, and Home
-        is the button you reach for then."""
+        is the button you reach for then.
+
+        UNPARK FIRST, and this is the whole reason the order is three steps.
+        A PARKED AM5 REFUSES ``:hP#``. That is captured wire truth for this
+        mount, not an inference — docs/hardware/zwo-am5-lx200-protocol.md
+        records the entire motion class, ``:hP#`` included, answering ``e14#``
+        while parked, and unparking with the ZWO-specific ``:Spu#`` clearing
+        every one of them. So commanding home on a parked mount without
+        unparking sends a command the mount throws away, and because ``:hP#``
+        is fire-and-forget there is no ack to notice it by. The first version
+        of this fix did exactly that and reported success."""
+        await self.unpark()        # a parked mount refuses :hP# outright
         await self._park_now()     # never skipped — "parked" is not "at home"
-        await self.unpark()
+        await self.unpark()        # and leave it usable, not parked
 
     async def park(self) -> None:
         # Idempotent, mirroring unpark: re-parking a parked mount would cost a
@@ -386,53 +397,27 @@ class ZwoAm5Telescope(Telescope):
             # attempt — refusing to try would be worse than trying and timing
             # out, and this path is the last thing protecting the optics.
             pass
-        # WAS IT ALREADY REPORTING PARKED when we commanded this? Then the
-        # parked flag cannot be the completion signal — it is already set, and
-        # returning on it would let ``find_home``'s unpark land while the mount
-        # is still swinging home, cancelling the move it just asked for.
+        # COMPLETION SIGNAL: the parked flag, which is the hardware-verified
+        # one (:Gps# flips to '2' ~1s after :hP#). It is trustworthy at every
+        # call site because no call site reaches here with the mount already
+        # parked: ``park`` short-circuits on that, and ``find_home`` unparks
+        # first because a parked AM5 refuses :hP# outright.
         #
-        # Fall back to the evidence this driver already trusts to mean "the
-        # mount stopped": its reported position no longer changing, at the same
-        # SETTLE_DEG criterion the goto settle poll uses. No new constant and no
-        # new claim about the hardware — and NOT the :GU# status word, whose
-        # slewing/parked bits are explicitly unverified against live states
-        # (docs/hardware/zwo-am5-lx200-protocol.md).
-        was_parked = await self.is_parked()
+        # An earlier version tried to handle a call with the mount already
+        # parked by watching for the position to stop changing instead. That
+        # was solving a problem the wrong ordering had created, and it could
+        # not work: a mount that never moved reports a perfectly stable
+        # position, so a refused :hP# read as a completed home.
         await self._link.request("hP", reply="none")
         deadline = asyncio.get_running_loop().time() + 60.0
-        prev: tuple[float, float] | None = None
-        # Built outside the f-string: a conditional expression spanning lines
-        # inside one is PEP 701 syntax (3.12+), and this package supports 3.11.
-        stalled = ("mount never came to rest" if was_parked
-                   else "mount still reports unparked")
         while True:
             if asyncio.get_running_loop().time() > deadline:
                 raise DeviceError(
-                    f"{self.name}: park did not complete within 60s ({stalled})")
+                    f"{self.name}: park did not complete within 60s "
+                    "(mount still reports unparked)")
             await asyncio.sleep(PARK_POLL_S)
-            if not was_parked:
-                if await self.is_parked():
-                    return
-                continue
-            try:
-                pos = await self.get_position()
-            except Exception as e:  # noqa: BLE001
-                # NO POSITION MEANS NO EVIDENCE, and waiting out the full 60s
-                # for evidence that is never coming would turn Home into a
-                # minute-long failure on a mount that simply cannot report.
-                # The :hP# went out — which is strictly more than the old code
-                # did — so return, and SAY that completion is unverified rather
-                # than implying it was confirmed.
-                bus.log("warning",
-                        f"{self.name}: homing was commanded but the mount would "
-                        f"not report its position ({e}), so there is no "
-                        f"confirmation it finished — check where it is pointing "
-                        f"before the next slew", "mount")
+            if await self.is_parked():
                 return
-            if prev is not None and max(abs(pos[0] - prev[0]) * 15.0,
-                                        abs(pos[1] - prev[1])) < SETTLE_DEG:
-                return
-            prev = pos
 
     async def get_tracking(self) -> bool:
         return (await self._get("GAT")).startswith("1")

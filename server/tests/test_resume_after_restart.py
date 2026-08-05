@@ -283,8 +283,11 @@ class _StubEngine:
         from astrodeck.devices.base import SafetyReading
         return SafetyReading(is_safe=True, source="stub")
 
-    async def check_slew_limits(self, target, *, cfg=None, projected=True):
-        self.limit_checks.append(target)
+    async def check_slew_limits(self, target, *, cfg=None, plan=None,
+                                projected=True):
+        # ``plan`` is part of the surface because the pier-collision branch
+        # reads plan.meridian_flip and this process has no run in flight.
+        self.limit_checks.append((target, plan))
 
 
 def _light_session() -> Session:
