@@ -5014,7 +5014,6 @@ def create_app() -> FastAPI:
 
         Blank secrets in the body mean "unchanged" (the UI only ever sees the
         redacted block), so a method/TTL toggle never wipes a stored credential."""
-        auth = _preserve_auth_secrets(auth)
         try:
             cfg = await asyncio.to_thread(config_store.set_auth, auth)
         except ValueError as e:
@@ -5033,7 +5032,17 @@ def create_app() -> FastAPI:
         """W3 relay-config seam (admin.users-gated). The relay/remote knobs live on
         the same ``AuthConfig`` (relay_pubkey / viewer_link_pubkey); this dedicated
         admin route exists now so the relay lane never has to touch ``app.py``.
-        Today it persists AuthConfig exactly like ``/api/auth/config``."""
+        Today it persists AuthConfig exactly like ``/api/auth/config``.
+
+        AND THAT INCLUDES THE SECRET-PRESERVING STEP, which it was missing. The
+        two routes take the same whole ``AuthConfig``, and the block the UI
+        holds has every secret scrubbed to "" — so saving the relay panel wrote
+        those blanks straight over the stored values, silently wiping the Google
+        client secret and the session signing key. Wiping the signing key
+        invalidates every live session, which is a strange thing to have happen
+        because you pressed Save on a relay setting. "Exactly like
+        /api/auth/config" was true of the sentence and not of the code."""
+        auth = _preserve_auth_secrets(auth)
         try:
             cfg = await asyncio.to_thread(config_store.set_auth, auth)
         except ValueError as e:

@@ -1321,3 +1321,33 @@ def test_preflight_is_closed_to_a_viewer(tmp_path, monkeypatch):
     with TestClient(app) as c:
         assert c.get("/api/sequence/preflight?ra_hours=5&dec_deg=10"
                      ).status_code == 403
+
+
+def test_saving_relay_settings_does_not_wipe_the_auth_secrets(tmp_path,
+                                                              monkeypatch):
+    """POST /api/remote/config takes the whole AuthConfig, and the block the UI
+    holds has every secret scrubbed to "". Without the preserve step its sibling
+    twenty lines above already used, pressing Save on a relay setting wrote those
+    blanks over the stored values — wiping the Google client secret and the
+    session signing key, which invalidates every live session. Its docstring said
+    it persists AuthConfig "exactly like /api/auth/config"; that was true of the
+    sentence and not of the code."""
+    from astrodeck.config import AuthConfig
+    store, app = _make_client(tmp_path, monkeypatch)
+    store.set_auth(AuthConfig(provider="google", google_client_id="cid",
+                              google_client_secret="SECRET-KEEP-ME",
+                              session_private_key="SIGNING-KEY-KEEP-ME"))
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        # the redacted shape the panel echoes back: secrets blanked
+        r = c.post("/api/remote/config", json={
+            "provider": "google", "google_client_id": "cid",
+            "google_client_secret": "", "session_private_key": "",
+            "relay_pubkey": "new-relay-key"})
+        assert r.status_code == 200, r.text
+    after = store.cfg().auth
+    assert after.google_client_secret == "SECRET-KEEP-ME", "Google sign-in wiped"
+    assert after.session_private_key == "SIGNING-KEY-KEEP-ME", (
+        "the session signing key was rotated by a relay-settings save — every "
+        "signed-in user is now logged out")
+    assert after.relay_pubkey == "new-relay-key", "the actual edit must land"
