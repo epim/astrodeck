@@ -373,3 +373,35 @@ async def test_no_autofocus_provider_warns_and_resumes_anyway(sim_hub, monkeypat
     assert "check focus" in warned[0]
     assert await wait_for(lambda: engine.state.get("state") == "complete")
     assert session_store.load(sid).status == "complete"
+
+
+async def test_the_recenter_gate_gets_the_plan_not_just_the_config(sim_hub,
+                                                                   monkeypatch):
+    """The pier-collision branch reads ``plan.meridian_flip``.
+
+    In a fresh post-reboot process the engine's own ``plan`` is still None — no
+    run has started — so passing only ``cfg`` left the pier half of the gate
+    inert while the altitude half ran. A partial guard that looks like a whole
+    one is worse than an absent one, because the log says the limits were
+    checked. The ladder passes the armed session's plan, which is the same
+    object engine.start receives, so both gates read one setting."""
+    engine = SequenceEngine(sim_hub)
+    await _dormant_armed(sim_hub, engine)
+    _record_motion(sim_hub, monkeypatch)
+
+    seen: list = []
+
+    async def spy(target, *, cfg=None, plan=None, projected=True):
+        seen.append({"cfg": cfg, "plan": plan})
+    monkeypatch.setattr(engine, "check_slew_limits", spy)
+
+    now = {"t": 1_700_000_000.0}
+    arm = ResumeArm(engine, sim_hub, clock=lambda: now["t"])
+    monkeypatch.setattr(ResumeArm, "_window_open", lambda self, s, t: True)
+    await arm.tick()
+
+    assert seen, "the re-centering slew was not gated at all"
+    assert seen[0]["cfg"] is not None, "cfg must be passed — engine._cfg is None here"
+    assert seen[0]["plan"] is not None, (
+        "plan must be passed, or the pier-collision branch is silently inert")
+    assert engine.plan is None or seen[0]["plan"] is not None
