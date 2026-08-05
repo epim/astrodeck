@@ -149,6 +149,73 @@ async def test_refocus_on_temp_delta(sim_hub):
     assert await engine._refocus_due()
 
 
+async def test_refocus_baseline_seeds_itself_without_an_autofocus(sim_hub, monkeypatch):
+    """The drift baseline used to be writable ONLY by a completed autofocus, so a
+    plan with `autofocus_every = 0` and every target `autofocus_first = False`
+    never got one — and "refocus when the focuser drifts 1°C" never fired all
+    night. First use arms it from the temperature we are focused at right now."""
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(refocus_on_temp_delta_c=1.0, autofocus_every=0)
+    temp = {"c": 10.0}
+
+    async def read_temp():
+        return temp["c"]
+    monkeypatch.setattr(sim_hub.devices["focuser"], "get_temperature", read_temp)
+
+    engine._last_focus_temp = None                # the user focused by hand
+    assert not await engine._refocus_due()        # nothing to compare against yet
+    assert engine._last_focus_temp == 10.0        # ...but now there is
+
+    temp["c"] = 16.0                              # the night cools 6°C
+    assert await engine._refocus_due()
+
+
+async def test_focuser_without_a_temperature_probe_never_refocuses(sim_hub, monkeypatch):
+    """A focuser with no probe must stay a silent no-op: no crash, and no refocus
+    on every single frame from a baseline that can never be read."""
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(refocus_on_temp_delta_c=1.0, autofocus_every=0)
+    foc = sim_hub.devices["focuser"]
+
+    async def no_probe():
+        raise RuntimeError("focuser reports no temperature")
+    monkeypatch.setattr(foc, "get_temperature", no_probe)
+    engine._last_focus_temp = None
+    for _ in range(3):
+        assert not await engine._refocus_due()
+    assert engine._last_focus_temp is None
+
+    async def none_probe():
+        return None
+    monkeypatch.setattr(foc, "get_temperature", none_probe)
+    for _ in range(3):
+        assert not await engine._refocus_due()
+
+
+async def test_failed_autofocus_still_records_the_temperature(sim_hub, monkeypatch):
+    """An autofocus that RAISES left the baseline where it was, so the same drift
+    kept re-triggering the same failing autofocus between every frame. The
+    baseline records where the temperature IS, not where focus last succeeded."""
+    import astrodeck.sequence.engine as engine_mod
+
+    engine = SequenceEngine(sim_hub)
+    engine.plan = SequencePlan(refocus_on_temp_delta_c=1.0)
+    engine._cfg = None                            # af_failure_action = "warn"
+    engine._last_focus_temp = 5.0                 # armed 7°C ago
+
+    async def read_temp():
+        return 12.0
+    monkeypatch.setattr(sim_hub.devices["focuser"], "get_temperature", read_temp)
+
+    async def blow_up(*a, **kw):
+        raise RuntimeError("star detection failed")
+    monkeypatch.setattr(engine_mod, "run_autofocus", blow_up)
+
+    await engine._autofocus("autofocus")          # "warn" => swallowed, night continues
+    assert engine._last_focus_temp == 12.0
+    assert not await engine._refocus_due()        # and the loop does not re-arm
+
+
 async def test_guiding_recovery(sim_hub):
     g = sim_hub.guider
     await g.start_guiding()
