@@ -34,6 +34,7 @@ from typing import Any
 
 from ..devices.base import DeviceError
 from ..events import bus
+from .session import wait_if_paused
 
 # --- guarded native import -------------------------------------------------
 try:  # pragma: no cover - trivially guarded; exercised both ways in tests
@@ -79,6 +80,15 @@ MIN_POLE_DISTANCE_DEG = 20.0
 _DONE_THRESHOLD_ARCMIN = 1.0
 _ADJUST_INTERVAL_S = 1.0
 _MAX_ADJUST_UPDATES = 240
+
+#: Log the measured position-angle spread once it exceeds this. The three frames
+#: are supposed to differ by a pure RA rotation; a spread this large means the
+#: camera/pier angle moved between them (a meridian flip, a rotator step), and
+#: the fit is then measuring that motion as well as the axis error. The engine
+#: raises ``position_angle_spread_large`` for it — a WARNING, never a refusal
+#: (docs/native-parity/algorithms/tppa-polar-alignment.md) — but a headless or
+#: REST operator never sees the flag, so name the number in the log too.
+_PA_SPREAD_WARN_DEG = 5.0
 
 
 async def run_native(session: Any, hub: Any) -> None:
@@ -155,7 +165,7 @@ async def _drive(session: Any, hub: Any) -> None:
     solves: list[dict] = []
     for i in range(3):
         _check_alive(hub, epoch)
-        await _wait_if_paused(session)
+        await wait_if_paused(session)
         frame, result, geom = await _capture_and_solve(hub, solver)
         if i == 0:
             # The authoritative check: where the sky says we are, not where the
@@ -171,6 +181,11 @@ async def _drive(session: Any, hub: Any) -> None:
                          progress=0.1 + 0.15 * (i + 1), point_index=i,
                          message=f"native TPPA: measured point {i + 1}/3")
         if i < 2:
+            # Pause BLOCKS the 12° slew. Committing one more rotation after the
+            # user hit Pause leaves the tube somewhere they did not put it and
+            # did not ask for — the one irreversible thing this loop does. The
+            # motion-epoch fence inside _rotate_in_ra still raises independently.
+            await wait_if_paused(session)
             await _rotate_in_ra(hub, tel, epoch, result)
 
     # ---- fit the axis + initial error -------------------------------------
@@ -183,12 +198,18 @@ async def _drive(session: Any, hub: Any) -> None:
     bus.log("info",
             f"native TPPA solved: total {err['total_arcmin']:.1f}' "
             f"(az {err['az_arcmin']:.1f}', alt {err['alt_arcmin']:.1f}')", "polar")
+    _log_pa_spread(err)
 
     # ---- PHASE adjusting: live re-scale while the user turns the knobs -----
     for _ in range(_MAX_ADJUST_UPDATES):
         _check_alive(hub, epoch)
-        await _wait_if_paused(session)
+        await wait_if_paused(session)
         await asyncio.sleep(_ADJUST_INTERVAL_S)
+        # Pause most often lands DURING the 1 s cadence sleep. Without this
+        # second check the flag is only read once per interval — one full extra
+        # exposure fires after the user hit Pause, and on a real rig that is a
+        # shutter they asked to stop.
+        await wait_if_paused(session)
         frame, result, _ = await _capture_and_solve(hub, solver)
         solve = {
             "ra_hours": result.ra_hours,
@@ -283,13 +304,6 @@ def _check_alive(hub: Any, epoch: int) -> None:
         raise DeviceError("polar alignment fenced by a motion abort")
 
 
-async def _wait_if_paused(session: Any) -> None:
-    """Block while the session is paused (the user hit Pause mid-run). ``stop()``
-    cancels this task, so a cancel still unwinds a paused session."""
-    while getattr(session, "_native_paused", False):
-        await asyncio.sleep(0.1)
-
-
 def _site_dict(hub: Any) -> dict:
     s = hub.site
     return {"latitude_deg": s["latitude"], "longitude_deg": s["longitude"],
@@ -309,10 +323,32 @@ def _options(hub: Any, geom: tuple) -> dict:
     return opts
 
 
+def _log_pa_spread(err: dict) -> None:
+    """Name the position-angle spread in the log when it is large enough to make
+    the fit untrustworthy. The UI renders the same caveat from ``flags`` +
+    ``position_angle_spread_deg``; this is the channel a headless/REST operator
+    has. Warning only — the run continues either way."""
+    spread = err.get("position_angle_spread_deg")
+    if spread is None or spread <= _PA_SPREAD_WARN_DEG:
+        return
+    bus.log("warning",
+            f"native TPPA: the camera/pier angle moved {spread:.1f}° across the "
+            "three measurement frames, so they were not a pure RA rotation and "
+            "this fit is not trustworthy — re-run without a meridian crossing "
+            "before turning a bolt", "polar")
+
+
 def _publish_error(session: Any, err: dict, *, phase: str, point_index: int,
                    progress: float, message: str, state: str = "running") -> None:
     """Publish a native TPPA error on the canonical ``polar`` schema (errors are
-    already arcminutes) plus the additive native fields the wizard consumes."""
+    already arcminutes) plus the additive native fields.
+
+    Not all of these reach the wizard: ``phase``, ``point_index`` and the two
+    ``*_direction`` hints drive it, while ``flags`` +
+    ``position_angle_spread_deg`` feed only the "this fit is not trustworthy"
+    caveat banner. The spread is shipped as the NUMBER as well as the boolean
+    flag, because "the geometry was off" is not actionable and "the angle moved
+    9.4°" is."""
     session._publish(
         state=state, source="native", phase=phase, point_index=point_index,
         progress=progress, message=message,
@@ -321,6 +357,7 @@ def _publish_error(session: Any, err: dict, *, phase: str, point_index: int,
         az_direction=err.get("az_direction"),
         alt_direction=err.get("alt_direction"),
         flags=err.get("flags", []),
+        position_angle_spread_deg=err.get("position_angle_spread_deg"),
     )
 
 
