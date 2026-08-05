@@ -40,6 +40,7 @@ from .capabilities import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
                            CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE,
                            CAP_CONTROL_MOUNT, CAP_CONTROL_POWER,
                            CAP_SYSTEM_UPDATE, CAP_VIEW_MEDIA, CAP_VIEW_PREVIEW,
+                           CAP_VIEW_SITE_DERIVED,
                            CAP_VIEW_SITE_PRECISE, CAP_VIEW_STATUS,
                            CAP_VIEW_WEATHER,
                            DESTRUCTIVE_CAPS, RETIRED_CAPS, ROLES, ROLES_CAP,
@@ -63,7 +64,7 @@ from .users import User, UserStore, user_store
 __all__ = [
     # capabilities
     "CAP_VIEW_STATUS", "CAP_VIEW_PREVIEW", "CAP_VIEW_MEDIA",
-    "CAP_VIEW_SITE_PRECISE", "CAP_VIEW_WEATHER",
+    "CAP_VIEW_SITE_DERIVED", "CAP_VIEW_SITE_PRECISE", "CAP_VIEW_WEATHER",
     "CAP_CONTROL_CAPTURE", "CAP_CONTROL_MOUNT",
     "CAP_CONTROL_GUIDE", "CAP_CONTROL_POWER", "CAP_CONFIG_SAFETY",
     "CAP_CONFIG_SOLAR_OVERRIDE", "CAP_CONFIG_BACKEND", "CAP_CONFIG_SITE_OPTICS",

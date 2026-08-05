@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..alerting import AlertDispatcher
 from ..auth import (ALL_CAPS, CAP_ADMIN_USERS, CAP_CONFIG_ALERTS,
+                    CAP_VIEW_SITE_DERIVED,
                     CAP_CONFIG_BACKEND, CAP_CONFIG_SAFETY, CAP_CONFIG_SITE_OPTICS,
                     CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONTROL_CAPTURE,
                     CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
@@ -2334,15 +2335,29 @@ def create_app() -> FastAPI:
                        principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         from ..catalog import coords
         s = config_store.cfg().site
+        # THE lat/lon QUERY OVERRIDES ARE A HOLDER-ONLY FEATURE. A route that
+        # answers "what is the sun's altitude at the coordinates I name" is a
+        # geolocation oracle no matter how carefully its DEFAULT path is
+        # redacted: a caller sweeps candidate coordinates and keeps whichever
+        # reproduces the readings it already has. They exist for the site picker,
+        # which is admin-only anyway.
+        if (lat is not None or lon is not None) \
+                and not principal.has(CAP_VIEW_SITE_PRECISE):
+            raise HTTPException(403, "naming coordinates requires view.site_precise")
         latitude = s.latitude if lat is None else lat
         longitude = s.longitude if lon is None else lon
-        sun = coords.sun_altaz(latitude, longitude)
-        sun_alt = sun[0] if isinstance(sun, (tuple, list)) else float(sun)
-        window = coords.dark_window(latitude, longitude)
-        out = {
-            "sun_alt_deg": round(sun_alt, 1),
-            "dark_window": window,
-        }
+        out: dict = {}
+        # sun_alt_deg and dark_window are the SAME INFORMATION as the place_hint
+        # and lst_str withheld below, arrived at by arithmetic: solar altitude
+        # over a night gives latitude, and the dark-window boundaries give
+        # longitude to within minutes. Withholding the two obvious geolocators
+        # while serving the two computed ones was the shape of this whole class
+        # of leak. Holders of view.site_derived (operator, admin) get them.
+        if principal.has(CAP_VIEW_SITE_DERIVED):
+            sun = coords.sun_altaz(latitude, longitude)
+            sun_alt = sun[0] if isinstance(sun, (tuple, list)) else float(sun)
+            out["sun_alt_deg"] = round(sun_alt, 1)
+            out["dark_window"] = coords.dark_window(latitude, longitude)
         # place_hint (names the region) and lst_str (LST == longitude) are direct
         # geolocators; a non-holder keeps the ephemeris (sun alt + dark window)
         # but not these two (spec §2). Holder gets everything.
@@ -4292,11 +4307,20 @@ def create_app() -> FastAPI:
         snap["polar"] = hub.polar.state | {"running": hub.polar.running}
         return snap
 
-    @app.get("/api/sequence/preflight", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    @app.get("/api/sequence/preflight",
+             dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
     async def sequence_preflight(ra_hours: float, dec_deg: float):
         """Live single-target altitude verdict from the current site. Returns
-        ``unknown`` while the site is still the default (no trustworthy answer)."""
+        ``unknown`` while the site is still the default (no trustworthy answer).
+
+        GATED, NOT REDACTED. Everything this route returns is a function of the
+        site: strip the altitude and the azimuth and the remaining ``verdict``
+        is still a three-level channel a caller can binary-search on dec until
+        it has the observer's latitude. There is nothing left of the route once
+        the site-derived part is removed, so the honest move is to require the
+        capability rather than serve a hollowed-out answer. Operators hold it —
+        they plan sequences here."""
         return _preflight_alt(ra_hours, dec_deg)
 
     @app.post("/api/sequence/preflight", dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
@@ -4496,9 +4520,10 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------- catalog
 
-    @app.get("/api/catalog", dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @app.get("/api/catalog")
     @declare(CAP_VIEW_STATUS)
-    async def catalog(q: str = "", explain: bool = False):
+    async def catalog(q: str = "", explain: bool = False,
+                      principal: Principal = Depends(require(CAP_VIEW_STATUS))):
         """Target search. Returns a bare LIST of rows, as it always has.
 
         `explain=1` returns {"results": [...], "notes": [...]} instead. The
@@ -4519,18 +4544,25 @@ def create_app() -> FastAPI:
         # second of frozen telemetry for one keystroke. Same offload the hub
         # already uses for detect_stars and measure_blob.
         found = await asyncio.to_thread(search, q)
-        for r in found.rows:
-            alt, az = altaz(r["ra_hours"], r["dec_deg"],
-                            hub.site["latitude"], hub.site["longitude"])
-            r["alt"] = round(alt, 1)
-            r["az"] = round(az, 1)
+        # alt/az ONLY for a holder of view.site_derived. Each row is
+        # f(site, target), and the caller chooses the target — so a search box
+        # is a coordinate oracle with as many samples as the caller cares to
+        # type. The rows themselves (name, type, magnitude, RA/Dec) are catalog
+        # facts and stay: a viewer can still see what is in the sky, just not
+        # where the sky is being observed from.
+        if principal.has(CAP_VIEW_SITE_DERIVED):
+            for r in found.rows:
+                alt, az = altaz(r["ra_hours"], r["dec_deg"],
+                                hub.site["latitude"], hub.site["longitude"])
+                r["alt"] = round(alt, 1)
+                r["az"] = round(az, 1)
         if explain:
             return {"results": found.rows, "notes": found.notes}
         return found.rows
 
     @app.get("/api/catalog/tonight",
-             dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+             dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+    @declare(CAP_VIEW_SITE_DERIVED)
     async def catalog_tonight(date: str | None = None, alt_limit: float = 30.0):
         """Rank the whole catalog by tonight's best-window visibility and tag each
         object with a beginner difficulty rating (NOV-3). Mirrors post_order's

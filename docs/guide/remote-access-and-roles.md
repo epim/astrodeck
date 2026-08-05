@@ -78,6 +78,21 @@ What the individual capabilities gate:
   longitude, elevation. **Admin only.** Stripped (made absent, not blanked)
   from every status/summary/config payload and the WS hello/status frames for
   everyone else.
+- **`view.site_derived`** — values *computed from* the site rather than
+  containing it: the mount's altitude/azimuth, a target's altitude verdict,
+  the sun's altitude, tonight's dark window, and the visibility and framing
+  routes. **Operator and admin.** Split off `view.site_precise` on 2026-08-04
+  for the same reason `view.weather` was, and found the same way — by
+  measuring what the capability actually withheld. `view.site_precise` was a
+  filter on four *key names*, and a key-name filter cannot withhold
+  `f(latitude, longitude)`: given the telescope's RA/Dec, an altitude puts the
+  observer on a circle around the Earth and a second sample collapses it to a
+  point. An audit recovered the site to 2.9 km from three requests a plain
+  viewer may make. Rounding is not a defence — averaging coarse samples
+  recovers the value. Routes that exist *only* to answer a site-relative
+  question (`/api/visibility`, `/api/framing/mosaic`, `/api/catalog/tonight`,
+  `GET /api/sequence/preflight`) are gated on this capability rather than
+  redacted, because nothing useful survives removing the answer.
 - **`view.weather`** — the whole forecast / Sky Conditions / radar surface
   (2026-07-17 decisions wave I2). **Operator and admin** — split off
   `view.site_precise` so operators get full weather, radar map included, on
@@ -294,6 +309,12 @@ Because remote viewers are often on a limited role, the location rules matter:
   latitude, longitude, or elevation** on status, summary, or config payloads,
   or the WS hello/status frames. The coordinates are **removed** (made
   absent, not blanked) at a single server seam.
+- A principal **without `view.site_derived`** (every viewer) additionally never
+  sees any value *computed from* the coordinates — `mount.alt`/`mount.az` are
+  stripped from status and from the WS push, and the visibility, framing,
+  tonight and single-target-preflight routes refuse them outright. This closes
+  the gap the key-name stripping above left open: those numbers localize the
+  rig to a couple of kilometres without ever naming a latitude.
 - **Weather events are dropped entirely** for a principal lacking
   `view.weather` over the WebSocket — not just stripped. Viewers never
   receive them; operators and admins do (2026-07-17 decisions wave I2).

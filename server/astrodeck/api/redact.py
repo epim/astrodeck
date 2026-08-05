@@ -28,8 +28,8 @@ BOTH the on-LAN /ws handler (``api.app``) AND the relay-tunneled /ws handler
 """
 from __future__ import annotations
 
-from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_PRECISE,
-                                 CAP_VIEW_WEATHER)
+from ..auth.capabilities import (CAP_CONFIG_BACKEND, CAP_VIEW_SITE_DERIVED,
+                                 CAP_VIEW_SITE_PRECISE, CAP_VIEW_WEATHER)
 from ..auth.principal import Principal
 
 # How often the long-lived /ws socket RE-authenticates its principal (seconds).
@@ -47,6 +47,40 @@ WS_AUTH_RECHECK_S = 60.0
 # they are retained (default-site nudge + alt-limit display; neither is a
 # geolocator).
 _SITE_STRIP_KEYS = ("name", "latitude", "longitude", "elevation_m")
+
+# ---------------------------------------------- values DERIVED from the site
+# Stripping the four keys above is necessary and NOT sufficient, and that was
+# the hole: this seam was a key-name filter while a dozen surfaces returned
+# f(latitude, longitude). Given the mount's RA/Dec — which a viewer holds, it is
+# not site data — an ALTITUDE pins the observer to a circle on the Earth, and a
+# second sample hours later, or an azimuth alongside it, collapses that circle
+# to a point. Recovered to 2.9 km from three authorized requests in the audit.
+#
+# Quantizing is not an available answer: averaging many coarse samples recovers
+# the underlying value, which is exactly how that 2.9 km figure was obtained.
+# So the derived values are ABSENT for a non-holder, the same as the raw ones.
+_MOUNT_DERIVED_KEYS = ("alt", "az")
+
+
+def _strip_mount_derived(mount: dict) -> None:
+    """Remove the site-derived pointing values from a mount block IN PLACE.
+
+    RA/Dec stay: they say where the telescope looks, not where it stands.
+    Alt/az are the same fact expressed in the OBSERVER's frame, which is the
+    part that localizes them."""
+    for k in _MOUNT_DERIVED_KEYS:
+        mount.pop(k, None)
+
+
+def _scrub_derived_node(container: dict) -> None:
+    """Make ``container['mount']`` safe for a non-holder IN PLACE, fail-CLOSED
+    on an unexpected shape — same rule as :func:`_scrub_site_node`."""
+    if "mount" not in container:
+        return
+    if isinstance(container.get("mount"), dict):
+        _strip_mount_derived(container["mount"])
+    else:
+        container.pop("mount", None)
 
 
 def _strip_site(site: dict) -> None:
@@ -89,20 +123,32 @@ def _redact_site_for(payload: dict, principal: Principal | None) -> dict:
     whole routine is wrapped so redaction can NEVER raise out and 500 a surface
     -- on any unforeseen error it removes the site node(s) and returns a safe
     (coordinate-free) payload rather than propagate."""
-    if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
-        return payload  # holder: full precision, untouched
+    # TWO CAPS, EVALUATED INDEPENDENTLY. An operator holds site_derived and NOT
+    # site_precise, so a single early return on either one would be wrong in a
+    # different direction for each role: keyed on precise it strips an
+    # operator's alt/az, keyed on derived it hands a viewer the coordinates.
+    has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
+    has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
+    if has_precise and has_derived:
+        return payload  # holder of both: untouched
     if not isinstance(payload, dict):
         return payload
     try:
-        _scrub_site_node(payload)
-        cfg = payload.get("config")
-        if isinstance(cfg, dict):
-            _scrub_site_node(cfg)
+        if not has_precise:
+            _scrub_site_node(payload)
+            cfg = payload.get("config")
+            if isinstance(cfg, dict):
+                _scrub_site_node(cfg)
+        if not has_derived:
+            _scrub_derived_node(payload)
     except Exception:  # noqa: BLE001 - never 500 a surface: fail CLOSED
-        payload.pop("site", None)
-        cfg = payload.get("config")
-        if isinstance(cfg, dict):
-            cfg.pop("site", None)
+        if not has_precise:
+            payload.pop("site", None)
+            cfg = payload.get("config")
+            if isinstance(cfg, dict):
+                cfg.pop("site", None)
+        if not has_derived:
+            payload.pop("mount", None)
     return payload
 
 
@@ -127,22 +173,41 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
     view.site_precise, unchanged). A viewer holds neither cap, so weather
     stays dropped for it.
 
-    CONTRACT (spec §8): any FUTURE event or payload that embeds site
-    coordinates MUST place them at ``data.site`` or ``data.config.site`` so this
-    seam catches them. Site data reachable by no other path is the invariant
-    that makes this the single enforcement point; do NOT add a second lane."""
+    CONTRACT (spec §8), RESTATED — the original wording is what let this leak.
+    It said site COORDINATES must live at ``data.site`` / ``data.config.site``,
+    and every author obeyed it. But the rule that has to hold is stronger:
+
+        NO VALUE COMPUTED FROM THE SITE MAY REACH A NON-HOLDER.
+
+    A key-name filter cannot enforce that, because ``f(latitude, longitude)``
+    carries the coordinate without carrying the key. Alt/az, airmass, an
+    hour-angle, a sun altitude, a dark-window boundary, a rise/set time, a
+    horizon verdict — each of these is the site, re-encoded. The audit recovered
+    the observatory to 2.9 km from three requests a plain viewer is entitled to
+    make, none of which contained the word "latitude".
+
+    So: coordinates go at ``data.site``/``data.config.site``, DERIVED values are
+    stripped here too (``mount.alt``/``az``), and a surface that exists to answer
+    a site-relative question — visibility, framing, the sky panel — is gated on
+    ``view.site_precise`` rather than redacted, because there is nothing left of
+    it once the answer is removed. Adding a derived value to a viewer-visible
+    payload is a capability decision, not a formatting one."""
     if ev_json.get("type") == "weather":
         if principal is not None and principal.has(CAP_VIEW_WEATHER):
             return ev_json  # holder (operator or admin): verbatim, unstripped
         return None          # non-holder (viewer): dropped entirely
-    if principal is not None and principal.has(CAP_VIEW_SITE_PRECISE):
+    # Two caps, independent — see _redact_site_for. An operator holds derived
+    # and not precise, so neither one alone decides this event.
+    has_precise = principal is not None and principal.has(CAP_VIEW_SITE_PRECISE)
+    has_derived = principal is not None and principal.has(CAP_VIEW_SITE_DERIVED)
+    if has_precise and has_derived:
         return ev_json
     data = ev_json.get("data")
     if not isinstance(data, dict):
         return ev_json
     try:
         new_data: dict | None = None
-        if "site" in data:
+        if not has_precise and "site" in data:
             site = data.get("site")
             if isinstance(site, dict):
                 if any(k in site for k in _SITE_STRIP_KEYS):
@@ -155,8 +220,23 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
                 # (a coordinate we cannot key-strip must never leak).
                 new_data = dict(data)
                 new_data.pop("site", None)
+        # Site-DERIVED pointing (mount.alt/az). Copied before popping for the
+        # same reason the site node is: Event.data is shared across every
+        # subscriber, so mutating it in place would strip the values from the
+        # holder's copy too.
+        if not has_derived and "mount" in data:
+            mount = data.get("mount")
+            if isinstance(mount, dict):
+                if any(k in mount for k in _MOUNT_DERIVED_KEYS):
+                    new_data = new_data if new_data is not None else dict(data)
+                    new_mount = dict(mount)
+                    _strip_mount_derived(new_mount)
+                    new_data["mount"] = new_mount
+            else:
+                new_data = new_data if new_data is not None else dict(data)
+                new_data.pop("mount", None)   # unexpected shape -> fail CLOSED
         cfg = data.get("config")
-        if isinstance(cfg, dict) and "site" in cfg:
+        if not has_precise and isinstance(cfg, dict) and "site" in cfg:
             base = new_data if new_data is not None else dict(data)
             new_cfg = dict(cfg)
             cfg_site = cfg.get("site")
@@ -177,7 +257,10 @@ def _redact_ws_event(ev_json: dict, principal: Principal | None) -> dict | None:
         # coordinate-free event rather than propagating an exception that would
         # tear down the whole /ws telemetry stream.
         safe = dict(data)
-        safe.pop("site", None)
+        if not has_precise:
+            safe.pop("site", None)
+        if not has_derived:
+            safe.pop("mount", None)
         cfg = safe.get("config")
         if isinstance(cfg, dict):
             cfg = dict(cfg)

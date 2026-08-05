@@ -27,7 +27,7 @@ import math
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ..auth import CAP_VIEW_STATUS, require
+from ..auth import CAP_VIEW_SITE_DERIVED, require
 from ..auth.rbac import declare
 from ..config import ARCSEC_PER_RAD
 
@@ -265,8 +265,8 @@ async def _stamp_transit_alt(panels: list[dict], date: str | None) -> None:
 # ----------------------------------------------------------------- route
 
 @router.post("/api/framing/mosaic",
-             dependencies=[Depends(require(CAP_VIEW_STATUS))])
-@declare(CAP_VIEW_STATUS)
+             dependencies=[Depends(require(CAP_VIEW_SITE_DERIVED))])
+@declare(CAP_VIEW_SITE_DERIVED)
 async def post_mosaic(spec: MosaicSpecIn) -> dict:
     """Canonical mosaic for ``MosaicSpecIn`` -> ``MosaicResult``.
 

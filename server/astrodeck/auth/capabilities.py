@@ -20,6 +20,23 @@ CAP_VIEW_STATUS = "view.status"            # read-only status + WS subscribe
 CAP_VIEW_PREVIEW = "view.preview"          # downsized preview frames (NOT raw FITS)
 CAP_VIEW_MEDIA = "view.media"              # raw FITS / full-res science (bulk)
 CAP_VIEW_SITE_PRECISE = "view.site_precise"  # precise lat/lon in hello/config frames
+#: Values COMPUTED from the site: mount alt/az, a target's altitude verdict,
+#: sun altitude, dark-window boundaries, visibility and framing answers.
+#:
+#: Split off ``view.site_precise`` for the same reason ``view.weather`` was
+#: (2026-07-17 wave I2), and discovered the same way — by measuring what the
+#: cap actually withheld. ``view.site_precise`` was implemented as a filter on
+#: four KEY NAMES, which cannot withhold ``f(latitude, longitude)``: given the
+#: mount's RA/Dec, an altitude pins the observer to a circle on the Earth and a
+#: second sample collapses it to a point. The audit recovered the observatory to
+#: 2.9 km from three requests a plain VIEWER is entitled to make.
+#:
+#: Operators hold this and viewers do not, which is the same line the owner
+#: already drew for the radar map: an operator may learn the site REGION (they
+#: plan and run sequences here, and cannot do either blind), while the precise
+#: fix stays behind ``view.site_precise``. A viewer link — the thing you hand to
+#: someone untrusted — discloses neither.
+CAP_VIEW_SITE_DERIVED = "view.site_derived"
 CAP_VIEW_WEATHER = "view.weather"          # forecast/Sky Conditions/radar (2026-07-17
                                             # decisions wave I2: split off view.site_precise
                                             # so operators get weather without precise site)
@@ -39,7 +56,7 @@ CAP_SYSTEM_UPDATE = "system.update"            # DESTRUCTIVE: download + restart
 
 ALL_CAPS = frozenset({
     CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_MEDIA, CAP_VIEW_SITE_PRECISE,
-    CAP_VIEW_WEATHER,
+    CAP_VIEW_SITE_DERIVED, CAP_VIEW_WEATHER,
     CAP_CONTROL_CAPTURE, CAP_CONTROL_MOUNT, CAP_CONTROL_GUIDE, CAP_CONTROL_POWER,
     CAP_CONFIG_SAFETY, CAP_CONFIG_SOLAR_OVERRIDE, CAP_CONFIG_BACKEND,
     CAP_CONFIG_SITE_OPTICS, CAP_CONFIG_ALERTS, CAP_ADMIN_USERS, CAP_SYSTEM_UPDATE,
@@ -81,6 +98,7 @@ ROLES_CAP: dict[str, frozenset[str]] = {
     # view.site_precise (the exact GPS fix stays admin-only everywhere else).
     "operator": frozenset({
         CAP_VIEW_STATUS, CAP_VIEW_PREVIEW, CAP_VIEW_WEATHER,
+        CAP_VIEW_SITE_DERIVED,
         CAP_CONTROL_CAPTURE, CAP_CONTROL_GUIDE, CAP_CONTROL_MOUNT,
     }),
     # everything incl. view.media, view.site_precise.
