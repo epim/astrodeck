@@ -185,7 +185,7 @@ is authoritative for the real path.
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy** — real coords `[SITE-LAT]` / `[SITE-LON]` and label **"[SITE-LABEL]"**
+- **Privacy** — real coords `<REDACTED-LAT>` / `<REDACTED-LON>` and label **"<REDACTED-SITE-LABEL>"**
   NEVER appear in code/tests/docs. Site default is **"My Observatory"** / `0.0`.
 - **Never** `git add -A` — stage explicit paths only.
 - **UI gate** — `cd ui && npx tsc -b` must pass.

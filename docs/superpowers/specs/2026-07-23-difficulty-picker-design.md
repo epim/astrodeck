@@ -207,8 +207,8 @@ active are noted in Open Decisions.)
 
 ## 2. GLOBAL CONSTRAINTS (verbatim)
 
-- **Privacy.** The real coordinates `[SITE-LAT]` / `[SITE-LON]` and the label
-  "[SITE-LABEL]" must **NEVER** appear in code, tests, or docs. The site default is
+- **Privacy.** The real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  "<REDACTED-SITE-LABEL>" must **NEVER** appear in code, tests, or docs. The site default is
   "My Observatory" / `0.0`. All tests use synthetic non-default sites (e.g.
   `40.0 / -74.0`), matching `test_visibility.py`.
 - **Never `git add -A`.** Stage files explicitly by path.

@@ -224,8 +224,8 @@ the two strings. The typechecker (`npx tsc -b`) verifies the binding.
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy** — the real coordinates `[SITE-LAT]` / `[SITE-LON]` and the label
-  `"[SITE-LABEL]"` must NEVER appear in code, tests, or docs. Site default is
+- **Privacy** — the real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must NEVER appear in code, tests, or docs. Site default is
   `"My Observatory"` / `0.0`. (This feature touches none of these; keep it that
   way — no coordinates, no site strings in any narration copy or test.)
 - **Never `git add -A`.** Stage named paths only.

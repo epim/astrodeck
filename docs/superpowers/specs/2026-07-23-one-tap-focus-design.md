@@ -184,8 +184,8 @@ capability explanation first (a viewer always sees the honest read-only reason):
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy.** The real coordinates **[SITE-LAT] / [SITE-LON]** and the label
-  **"[SITE-LABEL]"** must **NEVER** appear in code, tests, or docs. Site default is
+- **Privacy.** The real coordinates **<REDACTED-LAT> / <REDACTED-LON>** and the label
+  **"<REDACTED-SITE-LABEL>"** must **NEVER** appear in code, tests, or docs. Site default is
   **"My Observatory"** / **0.0**. (This feature touches no site/coords data; keep it
   that way — no fixtures with real coords.)
 - **Never `git add -A`.** Stage explicit paths only.

@@ -12,7 +12,7 @@
 
 _(Verbatim from spec §4 — binding on every task. Each task's requirements implicitly include this section.)_
 
-- **Privacy:** real observing-site coordinates **[SITE-LAT] N / [SITE-LON] W** and the label **"[SITE-LABEL]"** must NEVER appear in code, tests, docs, or fixtures. Site default stays **"My Observatory"**, coords `0.0`. SITELAT/SITELONG tests MUST use invented coords (e.g. `40.0 / -105.0`), never the developer's real site.
+- **Privacy:** real observing-site coordinates **<REDACTED-LAT> N / <REDACTED-LON> W** and the label **"<REDACTED-SITE-LABEL>"** must NEVER appear in code, tests, docs, or fixtures. Site default stays **"My Observatory"**, coords `0.0`. SITELAT/SITELONG tests MUST use invented coords (e.g. `40.0 / -105.0`), never the developer's real site.
 - **Secrets:** admin tokens and the Ed25519 signing seed are never committed literally.
 - **Git:** never `git add -A` — stage explicit paths only. Push to origin only when the user asks.
 - **Backend tests:** `server/.venv/Scripts/pytest.exe`. Do **not** run `vite build` concurrently with pytest.
@@ -21,7 +21,7 @@ _(Verbatim from spec §4 — binding on every task. Each task's requirements imp
 - **Honest-disabled UI (§11.8 idiom):** dim token + lock glyph + `aria-disabled` + `title` reason — never native `disabled`. *(No UI in this feature.)*
 - **Additive / back-compat:** all new cards are additive; no existing card renamed/removed. `meta=None` reproduces today's behavior. Do **NOT** edit `build/lib/astrodeck/**` (stale build copy); ship from `server/astrodeck/**` only.
 
-**Definition of done:** backend suite green · new logic covered by a test in the repo's idiom · spec-compliance + code-quality reviews passed · privacy scan clean (`[SITE-LAT]` / `[SITE-LON]` / `[SITE-LABEL]` absent from the diff) · tracker updated.
+**Definition of done:** backend suite green · new logic covered by a test in the repo's idiom · spec-compliance + code-quality reviews passed · privacy scan clean (`<REDACTED-LAT>` / `<REDACTED-LON>` / `<REDACTED-SITE-LABEL>` absent from the diff) · tracker updated.
 
 **Test command convention:** all pytest commands below run **from the repo root** `C:\Users\bear\astro` and use the required interpreter `server/.venv/Scripts/pytest.exe`. pytest auto-discovers `server/pyproject.toml` (rootdir=`server`, `testpaths=["tests"]`, `asyncio_mode="auto"`). `-n0` disables xdist for a fast single-test run.
 
@@ -1347,7 +1347,7 @@ Expected: all PASS.
 
 - [ ] **Step 8: Privacy scan the diff**
 
-Run: `git diff --staged --unified=0 | grep -nE "[SITE-LAT]|[SITE-LON]|[SITE-LABEL]" || echo CLEAN`
+Run: `git diff --staged --unified=0 | grep -nE "[SITE-LAT]|[SITE-LON]|<REDACTED-SITE-LABEL>" || echo CLEAN`
 Expected: `CLEAN`.
 
 - [ ] **Step 9: Commit**
@@ -1364,7 +1364,7 @@ git commit -m "feat(hub,config): opt-in solve_saved_lights stamps WCS on saved l
 ## Final verification (after Task 7)
 
 - [ ] **Full suite green.** Run the whole backend suite once: `server/.venv/Scripts/pytest.exe` (from repo root; uses the default `-n 12`). Expected: no new failures vs. baseline.
-- [ ] **Privacy scan the whole feature diff** (not just staged): `git diff main --unified=0 | grep -nE "[SITE-LAT]|[SITE-LON]|[SITE-LABEL]" || echo CLEAN` → `CLEAN`.
+- [ ] **Privacy scan the whole feature diff** (not just staged): `git diff main --unified=0 | grep -nE "[SITE-LAT]|[SITE-LON]|<REDACTED-SITE-LABEL>" || echo CLEAN` → `CLEAN`.
 - [ ] **No `build/lib` edits:** `git diff --name-only main | grep "build/lib" && echo "VIOLATION" || echo OK` → `OK`.
 - [ ] **Tracker updated** in the program brief (`docs/superpowers/specs/2026-07-22-pro-novice-feature-program.md`): mark PRO-2 / F-B implemented.
 

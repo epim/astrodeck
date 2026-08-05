@@ -88,8 +88,8 @@ Reviewers run at a tier scaled to the diff's risk, never below Sonnet.
 
 ### Global constraints (inherited by every feature spec — copy verbatim into each plan)
 
-- **Privacy:** real observing-site coordinates **[SITE-LAT] N / [SITE-LON] W** and the label
-  **"[SITE-LABEL]"** must NEVER appear in code, tests, docs, or fixtures. Site default stays
+- **Privacy:** real observing-site coordinates **<REDACTED-LAT> N / <REDACTED-LON> W** and the label
+  **"<REDACTED-SITE-LABEL>"** must NEVER appear in code, tests, docs, or fixtures. Site default stays
   **"My Observatory"**, coords `0.0`. (Both prior review privacy scans were clean — keep it that way.)
 - **Secrets:** admin tokens and the Ed25519 signing seed are never committed literally.
 - **Git:** never `git add -A` — stage explicit paths only. Push to origin only when the user asks.

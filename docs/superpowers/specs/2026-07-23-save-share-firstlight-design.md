@@ -184,8 +184,8 @@ render verified by `tsc -b`.
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy.** The real site coordinates **[SITE-LAT] / [SITE-LON]** and the label
-  **"[SITE-LABEL]"** must NEVER appear in code, tests, or docs. The site default is
+- **Privacy.** The real site coordinates **<REDACTED-LAT> / <REDACTED-LON>** and the label
+  **"<REDACTED-SITE-LABEL>"** must NEVER appear in code, tests, or docs. The site default is
   **"My Observatory"** / **0.0**. The share caption is strip-entirely: it contains
   target/exposure/count/gain/date ONLY — never coordinates or a site label.
 - **Never `git add -A`.** Stage only the files this plan names, explicitly.

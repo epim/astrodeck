@@ -244,8 +244,8 @@ camera brightens. Tested against this sim double (a fake-SDK-equivalent).
 
 ## 2. Global Constraints (verbatim)
 
-- **Privacy:** the real coordinates `[SITE-LAT]` / `[SITE-LON]` and the label
-  `"[SITE-LABEL]"` must NEVER appear in code, tests, or docs. Site default is
+- **Privacy:** the real coordinates `<REDACTED-LAT>` / `<REDACTED-LON>` and the label
+  `"<REDACTED-SITE-LABEL>"` must NEVER appear in code, tests, or docs. Site default is
   `"My Observatory"` / `0.0`.
 - Never `git add -A`.
 - **UI gate:** `cd ui && npx tsc -b`.

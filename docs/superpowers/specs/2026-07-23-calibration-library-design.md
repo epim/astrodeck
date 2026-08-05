@@ -185,8 +185,8 @@ Decision D3 records the trade-off.
 
 ## 2. Global Constraints (verbatim — apply to every task)
 
-- **Privacy.** The real observing coordinates **[SITE-LAT] / [SITE-LON]** and the
-  label **"[SITE-LABEL]"** must **NEVER** appear in code, tests, or docs. The site
+- **Privacy.** The real observing coordinates **<REDACTED-LAT> / <REDACTED-LON>** and the
+  label **"<REDACTED-SITE-LABEL>"** must **NEVER** appear in code, tests, or docs. The site
   default is **"My Observatory"** / **0.0**. (Calibration masters carry no RA/Dec
   by construction — darks/bias/flats have no pointing — so this feature adds no
   coordinate surface, but the rule stands for any fixture/sample.)
