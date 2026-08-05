@@ -799,3 +799,42 @@ OUT both coordinates and the label, 50 occurrences in tracked files. Redacted in
 the working tree, but **git history still carries them** -- decide whether that
 warrants a history rewrite. `ui/src/lib/__tests__/troubleshoot.test.ts` keeps
 the literals ON PURPOSE: it is the guard asserting they never reach an export.
+
+---
+
+# Found by CI after the sweep — FIXED
+
+CI's first run in a day (the last green predates every 2026-08-04 commit) caught
+two things no local run could. Recorded because the second one is the most
+valuable finding of the whole exercise.
+
+## I. [blocker, FIXED] A FastAPI upgrade silently emptied the RBAC boot assertion
+
+`assert_route_capabilities` iterated `app.routes` and graded every route.
+**FastAPI 0.141** changed `include_router` to append ONE lazy `_IncludedRouter`
+marker instead of copying the child's routes up. The walk then saw one opaque
+object where a dozen graded routes used to be, so `/auth/*`, `/api/visibility`,
+`/api/framing`, `/api/survey` and `/api/tiles` stopped being checked at all.
+
+Nothing raised. **The assertion still passed** -- which is what stops anyone
+looking. `pyproject` says `fastapi>=0.115` (unpinned), so this was live in every
+fresh environment: CI first, then the next deploy. The dev box and the rig are on
+0.136, which still flattens, which is why it looked fine locally.
+
+Fixed by `iter_app_routes` (rbac.py), which recurses through the marker's
+`original_router` and degrades to the flat list on older FastAPI. Verified on
+BOTH shapes -- 0.136 locally and 0.141 in a Linux container. Deliberately NOT
+pinned: the guard is a regression test that builds a two-line app, includes a
+router, and asserts the child route is visible, so the next shape change fails
+loudly instead of narrowing scope in silence.
+
+Note the newly-covered routers all PASS the invariants -- nothing was hiding
+behind the gap. The defect was the loss of coverage, not a bad route.
+
+## J. [FIXED] A test that silently required the Rust wheel
+
+`test_polar_alignment_takes_the_camera_before_it_rotates_the_mount` stopped its
+run by letting the REAL native fit reject three identical solves. CI's `server`
+job does not install that wheel, so `_native` was None and the run died on an
+AttributeError. Now stubs the fit alongside the already-stubbed rotation, so it
+grades the camera-yield ordering on any host.
