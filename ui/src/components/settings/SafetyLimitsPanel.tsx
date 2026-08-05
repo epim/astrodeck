@@ -56,6 +56,11 @@ const PRESETS: Record<string, Partial<SafetyConfig>> = {
     resume_when_safe: false,
     resume_safe_consecutive: 3,
     max_pause_min: 0,
+    // The server's "remote" has ALWAYS included this; this table did not, so
+    // picking Remote wrote five of the six values and the derived label came
+    // straight back as "Custom". Inert on a rig with no dome, and on a rig with
+    // one it is what "nobody is there, a trip ends the night" already meant.
+    close_dome_on_unsafe: true,
   },
 };
 
