@@ -118,6 +118,51 @@ def test_clear_calibration_removes_both_files(tmp_path, monkeypatch):
     assert not (d / "prof1-gp.json").exists()
 
 
+# --- the id is interpolated into a path (#24 rider) -------------------------
+#
+# Until #24 these five sites read `CONFIG_DIR/guider/{self.profile_id}.json`
+# with a literal f-string, and the id was a hardcoded None or the sim's "sim",
+# so nothing hostile could ever reach them. Real profile ids now flow in. They
+# are uuid4-derived (profiles.py:76) and therefore safe TODAY — the point of
+# routing them through the same `safe_id_path` the profile store itself uses is
+# that they stay safe when the next feature lets someone name a profile.
+
+
+@pytest.mark.parametrize("hostile", ["../victim", "..\\victim", "sub/victim"])
+def test_a_profile_id_can_never_address_a_file_outside_the_guider_dir(
+        tmp_path, monkeypatch, hostile):
+    """`clear_calibration` UNLINKS what the id resolves to. A decoy one level up
+    is the concrete stake: `../victim` deleted `CONFIG_DIR/victim.json`."""
+    g = _guider(tmp_path, monkeypatch,
+                [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, 0.0]])
+    g.profile_id = hostile
+    victim = tmp_path / "victim.json"
+    victim.write_text("{}", encoding="utf-8")
+
+    g._persist_gp_window()
+    assert g.clear_calibration() is False
+    assert victim.exists(), "a profile id must not address a file it does not own"
+    assert g._load_gp_window() is None
+    assert g._load_persisted_calibration() is None
+    # ...and nothing was written under the id either, on any platform: a
+    # separator the RUNNING os does not recognise is a literal filename here,
+    # which is containment but not the refusal the guard promises.
+    assert not list(tmp_path.rglob("*victim*.json"))[1:]
+
+
+def test_an_ordinary_profile_id_still_round_trips(tmp_path, monkeypatch):
+    """The guard must not cost the normal case. uuid4 ids have hyphens in them
+    and hyphens are the one thing the `-gp.json` suffix also uses."""
+    g = _guider(tmp_path, monkeypatch,
+                [[0.0, 0.1, 1.0, 0.0], [5.0, 0.2, 1.0, 0.0]])
+    g.profile_id = "7f3a1c2e-9b40-4d51-8a6f-2c0d5e7b1a94"
+    g._persist_gp_window()
+    assert (tmp_path / "guider" /
+            "7f3a1c2e-9b40-4d51-8a6f-2c0d5e7b1a94-gp.json").exists()
+    assert g._load_gp_window() is not None
+    assert g.clear_calibration() is True
+
+
 # --- real-wheel round-trip (fix round, review test-blind-spot #2) -----------
 
 def _star_frame(cx, cy, w=64, h=64, amp=4000.0, sg=1.6, bg=100):

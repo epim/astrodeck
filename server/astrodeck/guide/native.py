@@ -101,6 +101,14 @@ _FAULT_FRAME_BUDGET = 5
 # Cap on how long ``dither`` waits for the engine's settle window to close.
 _SETTLE_TIMEOUT_S = 90.0
 
+# How long the cached guide frame stays good enough to serve the IDLE preview
+# (``guide_frame``) before it is re-exposed. Deliberately BELOW the panel's
+# 2500 ms poll (GuideFramePreview.tsx) so a poll gets a genuinely new frame
+# rather than the same array re-encoded — the whole defect this guards was a
+# cache with no age at all. While the guide LOOP runs the cache is served
+# regardless of age: the loop owns the sensor and its last frame is the truth.
+_IDLE_PREVIEW_TTL_S = 2.0
+
 # Guiding Assistant progress copy (review fix): Phase B issues raw N/S pulses —
 # the scope MOVES — so neither message may read as passive "watching".
 _PHASE_A_MSG = "Watching a star drift (1 of 2)…"
@@ -155,11 +163,22 @@ class NativeGuider(Guider):
     can_flip_calibration = True
 
     def __init__(self, guide_camera: Camera, telescope: Telescope, *,
-                 config: dict, profile_id: str | None = None) -> None:
+                 config: dict, profile_id: str | None = None,
+                 profile_id_resolver=None,
+                 shares_the_imaging_sensor: bool = False) -> None:
         self.cam = guide_camera
         self.tel = telescope
+        #: True when ``guide_camera`` IS the rig's imaging camera (the OAG-style
+        #: fallback native_backend allows when no guide camera is assigned).
+        #: Only the caller that chose the camera can know this, so it is passed
+        #: in rather than guessed. Read by ``guide_frame``: the idle preview
+        #: must not repeatedly steal a sensor the imaging train is using.
+        self.shares_the_imaging_sensor = bool(shares_the_imaging_sensor)
         self.config = dict(config or {})
-        self.profile_id = profile_id
+        # Either a literal id (the sim's "sim", a test's fixed key) or a
+        # zero-arg callable read lazily — see the ``profile_id`` property.
+        self._profile_id = profile_id
+        self._profile_id_resolver = profile_id_resolver
 
         self._engine = None
         self._loop_task: asyncio.Task | None = None
@@ -209,6 +228,13 @@ class NativeGuider(Guider):
         self._settle_error: str | None = None
 
         self._last_frame = None            # last exposed numpy frame (guide_frame)
+        # ...and WHEN it was exposed (monotonic). ``guide_frame``'s idle branch
+        # asks how old the cache is, not whether it exists: nothing ever empties
+        # ``_last_frame`` (stop_guiding keeps it on purpose), so an emptiness
+        # test froze the preview on the first frame the guider ever took.
+        self._last_frame_at = 0.0
+        # Single-flight for the idle preview exposure (see _idle_preview_frame).
+        self._preview_task: asyncio.Task | None = None
         self._last_stats = GuideStats()
 
         cfg = self.config
@@ -227,6 +253,62 @@ class NativeGuider(Guider):
         # default False matches the common GEM. Used by BOTH the guiding-start
         # host contract and the meridian-flip ABC method.
         self._flip_requires_dec_flip = bool(cfg.get("flip_requires_dec_flip", False))
+
+    # ------------------------------------------------------------- profile key
+
+    @property
+    def profile_id(self) -> str | None:
+        """The profile this guider's persisted calibration + PPEC model are
+        keyed on, or None for "persist nothing" (every persistence path starts
+        with that gate, and a profile-less rig still guides — it just
+        recalibrates every start).
+
+        Resolved LAZILY when the constructor was handed a resolver instead of a
+        literal, which is what the native backend has to do: a session — and
+        with it this guider — is built inside ``connect_profile()``, and
+        ``set_active_profile`` runs only AFTER that returns (hub.py:754 then
+        :771), so an id read at construction belongs to the profile being
+        switched AWAY from.
+        Memoized on the first non-None answer: a session lives for exactly one
+        connect, so that answer is the profile that opened it, and a mid-session
+        switch (which tears the session down anyway) cannot re-key files
+        underneath a running guide loop."""
+        pid = getattr(self, "_profile_id", None)
+        if pid:
+            return pid
+        resolve = getattr(self, "_profile_id_resolver", None)
+        if resolve is None:
+            return pid
+        # Never raise into a caller: this sits on the guiding-start path and on
+        # the clear-calibration route, and a config store that cannot answer is
+        # a "no profile", not a failure to guide.
+        with contextlib.suppress(Exception):
+            resolved = resolve()
+            if resolved:
+                self._profile_id = resolved
+                return resolved
+        return None
+
+    @profile_id.setter
+    def profile_id(self, value: str | None) -> None:
+        # An explicit assignment wins outright — drop the resolver so it cannot
+        # come back and overwrite what the caller pinned.
+        self._profile_id = value
+        self._profile_id_resolver = None
+
+    def _profile_path(self, suffix: str = ".json"):
+        """``CONFIG_DIR/guider/<profile><suffix>`` for the CURRENT profile.
+
+        Through ``safe_id_path`` (the same guard ``profiles.py`` resolves its
+        own store with), which raises ``KeyError`` for anything that is not a
+        single contained filename component on either platform. Profile ids are
+        uuid4-derived so nothing hostile can reach here today; this keeps that
+        true the day an id becomes user-chosen. Every caller already treats a
+        raise as "no persistence", so the refusal degrades the same way a
+        missing file does."""
+        from ..config import CONFIG_DIR
+        from ..persist import safe_id_path
+        return safe_id_path(CONFIG_DIR / "guider", str(self.profile_id), suffix)
 
     # --------------------------------------------------------------- lifecycle
 
@@ -693,21 +775,41 @@ class NativeGuider(Guider):
 
     async def _expose(self):
         """Expose one guide frame, absorbing a transient camera fault (A1;
-        final-branch-review I2): on DeviceError (incl. the A3 imageready
-        timeout) retry up to _EXPOSE_RETRIES times with _EXPOSE_BACKOFF_S
-        backoff. asyncio.CancelledError (a stop mid-exposure) is NOT retried —
-        it propagates immediately. Exhausted retries raise DeviceError, which
+        final-branch-review I2): retry up to _EXPOSE_RETRIES times with
+        _EXPOSE_BACKOFF_S backoff. Exhausted retries raise DeviceError, which
         the guide loop counts as one lost frame and the calibration path
-        surfaces as a clean calibration abort."""
-        last_err: DeviceError | None = None
+        surfaces as a clean calibration abort.
+
+        ANY ``Exception`` from the camera is retried, not just ``DeviceError``
+        (#28). The promise here is about transient FAULTS, and the adapters
+        under us leak the whole transport family — ``httpx.HTTPError`` from an
+        Alpaca camera, ``OSError`` from a serial/USB read, ``struct.error`` from
+        a short packet (alpaca.py catches that same triple in ten places) — plus
+        whatever an out-of-tree driver raises. Every one of those used to walk
+        straight past this envelope and out through ``_guide_loop``'s defensive
+        handler, which stops guiding WITHOUT latching ``_lost``, so the sequence
+        engine's recovery was never told anything was wrong.
+        ``asyncio.CancelledError`` is a ``BaseException``, so the "a stop
+        mid-exposure is NOT retried" contract survives the widening untouched.
+        """
+        last_err: Exception | None = None
         for attempt in range(_EXPOSE_RETRIES + 1):
             try:
                 frame = await self.cam.expose(
                     self._exposure_s, self._gain, self._offset,
                     binning=self._binning)
+                # ``Camera.expose`` is ANNOTATED ``-> CameraFrame`` and nothing
+                # enforces it; a driver that returns None on failure made the
+                # next line an AttributeError — unretried and unhandled. Make it
+                # a retryable fault by construction rather than by trusting an
+                # inventory of today's adapters (the hub guards its own preview
+                # path the same way).
+                if frame is None:
+                    raise DeviceError(f"{self.cam.name} returned no frame")
                 self._last_frame = frame.data
+                self._last_frame_at = time.monotonic()
                 return frame
-            except DeviceError as e:
+            except Exception as e:
                 last_err = e
                 if attempt < _EXPOSE_RETRIES:
                     bus.log("warning",
@@ -1162,11 +1264,10 @@ class NativeGuider(Guider):
             # HandleImageScaleChange -> ClearCalibration, myframe.cpp:2902);
             # _cal_reusable applies the same 1% gate on reuse.
             cal["image_scale_arcsec"] = self._image_scale
-            from ..config import CONFIG_DIR
-            d = CONFIG_DIR / "guider"
-            d.mkdir(parents=True, exist_ok=True)
-            (d / f"{self.profile_id}.json").write_text(
-                json.dumps(cal, indent=2), encoding="utf-8")
+            # Resolve BEFORE mkdir so a refused id creates nothing at all.
+            p = self._profile_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(cal, indent=2), encoding="utf-8")
             bus.log("info",
                     f"native guider: saved calibration for profile "
                     f"{self.profile_id}", "guide")
@@ -1185,10 +1286,7 @@ class NativeGuider(Guider):
             return False
         removed = False
         try:
-            from ..config import CONFIG_DIR
-            d = CONFIG_DIR / "guider"
-            for name in (f"{self.profile_id}.json", f"{self.profile_id}-gp.json"):
-                p = d / name
+            for p in (self._profile_path(), self._profile_path("-gp.json")):
                 if p.exists():
                     p.unlink()
                     removed = True
@@ -1210,8 +1308,7 @@ class NativeGuider(Guider):
         if not self.profile_id:
             return None
         try:
-            from ..config import CONFIG_DIR
-            p = CONFIG_DIR / "guider" / f"{self.profile_id}.json"
+            p = self._profile_path()
             if not p.exists():
                 return None
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -1246,12 +1343,10 @@ class NativeGuider(Guider):
             window = self._engine.dump_gp_window()
             if not window or len(window) < 2:
                 return
-            from ..config import CONFIG_DIR
-            d = CONFIG_DIR / "guider"
-            d.mkdir(parents=True, exist_ok=True)
-            (d / f"{self.profile_id}-gp.json").write_text(
-                json.dumps({"dumped_at": time.time(), "window": window}),
-                encoding="utf-8")
+            p = self._profile_path("-gp.json")     # resolve before mkdir
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({"dumped_at": time.time(), "window": window}),
+                         encoding="utf-8")
             bus.log("info",
                     f"native guider: saved PPEC model for profile "
                     f"{self.profile_id}", "guide")
@@ -1269,8 +1364,7 @@ class NativeGuider(Guider):
         if not self.profile_id:
             return None
         try:
-            from ..config import CONFIG_DIR
-            p = CONFIG_DIR / "guider" / f"{self.profile_id}-gp.json"
+            p = self._profile_path("-gp.json")
             if not p.exists():
                 return None
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -1388,20 +1482,44 @@ class NativeGuider(Guider):
         """A small auto-stretched PNG of the guide-star region for the live UI.
         Crops a tile around the brightest pixel of the most recent guide frame
         and reuses the main display pipeline. While guiding this is the last
-        looped exposure; when connected but idle it grabs one frame on demand so
-        the preview works before a session starts. Never raises — returns None on
-        any failure so the endpoint answers 404 rather than 500."""
+        looped exposure; when connected but idle it grabs a frame on demand —
+        again once the cached one is older than ``_IDLE_PREVIEW_TTL_S``, so the
+        panel keeps getting new pictures instead of the first one forever. Never
+        raises — returns None on any failure so the endpoint answers 404 rather
+        than 500."""
         try:
             data = self._last_frame
             loop_running = self._loop_task is not None and not self._loop_task.done()
-            if data is None and self.connected and not loop_running:
+            # AGE, not emptiness: nothing empties the cache, so `data is None`
+            # alone stopped asking the camera after the very first frame.
+            stale = (data is None
+                     or (time.monotonic() - self._last_frame_at) > _IDLE_PREVIEW_TTL_S)
+            if self.shares_the_imaging_sensor:
+                # OAG rig: our "guide camera" IS the imaging camera. Re-exposing
+                # it on AGE would take the sensor out from under the imaging
+                # train, mid-sequence, every couple of seconds, for a panel
+                # nobody is guiding with. Emptiness still grabs, so this rig
+                # keeps exactly the one-grab-per-panel-open behaviour it had
+                # before the age gate existed — the fix above is for rigs with a
+                # camera of their own to expose.
+                #
+                # The hub refuses this case on the guide-CAMERA path
+                # (_guide_preview_source), but reaches that test only when no
+                # guider answered, so a native guider walks straight past it.
+                # Deliberately NOT re-deriving the hub's source order here: two
+                # copies of that order silently diverged once already
+                # (test_guide_preview_source.py). This asks the only question
+                # this object can answer about itself.
+                stale = data is None
+            if stale and self.connected and not loop_running:
                 # Idle but connected: the guide camera can produce a frame on
-                # demand (don't touch the camera while the loop owns it).
+                # demand (don't touch the camera while the loop owns it). A
+                # failed grab leaves ``data`` on the previous frame — old-but-real
+                # beats blanking a panel that had a picture a moment ago.
                 with contextlib.suppress(Exception):
-                    f = await self.cam.expose(self._exposure_s, self._gain,
-                                              self._offset, binning=self._binning)
-                    data = f.data
-                    self._last_frame = data
+                    fresh = await self._idle_preview_frame()
+                    if fresh is not None:
+                        data = fresh
             if data is None:
                 return None
             import numpy as np
@@ -1419,3 +1537,36 @@ class NativeGuider(Guider):
             return to_png(tile, stretch=True, max_width=max(int(tile.shape[1]), 192))
         except Exception:
             return None
+
+    async def _idle_preview_frame(self):
+        """ONE on-demand preview exposure, SHARED by every poller that asks
+        while it is in flight.
+
+        The panel starts a new request every 2.5 s whether or not the previous
+        one landed (GuideFramePreview.tsx), and a guide exposure plus USB
+        readout plus a PNG encode can outlast that — so once the idle branch
+        fires on age rather than on emptiness, two overlapping pollers would
+        both reach ``expose()`` and race two readouts over one buffer. The
+        hub's single-flight (``Hub.guide_preview_png``) guards only its own
+        guide-CAMERA branch and never reaches this one.
+
+        Shielded: a client that drops the ``<img>`` load cancels its own WAIT,
+        never the exposure — a camera killed mid-readout stays wedged for the
+        run that follows. A COMPLETED task is replaced rather than re-awaited,
+        so sequential polls each reach the sensor (that is the whole point)."""
+        task = self._preview_task
+        if task is None or task.done():
+            task = asyncio.ensure_future(self._expose_preview_frame())
+            self._preview_task = task
+        return await asyncio.shield(task)
+
+    async def _expose_preview_frame(self):
+        """The preview exposure itself, in its own coroutine so overlapping
+        callers can share one in-flight frame. Stamps the cache so the next
+        poll's age test is measured from THIS frame."""
+        frame = await self.cam.expose(self._exposure_s, self._gain,
+                                      self._offset, binning=self._binning)
+        data = frame.data
+        self._last_frame = data
+        self._last_frame_at = time.monotonic()
+        return data

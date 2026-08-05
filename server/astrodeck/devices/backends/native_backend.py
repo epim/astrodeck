@@ -164,12 +164,30 @@ class NativeSession:
         except Exception:  # pragma: no cover - defensive; scale stays 1.0
             image_scale = 1.0
             image_scale_known = False
+        # #24: this passed profile_id=None, which switched the guider's WHOLE
+        # calibration + PPEC persistence layer off on every real rig — a fresh
+        # ~20+ s calibration walk at every start and a trained PPEC model
+        # discarded at every stop, silently, because each persistence path
+        # simply returns on a falsy id. The id is read LAZILY, not here: this
+        # runs inside connect_profile(), and set_active_profile lands only
+        # AFTER that returns (hub.py:754 then :771), so an id captured at
+        # construction is the profile being switched away FROM. None-safe — a
+        # rig with no active profile keeps exactly today's behaviour (it guides,
+        # it just persists nothing).
+        def _active_profile_id() -> str | None:
+            from ...profiles import active_profile
+            return getattr(active_profile(), "id", None)
+
         self._guider = NativeGuider(
             gcam, tel,
             config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
                     "image_scale_known": image_scale_known,
                     **guide_algo_config()},
-            profile_id=None)
+            profile_id_resolver=_active_profile_id,
+            # This function is the only place that knows the OAG fallback was
+            # taken. The guider needs it so its idle preview does not keep
+            # re-exposing the imaging sensor mid-sequence — see guide_frame.
+            shares_the_imaging_sensor=self._devices.get("guide_camera") is None)
         return self._guider
 
     def guide_camera(self) -> object | None:

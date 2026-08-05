@@ -649,8 +649,15 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
               onExplain={(r) => onToast("info", r)}
               onClick={() => void (async () => {
                 try {
-                  await api.del("/api/guide/calibration");
-                  onToast("info", "Cleared saved calibration");
+                  // The route reports whether a file was actually removed, and
+                  // the two outcomes are different facts: a guider with no
+                  // profile key (or a profile that has never calibrated) has
+                  // nothing to delete, and toasting "Cleared" at it claimed an
+                  // effect that did not happen.
+                  const r = await api.del<{ cleared?: boolean }>("/api/guide/calibration");
+                  onToast("info", r?.cleared
+                    ? "Cleared the saved calibration for this profile"
+                    : "Nothing to clear — this profile has no saved calibration");
                 } catch (e) {
                   onToast("error", (e as Error).message);
                 }
