@@ -20,6 +20,7 @@ type NativePolar = PolarState & {
   az_direction?: KnobDir | null;
   alt_direction?: KnobDir | null;
   flags?: string[];
+  position_angle_spread_deg?: number | null;
 };
 
 export default function PolarView() {
@@ -60,6 +61,14 @@ export default function PolarView() {
 
   const azHint = hasReading ? knobHint(polar.az_direction, az, "az") : null;
   const altHint = hasReading ? knobHint(polar.alt_direction, alt, "alt") : null;
+
+  // The engine's one warning that survives the pole guard: the three measurement
+  // frames differed by more than a pure RA rotation (a meridian flip or a rotator
+  // step moved the camera/pier angle), so the fit is measuring that motion too.
+  // A warning, never a refusal — but the number has to reach the person holding
+  // the bolt, or they turn it on a reading that isn't real.
+  const paSpreadLarge = polar.flags?.includes("position_angle_spread_large") ?? false;
+  const paSpread = polar.position_angle_spread_deg;
 
   const sourceLabel = src === "nina" ? "NINA TPPA"
     : src === "native" ? "AstroDeck native"
@@ -187,6 +196,21 @@ export default function PolarView() {
             ) : (
               /* UX-19: idle — no busy LED / "Waiting for solve…" before Start is pressed. */
               <p className="text-sm text-faint mt-2">Not started — press Start Alignment to measure.</p>
+            )}
+
+            {/* ABOVE the knob rows on purpose: those arrows are what the user
+                would otherwise act on, and this says the reading behind them is
+                not trustworthy. Same shape as the sim-provider warning below so
+                it reads as a caveat under red light, where hue alone doesn't. */}
+            {paSpreadLarge && (
+              <p className="text-xs text-warn mt-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2"
+                role="alert">
+                Camera angle moved {paSpread != null ? `${paSpread.toFixed(1)}°` : "well past 5°"} across
+                the three measurement frames — that is not a pure rotation in RA, so this fit
+                measured that motion too and the numbers below are not trustworthy. Re-run the
+                alignment without a meridian crossing (and without moving the rotator) before you
+                turn a bolt.
+              </p>
             )}
 
             {/* Which way to turn each bolt — arrow + magnitude + word, from the

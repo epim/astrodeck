@@ -159,6 +159,24 @@ async def test_native_reaches_terminal_on_alignment(sim_hub):
     assert not h.polar.running
 
 
+async def test_native_publishes_the_position_angle_spread(sim_hub):
+    """The engine's RAW spread magnitude has to reach the payload under the key
+    the PyO3 layer exports, so the UI's "this fit is not trustworthy" caveat can
+    name a number. The stubbed engine in test_polar_pause.py cannot catch a
+    rename on the Rust side — only a real run can."""
+    h = sim_hub
+    h.sim_rig.set_polar_misalignment(5.0, 6.0, lat_deg=_LAT, lon_deg=_LON)
+    await h.polar.start()
+    assert await _wait(lambda: h.polar.state.get("phase") == "adjusting"), \
+        h.polar.state
+    st = h.polar.state
+    assert "position_angle_spread_deg" in st, st
+    assert isinstance(st["position_angle_spread_deg"], float), st
+    # A clean sim run is a pure RA rotation, so it must NOT raise the caveat.
+    assert "position_angle_spread_large" not in st.get("flags", []), st
+    await h.polar.stop()
+
+
 async def test_provider_routes_astrodeck_for_native_rig(sim_hub):
     """A native (sim) rig with camera+mount+trusted solver resolves polar align to
     the AstroDeck native engine."""
