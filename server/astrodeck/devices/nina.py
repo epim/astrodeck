@@ -268,12 +268,16 @@ class NinaCamera(_NinaDevice, Camera):
     async def expose(self, seconds: float, gain: int, offset: int, binning: int = 1,
                      light: bool = True, save: bool = False,
                      target: str = "") -> CameraFrame:
-        if binning and binning > 1:
-            try:
-                await self.client.get("/equipment/camera/set-binning",
-                                      binning=f"{binning}x{binning}")
-            except DeviceError:
-                pass
+        # Send the bin UNCONDITIONALLY (as alpaca/asiair do). Skipping it for
+        # bin 1 left NINA sitting at whatever a previous bin-2 exposure set,
+        # while this frame went out stamped bin 1 — a lie every downstream pixel
+        # scale, FITS header and dither step then inherits.
+        b = max(1, int(binning or 1))
+        try:
+            await self.client.get("/equipment/camera/set-binning",
+                                  binning=f"{b}x{b}")
+        except DeviceError:
+            pass
         image_type = "LIGHT" if light else "DARK"
         try:
             await self.client.get(
@@ -299,9 +303,21 @@ class NinaCamera(_NinaDevice, Camera):
         except DeviceError:
             pass
 
+        # The set-binning call above is deliberately best-effort (a NINA without
+        # the endpoint must not fail the exposure), so stamping the bin we ASKED
+        # for would still be a guess. NINA reports the CURRENT bin as BinX/
+        # BinningX (see connect()), so read it back and stamp what actually ran;
+        # fall back to the requested bin only when NINA says nothing.
+        actual = b
+        try:
+            actual = int(pick(await self.info(force=True),
+                              "BinX", "BinningX", default=b) or b)
+        except (DeviceError, TypeError, ValueError):
+            pass
+
         frame = CameraFrame(
             data=_decode_gray16(png),
-            exposure_s=seconds, gain=gain, offset=offset, binning=binning,
+            exposure_s=seconds, gain=gain, offset=offset, binning=actual,
             bayer_pattern=None,
             temperature_c=_maybe_float(pick(stats, "Temperature")),
             timestamp=time.time(),
@@ -1064,9 +1080,11 @@ async def discover_nina(port: int = DEFAULT_PORT, timeout: float = 0.6,
         # before probing it. The local-subnet sweep above is trusted LAN; this
         # only gates the user-supplied additions. A blocked/invalid host is
         # skipped (discovery is best-effort and must not 500 on one bad input).
+        # Probe the addresses the guard APPROVED — resolving the name a second
+        # time here would let an attacker's record answer public to the check and
+        # 127.0.0.1 to the probe (DNS rebinding).
         try:
-            validate_scan_host(h, port)
-            candidates.append(socket.gethostbyname(h))
+            candidates.extend(validate_scan_host(h, port))
         except (AlpacaScanError, OSError):
             pass
     candidates = list(dict.fromkeys(candidates))  # de-dupe, preserve order

@@ -117,9 +117,11 @@ class AlpacaScanError(DeviceError):
         self.kind = kind
 
 
-# A bare hostname or IP literal only — no scheme, path, query, userinfo, or an
-# embedded ``:port``. Labels are RFC-952/1123-ish; IPv6 literals (which contain
-# ':') are intentionally not accepted by the manual scanner.
+# A bare hostname only — no scheme, path, query, userinfo, or an embedded
+# ``:port``. Labels are RFC-952/1123-ish. IP literals never reach this regex:
+# ``validate_scan_host`` parses them with ``ipaddress`` first, so a bare IPv6
+# literal IS accepted (and ``_authority`` brackets it) — only a BRACKETED one
+# ``[::1]`` is rejected, since that is URL syntax rather than a host.
 _HOSTNAME_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
 )
@@ -128,10 +130,13 @@ _HOSTNAME_RE = re.compile(
 def _resolved_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """True if a *resolved* IP is one an unauthenticated scan must never reach.
 
-    Checking the resolved IP (not just the literal) is what defeats DNS
-    rebinding — ``evil.com`` resolving to ``127.0.0.1`` / ``169.254.169.254`` is
-    rejected here even though the literal looked public. ``169.254.0.0/16``
-    (link-local, incl. the cloud-metadata IP) is covered by ``is_link_local``.
+    Checking the resolved IP (not just the literal) is half of the DNS-rebinding
+    defence — ``evil.com`` resolving to ``127.0.0.1`` / ``169.254.169.254`` is
+    rejected here even though the literal looked public. The other half is that
+    the caller must then DIAL the address this approved (see ``validate_scan_host``
+    and ``query_server``); re-resolving the name would hand the attacker a second
+    answer. ``169.254.0.0/16`` (link-local, incl. the cloud-metadata IP) is
+    covered by ``is_link_local``.
     """
     return bool(
         ip.is_loopback
@@ -143,19 +148,39 @@ def _resolved_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     )
 
 
-def validate_scan_host(host: str, port: int) -> None:
+def _authority(host: str, port: int) -> str:
+    """``host:port`` for a URL, bracketing an IPv6 literal as RFC 3986 requires.
+
+    Without the brackets ``2606:4700::1111`` + port 11111 concatenates into
+    ``2606:4700::1111:11111`` — a different (and unvalidated) address.
+    """
+    try:
+        if ipaddress.ip_address(host).version == 6:
+            return f"[{host}]:{port}"
+    except ValueError:
+        pass
+    return f"{host}:{port}"
+
+
+def validate_scan_host(host: str, port: int) -> list[str]:
     """Validate a user-supplied Alpaca/NINA scan target before any network I/O.
 
     Raises :class:`AlpacaScanError` (kind ``"invalid"``) if:
 
-    - ``host`` is not a bare hostname/IPv4 literal (blocks ``evil.com/x?``,
+    - ``host`` is not a bare hostname/IP literal (blocks ``evil.com/x?``,
       ``user@host``, an embedded ``host:port``, schemes, IPv6 brackets);
     - ``port`` is not an integer in ``1..65535``;
     - the host **resolves** to a loopback/private/link-local/reserved/metadata
-      address (SSRF guard that also defeats DNS rebinding).
+      address (the SSRF guard);
 
-    Returns ``None`` on success. This is the single chokepoint shared by the
-    Alpaca and NINA manual-scan entry points.
+    or kind ``"unreachable"`` if the name does not resolve to anything usable.
+
+    Returns the approved address literals, and the caller MUST connect to one of
+    them rather than to ``host``. That is the DNS-rebinding half of the guard:
+    resolving here and then letting the HTTP client resolve the name again gives
+    an attacker-controlled record a second answer (public first, ``127.0.0.1``
+    second) between the check and the connection. This is the single chokepoint
+    shared by the Alpaca and NINA manual-scan entry points.
     """
     host = (host or "").strip()
     if not host:
@@ -179,8 +204,9 @@ def validate_scan_host(host: str, port: int) -> None:
     if not (1 <= port_i <= 65535):
         raise AlpacaScanError("invalid", f"port out of range: {port_i}")
 
-    # Resolve and reject the resolved IP(s) — defeats DNS rebinding. A literal IP
-    # resolves to itself; a hostname is resolved via getaddrinfo.
+    # Resolve ONCE and reject the resolved IP(s). A literal IP resolves to
+    # itself; a hostname is resolved via getaddrinfo. The survivors are returned
+    # so the caller dials them — this lookup is the only one that ever happens.
     resolved: list[str] = []
     if ip_literal is not None:
         resolved = [str(ip_literal)]
@@ -191,16 +217,25 @@ def validate_scan_host(host: str, port: int) -> None:
             raise AlpacaScanError("unreachable", f"could not resolve host '{host}'")
         resolved = [info[4][0] for info in infos]
 
+    approved: list[str] = []
     for addr in resolved:
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:
+            # Not an address we can reason about, so it was never really checked
+            # — drop it rather than hand it back as approved.
             continue
         if _resolved_ip_blocked(ip):
             raise AlpacaScanError(
                 "invalid",
                 f"host '{host}' resolves to a blocked address ({addr}); "
                 f"only routable LAN/Internet hosts may be scanned")
+        if str(ip) not in approved:      # getaddrinfo repeats an address per family
+            approved.append(str(ip))
+
+    if not approved:
+        raise AlpacaScanError("unreachable", f"could not resolve host '{host}'")
+    return approved
 
 
 async def query_server(host: str, port: int) -> dict:
@@ -210,11 +245,16 @@ async def query_server(host: str, port: int) -> dict:
     Raises :class:`AlpacaScanError` with a differentiated ``kind`` so the UI can
     tell "wrong IP" from "right IP but not an Alpaca server".
     """
-    validate_scan_host(host, port)
-    url = f"http://{host}:{port}/management/v1/configureddevices"
+    # Dial the address the guard approved, NOT the name: putting `host` back in
+    # the URL authority would let httpx resolve it a second time, which is the
+    # whole DNS-rebinding window. The user's original host:port rides in the Host
+    # header so a vhosted Alpaca server still answers, and redirects stay OFF
+    # (httpx's default) — following one would re-dial an unvalidated target.
+    addrs = validate_scan_host(host, port)
+    url = f"http://{_authority(addrs[0], port)}/management/v1/configureddevices"
     try:
         async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(url)
+            r = await c.get(url, headers={"Host": _authority(host, port)})
     except httpx.TimeoutException:
         # Host reachable but the request (connect or read) timed out — distinct
         # from "can't connect at all"; the copy must not say "device is on?".
@@ -225,10 +265,12 @@ async def query_server(host: str, port: int) -> dict:
             f"could not connect to {host}:{port} — check the IP, port and that "
             f"the device is on")
     if r.status_code != 200:
+        # No upstream status in the message: this route is viewer-reachable, and
+        # echoing 401-vs-404-vs-503 turns it into a port/host scan oracle (the
+        # 502 handler in the API layer says it does not leak one — this is where
+        # that promise is actually kept).
         raise AlpacaScanError(
-            "not_alpaca",
-            f"{host}:{port} answered but is not an Alpaca server "
-            f"(HTTP {r.status_code})")
+            "not_alpaca", f"{host}:{port} answered but is not an Alpaca server")
     try:
         devices = r.json().get("Value", [])
     except ValueError:
