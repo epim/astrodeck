@@ -171,6 +171,33 @@ def test_alerts_upsert_delete_and_token_blanking(client):
     assert c.get("/api/alerts").json() == []
 
 
+def test_saving_a_sink_with_the_blanked_token_keeps_it_verified(client):
+    """The client never holds the token — every read blanks it — so pressing Save
+    on ANY other field POSTs ``token: ""``. The identity comparison ran BEFORE
+    the token was restored, so `"" != "BOT-SECRET"` read as a re-point and
+    cleared the badge on every save of a credential-bearing sink. The sibling
+    helper ``_merge_alert_verified`` already had the ordering right; this route
+    had a second copy of the rule that did not."""
+    c, store = client
+    sink = {"id": "tg1", "kind": "telegram", "token": "BOT-SECRET",
+            "chat_id": "12345", "events": ["run_end"]}
+    assert c.post("/api/alerts", json=sink).status_code == 200
+    store.cfg().alerts[0].verified = True
+
+    # exactly what the panel round-trips (AlertsPanel `{...s, token: ""}`): the
+    # sink it was served, verified badge and all, with one unrelated edit and
+    # the token as the blank the server handed it.
+    r = c.post("/api/alerts", json=dict(sink, token="", verified=True,
+                                        events=["run_end", "safety"]))
+    assert r.status_code == 200, r.text
+    after = store.cfg().alerts[0]
+    assert after.token == "BOT-SECRET", "the stored secret was blanked"
+    assert after.events == ["run_end", "safety"], "the actual edit must land"
+    assert after.verified is True, (
+        "nothing was re-pointed, but the verified badge was cleared — the user "
+        "must re-run the delivery test after every unrelated save")
+
+
 def test_alert_test_roundtrip(client, monkeypatch):
     c, _ = client
     c.post("/api/alerts", json={"id": "w1", "kind": "webhook",
