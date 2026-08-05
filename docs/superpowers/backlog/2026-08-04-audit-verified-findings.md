@@ -838,3 +838,47 @@ run by letting the REAL native fit reject three identical solves. CI's `server`
 job does not install that wheel, so `_native` was None and the run died on an
 AttributeError. Now stubs the fit alongside the already-stubbed rotation, so it
 grades the camera-yield ordering on any host.
+
+---
+
+# Found while standing the rig down, 2026-08-05
+
+## K. [blocker] NOTHING parks an idle mount at dawn
+
+Every park path in the server hangs off the sequence engine's run lifecycle:
+`engine._wind_down` (engine.py:3008) and the roof/dome close that rides it.
+`_solar_block` (app.py:2030) is NOT a second line of defence -- it only refuses a
+SLEW whose destination is inside the sun cone. It never parks anything, and it
+is only consulted at goto entry.
+
+So on any night the operator stands down WITHOUT a run -- which is exactly what
+happens after a failed session -- the mount keeps tracking until something
+physical stops it, straight through sunrise. Verified 2026-08-05: mount left
+tracking at 61 deg altitude, no run active, no armed session window open, and
+nothing anywhere would have parked it before the sun.
+
+Made worse by auto-resume: a session armed with `auto_resume=True` will UNPARK
+the mount and run the recovery ladder when its window opens. If the ladder then
+refuses (a failed plate solve is the common case -- cloud, dew), it returns and
+stays dormant, leaving the mount UNPARKED with no run to wind it down. The rig
+is then in the worst state of all: unparked, tracking, unattended, and with
+nothing scheduled that would ever park it.
+
+FIX: a dawn-park daemon that does not depend on a run existing. It belongs
+beside the AlertDispatcher lifespan task in `create_app` (app.py:305 is the
+pattern), should trigger on SUN ALTITUDE rather than clock time so it is correct
+year-round and at any latitude, and must be idempotent (parking a parked mount
+is a no-op, so a repeated tick is harmless). Sun altitude is already available
+via `coords.sun_altaz(lat, lon, ts)`.
+
+INTERIM MITIGATION IN PLACE (remove once the above ships): a Windows scheduled
+task `AstroDeckParkWatchdog` on the rig runs `AstroDeck\park-watchdog.ps1` every
+10 minutes for 12 hours, logs every check to `AstroDeck\park-watchdog.log`, and
+parks if the mount is unparked after 05:30 local. It deliberately does NOT act
+while it is still dark, so it cannot fight an operator who gets up to observe.
+Its park branch was exercised against the real mount (unpark -> detect -> park
+-> confirm), not just its no-op branch.
+
+NOTE for whoever writes that script: `Invoke-RestMethod` SILENTLY IGNORES a
+hand-set `Cookie:` header and the request 401s. The session JWT has to go in a
+`WebRequestSession` cookie jar (or use `curl.exe`). Measured on the rig.
