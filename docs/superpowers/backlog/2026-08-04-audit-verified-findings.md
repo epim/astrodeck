@@ -211,6 +211,8 @@ Make the route accept only what its own docstring says it writes, rather than a 
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 9. [important] The route is `GET /api/discover/alpaca` (plus `/api/discover/nina`), both gated on `view.status` -- a VIEWER capability -- and the guard's comment claiming it "defeats DNS rebinding" is false: the val
 
 **Files:** server/astrodeck/devices/alpaca.py, server/astrodeck/devices/nina.py, server/astrodeck/api/app.py, server/astrodeck/auth/capabilities.py, server/astrodeck/remote/relay_client.py
@@ -226,6 +228,8 @@ Make the route accept only what its own docstring says it writes, rather than a 
 4. Optional, same route, to close the oracle app.py:1656-1658 claims is already closed: drop `(HTTP {r.status_code})` from the `not_alpaca` message at alpaca.py:228-231, or collapse `unreachable`/`timeout`/`not_alpaca` into one message when the caller lacks `config
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 10. [important] CONFIRMED -- `GET /api/profiles/{id}` is gated only on `view.status` (which a VIEWER holds) and `redact_profile` scrubs nothing but secret-looking keys inside `devices[].extra`, so a viewer/relay-link
 
@@ -268,6 +272,8 @@ MUST NOT CHANGE:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 12. [important] `_enforce_stop_boundary` is wired only into the light-frame loop in `_run_step`; `_run_calibration`'s frame loop never calls it, so a calibration target's "stop at dawn" / "max run" boundary is enforc
 
 **Files:** server/astrodeck/sequence/engine.py, server/astrodeck/sequence/schedule.py, server/astrodeck/sequence/models.py, ui/src/views/SequenceView.tsx, ui/src/components/sequence/SchedulePanel.tsx, server/tests/test_sequence_engine_fixes.py
@@ -288,6 +294,8 @@ TEST: add a calibration-target analogue of `test_run_step_does_not_shoot_past_cl
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 13. [important] Temperature-drift refocus is gated on a baseline (`_last_focus_temp`) that ONLY an autofocus can write, so a plan with `autofocus_every = 0` and no target running an initial AF never refocuses on drif
 
 **Files:** server/astrodeck/sequence/engine.py, server/astrodeck/sequence/models.py, ui/src/views/FocusView.tsx, ui/src/views/SequenceView.tsx, ui/src/views/AtlasView.tsx, ui/src/lib/preflight.ts, server/tests/test_sequence.py
@@ -307,6 +315,8 @@ Make the baseline self-seeding so the promise no longer depends on an autofocus 
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 14. [important] The per-target "if missed: wait | skip" control is inert: `Schedule.on_missed` is written to the plan, round-tripped through the API into session ledgers, and rendered in the target summary, but no se
 
 **Files:** server/astrodeck/sequence/models.py, server/astrodeck/sequence/engine.py, server/astrodeck/sequence/schedule.py, ui/src/components/sequence/SchedulePanel.tsx, ui/src/lib/schedule.ts, docs/guide/plan-and-sequences.md, server/tests/test_config_automation.py
@@ -321,6 +331,8 @@ WIRE IT (preferred; keeps the shipped plan schema):
 3. server/astrodeck/sequence/engine.py:937-945 (`all_closed`) and :889-890: leave the window_closed/never_rises handling exactly as is under BOTH settings -- a closed window cannot be waited for, and changing it would resurrect the ~23h stall. Instead fix the copy in ui/src/components/sequence/SchedulePanel.tsx:222 so "wait" no longer promises the engine holds a target whose window has already closed; state the actual rule ("wait -- run it whenever its window is open, even if the start was missed; a window that has closed
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 15. [important] The ASIAIR focuser's `move_to` still returns SUCCESS on absence-of-motion (two idle polls = 1.0 s) and never compares the reached position to the target -- the exact defect removed from the sibling ZW
 
@@ -374,6 +386,8 @@ server/tests/test_zwo_am5.py:862-871 `test_park_stays_idempotent` must be rewrit
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 17. [important] `_wait_stopped` promises that "two consecutive stopped samples" make it impossible to report "a settled slew that never started", but two samples taken before the mount begins moving are indistinguish
 
 **Files:** server/astrodeck/devices/backends/asiair_backend.py, server/tests/test_asiair_backend.py, server/astrodeck/hub.py, server/astrodeck/polar/native.py, server/astrodeck/sequence/engine.py
@@ -391,6 +405,8 @@ Make "settled" mean "settled AT THE TARGET", and stop reading a missing field as
 4. server/tests/test_asiair_b
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 18. [important] Confirmed in its core: `NinaCamera.expose` sends `set-binning` only when `binning > 1`, so a subsequent bin-1 request leaves NINA at the last raised bin while the frame is stamped `binning=1` -- reach
 
@@ -420,6 +436,8 @@ TEST: extend server/tests/test_nina_optics_bin.py with a fake client recording e
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 19. [important] Pause on a native TPPA run is deterministically overwritten: the driver publishes `state:"running"` after `pause()` wrote `state:"paused"`, so the UI keeps showing Pause instead of Resume, and in the 
 
 **Files:** server/astrodeck/polar/native.py, server/astrodeck/polar/session.py, ui/src/views/PolarView.tsx, ui/src/store.ts, server/astrodeck/api/app.py
@@ -439,6 +457,8 @@ Do NOT change `stop()`: it cancels the task, and `_wait_if_paused`'s `await asyn
 Add a regression test (none exists today): drive `run_native` with a stub solver, call `await sessio
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 20. [important] PHD2Guider hardcodes `is_arcsec=True` while converting PHD2's pixel errors with a made-up 2.0 "/px constant that no product path ever sets, so the UI unit label, the narration verdict, and the sequenc
 
@@ -466,6 +486,8 @@ MUST NOT CHANGE:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 21. [important] The native guider's idle on-demand grab is gated on the frame cache being EMPTY, and nothing ever empties it, so once any guide frame exists the "live" Guide cam preview (polled every 2.5 s on Capture
 
 **Files:** server/astrodeck/guide/native.py, server/astrodeck/hub.py, ui/src/components/GuideFramePreview.tsx, ui/src/views/PolarView.tsx, server/astrodeck/devices/backends/sim_backend.py, server/astrodeck/api/app.py
@@ -489,6 +511,8 @@ Must NOT change:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 22. [important] The power-cut record is destroyed by the boot it is meant to survive: the 2 s status poller writes the post-restart focuser position over the file within ~2 s of connect, and the only reader (resume_a
 
 **Files:** server/astrodeck/devices/fingerprint.py, server/astrodeck/hub.py, server/astrodeck/sequence/resume_arm.py, server/tests/test_resume_after_restart.py
@@ -506,6 +530,8 @@ In server/astrodeck/devices/fingerprint.py:
 Tests to add in server/tests/test_resume_after_restart.py: one that runs the REAL recorder path (hub.poll_status, as test_poll_status_records_the_fingerprint at :18
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 23. [important] CONFIRMED but materially narrowed: `flags` is published on every native TPPA update and rendered by nothing, so `_publish_error`'s docstring claim ("the additive native fields the wizard consumes") is
 
@@ -527,6 +553,8 @@ MUST NOT CHANGE:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 24. [important] The native guider's whole calibration/PPEC persistence layer is gated on `self.profile_id`, and the only production site that builds a guider for a REAL rig hardcodes `profile_id=None` -- so on any Al
 
 **Files:** server/astrodeck/devices/backends/native_backend.py, server/astrodeck/guide/native.py, server/astrodeck/api/app.py, ui/src/views/GuideView.tsx, server/astrodeck/devices/backends/sim_backend.py
@@ -542,6 +570,8 @@ PATH-SAFETY RIDER: once real ids start flowing, `guide/native.py:1168, :1190, :1
 SECONDARY (honesty) -- ui/src/views/GuideView.tsx:650-656: inspect the response instead of toasting unconditionally, e.g. `const r = await api.del("/api/guide/calibration"); onToast("info", r?.cleared ? "Cleared saved calibration" : "There was no saved calibration to clear");`. Leave the button's `clearCalReason` gating (GuideView.tsx:520-523) alo
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 25. [important] The claim holds: `SAFETY_PRESETS` is dead code on the server and `SafetyConfig.preset` is stored but never applied by anything, so the documented "safety behaviour is configured through named presets 
 
@@ -559,6 +589,8 @@ Make the label and the numerics agree on the server; the UI must stop being the 
 3. ui/src/components/settings/SafetyLimitsPanel.tsx:28-48 -- once the server owns the semantics, delete the hand-mirrored `PRESETS` table (and the comment at :31-32 that documents why it exists) or serve it from the server, so the two tables cannot drift again. If the table must stay client-side for now, at minimum add `clo
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 26. [important] POST /api/alerts compares the delivery identity BEFORE restoring the blanked token, so every save of a credential-bearing sink silently clears `verified` even when nothing was re-pointed -- I reproduc
 
@@ -578,6 +610,8 @@ MUST NOT CHANGE:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 27. [important] rbac.py's docstring claims it "enforces the four invariants from the plan," but invariant (4) -- identity-disclosing GETs must carry an auth dependency -- is never implemented anywhere, and the invari
 
 **Files:** server/astrodeck/auth/rbac.py, server/astrodeck/api/app.py, server/astrodeck/auth/routes.py, server/tests/test_rbac_boot_assertion.py, docs/superpowers/specs/2026-06-16-pluggable-backends-rbac-remote-design.md
@@ -594,6 +628,8 @@ Two changes in server/astrodeck/auth/rbac.py; do not touch the existing exemptio
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 28. [important] The promise at guide/native.py:92-96 ("a transient guide-camera exposure fault is absorbed by bounded retry+backoff around every guide/cal exposure") is broken -- but NOT by the mechanism the candidat
 
 **Files:** server/astrodeck/guide/native.py, server/astrodeck/devices/alpaca.py, server/astrodeck/devices/backends/native_backend.py, server/astrodeck/devices/sim.py, server/tests/test_native_guider_expose_retry.py
@@ -609,6 +645,8 @@ Two changes in server/astrodeck/auth/rbac.py; do not touch the existing exemptio
 4. server/tests/test_native_guider_expose_retry.py -- add one test per path that injects a NON-`DeviceError`: (a) `_expose` absorbs 2 of them and returns a frame; (b) `_guide_loop` survives 4 exhausted non-DeviceError frames (`_fault_frames == 4`, task alive) and dies on the 5th with `_lost is True`; (c) `_calibrate` raises `DeviceError`, not the raw transport error. Also update the co
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 29. [minor] The phd2_backend module header asserts `discoverable = False` and "not auto-discovered", but the class sets `discoverable = True` and `discover()` really returns a PHD2 offer -- the header is stale do
 
@@ -635,6 +673,8 @@ Must NOT change:
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 30. [minor] `build_breakdowns` is dead code that has never had a caller in any commit, and its docstring names as its use case ("re-hydrating a reporter") the exact operation the code in the same file deliberatel
 
 **Files:** server/astrodeck/sequence/report.py, server/astrodeck/sequence/__init__.py, server/tests/test_report.py
@@ -648,6 +688,8 @@ If it is deliberately kept as a future utility, then at minimum strike the false
 Must NOT change: `_Totals` (report.py:124-233) or its `add`/`breakdowns`/`from_report` methods; the live headline path `self._totals.breakdowns()` at report.py:359; the `attach_existing` seeding at report.py:427-429 including its comment; the `_MAX_FRAMES` downsample at report.py:306-308. Do not "fix" this by wiring `build_breakdowns` into `attach_existing` -- that is the bug the C1-19 comment exists to prevent.
 
 ---
+
+**DONE (shipped 0.2.44).**
 
 ## 31. [minor] Two docstrings on the AM5 pulse-guide path describe a west strategy that the code has never used -- they name rate index R3 and a delivered rate of ~0.9x sidereal, while the code sends R2 and every ot
 
@@ -667,6 +709,8 @@ MUST NOT CHANGE: `_PULSE_WEST_RATE_CMD = "R2"` (:60), `_PULSE_DEC_RATE_CMD = "R1
 
 ---
 
+**DONE (shipped 0.2.44).**
+
 ## 32. [minor] Confirmed: on the sim polar provider, Pause publishes `state="paused"` but the sim driver never reads the pause flag -- it keeps streaming errors (still labelled "paused") and finishes with "polar ali
 
 **Files:** server/astrodeck/polar/session.py, server/astrodeck/polar/native.py, server/astrodeck/providers.py, server/astrodeck/api/app.py, ui/src/views/PolarView.tsx, ui/src/store.ts, docs/superpowers/specs/2026-06-15-polar-alignment-design.md
@@ -684,3 +728,74 @@ Make the sim honor the flag it is paused with, and stop `pause()` from asserting
 4. Add a regression test alongside server/tests/test_polar.py (which today has zero pause/resume coverage -- grep for "pause" in test_polar.py and test_polar_native.py returns nothing): start the sim session, pause during the convergence phase, assert no further `polar` event is published for N ticks and that the session has NOT reached `state="done"`, then resume and assert it completes.
 
 Do NOT "fix" this by hiding or disabling the Pause button for sim in ui/src/views/PolarView.tsx -- the spec (docs/superpowers/specs/2026-06-15-polar-alignment-design.md) makes exercising the full Start/Pa
+
+---
+
+# Still open after the 2026-08-04 sweep
+
+All 32 entries above are closed. These were found WHILE closing them and were
+not part of the verified set, so none has been through an adversarial pass.
+Ordered worst first.
+
+## A. [important] `/api/discover/*` is gated on `view.status`, so a VIEWER can enumerate the LAN
+
+Pinning the SSRF guard (#9) closed the DNS-rebinding window; it did not answer
+why a viewer may scan at all. `GET /api/discover/nina` sweeps the local /24 with
+no host argument (`nina.py::_local_subnets`), and `/api/discover/alpaca` probes
+any routable host the caller names. Both hold `CAP_VIEW_STATUS`.
+
+The likely fix is raising all four discovery routes to `CAP_CONFIG_BACKEND`,
+matching every sibling POST and the fact that the only UI caller is
+`DriversPanel` (a Settings surface, `config.backend` in practice). NOT done on
+2026-08-04 because it could not be verified end-to-end against the Equipment
+screen that night, and breaking device assignment is worse than the leak.
+Verify `discoverHardware()` and the connect wizard before changing it.
+
+## B. [minor] `ui/src/api/backends.ts` types `getProfile` as a full `Profile`
+
+After #10 a viewer/operator gets a PARTIAL record (no `host`/`port`/`port_path`,
+no `nina_*`/`phd2_*`, no `site_name`). The TS type still promises all of them.
+No live flow breaks -- the Equipment editor is `config.backend`-gated, and every
+profile WRITE requires that cap, so the read-modify-write in
+`ProfileList.onUpdateFromRig` can only run for a holder, who gets the full
+record. The type should gain optionals so a future caller cannot be misled.
+
+## C. [minor] An alert sink's `verified` is still cleared when a client OMITS the field
+
+#26 fixed the ordering: a blanked token echoed back no longer reads as a
+re-point. But `_merge_alert_verified` keeps whatever `verified` arrived, so a
+client that omits the key entirely still clears the badge. The real client
+echoes it (`AlertsPanel.tsx` spreads the sink), so this is not the reported bug.
+
+## D. [minor] `POST /api/polar/pause` on an idle session returns 200, not 409
+
+#19 stopped it publishing `state="paused"` with no session -- the part that
+stranded the UI. Turning the no-op into a 409 needs a `try/except RuntimeError`
+on the two handlers in `api/app.py` AND a UI that expects it; deliberately not
+done, since the button only renders while a session runs.
+
+## E. [minor] `GET /api/me` is covered by `IDENTITY_PATHS`, not by the `identity=True` flag
+
+Invariant (4) holds either way (#27). Adding the flag to its `@declare` would be
+belt-and-braces against someone renaming the path.
+
+## F. [deliberate] A rig with NO focuser rewrites the last remembered position forever
+
+The carry-forward in #22 has no expiry. Nothing reads the value on such a rig,
+and expiring it would reintroduce the blanking bug it exists to prevent.
+
+## G. [deliberate] `on_missed="skip"` does not fire for `start_mode="now"`
+
+A Now target freezes its start at run start, so every target queued behind the
+first is "late" by construction and the naive rule silently drops an entire
+plan. Bounding a Now target is what stop/max-run already does (#14).
+
+## H. [important] The privacy rule quoted the value it forbids
+
+Not an audit finding -- found by the pre-push scan on 2026-08-04. The standing
+constraint ("the real site coordinates and label must NEVER appear in code,
+tests, or docs") was pasted into 26 spec/plan docs as boilerplate that SPELLS
+OUT both coordinates and the label, 50 occurrences in tracked files. Redacted in
+the working tree, but **git history still carries them** -- decide whether that
+warrants a history rewrite. `ui/src/lib/__tests__/troubleshoot.test.ts` keeps
+the literals ON PURPOSE: it is the guard asserting they never reach an export.

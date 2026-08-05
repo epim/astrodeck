@@ -114,8 +114,8 @@ runnable; there is no target-less "plan" to drop steps onto).
 
 ## 2. Global Constraints (verbatim, binding)
 
-- **Privacy.** The real coordinates **[SITE-LAT] / [SITE-LON]** and the label
-  **"[SITE-LABEL]"** MUST NEVER appear in code, tests, or docs. Site default is
+- **Privacy.** The real coordinates **<REDACTED-LAT> / <REDACTED-LON>** and the label
+  **"<REDACTED-SITE-LABEL>"** MUST NEVER appear in code, tests, or docs. Site default is
   **"My Observatory" / 0.0**. (This feature introduces no coordinates at all —
   templates carry only exposure recipes.)
 - **Never `git add -A`.** Stage explicit paths only.
