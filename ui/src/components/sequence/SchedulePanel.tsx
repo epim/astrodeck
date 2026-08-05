@@ -219,7 +219,12 @@ export default function SchedulePanel({ schedule, disabled, onChange }: {
               if missed
               <InfoDot
                 label="About the missed-window behavior"
-                content="wait — the engine holds and waits for this target's window to open. skip — if the window is already missed (or later closes) the engine skips this target for the night and moves on."
+                content={
+                  "wait — run this target whenever its window is open, even if the start passed while another target was shooting. " +
+                  "skip — drop it for the night once its start is more than 5 minutes past. " +
+                  "Either way a window that has already CLOSED (stop time, dawn, max run) is skipped: a closed window cannot be waited for. " +
+                  "A Now start has nothing to miss, so skip does not apply to it."
+                }
               />
             </span>
             <span className="inline-flex items-center gap-2">

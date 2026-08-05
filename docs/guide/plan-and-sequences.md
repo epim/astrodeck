@@ -192,8 +192,12 @@ Each target has a collapsible **schedule** controlling *when* it runs:
   climbs above this altitude (separate from the global mount-altitude safety
   floor).
 - **stop** — **None**, **Dawn**, or a **Time**; plus a **max run** cap.
-- **if missed** — **wait** (hold for the window to open) or **skip** (move on if
-  the window is already missed).
+- **if missed** — **wait** (run it whenever its window is open, even if the start
+  passed while another target was shooting) or **skip** (drop it for the night
+  once its start is more than 5 minutes past). A window that has already *closed*
+  — stop time, dawn, or max run — is skipped under both settings; a closed window
+  cannot be waited for. A **Now** start has nothing to miss, so **skip** does not
+  apply to it (use **stop** / **max run** to bound a run-now target).
 
 The engine freezes each window at start and runs targets in a visibility-sorted,
 skip-ahead order. A per-target altitude **spark** and runtime chips

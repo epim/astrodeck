@@ -44,7 +44,10 @@ class Schedule(BaseModel):
     stop_offset_min: int = 0
     stop_time: str | None = None
     max_run_min: int = 0               # 0 = no cap
-    on_missed: str = "wait"            # wait | skip  (default wait — C1-25)
+    # Literal, not str: the scheduler branches on this (a target whose start
+    # window opened long ago is dropped under "skip"), so a typo must 422 at the
+    # plan route rather than silently reading as "wait". Default wait — C1-25.
+    on_missed: Literal["wait", "skip"] = "wait"
 
 
 class Target(BaseModel):

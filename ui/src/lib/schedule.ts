@@ -39,7 +39,11 @@ export function scheduleSummary(s: Schedule | undefined): string {
   const illum = s.max_moon_illum_pct > 0 ? `Moon ≤ ${Math.round(s.max_moon_illum_pct)}%` : "";
   const begin = [start, gate, ha, sep, illum].filter(Boolean).join(" & ");
   const stop = stopLabel(s);
-  const missed = s.on_missed === "skip" ? "skip if missed" : "";
+  // "skip if missed" only means something when there is a start to miss: a
+  // "now" start is frozen at run start, so the engine never counts it as missed
+  // (else every target queued behind the first would be dropped).
+  const missed = s.on_missed === "skip" && s.start_mode !== "now"
+    ? "skip if missed" : "";
   if (!begin && !stop && !missed) return "Runs immediately";
   const head = begin || "Now";
   const tail = [stop, missed].filter(Boolean).join(" · ");

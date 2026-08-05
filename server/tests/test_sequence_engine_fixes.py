@@ -223,6 +223,61 @@ async def test_run_step_does_not_shoot_past_closed_window(sim_hub):
     assert engine._frames_done == 0
 
 
+async def test_run_calibration_does_not_shoot_past_closed_window(sim_hub):
+    """CALIBRATION obeys the same frozen boundary. The check lived only in the
+    light-frame loop, so a dark/flat target's "stop at dawn" / "max run" was
+    consulted once, at SELECTION — a 200-frame dark set then ran to its last
+    frame hours past the boundary."""
+    engine = SequenceEngine(sim_hub)
+    target = Target(name="darks", ra_hours=0.0, dec_deg=0.0, calibration=True,
+                    center=False, autofocus_first=False,
+                    steps=[ExposureStep(filter=None, exposure_s=0.05, count=3,
+                                        frame_type="Dark")])
+    engine.plan = SequencePlan(name="p", targets=[target], guide=False,
+                               safety_check=False)
+    engine._cfg = None            # safety gate no-op
+    engine._done = {}
+    now = time.time()
+    engine._frozen = {id(target): (now - 100, now - 1)}          # already closed
+
+    with pytest.raises(StopTarget):
+        await engine._run_calibration(0, target)
+    assert engine._frames_done == 0
+
+
+async def test_calibration_stop_boundary_leaves_the_flat_panel_off(sim_hub, monkeypatch):
+    """StopTarget is CAUGHT by the scheduler — the night carries on — so it is NOT
+    the abort/teardown path that runs ``_panel_off_safe``. A flat step cut short at
+    its own stop boundary must still leave the panel dark, or it burns through
+    every following target's frames."""
+    engine = SequenceEngine(sim_hub)
+    step = ExposureStep(filter=None, exposure_s=0.05, count=3, frame_type="Flat",
+                        adu_target=20000, panel_brightness=180)
+    target = Target(name="flats", ra_hours=0.0, dec_deg=0.0, calibration=True,
+                    center=False, autofocus_first=False, steps=[step])
+    engine.plan = SequencePlan(name="p", targets=[target], guide=False,
+                               safety_check=False)
+    engine._cfg = None
+    engine._done = {}
+
+    seen = {}
+
+    async def solved(_step, _target):
+        # stand in for the metering captures; the PANEL is the real sim device.
+        seen["lit"] = (await sim_hub.calibrator_status())["state"]
+        return 0.05, True
+    monkeypatch.setattr(engine, "_solve_flat_exposure", solved)
+
+    now = time.time()
+    engine._frozen = {id(target): (now - 100, now - 1)}          # already closed
+
+    with pytest.raises(StopTarget):
+        await engine._run_calibration(0, target)
+    # guard the test itself: a panel that was never lit proves nothing.
+    assert seen.get("lit") == "ready", "the flat panel was never turned on"
+    assert (await sim_hub.calibrator_status())["state"] == "off"
+
+
 # ------------------------------------ mount stops tracking during inter-target wait
 
 async def test_mount_stops_tracking_while_waiting_for_next_target(sim_hub, temp_store):
@@ -497,3 +552,125 @@ async def test_a_future_deadline_still_returns_at_the_deadline(sim_hub, monkeypa
     t0 = time.time()
     await engine._wait_until(time.time() + 0.05)
     assert time.time() - t0 < 5.0, "the wait overran its deadline"
+
+
+# ------------------------------------------------- "if missed: skip" is enforced
+#
+# ``Schedule.on_missed`` was written to the plan, round-tripped through the API
+# into session ledgers and rendered in the target summary — and read by nothing.
+# A target set to "skip" behaved exactly like "wait": the scheduler ran it hours
+# after its window opened.
+
+
+def _sched_target(name="Late", **sched):
+    t = _light_target(name=name,
+                      steps=[ExposureStep(filter="L", exposure_s=0.05, count=1)])
+    for k, v in sched.items():
+        setattr(t.schedule, k, v)
+    return t
+
+
+async def test_missed_start_predicate(sim_hub):
+    """The predicate reads the FROZEN start (never a re-resolved one — a
+    re-resolved past dusk rolls forward to tomorrow and the branch is
+    unreachable), and only fires for a target that opted in."""
+    site, twi = sim_hub.site, -12.0
+    now = time.time()
+
+    skip = _sched_target(start_mode="time", start_time="22:00", on_missed="skip")
+    wait = _sched_target(start_mode="time", start_time="22:00", on_missed="wait")
+    engine = SequenceEngine(sim_hub)
+    engine._frozen = {id(skip): (now - 3 * 3600, None),
+                      id(wait): (now - 3 * 3600, None)}
+
+    assert engine._missed_start(skip, now, site, twi) is True
+    assert engine._missed_start(wait, now, site, twi) is False, "wait is the default; it must never skip"
+
+    # a target reached a couple of seconds after its own start is NOT missed —
+    # a zero grace would let float jitter and the 5 s re-evaluation cadence eat a
+    # target that became ready at its own start instant.
+    fresh = _sched_target(start_mode="time", start_time="22:00", on_missed="skip")
+    engine._frozen[id(fresh)] = (now - 2.0, None)
+    assert engine._missed_start(fresh, now, site, twi) is False
+
+    # no frozen window / no start anchor at all => nothing to have missed.
+    orphan = _sched_target(start_mode="time", start_time="22:00", on_missed="skip")
+    assert engine._missed_start(orphan, now, site, twi) is False
+
+    # a RESUMED target that already has frames in the ledger was not missed — its
+    # window is re-frozen at the NEW run start, so it is hours "late" the moment
+    # the app restarts, and half a target must not evaporate on restart.
+    engine._done = {f"{skip.id}:{skip.steps[0].id}": 3}
+    assert engine._missed_start(skip, now, site, twi) is False
+    engine._done = {}
+
+
+async def test_start_now_target_is_never_missed(sim_hub):
+    """The regression this control could easily cause: ``start_mode="now"``
+    freezes its start at RUN START, so every queued target's start is hours old by
+    the time the scheduler reaches it. "Now" has no window to miss — a 5-target
+    all-now plan must still run target 5."""
+    engine = SequenceEngine(sim_hub)
+    now = time.time()
+    fifth = _sched_target(name="fifth", start_mode="now", on_missed="skip")
+    engine._frozen = {id(fifth): (now - 4 * 3600, None)}   # run started 4 h ago
+    assert engine._missed_start(fifth, now, sim_hub.site, -12.0) is False
+
+
+async def test_altitude_gated_target_is_not_missed_while_it_climbs(sim_hub):
+    """A target held below its own ``min_altitude_deg`` was not missed — the
+    engine was waiting for it, exactly as configured. Only a target that was
+    ELIGIBLE at its frozen start and did not get run counts as missed."""
+    from astrodeck.catalog.coords import lst_hours
+
+    site = sim_hub.site
+    lat, lon = float(site["latitude"]), float(site["longitude"])
+    now = time.time()
+    start = now - 3 * 3600
+    # 3 h before now the target sits 3 h east of the meridian (~56 deg at this
+    # declination); it transits (~90 deg) right about now.
+    ra = (lst_hours(lon, start) + 3.0) % 24.0
+
+    engine = SequenceEngine(sim_hub)
+    gated = Target(name="Climber", ra_hours=ra, dec_deg=lat, center=False,
+                   autofocus_first=False,
+                   steps=[ExposureStep(filter="L", exposure_s=0.05, count=1)])
+    gated.schedule.start_mode = "time"
+    gated.schedule.min_altitude_deg = 70.0
+    gated.schedule.on_missed = "skip"
+    engine._frozen = {id(gated): (start, None)}
+    assert engine._missed_start(gated, now, site, -12.0) is False
+
+    # same target, same frozen window, no altitude gate => it WAS runnable at its
+    # start and we never ran it: that is the missed case.
+    ungated = gated.model_copy(deep=True)
+    ungated.schedule.min_altitude_deg = 0.0
+    engine._frozen[id(ungated)] = (start, None)
+    assert engine._missed_start(ungated, now, site, -12.0) is True
+
+
+async def test_scheduler_skips_a_missed_target_and_runs_a_waiting_one(sim_hub, temp_store):
+    """End to end: the SAME plan, differing only in ``on_missed``. "skip" drops
+    the target whose window opened 3 h ago; "wait" runs it anyway (the shipped
+    default must not change)."""
+    set_safety(temp_store, enabled=False)
+    past = time.strftime("%H:%M", time.localtime(time.time() - 3 * 3600))
+
+    async def run(on_missed: str) -> int:
+        t = _sched_target(start_mode="time", start_time=past, on_missed=on_missed)
+        plan = SequencePlan(name=f"missed-{on_missed}", guide=False, dither_every=0,
+                            autofocus_every=0, meridian_flip=False,
+                            safety_check=False, targets=[t])
+        engine = SequenceEngine(sim_hub)
+        engine.start(plan)
+        try:
+            assert await wait_for(
+                lambda: engine.state.get("state") in ("complete", "error"),
+                timeout=60), engine.state
+            assert engine.state.get("state") == "complete", engine.state
+            return engine._frames_done
+        finally:
+            await engine.abort()
+
+    assert await run("skip") == 0, "a missed target set to skip must not be shot"
+    assert await run("wait") == 1, "wait is the default — it still runs the target"

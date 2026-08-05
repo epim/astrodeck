@@ -17,7 +17,12 @@ from astrodeck.sequence.models import Schedule, SequencePlan, Target
 def test_automation_keys_save_and_reload(tmp_path):
     path = tmp_path / "astrodeck.json"
     store = ConfigStore(path=path)
-    store.set_safety(SafetyConfig(preset="remote", on_unsafe="abort_park_warm",
+    # `preset` is DERIVED from the numerics on every read (2026-08-04), so this
+    # writes what "remote" IS and passes no label at all — which also pins the
+    # derivation: these six values must come back named, not as "custom".
+    store.set_safety(SafetyConfig(on_unsafe="abort_park_warm",
+                                  unsafe_consecutive=2, resume_when_safe=False,
+                                  max_pause_min=0, close_dome_on_unsafe=True,
                                   min_alt_deg=10.0, enabled=True))
     store.set_escalation(EscalationConfig(require_guiding=True,
                                           guiding_action="abort",
@@ -156,6 +161,18 @@ def test_old_plan_without_schedule_deserializes_unchanged():
     assert t.schedule.on_missed == "wait"
     # 4a fields untouched
     assert t.rotation_deg is None and t.mosaic_group is None
+
+
+def test_on_missed_rejects_a_value_the_engine_cannot_honor():
+    """``on_missed`` steers a real branch now, so a typo must 422 at the plan
+    route instead of silently reading as "wait" (the two shipped values are the
+    only two the scheduler implements)."""
+    assert Schedule(on_missed="skip").on_missed == "skip"
+    assert Schedule(on_missed="wait").on_missed == "wait"
+    with pytest.raises(Exception):
+        Schedule(on_missed="Skip")
+    with pytest.raises(Exception):
+        Schedule(on_missed="defer")
 
 
 def test_total_lights_excludes_calibration():
