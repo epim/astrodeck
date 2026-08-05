@@ -393,6 +393,20 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
         looping_at_each_rotate.append(hub.looping)
 
     monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)
+
+    # Stub the FIT as well as the rotation. The real engine rejects three solves
+    # that landed on the same sky ("mount did not move between points"), which is
+    # how this test stops the run — but it is a Rust wheel that CI's `server` job
+    # does not install, so there `_native` is None and the run died on an
+    # AttributeError instead. The subject here is the ORDERING of the camera
+    # yield against the first mount motion; making the stop deterministic on any
+    # host is what lets CI grade that at all.
+    class _RejectingFit:
+        @staticmethod
+        def tppa_from_three(*a, **k):
+            raise ValueError("mount did not move between points")
+
+    monkeypatch.setattr(nat, "_native", _RejectingFit)
     await _start_wedged_loop(sim_hub)
     assert sim_hub.looping is True
 
