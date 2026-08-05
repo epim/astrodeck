@@ -618,9 +618,15 @@ class SimGuideCamera(Camera):
         self._abort = asyncio.Event()
         self.full_well = 65535
         # A1 (final-branch-review I2) fault-injection knob: the next N expose
-        # calls raise DeviceError, driving the native guider's retry envelope
-        # and honest-death budget in tests. 0 = no injected faults.
+        # calls raise, driving the native guider's retry envelope and
+        # honest-death budget in tests. 0 = no injected faults.
         self.guide_expose_fail_next_n = 0
+        # ...and WHAT they raise (#28). This was hardcoded to DeviceError, which
+        # is exactly the one type the guider's retry envelope already handled —
+        # so the retry suite could not fail no matter how narrow that envelope
+        # was. A real adapter leaks httpx timeouts, OSError and struct.error;
+        # point this at any of them to inject one.
+        self.guide_expose_fail_exc: type[BaseException] = DeviceError
         # anchor the guide star's base center now, at construction — there is
         # only ever one SimGuideCamera per rig, so this is the rig's single
         # source of truth for where "zero guide error" points.
@@ -644,7 +650,8 @@ class SimGuideCamera(Camera):
                      target: str = "") -> CameraFrame:
         if self.guide_expose_fail_next_n > 0:
             self.guide_expose_fail_next_n -= 1
-            raise DeviceError("sim guide camera: injected exposure fault")
+            raise self.guide_expose_fail_exc(
+                "sim guide camera: injected exposure fault")
         self._abort.clear()
         # Fake out only the wall-clock dwell under tests (_sim_delay); the star
         # is rendered from ``time.time()`` + the requested ``seconds`` in
