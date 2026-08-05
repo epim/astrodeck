@@ -1629,19 +1629,42 @@ def create_app() -> FastAPI:
 
     # ------------------------------------------------------------ equipment
 
-    @app.get("/api/discover", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    # DISCOVERY IS AN ACTION, NOT A READ -- config.backend, not view.status.
+    #
+    # These five routes used to sit on view.status, alongside GET /api/drivers,
+    # on the reasoning that both answer "what equipment is there". That reading
+    # conflates two different things. GET /api/drivers describes what is already
+    # CONFIGURED: a passive read of our own state. Every route below makes the
+    # SERVER GO LOOK -- a UDP broadcast, a sweep of the local /24
+    # (devices/nina.py::_local_subnets, no host argument required), an outbound
+    # HTTP probe of a host the CALLER names, an enumeration of the COM drivers
+    # installed on this machine. A viewer link handed to someone on the internet
+    # could map the observatory's LAN through it.
+    #
+    # Nothing real loses access. Both callers are buttons on Settings > Backend
+    # Drivers and Equipment, and both panels already tell a non-holder
+    # "Read-only -- changing drivers needs config.backend": the scan results are
+    # only actionable by someone who can write a driver or a profile.
+    #
+    # The SSRF guard on /api/discover/alpaca stays exactly as it is. It is
+    # defence in depth, not a substitute: an authenticated operator must still
+    # not be able to make this server dial 169.254.169.254.
+
+    @app.get("/api/discover", dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def discover():
         return await alpaca_backend.discover()
 
-    @app.get("/api/discover/nina", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    @app.get("/api/discover/nina",
+             dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def discover_nina_instances(host: str = "", port: int = 1888):
         extra = [host] if host else None
         return await discover_nina(port=port, extra_hosts=extra)
 
-    @app.get("/api/discover/alpaca", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    @app.get("/api/discover/alpaca",
+             dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def discover_alpaca_one(host: str, port: int = 11111):
         """Server-side proxy for a manual Alpaca host/port scan (the browser
         can't do this directly — CORS). 502 with a differentiated cause so a
@@ -1660,8 +1683,8 @@ def create_app() -> FastAPI:
             raise HTTPException(502, str(e))
 
     @app.get("/api/discover/ascom-local",
-             dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+             dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def discover_ascom_local():
         """The native ASCOM scan (spec §3.2): registry-enumerated COM drivers
         per type, role-tagged, each carrying dev_type + dev_num addressing so
@@ -1695,7 +1718,9 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------- backend drivers (spec 2026-07-08)
     # GLOBAL driver config + the merged availability surface. Read = view.status
-    # (same as discovery); write = config.backend (same as every connect write).
+    # (a passive read of drivers we already have -- unlike /api/discover/*, which
+    # makes the server go LOOK and is therefore config.backend); write =
+    # config.backend (same as every connect write).
     # describe_all() never raises, so GET /api/drivers can't 500.
 
     @app.get("/api/drivers")
@@ -1772,8 +1797,9 @@ def create_app() -> FastAPI:
         bus.publish("config", config=redacted(config_store.cfg()))
         return {"deleted": driver_id, "config": _config_payload(principal)}
 
-    @app.get("/api/discover/{backend}", dependencies=[Depends(require(CAP_VIEW_STATUS))])
-    @declare(CAP_VIEW_STATUS)
+    @app.get("/api/discover/{backend}",
+             dependencies=[Depends(require(CAP_CONFIG_BACKEND))])
+    @declare(CAP_CONFIG_BACKEND)
     async def discover_backend(backend: str):
         """Delegate discovery to a named backend's ``discover()`` (unknown backend
         -> 404). A more general sibling of the legacy ``/api/discover``,

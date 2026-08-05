@@ -1467,3 +1467,53 @@ def test_the_profile_redaction_never_mutates_its_input(tmp_path, monkeypatch):
     assert "host" not in out["devices"][0]
     assert payload["devices"][0]["host"] == "10.42.0.5", "the input was mutated"
     assert payload["nina_host"] == "10.42.0.9" and "site_name" in payload
+
+
+# ---------------------------------------------------------------- discovery
+# Backlog finding A (2026-08-04). These five routes sat on view.status because
+# they were read as "what equipment is there", the same question GET
+# /api/drivers answers. But /api/drivers describes what is already CONFIGURED,
+# while every route below makes the SERVER GO LOOK: a UDP broadcast, a sweep of
+# the local /24 that needs no host argument at all, an outbound probe of a host
+# the CALLER names, an enumeration of this machine's installed COM drivers. A
+# viewer link handed to someone on the internet mapped the observatory's LAN.
+
+_DISCOVERY_ROUTES = (
+    "/api/discover",
+    "/api/discover/nina",
+    "/api/discover/alpaca?host=192.0.2.10&port=11111",
+    "/api/discover/ascom-local",
+    "/api/discover/sim",
+)
+
+
+def test_a_viewer_cannot_make_the_server_scan_the_network(tmp_path, monkeypatch):
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("viewer"))
+    with TestClient(app) as c:
+        for path in _DISCOVERY_ROUTES:
+            r = c.get(path)
+            assert r.status_code == 403, (
+                f"{path} answered {r.status_code} for a VIEWER -- discovery is "
+                f"an outbound action, not a read: {r.text[:200]}")
+
+
+def test_an_operator_cannot_either(tmp_path, monkeypatch):
+    """Running the sequencer does not include re-pointing the rig's hardware,
+    and the scan results are only actionable by config.backend."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("operator"))
+    with TestClient(app) as c:
+        for path in _DISCOVERY_ROUTES:
+            assert c.get(path).status_code == 403, path
+
+
+def test_an_admin_still_gets_to_scan(tmp_path, monkeypatch):
+    """The gate must not become a wall: the Equipment and Backend Drivers
+    panels are the whole point of these routes."""
+    _store, app = _make_client(tmp_path, monkeypatch)
+    _install(principal_for_role("admin"))
+    with TestClient(app) as c:
+        for path in _DISCOVERY_ROUTES:
+            r = c.get(path)
+            assert r.status_code != 403, f"{path} refused an ADMIN: {r.text[:200]}"
