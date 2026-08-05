@@ -435,7 +435,7 @@ class ZwoAm5Telescope(Telescope):
 
     async def guide_rates(self) -> tuple[float, float] | None:
         """The rates our emulated pulses ACTUALLY deliver (hardware-measured):
-        ra ~1x sidereal (tracking-suspend east / R3-west), dec ~0.5x (R1).
+        ra ~1x sidereal (tracking-suspend east / R2-west), dec ~0.5x (R1).
         (The mount's :GdG# setting governs only the inert :Mg*# path.)"""
         return (_PULSE_RA_RATE_DEG_S, _PULSE_DEC_RATE_DEG_S)
 
@@ -552,9 +552,11 @@ class ZwoAm5Telescope(Telescope):
     async def pulse_guide(self, direction: str, ms: int) -> None:
         """EMULATED pulse guide (native :Mg*# is inert; :M<dir># during
         tracking REPLACES the drive — see the module notes). Strategies:
-        east = tracking-suspend (exact 1x sidereal drift); west = R3+Mw
-        (~0.9x net west); n/s = R1 moves. Every path restores state in a
-        ``finally`` so cancellation can't leave the mount drifting."""
+        east = tracking-suspend (exact 1x sidereal drift), falling back to
+        R1+Me at 0.5x sidereal if tracking is already off; west = R2+Mw
+        (measured exactly 1x sidereal west); n/s = R1 moves. Every path
+        restores state in a ``finally`` so cancellation can't leave the
+        mount drifting."""
         d = direction.lower()[0]
         if d not in "nsew":
             raise DeviceError(f"{self.name}: bad guide direction {direction!r}")
