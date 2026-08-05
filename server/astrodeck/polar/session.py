@@ -36,7 +36,21 @@ async def wait_if_paused(session: Any) -> None:
     tolerant of a stub ``session`` (``getattr`` default) because the native
     driver is driven with fake sessions in tests. ``stop()`` cancels the driver
     task, so the sleep here is what lets a paused session still unwind.
+
+    Arriving here is ALSO the only evidence anybody has that the rig has
+    actually stopped: a driver only reaches a checkpoint between its steps, with
+    no exposure open and no slew outstanding (``tel.slew`` returns when the
+    mount stops reporting ``slewing``). So the first arrival for a given pause
+    is what promotes the session from "pausing" to "paused" — see
+    :meth:`PolarAlignSession._ack_pause_reached`. Nothing else may claim it:
+    ``pause()`` itself only raises the flag, and the 12° RA rotation it lands in
+    the middle of runs on for another 5-15 s.
     """
+    if not getattr(session, "_native_paused", False):
+        return
+    ack = getattr(session, "_ack_pause_reached", None)
+    if callable(ack):
+        ack()
     while getattr(session, "_native_paused", False):
         await asyncio.sleep(_PAUSE_POLL_S)
 
@@ -51,6 +65,11 @@ class PolarAlignSession:
         # NINA has its own mechanism (a ws "pause-alignment" action), so this
         # stays False for it and changes nothing about its behavior.
         self._native_paused = False
+        # Has a driver ARRIVED at ``wait_if_paused`` since the current pause was
+        # requested? That, not the POST returning, is when the mount has stopped
+        # — it is the difference between "pausing" and "paused" on the screen of
+        # someone with a hand on an altitude bolt.
+        self._pause_acked = False
         self.state: dict[str, Any] = self._idle()
 
     @staticmethod
@@ -65,12 +84,17 @@ class PolarAlignSession:
     def _publish(self, **kw: Any) -> None:
         # An explicit Pause is the USER's state; a driver may not downgrade it.
         # The native driver publishes state:"running" on every solve it had
-        # already started, which landed AFTER pause() wrote state:"paused" and
+        # already started, which landed AFTER pause() wrote the pause state and
         # flipped the UI's Resume button back to Pause — so the run looked live
         # while it was, in fact, waiting on the flag. Drop only the "running"
         # key; every other field (progress / az_error / *_direction / message)
-        # still streams, and the TERMINAL states must still land or a session
-        # that finishes while paused would stick on "paused" forever.
+        # still streams.
+        #
+        # ONLY "running". "pausing" and "paused" are the pause's own two states
+        # and have to get through — "paused" in particular is published from
+        # ``_ack_pause_reached`` while the flag is up, which is the whole point
+        # — and the TERMINAL states must still land or a session that finishes
+        # while paused would stick there forever with nothing left to clear it.
         if self._native_paused and kw.get("state") == "running":
             kw = {k: v for k, v in kw.items() if k != "state"}
         self.state = {**self.state, **kw}
@@ -86,6 +110,7 @@ class PolarAlignSession:
             raise RuntimeError("polar alignment is already running")
         self.state = self._idle()
         self._native_paused = False
+        self._pause_acked = False
         # Resolve the driver and record the source SYNCHRONOUSLY, before we
         # return. create_task only schedules the driver; its body (and its first
         # _publish(source=...)) hasn't run when the API handler reads
@@ -141,16 +166,42 @@ class PolarAlignSession:
         self._ws = None
         self._publish(state="idle", message="stopped", progress=0.0)
 
+    def _ack_pause_reached(self) -> None:
+        """A driver has ARRIVED at ``wait_if_paused``: NOW the rig has stopped.
+
+        Called from the primitive itself (see :func:`wait_if_paused`), because
+        that call site is the only place in the system that knows the driver is
+        between steps — no exposure open, no slew outstanding. Publishing
+        "paused" anywhere else is a claim about hardware we have not checked.
+
+        Idempotent: a driver hits the primitive several times per loop and only
+        the first arrival after a given ``pause()`` is the transition. Also a
+        no-op once the user has resumed, so a straggling call cannot re-park a
+        live run.
+        """
+        if not self._native_paused or self._pause_acked:
+            return
+        self._pause_acked = True
+        self._publish(state="paused", message="paused — the mount has stopped")
+
     async def pause(self) -> None:
-        # Nothing to pause: publishing state:"paused" with no session would
+        # Nothing to pause: publishing a pause state with no session would
         # STRAND the UI, which derives "a run is live" from that state string
         # (PolarView.tsx) — Resume/Stop would light up over nothing and Start
         # would be disabled, with no driver left to clear it.
         if not self.running:
             return
+        # Already stopping (or stopped). A second Pause — a REST client, or a
+        # double tap through a slow round trip — must NOT re-arm "pausing": the
+        # driver is parked inside ``wait_if_paused`` and will never re-enter it
+        # to ack, so the UI would sit on "Stopping…" over a mount that has been
+        # stationary for a minute.
+        if self._native_paused:
+            return
         # First-party drivers (native + sim): raise the flag they poll in
         # ``wait_if_paused`` so they stop capturing at the next yield point.
         self._native_paused = True
+        self._pause_acked = False
         # NINA runs its own alignment loop and ignores the flag; ask it over the
         # websocket instead. Best-effort — the plugin's acceptance of the action
         # is unverified against a live TPPA (no rig has confirmed it).
@@ -159,12 +210,28 @@ class PolarAlignSession:
                 await self._ws.send(json.dumps({"Action": "pause-alignment"}))
             except Exception:
                 pass
-        self._publish(state="paused", message="paused")
+        if self.state.get("source") == "nina":
+            # NINA never reaches ``wait_if_paused``, so nothing would promote
+            # "pausing" and the UI would sit on a disabled "Stopping…" with no
+            # way out. Its plugin owns the stop and tells us nothing about when
+            # it lands, so this stays the old best-effort claim — the honest
+            # two-step below needs a driver we can observe.
+            self._pause_acked = True
+            self._publish(state="paused", message="paused")
+            return
+        # NOT "paused" — the flag is only READ at the checkpoints, and an RA
+        # rotation already in flight keeps turning for another 5-15 s. The user
+        # of this screen is crouched at the mount with a hex key, so "stopped"
+        # is a claim about where their hands can safely be; say what is actually
+        # true and let ``_ack_pause_reached`` upgrade it.
+        self._publish(state="pausing",
+                      message="stopping — the mount may still be moving")
 
     async def resume(self) -> None:
         if not self.running:
             return
         self._native_paused = False
+        self._pause_acked = False
         if self._ws is not None:
             try:
                 await self._ws.send(json.dumps({"Action": "resume-alignment"}))
