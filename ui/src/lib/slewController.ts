@@ -289,6 +289,15 @@ export class SlewController {
         this.curAxis = null;
         this.curDir = null;
         this.mode = "idle";
+        // THE ONE EXIT THAT USED TO GO QUIET. Every other transition out of a
+        // hold — stopHold, forceStop, tripBelowHorizon — ends in emit(), which
+        // is the only thing that repaints the pad. This one did not, so a move
+        // POST that failed left the arrow lit and the feedback line reading
+        // "HOLD · 0.50°/s" over a mount that had already stopped: the error
+        // toast said one thing and the control said another. Emitted BEFORE the
+        // best-effort zero so the pad tells the truth even if that POST is lost
+        // as well.
+        this.emit();
         try {
           await this.o.postMove(axis, 0);
         } catch {

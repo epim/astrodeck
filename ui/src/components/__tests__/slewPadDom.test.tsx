@@ -243,6 +243,39 @@ test("after that release the pad accepts a NEW press", () => {
   });
 });
 
+// ------------------------------------------------- THE LOST RELEASE (#38)
+test("locking mid-press does not leave the pad dead for the rest of the night", () => {
+  // The screen lock engages with a finger down. The lock overlay then swallows
+  // the pointerup, so the handler that clears `activePointerId` never runs —
+  // and that ref is the multi-touch guard every later press is checked against.
+  // Left set, the pad looks entirely alive: arrows still depress, the keyboard
+  // path still works, and not one press reaches the mount.
+  captures.length = 0;
+  const held = arrow("east");
+  act(() => { held.dispatchEvent(pointer("pointerdown", 21)); });
+
+  // PRECONDITIONS. A press that took no capture never set the ref, and a press
+  // that started no hold is not the mid-press state the lock has to interrupt;
+  // either way the assertion at the end would pass with the fix reverted.
+  assert(captures.length === 1, "the press took no pointer capture — nothing was ever bound");
+  assert(/border-accent/.test(held.className),
+    "the press started no hold, so there is no interrupted press under test");
+
+  // NO pointerup is dispatched here, deliberately: that is the whole failure.
+  act(() => { useStore.setState({ locked: true } as never); });
+  assert(!/border-accent/.test(arrow("east").className),
+    "locking did not stop the slew — the lock effect never ran, so this test proves nothing");
+
+  act(() => { useStore.setState({ locked: false } as never); });
+
+  captures.length = 0;
+  press(arrow("north"), 22, () => {
+    assert(captures.length === 1,
+      "the pad rejected a fresh press after unlock — activePointerId still owns the id of a " +
+      "finger that is long gone, so every arrow animates and the mount never moves");
+  });
+});
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

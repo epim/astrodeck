@@ -358,6 +358,46 @@ test("a failed move post escalates to a stop and surfaces onError", async () => 
   eq(c.isHolding(), false, "not holding after a failed command");
 });
 
+// A failed move must also REPAINT THE PAD, not only toast (audit #37).
+//
+// The escalation above was already tested; what was missing is the half the
+// user looks at. Every other exit from a hold ends in `emit()` — stopHold,
+// forceStop, tripBelowHorizon — and this one did not, so the arrow stayed lit
+// and the feedback line kept reading "HOLD · 0.50°/s" over a mount that had
+// stopped: the toast said one thing and the control said the opposite.
+//
+// Driven at module scope rather than inside `test(...)` because this harness's
+// `test` does not await an async body: assertions made after an await land in a
+// promise nobody inspects, and the file would score them as passes.
+const emitH = makeHarness({
+  postMove: async (_axis, r) => { if (r !== 0) throw new Error("network"); },
+});
+const emitC = new SlewController(emitH.opts);
+emitC.startHold("ra", 1);
+const emitsAtPress = emitH.states.map((s) => s.mode);
+// three ticks: the failing postMove, its best-effort zero, and the catch.
+await Promise.resolve();
+await Promise.resolve();
+await Promise.resolve();
+const emitsAfterFailure = emitH.states.map((s) => s.mode);
+
+test("a failed move post repaints the pad instead of leaving the arrow lit", () => {
+  // PRECONDITION. Without this, "the last state is idle" is true from the very
+  // first render of a pad that never held anything, and the assertion below
+  // would pass with the fix reverted.
+  eq(emitsAtPress.length, 1, "the press should have emitted exactly one state:");
+  eq(emitsAtPress[0], "holding", "the press must actually start a hold:");
+
+  assert(emitsAfterFailure.length > emitsAtPress.length,
+    "the failure emitted NO state change — the controller went idle while the pad " +
+    "still shows the lit arrow and the hold rate it is no longer slewing at");
+  eq(emitsAfterFailure[emitsAfterFailure.length - 1], "idle",
+    "the state the pad was last told:");
+  const last = emitH.states[emitH.states.length - 1];
+  eq(last.axis, null, "the arrow highlight is keyed on axis; it must be cleared:");
+  eq(last.dir, null, "…and on dir:");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console
