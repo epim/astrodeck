@@ -62,6 +62,8 @@ class CoolAdapter(FakeAdapter):
     def set_cooler(self, on): self._cooler = on
     def get_temperature(self): return -10.0 if self._cooler else self._temp
     def get_cooler_power(self): return 42 if self._cooler else 0
+    def get_target_temp(self): return self._target
+    def get_cooler_on(self): return self._cooler
     def set_dew_heater(self, power): self.calls.append(f"dew:{power}")
 
 
@@ -141,6 +143,54 @@ async def test_cooling_delegates_to_adapter():
     assert ca._cooler is True and ca._target == -10.0
     assert await cam.get_temperature() == -10.0
     assert await cam.cooler_power() == 42
+
+
+async def test_native_camera_reports_its_cooler_state_for_the_frame_header():
+    """``fitsio`` writes SET-TEMP from the hub's ``getattr(cam, "get_cooler")``.
+
+    ``NativeCamera`` had no such attribute — only the Alpaca, NINA, ASIAIR and
+    sim cameras did — so on a native rig the getattr simply came back None and
+    every frame was written with no SET-TEMP. The setpoint is what tells a later
+    calibration match which darks belong to which lights, so its absence is
+    silent until the night you try to use the library."""
+    ca = CoolAdapter()
+    cam = NativeCamera(ca)
+    await cam.connect()
+    assert callable(getattr(cam, "get_cooler", None)), \
+        "the header writer reaches this by getattr; absent means no SET-TEMP"
+
+    await cam.set_cooler(True, target_c=-10.0)
+    assert await cam.get_cooler() == {"on": True, "target_c": -10.0, "power": 42}
+
+    await cam.set_cooler(False)
+    off = await cam.get_cooler()
+    assert off["on"] is False and off["power"] == 0
+
+
+async def test_a_camera_with_no_cooler_reports_none_rather_than_a_shape():
+    """No cooler is not "cooler off at 0 °C" — the header must omit SET-TEMP,
+    not record a number nothing is holding."""
+    cam = NativeCamera(FakeAdapter())
+    await cam.connect()
+    assert cam.can_cool is False
+    assert await cam.get_cooler() is None
+
+
+async def test_an_unreadable_setpoint_stays_unknown_instead_of_being_guessed():
+    """A brand whose SDK cannot read the setpoint back gets None, not the last
+    value we happened to command — the base adapter's default. Guessing here
+    would stamp a confident SET-TEMP on a frame nobody verified."""
+    class Deaf(CoolAdapter):
+        def get_target_temp(self): return None
+        def get_cooler_on(self): return None
+
+    ca = Deaf()
+    cam = NativeCamera(ca)
+    await cam.connect()
+    await cam.set_cooler(True, target_c=-15.0)
+    state = await cam.get_cooler()
+    assert state["target_c"] is None and state["on"] is None
+    assert ca._target == -15.0, "the command still reached the device"
 
 
 async def test_expose_applies_read_mode_before_start():

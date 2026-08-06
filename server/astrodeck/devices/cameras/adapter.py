@@ -97,6 +97,17 @@ class CameraAdapter(ABC):
     def get_cooler_power(self) -> int | None:
         return None
 
+    def get_target_temp(self) -> float | None:
+        """The cooler SETPOINT the camera is holding, or None when this brand's
+        SDK cannot read it back. Distinct from ``get_temperature`` (the sensor's
+        actual temperature) — a frame's header wants both, and the difference
+        between them is how you tell a stabilised cooler from a losing one."""
+        return None
+
+    def get_cooler_on(self) -> bool | None:
+        """Whether the TEC is engaged, or None when unreadable."""
+        return None
+
     def set_dew_heater(self, power: int) -> None:
         raise DeviceError("camera has no dew heater")
 
