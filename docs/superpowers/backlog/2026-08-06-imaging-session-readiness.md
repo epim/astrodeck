@@ -142,6 +142,47 @@ unmodelled by our config.
 
 `pier_side: unknown` also means the flip logic has no input to work from.
 
+## 7a. AUDIT VERDICT (2026-08-06): several guards are not merely off, they are inert
+
+`server/tests/test_unattended_night_guards_audit.py` pins what these settings
+ACTUALLY do today rather than asserting they are good. Seven of its tests
+document a GAP and each names what would have to change for it to be deleted.
+The findings, by test name:
+
+**Dead config — read by no production code at all:**
+- `test_reconnect_resume_and_retries_are_read_by_no_production_code`
+- `test_hub_reconnect_role_has_no_caller`
+- `test_nothing_ever_publishes_the_reconnect_alert_event`
+
+So `reconnect_resume` / `reconnect_retries` are the project's dominant defect
+class again: stored, echoed by the API, rendered in the UI, consumed by nothing
+(same shape as audit findings #14 `on_missed`, #22, #25 `SAFETY_PRESETS`).
+
+**Guards that exist but cannot bite as configured:**
+- `test_watchdog_is_not_started_at_the_rigs_zero_setting` — 0 means no watchdog
+- `test_watchdog_trip_is_warn_only_and_ignores_on_unsafe` — a trip does not
+  honour `on_unsafe`, so even set non-zero it only warns
+- `test_watchdog_is_blind_while_frames_are_not_expected` — the blind window
+- `test_require_cooling_is_inert_without_a_plan_setpoint`
+- `test_require_guiding_is_inert_when_the_plan_does_not_ask_to_guide`
+- `test_guiding_action_warn_is_indistinguishable_from_the_guard_being_off`
+
+**Silence:**
+- `test_empty_alert_list_swallows_a_dying_run_in_silence` (and its positive
+  control, `test_one_configured_sink_does_receive_the_dying_run`)
+- `test_empty_deadman_url_pings_nothing_and_says_nothing` (positive control
+  `test_configured_deadman_url_is_actually_pinged`)
+
+**Safety armed with no source:**
+- `test_a_whole_run_completes_with_safety_armed_and_no_monitor` — a whole run
+  completes with `safety.enabled: true`, `on_unsafe: "pause"` and
+  `connected: false`. The gate reads as protection and permits everything.
+
+Fix priority for an unattended night: alerts + deadman first (without them no
+other failure is even observable), then the watchdog honouring `on_unsafe`,
+then the safety-monitor honesty. `reconnect_resume` is dead config — either
+implement it or delete it, but it must stop advertising a behaviour.
+
 ## 7. Unattended failure handling is entirely off
 
 ```
@@ -205,6 +246,38 @@ tracking guard, but no photons.
 - Filter focus offsets (§5)
 - Polar adjust phase (§9)
 - Plate-solve-dependent centring at the session level
+
+## STATUS AT 2026-08-06 14:20 — what is done and what is next
+
+**Deployed and live: 0.2.48.** Rig parked at Dec +90, tracking off, all
+scheduled tasks armed. Nine local commits, NOTHING PUSHED (the owner asked me
+to stop pushing: CI runs on every push to main and it burns their runner
+minutes). Full backend suite 3705 passed, 19 skipped.
+
+DONE TODAY, hardware-verified:
+- Guide focal length set to **150 mm** (ZWO 30 mm f/5 guider), config v143 —
+  unblocks every guiding number being in real arcsec (§1)
+- Solar avoidance on slews, including the disarm (5a, 5c) — see below
+- **Sun-approach watchdog built and it parked the tube on hardware** (#150, 5b)
+- **Park-after-stop fixed and re-verified** (#151)
+- Autofocus `EAFMove` serialisation + V-curve instrumentation (#143, code side)
+- Unattended-guards audit landed — see §7a, the verdict is worse than "off"
+
+STILL TO DO IN DAYLIGHT, in the order I would take them:
+1. **#142 dark-frame sequence end to end** — still the highest-value test
+   available without sky; nothing else exercises the whole chain
+2. **#144 cooling** — set a setpoint, cool, hold, warm ramp; measure the real
+   rate against the recorded 5.0 -> 1.72 C/min
+3. **#146/#147** — alerts + deadman FIRST (without them no other failure is
+   observable), then the watchdog honouring `on_unsafe`
+4. **#145 meridian flip** — owner chose "enable and validate in daylight first";
+   `pier_side` currently reads `unknown`, which the flip logic needs
+
+TONIGHT (owner decisions): clear window **21:49 to about 23:00**, then the
+marine layer returns. Point Dec +20..+68 within ~1.5 h of the meridian —
+roughly **RA 18h15m / Dec +40** at the start. Slew off the park position first
+(Dec +90 is inside the pole guard). Then polar-align, then **attempt a
+first-light guide calibration** (#141, #149).
 
 ## Hardware validation results, 2026-08-06 (daylight, cap on, Dark filter closed)
 
