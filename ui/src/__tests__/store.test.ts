@@ -597,6 +597,41 @@ test("calibration: noteLightFrame accumulates identical frames and refreshes tem
   eq(useStore.getState().lastLight?.tempC, -9, "temp refreshes to latest");
 });
 
+// --------------------------------- monitor: an "aborting" frame is NOT terminal
+test("monitor: the run banner survives the teardown and clears when it lands", () => {
+  useStore.setState({ sequence: { state: "idle" }, runBanner: null, view: "capture", autoMonitor: false });
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "running", plan_name: "NGC7000 SHO", progress: { frames_done: 4, frames_total: 20, percent: 20, elapsed_s: 900, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  assert(!!useStore.getState().runBanner, "PRECONDITION: no banner to keep");
+
+  // The engine publishes this for the WHOLE ~210 s wind-down (abort the
+  // exposure, stop the guider, panel off, drain the thumbs) and only says
+  // "aborted" once the rig has actually stopped. The banner is the only thing
+  // outside the Monitor that says a run is happening, so clearing it here took
+  // the run off every other screen while the rig was still moving.
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "aborting", plan_name: "NGC7000 SHO", detail: "stopping the run", progress: { frames_done: 4, frames_total: 20, percent: 21, elapsed_s: 940, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  const s = useStore.getState();
+  assert(!!s.runBanner && s.runBanner.active,
+    "the run banner was cleared while the rig was still tearing the run down");
+  eq(s.runBanner!.percent, 21, "the banner froze instead of following the teardown");
+  eq(s.sequence.state, "aborting", "the frame never reached the sequence slice");
+
+  // ...and the TERMINAL state does clear it.
+  useStore.getState().handleEvent({
+    type: "sequence",
+    data: { state: "aborted", progress: { frames_done: 4, frames_total: 20, percent: 21, elapsed_s: 950, rejected: 0 } } as unknown as Record<string, unknown>,
+    ts: 0,
+  });
+  eq(useStore.getState().runBanner, null, "the banner outlived the run it describes");
+});
+
 // ---------------------------------------------------------------- report
 const total = passed + failed;
 // eslint-disable-next-line no-console

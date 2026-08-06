@@ -197,7 +197,7 @@ const text = (): string => container.textContent || "";
  *  supposed to be replacing. */
 const badge = (): string => {
   const el = [...container.querySelectorAll("span")].find((s: any) =>
-    /^(RUNNING|PAUSING|PAUSED|COMPLETE|ERROR|ABORTED)$/.test((s.textContent || "").trim()));
+    /^(RUNNING|PAUSING|PAUSED|ABORTING|COMPLETE|ERROR|ABORTED)$/.test((s.textContent || "").trim()));
   return el ? (el.textContent || "").trim() : "";
 };
 
@@ -493,6 +493,120 @@ await frame("running", { frameStartedAtMs: Date.now() - 20_000, exposureS: 300 }
 test("…and the timer stops again when the pause is cancelled", () => {
   assert(live500.size === 0, `${live500.size} 500 ms timer(s) survived the resume`);
 });
+
+// ------------------------------------------- THE TEARDOWN IS A LIVE RUN (#9b)
+// The engine publishes state="aborting" for the WHOLE wind-down — abort the
+// exposure, stop the guider, panel/cover off, finalize the report, drain the
+// thumbnails — and only says "aborted" once the rig has actually stopped. The
+// client's is-live predicates were `running || paused`, so that frame read as
+// "not a run": the whole panel (progress, badge, and the Abort control itself)
+// unmounted for the ~210 s teardown, and the local latch's `if (!running)`
+// deleted the "Aborting…" label the instant the server started agreeing with
+// it. Nothing on screen, over a rig that is still moving — strictly worse than
+// the stale RUNNING panel it replaced.
+await frame("running", { frameStartedAtMs: Date.now() - 5_000 });
+abortReply = "hang";
+{
+  const b = byText(/Abort/);
+  const ev = (type: string) => {
+    const e = new win.Event(type, { bubbles: true, cancelable: true });
+    (e as any).pointerId = 1; (e as any).pointerType = "touch";
+    (e as any).button = 0; (e as any).isPrimary = true;
+    return e;
+  };
+  const before = posts.length;
+  await act(async () => { b.dispatchEvent(ev("pointerdown")); });
+  await settle(900);
+  await act(async () => { b.dispatchEvent(ev("pointerup")); });
+  await settle(30);
+  test("precondition: the hold fired and the row latched before the frame lands", () => {
+    assert(posts.slice(before).some((p) => p.includes("/api/sequence/abort")),
+      "the hold never reached the abort route, so nothing below is under test");
+    assert(byText(/Aborting/) != null,
+      "the row never entered its own aborting state, so the frame below has " +
+      "nothing to preserve");
+  });
+}
+
+// The engine's first teardown frame.
+await frame("aborting", { frameStartedAtMs: null });
+
+test("the panel stays on screen for the whole teardown", () => {
+  assert(badge() === "ABORTING",
+    `the badge reads "${badge()}" on the engine's own aborting frame — the run ` +
+    "panel unmounts and the operator has nothing on screen while the rig stops");
+  assert(/Sequence · NGC7000 SHO/.test(text()),
+    "the run panel itself is gone during the teardown");
+  // The badge's WORD survives the unknown-state fallback (it upper-cases
+  // whatever it was handed), so read the tone too: the fallback paints an
+  // accent/info chip, which is the same chip a NINA handover gets.
+  const chip = [...container.querySelectorAll("span")].find(
+    (s: any) => (s.textContent || "").trim() === "ABORTING");
+  const cls = chip ? chip.className : "";
+  assert(/text-warn/.test(cls),
+    `the ABORTING badge is toned "${cls}" — a rig that has not stopped yet reads ` +
+    "the same as one that is idling or handed over");
+  assert(/blink/.test(cls),
+    "the badge is static while a teardown is running — the blink is the channel " +
+    "that survives a red-light screen where hue barely reads");
+});
+
+test("…and the Abort control stays with it, reporting instead of inviting", () => {
+  const b = byText(/Aborting/);
+  assert(b != null,
+    "the 'Aborting…' label was deleted by the very frame that confirms it — the " +
+    "abort now looks like it never happened, on the control an operator reaches " +
+    "for when something is already wrong");
+  assert(b.disabled === true,
+    "the Abort is pressable during its own teardown: a second one used to cancel " +
+    "a task already inside its cancellation handler and sever the wind-down");
+  assert(b.getAttribute("aria-busy") === "true", "no aria-busy for a screen reader");
+  assert(!/parking/i.test(b.textContent || ""),
+    "the button claims a park; the user-abort path ends the exposure and the " +
+    "guider and leaves the mount tracking (engine._safe_stop)");
+});
+
+test("…and neither Pause nor Resume is offered on a run being torn down", () => {
+  assert(byText(/^Pause$/) == null,
+    "Pause is on screen during a teardown — the engine refuses it, so it is a " +
+    "button that cannot do what it says");
+  assert(byText(/^Resume$/) == null && byText(/Cancel pause/) == null,
+    "a resume control is offered for a run whose task has already been cancelled");
+});
+
+// A CLIENT THAT NEVER SAW THE PRESS. The local latch is what carried the state
+// above; a phone that unlocks mid-teardown, or a second browser, has none. The
+// server frame alone has to be enough.
+{
+  const fresh = win.document.createElement("div");
+  win.document.body.appendChild(fresh);
+  const freshRoot = createRoot(fresh);
+  await act(async () => { freshRoot.render(createElement(SequenceView)); });
+  await settle(20);
+  const freshText = (): string => fresh.textContent || "";
+  const freshBtn = (re: RegExp): any =>
+    [...fresh.querySelectorAll("button")].find((b: any) => re.test((b.textContent || "").trim()));
+  test("a client that arrived mid-teardown sees the live panel too", () => {
+    assert(/Sequence · NGC7000 SHO/.test(freshText()),
+      "a client with no local abort latch sees no run panel at all while the rig " +
+      "is tearing down — the state on the wire is the only thing it has");
+    assert(/ABORTING/.test(freshText()),
+      `no ABORTING badge on a fresh mount: ${freshText().slice(0, 200)}`);
+    const b = freshBtn(/Aborting/);
+    assert(b != null && b.disabled === true,
+      "the Abort control is missing (or live) for a client that did not witness " +
+      "the press");
+  });
+  await act(async () => { freshRoot.unmount(); });
+  fresh.remove();
+}
+
+await frame("aborted", { frameStartedAtMs: null });
+test("…and the terminal state still ends it", () => {
+  assert(badge() === "ABORTED", `the teardown never terminated (badge: "${badge()}")`);
+  assert(byText(/Aborting/) == null, "the aborting row outlived the teardown");
+});
+abortReply = "ok";
 
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });

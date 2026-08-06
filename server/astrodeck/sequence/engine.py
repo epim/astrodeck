@@ -61,6 +61,12 @@ DITHER_COST_S = 8.0         # seed event costs; replaced by measured averages
 AF_COST_S = 45.0
 FLIP_COST_S = 90.0
 
+# States the run has FINISHED in. "aborting" is deliberately not one: it names a
+# teardown that is still running, and every consumer that treats it as terminal
+# (the run panel, the Abort control, the monitor banner) blanks itself over a rig
+# that has not stopped yet.
+_TERMINAL_STATES = frozenset({"complete", "aborted", "error"})
+
 # --- safety/scheduling constants (Batch 4b §1.9) ---------------------------
 SAFETY_PAUSE_POLL_S = 5.0       # re-read cadence while paused-for-safety
 SAFETY_SEED_WAIT_S = 1.0        # max wait for the own-cadence poller's first read
@@ -289,6 +295,12 @@ class SequenceEngine:
         self._pending_skips: set[str] = set()
         self._cfg = None                    # config snapshot taken at start()
         self._dawn_cutoff = False           # scheduler ran out of open windows
+        # A teardown is in flight (``abort()`` between its first publish and the
+        # terminal one). NOT the same question as ``self.running``, which stays
+        # True for the whole wind-down and so cannot tell a live run from one
+        # that is being killed. Read by the second-caller guard and by the ETA
+        # suppression — see abort() and _set_state().
+        self._aborting = False
         # AlertDispatcher for the external dead-man's-switch + progress heartbeat
         # (§1.8/§1.9-F). Injected by the app wiring (set hub.dispatcher); the
         # engine looks it up lazily via self.hub so there's no import cycle. When
@@ -375,12 +387,24 @@ class SequenceEngine:
         self._task = asyncio.create_task(self._run())
 
     def pause(self) -> None:
+        # A teardown is not pausable. ``self.running`` is still True inside it,
+        # so without this the route would publish state="paused" over a run
+        # whose task is already cancelled — the client's is-live predicates
+        # would light Resume on a rig that is winding down and never comes back.
+        if self._aborting:
+            return
         self._paused.clear()
         if self._pause_started_at is None:
             self._pause_started_at = time.time()
         self._set_state(state="paused")
 
     def resume(self) -> None:
+        # Same window, worse consequence: a resume during the teardown would
+        # publish state="running" (with a full live ETA) for a run that has been
+        # cancelled, which un-hides every control the abort just took away and
+        # restarts a finish clock counting down to nothing.
+        if self._aborting:
+            return
         if self._pause_started_at is not None:
             self._paused_accum_s += time.time() - self._pause_started_at
             self._pause_started_at = None
@@ -514,19 +538,74 @@ class SequenceEngine:
         return 0 < (ttf_h * 3600.0) <= remaining_window_s
 
     async def abort(self) -> None:
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
-        # the main run is now fully stopped, so no NEW thumb can be spawned
-        # concurrently -- this always drains exactly the pending set (Task 6
-        # review, Important #1: no orphaned renders / "destroyed but pending"
-        # warnings at interpreter exit).
-        await self._drain_thumb_tasks()
-        self._set_state(state="aborted", detail="sequence aborted", schedule=None,
-                        session=None)
+        # SAY IT BEFORE DOING IT. Everything below -- cancelling the run, its
+        # `_safe_stop` (abort the exposure, stop the guider, panel/cover off),
+        # the report finalize, then draining every in-flight thumbnail render --
+        # is bounded but generously so: ~210 s of device I/O worst case, against
+        # the 15 s cap on the POST that is awaiting it. Publishing only the
+        # terminal state meant the caller's sole feedback was its own timeout, so
+        # an abort that WORKED came back as "server not responding".
+        #
+        # Same two-step as the polar session's pausing/paused (polar/session.py):
+        # publish what is true NOW -- a teardown is running and the rig has not
+        # stopped yet -- and let the terminal state land when it actually has.
+        # NOTHING below this block changes: the wind-down's ordering and its
+        # timeouts are safety-critical and hardware-verified.
+        #
+        # ALREADY TEARING DOWN -> NO-OP. `self._task and not self._task.done()`
+        # stays true for the WHOLE wind-down, so it cannot tell a first abort
+        # from a second one. And a second one is not hypothetical: the lock
+        # screen's emergency STOP posts this route on every press and is
+        # deliberately never disabled (TouchGuard.tsx), and the POST's own 15 s
+        # cap expires long before the teardown does, so the operator sees a
+        # "failed" abort and presses again.
+        #
+        # A second `cancel()` lands on a task that is already inside
+        # `except asyncio.CancelledError: await self._safe_stop()`, and raises a
+        # BaseException that `_safe_stop`'s `except (TimeoutError, Exception)`
+        # cannot catch: the teardown dies after abort_exposure and never reaches
+        # stop_guiding / the flat panel / _finalize_report. The guider keeps
+        # guiding, the panel stays lit, the session is never marked dormant --
+        # a second press of STOP would leave the rig in a worse state than one.
+        #
+        # Same guard as PolarAlignSession.pause()'s `if self._native_paused:
+        # return` (polar/session.py), for the same reason: a REST client or a
+        # double tap through a slow round trip must not re-arm the state.
+        if self._aborting:
+            return
+        self._aborting = True
+        try:
+            # The intermediate state is guarded on a LIVE task, like `pause()`'s
+            # "nothing to pause": announcing a teardown that isn't running
+            # renders a wind-down over an idle rig...
+            if self._task and not self._task.done():
+                # ...unless the run has ALREADY published a terminal state and is
+                # only finishing a shielded wind-down (the SafetyAbort path parks
+                # the mount inside `asyncio.shield`). Rewriting that frame back to
+                # "aborting" would replace `aborted / end_reason=unsafe` with a
+                # detail that disclaims the very park that is in flight.
+                if self.state.get("state") not in _TERMINAL_STATES:
+                    self._set_state(
+                        state="aborting",
+                        detail="stopping the run — ending the exposure and "
+                               "the guider. A device that has stopped "
+                               "answering can hold this for a few minutes.")
+                self._task.cancel()
+                try:
+                    await self._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            # the main run is now fully stopped, so no NEW thumb can be spawned
+            # concurrently -- this always drains exactly the pending set (Task 6
+            # review, Important #1: no orphaned renders / "destroyed but pending"
+            # warnings at interpreter exit).
+            await self._drain_thumb_tasks()
+            self._set_state(state="aborted", detail="sequence aborted",
+                            schedule=None, session=None)
+        finally:
+            # Cleared only after the TERMINAL state is on the wire, so the window
+            # the flag names is exactly the window the clients see "aborting" in.
+            self._aborting = False
 
     async def _drain_thumb_tasks(self) -> None:
         """Cancel and await every in-flight thumbnail render (Task 6 review,
@@ -587,7 +666,15 @@ class SequenceEngine:
             }
             # deterministic ETA fields — only while a run is live (idle/complete
             # carry no honest finish). compute_eta never raises.
-            if self.running:
+            #
+            # A teardown is live by `self.running` (the task is inside its own
+            # cancellation) but nothing about the plan will finish, so a finish
+            # clock there counts down to something already cancelled.
+            #
+            # Keyed on the TEARDOWN, not on this call's state string: a
+            # _set_state that omits `state=` merges into a state that is still
+            # "aborting", and re-attached a full live eta_s to it.
+            if self.running and not self._aborting:
                 try:
                     progress.update(self.compute_eta())
                 except Exception:

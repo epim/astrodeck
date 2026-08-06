@@ -332,6 +332,11 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const unlockBtnRef = useRef<HTMLButtonElement | null>(null);
   const [stop, setStop] = useState<StopOutcome | null>(null);
+  // The engine's own word for "the teardown is running and the rig has not
+  // stopped yet". Read LIVE rather than latched into the outcome, so the line
+  // under the button upgrades itself the moment the wind-down finishes instead
+  // of describing the press forever.
+  const seqAborting = useStore((s) => s.sequence.state === "aborting");
 
   // F-A6: set initial focus to the unlock control so a keyboard/switch user lands
   // somewhere actionable the instant the lock engages.
@@ -394,15 +399,31 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
     haptics.tap();
     const req = ++stopReq.current;
     setStop({ phase: "sending" });
+    // ALREADY TEARING DOWN. This button is deliberately never disabled, so the
+    // second press of a stop that is still winding down is the normal case, not
+    // the edge one. The engine no-ops a second abort now (sequence/engine.py) —
+    // don't post it anyway, because its answer would overwrite the answer from
+    // the press that actually did it. The mount stop still goes on every press:
+    // it is idempotent and it is the reason this control exists.
+    const abortAlreadyRunning = useStore.getState().sequence.state === "aborting";
     void (async () => {
       const [motion, seq] = await Promise.allSettled([
         api.post("/api/mount/stop"),
-        api.post("/api/sequence/abort"),
+        abortAlreadyRunning ? Promise.resolve(null) : api.post("/api/sequence/abort"),
       ]);
       if (req !== stopReq.current) return;
+      // A TIMED-OUT abort is not a failed abort. /api/sequence/abort awaits the
+      // whole ~210 s wind-down against api.ts's 15 s cap, so on a real teardown
+      // the abort that WORKED came back rejected — and this overlay is the only
+      // surface a locked screen has, so it read "STOP DID NOT LAND" over a rig
+      // that was stopping exactly as asked. The engine's "aborting" state is the
+      // answer (see the line under the button); the request never was.
+      const seqTimedOut = seq.status === "rejected"
+        && seq.reason instanceof ApiError && seq.reason.timedOut;
       const failures = [
         motion.status === "rejected" ? stopFailureDetail("mount", motion.reason) : null,
-        seq.status === "rejected" ? stopFailureDetail("sequence", seq.reason) : null,
+        seq.status === "rejected" && !seqTimedOut
+          ? stopFailureDetail("sequence", seq.reason) : null,
       ].filter((s): s is string => s != null);
       if (failures.length === 0) {
         haptics.stop();
@@ -453,10 +474,17 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
           <p
             role={stop.phase === "failed" ? "alert" : "status"}
             className={`text-[11px] leading-snug text-center ${
-              stop.phase === "failed" ? "text-bad" : "text-good"}`}
+              stop.phase === "failed" ? "text-bad"
+                : seqAborting ? "text-warn" : "text-good"}`}
           >
             {stop.phase === "stopped"
-              ? "Motion stopped, sequence aborted."
+              ? seqAborting
+                // NOT "aborted": the engine is still ending the exposure and
+                // stopping the guider, and this is the screen someone reads
+                // before walking out to the scope.
+                ? "Motion stopped. The sequence is still stopping — ending the "
+                  + "exposure and the guider."
+                : "Motion stopped, sequence aborted."
               : `STOP DID NOT LAND — ${stop.detail}`}
           </p>
         )}

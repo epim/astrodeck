@@ -71,7 +71,7 @@ const FRAME_START_MS = 1_700_000_000_000;
 /** One WS `sequence` frame, as the engine emits it. `ageS` is how far into the
  *  current sub the server was when it emitted — the pause POST publishes a
  *  fresh snapshot, which is exactly why the client can know this at all. */
-function seqFrame(state: "running" | "paused", framesDone: number, ageS: number) {
+function seqFrame(state: "running" | "paused" | "aborting", framesDone: number, ageS: number) {
   return {
     state,
     plan_name: "Tonight",
@@ -91,7 +91,7 @@ function seqFrame(state: "running" | "paused", framesDone: number, ageS: number)
   };
 }
 
-function publish(state: "running" | "paused", framesDone: number, ageS: number): void {
+function publish(state: "running" | "paused" | "aborting", framesDone: number, ageS: number): void {
   act(() => {
     useStore.setState({ sequence: seqFrame(state, framesDone, ageS) } as never);
   });
@@ -177,6 +177,59 @@ test("a pause between frames is PAUSED immediately — no invented PAUSING", () 
     "a pause with no exposure in flight still reported PAUSING — the phase must " +
     "come from the frame, not from the word 'paused' arriving");
   assert(!/PAUSING/.test(text()), "invented a PAUSING phase with nothing exposing");
+});
+
+// ------------------------------------------------- THE TEARDOWN (review #9b)
+// `POST /api/sequence/abort` awaits the whole wind-down — abort the exposure,
+// stop the guider, panel/cover off, finalize, drain the thumbnails — so the
+// engine publishes state="aborting" the moment it starts and "aborted" only
+// once the rig has stopped. The Monitor derived "a run is live" from
+// running||paused, so that frame unmounted the controls row — INCLUDING the
+// Abort button — for the entire ~210 s teardown. The operator holds Abort,
+// everything vanishes, and the mount is still slewing.
+const buttonNamed = (re: RegExp): any =>
+  [...container.querySelectorAll("button")].find((b: any) => re.test(b.textContent || ""));
+
+test("the run controls stay on the dashboard for the whole teardown", () => {
+  // The engine drops eta_s on this frame (there is no finish to predict), which
+  // is exactly the frame the header has to cope with.
+  act(() => {
+    const f: any = seqFrame("aborting", 13, 40);
+    delete f.progress.eta_s;
+    delete f.progress.eta_confident;
+    f.detail = "stopping the run — ending the exposure and the guider.";
+    useStore.setState({ sequence: f } as never);
+  });
+  assert(/ABORTING/.test(text()),
+    `the badge does not say ABORTING while the engine tears the run down: ${text().slice(0, 200)}`);
+  const abort = buttonNamed(/Abort/i);
+  assert(abort != null,
+    "the Abort control unmounted the moment the abort landed — the operator is " +
+    "left with no evidence the press did anything, over a rig that is still moving");
+  assert(abort.disabled === true,
+    "Abort is still pressable during its own teardown; a second one re-cancels a " +
+    "task already inside its cancellation handler and severs the wind-down");
+  assert(/Aborting/.test(abort.textContent || ""),
+    `the button still reads as an offer, not a report: "${abort.textContent}"`);
+  const pause = buttonNamed(/^\s*Pause\s*$/);
+  assert(pause == null || pause.disabled === true,
+    "Pause is live on a run being torn down — the engine refuses it, so the " +
+    "button cannot do what it says");
+});
+
+test("…and the finish clock says what is happening instead of counting down", () => {
+  assert(/no finish time/.test(text()),
+    "the header slot went blank (which reads as 'over') or kept counting down to " +
+    `a completion that was cancelled: ${text().slice(0, 300)}`);
+});
+
+test("…and the terminal state still ends it", () => {
+  act(() => {
+    useStore.setState({ sequence: { state: "aborted", plan_name: "Tonight" } } as never);
+  });
+  assert(/ABORTED/.test(text()), `the teardown never terminated: ${text().slice(0, 160)}`);
+  assert(buttonNamed(/Abort/i) == null,
+    "the run controls outlived the run — Abort is offered over a stopped rig");
 });
 
 // ------------------------------------------------------------------- report
