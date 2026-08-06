@@ -178,6 +178,23 @@ class Camera(Device):
         """Set the camera's built-in dew heater (0-100%)."""
         raise DeviceError(f"{self.name} has no dew heater")
 
+    async def get_dew_heater(self) -> int | None:
+        """The heater's CURRENT level (0-100%), or None when this backend cannot
+        be asked — which is most of them, hence the inert default.
+
+        None means UNKNOWN, and the distinction is the whole reason this exists.
+        The heater was write-only, so the Capture slider had nothing to draw
+        itself from but its own last write, and a fresh tab's last write is 0.
+        With the heater running at 60% the slider sat at 0%, and dragging it up
+        to "turn it on" turned it DOWN. A backend that cannot read the register
+        must return None so the client can say so; returning 0 would put the
+        same lie one layer deeper, where the client can no longer see it.
+
+        Must not raise: this is read on the 2 s status poll. Backends whose
+        transport can fail (Alpaca, ASIAIR, an SDK register) swallow the failure
+        and return None — a momentarily unreadable heater is unknown, not off."""
+        return None
+
 
 #: The one source of truth for the tracking-rate vocabulary (multi-rate mount
 #: tracking, 2026-07-21). The wire/API/UI all use these lowercase names --

@@ -70,7 +70,12 @@ def test_close_parks_then_closes(client):
     assert client.post("/api/connect/sim").status_code == 200
     r = client.post("/api/dome/close")
     assert r.status_code == 200, r.text
-    assert r.json().get("started") == "goto"
+    # The close moved to its OWN lane (2026-08-05). It ran in "goto" because it
+    # parks the mount first, which is real mount motion — but that made the roof
+    # report itself as a slew, so "Close roof now" was dead during every
+    # unrelated goto. The exclusion is preserved by _LANE_SUPERSEDES; see
+    # test_busy_lanes_routes.py for both halves of it.
+    assert r.json().get("started") == "dome"
     # the park-and-close background task drives the shutter to closed.
     closed = _wait(
         lambda: client.get("/api/dome/state").json().get("shutter") == "closed",

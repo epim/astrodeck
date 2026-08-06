@@ -1139,6 +1139,55 @@ async def test_cooler_and_dew_heater(fake):
     await session.close()
 
 
+async def test_dew_heater_reads_back(fake):
+    """The level the box is actually holding, not the number a browser last
+    sent. ``AntiDewHeater`` is a 0/1 control, so the read-back is 0 or 100 —
+    including after ``set_dew_heater(50)``, which really did turn it fully on."""
+    # Make the double's get_control reflect what was written, so the round-trip
+    # is a round-trip and not two independent constants agreeing by luck.
+    written = fake.controls_written
+    plain = fake.camera.get_control
+    fake.camera.get_control = lambda name: (
+        written["AntiDewHeater"] if name == "AntiDewHeater" and name in written
+        else plain(name))
+
+    session = await _open()
+    cam = await session.get_device("camera", _conn())
+    assert cam.has_dew_heater is True             # precondition
+    assert await cam.get_dew_heater() == 0        # box says off, and means it
+    await cam.set_dew_heater(50)
+    assert written["AntiDewHeater"] == 1          # precondition: on/off control
+    assert await cam.get_dew_heater() == 100
+    await cam.set_dew_heater(0)
+    assert await cam.get_dew_heater() == 0
+    await session.close()
+
+
+async def test_dew_heater_is_unknown_not_zero_when_the_box_cannot_say(fake):
+    def boom(name):
+        raise RuntimeError("control not readable")   # -> DeviceError via link.call
+
+    fake.camera.get_control = boom
+    session = await _open()
+    cam = await session.get_device("camera", _conn())
+    assert cam.has_dew_heater is True             # precondition
+    assert await cam.get_dew_heater() is None
+    await session.close()
+
+
+async def test_a_camera_with_no_dew_heater_reports_no_level(fake):
+    names = ["Gain", "Exposure", "Offset", "Temperature", "CoolPowerPerc",
+             "TargetTemp", "CoolerOn"]        # no AntiDewHeater
+    fake.camera.controls = lambda: [
+        SimpleNamespace(name=n, min_val=0, max_val=300, read_only=False)
+        for n in names]
+    session = await _open()
+    cam = await session.get_device("camera", _conn())
+    assert cam.has_dew_heater is False            # precondition
+    assert await cam.get_dew_heater() is None
+    await session.close()
+
+
 async def test_a_camera_with_no_cooler_says_so(fake):
     fake.camera.info = lambda: SimpleNamespace(
         name="ASI220MM", chip_size=(1920, 1080), pixel_size_um=4.0, bins=[1],

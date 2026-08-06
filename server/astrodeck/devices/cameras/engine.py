@@ -250,3 +250,12 @@ class NativeCamera(Camera):
         if not self._caps or not self._caps.has_dew_heater:
             raise DeviceError(f"{self.name} has no dew heater")
         await self._run(lambda: self._a.set_dew_heater(int(power)))
+
+    async def get_dew_heater(self) -> int | None:
+        if not self._caps or not self._caps.has_dew_heater:
+            return None
+        try:
+            v = await asyncio.to_thread(self._a.get_dew_heater)
+        except Exception:  # noqa: BLE001 - polled; an unreadable heater is unknown
+            return None
+        return None if v is None else int(v)
