@@ -3,12 +3,12 @@ import { useStore, usePolar, useProviders } from "../store";
 import { PolarReticle, knobHint, polarTier, polarInstruction, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Icon } from "../components/icons";
-import { Panel, Led } from "../components/ui";
+import { Panel, Led, HonestButton } from "../components/ui";
 import ProviderBadge from "../components/ProviderBadge";
-import { useCanControlMount } from "../lib/caps";
+import { accessPhrase, useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import type { PolarState } from "../types";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 /* Fields the native TPPA engine (server/astrodeck/polar/native.py) adds to the
    canonical `polar` payload beyond PolarState. The store forwards the whole
@@ -42,6 +42,36 @@ export default function PolarView() {
     || polar.state === "pausing";
   const pausing = polar.state === "pausing";
 
+  // THE GAP BETWEEN "STARTED" AND "RUNNING". POST /api/polar/start returns the
+  // instant `asyncio.create_task` hands back a task object; the driver's first
+  // `_publish(state="running")` lands a beat later (a solve setup, a provider
+  // resolve). For that second or so `polar.state` is still "idle", so the panel
+  // read "Not started — press Start Alignment to measure." over a run that had
+  // already committed the mount, Stop sat grey, and the re-enabled Start 409'd
+  // ("polar alignment is already running") on the second tap people reasonably
+  // gave it.
+  //
+  // Same contract as lib/useBusy's `useBusyOrPending` — latch locally, hand over
+  // to server truth the moment it arrives, and EXPIRE so a start that never took
+  // (403, dropped socket) can never leave Start dead — but keyed on the polar
+  // stream rather than a busy lane: the polar session runs on its own task, not
+  // through the hub's `_spawn` lanes, so `useBusy("polar")` has nothing to read.
+  //
+  // The handover test is "the stream reports a LIVE state", not "the state
+  // changed": `start()` resets its own state dict without publishing, so a
+  // second alignment begun from a finished one leaves `polar.state === "done"`
+  // on the wire until the new driver's first frame.
+  const [starting, setStarting] = useState(false);
+  useEffect(() => {
+    if (!starting) return;
+    if (running || polar.state === "error") { setStarting(false); return; }
+    const t = setTimeout(() => setStarting(false), 6000);
+    return () => clearTimeout(t);
+  }, [starting, running, polar.state]);
+  // Everything that must treat the alignment as LIVE — Start locked out, Stop
+  // armed, the reticle panel not claiming "not started".
+  const live = running || starting;
+
   const az = polar.az_error, alt = polar.alt_error, total = polar.total_error;
   const src = polar.source as string | null;
 
@@ -51,6 +81,10 @@ export default function PolarView() {
   const hasReading =
     polar.phase !== "measuring" && (total > 0 || polar.state === "done");
   const measuring = polar.phase === "measuring";
+  // `hasReading` deliberately admits a terminal "done" with no number so the
+  // readout stops saying "waiting"; a CLAIM about the alignment needs the
+  // stronger test — a session that ended before any fit has nothing to report.
+  const measuredTotal = Number.isFinite(total) && total > 0;
 
   // Measure→Adjust progress. point_index advances 0..2 as each solve lands;
   // adjusting (or any streamed reading) means all three are in.
@@ -88,12 +122,23 @@ export default function PolarView() {
   // UX-16: local in-flight guard so a slow POST round-trip disables the trigger
   // buttons immediately (no dead-feeling double-fire before the server publishes state).
   const [busy, setBusy] = useState(false);
+  const run = async (fn: () => Promise<unknown>) => {
+    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
+  };
   const act = async (fn: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
-    finally { setBusy(false); }
+    try { await run(fn); } finally { setBusy(false); }
   };
+  // STOP IS NOT ONE OF THEM. `busy` is a guard against double-firing ONE
+  // control; routing the emergency stop through it made Pause's in-flight POST
+  // — 40 ms of it, or several seconds on a phone over a relay — the thing that
+  // disabled the red button while the mount was still swinging. A stop is
+  // idempotent server-side, so there is nothing here worth guarding against.
+  const stopReason: string | null =
+    !canMount ? `Stopping an alignment needs ${accessPhrase("control.mount")}.`
+      : !live ? "No alignment is running — nothing to stop."
+        : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -127,12 +172,13 @@ export default function PolarView() {
                   blink is the channel that survives a red-light screen where
                   hue barely reads. */}
               <span className={`text-[11px] tracking-widest uppercase ${
-                polar.state === "done" ? "text-good"
+                starting ? "text-accent blink"
+                  : polar.state === "done" ? "text-good"
                   : polar.state === "running" ? "text-accent blink"
                   : pausing ? "text-warn blink"
                   : polar.state === "paused" ? "text-warn"
                   : polar.state === "error" ? "text-bad" : "text-dim"}`}>
-                {pausing ? "stopping" : polar.state}
+                {starting ? "starting" : pausing ? "stopping" : polar.state}
               </span>
             </div>
           }>
@@ -203,10 +249,14 @@ export default function PolarView() {
                   {polarInstruction(total)}
                 </p>
               </>
-            ) : measuring || running ? (
+            ) : measuring || live ? (
               <div className="flex items-center gap-2 mt-2">
                 <Led state="busy" label="measuring" />
-                <span className="text-sm text-dim">{measuring ? "Measuring axis…" : "Waiting for solve…"}</span>
+                <span className="text-sm text-dim">
+                  {measuring ? "Measuring axis…"
+                    : starting ? "Starting — the mount is committed."
+                      : "Waiting for solve…"}
+                </span>
               </div>
             ) : (
               /* UX-19: idle — no busy LED / "Waiting for solve…" before Start is pressed. */
@@ -283,9 +333,20 @@ export default function PolarView() {
               </p>
             )}
             <div className="flex flex-col gap-2">
-              <button className="btn btn-accent" disabled={!canMount || running || busy}
-                onClick={() => act(() => api.post("/api/polar/start"))}>
-                <Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Start Alignment
+              <button className="btn btn-accent" disabled={!canMount || live || busy}
+                aria-busy={starting || undefined}
+                onClick={() => {
+                  setStarting(true);
+                  void act(async () => {
+                    // A refused start (409 "already running", 403) never becomes
+                    // a run, so drop the latch at once rather than making the
+                    // user wait out its expiry to try again.
+                    try { await api.post("/api/polar/start"); }
+                    catch (e) { setStarting(false); throw e; }
+                  });
+                }}>
+                <Icon name="align" size={14} className="inline -mt-0.5 mr-1" />
+                {starting ? "Starting…" : "Start Alignment"}
               </button>
               <div className="grid grid-cols-2 gap-2">
                 {pausing ? (
@@ -301,13 +362,45 @@ export default function PolarView() {
                   <button className="btn" disabled={!canMount || !running || busy}
                     onClick={() => act(() => api.post("/api/polar/pause"))}>Pause</button>
                 )}
-                <button className="btn btn-danger" disabled={!canMount || !running || busy}
-                  onClick={() => act(() => api.post("/api/polar/stop"))}>Stop</button>
+                {/* The one control on this screen whose whole job is to be
+                    reachable. `disabled` would take its reason out of the
+                    accessibility tree and leave a grey rectangle that says
+                    nothing to the person crouched at the mount; HonestButton
+                    (house rule §11.8) stays focusable and pressable and STATES
+                    which of the two refusals applies. */}
+                <HonestButton
+                  className="btn btn-danger"
+                  reason={stopReason}
+                  onExplain={(r) => showToast("info", r)}
+                  onClick={() => { setStarting(false); void run(() => api.post("/api/polar/stop")); }}
+                >
+                  Stop
+                </HonestButton>
               </div>
             </div>
-            {polar.state === "done" && (
-              <p className="text-good text-xs mono mt-3">✓ aligned to {total.toFixed(1)}′ total error</p>
-            )}
+            {/* WHAT ACTUALLY HAPPENED, not merely that it stopped happening.
+                "done" is the terminal state for every ending the drivers have:
+                the native engine converging inside its threshold, but ALSO its
+                240-update safety cap expiring, and NINA closing the TPPA socket
+                after any single measurement. So a run abandoned at 25′ used to
+                print a green "✓ aligned to 25.3′" directly under a red "Keep
+                going" — the one line on the screen a user reads as permission to
+                walk away from the mount. */}
+            {polar.state === "done" && !starting && (measuredTotal ? (
+              tier === "excellent" ? (
+                <p className="text-good text-xs mono mt-3">✓ aligned to {total.toFixed(1)}′ total error</p>
+              ) : (
+                <p className={`text-xs mt-3 leading-relaxed ${verdict.tone}`}>
+                  Session ended at {total.toFixed(1)}′ — that is where it stopped, not
+                  where it should be. {polarInstruction(total)} Then run Start Alignment
+                  again to re-measure.
+                </p>
+              )
+            ) : (
+              <p className="text-dim text-xs mt-3 leading-relaxed">
+                Session ended before any error was measured — nothing was aligned.
+              </p>
+            ))}
           </Panel>
 
           {/* Guide view so the user can watch the field during alignment. */}
