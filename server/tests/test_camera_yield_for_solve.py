@@ -389,7 +389,12 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
 
     looping_at_each_rotate = []
 
-    async def watching_rotate(hub, tel, epoch, result):
+    async def watching_rotate(hub, tel, epoch, result, step=None):
+        # ``step`` is the signed RA step the driver decides once from the first
+        # solved point and passes to every leg, so the arc cannot reverse
+        # direction halfway. Accepted and ignored: this stub exists to observe
+        # when the rotation happens relative to the camera handover, not to move
+        # anything.
         looping_at_each_rotate.append(hub.looping)
 
     monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)
@@ -410,12 +415,15 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
     await _start_wedged_loop(sim_hub)
     assert sim_hub.looping is True
 
-    # The stubbed rotation records instead of moving, so all three solves land on
-    # the same sky and the circle fit rejects them ("mount did not move between
-    # points"). That is expected and irrelevant: the subject here is the ORDERING
-    # of the camera yield against the first mount motion, and the run reaches the
-    # fit only by getting past every rotation first.
-    with pytest.raises(ValueError, match="did not move"):
+    # The stubbed rotation records instead of moving, so the driver's own
+    # did-the-mount-arrive check refuses at the second measurement point — it
+    # now catches this before the fit ever sees it, which is the whole reason it
+    # exists (a stuck mount used to reach the engine and, unless all THREE points
+    # coincided, come back as a confident 0.00' "polar aligned"). Either way the
+    # stop is expected and irrelevant here: the subject is the ORDERING of the
+    # camera yield against the first mount motion, and the run reaches any stop
+    # at all only by getting past the first rotation.
+    with pytest.raises(DeviceError, match="did not move"):
         await nat._drive(_FakeSession(), sim_hub)
 
     assert looping_at_each_rotate, "the mount never rotated; the test proved nothing"
