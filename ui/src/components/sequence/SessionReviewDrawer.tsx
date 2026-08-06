@@ -206,7 +206,10 @@ export default function SessionReviewDrawer({ id, onClose }: {
           aria-label={regradeReason ? `Mark rejected — ${regradeReason}` : undefined}
           aria-describedby={regradeReason ? "regrade-reason" : undefined}
           onClick={() => { if (!regradeReason) void bulk("reject"); }}>
-          <Icon name="x" size={12} /> mark rejected
+          {/* The count belongs on the DESTRUCTIVE half at least as much as on
+              the accepting one: this was the only button in the pair that never
+              said how many frames it was about to regrade. */}
+          <Icon name="x" size={12} /> mark rejected ({sel.length})
         </button>
       </div>
       {regradeReason && (
@@ -228,13 +231,41 @@ export default function SessionReviewDrawer({ id, onClose }: {
           const v = verdictOf(f);
           const selected = sel.includes(f.id);
           return (
+            /* SELECTION NEEDS A SHAPE, NOT A HUE. The only difference between
+               a selected card and an unselected one used to be `border-accent`
+               vs `border-line` — one 1px hairline, same width, no fill, no
+               glyph. Under :root.night both tokens are the same red (--accent
+               #ff3a3a against --line rgba(255,50,50,0.25)), so an operator
+               picking keepers out of a three-night SHO grid before pressing
+               "mark rejected" was reading a brightness step on a hairline, on a
+               red-filtered tablet. index.css states the rule (§154-157: "any
+               status that must survive night mode needs a non-hue channel").
+               The tick box is the same answer the gallery's multi-select grid
+               already gives the identical interaction (gallery/FrameTile.tsx),
+               and it is what a photograph of the screen, a greyscale render or
+               a red filter all still show: EMPTY BOX vs FILLED BOX WITH A TICK.
+               Border width is 2px in BOTH states on purpose — selecting must
+               not reflow the grid by a pixel. */
             <button key={f.id}
-              className={`text-left border p-1 flex flex-col gap-1 ${selected ? "border-accent" : "border-line"}`}
+              className={`text-left border-2 p-1 flex flex-col gap-1 ${
+                selected ? "border-accent bg-accent/10" : "border-line"}`}
               aria-pressed={selected}
+              data-selected={selected ? "true" : undefined}
               aria-label={`Select frame ${f.id}`}
               onClick={() => setSel(toggleSel(sel, f.id))}>
-              <Thumb src={f.thumb
-                ? `${BASE}/api/sessions/${session.id}/frames/${f.id}/thumb` : null} />
+              <span className="relative block">
+                <Thumb src={f.thumb
+                  ? `${BASE}/api/sessions/${session.id}/frames/${f.id}/thumb` : null} />
+                <span
+                  aria-hidden
+                  data-tick={selected ? "on" : "off"}
+                  className={`absolute top-1 left-1 w-5 h-5 border flex items-center justify-center ${
+                    selected
+                      ? "bg-accent border-accent text-accent-ink"
+                      : "bg-bg/70 border-line2 text-transparent"}`}>
+                  <Icon name="check" size={12} />
+                </span>
+              </span>
               <span className="mono text-[10px] text-dim">
                 {targetName(f.target_id)} · {filterOf(f.step_id)} · {f.night.slice(-6)}
               </span>

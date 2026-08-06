@@ -62,6 +62,26 @@ const PAGE = 200;
  *  a library walk on the far end, so typing "M42" must not be four of them. */
 const SEARCH_DEBOUNCE_MS = 300;
 
+/** The engaged face of the Frames/Trash tab pair. ONE definition because it is
+ *  one control: the two tabs disagreeing about how selection looks is its own
+ *  defect.
+ *
+ *  THE `!` ON THE FILL IS LOAD-BEARING, and it is the whole reason this constant
+ *  exists rather than an inline string somebody can trim. `.btn` is declared in
+ *  index.css OUTSIDE any cascade layer and sets `background: var(--bg-raise)`;
+ *  Tailwind's `bg-accent/10` lands inside `@layer utilities`. Unlayered CSS beats
+ *  layered CSS no matter the specificity, so a plain `bg-accent/10` on a `.btn`
+ *  RENDERS NOTHING. Verified in the built stylesheet, not reasoned about: run
+ *  `vite build` and the emitted `.bg-accent\/10` rule sits inside the
+ *  `@layer utilities{…}` block while `.btn` sits after its closing brace.
+ *  `!bg-accent/10` compiles to `background-color: … !important`, which is the one
+ *  thing that does beat an unlayered declaration.
+ *
+ *  MountView.tsx:623-629 records the same trap after deleting its own dead fill.
+ *  NavMoreSheet.tsx:269 and SlewPad.tsx:375/470 still carry the non-important
+ *  form on `.btn` elements, so those fills paint nothing either. */
+const SELECTED_TAB = "!border-accent !text-accent !bg-accent/10";
+
 export default function GalleryView(): JSX.Element {
   const enqueueToast = useStore((s) => s.enqueueToast);
   // view.preview lists and thumbnails; view.media hands over raw FITS (which
@@ -291,8 +311,22 @@ export default function GalleryView(): JSX.Element {
         title="Capture library"
         right={
           <div className="flex items-center gap-1.5">
+            {/* SELECTION IS A FILL, NOT A HUE. These two used to mark the active
+                tab with `!border-accent !text-accent` alone. Under the red night
+                palette that is worse than nothing: --accent (#ff3a3a) is DIMMER
+                than --text (#ff7a7a), so the selected label read fainter than
+                the unselected one — like the disabled tab — while the 1px border
+                got brighter, i.e. the two channels pointed opposite ways and the
+                word won by area. index.css:154-157 states the rule ("Any status
+                that must survive night mode needs a non-hue channel — ... fill
+                for selection").
+
+                Do NOT copy the fill from NavMoreSheet:269 or SlewPad:375/470.
+                Those append a NON-important `bg-accent/10` to a `.btn`, which
+                the unlayered `.btn` background overrides — they are dead
+                declarations, not working precedent. See SELECTED_TAB above. */}
             <button
-              className={`btn ${actionBtn} ${tab === "library" ? "!border-accent !text-accent" : ""}`}
+              className={`btn ${actionBtn} ${tab === "library" ? SELECTED_TAB : ""}`}
               onClick={() => setTab("library")}
               aria-pressed={tab === "library"}
             >
@@ -300,7 +334,7 @@ export default function GalleryView(): JSX.Element {
             </button>
             {canDelete && (
               <button
-                className={`btn ${actionBtn} ${tab === "trash" ? "!border-accent !text-accent" : ""}`}
+                className={`btn ${actionBtn} ${tab === "trash" ? SELECTED_TAB : ""}`}
                 onClick={() => setTab("trash")}
                 aria-pressed={tab === "trash"}
               >

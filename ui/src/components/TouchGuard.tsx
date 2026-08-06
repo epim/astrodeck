@@ -123,11 +123,36 @@ function SlideToUnlock({
   // F-A5: bind the slide to ONE pointer; ignore any other pointer's move/up/cancel.
   const slidePointerId = useRef<number | null>(null);
 
-  const reset = () => {
+  const reset = useCallback(() => {
     setPct(0);
     startX.current = null;
     slidePointerId.current = null;
-  };
+  }, []);
+
+  // The gesture that ends without a pointer event at all. pointerup /
+  // pointercancel / lostpointercapture cover palm-reject, a scroll stealing the
+  // gesture and a drag released off the handle — but backgrounding the app, the
+  // tablet's screen timeout and an OS focus steal deliver NONE of them. Left
+  // that way the handle stays translated mid-track with the accent fill behind
+  // it, and `slidePointerId` still owns the slider, so `onDown` returns at its
+  // guard on every later touch: the primary unlock affordance looks half-slid
+  // and is dead for the rest of the locked session. Exactly the latch SlewPad
+  // documents at SlewPad.tsx:205-228 and HoldButton guards at ui.tsx:415-430;
+  // this is the same three-line effect.
+  //
+  // reset() only ever CLEARS — it can never complete an unlock, because the 0.6
+  // threshold is read solely inside onUp. Losing focus must not open the lock.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "hidden") reset();
+    };
+    window.addEventListener("blur", reset);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("blur", reset);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [reset]);
 
   const onDown = (e: RPointerEvent) => {
     if (slidePointerId.current != null) return; // a slide already owns the handle

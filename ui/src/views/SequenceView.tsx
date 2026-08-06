@@ -833,7 +833,7 @@ export default function SequenceView() {
                       onPointerCancel={bind.onPointerUp}
                       onKeyDown={bind.onKeyDown}
                       onKeyUp={bind.onKeyUp}
-                  onBlur={bind.onBlur}
+                      onBlur={bind.onBlur}
                     >
                       <span
                         aria-hidden
@@ -1430,6 +1430,32 @@ export default function SequenceView() {
         <PlanLibraryPanel />
 
         <Panel title="Automation">
+          {/* THE ONE PANEL WHOSE ENGAGED STATE WAS A LIE. Every control in this
+              column stays live during a run and NONE of it reaches that run:
+              the engine takes a copy of the plan at Run
+              (sequence/engine.py `self.plan = plan`) and reads dither,
+              refocus, filter offsets, the flip, the quality gates, cool-to and
+              the end-of-run park/warm out of that copy for the rest of the
+              night. So an operator who sees cloud coming at 2am, slides the
+              safety monitor gate ON and watches it stay ON — aria-checked and
+              all — walks away believing an unattended run will now park on an
+              unsafe verdict. It will not. The mirror case is as bad: sliding
+              the gate OFF to ride out thin cloud shows a disarmed switch while
+              the engine keeps aborting and parking on the copy that still has
+              it armed.
+              This is the honesty the Targets panel already has (its LockedNote
+              above) and SchedulePanel gets by being `disabled={running}`. A
+              note rather than a lock, deliberately and for the same reason
+              Targets chose one: preparing tomorrow night's automation while
+              tonight runs is a thing people do, and taking that away to fix a
+              wrong claim would be a worse trade than telling the truth. */}
+          {running && (
+            <LockedNote className="!items-start mb-3"
+              reason={`These settings apply to your NEXT run, not “${runningPlanName}” — the `
+                + `server is executing the copy of the plan it took at Run, so changing anything `
+                + `here, including the safety monitor gate, does not reach the run in progress. `
+                + `Stop it and start it again to run under new settings.`} />
+          )}
           <div className="flex flex-col gap-3 text-xs">
             <label className="flex items-center justify-between gap-2">
               <span className="text-dim">guide during sequence</span>
@@ -1665,8 +1691,22 @@ export default function SequenceView() {
 
         {/* Conditional sequencer (PRO-3): optional when-trigger-do-action rules
             layered on the fixed plan. Empty === byte-identical run. One more
-            optional sub-panel, sits with the plan settings. */}
-        <InstructionsPanel plan={plan} setPlan={setPlan} canWrite={canRun} />
+            optional sub-panel, sits with the plan settings.
+            The rules go into the same plan copy the engine took at Run
+            (engine.py reads `self.plan.instructions`), so a rule added mid-run
+            never fires tonight — the same claim the Automation panel above had
+            to stop making. The note lives HERE, tight to the panel, rather than
+            inside it: InstructionsPanel's own lock copy is about the
+            control.mount capability, and dressing "the run already started" up
+            as a permissions problem would be a second false statement. */}
+        <div className="flex flex-col gap-1.5">
+          {running && (
+            <LockedNote className="!items-start"
+              reason={`Rules apply to your next run, not “${runningPlanName}” — the server is `
+                + `executing the copy of the plan it took at Run.`} />
+          )}
+          <InstructionsPanel plan={plan} setPlan={setPlan} canWrite={canRun} />
+        </div>
 
         {/* Multi-night sessions (sessions spec §7): resume/manage cards for
             non-abandoned sessions. Self-hides when there are none. Its OWN

@@ -383,6 +383,32 @@ export default function AtlasView(): JSX.Element {
   const plausibility = plausibilityHint(fov.pixel_scale_arcsec);
   const frameFovDeg = Math.max(fov.fov_x_deg, fov.fov_y_deg);
 
+  // "Match camera" is a claim about the CAMERA, so it cannot outlive the optics
+  // it was matched to. The zoom is applied ONCE, when the switch goes on; the
+  // frame it was matched to moves on its own afterwards — a focal-length or
+  // sensor keystroke (focalOverride feeds `fov` per keystroke), and, with no
+  // user interaction at all, a 2 s status frame carrying new camera optics from
+  // a reconnect or another screen. The "Your camera" rectangle resizes on the
+  // canvas immediately, the zoom does not follow, and the switch went on
+  // reading ON over a view that visibly no longer matched.
+  //
+  // CLEARED rather than re-applied, for two reasons: the InfoDot beside it
+  // promises "turn off to go back to your previous zoom", i.e. a one-shot apply
+  // with a memory rather than a live mode; and re-zooming on every keystroke of
+  // a half-typed focal length would jerk the sky under the user's hands. This is
+  // the same resolution the zoom path already carries at setZoom below — every
+  // way the view can stop matching the camera ends the match.
+  //
+  // `prev_zoom_deg` is deliberately left alone: the OFF branch is the only
+  // reader, it is unreachable without turning the switch ON again first, and
+  // that re-save overwrites it with the zoom the user is actually looking at.
+  useEffect(() => {
+    if (!cameraFovLock) return;
+    setCameraFovLock(false);
+    // frameFovDeg ONLY: this fires when the camera changes underneath the
+    // match, never when the flag itself does.
+  }, [frameFovDeg]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- focal-length commit: PUT /api/optics then re-GET config (spec §6) ----
   // The value-taking committer is the real worker — calibrate passes the computed
   // focal DIRECTLY (no setState→read round-trip, which closed over a stale draft

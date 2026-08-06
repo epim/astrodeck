@@ -156,6 +156,32 @@ await test("the view mounted with three ports from the power box", () => {
     "Cam power does not read OFF at value 0, so a later 'it changed' means nothing");
 });
 
+// ------------------------------------------- the outlet declares it IS a toggle
+// The engaged look (LED, accent border, the word ON) already followed `p.value`
+// — device truth, not the tap. What was missing was the declaration: with no
+// role and no aria-checked, the ONLY state channel was name-from-content, so the
+// outlet's state arrived as a changed NAME ("Bench light ON" → "Bench light
+// OFF"), nothing identified the control as a toggle at all, and mid-walk the
+// pending aria-label took the name over — the identity swapping channels in the
+// middle of the interaction, which is worst for voice control ("press Bench
+// light ON" aims at a name that moves out from under the utterance).
+await test("an outlet is declared as a switch, and it starts where the BOX is", () => {
+  const on = row("Mount power");   // seeded value 1
+  const off = row("Cam power");    // seeded value 0
+  assert(on.getAttribute("role") === "switch",
+    `the outlet is a plain push button (role="${on.getAttribute("role")}") on the one ` +
+    "screen that switches mains power");
+  assert(on.getAttribute("aria-checked") === "true",
+    `a port the box reports ON announces aria-checked="${on.getAttribute("aria-checked")}"`);
+  assert(off.getAttribute("aria-checked") === "false",
+    `a port the box reports OFF announces aria-checked="${off.getAttribute("aria-checked")}"`);
+  // ...and the state must have stopped riding in the accessible name.
+  assert(!/\b(ON|OFF)\b/.test(on.getAttribute("aria-label") || ""),
+    `the accessible name still carries the state: "${on.getAttribute("aria-label")}"`);
+  assert((on.getAttribute("aria-label") || "").includes("Mount power"),
+    `the outlet lost its name entirely: "${on.getAttribute("aria-label")}"`);
+});
+
 // ------------------------------------------------------ #78 per-row pending
 await test("a tapped port says so for the whole serial round trip", async () => {
   posts.length = 0;
@@ -182,6 +208,22 @@ await test("the LED still reports the port's REAL state mid-cycle", () => {
     "asserting a switch that has not happened");
 });
 
+await test("aria-checked reports the PORT mid-walk, not the tap", () => {
+  // The toggle-class defect in its other direction: an engaged look that means
+  // "you pressed it" rather than "the device is in that state". The box has not
+  // switched yet, so the switch must still announce OFF.
+  const r = row("Cam power");
+  assert(r.getAttribute("aria-busy") === "true",
+    "precondition: the walk is in flight — without it this asserts nothing");
+  assert(r.getAttribute("aria-checked") === "false",
+    "the switch announces itself as ON while the power box is still being walked — " +
+    "a screen-reader user is told mains power is on before it is");
+  // The name must not have changed under the walk either.
+  assert((r.getAttribute("aria-label") || "") === "Cam power",
+    `the accessible name changed mid-interaction to "${r.getAttribute("aria-label")}" — ` +
+    "voice control aims at a name that moves out from under the utterance");
+});
+
 await test("a second tap during the cycle queues no second walk of the box", async () => {
   assert(release != null, "the first request already resolved (precondition)");
   const before = posts.length;
@@ -201,6 +243,9 @@ await test("when the box answers, the row goes back to reporting state", async (
     `the row is stuck mid-request at "${r.textContent?.trim()}"`);
   assert(/ON/.test(r.textContent), "the row never reflected the switch it made");
   assert(r.getAttribute("aria-busy") == null, "the row is still announced as busy");
+  assert(r.getAttribute("aria-checked") === "true",
+    "the switch still announces OFF after the box confirmed the port is ON — the " +
+    "declared state and the painted state disagree");
 });
 
 // -------------------------------------------------- #24 interrupted PWM drag

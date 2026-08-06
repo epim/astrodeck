@@ -52,6 +52,27 @@ type CapturePhase = "idle" | "exposing" | "downloading";
 // that a genuine stall surfaces instead of hanging.
 const DOWNLOAD_WATCHDOG_MS = 60_000;
 
+// How long the click-side "starting" latch may outlive the POST.
+//
+// Loop and Live View are the two controls whose engaged look is pure SERVER
+// truth (`status.looping`, `status.live_stack_active`) and therefore up to one
+// 2 s status frame behind the tap. `pending` used to be dropped the instant the
+// POST resolved (~40 ms), so for the rest of that frame the loop WAS running
+// and its own button looked untouched and re-pressable. The second tap is not a
+// harmless duplicate: `/api/capture/loop` -> hub.start_loop CANCELS the exposure
+// in progress and awaits its teardown before spawning a replacement (a 300 s sub
+// is silently thrown away), and a second Live View tap re-enters the START
+// branch — `liveStackOn` is still false — and assigns a brand-new LiveStacker,
+// discarding the accumulated stack that is the whole point of the feature.
+//
+// So the latch is held from ACCEPTANCE until the rig confirms, with a grace so a
+// start that never takes cannot latch the control for the night. Same shape and
+// the same 6 s as lib/useBusy's `useBusyOrPending`; written here rather than
+// with that hook because Stop has to be able to DROP the latch, which the hook
+// does not expose, and because the truth each control hands over to is the one
+// it already renders from rather than a second signal beside it.
+const START_CONFIRM_GRACE_MS = 6000;
+
 // UX-28: a cooler set-point outside this range (or blank/non-numeric) is almost
 // certainly a typo; block it rather than POST a NaN that serializes to null.
 const COOLER_MIN_C = -60;
@@ -170,9 +191,6 @@ export default function CaptureView() {
   // carousel landing several seconds later. See lib/filterSlots.filterMotion.
   const [filterCmd, setFilterCmd] = useState<FilterCommand | null>(null);
   const [filterNow, setFilterNow] = useState(() => Date.now());
-  // Which preset was last applied — the picker button's readout. Not
-  // persisted: it describes THIS session's last tap, not a saved setting.
-  const [lastPreset, setLastPreset] = useState<string | null>(null);
   // Photometry fields are a once-per-camera setup, so they start closed.
   const [photAdvanced, setPhotAdvanced] = useState(false);
   const [camAdvanced, setCamAdvanced] = useState(false); // Advanced disclosure (egain)
@@ -253,6 +271,25 @@ export default function CaptureView() {
   const coolerTargetInvalid =
     coolerTarget.trim() === "" || !Number.isFinite(coolerTargetNum) ||
     coolerTargetNum < COOLER_MIN_C || coolerTargetNum > COOLER_MAX_C;
+  // Is there a set-point in the box that the camera has NOT been told about?
+  //
+  // This is the whole defect window of the Cool/Set button. While the cooler is
+  // on and the box is untouched the effect above keeps the two equal, so there
+  // is nothing owed; the moment somebody types -25 over a camera holding -20,
+  // the button that would send it is the only thing on the panel that can say
+  // so. It used to say the opposite — accent chrome plus aria-pressed="true"
+  // driven by `cooler.on`, i.e. lit BECAUSE the cooler was running, which is the
+  // one thing it does not control.
+  //
+  // Derived from the two numbers rather than from `coolerTargetEdited`, which is
+  // a ref and so cannot drive a render at all; this also self-corrects when the
+  // driver clamps the request, and when another client changes the set-point.
+  // Gated on `coolerHolding` for the same reason the tracking effect is: during
+  // a warm ramp the two differ BY DESIGN (the ramp walks the driver's set-point
+  // to ambient) and Set there means "abort the ramp", not "apply an edit".
+  const coolerEditPending =
+    coolerHolding && !coolerTargetInvalid && deviceTargetC != null &&
+    Math.abs(coolerTargetNum - deviceTargetC) >= 0.05;
   const looping = !!status?.looping;
   const liveStackOn = !!status?.live_stack_active; // NOV-1: server truth (survives reload)
   const polarBusy = polar.state === "running" || polar.state === "paused";
@@ -286,6 +323,23 @@ export default function CaptureView() {
     target,
     frame_type: frameType,
   };
+
+  // Which preset the settings on screen ACTUALLY ARE — not which one was last
+  // tapped.
+  //
+  // This used to be `lastPreset`, a record of the last tap, and every other path
+  // that writes these four boxes left it standing: Suggest settings rewrites the
+  // exposure, "Match last lights" and the end-of-loop darks prefill rewrite all
+  // four (and flip frameType to Dark/Bias, where a "Galaxy" preset is nonsense),
+  // and a hand edit rewrites whichever one you typed in. The collapsed button
+  // could be read as shorthand for "the last one you applied"; the listbox row
+  // could not — `aria-selected` plus the • glyph is a selection assertion, and a
+  // screen reader announced "Galaxy, selected" while none of Galaxy's four
+  // values was still set. Derived instead, so the mark can only ever name
+  // settings that are loaded, and says "custom" when they match no preset.
+  const activePreset = CAPTURE_PRESETS.find((p) =>
+    Number(exposure) === p.exposure_s && Number(gain) === p.gain &&
+    Number(offset) === p.offset && Number(binning) === p.binning) ?? null;
 
   // --- NOV-4 Suggest settings (photometry/SNR design §3 Task 4) ---
   // egain prefers the manually-entered profile value; falls back to the
@@ -385,6 +439,10 @@ export default function CaptureView() {
   // cannot stomp a genuinely-running frame either — the case the old comment was
   // protecting), and the tap is acknowledged meanwhile by the control's own
   // "Starting…" state rather than by a fictional frame.
+  //
+  // `pending` is ALSO the engaged state of the control that started it, and it
+  // outlives the POST for Loop and Live View — see START_CONFIRM_GRACE_MS and
+  // the handover effect below.
   const [pending, setPending] = useState<null | "single" | "loop" | "live">(null);
   // Bumped by Stop, so a request that was already in flight when the user
   // pressed Stop cannot come back and arm a bar for a frame they cancelled.
@@ -397,11 +455,10 @@ export default function CaptureView() {
       await api.post(path, payload);
     } catch (e) {
       showToast("error", (e as Error).message);
-      return; // nothing was armed — never draw progress for a refused exposure
-    } finally {
       setPending(null);
+      return; // nothing was armed — never draw progress for a refused exposure
     }
-    if (armGenRef.current !== gen) return;
+    if (armGenRef.current !== gen) { setPending(null); return; }
     // "We have seen the lane" has to mean "seen it since THIS POST", or the
     // guard below protects the wrong exposure. A frame that ends the honest way
     // — a new preview id — never delivers the lane-ABSENT frame that clears the
@@ -414,7 +471,29 @@ export default function CaptureView() {
     sawCaptureLane.current = false;
     armStatusRef.current = statusRef.current;
     beginExposure(len);
+    // Single's engaged state becomes LOCAL on the line above — the bar is armed,
+    // and the button reads "Exposing…" off `phase` from here — so its latch has
+    // done its job. Loop and Live View have no local truth to hand over to: they
+    // render from `status.looping` / `status.live_stack_active`, which is a
+    // status frame away, so their latch stays up until the effect below sees the
+    // rig agree (or the grace expires).
+    if (kind === "single") setPending(null);
   };
+
+  // Hand the starting latch over to the rig, or expire it. The moment the server
+  // reports the loop / the live stack, the control's own engaged state is true
+  // and the latch is dropped; if the rig never says so — a start that failed
+  // after acceptance, a dropped link, an op that ended inside one frame — the
+  // grace releases it rather than leaving the control locked all night. This is
+  // the `finally` that used to run 40 ms after the tap, moved onto the only
+  // signal that can honestly retire it.
+  useEffect(() => {
+    if (pending == null || pending === "single") return;
+    if (pending === "loop" && looping) { setPending(null); return; }
+    if (pending === "live" && liveStackOn) { setPending(null); return; }
+    const t = window.setTimeout(() => setPending(null), START_CONFIRM_GRACE_MS);
+    return () => window.clearTimeout(t);
+  }, [pending, looping, liveStackOn]);
 
   // Begin (or restart) the exposing phase. Records the wall-clock start + the frame
   // length so the rAF/interval tick can fill the bar. Used by Single AND by Loop's
@@ -576,6 +655,7 @@ export default function CaptureView() {
     setStopPressed(true);
     window.setTimeout(() => setStopPressed(false), 220);
     armGenRef.current++;   // void any accept still in flight (see `arm`)
+    setPending(null);      // …and drop the starting latch it may have raised
     setPhase("idle");
     // End-of-session nudge (calibration-capture spec §1.3): stopping a Light
     // loop with a bankable batch of lights offers to switch to Dark + prefill.
@@ -607,16 +687,23 @@ export default function CaptureView() {
   // NOV-1 Live View: toggle arms the server-side stacker + starts the loop;
   // toggling off disarms + stops. Reset clears the accumulator, keeps arming.
   const onLiveView = () => {
-    if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
+    if (!canCapture) return;
+    // The OFF half runs first and is deliberately not gated on `pending`. Since
+    // that latch now lives for up to a status frame, gating the stop path on it
+    // would leave a lit "Live View · on" that silently did nothing for six
+    // seconds — the defect this whole change is about, reintroduced from the
+    // other side. Nothing about an unrelated start makes ending the stack wrong.
     if (liveStackOn) {
       // Retire the bar here, the way Stop does: this tap ends the loop, so
       // letting the lane effect discover it would narrate the user's own press
       // back at them as "stopped on the rig".
       armGenRef.current++;
+      setPending(null);
       setPhase("idle");
       act(() => api.post("/api/capture/livestack/stop"));
       return;
     }
+    if (captureBlocked || exposureInvalid || gainInvalid || pending) return;
     void arm("live", "/api/capture/livestack/start",
              { ...body, frame_type: "Light", clip_sigma: liveClipSigma }, exposureS);
   };
@@ -654,6 +741,10 @@ export default function CaptureView() {
   // The request is out but unanswered: the camera has NOT accepted the exposure
   // yet, so the control says "Starting…" and no bar is drawn. Distinct from
   // `inFlight`, which means a frame the server accepted is actually running.
+  // The same sentence is FocusPod's and FocusView's (one vocabulary for one
+  // state), so it stays on the branch it is literally true of — Single, whose
+  // latch is dropped the moment the POST is accepted. Loop and Live View hold
+  // theirs PAST acceptance, waiting on a different answer, and say so below.
   const startingReason =
     "Waiting for the camera to accept this exposure — no frame has started yet";
 
@@ -671,12 +762,20 @@ export default function CaptureView() {
     exposureInvalid ? "Fix the exposure above first"
       : gainInvalid ? "Fix the gain above first"
         : null;
+  // A start the rig has accepted but not yet confirmed still owns the camera,
+  // and `pending` already blocks every one of these handlers. Say so instead of
+  // leaving a live-looking button whose press does nothing for a status frame.
+  // The control that RAISED the latch has its own "Starting…" branch below and
+  // is matched before this reason is ever consulted.
+  const startPendingReason =
+    pending ? "A capture is starting — waiting for the camera to answer" : null;
   // Shared by every control that starts an exposure.
   const exposeReason =
     readOnlyReason
     ?? (polarBusy ? "Polar alignment owns the camera right now"
       : seqOwnsCamera ? "A sequence owns the camera — stop it first"
-        : settingsReason);
+        : settingsReason)
+    ?? startPendingReason;
   const singleReason =
     exposeReason ?? (looping ? "A capture loop is running — press Stop first" : null);
   const loopReason = exposeReason;
@@ -758,16 +857,19 @@ export default function CaptureView() {
 
           {/* Presets — ONE button that opens the list (QA: "presets should be
                a button that opens a picker"). Six permanent 44px chips were
-               most of a rail, for a control you touch once a session. The
-               button names the last one applied, so the glance still works. */}
+               most of a rail, for a control you touch once a session.
+               The button and the checked row both name the preset the four
+               boxes ARE (`activePreset`), not the one last tapped — see the
+               derivation above; "custom" is what "these are not any preset"
+               looks like, and no row carries the dot in that state. */}
           <div className="mt-3">
             <PickerButton
               label="Preset"
-              summary={lastPreset ?? "choose"}
+              summary={activePreset?.label ?? "custom"}
               options={CAPTURE_PRESETS.map((p) => ({
                 id: p.id, label: p.label, hint: p.blurb,
               }))}
-              selected={lastPreset ? [CAPTURE_PRESETS.find((p) => p.label === lastPreset)?.id ?? ""] : []}
+              selected={activePreset ? [activePreset.id] : []}
               disabled={!!readOnlyReason}
               disabledReason={readOnlyReason}
               onBlocked={(r) => showToast("warning", r)}
@@ -778,7 +880,6 @@ export default function CaptureView() {
                 setGain(String(p.gain));
                 setOffset(String(p.offset));
                 setBinning(String(p.binning));
-                setLastPreset(p.label);
                 showToast("info", `Preset: ${p.label}`);
               }}
             />
@@ -969,9 +1070,19 @@ export default function CaptureView() {
                 Starting…
               </button>
             ) : inFlight && !looping ? (
+              // `aria-busy`, NOT `aria-pressed`. Single is a shutter — a
+              // momentary action with no engaged state to persist and no second
+              // press that could release it — and it carried aria-disabled AND
+              // aria-pressed together, so for the length of the exposure a
+              // screen reader announced the shutter as a latched, unavailable
+              // TOGGLE. The accent chrome and the progress bar below stay: they
+              // are accurate, and it is only the affirmative claim of a pressed
+              // toggle that is false. The Looping branch below keeps
+              // aria-pressed, because Loop genuinely is a latched mode whose off
+              // switch is Stop.
               <button
                 className="btn btn-accent border-accent tap-lg min-h-[56px]"
-                aria-disabled aria-pressed
+                aria-disabled aria-busy
                 aria-label={`${phase === "downloading" ? "Reading out" : "Exposing"} — a frame is already in progress`}>
                 {phase === "downloading" ? "Reading…" : "Exposing…"}
               </button>
@@ -992,10 +1103,16 @@ export default function CaptureView() {
                 Looping…
               </button>
             ) : pending === "loop" ? (
+              // Held from the tap until `status.looping` lands (or the grace
+              // expires) — NOT until the POST resolves. Loop's engaged look is
+              // pure server truth and is a status frame behind the tap, so for
+              // up to two seconds the loop was running underneath a button that
+              // looked untouched; the second tap that invited cancels the
+              // exposure in progress and throws it away.
               <button
                 className="btn tap-lg min-h-[56px]"
                 aria-disabled aria-busy
-                aria-label={startingReason}>
+                aria-label="Starting — the loop has been requested and the rig has not reported it running yet">
                 Starting…
               </button>
             ) : loopReason ? (
@@ -1046,15 +1163,21 @@ export default function CaptureView() {
                reflects server truth (status.live_stack_active), so a reload mid-stack
                stays lit. Reset is honest-disabled (§11.8) until armed. ---- */}
           <div className="grid grid-cols-2 gap-2 mt-2">
-            {exposeReason && !liveStackOn ? (
+            {/* The control that RAISED the latch is matched first: `exposeReason`
+                now names a pending start too, and a lock glyph on the button you
+                just pressed says "blocked", the opposite of the truth. Same
+                latch as Loop's and for the same reason — a second tap here does
+                not restart anything, it assigns a fresh LiveStacker and throws
+                away everything accumulated so far. */}
+            {pending === "live" ? (
+              <button className="btn tap min-h-[44px]" aria-disabled aria-busy
+                aria-label="Starting — Live View has been requested and the rig has not reported the stack yet">
+                Starting…
+              </button>
+            ) : exposeReason && !liveStackOn ? (
               <LockedChip reason={exposeReason} className="btn tap min-h-[44px] justify-center">
                 Live View
               </LockedChip>
-            ) : pending === "live" ? (
-              <button className="btn tap min-h-[44px]" aria-disabled aria-busy
-                aria-label={startingReason}>
-                Starting…
-              </button>
             ) : (
               <button
                 className={`btn tap min-h-[44px] ${liveStackOn ? "btn-accent border-accent" : ""}`}
@@ -1361,9 +1484,25 @@ export default function CaptureView() {
                   {cooler?.on ? "Set" : "Cool"}
                 </LockedChip>
               ) : (
+                // NO aria-pressed. This is a one-way apply: from OFF the press
+                // moves it false->true, and the second press — in the "Set"
+                // identity, its accessible name having silently changed under
+                // the user — cannot move it back, because the off action is the
+                // separate Warm button beside it. A toggle that only latches is
+                // not a toggle, and `cooler.on` is already carried honestly two
+                // rows up by the LED and the word "Cooling".
+                //
+                // The accent chrome is repointed at the one thing this button
+                // does own: whether the number in the box has been SENT. Lit now
+                // means "there is a set-point here the camera has not been told
+                // about" — so typing -25 over a camera holding -20 lights the
+                // control that would send it, instead of finding it already
+                // dressed as applied.
                 <button
-                  className={`btn tap min-h-[44px] w-full ${cooler?.on ? "btn-accent border-accent" : ""}`}
-                  aria-pressed={!!cooler?.on}
+                  className={`btn tap min-h-[44px] w-full ${coolerEditPending ? "btn-accent border-accent" : ""}`}
+                  aria-label={coolerEditPending && deviceTargetC != null
+                    ? `Set — send ${coolerTargetNum} °C to the camera, which is holding ${deviceTargetC.toFixed(1)} °C`
+                    : undefined}
                   onClick={() => act(async () => {
                     await api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum });
                     // Sent: the camera is the authority on this number again, so
@@ -1405,6 +1544,23 @@ export default function CaptureView() {
                 </button>
               )}
             </div>
+            {/* The unsent set-point, in words. The accent chrome above is the
+                glance; this is the channel that survives the red palette, where
+                accent-vs-plain on a 1px border is close to nothing, and it is
+                also the only place the two numbers are put side by side — the
+                "target" Stat shows the camera's and the box shows the user's,
+                three controls apart, with nothing saying they disagree.
+                Phrased as the two numbers and what the button does, NOT as "not
+                sent yet": between the POST and the status frame that confirms
+                it, "not sent yet" would itself be false for a second or two —
+                the same shape of lie, from the other side. The camera holding a
+                different number is true throughout that window. */}
+            {coolerEditPending && deviceTargetC != null && (
+              <p className="text-[11px] text-warn mt-2 leading-snug">
+                The camera is holding {deviceTargetC.toFixed(1)} °C — Set sends
+                the {coolerTargetNum} °C in the box.
+              </p>
+            )}
             {/* ---- warm-down ramp progress (2026-08-04). The panel's only
                  previous answer to "is it warming?" was the cooler LED going
                  off, which happened instantly because the TEC was being cut

@@ -608,6 +608,61 @@ test("…and the terminal state still ends it", () => {
 });
 abortReply = "ok";
 
+// ------------------------- THE AUTOMATION COLUMN'S CLAIM (button-rest #12)
+// The Automation panel stays fully live during a run and NONE of it reaches
+// that run: the engine takes a copy of the plan at Run (engine.py
+// `self.plan = plan`) and reads dither, refocus, the flip, the quality gates,
+// cool-to, the safety gate and the end-of-run park/warm out of that copy for
+// the rest of the night. So the operator who sees cloud coming at 2am, slides
+// "safety monitor gate" ON and watches it STAY on — aria-checked and all —
+// walks away believing an unattended run will now park on an unsafe verdict.
+// Targets says this (its own LockedNote) and SchedulePanel is disabled while
+// running; this column had neither, and it is the one holding the safety gate.
+await frame("running", { frameStartedAtMs: Date.now() - 1_000 });
+const switches = (): any[] => [...container.querySelectorAll('[role="switch"]')];
+const safetyGate = (): any =>
+  switches().find((s: any) => /safety monitor gate/i.test(s.getAttribute("aria-label") || ""));
+
+test("the Automation panel says its settings belong to the NEXT run", () => {
+  // PRECONDITION: the panel is actually on screen, or "the note is missing"
+  // and "the panel is missing" would be the same result.
+  assert(safetyGate() != null,
+    "no safety-monitor-gate switch on screen — the panel this test is about never rendered");
+  assert(/These settings apply to your NEXT run/.test(text()),
+    "the whole Automation column — the safety gate included — is live and ignored during a " +
+    "run, with nothing on screen saying so: the switch slides, stays engaged, and the " +
+    "engine never sees it");
+  assert(/does not reach the run in progress/.test(text()),
+    "the note stops short of saying what the switch the user just moved will NOT do");
+  assert(/“NGC7000 SHO”/.test(text()),
+    "the note does not name the run holding the plan copy");
+});
+
+test("…and the switch is still operable, because it is the NEXT run's setting", () => {
+  // The fix must be a note, not a lock: preparing tomorrow night's automation
+  // while tonight runs is the whole reason Targets chose a note too. A test
+  // that only asserted the note would pass just as well over a dead panel.
+  const gate = safetyGate();
+  assert(gate.getAttribute("aria-disabled") !== "true" && gate.disabled !== true,
+    "the safety gate went out of service — the note explains a lock nobody asked for");
+});
+
+test("Instructions carry the same warning, since the rules are in that copy too", () => {
+  assert(/Rules apply to your next run/.test(text()),
+    "a conditional rule added mid-run never fires tonight (engine reads " +
+    "self.plan.instructions off the same snapshot) and the editor says nothing");
+});
+
+await frame("complete", { frameStartedAtMs: null });
+test("…and both notes go away when the run does", () => {
+  assert(!/These settings apply to your NEXT run/.test(text()),
+    "the automation note outlived the run that justified it, so it now describes a lie " +
+    "in the other direction");
+  assert(!/Rules apply to your next run/.test(text()),
+    "the instructions note outlived the run");
+  assert(safetyGate() != null, "the panel vanished with the run — that is not the fix either");
+});
+
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });
 const total = passed + failed;

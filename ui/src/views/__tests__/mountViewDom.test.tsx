@@ -203,9 +203,22 @@ test("Park returns when the lane retires", () => {
 });
 
 // --------------------------------------------------------- GOTO (audit #33)
+/** The one catalog row, as an element — the marker under test lives on the ROW,
+ *  not on the button inside it. */
+const catalogRow = (): any =>
+  [...container.querySelectorAll("tr")].find((r: any) => /M42/.test(r.textContent || ""));
+
 test("GOTO is live on an idle mount", () => {
   const b = byText(/^GOTO$/);
   assert(b != null && b.disabled === false, "GOTO starts out unavailable — the fixture is wrong");
+});
+
+test("PRECONDITION: no row carries the in-flight marker before a slew", () => {
+  const row = catalogRow();
+  assert(row != null, "no M42 row — the catalog fetch never landed");
+  assert(!/border-l-2/.test(row.className || ""),
+    "the row is already marked; 'it gets marked' below would prove nothing");
+  assert(!/▸/.test(row.textContent || ""), "the row already carries the in-flight glyph");
 });
 
 await click(byText(/^GOTO$/));
@@ -222,6 +235,26 @@ test("GOTO reports the slew it started, and says which target", () => {
   const toasts = (useStore.getState() as any).toasts as { title: string }[];
   assert(toasts.some((t) => /Slewing to M42/.test(t.title)),
     "no confirmation that the slew was accepted — success and 'nothing happened' look identical");
+});
+
+test("the row being slewed to is marked by SHAPE, not by accent hue alone", () => {
+  // Every GOTO in the table is `disabled` while a slew runs, which paints it at
+  // 0.35 opacity (index.css:407). The target's own button used to be marked by
+  // accent border + accent text and nothing else — two colour channels, both
+  // composited toward the near-black panel by that same 0.35, which crushes the
+  // border's 3.17:1 step to 1.39:1. Under :root.night the ID cell, the border
+  // and the text are all red anyway. So the marker cannot live on the button and
+  // cannot be a colour: index.css:154-157 — "any status that must survive night
+  // mode needs a non-hue channel".
+  const row = catalogRow();
+  assert(row != null, "the M42 row vanished");
+  assert(/border-l-2/.test(row.className || ""),
+    "the slewing row has no bar in the margin — the only marker is on a button painted at 0.35 opacity");
+  assert(/▸/.test(row.textContent || ""),
+    "the slewing row has no glyph beside its id, so the state has no shape channel at all");
+  assert(/bg-accent\/10/.test(row.className || ""),
+    "the slewing row has no fill — the one that used to be on the button never rendered, "
+    + "because .btn's unlayered `background` always beats an @layer utility");
 });
 
 // The rig confirms the lane on its next frame, which is what the local latch
@@ -276,6 +309,55 @@ await frame([], { tracking: false });
 test("…and hands back to the mount's own telemetry when it agrees", () => {
   assert(toggle().getAttribute("aria-checked") === "false", "the switch lost the state the mount now reports");
 });
+
+// -------------------------------- A MOTION THIS TAB DID NOT START (finding #2)
+// `motion` — the latch that turns the shared `goto` lane into "Parking…" — is
+// per-tab state and dies with a reload. So this is the state of a tablet that
+// was not the one that pressed Park: the rig's own lane is the only evidence
+// there is, and a native AM5 leaves BOTH `slewing` and `parked` false for the
+// whole 15-60 s of a park.
+await frame([], { tracking: false, parked: false, slewing: false });
+test("PRECONDITION: with the lane idle this tab reads IDLE and offers Home", () => {
+  assert(/IDLE/.test(container.textContent || ""),
+    "the State stat does not read IDLE on a stopped mount — the fixture is wrong");
+  const h = byText(/^Home$/);
+  assert(h != null && h.disabled === false,
+    "Home is already unavailable, so 'it goes out of service' below would prove nothing");
+});
+
+await frame(["goto"], { tracking: false, parked: false, slewing: false });
+test("a motion this tab did not start is not reported as an idle mount", () => {
+  const t = container.textContent || "";
+  assert(!/IDLE/.test(t),
+    "the State stat still reads IDLE while the rig's own goto lane is busy: after a "
+    + "reload mid-park, or on a second tablet, this is the whole of what the page knows "
+    + "and it was saying the mount was stopped");
+  assert(/MOVING/.test(t),
+    "nothing in the Pointing panel says the mount is moving — the lane cannot say WHICH "
+    + "of park/home/goto it is, but 'moving' is certainly true");
+});
+
+test("…and Home, which is not an abort, goes out of service and says why", () => {
+  const h = byText(/^Home$/);
+  assert(h != null && h.disabled === true,
+    "Home is offered over a motion already on the lane. /api/mount/home spawns with "
+    + "replace=True and find_home() is unpark → park → unpark, so cancelling it mid-sequence "
+    + "can leave the mount PARKED — the button looks like it worked and the next slew is refused");
+  assert(/already moving/.test(h.getAttribute("title") || ""),
+    "the blocked Home says nothing about why or when it comes back");
+});
+
+test("…but Park stays pressable, because Park IS the abort", () => {
+  const p = byText(/^Park$/);
+  assert(p != null && p.disabled === false,
+    "Park went dead over a motion it did not start — park is the server's "
+    + "motion-committing abort (replace=True cancels the goto and stows the mount), so "
+    + "taking it away removes the only way to stop a bad slew");
+  assert(/already moving/.test(p.getAttribute("aria-label") || ""),
+    "Park offers itself as a fresh, consequence-free action over a motion that a press "
+    + "would cancel — and if that motion is itself a park, restart");
+});
+await frame([]);
 
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });

@@ -213,6 +213,96 @@ await scenario().catch((e: unknown) => {
   failures.push(`x the scenario could not be driven to the end: ${(e as Error).message}`);
 });
 
+// ================================= the Frames/Trash tabs, under the red filter
+// The selected tab used to be marked by `!border-accent !text-accent` alone —
+// border colour and text colour, nothing else. In night mode that is worse than
+// no cue: --accent (#ff3a3a) is DIMMER than --text (#ff7a7a), so the ACTIVE
+// label read fainter than the inactive one — like the disabled one — while the
+// 1px border got brighter. Two channels pointing opposite ways, and the label
+// wins by area. index.css:154-157 states the rule ("Any status that must survive
+// night mode needs a non-hue channel — ... fill for selection") and four of the
+// five other hand-rolled uses of this exact idiom in the repo already obey it
+// (NavMoreSheet:269, SlewPad:372, SlewPad:467, MountView:566). These two were
+// the only occurrences that dropped the fill.
+//
+// A DOM test cannot see a colour, so the assertion is the mechanism: the
+// selected face must differ from the unselected one by something that is not a
+// colour word — a fill.
+//
+// AND THE FILL HAS TO BE `!important`, WHICH IS NOT A STYLE PREFERENCE. `.btn`
+// is declared in index.css OUTSIDE any cascade layer and sets
+// `background: var(--bg-raise)`; Tailwind's `bg-accent/10` is emitted inside
+// `@layer utilities`. Unlayered CSS beats layered CSS regardless of specificity,
+// so a plain `bg-accent/10` on a `.btn` paints nothing at all. jsdom computes no
+// cascade and would happily report the class as present — which is exactly how
+// a "fixed" tab could ship still looking identical under the red filter, and
+// why this file asserts the `!`. (MountView.tsx:623-629 documents the same trap
+// after deleting its own dead `bg-accent/10`.)
+const tab = (re: RegExp): any =>
+  [...container.querySelectorAll("button")]
+    .find((b: any) => re.test(b.textContent || "") && b.getAttribute("aria-pressed") != null);
+/** Every background-fill utility on the element that can actually WIN against
+ *  `.btn` — i.e. the important ones. A non-important `bg-*` is a dead
+ *  declaration here, so it deliberately does not count as a fill. */
+const fills = (el: any): string[] =>
+  String(el?.className ?? "").match(/(?:^|\s)!bg-[\w./[\]-]+/g)?.map((s) => s.trim()) ?? [];
+/** ...and the trap itself: a fill that is present but cannot render. */
+const deadFills = (el: any): string[] =>
+  String(el?.className ?? "").match(/(?:^|\s)bg-[\w./[\]-]+/g)?.map((s) => s.trim()) ?? [];
+
+function tabScenario(): void {
+  const frames = tab(/Frames/);
+  const trash = tab(/Trash/);
+  test("GUARD: both gallery tabs rendered, with Frames the selected one", () => {
+    assert(frames != null, `no Frames tab: ${text().slice(0, 200)}`);
+    assert(trash != null, "no Trash tab — this account should hold control.capture");
+    assert(frames.getAttribute("aria-pressed") === "true", "precondition: Frames is selected");
+    assert(trash.getAttribute("aria-pressed") === "false", "precondition: Trash is not");
+  });
+
+  test("the selected tab is marked by a FILL, not by colour alone", () => {
+    assert(fills(frames).length > 0,
+      `the selected tab carries no fill that can render (class="${frames.className}") — ` +
+      "under the red night palette its only cues are a dimmer label and a brighter " +
+      "hairline, which point in opposite directions and read as the DISABLED tab. " +
+      "A non-important bg-* here does not count: `.btn` is unlayered and its " +
+      "background beats anything in @layer utilities.");
+    assert(fills(trash).length === 0,
+      `the UNSELECTED tab carries a fill too (class="${trash.className}"), so the fill ` +
+      "distinguishes nothing");
+    // The specific way this fix can be silently undone.
+    assert(deadFills(frames).length === 0,
+      `the selected tab carries a NON-important fill (${deadFills(frames).join(" ")}) — ` +
+      "it is in the class list and paints no pixels, so the tab looks exactly as " +
+      "broken as before while every class-string check says it was fixed");
+  });
+
+  test("and both tabs agree on what selection looks like", () => {
+    // Byte-identical conditionals or the pair contradicts itself. Fixing one and
+    // not the other is the failure mode this catches.
+    // Snapshot FIRST: React reuses the same DOM node and rewrites className in
+    // place, so reading `frames` after the click would read the DESELECTED face
+    // and the comparison would pass by comparing nothing to nothing.
+    const selectedFrames = fills(frames).join(" ");
+    click(trash);
+    const frames2 = tab(/Frames/);
+    const trash2 = tab(/Trash/);
+    assert(trash2.getAttribute("aria-pressed") === "true",
+      "precondition: clicking Trash selected it");
+    assert(selectedFrames.length > 0, "precondition: the snapshot caught the selected face");
+    assert(fills(trash2).join(" ") === selectedFrames,
+      `selected Trash paints "${fills(trash2).join(" ")}" where selected Frames painted ` +
+      `"${selectedFrames}" — the two halves of one control disagree`);
+    assert(fills(frames2).length === 0, "the deselected Frames tab kept its fill");
+  });
+}
+
+try { tabScenario(); }
+catch (e: unknown) {
+  failed++;
+  failures.push(`x the tab scenario could not be driven to the end: ${(e as Error).message}`);
+}
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

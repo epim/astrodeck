@@ -182,10 +182,34 @@ function annotationRows(
   return rows;
 }
 
-/** Which annotations are ON. `bahtinov` is opt-OUT (undefined reads as on),
- *  which is why it cannot be tested for truthiness like the others. */
+/** Which annotations are ON **and drawable on this frame**.
+ *
+ *  The stored preference and the overlay actually being drawn are two different
+ *  facts, and this helper used to report the first while claiming to report the
+ *  second. Turn Stars on (it persists to localStorage, store.ts persistPreview)
+ *  and then let a frame arrive with no star list — a NINA frame, cloud, a
+ *  detection that found nothing — and PreviewStage draws no rings at all
+ *  (it gates on `starsAvailable`), while this returned "stars" anyway. The
+ *  button then read "2 on" with exactly one overlay on screen, and the picker
+ *  row rendered ENGAGED AND GREYED at once: aria-selected="true" plus the `•`
+ *  bullet on top of opacity-40 + aria-disabled, a selection assertion about an
+ *  overlay the app was refusing to render. It could not even be cleared while
+ *  the data stayed away — PickerButton blocks a disabled row before `onPick`,
+ *  so the tap only toasted the reason and the bullet stayed — and because the
+ *  preference persists, a NINA user saw it stuck across reloads.
+ *
+ *  So: a row the frame cannot support reads OFF, in the summary and in the
+ *  list, exactly as `Toggle` above already does for the Magnifier (locked chip,
+ *  no engaged look). Nothing is written to the store, so the preference is
+ *  intact and the row lights up again on the first frame that carries the data.
+ *
+ *  `bahtinov` is opt-OUT (undefined reads as on), which is why it cannot be
+ *  tested for truthiness like the others; it is never `disabled` — the row only
+ *  exists when `preview.bahtinov.geom` does — so it is unaffected by the filter.
+ */
 function annotationsOn(overlays: OverlayToggles, rows: PickerOption[]): string[] {
   return rows
+    .filter((r) => !r.disabled)
     .filter((r) => (r.id === "bahtinov"
       ? (overlays as unknown as Record<string, unknown>).bahtinov !== false
       : !!(overlays as unknown as Record<string, unknown>)[r.id]))
@@ -232,6 +256,9 @@ export function PreviewToolbar({
   const [dlOpen, setDlOpen] = useState(false);
   const dlRef = useRef<HTMLDivElement>(null);
   const dlBtnRef = useRef<HTMLButtonElement>(null);
+  /** Was focus inside the download region when it last moved? Read only on the
+   *  path below where the trigger unmounts under the user. */
+  const dlFocusRef = useRef(false);
   // Self-subscribed rather than passed down (SnrChip's idiom): the toolbar's
   // caller has no reason to know about the server's frame ring, and a blocked
   // annotation row has to be able to say so somewhere the user is looking.
@@ -337,6 +364,39 @@ export function PreviewToolbar({
         `and this one is ${behind} back. Return to Live, or open the saved sub from the Gallery.`
       : "No frame to download yet";
 
+  // A DISCLOSURE CANNOT OUTLIVE ITS OWN TRIGGER. `dlDisabled` flips the moment
+  // the link drops or the pinned frame falls DISPLAY_KEEP behind, and the
+  // trigger is then replaced by a LockedChip whose reason says the downloads
+  // are unavailable — but the panel below it kept rendering, because its render
+  // was gated on `dlOpen && id != null` and never on `dlDisabled`. On the
+  // link-down path (the instant, far more reachable one — `behind` is normally
+  // 0 there) EVERY row stayed a live `<a download>`, so a locked control sat
+  // directly on top of the offers it had just withdrawn, and tapping one did
+  // nothing whatsoever: see the note at the top of this file — an `<a download>`
+  // that 404s reports nothing at all.
+  //
+  // The render below is gated on `!dlDisabled` so that contradiction cannot be
+  // painted for even one frame; the STATE is cleared here so the panel does not
+  // spring back open by itself when the link returns.
+  useEffect(() => {
+    if (!dlDisabled) return;
+    setDlOpen(false);
+    // The trigger just unmounted, possibly under the user's focus, which leaves
+    // focus on <body> — the keyboard user is dropped at the top of the document
+    // with no idea why the control vanished. Hand focus to the LockedChip that
+    // replaced it: it is focusable for exactly this purpose (tabIndex=0, the
+    // reason in its aria-label, and a tooltip so the reason has a tap path).
+    // Guarded twice so this can never STEAL focus: only when focus was ours,
+    // and only when it is now nowhere.
+    if (!dlFocusRef.current) return;
+    const active = document.activeElement as HTMLElement | null;
+    // `isConnected` as well as the body check: browsers differ on whether
+    // removing the focused node resets `activeElement` to <body> or leaves it
+    // pointing at the detached element. Both readings mean the same thing here.
+    if (active && active !== document.body && active.isConnected) return;
+    dlRef.current?.querySelector<HTMLElement>('[role="button"]')?.focus();
+  }, [dlDisabled]);
+
   return (
     <div className="preview-toolbar">
       {/* zoom cluster — always visible.
@@ -425,7 +485,17 @@ export function PreviewToolbar({
       <span className="flex-1" />
 
       {/* download */}
-      <div className="relative" ref={dlRef}>
+      {/* onFocus/onBlur, not a focus poll: React delegates these from the
+          BUBBLING focusin/focusout, so the flag tracks focus anywhere in the
+          region — trigger, panel links, locked rows — and stays true when the
+          focused node is REMOVED (removal fires no blur), which is precisely
+          the case the effect above needs to recognise. */}
+      <div
+        className="relative"
+        ref={dlRef}
+        onFocus={() => { dlFocusRef.current = true; }}
+        onBlur={() => { dlFocusRef.current = false; }}
+      >
         {dlDisabled ? (
           <LockedChip reason={dlReason} className={LOCKED_BTN}>
             Download
@@ -449,7 +519,7 @@ export function PreviewToolbar({
             download links and a few honest stand-ins for the ones that are
             unavailable. Links are focusable and Tab-navigable natively, so
             saying that plainly is both true and usable. */}
-        {dlOpen && id != null && (
+        {dlOpen && !dlDisabled && id != null && (
           <div
             role="group"
             aria-label={`Download frame ${id}`}

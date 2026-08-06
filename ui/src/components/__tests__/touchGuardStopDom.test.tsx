@@ -288,6 +288,116 @@ await teardownScenario().catch((e: unknown) => {
   failures.push(`x the teardown scenario could not be driven to the end: ${(e as Error).message}`);
 });
 
+// ============================================== SLIDE-TO-UNLOCK, TAKEN AWAY
+// The handle takes a pointer capture and handles pointerup / pointercancel /
+// lostpointercapture, so palm-reject, a scroll stealing the gesture and a drag
+// released off the track already reset cleanly. What it had NO exit for was the
+// gesture that ends with no pointer event at all: the tablet's screen timeout,
+// an app switch, an OS focus steal. `pct` was never reset, so the handle sat
+// translated mid-track with the accent fill behind it — and `slidePointerId`
+// still owned the slider, so `onDown` returned at its guard on EVERY later
+// touch. The primary unlock affordance looked half-slid and was dead for the
+// rest of the locked session (SlewPad.tsx:205-228 documents this exact latch on
+// its own arrows; ui.tsx:415-430 guards HoldButton against it).
+
+/** jsdom has no PointerEvent; React reads pointerId/clientX off the native
+ *  event, so a plain Event carrying those fields is what a finger looks like. */
+function slide(node: any, type: string, clientX: number, pointerId = 7): void {
+  act(() => {
+    const ev = new win.Event(type, { bubbles: true, cancelable: true }) as any;
+    ev.pointerId = pointerId;
+    ev.pointerType = "touch";
+    ev.isPrimary = true;
+    ev.clientX = clientX;
+    ev.clientY = 0;
+    node.dispatchEvent(ev);
+  });
+}
+const handle = () =>
+  ([...container.querySelectorAll("button")] as any[])
+    .find((b) => /cursor-grab/.test(typeof b.className === "string" ? b.className : ""));
+/** How far along the 200px track the handle is actually drawn. */
+const handleX = () => {
+  const t = String(handle()?.style?.transform ?? "");
+  return Number(t.match(/translateX\(([-\d.]+)px\)/)?.[1] ?? NaN);
+};
+
+// jsdom's visibilityState is a prototype getter; shadow it so the test can put
+// the tab in the background the way a screen timeout does.
+let visState = "visible";
+Object.defineProperty(win.document, "visibilityState", {
+  configurable: true, get: () => visState,
+});
+
+function slideScenario(): void {
+  test("GUARD: the handle exists and a drag actually moves it", () => {
+    assert(handle() != null, "no slide handle on the locked screen — nothing below is testable");
+    assert(handleX() === 0, `the handle does not start at rest (translateX=${handleX()})`);
+    slide(handle(), "pointerdown", 0);
+    slide(handle(), "pointermove", 120);
+    assert(handleX() > 0,
+      `dragging the handle 120px did not move it (translateX=${handleX()}) — the fixture ` +
+      "cannot drive this control, so a later 'it went back to rest' would prove nothing");
+  });
+
+  // THE DEFECT: the window loses focus mid-slide. No pointerup, no pointercancel.
+  act(() => { win.dispatchEvent(new win.Event("blur")); });
+
+  test("a slide interrupted by an OS focus steal returns the handle to rest", () => {
+    assert(handleX() === 0,
+      `the handle is parked at translateX=${handleX()} with the accent fill behind it, ` +
+      "on a gesture whose finger is long gone");
+  });
+
+  test("...and does NOT unlock — losing focus is not a completed slide", () => {
+    assert(overlay() != null,
+      "the screen unlocked itself when the window lost focus: the safety lock guarding " +
+      "live mount motion opened without anybody completing the gesture");
+  });
+
+  test("...and the slider still takes a new gesture (the pointer-id latch is cleared)", () => {
+    // The half of this that is worse than the stale look: `slidePointerId` still
+    // set means onDown returns at TouchGuard.tsx:133 for every later touch.
+    //
+    // PRECONDITION, and it is load-bearing: a LATCHED handle is frozen where the
+    // interrupted drag left it, which is also `> 0`. Without asserting it is at
+    // rest first, "it moved" would be satisfied by a handle that cannot move at
+    // all — the test would pass over the exact defect it names.
+    assert(handleX() === 0,
+      `the handle is at translateX=${handleX()} before this gesture starts, so "it moved" ` +
+      "below would prove nothing");
+    slide(handle(), "pointerdown", 0, 9);
+    slide(handle(), "pointermove", 130, 9);
+    assert(handleX() > 0,
+      "a fresh touch does nothing at all — the handle is owned forever by a pointer id " +
+      "that no longer exists, so the primary unlock affordance is dead for the rest of " +
+      "this locked session (the UNLOCK button and Escape are the only way out)");
+  });
+
+  // Same hole, the other trigger: the tab going to the background.
+  test("backgrounding the tab mid-slide releases it too", () => {
+    assert(handleX() > 0, "precondition: a slide is in progress from the test above");
+    visState = "hidden";
+    act(() => { win.document.dispatchEvent(new win.Event("visibilitychange")); });
+    visState = "visible";
+    assert(handleX() === 0,
+      `the handle stayed at translateX=${handleX()} when the tablet's screen timed out ` +
+      "mid-slide — the case pointercancel does not cover");
+    assert(overlay() != null, "backgrounding the tab unlocked the screen");
+    // ...and it is usable again afterwards.
+    slide(handle(), "pointerdown", 0, 11);
+    slide(handle(), "pointermove", 140, 11);
+    assert(handleX() > 0, "the slider is latched dead after the visibility change");
+    slide(handle(), "pointercancel", 140, 11);   // leave it at rest for the report
+  });
+}
+
+try { slideScenario(); }
+catch (e: unknown) {
+  failed++;
+  failures.push(`x the slide scenario could not be driven to the end: ${(e as Error).message}`);
+}
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

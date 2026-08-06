@@ -128,7 +128,20 @@ test("the table covers every lane the SERVER can refuse, not every lane we remem
   // full checkout, so a missing file here is a broken assumption, not a reason
   // to pass quietly — hence no try/catch.
   const appPy = fileURLToPath(new URL("../../../../server/astrodeck/api/app.py", import.meta.url));
-  const src = readFileSync(appPy, "utf8");
+  let src: string;
+  try {
+    src = readFileSync(appPy, "utf8");
+  } catch {
+    // Still a hard failure — see above; a silent skip would retire the guard.
+    // But say WHY, because the bare ENOENT is unreadable: it surfaced once from
+    // a CI-parity run that had copied only ui/ into a container, and the raw
+    // errno gave no hint that the cause was the harness rather than the code.
+    throw new Error(
+      `cannot read ${appPy} — this check reads the SERVER's own _spawn() calls, ` +
+      "so it needs the whole repo, not ui/ alone. If you are running the UI " +
+      "suite from a partial copy, copy the repo root instead.",
+    );
+  }
   const lanes = new Set<string>();
   for (const m of src.matchAll(/_spawn\(\s*"([A-Za-z0-9_.-]+)"/g)) lanes.add(m[1]);
   // _spawn_connect keeps the connect task out of hub._busy and writes its own

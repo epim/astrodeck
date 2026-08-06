@@ -55,7 +55,12 @@ for (const k of [
   "window", "document", "navigator", "HTMLElement", "HTMLInputElement", "Element",
   "Node", "Event", "CustomEvent", "MouseEvent", "localStorage",
   "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle",
-  "matchMedia", "WebSocket",
+  // `location` is BARE (not window.location) in ws.ts:43-46, so without it a
+  // panel whose save calls reconnectWs() throws ReferenceError inside its own
+  // try/catch and reports "Could not save." over a save the server accepted.
+  // The failure looks exactly like a rejected write, which is the one thing this
+  // file exists to tell apart from an accepted one.
+  "location", "matchMedia", "WebSocket",
 ]) {
   const v = k === "window" ? win : win[k];
   Object.defineProperty(g, k, { value: v, writable: true, configurable: true });
@@ -69,10 +74,16 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 type Reply = { status: number; body: unknown };
 const routes: Record<string, () => Reply | Promise<Reply>> = {};
 const calls: string[] = [];
+/** The last JSON body sent to each route. A route takes no arguments, so this
+ *  is how a stub can answer the NEXT GET with what the POST actually wrote —
+ *  which is the only way to drive a save-then-edit sequence honestly instead of
+ *  hard-coding the answer the test wants to see. */
+const sent: Record<string, any> = {};
 g.fetch = async (url: string, init?: any) => {
   const method = (init?.method ?? "GET").toUpperCase();
   const key = `${method} ${String(url)}`;
   calls.push(key);
+  if (init?.body) { try { sent[key] = JSON.parse(init.body); } catch { /* not json */ } }
   const make = routes[key] ?? (() => ({ status: 404, body: { detail: "no route" } }));
   // Awaited, so a route may return a PENDING promise — the only way to hold a
   // request open across assertions, which is what "while one sink is testing"
@@ -93,6 +104,8 @@ const SafetyPanel = (await import("../settings/SafetyPanel")).default;
 const SafetyLimitsPanel = (await import("../settings/SafetyLimitsPanel")).default;
 const EscalationPanel = (await import("../settings/EscalationPanel")).default;
 const OpticsPanel = (await import("../settings/OpticsPanel")).default;
+const UpdatePanel = (await import("../settings/UpdatePanel")).default;
+const AuthMethodPanel = (await import("../settings/AuthMethodPanel")).default;
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -694,6 +707,237 @@ await test("Alerts: testing one channel does not deaden the other rows' Test but
 
   release();
   await flush();
+});
+
+// ================================================ "✓ Saved" over unsaved values
+// A green tick beside a live Save button is the confident-and-wrong signal this
+// project keeps paying for. Three panels carried it. In every case `savedAt` was
+// only ever SET — the one thing that could clear it was a SERVER config change,
+// which a local edit is not — so the confirmation outlived the state it named.
+//
+// Each test below proves the confirmation was REACHED before asserting it went
+// away: "no Saved on screen" is trivially true of a panel that never saved.
+
+/** Route GET /api/config so a save's `loadConfig()` re-hydrates with what the
+ *  POST actually wrote. Without it the panel's draft stays permanently ahead of
+ *  the store and `dirty` could never fall back to false — which would make every
+ *  "the tick came back" assertion below pass for the wrong reason. */
+function echoConfig(read: () => Record<string, unknown>): void {
+  routes["GET /api/config"] = () => ({ status: 200, body: makeConfig(read()) });
+}
+
+await test("Safety: the exclusion angle's tick retracts the moment the angle is edited again", async () => {
+  routes["GET /api/dome/state"] = domeOpen;
+  let safety: Record<string, unknown> = { ...SAFETY };
+  routes["POST /api/config"] = () => {
+    safety = { ...safety, ...(sent["POST /api/config"]?.safety ?? {}) };
+    return { status: 200, body: makeConfig({ safety }) };
+  };
+  echoConfig(() => ({ safety }));
+  seedStore();
+  await mount(createElement(SafetyPanel as never));
+
+  const cone = () => ([...container.querySelectorAll("input[type=number]")] as any[])[0];
+  assert(cone()?.value === "30", `precondition: the 30° cone is on screen (got ${cone()?.value})`);
+  await typeInto(cone(), "45");
+  assert(buttonWith(/Save angle/).disabled === false,
+    "precondition: editing the angle makes the panel dirty and Save angle live");
+  assert(/Unsaved/.test(text()),
+    `precondition: the panel says the angle is unsaved: ${text().slice(-500)}`);
+
+  await click(buttonWith(/Save angle/));
+  await flush();
+
+  // PRECONDITION for everything after this: the save happened AND the tick is up.
+  assert(calls.includes("POST /api/config"), "precondition: the angle save reached the server");
+  // Capital S, no word boundaries. Every DIRTY warning in this panel reads
+  // "Unsaved" and the roof's confirmation reads "saved", so this matches the
+  // cone's chip and only that. `\bSaved\b` would NOT work: textContent runs the
+  // chip straight into "Observatory roof", so the trailing boundary never
+  // exists — the assertion would have been passing on the adjacent copy.
+  assert(/Saved/.test(text()),
+    `precondition: a successful save puts a confirmation on screen at all: ${text().slice(-800)}`);
+  assert(buttonWith(/Save angle/).disabled === true,
+    "precondition: the panel is clean again after the save");
+
+  // ...and now the defect: change the angle again.
+  await typeInto(cone(), "60");
+  assert(buttonWith(/Save angle/).disabled === false,
+    "precondition: the second edit made the panel dirty again");
+  assert(!/Saved/.test(text()),
+    "the panel still shows a green Saved beside a live 'Save angle' button — it is " +
+    "claiming the cone is stored and offering to store it in the same breath, and the " +
+    "user walks away believing the mount enforces 60° when it enforces 45°");
+  assert(/Unsaved/.test(text()),
+    `nothing on screen says the angle is unsaved: ${text().slice(-500)}`);
+
+  delete routes["POST /api/config"];
+  delete routes["GET /api/config"];
+});
+
+await test("Safety: a roof toggle's confirmation never speaks for the exclusion angle", async () => {
+  // The two writes in this panel are independent, and the single unlabelled
+  // "✓ Saved" at the foot of the panel could not tell them apart: flipping a roof
+  // interlock (which persists immediately) lit it, and it then sat there under an
+  // exclusion angle that had never been saved.
+  routes["GET /api/dome/state"] = domeOpen;
+  let safety: Record<string, unknown> = { ...SAFETY };
+  routes["POST /api/config"] = () => {
+    safety = { ...safety, ...(sent["POST /api/config"]?.safety ?? {}) };
+    return { status: 200, body: makeConfig({ safety }) };
+  };
+  echoConfig(() => ({ safety }));
+  seedStore();
+  await mount(createElement(SafetyPanel as never));
+
+  assert(!/saved/i.test(text()), "precondition: nothing has been saved yet");
+  await click(byLabel("Close roof at end-of-night"));
+  await flush();
+
+  assert(byLabel("Close roof at end-of-night").getAttribute("aria-checked") === "true",
+    "precondition: the roof flag was accepted by the server");
+  assert(/saved/i.test(text()),
+    `precondition: an accepted roof write confirms itself: ${text().slice(-500)}`);
+
+  const cone = ([...container.querySelectorAll("input[type=number]")] as any[])[0];
+  await typeInto(cone, "60");
+  assert(buttonWith(/Save angle/).disabled === false,
+    "precondition: the exclusion angle is now dirty and unsaved");
+
+  // "Unsaved" contains "saved"; it is a dirty warning, not a confirmation.
+  const t = text().replace(/Unsaved/g, "«dirty»");
+  const all = (t.match(/saved/gi) ?? []).length;
+  const roof = (t.match(/Roof settings saved/g) ?? []).length;
+  assert(all === roof,
+    `the panel shows ${all} save confirmation(s) of which only ${roof} name the roof — ` +
+    "an unqualified 'Saved' is sitting under an exclusion angle that is not saved, " +
+    `which is how the cone reads 60° on screen and 30° on the mount: ${t.slice(-500)}`);
+
+  delete routes["POST /api/config"];
+  delete routes["GET /api/config"];
+});
+
+const UPDATE = {
+  enabled: true, auto_check: true, check_interval_hours: 24, channel: "stable",
+  repo: "epim/astrodeck", signing_pubkey: "AAAApubkey", health_timeout_s: 60,
+  last_check_ts: null,
+};
+const UPDATE_STATUS = {
+  current: "0.2.6", latest: null, update_available: false, phase: "idle",
+  progress: 0, last_check_ts: null, channel: "stable", notes_md: null,
+  can_apply: true, apply_blocked_reason: "", supervised: true,
+  last_result: null, error: null,
+};
+
+await test("Updates: the tick retracts on a local edit, and the panel says it is dirty", async () => {
+  routes["GET /api/update/status"] = () => ({ status: 200, body: UPDATE_STATUS });
+  let update: Record<string, unknown> = { ...UPDATE };
+  routes["POST /api/update/config"] = () => {
+    update = { ...update, ...(sent["POST /api/update/config"] ?? {}) };
+    return { status: 200, body: makeConfig({ update }) };
+  };
+  echoConfig(() => ({ update }));
+  seedStore({
+    config: makeConfig({ update }),
+    caps: [...ADMIN_CAPS, "system.update"],
+  });
+  await mount(createElement(UpdatePanel as never));
+
+  const save = () => buttonWith(/Save settings/);
+  const interval = () => ([...container.querySelectorAll("input[type=number]")] as any[])[0];
+  assert(save() != null, `the Updates settings panel did not mount: ${text().slice(0, 200)}`);
+  assert(interval()?.value === "24",
+    `precondition: the 24h check interval is on screen (got ${interval()?.value})`);
+  assert(save().disabled === true, "precondition: a clean panel does not offer to save");
+  assert(!/Saved/.test(text()), "precondition: nothing claims to have been saved yet");
+
+  await typeInto(interval(), "48");
+  assert(save().disabled === false, "precondition: the edit made the panel dirty");
+  assert(/Unsaved changes/.test(text()),
+    `an edited panel raises no unsaved warning at all: ${text().slice(-400)}`);
+
+  await click(save());
+  await flush();
+  assert(calls.includes("POST /api/update/config"), "precondition: the save reached the server");
+  assert(/Saved/.test(text()),
+    `precondition: a successful save confirms itself: ${text().slice(-400)}`);
+  assert(!/Unsaved changes/.test(text()),
+    "the unsaved warning survived the save that cleared it");
+  assert(save().disabled === true, "precondition: the panel is clean again");
+
+  // THE DEFECT: edit the release signing key / interval after a save.
+  await typeInto(interval(), "72");
+  assert(save().disabled === false, "precondition: the second edit made it dirty again");
+  assert(!/Saved/.test(text()),
+    "the panel shows a green 'Saved' beside a live 'Save settings' button — it claims " +
+    "the update settings are stored and offers to store them at the same time");
+  assert(/Unsaved changes/.test(text()),
+    `nothing warns that the edit is unsaved: ${text().slice(-400)}`);
+
+  delete routes["POST /api/update/config"];
+  delete routes["GET /api/update/status"];
+  delete routes["GET /api/config"];
+});
+
+const AUTH = {
+  methods: ["local"], provider: "none", google_configured: false,
+  admin_token_configured: true, session_signing_configured: true,
+  role_allowlist: {}, default_role: null, session_ttl_s: 28800,
+  local_enabled_first_run: true, trust_loopback: true,
+};
+
+await test("Sign-in methods: the switches are DRAFTS and now say so", async () => {
+  // The hardening scenario. An admin flips "Trust this machine (loopback) as
+  // admin" to OFF, the switch reads OFF, and nothing on screen says the server
+  // has not been told. The open-server banners can't cover it (they only render
+  // with NO method enabled) and neither can the guided card (setupCard.ts:45
+  // keys on the SERVER-persisted methods).
+  let auth: Record<string, unknown> = { ...AUTH };
+  routes["POST /api/auth/config"] = () => {
+    auth = { ...auth, ...(sent["POST /api/auth/config"] ?? {}) };
+    return { status: 200, body: auth };
+  };
+  echoConfig(() => ({ auth }));
+  seedStore({ config: makeConfig({ auth }), caps: [...ADMIN_CAPS, "admin.users"] });
+  await mount(createElement(AuthMethodPanel as never));
+
+  const trust = () => byLabel("Trust loopback as admin");
+  const save = () => buttonWith(/Save methods|Save \(open the server\)/);
+  assert(trust() != null, `the auth panel did not mount: ${text().slice(0, 200)}`);
+  assert(trust().getAttribute("aria-checked") === "true",
+    "precondition: loopback starts trusted, matching the seeded server block");
+  assert(save().disabled === true,
+    "a panel whose every switch matches the server still offers to save it — so the " +
+    "Save button is not a signal at all");
+  assert(!/Unsaved/.test(text()), "precondition: a clean panel warns of nothing");
+
+  await click(trust());
+  assert(trust().getAttribute("aria-checked") === "false",
+    "precondition: the switch took the flip — without this, everything below is vacuous");
+  assert(/Unsaved/.test(text()),
+    "the switch reads OFF while the server still trusts loopback as admin, and NOTHING " +
+    "on screen contradicts the admin who is about to walk away from it");
+  assert(save().disabled === false, "the draft cannot be saved");
+
+  await click(save());
+  await flush();
+  assert(calls.includes("POST /api/auth/config"), "precondition: the save reached the server");
+  assert(sent["POST /api/auth/config"]?.trust_loopback === false,
+    "precondition: the save carried the flipped value");
+  assert(/Saved/.test(text()),
+    `precondition: a successful save confirms itself: ${text().slice(-400)}`);
+  assert(!/Unsaved/.test(text()), "the unsaved warning survived the save that cleared it");
+
+  // ...and the stale tick: flip it back, and the old confirmation must go.
+  await click(trust());
+  assert(trust().getAttribute("aria-checked") === "true", "precondition: the second flip took");
+  assert(!/Saved/.test(text()),
+    "the green 'Saved' from the previous save is still beside the button under a switch " +
+    "that has been moved since — it now confirms a value the server does not hold");
+  assert(/Unsaved/.test(text()), "and nothing says the new position is a draft");
+
+  delete routes["POST /api/auth/config"];
+  delete routes["GET /api/config"];
 });
 
 // ------------------------------------------------------------------- report

@@ -418,6 +418,71 @@ await test("a second tap during the altitude check never reaches the mount", asy
   preflightDelayMs = 0;
 });
 
+// ------------------------------- #41b Match camera vs the optics underneath it
+/** The canvas's own "Your camera · W×H" label — the drawn frame the switch is
+ *  claiming the view matches, read as the user sees it. */
+function camFrame(): string | null {
+  const m = /Your camera\s*·\s*([\d.]+[′°]×[\d.]+[′°])/.exec(container.textContent || "");
+  return m ? m[1] : null;
+}
+const focalField = () =>
+  container.querySelector('input[aria-label^="Camera focal length"]');
+
+await test("Match camera stops claiming a match when the camera changes under it", async () => {
+  // The zoom is applied ONCE, at the tap. The frame it matched then moves on
+  // its own — a focal-length keystroke here, and on a real rig a 2 s status
+  // frame carrying new camera optics, with no user interaction at all. The
+  // "Your camera" rectangle resizes on the canvas immediately, the zoom does
+  // not follow, and the switch went on reading ON over a view that had visibly
+  // stopped matching.
+  if (!focalField()) await act(async () => { click(opticsGear()); });
+  assert(focalField() != null, "no focal-length field — the optics drawer never opened");
+
+  if (matchToggle().getAttribute("aria-checked") === "true") {
+    await act(async () => { click(matchToggle()); });
+  }
+  await act(async () => { click(matchToggle()); });
+  // PRECONDITION 1: the switch really is ON. Without it, "it reads OFF after"
+  // is what a switch that never took the click says too.
+  assert(matchToggle().getAttribute("aria-checked") === "true",
+    "the Match camera switch did not take the click, so nothing below is testable");
+  const matchedTo = camFrame();
+  assert(matchedTo != null,
+    "no 'Your camera' frame on the canvas — the optics fixture is wrong, so the " +
+    "change this test turns on could not be observed");
+  const matchedZoom = useStore.getState().framing!.fovZoomDeg;
+
+  // Type a new focal length. No blur, so no PUT: this is the draft feeding the
+  // FOV per keystroke, which is exactly how the frame moves under the switch.
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(focalField(), "1200");
+    focalField().dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+  // PRECONDITION 2: the camera's field on the canvas really did change, and the
+  // zoom really did not follow it. Both halves of "no longer matching".
+  assert(camFrame() !== matchedTo,
+    `the "Your camera" frame still reads ${matchedTo} after the focal length ` +
+    "changed — the view did not stop matching, so there is nothing to be wrong about");
+  assert(useStore.getState().framing!.fovZoomDeg === matchedZoom,
+    "the zoom moved with the optics, which is a different design from the one " +
+    "under test; this assertion is the reason the switch would be lying");
+
+  assert(matchToggle().getAttribute("aria-checked") === "false",
+    `Match camera still reads ON over a ${camFrame()} frame it was matched to at ` +
+    `${matchedTo} — the switch is asserting the view matches your camera when the ` +
+    "camera rectangle on the canvas has visibly outgrown it");
+
+  // Put the fixture back the way it found it.
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(
+      win.HTMLInputElement.prototype, "value")!.set!;
+    setter.call(focalField(), "530");
+    focalField().dispatchEvent(new win.Event("input", { bubbles: true }));
+  });
+});
+
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });
 const total = passed + failed;
