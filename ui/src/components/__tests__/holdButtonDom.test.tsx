@@ -97,10 +97,11 @@ const root = createRoot(container);
 let confirms = 0;
 /** The rendered face carries `bind.hintLabel` while armed, which is how the
  *  caption assertions read it — the same way monitor.tsx and ConfirmDialog do. */
-function Harness({ holdMs }: { holdMs: number }) {
+function Harness({ holdMs, disabled = false }: { holdMs: number; disabled?: boolean }) {
   return createElement(HoldButton, {
     label: "Abort sequence",
     holdMs,
+    disabled,
     onConfirm: () => { confirms++; },
     children: (bind: any) => createElement(
       "button",
@@ -114,6 +115,12 @@ function Harness({ holdMs }: { holdMs: number }) {
         onPointerUp: bind.onPointerUp,
         onKeyDown: bind.onKeyDown,
         onKeyUp: bind.onKeyUp,
+        // Every real call site spreads this; without it the element's own blur
+        // is unobservable and the keyboard arming outlives leaving the control.
+        onBlur: bind.onBlur,
+        // ...and every real call site ALSO puts `disabled` on the native button,
+        // which is what removes the pointer exit when it flips mid-hold.
+        disabled,
       },
       bind.armed ? bind.hintLabel : "Abort",
     ),
@@ -254,7 +261,60 @@ test("resting caption is still HOLD TO …", () => {
 });
 
 // ------------------------------------------------------------------- report
+// ------------------------------------------- going disabled mid-hold (class C)
+test("a control that goes disabled mid-hold does not complete itself", () => {
+  // THE HOLE: `disabled` used to be an ENTRY condition only. Every call site
+  // also puts it on the native <button>, and a disabled button stops dispatching
+  // pointer events — so the user's pointerup never arrived, and pointerup was
+  // the only exit. The rAF ran on over a greyed-out button and fired anyway.
+  //
+  // Reachable in one gesture on Settings > Profiles: renaming a profile commits
+  // on BLUR, which the pointerdown's focus default action triggers one frame
+  // into a 700ms hold, disabling that row's button.
+  confirms = 0;
+  act(() => { root.render(createElement(Harness, { holdMs: HOLD_MS, disabled: false })); });
+  act(() => { btn().dispatchEvent(pointer("pointerdown")); });
+  pump(5, 16);
+  assert(btn().getAttribute("data-armed") === "true",
+    "precondition: the hold never started, so nothing below would prove anything");
+
+  act(() => { root.render(createElement(Harness, { holdMs: HOLD_MS, disabled: true })); });
+  pump(80, 16);   // well past the 700ms hold
+
+  assert(confirms === 0,
+    "the hold completed on a DISABLED button — the destructive action fired on a " +
+    "press the user had already abandoned, with the control greyed out and dead to touch");
+  assert(btn().getAttribute("data-armed") === "false",
+    "the fill kept sweeping across a disabled button");
+  act(() => { root.render(createElement(Harness, { holdMs: HOLD_MS, disabled: false })); });
+});
+
+// ------------------------------------- leaving the control disarms it (class C)
+test("tabbing away from an armed control disarms the keyboard two-step", () => {
+  // `blur` does not bubble, so HoldButton's window-level listener never sees
+  // focus move between two elements in the same page. The button went on
+  // reading "PRESS AGAIN TO ABORT" with no focus — and tabbing back inside the
+  // 3s window made a SINGLE Enter fire, collapsing the two-step confirm to one.
+  confirms = 0;
+  act(() => { btn().dispatchEvent(key("keydown", "Enter")); });
+  assert(btn().getAttribute("data-armed") === "true",
+    "precondition: the first Enter did not arm, so the disarm below proves nothing");
+
+  act(() => { btn().dispatchEvent(new win.FocusEvent("focusout", { bubbles: true })); });
+  assert(btn().getAttribute("data-armed") === "false",
+    "still armed after focus left the control — it wears PRESS AGAIN with no focus");
+
+  // The load-bearing half: the NEXT Enter must be a first press, not a confirm.
+  act(() => { btn().dispatchEvent(key("keydown", "Enter")); });
+  assert(confirms === 0,
+    "a single Enter after tabbing back ABORTED THE RUN — the two-step confirm " +
+    "had silently become one step");
+  assert(btn().getAttribute("data-armed") === "true", "that Enter should have re-armed");
+  act(() => { btn().dispatchEvent(new win.FocusEvent("focusout", { bubbles: true })); });
+});
+
 act(() => { root.unmount(); });
+
 const total = passed + failed;
 console.log(`holdButtonDom.test: ${passed}/${total} passed`);
 for (const f of failures) console.log("  " + f);

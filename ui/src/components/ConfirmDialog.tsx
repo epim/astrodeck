@@ -135,6 +135,7 @@ export function ConfirmHost() {
                   onPointerCancel={bind.onPointerUp}
                   onKeyDown={bind.onKeyDown}
                   onKeyUp={bind.onKeyUp}
+                  onBlur={bind.onBlur}
                 >
                   {/* luminance-based, hue-independent progress fill (light-on-dark) */}
                   <span

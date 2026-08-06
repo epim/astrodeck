@@ -263,6 +263,10 @@ export type HoldBind = {
   onPointerUp: (e: RPointerEvent) => void;
   onKeyDown: (e: RKeyboardEvent) => void;
   onKeyUp: (e: RKeyboardEvent) => void;
+  //: Spread this onto the button like the rest. Leaving the control has to
+  //: cancel a keyboard arming, and only the ELEMENT can hear that — `blur` does
+  //: not bubble, so the window listener inside HoldButton never sees a Tab.
+  onBlur: () => void;
   progress: number;   // 0..1 fill
   armed: boolean;     // pointer-holding OR keyboard-armed
   hintLabel: string;  // "HOLD TO …", or "PRESS AGAIN TO …" while kb-armed
@@ -316,7 +320,29 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
     if (raf.current != null) { cancelAnimationFrame(raf.current); raf.current = null; }
   };
 
+  // `disabled` is live, not just an entry condition. It used to be read only in
+  // beginHold/onPointerDown/onKeyDown, and nothing watched it afterwards — but
+  // every call site also puts the flag on the rendered <button>, and a DISABLED
+  // BUTTON STOPS DISPATCHING POINTER EVENTS. So a control that went disabled
+  // mid-hold lost `onPointerUp`, which is this primitive's only pointer exit:
+  // the rAF kept running over a greyed-out 0.35-opacity button, the fill swept
+  // to full with no finger on it, and the destructive action fired anyway.
+  //
+  // Reachable in one plain gesture, no second finger: on Settings → Profiles,
+  // rename a profile and then press-and-hold "Update from the current rig"
+  // instead of pressing Enter. The rename commits on BLUR, which the
+  // pointerdown's focus default action triggers one frame into a 700 ms hold;
+  // that sets busyId, the row's button goes disabled, and the profile's stored
+  // devices are overwritten from the live rig on a hold the user had already
+  // abandoned. This is the confirm gate for every destructive action in the
+  // app, so the hole was in all of them.
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+
   const tick = () => {
+    // Checked INSIDE the loop, not only at entry: this is the frame on which a
+    // hold whose exit has just been taken away must die.
+    if (disabledRef.current) { stopRaf(); setHolding(false); setProgress(0); return; }
     const now = performance.now();
     held.current += Math.min(now - lastTick.current, HOLD_MAX_FRAME_CREDIT_MS);
     lastTick.current = now;
@@ -375,6 +401,20 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
   };
   const onKeyUp = (e: RKeyboardEvent) => { /* keyboard path is two discrete presses, not a hold */ void e; };
 
+  // Leaving the CONTROL disarms it, not just leaving the window.
+  //
+  // The window-level "blur" listener below cannot do this job: `blur` does not
+  // bubble, so a bubble-phase listener on `window` fires only when the WINDOW
+  // loses focus (alt-tab), never when focus moves between two elements in the
+  // same page. So arming Abort with Enter and then pressing Tab left the button
+  // wearing "PRESS AGAIN TO ABORT" while it no longer had focus — and, worse,
+  // `kbArmed` was still true, so tabbing back inside the 3 s window made a
+  // SINGLE Enter abort the run. The two-step confirm silently became one step.
+  //
+  // holdButtonDom.test.tsx only ever dispatched the WINDOW blur, which is why
+  // this survived a green suite.
+  const onBlur = () => { disarmKb(); if (!fired.current) endHold(); };
+
   // The hold is bound to a finger that is on the glass NOW. If the tab is
   // backgrounded, the app switched away from, or the OS steals focus mid-press,
   // no pointerup or pointercancel is guaranteed to arrive — and the hold would
@@ -407,7 +447,7 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
   return (
     <>
       {children({
-        onPointerDown, onPointerUp, onKeyDown, onKeyUp,
+        onPointerDown, onPointerUp, onKeyDown, onKeyUp, onBlur,
         progress, armed, hintLabel, "aria-label": label,
       })}
       {kbArmed && (
