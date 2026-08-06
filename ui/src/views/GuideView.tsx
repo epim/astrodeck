@@ -19,6 +19,7 @@ import {
   LOCKED_CLASS,
 } from "../components/ui";
 import { useCanControlGuide, accessPhrase } from "../lib/caps";
+import { useBusy, useBusyLanes, useBusyOrPending } from "../lib/useBusy";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import ProviderBadge from "../components/ProviderBadge";
 import GuideFramePreview from "../components/GuideFramePreview";
@@ -105,10 +106,69 @@ export default function GuideView() {
     finally { setActing(false); }
   };
 
+  // Start Guiding and Force Recalibrate both spawn the SERVER's "guide" lane,
+  // and the work that lane does — find a star, then walk a 1–3 minute
+  // calibration — happens with `guiding` still FALSE the whole time. Gating
+  // these four buttons on `guiding` alone therefore left every one of them
+  // reporting the wrong thing for the longest, most alarming part of a start.
+  // The lane is the cross-provider truth (it survives a reload, and the bridge
+  // guiders publish no `phase`); `phase` — native guider only — names WHICH
+  // step, which is what makes the reasons below worth reading.
+  const { busy: guideLaneBusy, arm: armGuideLane } = useBusyOrPending("guide");
+  // Server truth with no local latch: Stop's copy must follow the RIG, never an
+  // optimistic click of ours.
+  const guideLaneLive = useBusy("guide");
+  const phase = stats?.phase ?? "";
+  // `phase` is a FALLBACK for a server too old to publish `busy_lanes` — and
+  // only there. `useBusyLanes()` is undefined in exactly that case and in no
+  // other (an idle rig publishes `[]`), so that is what the fallback is gated
+  // on. Trusting `phase` unconditionally locked the hardware out: the native
+  // guider sets `_phase_hint = "calibrating"` before the walk and clears it
+  // only on the SUCCESS path (native.py:454) or in `stop_guiding` — a walk
+  // that times out or loses its star leaves the hint set, `_spawn`'s wrapper
+  // only logs the exception, and every 2s status frame republishes it. With
+  // the lane long since idle, Start, Force Recalibrate and Stop were all dim
+  // for the rest of the session, and the two that recover the rig are the ones
+  // this page exists for. Lane says idle ⇒ nothing is starting up, whatever a
+  // leftover hint claims. (`"finding"` was never trusted here anyway: the
+  // guide loop also reports it once it is up and hunting for its lock, which
+  // is a state Stop can and should end.)
+  const lanes = useBusyLanes();
+  const startingUp = guideLaneBusy || (lanes === undefined && phase === "calibrating");
+
   // UX-23: fetch the guider's calibration report so a bad/flipped calibration is
   // visible before it runs the mount away from the star. Refetch when guiding
   // (re)starts — a fresh calibration completes on start / Force Recalibrate.
   const [calReport, setCalReport] = useState<CalibrationReport | null>(null);
+  // A calibration is destroyed from two places BELOW this panel — Guide
+  // Tuning's Clear Calibration and the assistant's apply-with-clear — and
+  // neither moves `guiding`, so the green "calibrated · Good calibration" LED
+  // sat there describing something the user had just deleted. Both children
+  // report in here.
+  //
+  // THE REFETCH ALONE CANNOT FIX THAT, and the first version of this claimed it
+  // did. `DELETE /api/guide/calibration` unlinks the PERSISTED
+  // `<profile>.json` (+ the PPEC window) and is documented "Does not disturb an
+  // in-flight guide loop" (native.py:1278). `GET` answers with
+  // `calibration_report()`, which dumps the ENGINE's in-memory calibration
+  // (native.py:1216) — a different object, untouched by the delete. So the
+  // re-read comes back byte-identical and the LED is right to stay green: the
+  // guider really does still hold that calibration. What the user destroyed is
+  // the copy the NEXT start would have reused. The panel says which, below —
+  // the two only diverge from the moment something is cleared, so the line is
+  // rendered from that moment and not before.
+  const [calTick, setCalTick] = useState(0);
+  const [savedCalCleared, setSavedCalCleared] = useState(false);
+  const refreshCalibration = (clearedSaved: boolean) => {
+    setCalTick((t) => t + 1);
+    if (clearedSaved) setSavedCalCleared(true);
+  };
+  // `start_guiding` ends with `_persist_calibration()` before it sets
+  // `_active` (native.py:449-456), so a guider that reports `guiding` has just
+  // written a saved copy again — Force Recalibrate's walk included. Drop the
+  // line then, rather than leaving it to outlive the fact it states.
+  const guidingNow = !!stats?.guiding;
+  useEffect(() => { if (guidingNow) setSavedCalCleared(false); }, [guidingNow]);
   // "Open in tuning editor" hand-off (design §4.2): the Guiding Assistant panel
   // seeds the existing GuideSettingsDrawer with recommended params for hand
   // tuning, reusing the AlgoParams editor rather than building a new one.
@@ -125,16 +185,48 @@ export default function GuideView() {
   const noGuiderReason = connected
     ? null
     : "No guider is connected — set one up on the Equipment page";
+  // What the "guide" lane is doing right now, in the user's words. Used by
+  // three of the four reasons below, so the screen never offers two different
+  // accounts of the same operation.
+  const startingWhat =
+    phase === "calibrating"
+      ? "Calibrating the guider — the mount is learning which way it moves"
+      : phase === "finding" ? "Looking for a guide star"
+        : "Guiding is already starting";
   const startReason =
     guideReadOnlyReason ?? noGuiderReason
     ?? (stats?.guiding ? "Guiding is already running"
-      : acting ? "Still working on the last command" : null);
+      // Pressing again here is answered `'guide' is already running` — a 409
+      // the user reads as a fault, half a minute into a start that is going
+      // fine. Say what it is doing and that it finishes on its own.
+      : startingUp ? `${startingWhat}. Guiding begins on its own when it finishes.`
+        : acting ? "Still working on the last command" : null);
   const stopReason =
     guideReadOnlyReason ?? noGuiderReason
-    ?? (!stats?.guiding ? "Guiding isn't running — there is nothing to stop" : null);
+    ?? (stats?.guiding ? null
+      : guideLaneLive
+        // Inside the lane, the NATIVE guider polls nothing: `stop_guiding` sets
+        // `_stop`, the walk never looks at it, and `start_guiding` clears it
+        // again on the way into the loop — so the press is swallowed and guiding
+        // starts anyway. Dimming it is right; claiming "there is nothing to
+        // stop" beside a header reading "Calibrating the guider…" was not. A
+        // bridge guider (PHD2/NINA) publishes no phase and its stop DOES abort a
+        // start, so it keeps a live Stop.
+        ? (phase === "calibrating" || phase === "finding"
+          ? `${startingWhat}. This step can't be interrupted — Stop works once guiding is running.`
+          : null)
+        // Lane finished, `guiding` not yet true: the loop IS up and hunting its
+        // lock, and Stop ends it. Only a genuinely idle guider has nothing to stop.
+        : phase === "finding" ? null
+          : "Guiding isn't running — there is nothing to stop");
   const calibrateReason =
     guideReadOnlyReason ?? noGuiderReason
-    ?? (acting ? "Still working on the last command" : null);
+    // This one is not merely a 409: /api/guide/calibrate spawns with
+    // replace=True, so a second press CANCELS the walk in flight and starts the
+    // whole thing over. The reason has to block the press, not just explain it.
+    ?? (startingUp
+      ? `${startingWhat}. Pressing again cancels it and starts the calibration over.`
+      : acting ? "Still working on the last command" : null);
   const ditherReason =
     guideReadOnlyReason ?? noGuiderReason
     ?? (!stats?.guiding ? "Start guiding first — a dither nudges the star and re-settles" : null);
@@ -153,7 +245,10 @@ export default function GuideView() {
       .then((r) => { if (!cancelled) setCalReport(r.report); })
       .catch(() => { if (!cancelled) setCalReport(null); });
     return () => { cancelled = true; };
-  }, [connected, stats?.guiding]);
+    // `guideLaneLive` covers Force Recalibrate, which clears the stored
+    // calibration at the START of a walk that ends minutes later; `calTick` is
+    // the two children below that clear it with no state change of their own.
+  }, [connected, stats?.guiding, guideLaneLive, calTick]);
 
   return (
     <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
@@ -223,7 +318,13 @@ export default function GuideView() {
             {/* min-h-11: these measured 34px tall, under the 44px touch floor. */}
             <HonestButton className="btn btn-accent min-h-11" reason={startReason}
               onExplain={explain}
-              onClick={() => act(() => api.post("/api/guide/start"))}>
+              onClick={() => act(async () => {
+                await api.post("/api/guide/start");
+                // The POST returns the moment the task is CREATED. Latch until
+                // the lane shows up on a status frame (≤2s) so the button does
+                // not look pressable again in between.
+                armGuideLane();
+              })}>
               <Icon name="guide" size={14} className="inline -mt-0.5 mr-1" />Start Guiding
             </HonestButton>
             {distinct(startReason) && <LockedNote reason={distinct(startReason)!} className="-mt-1" />}
@@ -237,7 +338,10 @@ export default function GuideView() {
               onExplain={explain}
               onClick={() => act(async () => {
                 await api.post("/api/guide/calibrate");
-                showToast("info", "Recalibrating — a fresh calibration is running");
+                armGuideLane();
+                showToast("info",
+                  "Recalibrating — the mount walks a fresh calibration, then "
+                  + "guiding starts on its own");
               })}>
               Force Recalibrate
             </HonestButton>
@@ -323,6 +427,22 @@ export default function GuideView() {
                   <span className="mono">{calReport.pier_side}</span></div>
               )}
             </div>
+            {savedCalCleared && (
+              /* The half of "Clear Calibration" this panel is evidence of. The
+                 numbers above are the guider's own, and they did not change —
+                 saying which copy went is the difference between a control that
+                 looks broken and one the user can plan around. */
+              <p className="text-[11px] text-warn leading-snug mt-3 border-t border-line pt-2">
+                {stats?.guiding
+                  ? "The saved copy was cleared. These numbers are the "
+                    + "calibration guiding is using right now — it keeps them "
+                    + "until it stops, then the next start calibrates from "
+                    + "scratch. Force Recalibrate replaces them now."
+                  : "The saved copy was cleared. These numbers are what the "
+                    + "last run measured, still held in memory; nothing is "
+                    + "stored, so the next start calibrates from scratch."}
+              </p>
+            )}
             {calReport.advisories.length > 0 && (
               <ul className="mt-3 flex flex-col gap-1 border-t border-line pt-2">
                 {calReport.advisories.map((a, i) => (
@@ -336,12 +456,14 @@ export default function GuideView() {
         )}
 
         <GuideAssistantPanel canGuide={canGuide} connected={connected}
-          onToast={showToast} onOpenInTuning={setTuningSeed} />
+          onToast={showToast} onOpenInTuning={setTuningSeed}
+          onCalibrationChanged={refreshCalibration} />
 
         <GuideProviderPanel />
 
         <GuideSettingsDrawer canGuide={canGuide} connected={connected}
-          onToast={showToast} seed={tuningSeed} />
+          onToast={showToast} seed={tuningSeed}
+          onCalibrationChanged={refreshCalibration} />
       </div>
     </div>
   );
@@ -402,14 +524,51 @@ function GuideProviderPanel() {
   );
 }
 
-function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
+/** snake_case → camelCase for ONE param key: the inverse of guideSettings'
+ *  `toSnake`, applied at the read boundary only (the client's own state stays
+ *  camelCase throughout). */
+const toCamelKey = (k: string) =>
+  k.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+
+/** The algorithm's dossier §15 defaults with the axis's PERSISTED overrides laid
+ *  on top.
+ *
+ *  Server-side every `GuideAxisParams` field is optional-null, and null means
+ *  "not pinned — the engine's own default applies", so a null must leave the
+ *  default it stands for alone rather than blanking the field. Keys the chosen
+ *  algorithm does not have are dropped for the same reason a swap resets the
+ *  editors: a `hysteresis` left over from a previous algorithm is not a
+ *  parameter of this one, and showing it would only invite Save to persist it. */
+function withSavedParams(
+  kind: GuideAlgorithmKind,
+  saved?: Record<string, number | null> | null,
+): GuideAlgorithmParamDefaults {
+  const out: GuideAlgorithmParamDefaults = { ...GUIDE_ALGORITHM_DEFAULTS[kind] };
+  for (const [k, v] of Object.entries(saved ?? {})) {
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    const key = toCamelKey(k);
+    if (key in out) out[key] = v;
+  }
+  return out;
+}
+
+function GuideSettingsDrawer({ canGuide, connected, onToast, seed, onCalibrationChanged }: {
   canGuide: boolean;
   connected: boolean;
   onToast: ToastFn;
   seed?: GuideSettingsPutBody | null;
+  /** Tell the Calibration panel above to re-read. `clearedSaved` is the
+   *  server's own answer to "was a persisted calibration actually removed" —
+   *  the panel says so, because the report it renders comes from the engine and
+   *  will NOT change. */
+  onCalibrationChanged?: (clearedSaved: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  // Why the GET's failure is kept, not just toasted: `loaded` now gates Save
+  // (see `saveReason`), so the difference between "still reading" and "could
+  // not read" is the difference between waiting and doing something about it.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [ra, setRa] = useState<GuideAlgorithmKind>(defaultGuideSettings().ra.algorithm);
   const [dec, setDec] = useState<GuideAlgorithmKind>(defaultGuideSettings().dec.algorithm);
@@ -455,13 +614,27 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
       const s = await api.get<{
         ra_algorithm: string; dec_algorithm: string;
         dec_guide_mode?: string; blc_pulse_ms?: number;
+        ra_params?: Record<string, number | null> | null;
+        dec_params?: Record<string, number | null> | null;
       }>("/api/guide/settings");
-      if (isValidRaAlgorithm(s.ra_algorithm)) chooseRa(s.ra_algorithm);
-      if (isValidDecAlgorithm(s.dec_algorithm)) chooseDec(s.dec_algorithm);
+      // The PERSISTED per-axis params were never read here, and `chooseRa` /
+      // `chooseDec` reset the editors to the dossier §15 factory defaults — so
+      // the drawer opened on defaults whatever was on the rig, and Save (which
+      // PUTs ra_params/dec_params unconditionally) overwrote a hand-tuned axis
+      // on every open-and-save, not only when this GET failed. Set the kind and
+      // its saved overrides together instead.
+      const raKind = isValidRaAlgorithm(s.ra_algorithm) ? s.ra_algorithm : ra;
+      const decKind = isValidDecAlgorithm(s.dec_algorithm) ? s.dec_algorithm : dec;
+      setRa(raKind);
+      setRaParams(withSavedParams(raKind, s.ra_params));
+      setDec(decKind);
+      setDecParams(withSavedParams(decKind, s.dec_params));
       if (isValidDecGuideMode(s.dec_guide_mode ?? "")) setDecMode(s.dec_guide_mode as DecGuideMode);
       if (typeof s.blc_pulse_ms === "number") setBlcMs(String(s.blc_pulse_ms));
+      setLoadError(null);
       setLoaded(true);
     } catch (e) {
+      setLoadError((e as Error).message);
       onToast("error", (e as Error).message);
     }
   };
@@ -480,9 +653,7 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
     if (!seed) return;
     const camel = (p: Record<string, number>): GuideAlgorithmParamDefaults => {
       const out = {} as GuideAlgorithmParamDefaults;
-      for (const [k, v] of Object.entries(p)) {
-        out[k.replace(/_([a-z])/g, (_m, c) => c.toUpperCase())] = v;
-      }
+      for (const [k, v] of Object.entries(p)) out[toCamelKey(k)] = v;
       return out;
     };
     if (isValidRaAlgorithm(seed.ra_algorithm)) setRa(seed.ra_algorithm);
@@ -516,7 +687,17 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
   const tuningReadOnlyReason = canGuide
     ? null
     : `Read-only session — ${accessPhrase("control.guide")} required to change guide tuning`;
-  const saveReason = tuningReadOnlyReason ?? (busy ? "Saving the last change…" : null);
+  // Save PUTs every field this drawer holds, including the per-axis params. Until
+  // the GET has landed those fields are FACTORY DEFAULTS, not the rig's — so a
+  // Save before (or instead of) a successful load silently replaces a tuned axis
+  // with the dossier defaults. Hold it until we know what we would be replacing.
+  const saveReason =
+    tuningReadOnlyReason
+    ?? (!loaded
+      ? (loadError
+        ? `Couldn't read the saved tuning (${loadError}) — saving now would replace it with factory defaults`
+        : "Reading the saved tuning…")
+      : busy ? "Saving the last change…" : null);
   const clearCalReason =
     tuningReadOnlyReason
     ?? (!connected ? "No guider is connected"
@@ -570,6 +751,28 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
       ) : (
         <div className="flex flex-col gap-3">
           {tuningReadOnlyReason && <LockedNote reason={tuningReadOnlyReason} />}
+          {/* Until the GET lands, every field below is a FACTORY DEFAULT, not
+              what the rig is running — say so where the user is about to read
+              them, not only under a Save they may never press. */}
+          {!loaded && (
+            loadError ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[11px] text-warn leading-snug flex-1 min-w-[200px]">
+                  Couldn&rsquo;t read the saved tuning ({loadError}). These are
+                  factory defaults, not your rig&rsquo;s settings — Save is held
+                  back so it can&rsquo;t replace them.
+                </p>
+                <button className="btn tap min-h-[44px] !px-3 text-[11px]"
+                  onClick={() => void load()}>
+                  Try again
+                </button>
+              </div>
+            ) : (
+              <p className="text-[11px] text-dim leading-snug">
+                Reading the saved tuning from the rig…
+              </p>
+            )
+          )}
           <label className="flex flex-col gap-1">
             <span className="label">RA algorithm</span>
             {/* Same rule as the provider override: no `readOnly` exists for a
@@ -655,8 +858,14 @@ function GuideSettingsDrawer({ canGuide, connected, onToast, seed }: {
                   // nothing to delete, and toasting "Cleared" at it claimed an
                   // effect that did not happen.
                   const r = await api.del<{ cleared?: boolean }>("/api/guide/calibration");
+                  // The Calibration panel above describes the ENGINE's
+                  // calibration, which this delete does not touch — hand it the
+                  // outcome so it can say which copy went instead of leaving a
+                  // green LED to be read as "nothing happened".
+                  onCalibrationChanged?.(!!r?.cleared);
                   onToast("info", r?.cleared
-                    ? "Cleared the saved calibration for this profile"
+                    ? "Cleared the saved calibration — the guider keeps the one "
+                      + "it is holding until guiding stops"
                     : "Nothing to clear — this profile has no saved calibration");
                 } catch (e) {
                   onToast("error", (e as Error).message);
@@ -756,26 +965,45 @@ function AlgoParams({ kind, params, onChange, disabled }: {
 // checkbox for selective apply, and "Open in tuning editor" (hands the params to
 // the existing GuideSettingsDrawer). Honest-disabled (§11.8) for no-guider /
 // non-native / already-guiding / viewer.
-function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
+function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning,
+  onCalibrationChanged }: {
   canGuide: boolean;
   connected: boolean;
   onToast: ToastFn;
   onOpenInTuning: (body: GuideSettingsPutBody) => void;
+  /** Tell the Calibration panel above to re-read; `clearedSaved` says whether a
+   *  persisted calibration was actually removed (see the drawer's copy). */
+  onCalibrationChanged?: (clearedSaved: boolean) => void;
 }) {
   const providers = useProviders();
   const status = useStatus();
   const guide = useGuide();
   const progress = useGuideAssistant();
   const [report, setReport] = useState<AssistantReport | null>(null);
-  const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [includeBacklash, setIncludeBacklash] = useState(true);
   const clearProgress = useStore((s) => s.clearGuideAssistant);
 
+  // The RUN outlives this component. It is a 2–4 minute background task on the
+  // rig, and `running` used to be a local boolean set beside the POST — so a
+  // reload or a tab switch mid-run came back to the Run button (which then
+  // 409'd), with no bar, no Stop, and no way to reach the report the run was
+  // about to produce. The server publishes the `guide_assistant` lane on every
+  // status frame; ask it instead. `arm()` only covers the ≤2s before the first
+  // frame carries the lane.
+  const { busy: running, arm: armRun } = useBusyOrPending("guide_assistant");
+
   const kind = providers?.guide?.kind;
   const isNative = kind === "astrodeck" || kind === "sim";
   const guiding = !!(guide?.guiding ?? status?.guider?.guiding);
+  // A start in flight holds the guider's start lock for its whole star-search +
+  // calibration walk, with `guiding` still false. The assistant needs that same
+  // lock, so a Run pressed here does not refuse — it QUEUES behind the walk and
+  // then fails minutes later with "stop guiding before running the Guiding
+  // Assistant", long after the user has stopped watching.
+  const guideStarting = useBusy("guide");
 
   // Honest-disabled reason (§11.8) — first blocking condition wins.
   const reason = !canGuide
@@ -786,34 +1014,33 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
         ? "the Guiding Assistant works with the AstroDeck native guider"
         : guiding
           ? "stop guiding first"
-          : null;
+          : guideStarting
+            ? "guiding is starting — the assistant needs the mount to itself"
+            : null;
   const blocked = reason !== null;
 
-  // Terminal ticks. "done" -> fetch the cached report and seed the advanced
-  // selection with the non-advanced recommendation keys (the novice apply set);
-  // "error" -> stop the bar and let the error card render the message.
-  // `run()` clears the retained tick BEFORE the POST, so a "done" seen here can
-  // only belong to THIS run (the previous run's tick used to latch instantly
-  // and paint last run's numbers as if they were fresh).
+  // The "done" tick is what says a report EXISTS to fetch, so it is honoured
+  // whatever this component believes about who started the run — the mid-run
+  // reload above comes back with no local state at all, and its report arrives
+  // on exactly this tick. Deduped by tick IDENTITY (the store hands out a fresh
+  // object per tick) rather than by a flag, so a retained "done" cannot re-fetch
+  // on every unrelated re-render, and a second RUN's "done" is not mistaken for
+  // the first's. `run()` also clears the retained tick before its POST, so a
+  // stale "done" can never paint last run's numbers as if they were fresh.
+  const fetchedTick = useRef<unknown>(null);
   useEffect(() => {
-    if (!running) return;
-    if (progress?.phase === "error") {
-      setRunning(false);
-      return;
-    }
-    if (progress?.phase === "done") {
-      api.get<{ report: AssistantReport | null }>("/api/guide/assistant/report")
-        .then((r) => {
-          setReport(r.report);
-          if (r.report) {
-            setSelected(new Set(
-              r.report.recommendations.filter((x) => !x.advanced).map((x) => x.key)));
-          }
-        })
-        .catch((e) => onToast("error", (e as Error).message))
-        .finally(() => setRunning(false));
-    }
-  }, [progress?.phase, running, onToast]);
+    if (progress?.phase !== "done" || fetchedTick.current === progress) return;
+    fetchedTick.current = progress;
+    api.get<{ report: AssistantReport | null }>("/api/guide/assistant/report")
+      .then((r) => {
+        setReport(r.report);
+        if (r.report) {
+          setSelected(new Set(
+            r.report.recommendations.filter((x) => !x.advanced).map((x) => x.key)));
+        }
+      })
+      .catch((e) => onToast("error", (e as Error).message));
+  }, [progress, onToast]);
 
   const run = async () => {
     if (blocked || running) return;
@@ -824,15 +1051,42 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
     try {
       await api.post("/api/guide/assistant/start",
         { include_backlash: includeBacklash });
-      setRunning(true);
+      // Only after the POST is accepted: arming on a 409/403 would show a
+      // progress bar for a run that never started.
+      armRun();
     } catch (e) {
       onToast("error", (e as Error).message);
     }
   };
 
+  // `stopping` is dropped by the RIG, not by the request: the POST resolves in
+  // ~40ms (it only sets a cancel flag), while the run keeps pulsing the mount
+  // until it reaches its next cancellation check. Clearing it in a `finally`
+  // made "Stopping…" and the "checks between pulses" note underneath describe
+  // the round trip — they blinked for one frame and the button went back to
+  // reading "Stop" over a run that was still going, which is the exact defect
+  // the rest of this wave is fixing. The lane going quiet is the run actually
+  // being over, and it cannot latch: when the lane clears the whole block
+  // unmounts anyway, and this resets it for the next run.
+  useEffect(() => { if (!running) setStopping(false); }, [running]);
+
   const stop = async () => {
-    try { await api.post("/api/guide/assistant/stop"); } catch { /* ignore */ }
-    setRunning(false);
+    if (stopping) return;
+    setStopping(true);
+    try {
+      await api.post("/api/guide/assistant/stop");
+      // Deliberately NOT setting anything to "idle" here. The rig is still
+      // pulsing the mount until the run reaches its next cancellation check, and
+      // it publishes a terminal tick when it gets there. A stop that never
+      // landed (403, dropped link) used to be swallowed whole: the panel went
+      // back to idle over a live run, and dropping `running` also cancelled the
+      // effect above — so the report that run went on to produce was discarded.
+    } catch (e) {
+      // The stop never reached the rig, so nothing is stopping: say so and give
+      // the button back rather than leaving "Stopping…" over a live run.
+      setStopping(false);
+      onToast("error", (e as Error).message);
+    }
   };
 
   const apply = async (keys?: string[]) => {
@@ -863,10 +1117,33 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
       }
       await api.put("/api/guide/settings", body);
       if (clearCal) {
-        try { await api.del("/api/guide/calibration"); } catch { /* best effort */ }
-        onToast("info",
-          "Recommended settings applied — saved calibration cleared; it " +
-          "recalibrates on the next guiding start");
+        // The route answers whether a file was actually removed, and an
+        // undeletable one still comes back 200 — so "cleared" was a claim, not
+        // an observation. Report what happened, the way the drawer's own
+        // handler does, and refresh the Calibration panel either way.
+        let cleared = false;
+        let clearError: string | null = null;
+        try {
+          const r = await api.del<{ cleared?: boolean }>("/api/guide/calibration");
+          cleared = !!r?.cleared;
+        } catch (e) {
+          clearError = (e as Error).message;
+        }
+        onCalibrationChanged?.(cleared);
+        if (clearError) {
+          onToast("warning",
+            "Recommended settings applied, but the saved calibration could not "
+            + `be cleared (${clearError}) — guiding will reuse it. Try Clear `
+            + "Calibration in Guide Tuning below.");
+        } else if (cleared) {
+          onToast("info",
+            "Recommended settings applied — saved calibration cleared; it " +
+            "recalibrates on the next guiding start");
+        } else {
+          onToast("info",
+            "Recommended settings applied. There was no saved calibration to " +
+            "clear, so the next start calibrates from scratch anyway.");
+        }
       } else {
         onToast("success",
           "Recommended guide settings applied — they take effect on the next " +
@@ -888,10 +1165,20 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
   const summary = report ? summarize(report) : null;
   const rows = report ? formatRecommendations(report) : [];
   const toneClass = { good: "text-good", warn: "text-warn", bad: "text-bad" };
+  // The report is the handover out of the progress bar: a run short enough to
+  // finish between two status frames never puts its lane on one, so `running`
+  // would otherwise sit on the local latch until it expires, with a full bar
+  // over a result that is already in hand.
   // A run that FAILED (no star, cancelled, device error) publishes a terminal
-  // {phase:"error", message} tick — render it as a sentence with a way out
-  // instead of leaving a half-filled bar reading "Watching…" forever.
-  const failed = !running && !report && progress?.phase === "error";
+  // {phase:"error", message} tick, and that tick is the other handover out of
+  // the bar. A refusal that lands inside the first two seconds — parked mount,
+  // no star — arrives while `running` is still the local `arm()` latch, so
+  // without this the panel showed a full progress bar captioned with the error
+  // text, over a live Stop, for the whole 6s grace before the failure card
+  // appeared. `run()` clears the retained tick before its POST, so this can
+  // only ever be THIS run's error.
+  const showRunning = running && !report && progress?.phase !== "error";
+  const failed = !showRunning && !report && progress?.phase === "error";
   // The server message is a DeviceError string prefixed with the driver name —
   // strip that so the card reads as a sentence to the user.
   const failMessage = (progress?.message ?? "")
@@ -919,14 +1206,27 @@ function GuideAssistantPanel({ canGuide, connected, onToast, onOpenInTuning }: {
   return (
     <Panel title="Guiding Assistant" right={<ProviderBadge cap="guide" />}>
       {/* Novice: one Run button (honest-disabled), progress, then a summary. */}
-      {running ? (
+      {showRunning ? (
         <div className="flex flex-col gap-2">
           <div className="h-2 rounded bg-line overflow-hidden">
             <div className="h-full bg-accent transition-all"
               style={{ width: `${progress?.pct ?? 0}%` }} />
           </div>
-          <p className="text-xs text-dim">{progress?.message ?? "Working…"}</p>
-          <button className="btn" onClick={() => void stop()}>Stop</button>
+          <p className="text-xs text-dim">
+            {/* Between a reload and the next progress tick there is no message
+                to show, and "Working…" over an empty bar is the least a user
+                needs to know the rig is still on it. */}
+            {progress?.message ?? "Working… (started before this page loaded)"}
+          </p>
+          <button className="btn" onClick={() => void stop()} aria-busy={stopping}>
+            {stopping ? "Stopping…" : "Stop"}
+          </button>
+          {stopping && (
+            <p className="text-[11px] text-dim leading-snug">
+              The run checks for this between pulses, so it can take a few
+              seconds to come to a halt.
+            </p>
+          )}
         </div>
       ) : failed ? (
         <div className="flex flex-col gap-2">

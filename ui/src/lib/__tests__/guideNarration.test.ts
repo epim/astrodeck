@@ -70,11 +70,28 @@ test('phase "settling" -> tone warn', () => {
   eq(r.verdict, null);
 });
 
-test('phase "lost" -> tone bad, verdict null', () => {
+// `phase: "lost"` is latched by the native guider only once it has GIVEN UP
+// (reacquire budget spent, or a fatal lock loss), and the same latch stops the
+// loop — so the sentence must not promise a recovery attempt, and it must still
+// read correctly after a Stop (the server's latch survives one).
+test('phase "lost" -> terminal sentence, no "recover" promise', () => {
   const r = guideNarration(baseInput({ phase: "lost" }));
-  eq(r.phaseText, "Lost the guide star — trying to recover");
+  eq(r.phaseText, "Guiding stopped — lost the guide star");
   eq(r.tone, "bad");
-  eq(r.verdict, null);
+  if (/recover/i.test(r.phaseText)) {
+    throw new Error("still promises a recovery nothing is attempting");
+  }
+  if (!r.verdict || !/Start Guiding/.test(r.verdict)) {
+    throw new Error(`terminal phase must say what to do next, got ${String(r.verdict)}`);
+  }
+});
+
+test('phase "lost" reads correctly with guiding:false (i.e. after a Stop)', () => {
+  // The precondition: the guider really is not guiding, which is the state the
+  // old copy contradicted by claiming a recovery was under way.
+  const r = guideNarration(baseInput({ phase: "lost", guiding: false }));
+  eq(r.phaseText, "Guiding stopped — lost the guide star");
+  eq(r.tone, "bad");
 });
 
 // ---------------------------------------------------------------- headline case
