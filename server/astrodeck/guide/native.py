@@ -122,6 +122,19 @@ _PHASE_B_MSG = "Nudging the mount up and down to measure slack (2 of 2)…"
 _UNKNOWN_DECLINATION = 997.0
 
 
+class GuidingStopped(DeviceError):
+    """``stop_guiding`` reached a start that had not begun guiding yet.
+
+    A ``DeviceError`` subclass so every existing caller already handles it — the
+    ``guide`` lane wrapper (api/app.py ``_spawn``), the sequence engine's
+    ``except Exception`` around ``start_guiding``, ``_maybe_recover_guiding``.
+    Raising rather than returning quietly is the load-bearing part: a plan with
+    ``escalation.require_guiding`` must escalate, because the night really is
+    unguided, and a silent return would have let it shoot anyway. Its own type
+    so a caller that cares can tell "the user stopped it" from "the mount could
+    not calibrate"."""
+
+
 def guide_algo_config() -> dict:
     """The persisted per-axis guide-algorithm selection (``AppConfig.guide``)
     as engine-config keys (``ra_algorithm`` / ``dec_algorithm`` /
@@ -362,6 +375,15 @@ class NativeGuider(Guider):
             if (self._active and self._loop_task is not None
                     and not self._loop_task.done()):
                 return
+            # ARM THE STOP FLAG FOR THIS RUN HERE, before the first await —
+            # not on the way into the guide loop, where it used to be cleared.
+            # A Stop pressed during the one-to-three-minute calibration walk was
+            # then not merely ignored but ERASED, and guiding STARTED, on a rig
+            # whose user had just pressed Stop with the mount pulsing. Cleared
+            # here, "set" can only mean "arrived after this start began" — which
+            # is exactly what Stop means — and nothing between this line and the
+            # loop may clear it again (``_abort_if_stopped`` is the only reader).
+            self._stop.clear()
             self._lost = False
             self._reacquire = 0
             self._fault_frames = 0
@@ -448,11 +470,17 @@ class NativeGuider(Guider):
             await self._maybe_flip_for_pier()
             self._persist_calibration()
 
+            # LAST GATE. A Stop that landed during the walk is caught by the
+            # walk's own polling; one that landed in the reuse path, the pier
+            # check or the persist above has nothing else looking for it, and
+            # this is the last point before the loop that would otherwise begin
+            # guiding on top of it.
+            self._abort_if_stopped("before guiding began")
+
             # NOV-7: the guide loop owns the phase from here on (via the
             # engine dict / _active) — clear the hint so a stale
             # "finding"/"calibrating" never outlives the transition it named.
             self._phase_hint = None
-            self._stop.clear()
             self._active = True
             self._loop_task = asyncio.create_task(self._guide_loop())
             bus.log("info", "native guider calibrated and guiding", "guide")
@@ -460,6 +488,16 @@ class NativeGuider(Guider):
 
     async def stop_guiding(self) -> None:
         self._active = False
+        # The star-loss latch belongs to the session that lost the star. Nothing
+        # cleared it until the NEXT start, so after a Stop the panel went on
+        # reading "Guiding stopped — lost the guide star … Fix it, then Start
+        # Guiding again" (guideNarration.ts) over a guider the user had already
+        # stopped. AUDIT of the other latched host fields: `_reacquire`,
+        # `_fault_frames` and `_settle_open` latch the same way but are read
+        # only from inside the loop this call kills, and `start_guiding` resets
+        # all three — `_lost` is the one that reaches a reader after a Stop,
+        # because `stats()`/`_current_phase()` read it with no loop running.
+        self._lost = False
         self._phase_hint = None
         self._stop.set()
         task = self._loop_task
@@ -476,61 +514,102 @@ class NativeGuider(Guider):
         bus.publish("guide", **self.stats().__dict__)
         bus.log("info", "native guider stopped", "guide")
 
+    def _abort_if_stopped(self, during: str) -> None:
+        """Raise ``GuidingStopped`` when a Stop has arrived since this start
+        cleared the flag (``start_guiding``), leaving the guider in a state the
+        UI can narrate: no loop armed, no guiding intent, ``phase == "idle"``.
+
+        Publishes that terminal tick itself rather than leaning on whoever set
+        ``_stop`` having published one — the guide loop's own fatal paths set
+        the same flag, so this is the only place that can promise the narration
+        lands somewhere readable no matter which of them fired."""
+        if not self._stop.is_set():
+            return
+        # Nothing here races the guide loop: every caller sits BEFORE the loop
+        # is armed, which is the whole point of aborting here.
+        self._active = False
+        self._phase_hint = None
+        self._last_stats = self.stats()
+        bus.publish("guide", **self._last_stats.__dict__)
+        msg = (f"native guider: stopped {during} — the mount is tracking, "
+               f"not guiding")
+        bus.log("info", msg, "guide")
+        raise GuidingStopped(msg)
+
     # ------------------------------------------------------------ calibration
 
     async def _calibrate(self) -> None:
         """Locate the guide star, run the engine's calibration state machine
         (expose → ``process`` → ``pulse_guide``) until it completes, and stamp
         the mount's real scope pointing (OBLIGATION (e)). Raises ``DeviceError``
-        on no-star / calibration-failed / timeout."""
-        # NOV-7: one "finding" tick before the star-find (D2 — one tick per
-        # phase transition; the guide loop already publishes per frame once
-        # guiding).
-        self._phase_hint = "finding"
-        bus.publish("guide", **self.stats().__dict__)
-        frame = await self._expose()
-        stars, _meta = _native.guide_star_find(frame.data)
-        if not stars:
-            raise DeviceError(
-                "native guider: no guide star found — cannot calibrate")
-        x0, y0 = float(stars[0]["x"]), float(stars[0]["y"])
-        self._engine.begin_calibration(x0, y0)
-        # NOV-7: one "calibrating" tick right after the engine enters its
-        # calibration state machine.
-        self._phase_hint = "calibrating"
-        bus.publish("guide", **self.stats().__dict__)
-        # OBLIGATION (e): stamp real declination/pier onto the pending
-        # calibration BEFORE it completes (patch_cal_from_scope applies it at
-        # COMPLETE). declination/rotator are RADIANS at the PyO3 surface.
-        await self._apply_scope_pointing()
-
-        bus.log("info", "native guider calibrating", "guide")
-        deadline = time.monotonic() + _CAL_TIMEOUT_S
-        while True:
-            if time.monotonic() > deadline:
-                raise DeviceError("native guider: calibration timed out")
+        on no-star / calibration-failed / timeout, and ``GuidingStopped`` when
+        the user stops the start mid-walk."""
+        try:
+            # A Stop can already be waiting: ``start_guiding`` clears the flag
+            # before its first await, and the rate read + engine build +
+            # persistence read all run between that and here.
+            self._abort_if_stopped("while starting the calibration")
+            # NOV-7: one "finding" tick before the star-find (D2 — one tick per
+            # phase transition; the guide loop already publishes per frame once
+            # guiding).
+            self._phase_hint = "finding"
+            bus.publish("guide", **self.stats().__dict__)
             frame = await self._expose()
-            action = self._engine.process(
-                frame.data, frame.timestamp, self._exposure_s)
-            kind = action["action"]
-            if kind == "cal_step":
-                await self.tel.pulse_guide(action["dir"], int(action["ms"]))
-                continue
-            if kind == "lock_lost":
-                reason = action.get("reason") or "calibration failed"
+            stars, _meta = _native.guide_star_find(frame.data)
+            if not stars:
                 raise DeviceError(
-                    f"native guider: calibration failed ({reason})")
-            # Idle (or any non-cal action): calibration is complete once a valid
-            # Cal is stored — the engine has already transitioned into its
-            # guiding phase (continuous star tracking is kept across the
-            # boundary). An Idle with no valid Cal is a momentary lost star
-            # mid-leg; keep exposing.
-            cal = self._engine.dump_calibration()
-            if cal and cal.get("is_valid"):
-                break
-        for msg in (self._engine.calibration_advisories() or []):
-            bus.log("warning", f"native guider calibration: {msg}", "guide")
-        bus.log("info", "native guider calibration complete", "guide")
+                    "native guider: no guide star found — cannot calibrate")
+            x0, y0 = float(stars[0]["x"]), float(stars[0]["y"])
+            self._engine.begin_calibration(x0, y0)
+            # NOV-7: one "calibrating" tick right after the engine enters its
+            # calibration state machine.
+            self._phase_hint = "calibrating"
+            bus.publish("guide", **self.stats().__dict__)
+            # OBLIGATION (e): stamp real declination/pier onto the pending
+            # calibration BEFORE it completes (patch_cal_from_scope applies it at
+            # COMPLETE). declination/rotator are RADIANS at the PyO3 surface.
+            await self._apply_scope_pointing()
+
+            bus.log("info", "native guider calibrating", "guide")
+            deadline = time.monotonic() + _CAL_TIMEOUT_S
+            while True:
+                # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
+                # and before the next exposure, and every leg loops back through
+                # it, so a Stop costs at most the one pulse already in flight —
+                # the mount stops moving and no guide loop is ever armed.
+                self._abort_if_stopped("during the calibration walk")
+                if time.monotonic() > deadline:
+                    raise DeviceError("native guider: calibration timed out")
+                frame = await self._expose()
+                action = self._engine.process(
+                    frame.data, frame.timestamp, self._exposure_s)
+                kind = action["action"]
+                if kind == "cal_step":
+                    await self.tel.pulse_guide(action["dir"], int(action["ms"]))
+                    continue
+                if kind == "lock_lost":
+                    reason = action.get("reason") or "calibration failed"
+                    raise DeviceError(
+                        f"native guider: calibration failed ({reason})")
+                # Idle (or any non-cal action): calibration is complete once a valid
+                # Cal is stored — the engine has already transitioned into its
+                # guiding phase (continuous star tracking is kept across the
+                # boundary). An Idle with no valid Cal is a momentary lost star
+                # mid-leg; keep exposing.
+                cal = self._engine.dump_calibration()
+                if cal and cal.get("is_valid"):
+                    break
+            for msg in (self._engine.calibration_advisories() or []):
+                bus.log("warning", f"native guider calibration: {msg}", "guide")
+            bus.log("info", "native guider calibration complete", "guide")
+        finally:
+            # The hint names a step that is over the moment this returns or
+            # raises. Cleared only on the SUCCESS path (start_guiding's), a walk
+            # that timed out or lost its star left every 2 s status frame
+            # republishing "Calibrating the guider…" for the rest of the
+            # session — and GuideView dims Start, Force Recalibrate and Stop on
+            # that hint, so the two buttons that recover the rig went with it.
+            self._phase_hint = None
 
     async def _apply_scope_pointing(self) -> None:
         """Discharge OBLIGATION (e): stamp the mount's real declination + pier
@@ -686,8 +765,9 @@ class NativeGuider(Guider):
         """Compose the plain-language narration phase (NOV-7 design doc §1.3)
         from state already tracked host-side — first match wins:
 
-            lost -> settling -> (active & engine guiding) -> _phase_hint ->
-            active (loop up, lock not yet established, == "finding") -> idle
+            lost -> (active & settling) -> (active & engine guiding) ->
+            _phase_hint -> active (loop up, lock not yet established, ==
+            "finding") -> idle
 
         ``engine_stats`` lets ``stats()`` pass its already-fetched engine dict
         so this doesn't re-query the engine on the hot per-frame path; callers
@@ -695,7 +775,12 @@ class NativeGuider(Guider):
         and this fetches its own when it actually needs the ``guiding`` key."""
         if self._lost:
             return "lost"
-        if self._engine_settling():
+        # Gated on _active for the same reason `stop_guiding` clears `_lost`:
+        # the settle window is engine state that only the guide LOOP closes
+        # (`_sync_settle_window`), so a Stop pressed mid-dither cancels the one
+        # thing that would ever have shut it, and an ungated read left the panel
+        # narrating "Settling after the move…" over a stopped guider forever.
+        if self._active and self._engine_settling():
             return "settling"
         if self._active and self._engine is not None:
             s = engine_stats
