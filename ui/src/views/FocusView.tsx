@@ -45,11 +45,22 @@ import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { HELP } from "../help";
 import StepDial from "../components/ui/StepDial";
 import { nudgeLabel } from "../lib/stepDial";
-import { anchorBlocker, moveProgress, type FocuserCommand } from "../lib/focusMove";
+import {
+  MOVE_IN_FLIGHT_REASON, MOVE_SENDING_REASON, anchorBlocker, moveProgress,
+  retireAfterMs, type FocuserCommand,
+} from "../lib/focusMove";
+import { useBusy } from "../lib/useBusy";
 
 /** The magnitudes the dial offers. 1 for a final twiddle, 1000 to cross the
  *  whole critical zone on a 30k-step EAF. */
 const STEP_VALUES = [1, 10, 100, 1000] as const;
+
+/** How long the Bahtinov button waits for `status.bahtinov_active` to agree
+ *  with the tap before it gives up and shows the rig's own answer again. Three
+ *  status frames (the poll is 2s): long enough that one dropped frame does not
+ *  flip the label back and forth, short enough that a request which never took
+ *  cannot leave the control stuck on "Arming…". */
+const BAHTINOV_PENDING_GRACE_MS = 6000;
 
 /**
  * minus · dial · plus — the thumb row (design doc §Thumb zones).
@@ -191,6 +202,18 @@ export default function FocusView() {
   const foc = status?.focuser;
   const pos = foc?.position ?? 0;
   const running = focus?.state === "running";
+  // WHO ELSE IS DRIVING THE FOCUSER. `running` comes off the `focus` event
+  // stream, which only reaches a client that was connected when the run
+  // started: open this screen mid-sweep and every focuser control offers itself
+  // as live, then 409s. The rig has said so on every 2s status frame all along —
+  // both /api/focuser/autofocus and /api/focuser/coarse `_spawn` the SAME
+  // `autofocus` lane (api/app.py), so one lane answers for both. Used for the
+  // GATES only; the V-curve and the Result panel still follow the event stream,
+  // because those are about a sweep whose data we actually have.
+  // (Called unconditionally, then OR-ed: `running || useBusy(...)` would skip
+  // the hook whenever a sweep IS running and change the hook order mid-run.)
+  const afLaneBusy = useBusy("autofocus");
+  const sweeping = running || afLaneBusy;
   // NOV-12 Bahtinov aid armed state (server truth via poll_status).
   const bahtOn = status?.bahtinov_active ?? false;
   // UX-25: filter/binning for the autofocus sweep.
@@ -229,6 +252,20 @@ export default function FocusView() {
   // like not pressing Go, which is how a firmware-refused move went unnoticed
   // for two nights. Hold the commanded target and narrate it. See lib/focusMove.
   const [cmd, setCmd] = useState<FocuserCommand | null>(null);
+  // THE ROUND TRIP ITSELF. `cmd` is armed only after the POST resolves — the
+  // ordering that stops a REFUSED move being drawn as a real one — so between
+  // the tap and the answer there was no `cmd`, therefore no `waiting`, therefore
+  // no blocked control and nothing on screen: the same "pressing Go looks like
+  // not pressing Go" this whole section exists to remove, just narrower. The
+  // target being sent, or null. Mirrors `capPending` four functions below.
+  const [sending, setSending] = useState<number | null>(null);
+  // …and the same latch as a ref, because the state one cannot close the window
+  // it guards: `sending` is a render closure, so two taps dispatched inside a
+  // single React batch (a double tap on a tablet, or a repeat-fire) both read
+  // the value from BEFORE the first one, both pass, and both reach the rig —
+  // the second earning a 409 off the `focuser` lane. A ref is written
+  // synchronously inside the handler, so the second tap sees the first.
+  const sendingRef = useRef(false);
   const [now, setNow] = useState(() => Date.now());
   // When `pos` last CHANGED: proof of motion for the backends whose is_moving()
   // cannot answer, and the reset for the stall clock on a long move.
@@ -287,6 +324,24 @@ export default function FocusView() {
 
   const progress = moveProgress(cmd, foc ? pos : null, foc?.moving, now, progressAt);
   const waiting = !!cmd && !progress?.settled;
+  // RETIRE THE COMMAND once it has been answered. Held forever, it made every
+  // LATER motion of the focuser — a sweep, a coarse walk, the sequencer, another
+  // client — read as this command: "→ 22000" over a move nobody asked for, then
+  // the orange "not moving — stopped at 18300, asked for 22000" six seconds
+  // later. See lib/focusMove retireAfterMs for the delays and why a refusal
+  // outstays a confirmation.
+  const retire = retireAfterMs({
+    settled: !!progress?.settled,
+    tone: progress?.tone ?? null,
+    sweepOwnsFocuser: sweeping,
+    sequenceRunning: seqOwnsCamera,
+  });
+  useEffect(() => {
+    if (cmd == null || retire == null) return;
+    if (retire === 0) { setCmd(null); return; }
+    const t = setTimeout(() => setCmd(null), retire);
+    return () => clearTimeout(t);
+  }, [cmd, retire]);
   // ONE second-hand for the whole view: the in-flight move AND the in-flight
   // exposure both need `now` to advance, and neither needs its own interval.
   useEffect(() => {
@@ -317,6 +372,42 @@ export default function FocusView() {
       setCapPending(null);
     }
   };
+  // ------------------------------------------------------- Bahtinov, in flight
+  // What we asked the aid to BE, until the rig says it is that. The route is
+  // synchronous — it arms the aid and starts a live loop before it answers — but
+  // `status.bahtinov_active` only reaches this screen on the next 2s status
+  // frame, so between the tap and that frame the button still read "Bahtinov
+  // focus" and a second finger sent the opposite command to a rig mid-arm.
+  //
+  // Same shape as lib/useBusy's useBusyOrPending, and it EXPIRES for the same
+  // reason: a request that never took effect (a 403, a dropped connection, an
+  // aid disarmed from another client) must not leave the control dead. Keyed on
+  // the published flag rather than a busy lane because this aid has no lane —
+  // arming is a state, not a task.
+  const [bahtWanted, setBahtWanted] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (bahtWanted == null) return;
+    if (bahtOn === bahtWanted) { setBahtWanted(null); return; }
+    const t = setTimeout(() => setBahtWanted(null), BAHTINOV_PENDING_GRACE_MS);
+    return () => clearTimeout(t);
+  }, [bahtWanted, bahtOn]);
+  const toggleBahtinov = (want: boolean) => {
+    setBahtWanted(want);
+    void act(async () => {
+      try {
+        await api.post(
+          want ? "/api/focuser/bahtinov/start" : "/api/focuser/bahtinov/stop",
+          want ? { exposure_s: 1, gain: 100, binning: 1 } : {},
+        );
+      } catch (e) {
+        // Refused (polar or a sequence owns the camera, or there is none): give
+        // the button back NOW rather than after the grace, and let `act` say why.
+        setBahtWanted(null);
+        throw e;
+      }
+    });
+  };
+
   const stopCapture = () => {
     setShotAt(null);   // nothing is in flight to narrate after a deliberate stop
     act(() => api.post("/api/capture/stop"));
@@ -325,26 +416,66 @@ export default function FocusView() {
   // closes over the exposure it was handed, so a tap that only moved a
   // highlight would leave the loop shooting the old length forever — a control
   // that looks applied and is ignored.
+  //
+  // Which is exactly what the blocked branch used to do. `if (!looping ||
+  // captureReason) return` dropped the restart AFTER the box had already been
+  // rewritten, so over a loop the rig would not restart — read-only, a sequence,
+  // a sweep, a half-typed gain — the preset lit up and reported `aria-pressed`
+  // for an exposure the camera was not using. So: decide first, and only claim
+  // the highlight when the restart is actually issued.
   const applyPreset = (s: number) => {
+    if (presetReason) { showToast("warning", presetReason); return; }
+    const was = capExposure;
     setCapExposure(String(s));
-    if (!looping || captureReason) return;
+    if (!looping) return;
     void api.post("/api/capture/loop", focusCaptureBody({
       exposureS: s, gain: capGainNum, binning: Number(capBin) || 1,
-    })).catch((e: Error) => showToast("error", e.message));
+    })).catch((e: Error) => {
+      // The loop is still shooting the old length, so the highlight goes back
+      // to saying so — a lit preset over a running loop is a claim about the
+      // camera, not about what is typed in a box.
+      setCapExposure(was);
+      showToast("error", e.message);
+    });
   };
 
   const moveTo = async (p: number) => {
+    // Belt and braces — the nudges, the dial and Go are all locked while a move
+    // is in flight (focuserReason below), but a second one must not get through
+    // here either. The server refuses it: /api/focuser/move `_spawn`s the
+    // `focuser` lane without replace=True, so a second POST is a 409 — and that
+    // 409 used to land in the catch below and clear `cmd`, throwing away the
+    // FIRST move's target, its distance-to-go and its stall clock. A tap that
+    // changed nothing on the rig blinded the one narrator watching the move
+    // that WAS happening.
+    if (waiting) { showToast("warning", MOVE_IN_FLIGHT_REASON); return; }
+    // …and the window `waiting` cannot cover: from here to the server's answer
+    // there is no `cmd` yet, so nothing above would stop a second tap. Read the
+    // REF, not the state, so two taps inside one React batch cannot both pass.
+    if (sendingRef.current) { showToast("warning", MOVE_SENDING_REASON); return; }
     const target = clampPos(p);
-    setCmd({ target, startedAt: Date.now(), from: pos });
-    setNow(Date.now());
+    const from = pos;
+    sendingRef.current = true;
+    setSending(target);
     try {
       await api.post("/api/focuser/move", { position: target });
     } catch (e) {
-      // The command never landed, so there is nothing in flight to narrate —
-      // leaving it would draw "→ 22000" over a move that was never accepted.
-      setCmd(null);
+      // Nothing is claimed: the command never landed, so there is no move to
+      // narrate — drawing "→ 22000" for it would be the failure this narrator
+      // was written to remove, pointing the other way.
       showToast("error", (e as Error).message);
+      return;
+    } finally {
+      // In the catch's path too: a refused move must hand the buttons straight
+      // back, not leave them locked behind a request that is over.
+      sendingRef.current = false;
+      setSending(null);
     }
+    // Armed only once the server has ACCEPTED it, which is also the ordering the
+    // shutter above had to learn (a refused Single drew a full exposing →
+    // downloading cycle for a frame that never existed).
+    setCmd({ target, startedAt: Date.now(), from });
+    setNow(Date.now());
   };
 
   // "Go to position" only checked non-empty string; non-numeric input (e.g.
@@ -367,8 +498,16 @@ export default function FocusView() {
   const focuserReason =
     readOnlyReason
     ?? (!foc ? "No focuser is connected — connect one on the Equipment page"
-      : running ? "Autofocus is running — let the sweep finish first"
-        : null);
+      : sweeping ? "Autofocus is running — let the sweep finish first"
+        // One move at a time, because the server allows exactly one: a second
+        // POST is a 409 off the `focuser` lane, and the tap that earns it costs
+        // the narration of the move already under way (see moveTo).
+        : waiting ? MOVE_IN_FLIGHT_REASON
+          // The same 409, in the window before the rig has answered the first
+          // one at all. Stated rather than merely refused, so the tap is
+          // visible while the round trip is open.
+          : sending != null ? MOVE_SENDING_REASON
+            : null);
   const goReason =
     focuserReason ?? (absTargetInvalid
       ? "Type a position number in the box first"
@@ -385,11 +524,44 @@ export default function FocusView() {
   // already owns the camera, and /api/capture would 409 against its own frames.
   const captureReason = focusCaptureBlocker({
     readOnlyReason, hasCamera: !!cam, polarBusy, sequenceOwnsCamera: seqOwnsCamera,
-    autofocusRunning: running, exposureInvalid: capExposureInvalid,
+    autofocusRunning: sweeping, exposureInvalid: capExposureInvalid,
     gainInvalid: capGainInvalid, gainMax: cam?.max_gain ?? null,
   });
   const singleReason =
     captureReason ?? (looping ? "A capture loop is running — press Stop first" : null);
+  // Tapping an exposure preset. Deliberately NOT `captureReason`: the preset is
+  // the repair for an empty exposure box — it writes a number into it — so
+  // refusing the tap for the very state it fixes would be a trap, which is why
+  // `exposureInvalid` is dropped here. The gain box is not dropped: its value
+  // rides in the restart's body, and a NaN gain reaches the wire as `null`.
+  // When no loop is running there is nothing to restart and nothing to refuse,
+  // beyond the read-only session that already makes the box itself read-only.
+  const presetReason =
+    readOnlyReason
+    ?? (looping
+      ? focusCaptureBlocker({
+        readOnlyReason, hasCamera: !!cam, polarBusy, sequenceOwnsCamera: seqOwnsCamera,
+        autofocusRunning: sweeping, exposureInvalid: false,
+        gainInvalid: capGainInvalid, gainMax: cam?.max_gain ?? null,
+      })
+      : null);
+  // "Find focus roughly first" walks the travel EXPOSING at every stop, so the
+  // route refuses it for the same reasons Single is refused — coarse_focus 409s
+  // on `engine.running or hub.looping` and requires a camera (api/app.py) — on
+  // top of the focuser gate every other control here shares. It deliberately
+  // does NOT inherit two of the hero's blockers: the Camera panel's exposure and
+  // gain boxes (it posts no parameters at all; the server walks at its own
+  // 6s / gain 300 / bin 2, focus/coarse.py), and `afReady.block`, which refuses
+  // a sweep when nothing has been measured. Coarse is the way OUT of having no
+  // measurable frame — blocking it for that would close the last door in the
+  // room, which is the loop this button was added to break.
+  const coarseReason =
+    focuserReason
+    ?? focusCaptureBlocker({
+      readOnlyReason, hasCamera: !!cam, polarBusy, sequenceOwnsCamera: seqOwnsCamera,
+      autofocusRunning: sweeping, exposureInvalid: false, gainInvalid: false,
+    })
+    ?? (looping ? "A capture loop is running — press Stop first" : null);
   // What stops the sweep getting the FRAME it copies from. `captureReason` is
   // the rig-level half; a running loop is not one of those — its next frame is
   // seconds away and satisfies the sweep by itself — but until that frame lands,
@@ -467,7 +639,9 @@ export default function FocusView() {
   // with its own behaviour", which this file already deleted once. One state
   // object, one handler, two places to press it.
   const afButton = focusButtonState({
-    canFocus, hasFocuser: !!foc, running, sweepBlock: afReady.block,
+    // `sweeping`, not `running`: a second sweep is a 409 off the `autofocus`
+    // lane, and a tab opened mid-run has no `focus` event to know that.
+    canFocus, hasFocuser: !!foc, running: sweeping, sweepBlock: afReady.block,
   });
   const runAutofocus = () => act(() => api.post("/api/focuser/autofocus", {
     ...afParams,
@@ -592,6 +766,7 @@ export default function FocusView() {
                 exposurePresets={FOCUS_EXPOSURE_PRESETS}
                 stepValues={STEP_VALUES}
                 onExposure={applyPreset}
+                exposureReason={presetReason}
                 onStep={setStep}
                 looping={looping}
                 starting={capPending}
@@ -636,28 +811,31 @@ export default function FocusView() {
         <Panel title="Bahtinov Focus" right={!canFocus && <ReadOnlyBadge />}>
           <BahtinovAid preview={shown} />
           {/* UX #24: the read-only reason was `title=` only — on a tablet the
-              button was simply dim and mute. LockedChip speaks it. */}
-          <button
-            className={`btn w-full tap min-h-11 mt-3 ${!canFocus ? "opacity-40" : ""} ${bahtOn ? "btn-accent" : ""}`}
-            aria-disabled={!canFocus || undefined}
-            aria-pressed={bahtOn}
-            aria-label={readOnlyReason
-              ? `${bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"} — ${readOnlyReason}`
-              : undefined}
-            onClick={
-              !canFocus
-                ? undefined
-                : () =>
-                    act(() =>
-                      api.post(
-                        bahtOn ? "/api/focuser/bahtinov/stop" : "/api/focuser/bahtinov/start",
-                        bahtOn ? {} : { exposure_s: 1, gain: 100, binning: 1 },
-                      ),
-                    )
-            }
-          >
-            {bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"}
-          </button>
+              button was simply dim and mute. LockedChip speaks it.
+              The pending branch is #46: arming ALSO starts a live loop, and the
+              flag that flips this label only arrives on the next 2s status
+              frame, so the tap looked ignored for two seconds and a second
+              finger sent /stop to a rig that was still arming. */}
+          {bahtWanted != null ? (
+            <button className="btn w-full tap min-h-11 mt-3" aria-disabled aria-busy
+              aria-label={bahtWanted
+                ? "Waiting for the rig to arm the Bahtinov aid — it starts a live loop first"
+                : "Waiting for the rig to confirm the Bahtinov aid is off"}>
+              {bahtWanted ? "Arming…" : "Stopping…"}
+            </button>
+          ) : (
+            <button
+              className={`btn w-full tap min-h-11 mt-3 ${!canFocus ? "opacity-40" : ""} ${bahtOn ? "btn-accent" : ""}`}
+              aria-disabled={!canFocus || undefined}
+              aria-pressed={bahtOn}
+              aria-label={readOnlyReason
+                ? `${bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"} — ${readOnlyReason}`
+                : undefined}
+              onClick={!canFocus ? undefined : () => toggleBahtinov(!bahtOn)}
+            >
+              {bahtOn ? "Stop Bahtinov aid" : "Bahtinov focus"}
+            </button>
+          )}
           {readOnlyReason && <LockedNote reason={readOnlyReason} className="mt-2" />}
           <p className="text-[11px] text-dim mt-2 leading-relaxed">
             Put a Bahtinov mask on the scope and point at a bright star, then watch
@@ -761,14 +939,22 @@ export default function FocusView() {
               // The hint changes with the loop, and the difference is the whole
               // point: "use it for the next frame" vs "restart what is running".
               const pa = presetAction(looping, s);
+              // Dimmed + aria-disabled + a spoken reason rather than the native
+              // attribute, and a toast on tap, exactly as the thumb row's
+              // nudges do it (StepRow) — five 44px cells have no room for a
+              // lock glyph each, but they still have to say why.
               return (
                 <button
                   key={s}
                   type="button"
-                  className={`btn tap min-h-[44px] !px-0 justify-center mono text-[11px] ${on ? "btn-accent border-accent" : ""}`}
+                  className={`btn tap min-h-[44px] !px-0 justify-center mono text-[11px] ${
+                    presetReason ? "opacity-40" : ""} ${on ? "btn-accent border-accent" : ""}`}
+                  aria-disabled={presetReason ? true : undefined}
                   aria-pressed={on}
-                  aria-label={`${s} second exposure — ${pa.hint}`}
-                  title={pa.hint}
+                  aria-label={presetReason
+                    ? `${s} second exposure — unavailable: ${presetReason}`
+                    : `${s} second exposure — ${pa.hint}`}
+                  title={presetReason ?? pa.hint}
                   onClick={() => applyPreset(s)}
                 >
                   {s}s
@@ -970,14 +1156,26 @@ export default function FocusView() {
                     offered permanently rather than only after a failure —
                     someone who knows the rig is miles out should not have to
                     fail once to be told about it. */}
-                <button
-                  className="btn w-full tap min-h-[44px] mb-3 text-[11px]"
-                  disabled={running || !foc || !canFocus}
-                  title="Step across the focuser's travel and stop where there are enough stars to autofocus"
-                  onClick={() => act(() => api.post("/api/focuser/coarse", {}))}
-                >
-                  Find focus roughly first
-                </button>
+                {/* This was the file's last native `disabled`, and it collapsed
+                    three blockers into a grey rectangle while missing the two
+                    that bite: a capture loop and a running sequence both 409 the
+                    route, and against either of those the button looked fully
+                    live and bought a red toast. `coarseReason` (above) is the
+                    same sentence chain every other control here uses. */}
+                {coarseReason ? (
+                  <LockedChip reason={coarseReason}
+                    className="btn w-full tap min-h-[44px] mb-3 text-[11px] justify-center">
+                    Find focus roughly first
+                  </LockedChip>
+                ) : (
+                  <button
+                    className="btn w-full tap min-h-[44px] mb-3 text-[11px]"
+                    title="Step across the focuser's travel and stop where there are enough stars to autofocus"
+                    onClick={() => act(() => api.post("/api/focuser/coarse", {}))}
+                  >
+                    Find focus roughly first
+                  </button>
+                )}
                 {bs.reason && <LockedNote reason={bs.reason} className="mb-3" />}
               </>
             );
@@ -1122,28 +1320,44 @@ export default function FocusView() {
               <button
                 className="btn btn-danger tap min-h-[44px] !border-2 inline-flex items-center justify-center gap-1.5"
                 style={{ background: "color-mix(in srgb, var(--danger-ink) 15%, transparent)" }}
-                onClick={() => {
-                  // Drop the commanded target: after a deliberate Halt,
-                  // "not moving — stopped at X" is technically true but reads
-                  // as a fault report for something the user just did.
+                onClick={() => act(async () => {
+                  await api.post("/api/focuser/halt");
+                  // Only once the rig has taken it. After a deliberate Halt,
+                  // "not moving — stopped at X" is technically true but reads as
+                  // a fault report for something the user just did — so it goes.
+                  // A halt LOST to wifi is the opposite case and used to look
+                  // identical: clearing first threw away the target, the
+                  // distance-to-go and the stall clock for a move that was still
+                  // running, leaving nothing on screen until the error toast
+                  // arrived up to 15s later (api.ts timeout).
                   setCmd(null);
-                  act(() => api.post("/api/focuser/halt"));
-                }}>
+                })}>
                 <Icon name="stop" size={13} className="shrink-0 fill-current" aria-hidden />
                 Halt
               </button>
             )}
           </div>
           {/* The move, narrated. `aria-live` because the whole point is that
-              something changed without the user touching anything. */}
-          {progress && (
+              something changed without the user touching anything.
+
+              The `sending` branch covers the round trip, where there is no
+              `cmd` to narrate yet: without it the tap produced nothing at all
+              until the rig answered, and the ellipsis is doing real work — it
+              says the rig has not agreed to anything, which is exactly the
+              claim "→ 12100" would make too early. */}
+          {progress ? (
             <p role="status" aria-live="polite"
               className={`mono text-[11px] mt-2.5 ${
                 progress.tone === "warn" ? "text-warn"
                   : progress.tone === "good" ? "text-good" : "text-accent"}`}>
               {progress.text}
             </p>
-          )}
+          ) : sending != null ? (
+            <p role="status" aria-live="polite" aria-busy
+              className="mono text-[11px] mt-2.5 text-dim">
+              sending {sending}…
+            </p>
+          ) : null}
 
           {/* Re-anchoring. A stepper focuser's position is a COUNT with no
               physical meaning until something anchors it, and this one resets

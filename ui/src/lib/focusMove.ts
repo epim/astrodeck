@@ -40,6 +40,37 @@ export const ARRIVAL_TOLERANCE_STEPS = 2;
  *  poll can't cry wolf, short enough to beat a person's "did that work?". */
 export const STALL_GRACE_MS = 6000;
 
+/** Why a second move is refused while one is in flight.
+ *
+ *  Not merely advice: POST /api/focuser/move `_spawn`s the `focuser` lane
+ *  WITHOUT replace=True, so the server answers a second one with a 409
+ *  (api/app.py `_spawn`). Naming Halt matters — it is the only way to end a
+ *  move early, and it is the button directly beside the one being refused. */
+export const MOVE_IN_FLIGHT_REASON =
+  "The focuser is still moving — wait for it to arrive, or press Halt";
+
+/** Why a move is refused between the tap and the server's answer to it.
+ *
+ *  A DIFFERENT window from the one above, and it needs its own sentence
+ *  because nothing has happened on the rig yet. `cmd` is armed only once the
+ *  POST resolves (moveTo's ordering, so a refused move is never drawn as a
+ *  real one), which leaves the round trip itself unguarded and unnarrated:
+ *  normally ~40ms, but a busy rig or a poor link makes it seconds, and in that
+ *  window the panel looked exactly as it had before the tap — the 2026-07-31
+ *  complaint, reintroduced at a smaller scale. Two taps inside it both reach
+ *  /api/focuser/move and the second is a 409 off the `focuser` lane. */
+export const MOVE_SENDING_REASON =
+  "Sending that move to the focuser — wait for the rig to answer";
+
+/** How long an ARRIVED move's line stays up before the command is retired.
+ *  Long enough to read "at 22000" after looking away at the image. */
+export const ARRIVED_LINGER_MS = 8_000;
+
+/** …and a refused one's. Much longer, because "not moving — stopped at 360,
+ *  asked for 22000" is the fault report this whole narrator exists for, and it
+ *  is read minutes after the tap that caused it. */
+export const STALL_LINGER_MS = 90_000;
+
 /**
  * The line to print under the Go button, or null when there is nothing to say.
  *
@@ -78,6 +109,60 @@ export function moveProgress(
     tone: "warn",
     settled: true,
   };
+}
+
+/**
+ * When to forget a commanded move — 0 for "now", a delay in ms, or null to
+ * keep holding it.
+ *
+ * WHY A COMMAND MUST BE RETIRED AT ALL. `cmd` is the only thing that makes the
+ * position numbers mean anything, and it used to live until the next Go. So
+ * every LATER motion of the focuser — an autofocus sweep, a coarse walk, the
+ * sequencer's own refocus, another client — was narrated as that finished
+ * command: first "→ 22000 · at 14475" for a move nobody asked for, and then,
+ * six seconds after the sweep parked somewhere else, the orange "not moving —
+ * stopped at 18300, asked for 22000". A fault report about a move that
+ * succeeded twenty minutes earlier, on a screen whose one job is to tell a
+ * refused move from a working one.
+ *
+ * A settled move lingers first — the line it is showing was worth printing —
+ * unless somebody else has taken the focuser, in which case there is nothing
+ * honest left to say about our command at all.
+ */
+export function retireAfterMs(p: {
+  /** moveProgress().settled — arrived, or demonstrably not happening. */
+  settled: boolean;
+  /** …and its tone, so a refusal outstays a confirmation. */
+  tone: MoveProgress["tone"] | null;
+  /** A sweep or a coarse walk is driving the focuser (the `autofocus` lane).
+   *  Retires the command whether or not it settled: the numbers are the
+   *  sweep's now, and narrating them against our target is how "→ 22000"
+   *  appears over a move nobody asked for. */
+  sweepOwnsFocuser: boolean;
+  /** A sequence is running. It refocuses on its own cadence, so a finished
+   *  CONFIRMATION must not be left lying around for its next move to be
+   *  reported as — but it does NOT cancel one in flight (nudging the focuser
+   *  during a run is allowed, and a nudge with no narration is the exact
+   *  failure this file exists to fix) and it does NOT cancel a REFUSAL. */
+  sequenceRunning: boolean;
+}): number | null {
+  if (p.sweepOwnsFocuser) return 0;
+  if (!p.settled) return null;
+  // TONE BEFORE THE SEQUENCE GATE, and the order is the whole point. A run does
+  // not take the focuser away from the operator, so the move the firmware
+  // refuses happens under a sequence as readily as without one — and with the
+  // gate above this line, "not moving — stopped at 360, asked for 22000" was
+  // retired at 0, i.e. cleared in the same commit that first rendered it. The
+  // one line this module exists to print, deleted on the frame it appeared,
+  // for the whole duration of every run.
+  //
+  // The confirmation is what a run may take: "at 22000" has been read by then,
+  // and the cost of keeping it is the run's own next refocus being narrated as
+  // the user's Go (which is what `sweepOwnsFocuser` above catches, but only
+  // once the autofocus lane is actually up).
+  if (p.tone === "warn") return STALL_LINGER_MS;
+  if (p.sequenceRunning) return 0;
+  return ARRIVED_LINGER_MS;
 }
 
 /**
