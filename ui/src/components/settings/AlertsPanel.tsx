@@ -368,7 +368,18 @@ export default function AlertsPanel(): JSX.Element {
   const [draft, setDraft] = useState<AlertSinkInput | null>(null);
   const [draftTokenConfigured, setDraftTokenConfigured] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null); // per-row test/delete
+  // Per row, not per panel. This was a single id, and the Test handler bailed on
+  // ANY row being busy — so while one channel was waiting on an SMTP timeout the
+  // other rows' Test buttons pressed down, looked live, and did nothing: no dim,
+  // no aria-disabled, no toast. The routes are independent (POST
+  // /api/alerts/{id}/test), so the guard is too; it still stops a double-tap on
+  // the SAME row.
+  const [busyIds, setBusyIds] = useState<string[]>([]); // per-row test/delete
+  const isBusy = (id: string) => busyIds.includes(id);
+  const markBusy = (id: string, on: boolean) =>
+    setBusyIds((ids) =>
+      on ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((x) => x !== id),
+    );
   const [deadmanUrl, setDeadmanUrl] = useState("");
   const [deadmanBusy, setDeadmanBusy] = useState(false);
 
@@ -441,8 +452,8 @@ export default function AlertsPanel(): JSX.Element {
   };
 
   const runTest = async (id: string) => {
-    if (busyId) return;
-    setBusyId(id);
+    if (isBusy(id)) return;
+    markBusy(id, true);
     try {
       const res = await testAlert(id);
       useStore.getState().enqueueToast({
@@ -457,7 +468,7 @@ export default function AlertsPanel(): JSX.Element {
         title: e instanceof Error ? e.message : "Could not run the test",
       });
     } finally {
-      setBusyId(null);
+      markBusy(id, false);
     }
   };
 
@@ -471,7 +482,7 @@ export default function AlertsPanel(): JSX.Element {
       cancelLabel: "Keep it",
     });
     if (!ok) return;
-    setBusyId(s.id);
+    markBusy(s.id, true);
     try {
       await deleteAlert(s.id);
       await useStore.getState().loadConfig();
@@ -484,7 +495,7 @@ export default function AlertsPanel(): JSX.Element {
         title: e instanceof Error ? e.message : "Could not delete the sink",
       });
     } finally {
-      setBusyId(null);
+      markBusy(s.id, false);
     }
   };
 
@@ -589,7 +600,7 @@ export default function AlertsPanel(): JSX.Element {
                       onClick={() => void runTest(s.id)}
                       locked={!canEdit}
                       lockedTitle={`Testing needs ${accessPhrase("config.alerts")}`}
-                      busy={busyId === s.id}
+                      busy={isBusy(s.id)}
                     >
                       Test
                     </ActionButton>
@@ -604,7 +615,7 @@ export default function AlertsPanel(): JSX.Element {
                       onClick={() => void removeSink(s)}
                       locked={!canEdit}
                       lockedTitle={`Deleting needs ${accessPhrase("config.alerts")}`}
-                      busy={busyId === s.id}
+                      busy={isBusy(s.id)}
                       tone="danger"
                     >
                       Delete

@@ -19,7 +19,7 @@
 // safety block with our edits applied (the auth-panel contract). A 403 from the
 // server (override cap lost mid-session) surfaces inline.
 
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { SafetyConfig } from "../../types";
 import {
   setSafetyConfig,
@@ -30,6 +30,7 @@ import {
 import { ApiError } from "../../api";
 import { useConfig, useStore } from "../../store";
 import { accessPhrase, useCan } from "../../lib/caps";
+import { useBusyOrPending } from "../../lib/useBusy";
 import { confirmDialog } from "../ConfirmDialog";
 import { domeStatusLabel } from "../../lib/dome";
 import { Panel, Field, Toggle } from "../ui";
@@ -41,13 +42,32 @@ export default function SafetyPanel(): JSX.Element {
   // config.solar_override — admin-only. Gates the disarm toggle + the exclusion
   // angle (both are solar fields the server requires the override cap to write).
   const canOverride = useCan("config.solar_override");
+  // The roof SETTINGS live in the same SafetyConfig block, which set_safety gates
+  // on config.safety — and neither operator nor viewer holds any config.* cap, so
+  // without this gate their tap on "Close roof on unsafe" 403'd while the switch
+  // sat there reading ON. An interlock nobody armed must not LOOK armed.
+  const canSafety = useCan("config.safety");
+  // ...but "Close roof now" is NOT a config write. POST /api/dome/close is gated
+  // on CAP_CONTROL_MOUNT (app.py:3748) because it MOVES THE MOUNT, and operator
+  // holds control.mount while holding no config.* cap at all. Folding the two
+  // together dimmed the only manual roof close in the whole app away from the
+  // operator — the person actually standing at the rig, and the rental persona
+  // the role exists for — and told them it needed an admin, which is false.
+  // Two permissions, two gates, two sentences.
+  const canCloseRoof = useCan("control.mount");
 
   // Draft mirrors the server block; re-seed whenever a fresh config lands (a save
   // broadcasts `config` over the WS → loadConfig refreshes the store slice).
   const [avoidance, setAvoidance] = useState(true);
   const [coneDeg, setConeDeg] = useState(30);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  // A refusal is reported AT THE CONTROL that raised it, not only in a line at
+  // the foot of the panel: with the roof block sitting between the sun toggle
+  // and that line, a refused re-arm reported itself a screenful away from the
+  // switch it was about. The tag says which control to print it beside.
+  const [err, setErr] = useState<{ where: "solar" | "roof"; msg: string } | null>(
+    null,
+  );
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   // Re-seed from the server. `solar_*` are additive on the backend, so a legacy
@@ -74,25 +94,68 @@ export default function SafetyPanel(): JSX.Element {
   const [closeOnUnsafe, setCloseOnUnsafe] = useState(false);
   const [closeWhenDone, setCloseWhenDone] = useState(false);
   const [reopenWhenSafe, setReopenWhenSafe] = useState(false);
-  const [roofBusy, setRoofBusy] = useState(false);
   useEffect(() => {
     setCloseOnUnsafe(seedCloseOnUnsafe);
     setCloseWhenDone(seedCloseWhenDone);
     setReopenWhenSafe(seedReopenWhenSafe);
   }, [seedCloseOnUnsafe, seedCloseWhenDone, seedReopenWhenSafe]);
-  useEffect(() => {
-    let live = true;
+
+  // The shutter status used to be read ONCE, on mount. A rain trip could close
+  // the roof five minutes later and this badge went on saying "Roof open" for
+  // the rest of the visit — the one place in Settings that reports the roof, and
+  // it was a page-load snapshot. /api/dome/state is outside the WS status frame,
+  // so it gets its own slow poll; 15 s matches MonitorView.tsx, and a shutter
+  // takes tens of seconds to move.
+  // Guards a reply that outlives the panel — a 15 s poll plus a one-shot after a
+  // close means there is usually one in flight.
+  const domeLive = useRef(true);
+  const refreshDome = () =>
     getDomeState()
       .then((d) => {
-        if (live) setDome(d);
+        if (domeLive.current) setDome(d);
       })
       .catch(() => {
         /* no dome / offline — the honest-disabled note covers it */
       });
+  useEffect(() => {
+    domeLive.current = true;
+    void refreshDome();
+    const id = window.setInterval(() => void refreshDome(), 15000);
     return () => {
-      live = false;
+      domeLive.current = false;
+      window.clearInterval(id);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // POST /api/dome/close `_spawn`s the "goto" lane with replace=True, and the
+  // park AND the shutter travel both happen inside it — the POST itself resolves
+  // in ~40 ms, which is why this button used to snap back to "Close roof now"
+  // while the mount was still swinging to park. Worse, replace=True means a
+  // second tap CANCELS the park in flight and starts the whole thing over, so
+  // OUR OWN close is hard-disabled off the lane rather than merely relabelled.
+  const { busy: gotoBusy, arm: armRoofClose } = useBusyOrPending("goto");
+  // Ours vs the mount's: the lane is shared with every slew, so it says "the rig
+  // is moving" but not "your close is running". "sending" = our POST is out and
+  // the rig has not answered yet; "closing" = the server took it.
+  //
+  // Why a phase and not a boolean: the 6 s `arm()` latch must be armed only on
+  // ACCEPTANCE. Armed before the POST, a refused close (403, no dome, dropped
+  // link) left the lane reading busy for six more seconds, during which the
+  // panel said "The mount is moving" over a mount that was not moving while the
+  // error toast said the opposite.
+  const [closePhase, setClosePhase] = useState<"idle" | "sending" | "closing">(
+    "idle",
+  );
+  const ourClose = closePhase !== "idle";
+  useEffect(() => {
+    if (closePhase !== "closing" || gotoBusy) return;
+    // The lane finished — or never took, in which case the latch expired.
+    // Either way, re-read the shutter instead of assuming.
+    setClosePhase("idle");
+    void refreshDome();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closePhase, gotoBusy]);
 
   if (!safety) {
     return (
@@ -147,7 +210,7 @@ export default function SafetyPanel(): JSX.Element {
             ? "Sun avoidance can only be changed by an admin (config.solar_override)."
             : e.message || "Could not save."
           : "Could not save.";
-      setErr(msg);
+      setErr({ where: "solar", msg });
       return false;
     } finally {
       setBusy(false);
@@ -159,9 +222,30 @@ export default function SafetyPanel(): JSX.Element {
   // enabling protective auto-close is always the safe direction.
   const domeConnected = !!dome?.connected;
   const shutter = dome?.shutter ?? "unknown";
+  // Why the three AUTO-CLOSE SETTINGS are inert, or null when they are live.
+  // Capability first: it is the reason that does not go away by plugging
+  // something in. This gate covers CONFIG WRITES ONLY — see closeLock.
+  const flagsLock = !canSafety
+    ? `Changing what the roof does by itself needs ${accessPhrase("config.safety")} (config.safety)`
+    : !domeConnected
+      ? "Connect a dome/roof device first"
+      : null;
+  // Why the MANUAL CLOSE is inert. Different route, different capability: the
+  // close moves the mount, so it is control.mount, which an operator holds.
+  const closeLock = !canCloseRoof
+    ? `Closing the roof needs ${accessPhrase("control.mount")} (control.mount)`
+    : !domeConnected
+      ? "No dome or roof device is connected — the server has nothing to close"
+      : null;
 
+  // Returns TRUE only when the server accepted the write — same contract as
+  // `persist` above, and for the same reason: these switches are not drafts,
+  // they are readouts of what the rig will do when the rain sensor trips. Left
+  // optimistic, a 403 (every non-admin: no role but admin holds any config.*
+  // cap) painted "Close roof on unsafe" ON, un-dimmed its reopen sub-toggle, and
+  // left the operator believing a rain trip would shut the roof over their gear.
   const persistDomeFlag = async (patch: Partial<SafetyConfig>) => {
-    if (busy) return;
+    if (busy) return false;
     setErr(null);
     setBusy(true);
     try {
@@ -169,49 +253,96 @@ export default function SafetyPanel(): JSX.Element {
       await setSafetyConfig(body);
       await useStore.getState().loadConfig();
       setSavedAt(Date.now());
+      return true;
     } catch (e) {
       const msg =
-        e instanceof ApiError ? e.message || "Could not save." : "Could not save.";
-      setErr(msg);
+        e instanceof ApiError
+          ? e.status === 403
+            ? `Changing the roof settings needs ${accessPhrase("config.safety")} (config.safety).`
+            : e.message || "Could not save."
+          : "Could not save.";
+      setErr({ where: "roof", msg });
+      return false;
     } finally {
       setBusy(false);
     }
   };
 
+  // On a refusal each switch goes back to where the SERVER is. `safety` is the
+  // stored config, which a failed write left untouched, so it IS that truth.
   const onToggleCloseOnUnsafe = async (on: boolean) => {
     setCloseOnUnsafe(on);
-    await persistDomeFlag({ close_dome_on_unsafe: on });
+    if (!(await persistDomeFlag({ close_dome_on_unsafe: on }))) {
+      setCloseOnUnsafe(seedCloseOnUnsafe);
+    }
   };
   const onToggleCloseWhenDone = async (on: boolean) => {
     setCloseWhenDone(on);
-    await persistDomeFlag({ close_dome_when_done: on });
+    if (!(await persistDomeFlag({ close_dome_when_done: on }))) {
+      setCloseWhenDone(seedCloseWhenDone);
+    }
   };
   const onToggleReopenWhenSafe = async (on: boolean) => {
     setReopenWhenSafe(on);
-    await persistDomeFlag({ reopen_dome_when_safe: on });
+    if (!(await persistDomeFlag({ reopen_dome_when_safe: on }))) {
+      setReopenWhenSafe(seedReopenWhenSafe);
+    }
   };
 
   // Manual close: fence + park + close via the tested ordering guard on the
-  // server. Toast the outcome (the shutter status line reflects progress).
+  // server. The POST only CREATES the task, so the in-flight state comes from
+  // the lane (see `gotoBusy` above), never from this promise.
+  //
+  // The goto lane is shared with every slew, and the two cases are NOT the same
+  // control decision. A second tap on OUR OWN close cancels the park we already
+  // started and begins it again — pure loss, so that one is hard-disabled. A
+  // slew somebody else started is different: dome_close calls
+  // hub.bump_motion_epoch() and re-spawns with replace=True precisely so it CAN
+  // pre-empt one. Blocking the close for the 30–90 s of a goto_and_center and
+  // saying "wait for it to finish" made the protective action wait on the
+  // hazard. Rain does not wait for a slew. So it stays reachable, behind a hold
+  // that names what it costs.
   const onCloseRoofNow = async () => {
-    if (roofBusy || !domeConnected) return;
-    setRoofBusy(true);
+    if (closeLock || ourClose) return;
+    if (gotoBusy) {
+      const ok = await confirmDialog({
+        title: "Stop the slew and close the roof?",
+        body: (
+          <>
+            The mount is moving right now. Closing the roof cancels that move,
+            parks the mount and then shuts the shutter — whatever it was slewing
+            to is abandoned and has to be started again. Do it if the weather is
+            turning. If it is not urgent, stop the mount yourself (or let the
+            move finish) and close after.
+          </>
+        ),
+        tone: "warn",
+        mode: "hold",
+        confirmLabel: "Stop the mount and close",
+        cancelLabel: "Leave the mount moving",
+      });
+      if (!ok) return;
+    }
+    // "sending" disables the button. It cannot latch: api.ts gives every request
+    // a hard 15 s timeout that THROWS (ApiError timedOut), so the catch below
+    // always runs and always returns the control. Do not replace that await with
+    // anything that can hang forever.
+    setClosePhase("sending");
     try {
       await closeDome();
+      // Arm the pending latch only on ACCEPTANCE. Armed before the POST, a
+      // refusal left the control dead — and mis-narrated — for 6 s.
+      armRoofClose();
+      setClosePhase("closing");
       useStore.getState().enqueueToast({
         level: "info",
         title: "Closing the roof — parking the mount first.",
       });
-      // refresh the shutter status shortly after the close is commanded.
-      setTimeout(() => {
-        getDomeState().then(setDome).catch(() => {});
-      }, 1500);
     } catch (e) {
+      setClosePhase("idle");
       const msg =
         e instanceof ApiError ? e.message || "Could not close the roof." : "Could not close the roof.";
       useStore.getState().enqueueToast({ level: "error", title: msg });
-    } finally {
-      setRoofBusy(false);
     }
   };
 
@@ -316,6 +447,15 @@ export default function SafetyPanel(): JSX.Element {
         />
       </div>
 
+      {/* A refused re-arm belongs BESIDE the switch that snapped back, not in a
+          line under the whole panel — the roof block now sits between the two. */}
+      {err?.where === "solar" && (
+        <p className="text-xs text-bad inline-flex items-center gap-1.5 -mt-1 mb-1">
+          <Icon name="alert" size={13} className="shrink-0" />
+          {err.msg}
+        </p>
+      )}
+
       {/* exclusion angle */}
       <div className="grid gap-3 sm:grid-cols-2 pt-4 border-t border-line mt-1">
         <Field
@@ -337,7 +477,7 @@ export default function SafetyPanel(): JSX.Element {
             disabled={busy || !canOverride}
           />
         </Field>
-        <div className="flex items-end">
+        <div className="flex flex-col justify-end items-start gap-1.5">
           <button
             type="button"
             className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
@@ -347,6 +487,16 @@ export default function SafetyPanel(): JSX.Element {
             <Icon name="check" size={15} />
             {busy ? "Saving…" : "Save angle"}
           </button>
+          {/* The field stays live while avoidance is off, so the greyed button
+              beside it read as a bug. It is not — there is no cone to size while
+              the guard is disarmed, and re-arming writes whatever is typed here,
+              so nothing needs saving separately. Say that where it is read. */}
+          {!avoidance && canOverride && (
+            <p className="text-[11px] text-dim max-w-md">
+              Nothing to save while avoidance is off — turning it back on stores
+              the angle above with it.
+            </p>
+          )}
         </div>
       </div>
 
@@ -409,13 +559,22 @@ export default function SafetyPanel(): JSX.Element {
           beats a crushed one).
         </p>
 
-        {/* honest-disabled (§11.8) when no dome is connected: dim + lock +
-            aria-disabled + title — NOT the native disabled attribute. */}
+        {/* honest-disabled (§11.8) when the SETTINGS are unreachable: dim + lock +
+            aria-disabled + title — NOT the native disabled attribute. Two very
+            different reasons, so they get two different sentences: no capability
+            is about who you are, no dome is about what is plugged in.
+            SCOPE: this wrapper covers the three CONFIG toggles and nothing else.
+            "Close roof now" used to live inside it, which meant config.safety —
+            an admin-only cap — silently took the app's only manual roof close
+            away from an operator who holds control.mount and could perform it.
+            pointer-events-none also killed it for touch while leaving it live to
+            a Tab and a Space, so it was dead on the tablet and mislabelled on
+            the keyboard. It now sits OUTSIDE, with its own gate. */}
         <div
-          aria-disabled={!domeConnected}
-          title={domeConnected ? undefined : "Connect a dome/roof device first"}
+          aria-disabled={!!flagsLock}
+          title={flagsLock ?? undefined}
           className={
-            domeConnected ? "mt-3" : "mt-3 opacity-50 pointer-events-none select-none"
+            flagsLock ? "mt-3 opacity-50 pointer-events-none select-none" : "mt-3"
           }
         >
           <div className="flex items-start justify-between gap-3 py-2">
@@ -426,10 +585,14 @@ export default function SafetyPanel(): JSX.Element {
                 pausing under an open sky.
               </p>
             </div>
+            {/* Natively disabled without the capability, not merely dimmed: the
+                container's pointer-events-none stops a tap but not a Tab and a
+                Space, and behind that key is a 403 that used to leave the switch
+                reading ON. */}
             <Toggle
               checked={closeOnUnsafe}
               onChange={onToggleCloseOnUnsafe}
-              disabled={busy}
+              disabled={busy || !canSafety}
               label="Close roof on unsafe"
               showState
             />
@@ -464,7 +627,7 @@ export default function SafetyPanel(): JSX.Element {
             <Toggle
               checked={reopenWhenSafe}
               onChange={onToggleReopenWhenSafe}
-              disabled={busy || !closeOnUnsafe}
+              disabled={busy || !closeOnUnsafe || !canSafety}
               label="Reopen roof when safe again"
               showState
             />
@@ -480,47 +643,76 @@ export default function SafetyPanel(): JSX.Element {
             <Toggle
               checked={closeWhenDone}
               onChange={onToggleCloseWhenDone}
-              disabled={busy}
+              disabled={busy || !canSafety}
               label="Close roof at end-of-night"
               showState
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3 pt-3 border-t border-line">
-            <span className="text-[11px] text-dim">
-              Park the mount, then close the roof now.
-            </span>
-            <button
-              type="button"
-              className="btn min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
-              onClick={onCloseRoofNow}
-              aria-disabled={roofBusy || !domeConnected}
-              disabled={roofBusy}
-            >
-              <Icon name="lock" size={15} />
-              {roofBusy ? "Closing…" : "Close roof now"}
-            </button>
-          </div>
         </div>
 
-        {!domeConnected && (
+        {/* A refused SETTING reports itself here, under the switch that snapped
+            back — not at the foot of the panel below the manual close. */}
+        {err?.where === "roof" && (
+          <p className="text-xs text-bad inline-flex items-center gap-1.5 mt-2">
+            <Icon name="alert" size={13} className="shrink-0" />
+            {err.msg}
+          </p>
+        )}
+
+        {!canSafety ? (
           <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs mt-3">
             <Icon name="lock" size={14} className="text-dim shrink-0" />
             <span className="text-dim">
-              No dome/roof device is connected. Connect one to enable auto-close
-              and the manual close. The settings above still save for when a roof
-              is added.
+              Changing what the roof does BY ITSELF needs{" "}
+              {accessPhrase("config.safety")} (config.safety) — an admin. The
+              three settings above are shown for reference. Closing the roof by
+              hand is a separate permission and is not affected by this.
             </span>
           </div>
-        )}
+        ) : !domeConnected ? (
+          <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs mt-3">
+            <Icon name="lock" size={14} className="text-dim shrink-0" />
+            <span className="text-dim">
+              No dome/roof device is connected, so these are read-only — the
+              server has nothing to close. Add a dome under Equipment and they
+              become settable.
+            </span>
+          </div>
+        ) : null}
+
+        {/* MANUAL CLOSE — deliberately OUTSIDE the config wrapper above. This is
+            not a settings write: POST /api/dome/close is control.mount, which an
+            operator holds and an operator is who is standing at the rig when it
+            starts raining. It is also the only manual roof close in the app. */}
+        <div className="flex items-center justify-between gap-3 pt-3 mt-3 border-t border-line">
+          <span className="text-[11px] text-dim max-w-md">
+            {ourClose
+              ? "Parking the mount, then closing. The shutter status above updates as it moves."
+              : closeLock
+                ? closeLock
+                : gotoBusy
+                  ? "The mount is moving — closing the roof stops that move first. Hold the button to confirm, or stop the mount yourself and close after."
+                  : "Park the mount, then close the roof now."}
+          </span>
+          {/* Hard-disabled for OUR OWN close (replace=True: a second tap cancels
+              the park in flight) and for a missing capability or device. NOT for
+              somebody else's slew — that one is reachable behind a hold. */}
+          <button
+            type="button"
+            className="btn min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
+            onClick={onCloseRoofNow}
+            aria-busy={ourClose || undefined}
+            aria-disabled={!!closeLock || ourClose}
+            title={closeLock ?? undefined}
+            disabled={!!closeLock || ourClose}
+          >
+            <Icon name="lock" size={15} />
+            {ourClose ? "Closing…" : "Close roof now"}
+          </button>
+        </div>
       </div>
 
-      {err && (
-        <p className="text-xs text-bad inline-flex items-center gap-1.5 mt-3">
-          <Icon name="alert" size={13} className="shrink-0" />
-          {err}
-        </p>
-      )}
       {savedAt && !busy && !err && (
         <p className="text-[11px] text-good inline-flex items-center gap-1.5 mt-3">
           <Icon name="check" size={13} /> Saved

@@ -16,7 +16,7 @@
 // config.solar_override and have their own panel — but they ride along in the
 // echo, unchanged, which the server permits.
 
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { CoolingConfig, SafetyConfig } from "../../types";
 import { setCoolingConfig, setSafetyConfig } from "../../api/backends";
 import { ApiError } from "../../api";
@@ -107,19 +107,51 @@ export default function SafetyLimitsPanel(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // Re-seed whenever a fresh config lands (a save broadcasts over the WS).
+  // The server block the live draft was seeded from. Comparing against it is the
+  // only way a reseed can tell the USER's edits from the SERVER's.
+  const baseRef = useRef<SafetyConfig | null>(null);
+
+  // Re-seed whenever a fresh config lands, keyed on the SERIALISED block rather
+  // than the object: `config.safety` is a new object on every config reload, so
+  // the old `[safety]` dep fired on reloads that changed nothing here — a driver
+  // added, a profile activated, any `config` frame off the WS — and silently
+  // wiped whatever was typed.
+  const safetySig = safety ? JSON.stringify(safety) : null;
   useEffect(() => {
-    if (safety) setDraft({ ...safety });
+    if (!safetySig) return;
+    const fresh = JSON.parse(safetySig) as SafetyConfig;
+    const base = baseRef.current;
+    baseRef.current = fresh;
+    setDraft((d) => {
+      if (!d || !base) return fresh;
+      // REBASE, don't replace. SafetyPanel (sun avoidance + the roof flags) writes
+      // the SAME safety block from the same tab, so its saves arrive here as a
+      // genuinely changed block — and a plain reseed threw away an altitude floor
+      // or a whole list of obstruction wedges someone was part-way through. Carry
+      // forward only the keys the user actually changed and take the server's for
+      // the rest, which also stops OUR next save (a full-block echo) from
+      // reverting their sun-avoidance change behind their back.
+      const mine: Record<string, unknown> = {};
+      for (const k of Object.keys(fresh) as (keyof SafetyConfig)[]) {
+        if (JSON.stringify(d[k]) !== JSON.stringify(base[k])) mine[k] = d[k];
+      }
+      return { ...fresh, ...mine };
+    });
     setErr(null);
     setSavedAt(null);
-  }, [safety]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [safetySig]);
 
   // Seeded independently of `safety` so an older server (or the WS bootstrap,
   // which omits the block) leaves the control absent rather than rendering it
-  // bound to undefined and writing a zero rate on the first save.
+  // bound to undefined and writing a zero rate on the first save. Signature-keyed
+  // for the same reason as above.
+  const coolingSig = cooling ? JSON.stringify(cooling) : null;
   useEffect(() => {
-    if (cooling) setCoolDraft({ ...cooling });
-  }, [cooling]);
+    if (!coolingSig) return;
+    setCoolDraft(JSON.parse(coolingSig) as CoolingConfig);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coolingSig]);
 
   if (!safety || !draft) {
     return (

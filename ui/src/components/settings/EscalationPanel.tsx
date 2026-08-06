@@ -87,11 +87,20 @@ export default function EscalationPanel(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Keyed on the SERIALISED block, never on the object. `config.escalation` is a
+  // fresh object on every config reload — the panel above saving, a profile
+  // activating, any `config` broadcast off the WS — so with `esc` in the dep
+  // array this effect fired on reloads that changed nothing here and threw away
+  // a half-set retake limit or watchdog, "Unsaved changes" and all. Same
+  // signature idiom as SitePanel.tsx:124.
+  const escSig = esc ? JSON.stringify(esc) : null;
   useEffect(() => {
-    if (esc) setDraft({ ...esc });
+    if (!escSig) return;
+    setDraft(JSON.parse(escSig) as EscalationConfig);
     setErr(null);
     setSavedAt(null);
-  }, [esc]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [escSig]);
 
   if (!esc || !draft) {
     return (

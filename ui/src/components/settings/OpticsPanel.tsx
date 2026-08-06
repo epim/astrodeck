@@ -98,12 +98,21 @@ export default function OpticsPanel(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Keyed on the SERIALISED optics and nothing else. `optics` is a fresh object
+  // on every config reload — adding a driver in the panel directly below this
+  // one reloads the config, hands back an identical-but-new optics object, and
+  // with it in the dep array this effect fired and threw away a focal length
+  // the user was halfway through typing. The "Unsaved changes" warning went with
+  // it, so the revert was silent. `seed` already carries every value we care
+  // about; SitePanel.tsx:124 keys the same way for the same reason.
   const seed = JSON.stringify(optics ?? null);
   useEffect(() => {
-    setDraft(optics ? (JSON.parse(seed) as Optics) : null);
+    const fresh = JSON.parse(seed) as Optics | null;
+    setDraft(fresh ? { ...fresh } : null);
     setErr(null);
     setSavedAt(null);
-  }, [seed, optics]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed]);
 
   if (!optics || !draft) {
     return (
