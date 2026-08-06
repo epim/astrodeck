@@ -27,7 +27,7 @@ import {
   deleteUser,
 } from "../../api/backends";
 import { ApiError } from "../../api";
-import { usePrincipal, useAuthMethods } from "../../store";
+import { usePrincipal, useAuthMethods, useStore } from "../../store";
 import {
   emailLooksValid, newUserBlocker, newUserBody, passwordTooLong, signInSummary,
   type SignInMethod,
@@ -137,9 +137,13 @@ function UserRow({
   onChanged: () => Promise<void>;
   onError: (m: string) => void;
 }): JSX.Element {
+  const showToast = useStore((s) => s.showToast);
   const [busy, setBusy] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [pw, setPw] = useState("");
+  // The reset's own failure, kept in the reset row rather than at the top of
+  // the panel — see submitReset.
+  const [pwErr, setPwErr] = useState<string | null>(null);
   const pwTooLong = new TextEncoder().encode(pw).length > 72;
 
   const run = async (fn: () => Promise<unknown>, fallback: string) => {
@@ -189,11 +193,28 @@ function UserRow({
   // UX-39: themed inline reset — masked field + client-side 72-byte guard,
   // replacing window.prompt (bright OS dialog that breaks night-mode/the dimmer
   // and echoes the password in cleartext).
+  // A failed reset used to end EXACTLY like a successful one — field cleared,
+  // row collapsed — because it went through `run()`, whose catch reports to the
+  // panel-wide error line above every other user's row. So the one place the
+  // failure was stated was the one place it didn't look like it was about this
+  // account, and the password was gone. Now the row stays open with what was
+  // typed still in it and the reason under the field, and success says so.
   const submitReset = async () => {
     if (busy || pw === "" || pwTooLong) return;
-    await run(() => resetUserPassword(user.id, pw), "Could not reset password.");
-    setPw("");
-    setResetting(false);
+    setPwErr(null);
+    setBusy(true);
+    try {
+      await resetUserPassword(user.id, pw);
+      // No list refresh: a password is not part of User.to_public(), so nothing
+      // on this row can have changed.
+      setPw("");
+      setResetting(false);
+      showToast("success", `New password set for ${user.username}.`);
+    } catch (e) {
+      setPwErr(errText(e, "Could not reset password."));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onDelete = async () => {
@@ -301,10 +322,10 @@ function UserRow({
               type="password"
               autoComplete="new-password"
               value={pw}
-              onChange={(e) => setPw(e.target.value)}
+              onChange={(e) => { setPw(e.target.value); setPwErr(null); }}
               disabled={busy}
               autoFocus
-              aria-invalid={pwTooLong}
+              aria-invalid={pwTooLong || !!pwErr}
             />
           </label>
           <button
@@ -319,13 +340,19 @@ function UserRow({
           <button
             type="button"
             className="btn min-h-[44px] sm:min-h-0"
-            onClick={() => { setResetting(false); setPw(""); }}
+            onClick={() => { setResetting(false); setPw(""); setPwErr(null); }}
             disabled={busy}
           >
             Cancel
           </button>
           {pwTooLong && (
             <p className="basis-full text-xs text-bad">Password is too long (max 72 bytes).</p>
+          )}
+          {pwErr && !pwTooLong && (
+            <p className="basis-full text-xs text-bad inline-flex items-center gap-1.5">
+              <Icon name="alert" size={13} className="shrink-0" />
+              {pwErr} — {user.username}&apos;s password is unchanged.
+            </p>
           )}
         </div>
       )}
@@ -356,6 +383,11 @@ export function AddUserForm({
   const [role, setRole] = useState<PrincipalRole>(defaultRole);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // What the last create actually made. The guided "Secure this server" card
+  // keeps this form mounted unless the new account is an ENABLED ADMIN, so
+  // "created, but as an operator" is the one fact that explains why step 1 is
+  // still open — a bare "Created." would leave that unanswerable.
+  const [created, setCreated] = useState<string | null>(null);
 
   // Offering Google-only while Google is off would mint an account that
   // cannot sign in at all, and nothing would say so until they tried.
@@ -380,9 +412,16 @@ export function AddUserForm({
     setEmailTouched(true);
     if (busy || blocker) return;
     setErr(null);
+    setCreated(null);
     setBusy(true);
+    // `made` splits the two failures this block can see. Only the create call's
+    // failure belongs to this form; once the account exists, a parent refresh
+    // that throws must not be reported as "Could not create user."
+    let made: string | null = null;
     try {
       await createUser({ ...newUserBody(draft), role });
+      made = `Created "${username.trim()}" as ${role}.`;
+      setCreated(made);
       setUsername("");
       setPassword("");
       setEmail("");
@@ -391,7 +430,12 @@ export function AddUserForm({
       setRole(defaultRole);
       await onCreated();
     } catch (e) {
-      setErr(errText(e, "Could not create user."));
+      if (!made) setErr(errText(e, "Could not create user."));
+    } finally {
+      // UsersPanel's own call site unmounts this form on success, which is what
+      // hid the missing clear; the guided setup card does NOT — it keeps the
+      // form up until an enabled admin exists, so creating an operator there
+      // froze every field with the button stuck on "Creating…".
       setBusy(false);
     }
   };
@@ -499,6 +543,12 @@ export function AddUserForm({
         <p className="text-xs text-bad inline-flex items-center gap-1.5">
           <Icon name="alert" size={13} className="shrink-0" />
           {err}
+        </p>
+      )}
+      {created && !err && (
+        <p className="text-xs text-good inline-flex items-center gap-1.5">
+          <Icon name="check" size={13} className="shrink-0" />
+          {created}
         </p>
       )}
       <div className="flex justify-end">
