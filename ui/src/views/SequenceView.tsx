@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import {
   useStore, useAtlasBannerPending, useLastReportId, defaultSchedule,
   usePhotometry, usePreview,
@@ -35,8 +35,10 @@ import {
 } from "../lib/photometry";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { formatScheduleStatus } from "../lib/scheduleStatus";
+import { fmtCountdown } from "../lib/eta";
 import type {
-  CatalogEntry, ExposureStep, SequencePlan, SequenceState, Target, VisibilityNight,
+  CatalogEntry, ExposureStep, SequencePlan, SequenceProgress, SequenceState, Target,
+  VisibilityNight,
 } from "../types";
 
 // UX-22: frame types the step editor can script (backend IMAGETYP + shutter
@@ -47,6 +49,11 @@ const FRAME_TYPES = ["Light", "Dark", "Flat", "Bias"] as const;
 function SeqStateBadge({ state }: { state: string }) {
   const map: Record<string, { icon: IconName; cls: string; word: string }> = {
     running: { icon: "play", cls: "text-good blink", word: "RUNNING" },
+    // PAUSING is not an engine state — it is the window the engine cannot
+    // report, between the pause landing and the open shutter closing. It keeps
+    // the blink because something is still HAPPENING, and the blink is the
+    // channel that survives a red-light screen where hue barely reads.
+    pausing: { icon: "pause", cls: "text-warn blink", word: "PAUSING" },
     paused: { icon: "pause", cls: "text-warn", word: "PAUSED" },
     complete: { icon: "check", cls: "text-good", word: "COMPLETE" },
     error: { icon: "x", cls: "text-bad", word: "ERROR" },
@@ -74,6 +81,81 @@ function ScheduleChip({ schedule }: { schedule: NonNullable<SequenceState["sched
       <Icon name={warn ? "alert" : "clock"} size={13} /> {status.text}
     </span>
   );
+}
+
+/** Seconds of SHUTTER the in-flight exposure still owes, or null when none is
+ *  open. This is what makes the difference between "pause requested" and
+ *  "paused" observable from the browser.
+ *
+ *  `frame_started_at_ms` is the engine's own in-flight marker: stamped in
+ *  `_begin_frame` immediately before `hub.capture`, zeroed in `_record_frame`
+ *  and `_end_discarded_frame`, and serialized as null whenever it is zero. So
+ *  a non-null value means a frame is exposing RIGHT NOW, and `pause()` — which
+ *  only clears an `asyncio.Event` the run loop rechecks at the next frame
+ *  boundary — republishes that marker along with `state:"paused"`.
+ *
+ *  Anchored ONCE per frame and then ticked on the CLIENT clock. The engine emits
+ *  a progress snapshot at each frame boundary and never again during the
+ *  exposure, so `server_now_ms` is frozen for the whole sub: re-deriving the
+ *  skew every tick subtracts two frozen numbers and cancels to exactly zero.
+ *  That is the bug that left MonitorView's sub-frame bar reading 0.0s for five
+ *  minutes (see SubFrameBar there) — same anchor, same reason.
+ *
+ *  Returning null once the exposure's own length has elapsed is deliberate: the
+ *  shutter is shut by then even if the engine is still saving, and it also means
+ *  the caller can never latch — a reject path clears the marker without
+ *  publishing, so a purely marker-driven "pausing" could stick.
+ *
+ *  `countdownLive` is what the number is FOR — the pause countdown — and it
+ *  gates the interval only. Ticking on "a frame is in flight" re-rendered this
+ *  whole view (every target card, every step grid, TargetSpark, SchedulePanel)
+ *  twice a second for the entire run, to move a countdown that renders only
+ *  inside the pausing block, on a tablet that is also holding a text field the
+ *  user can still type in. The VALUE stays correct without the tick because it
+ *  is computed during render off the client clock, and the pause itself causes
+ *  a render — so the first frame that says "paused" already carries the right
+ *  number, and only then does the timer start. It also stops itself: once the
+ *  exposure's length has elapsed the value is null, `ticking` goes false and
+ *  the interval is cleared, so `_end_discarded_frame` (clears the marker WITHOUT
+ *  publishing) cannot leave a timer running against a paused engine. */
+function useShutterRemainingS(
+  progress: SequenceProgress | undefined,
+  countdownLive: boolean,
+): number | null {
+  const startedAtMs = progress?.frame_started_at_ms ?? null;
+  const serverNowMs = progress?.server_now_ms ?? null;
+  const exposureS = progress?.current_exposure_s ?? 0;
+  const inFlight = startedAtMs != null && exposureS > 0;
+
+  const anchor = useRef<{ key: number; atMs: number; ageS: number } | null>(null);
+  if (startedAtMs != null && anchor.current?.key !== startedAtMs) {
+    // A client that opened the page mid-sub gets the frame's real age from the
+    // snapshot itself; one that watched it start gets 0 and its own clock.
+    // Unconditional (and NOT gated on countdownLive): it runs during render, so
+    // the anchor is already correct on the frame the pause arrives.
+    const reportedAgeS = serverNowMs != null ? (serverNowMs - startedAtMs) / 1000 : 0;
+    anchor.current = {
+      key: startedAtMs,
+      atMs: Date.now(),
+      ageS: Number.isFinite(reportedAgeS) ? Math.max(0, reportedAgeS) : 0,
+    };
+  }
+
+  const remainingS = (() => {
+    if (!inFlight || anchor.current == null) return null;
+    const left = exposureS - (anchor.current.ageS + (Date.now() - anchor.current.atMs) / 1000);
+    return left > 0 ? left : null;
+  })();
+
+  const ticking = countdownLive && remainingS != null;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!ticking) return;
+    const t = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(t);
+  }, [ticking]);
+
+  return remainingS;
 }
 
 export default function SequenceView() {
@@ -232,6 +314,17 @@ export default function SequenceView() {
   };
 
   const running = sequence.state === "running" || sequence.state === "paused";
+  // THE GAP PAUSE CANNOT CLOSE. `engine.pause()` clears an asyncio.Event and
+  // publishes state="paused" in the same breath, but the run loop only rechecks
+  // that flag at the top of the next frame (`_checkpoint`) — so the shutter open
+  // when you tapped stays open for the rest of the sub, up to ten minutes on
+  // narrowband. The badge, the banner and the Resume button all said PAUSED over
+  // it, which is the screen an operator reads before uncapping the scope or
+  // walking out with a head-torch. Two phases, and the second one is the engine's
+  // own in-flight marker rather than our optimism.
+  const shutterRemainingS = useShutterRemainingS(
+    sequence.progress, sequence.state === "paused");
+  const pausing = sequence.state === "paused" && shutterRemainingS != null;
   const finished = ["complete", "error", "aborted"].includes(sequence.state);
   const failed = sequence.state === "error" || sequence.state === "aborted";
   const showPanel = running || finished;        // NOT gated on progress
@@ -258,6 +351,76 @@ export default function SequenceView() {
   // 75 minutes of clear sky. The backend flag is the authority for BOTH terminal
   // states; the client gate was the bug.
   const resumable = !!recoverable && failed;
+
+  // ------------------------------------------------------------------- abort
+  // /api/sequence/abort is NOT one of the `_spawn` routes: it awaits the entire
+  // teardown — cancel the run task, drain every in-flight thumbnail render, run
+  // the run's own finally — which routinely outlives api.ts's 15s budget. So the
+  // abort that WORKED came back as "request timed out — server not responding",
+  // in a red toast, on the control an operator reaches for when something is
+  // wrong. The engine's terminal state on the next status frame is the answer;
+  // the request's own promise never was.
+  const [aborting, setAborting] = useState(false);
+  useEffect(() => {
+    if (!aborting) return;
+    if (!running) { setAborting(false); return; }   // the engine reported a terminal state
+    // ...and expire, so a dropped socket cannot leave the row dead. Re-posting is
+    // safe: abort on a finished task just republishes "aborted".
+    const t = window.setTimeout(() => setAborting(false), 60_000);
+    return () => clearTimeout(t);
+  }, [aborting, running]);
+
+  const abortSequence = async () => {
+    if (aborting) return;
+    setAborting(true);
+    try {
+      await api.post("/api/sequence/abort");
+    } catch (e) {
+      // A timeout here says nothing about whether the abort took — see above.
+      // Stay in the aborting state and let the engine answer.
+      if (e instanceof ApiError && e.timedOut) return;
+      setAborting(false);
+      showToast("error", (e as Error).message);
+    }
+  };
+
+  // ------------------------------------------------------------------ resume
+  // Resume and Resume-from-frame-N are the same POST from two places. Neither
+  // guarded itself, and `engine.start()` returns before its first
+  // `state:"running"` publish, so a second tap inside that window reached a
+  // route whose session had already been claimed and toasted "no resumable
+  // sequence found" over a resume that had started perfectly. One in-flight
+  // guard and one label, exactly as `ordering` above.
+  //
+  // The guard is a REF, not the state flag. Two taps land in one React batch and
+  // share one closure, so a `if (resuming) return` reads false both times — the
+  // `disabled` attribute has not been re-rendered yet either. A ref is the only
+  // thing that is already true when the second handler runs.
+  const [resuming, setResuming] = useState(false);
+  const resumeInFlight = useRef(false);
+  const endResume = () => { resumeInFlight.current = false; setResuming(false); };
+  useEffect(() => {
+    if (!resuming) return;
+    // Hand over to server truth: the POST resolves before the engine's first
+    // "running" publish, and it is that gap — not the request — that the second
+    // tap falls into. Expire so a resume that never took can't leave it dead.
+    if (sequence.state === "running") { endResume(); return; }
+    const t = window.setTimeout(endResume, 8000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resuming, sequence.state]);
+
+  const resumeRun = (path: "/api/sequence/recover" | "/api/sequence/resume") => {
+    if (resumeInFlight.current) return;
+    resumeInFlight.current = true;
+    setResuming(true);
+    void act(async () => {
+      try {
+        await api.post(path);
+        setRecoverable(null);
+      } catch (e) { endResume(); throw e; }
+    });
+  };
 
   useEffect(() => {
     if (running) return;
@@ -382,6 +545,15 @@ export default function SequenceView() {
   // falls through to the unconditional add), and both the "fine, no dialog"
   // and "confirmed" paths funnel into the same setPlan/setSearch call.
   const addTarget = async (e: CatalogEntry) => {
+    // THE LOCK, ENFORCED. The note above the target list says targets cannot be
+    // added during a run, and until this guard existed that was simply untrue:
+    // a search-pick appended a card that `+ step` could not fill and delete
+    // could not remove (both are `disabled={running}`), directly under the
+    // sentence promising it could not happen. The visible half of the lock is
+    // the `fieldset disabled` around the search itself; this is the half that
+    // holds if a pick reaches here by any other route, since CatalogSearch is
+    // the shared Atlas widget and its callers are not all this view.
+    if (running) return;
     if (pendingAdd) return; // in-flight guard — no double-add on a rapid double-tap
     setPendingAdd(true);
     try {
@@ -496,9 +668,11 @@ export default function SequenceView() {
                 “{recoverable.name}” stopped at {recoverable.frames_done}/{recoverable.frames_total} frames.
                 Resume picks up where it left off.
               </span>
-              <button className="btn btn-accent !py-1" onClick={() =>
-                act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
-                <Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Resume
+              <button className="btn btn-accent !py-1" disabled={resuming}
+                onClick={() => resumeRun("/api/sequence/recover")}>
+                {resuming ? "Resuming…" : (
+                  <><Icon name="play" size={12} className="inline -mt-0.5 mr-1" /> Resume</>
+                )}
               </button>
             </div>
           </Panel>
@@ -507,7 +681,7 @@ export default function SequenceView() {
         {showPanel && (
           <Panel title={`Sequence · ${sequence.plan_name ?? plan.name ?? ""}`}
             className={failed && !stoppedByUser ? "!border-bad/60" : ""}
-            right={<SeqStateBadge state={sequence.state} />}>
+            right={<SeqStateBadge state={pausing ? "pausing" : sequence.state} />}>
 
             {/* Failure banner — decoupled from progress so an early (pre-first-frame)
                 failure still shows a clear, human reason.
@@ -546,6 +720,26 @@ export default function SequenceView() {
               );
             })()}
 
+            {/* The half of the pause the engine cannot report. Same shape as the
+                polar view's stopping notice — a warn-bordered block, role=alert,
+                with the one instruction that matters said in words, because the
+                person reading this is deciding whether to touch the scope. */}
+            {pausing && (
+              <div className="flex items-start gap-2 border border-warn/50 bg-warn/5 px-3 py-2 mb-3"
+                role="alert">
+                <Icon name="pause" size={16} className="mt-0.5 shrink-0 text-warn" />
+                <p className="text-xs text-ink/90 leading-snug min-w-0">
+                  Pausing — this frame still has{" "}
+                  <span className="mono tabular-nums">{fmtCountdown(shutterRemainingS!)}</span>{" "}
+                  of shutter left, and the run does not stop until it lands.{" "}
+                  <strong className="font-medium">Keep lights off and hands off the
+                  scope</strong> until this reads PAUSED.
+                  {/* Only offered to someone who has the button. */}
+                  {canRun && " Abort ends it now."}
+                </p>
+              </div>
+            )}
+
             {/* Runtime autorun-schedule chip (wave-3 §2/§4) — pure render of the
                 engine's sequence.schedule block; absent entirely when the engine
                 hasn't attached one (e.g. no windowed target is active). */}
@@ -578,22 +772,43 @@ export default function SequenceView() {
             <div className="flex flex-wrap gap-2 mt-3">
               {!canRun && running && <ReadOnlyBadge />}
               {canRun && sequence.state === "running" && (
-                <button className="btn tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
+                <button className="btn tap min-h-[44px]" disabled={aborting}
+                  onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
               )}
-              {canRun && sequence.state === "paused" && (
-                <button className="btn btn-accent tap min-h-[44px]" onClick={() => act(() => api.post("/api/sequence/resume"))}>Resume</button>
+              {canRun && sequence.state === "paused" && !aborting && (
+                // While PAUSING the pause has not taken effect, so this button
+                // does not resume anything — it CANCELS the pause and the run
+                // never stops. Saying "Resume" there would have claimed a
+                // transition that never happened.
+                <button className="btn btn-accent tap min-h-[44px]" disabled={resuming}
+                  title={pausing
+                    ? "The pause hasn't taken effect yet — this keeps the run going"
+                    : undefined}
+                  onClick={() => resumeRun("/api/sequence/resume")}>
+                  {resuming ? "Resuming…" : pausing ? "Cancel pause" : "Resume"}
+                </button>
               )}
               {canRun && running && (
                 // Abort stops an unattended multi-hour run — non-urgent destructive,
                 // so it's a hold-to-confirm (spec §1c). Motion stops (STOP/Halt) stay
                 // single-tap; Abort is not a motion stop.
-                <HoldButton label="Abort sequence" onConfirm={() => act(() => api.post("/api/sequence/abort"))}>
+                <HoldButton label="Abort sequence" disabled={aborting}
+                  onConfirm={() => { void abortSequence(); }}>
                   {(bind) => (
                     <button
                       type="button"
-                      className="btn btn-danger tap min-h-[44px] relative overflow-hidden select-none"
+                      className={`btn btn-danger tap min-h-[44px] relative overflow-hidden select-none
+                        ${aborting ? "opacity-60" : ""}`}
                       style={{ touchAction: "none" }}
-                      aria-label={bind["aria-label"]}
+                      // Hard-disabled, not merely relabelled: HoldButton's own
+                      // `disabled` has already made the handlers inert, and a
+                      // button that looks pressable while it is not is the exact
+                      // dishonesty this row is being fixed for.
+                      disabled={aborting}
+                      aria-label={aborting
+                        ? "Aborting the sequence — stopping the run and parking"
+                        : bind["aria-label"]}
+                      aria-busy={aborting || undefined}
                       onPointerDown={bind.onPointerDown}
                       onPointerUp={bind.onPointerUp}
                       onPointerCancel={bind.onPointerUp}
@@ -611,10 +826,18 @@ export default function SequenceView() {
                       />
                       {/* Persistent hold affordance (r1 backlog): a tap-and-release with
                           nothing visibly happening got filed as a Blocker by an external
-                          reviewer — "Abort" alone never said this needs a HOLD. */}
-                      <span className="relative flex flex-col items-center leading-tight">
-                        <span>{bind.armed ? bind.hintLabel : "Abort"}</span>
-                        {!bind.armed && (
+                          reviewer — "Abort" alone never said this needs a HOLD.
+                          Once it IS aborting, the hint would invite a second hold on a
+                          teardown that takes tens of seconds — so the button reports
+                          instead, and reports what is slow about it. */}
+                      <span className="relative flex flex-col items-center leading-tight"
+                        aria-live="polite">
+                        <span>{aborting ? "Aborting…" : bind.armed ? bind.hintLabel : "Abort"}</span>
+                        {aborting ? (
+                          <span className="text-[9px] tracking-wider normal-case opacity-75">
+                            stopping the run and parking
+                          </span>
+                        ) : !bind.armed && (
                           <span className="text-[9px] tracking-wider normal-case opacity-75">hold to confirm</span>
                         )}
                       </span>
@@ -629,10 +852,14 @@ export default function SequenceView() {
                       an hour of clear sky and only one of them was prominent.
                       Both are always present; only the emphasis moves. */}
                   {canRun && resumable && recoverable && (
-                    <button className="btn btn-accent tap min-h-[44px]" onClick={() =>
-                      act(async () => { await api.post("/api/sequence/recover"); setRecoverable(null); })}>
-                      <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
-                      Resume from frame {recoverable.frames_done}/{recoverable.frames_total}
+                    <button className="btn btn-accent tap min-h-[44px]" disabled={resuming}
+                      onClick={() => resumeRun("/api/sequence/recover")}>
+                      {resuming ? "Resuming…" : (
+                        <>
+                          <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
+                          Resume from frame {recoverable.frames_done}/{recoverable.frames_total}
+                        </>
+                      )}
                     </button>
                   )}
                   {canRun && (
@@ -730,12 +957,56 @@ export default function SequenceView() {
                   wraps to its own line at the panel's left padding, and matched
                   on `.panel` rather than a child-index chain so it survives the
                   shared component gaining a wrapper. */}
-              <div className="[&_.panel]:!absolute md:[&_.panel]:!left-auto md:[&_.panel]:!right-0">
+              {/* A native `fieldset[disabled]` is the lock, not a class: it
+                  takes the input AND every result button out of service for
+                  pointer, touch and KEYBOARD in one attribute the browser
+                  enforces. `pointer-events-none` would have left Tab+Enter live,
+                  and CatalogSearch is the search Atlas uses too — it has no
+                  `disabled` prop, and forking it so two views could disagree
+                  about what "search" means is worse than wrapping it. The margin/
+                  padding/border reset keeps the fieldset from changing the layout
+                  it now wraps; `min-w-0` cancels the default min-width:min-content
+                  that would otherwise floor this header's width. */}
+              <fieldset
+                disabled={running}
+                title={running
+                  ? `Adding targets is locked while “${runningPlanName}” runs`
+                  : undefined}
+                className="m-0 p-0 border-0 min-w-0 disabled:opacity-40
+                  [&_.panel]:!absolute md:[&_.panel]:!left-auto md:[&_.panel]:!right-0">
                 <CatalogSearch onPick={addTarget} placeholder="+ add target — e.g. M 31" />
-              </div>
+              </fieldset>
             </div>
           }>
-          {plan.targets.length === 0 && (
+          {/* WHAT THE LOCK IS AND WHERE IT ENDS. During a run every card goes
+              half-live: + step, delete, apply-to-all and the starter templates
+              grey out, while the exposure/gain/count fields beside them stay
+              typeable — and nothing on screen said why, or what the still-live
+              half now affects. It is one rule, said once, at the top of the
+              region it governs (the same channel the Run button's LockedNote
+              uses): the server is executing the COPY it took at Run, so
+              structure cannot change and field edits belong to the next run.
+              EVERY CLAUSE IS ENFORCED — a note that describes a lock the code
+              does not keep is worse than no note, because it is what the user
+              believes instead of looking. The first draft failed that twice: it
+              said targets "can't be added" while the catalog search in this
+              panel's own header happily added them, and said "the fields below
+              stay editable" while SchedulePanel was disabled={running}.
+              "on this page" is load-bearing, not hedging: Atlas's Send to Plan
+              (AtlasView, HonestButton `sendLock`) deliberately stays live during
+              a run and carries its own warning that the engine snapshotted its
+              plan at Run, so an unqualified "targets can't be added" would be
+              false the moment someone frames a panel next door. */}
+          {running && (
+            <LockedNote className="!items-start mb-3"
+              reason={`Plan structure is locked while “${runningPlanName}” runs — the server is `
+                + `executing the copy it took at Run, so nothing on this page adds or removes a `
+                + `target, a step or a template, the catalog search is off, and per-target `
+                + `scheduling is frozen. Edits to what is still live — frame type, filter, `
+                + `exposure, gain, binning, count and the per-target toggles — apply to your `
+                + `next run, not this one.`} />
+          )}
+          {plan.targets.length === 0 && !running && (
             <p className="text-dim text-xs py-6 text-center tracking-widest uppercase">
               empty plan — search the catalog above to add targets
             </p>
