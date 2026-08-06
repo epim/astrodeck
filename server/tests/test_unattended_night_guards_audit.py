@@ -487,23 +487,21 @@ async def test_configured_deadman_url_is_actually_pinged():
 # 6. safety.enabled with no monitor
 # ============================================================================
 
-async def test_safety_gate_is_fail_OPEN_when_no_monitor_device_exists(
+async def test_armed_safety_with_no_monitor_says_so_once_per_run(
         sim_hub, monkeypatch):
-    """GAP, and the dangerous one. ``_safety_gate`` fetches
-    ``hub.devices.get("safety")`` and, when it is ``None``, skips the entire
-    monitor branch — no reading, no verdict, no ``_on_unsafe``.
+    """WAS THE DANGEROUS GAP, closed 2026-08-06. ``_safety_gate`` hung its whole
+    monitor branch off ``mon is not None``, so an absent monitor meant no
+    reading, no verdict, no ``_on_unsafe`` — ``safety.enabled: true`` +
+    ``on_unsafe: "pause"`` silently permitted everything, which is exactly this
+    rig's config. A monitor that EXISTS and is disconnected fails CLOSED (next
+    test). Absent and disconnected are the same situation to an operator and
+    were opposite situations to this code.
 
-    ``safety.enabled: true`` + ``on_unsafe: "pause"`` therefore permits
-    everything on a rig with no monitor assigned, which is precisely the rig's
-    state (``/api/safety/state`` -> ``connected: false, reading: null``). The
-    Settings screen shows an armed safety system; the engine has no input.
-
-    Contrast the next test: a monitor that EXISTS and is disconnected fails
-    CLOSED. Absent and disconnected are the same situation to an operator and
-    opposite situations to this code.
-
-    Delete this test when an armed-but-sourceless safety config is refused or
-    surfaced."""
+    The default stays permissive on purpose — the shipped default arms safety on
+    a rig with no monitor, so failing closed would refuse to image out of the
+    box — but it is now SAID rather than silently permitted. Once per run: it is
+    a configuration fact, not an event, and repeating it every frame boundary
+    would bury the night's real warnings."""
     engine = SequenceEngine(sim_hub)
     engine._cfg = AppConfig(safety=SafetyConfig(enabled=True, on_unsafe="pause",
                                                 unsafe_consecutive=3,
@@ -515,11 +513,41 @@ async def test_safety_gate_is_fail_OPEN_when_no_monitor_device_exists(
     sim_hub._safety_reading = None
     assert sim_hub.safety is None, "precondition: no monitor, as on the rig"
 
+    logged = capture_logs(monkeypatch)
     published = capture_safety_publishes(sim_hub, monkeypatch)
-    await asyncio.wait_for(engine._safety_gate(context="frame"), timeout=5)
+    for _ in range(3):
+        await asyncio.wait_for(engine._safety_gate(context="frame"), timeout=5)
 
-    assert published == [], "armed safety with no source raises nothing"
+    said = [m for lvl, m, src in logged
+            if src == "safety" and "no monitor is assigned" in m]
+    assert len(said) == 1, f"said {len(said)} times across 3 frames: {logged}"
+    assert "watching the weather" in said[0]
+    # still permissive by default — this is a report, not an enforcement
+    assert published == []
     assert engine.paused is False
+
+
+async def test_require_safety_monitor_makes_an_absent_monitor_fail_closed(
+        sim_hub, monkeypatch):
+    """The opt-in an unattended night wants: with
+    ``escalation.require_safety_monitor`` on, an ABSENT monitor drives
+    ``on_unsafe`` exactly like a disconnected one, which is what an operator
+    reading "safety: enabled, on unsafe: abort" already believes happens."""
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(
+        safety=SafetyConfig(enabled=True, on_unsafe="abort_park_warm",
+                            unsafe_consecutive=1, min_alt_deg=0.0),
+        escalation=EscalationConfig(require_safety_monitor=True))
+    engine.plan = light_plan()
+
+    sim_hub.devices.pop("safety", None)
+    sim_hub._safety_reading = None
+
+    published = capture_safety_publishes(sim_hub, monkeypatch)
+    with pytest.raises(SafetyAbort, match="no safety monitor is assigned"):
+        await asyncio.wait_for(engine._safety_gate(context="frame"), timeout=5)
+    assert published and published[0]["is_safe"] is False
+    assert published[0]["stale"] is True
 
 
 async def test_safety_gate_fails_CLOSED_when_the_monitor_is_present_but_down(
@@ -579,18 +607,18 @@ def _preflight_plan() -> dict:
                                     "filter": "L"}]}]}
 
 
-def test_preflight_reports_READY_with_safety_armed_and_no_monitor(api_client):
-    """GAP, at the other end of the same wire. POST ``/api/sequence/preflight``
-    is the go/no-go screen, and its safety check is guarded by
-    ``mon is not None and connected`` — so an armed-but-sourceless rig gets a
-    clean, unqualified green.
+def test_preflight_warns_when_safety_is_armed_with_no_monitor(api_client):
+    """WAS A GAP at the other end of the same wire, closed 2026-08-06. POST
+    ``/api/sequence/preflight`` is the go/no-go screen and its safety check was
+    guarded by ``mon is not None and connected``, so an armed-but-sourceless rig
+    got a clean, unqualified green. The route's own docstring says a go/no-go
+    screen that omits the go/no-go input is worse than no screen, and an absent
+    monitor omits it as completely as an ignored one.
 
-    The route's own docstring says a go/no-go screen that omits the go/no-go
-    input is worse than no screen. An absent monitor omits it just as
-    completely as an ignored one.
-
-    Delete this test when preflight says something about safety being armed with
-    nothing behind it."""
+    It now warns. NON-blocking by default (same reasoning as the engine gate:
+    the shipped default arms safety on a rig with no monitor), so ``blocked``
+    stays False and no existing client changes behaviour — but the screen no
+    longer claims a guard the run does not have."""
     c, store = api_client
     store.set_site(Site(name="Test", latitude=45.0, longitude=-122.0,
                         is_default=False))
@@ -602,8 +630,12 @@ def test_preflight_reports_READY_with_safety_armed_and_no_monitor(api_client):
     assert r.json()["connected"] is False, "precondition: no monitor, as on the rig"
 
     body = c.post("/api/sequence/preflight", json=_preflight_plan()).json()
+    src = [w for w in body["warnings"] if w["kind"] == "no_safety_source"]
+    assert len(src) == 1, body
+    assert "no safety monitor is assigned" in src[0]["message"]
+    assert src[0]["blocking"] is False, "reported, not imposed, by default"
     assert body["blocked"] is False
-    assert [w for w in body["warnings"] if w["kind"] == "unsafe"] == [], body
+    assert body["ok"] is False, "a clean green is the thing being fixed"
 
 
 def test_preflight_DOES_block_when_a_monitor_reports_unsafe(api_client):
@@ -632,13 +664,17 @@ def test_preflight_DOES_block_when_a_monitor_reports_unsafe(api_client):
 
 
 async def test_a_whole_run_completes_with_safety_armed_and_no_monitor(
-        sim_hub, temp_store):
-    """End-to-end shape of the gap: the rig's exact safety config, no monitor,
-    and the plan runs to completion with every frame taken.
+        sim_hub, temp_store, monkeypatch):
+    """End-to-end: the rig's exact safety config, no monitor, and the plan still
+    runs to completion with every frame taken — deliberately, because a weather
+    monitor is not part of a working rig and the shipped default arms safety
+    without one.
 
-    A safety system that is armed with no source and silently permits everything
-    is worse than one that is off, because the Settings screen reads as
-    protection."""
+    What changed 2026-08-06 is that the run no longer does it SILENTLY. The
+    completion is the same; the night's log now carries the sentence saying
+    nothing watched the weather. A safety system armed with no source that
+    silently permits everything is worse than one that is off, because the
+    Settings screen reads as protection."""
     temp_store.set_safety(SafetyConfig(enabled=True, on_unsafe="pause",
                                        unsafe_consecutive=3, min_alt_deg=0.0))
     temp_store.set_escalation(EscalationConfig())      # all rig defaults (warn)
@@ -646,8 +682,14 @@ async def test_a_whole_run_completes_with_safety_armed_and_no_monitor(
     sim_hub._safety_reading = None
     assert sim_hub.safety is None, "precondition: no monitor, as on the rig"
 
+    logged = capture_logs(monkeypatch)
+
     engine = SequenceEngine(sim_hub)
     engine.start(light_plan())
     assert await wait_for(lambda: not engine.running, timeout=20), engine.state
     assert engine.state.get("state") == "complete"
     assert engine._frames_done == 3
+    said = [m for lvl, m, src in logged
+            if src == "safety" and "no monitor is assigned" in m]
+    assert len(said) == 1, (
+        "the run completes, but exactly once it says nothing was watching")
