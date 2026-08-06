@@ -194,6 +194,17 @@ class PlayerOneAdapter(CameraAdapter):
     def set_dew_heater(self, power: int) -> None:
         self._sdk.set_config(self._cam_id, POA_HEATER_POWER, int(power))
 
+    def get_dew_heater(self) -> int | None:
+        # POA_HEATER_POWER reads back through POAGetConfig's c_long path (it is
+        # not in _FLOAT_CONFIGS), so the CAMERA is the source of truth for the
+        # level -- including across a server restart, the one case no client can
+        # cover on its own. Firmware that refuses the read answers
+        # CONF_CANNOT_READ, which the bindings raise: that is unknown, not 0.
+        try:
+            return int(self._sdk.get_config(self._cam_id, POA_HEATER_POWER))
+        except Exception:  # noqa: BLE001
+            return None
+
 
 try:
     registry.register_adapter("player-one", PlayerOneAdapter)

@@ -100,6 +100,15 @@ class CameraAdapter(ABC):
     def set_dew_heater(self, power: int) -> None:
         raise DeviceError("camera has no dew heater")
 
+    def get_dew_heater(self) -> int | None:
+        """The heater's current level (0-100%), or None when this brand's SDK
+        has no readable heater register.
+
+        None is UNKNOWN, never OFF — see Camera.get_dew_heater for the bug that
+        distinction exists to prevent. Returns rather than raises for the same
+        reason get_temperature does: it is polled."""
+        return None
+
     def applied_roi(self) -> "ROI | None":
         """The geometry the sensor ACTUALLY applied for the exposure in flight,
         in the same unbinned-pixel units as the request, or None when this brand

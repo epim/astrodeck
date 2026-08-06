@@ -67,6 +67,7 @@ from ..locations import (LocationLibraryFull, LocationNameCollision,
 from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
+from ..dawn_park import DawnPark
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
@@ -128,6 +129,14 @@ resume_arm = ResumeArm(engine, hub, weather=weather_service)
 # AlertDispatcher's wall-clock loop: that loop drives the external dead-man's
 # switch, and a directory walk that stalls it would fire a false "rig is down".
 trash_keeper = gallery_module.TrashKeeper()
+
+# Dawn park (backlog K / task #139). EVERY other park lives inside the sequence
+# engine's run lifecycle, so a night that ended without a run — which is what a
+# failed session looks like — left the mount tracking through sunrise with
+# nothing scheduled to stop it. Needs the engine as well as the hub: its first
+# question is whether a run is in progress, because the engine owns wind-down
+# then and racing it is worse than not acting.
+dawn_park = DawnPark(hub, engine)
 
 def _resolve_ui_dist() -> Path:
     """Where the built SPA lives, across every way AstroDeck is shipped.
@@ -313,6 +322,11 @@ async def _lifespan(app: "FastAPI"):
     # so a box that reboots daily still reaches the 30-day horizon. A no-op (one
     # `is_dir()`) until something has actually been deleted.
     trash_keeper.start()
+    # Dawn park — its own 60 s asyncio loop, the safety net under a night that
+    # ends with no sequence to wind it down. Started UNCONDITIONALLY: every tick
+    # re-reads the site and the Sun, so it costs one trig evaluation on a rig
+    # that never needs it and is armed the moment one does.
+    dawn_park.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -367,6 +381,7 @@ async def _lifespan(app: "FastAPI"):
         await weather_service.stop()
         await resume_arm.stop()
         await trash_keeper.stop()
+        await dawn_park.stop()
         await dispatcher.stop()
         task.cancel()
         try:
@@ -409,6 +424,102 @@ async def _lifespan(app: "FastAPI"):
             pass
 
 
+#: Lanes that must not overlap even though they carry DIFFERENT names.
+#:
+#: ``_spawn``'s one-task-per-name rule serializes a lane against itself, which is
+#: all most operations need. The roof is the exception: a close PARKS THE MOUNT
+#: first, so it is mount motion wearing another name. That is why the close was
+#: spawned as ``goto`` — one lane, one mount, correct by construction — and why
+#: the Settings "Close roof now" button then went dead during every unrelated
+#: slew and explained itself with somebody else's operation.
+#:
+#: Splitting the lane keeps the exclusion rather than inheriting it. The mapping
+#: reads ``key supersedes values``, and BOTH directions come from it (see
+#: ``_lane_conflict``) so the halves of one interlock cannot drift apart:
+#:   * closing the roof CANCELS an in-flight slew. A close is a safety action,
+#:     and the route has already bumped the motion fence — leaving the fenced
+#:     goto's task alive is the exact shape of the bug park was fixed for.
+#:   * a slew is REFUSED while the roof lane is live. This is the half that
+#:     would have been lost by simply renaming the lane: the close parks the
+#:     mount and then travels a shutter over it, and an unpark+slew accepted in
+#:     that window is how a tube meets a roof. ``close_observatory`` re-confirms
+#:     parked before it moves the shutter, but nothing downstream can stop a
+#:     slew that starts AFTER the roof is shut.
+#:
+#: WHAT THIS REACHES, exactly, so the sentence above is not read as wider than
+#: the guard: every route that spawns into the ``goto`` lane (goto, park, home)
+#: plus ``/api/mount/unpark``, which calls ``_refuse_if_lane_blocked`` directly
+#: because it never spawns — and unpark is the choke point, since a parked mount
+#: refuses axis motion at the driver. NOT reached: ``/api/mount/stop`` (never
+#: refused, on purpose — an emergency stop must work during a close) and the
+#: sequence engine's own slews, which do not go through ``_spawn`` at all. The
+#: engine case is pre-existing and unchanged by the split: a manual close during
+#: a run has always been able to race the run's slews, which is why the close
+#: bumps the motion fence.
+_LANE_SUPERSEDES: dict[str, tuple[str, ...]] = {"dome": ("goto",)}
+
+#: What to tell the operator when the reverse direction refuses, per superseding
+#: lane. A 409 reading "'goto' is already running" about a ROOF would send
+#: somebody hunting for a slew nobody started.
+_LANE_BLOCK_REASON: dict[str, str] = {
+    "dome": "the roof is closing — the mount was parked so the shutter could "
+            "travel over it, and moving it now is how a tube meets a roof",
+}
+
+
+def _lane_conflict(name: str) -> str | None:
+    """The live lane that forbids starting ``name`` right now, or None.
+
+    DERIVED from ``_LANE_SUPERSEDES`` rather than written out a second time, so
+    the refuse direction can never disagree with the supersede direction."""
+    for winner, losers in _LANE_SUPERSEDES.items():
+        if name in losers:
+            t = hub._busy.get(winner)
+            if t is not None and not t.done():
+                return winner
+    return None
+
+
+def _lane_409(detail: str, *, code: str, lane: str, **extra) -> HTTPException:
+    """A 409 a CLIENT can act on, not just print.
+
+    These refusals were bare-string details, so ``ApiError.code`` came back
+    undefined and the UI had to match a naked 409 — indistinguishable from every
+    other conflict a route can raise. The human sentence is UNCHANGED and still
+    lands at ``detail.detail`` (the nested shape ``lib/apiError.ts`` already
+    parses, and which this file uses for name_collision / version_too_new /
+    sun_exclusion), so nothing that read the message before reads anything
+    different now; the code and lane are additive."""
+    return HTTPException(409, detail={"detail": detail, "code": code,
+                                      "lane": lane, **extra})
+
+
+def _discard(coro) -> None:
+    """Close a coroutine we are refusing to run, so a 409 does not ALSO emit
+    "coroutine ... was never awaited" into the log of a rig that did nothing
+    wrong."""
+    close = getattr(coro, "close", None)
+    if callable(close):
+        close()
+
+
+def _refuse_if_lane_blocked(name: str) -> None:
+    """Raise the cross-lane 409 for ``name``, or return.
+
+    Split out of ``_spawn`` so a route that has SIDE EFFECTS TO PERFORM FIRST
+    can take the refusal before it performs them. ``/api/mount/park`` and
+    ``/api/mount/home`` bump the motion fence before spawning, and park's own
+    docstring names bump-then-409 as a past bug: the fence bump abandons an
+    in-flight motion, so a refusal after it leaves the rig with the sabotage and
+    without the park. Calling this first means a park refused because the roof
+    is closing changes nothing at all."""
+    blocker = _lane_conflict(name)
+    if blocker is not None:
+        raise _lane_409(_LANE_BLOCK_REASON.get(
+            blocker, f"'{blocker}' is running and '{name}' cannot run with it"),
+            code="lane_blocked", lane=name, blocked_by=blocker)
+
+
 def _spawn(name: str, coro, *, replace: bool = False) -> dict:
     """Run a long operation as a named background task (one per name).
 
@@ -416,11 +527,29 @@ def _spawn(name: str, coro, *, replace: bool = False) -> dict:
     by park, which is a motion-committing ABORT that must supersede an in-flight
     goto rather than be rejected by it. The cancelled goto unwinds (its slew abort
     + motion-fence bump already fenced it), releasing ``_motion_lock`` before the
-    replacement acquires it, so the two never touch the mount at once."""
+    replacement acquires it, so the two never touch the mount at once.
+
+    Cross-lane exclusion (``_LANE_SUPERSEDES``) is applied FIRST, in both
+    directions: a lane that supersedes another cancels it here, and a lane held
+    off by a live superseding lane is refused here — before anything is spawned,
+    so the refusal costs the rig nothing. Routes that act before they spawn call
+    ``_refuse_if_lane_blocked`` themselves, earlier; this is the backstop for
+    every route that does not."""
+    try:
+        _refuse_if_lane_blocked(name)
+    except HTTPException:
+        _discard(coro)
+        raise
+    for loser in _LANE_SUPERSEDES.get(name, ()):
+        t = hub._busy.get(loser)
+        if t is not None and not t.done():
+            t.cancel()
     existing = hub._busy.get(name)
     if existing and not existing.done():
         if not replace:
-            raise HTTPException(409, f"'{name}' is already running")
+            _discard(coro)
+            raise _lane_409(f"'{name}' is already running",
+                            code="lane_busy", lane=name)
         existing.cancel()
 
     async def wrapped():
@@ -452,12 +581,35 @@ def _spawn_connect(coro) -> dict:
     exhibits for a non-empty rig, where the connect happens AFTER the teardown).
     So we keep it out of ``_busy`` entirely and guard concurrency with a
     dedicated module handle. It still shares the ``profile`` lane intent: a
-    pending connect blocks another connect/apply from stomping it."""
+    pending connect blocks another connect/apply from stomping it.
+
+    THE MISSING LANE IS DELIBERATE, and it must stay missing. ``busy_lanes()``
+    is built from ``hub._busy`` alone, so publishing a "profile" lane means
+    putting a task in ``_busy`` — and ``_busy`` is not a display list, it is the
+    CANCEL LIST ``hub._teardown`` walks. Two things follow, and only the first
+    of them has been defused:
+      1. the self-cancel this function exists for. ``_teardown`` now skips
+         ``asyncio.current_task()`` (hub.py:1001), so the driver would survive
+         its own teardown — but that is defence-in-depth around a hazard, not a
+         licence to re-enter it;
+      2. ``_teardown`` ends with ``self._busy.clear()``. The lane would
+         therefore VANISH the moment the teardown finished — i.e. at the start
+         of the slow part, the reconnect — and a control gated on it would
+         unlock itself mid-connect. That is worse than no lane: it is a lane
+         that lies. Nothing app.py can do fixes it, because the clear happens
+         inside the hub.
+    So the connect stays out, and the client reads the RESULT instead (the
+    active-profile pointer, which ``connect_rigspec`` sets only on success —
+    see ProfileList's poll). ``test_busy_lanes_routes.py`` pins both halves.
+    """
     global _connect_task
-    if _connect_task is not None and not _connect_task.done():
-        raise HTTPException(409, "'profile' is already running")
-    if (t := hub._busy.get("profile")) and not t.done():
-        raise HTTPException(409, "'profile' is already running")
+    busy = _connect_task is not None and not _connect_task.done()
+    if not busy and (t := hub._busy.get("profile")) and not t.done():
+        busy = True
+    if busy:
+        _discard(coro)
+        raise _lane_409("'profile' is already running",
+                        code="lane_busy", lane="profile")
 
     async def wrapped():
         try:
@@ -3661,7 +3813,10 @@ def create_app() -> FastAPI:
         # every other device-touching motion path). replace=True CANCELS a prior
         # goto/center rather than 409-ing after the epoch bump already sabotaged it
         # (the old code bumped the fence and then _spawn 409'd, so the mount kept
-        # slewing to the wrong target and never parked).
+        # slewing to the wrong target and never parked). The cross-lane refusal
+        # is taken BEFORE the bump for that same reason — see
+        # _refuse_if_lane_blocked.
+        _refuse_if_lane_blocked("goto")
         hub.bump_motion_epoch()
 
         async def _park():
@@ -3703,6 +3858,7 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=400,
                 detail=f"{getattr(tel, 'name', 'this mount')} has no home position")
+        _refuse_if_lane_blocked("goto")     # before the bump; see park
         hub.bump_motion_epoch()
 
         async def _home():
@@ -3715,6 +3871,14 @@ def create_app() -> FastAPI:
     @app.post("/api/mount/unpark", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"Telescope.unpark"})
     async def unpark():
+        # Held off by a closing roof, on the SAME table as goto/park/home.
+        # ``/api/dome/close``'s docstring justifies its interlock with "an
+        # unpark+slew accepted in that window is how a tube meets a roof", and
+        # the unpark half was not actually covered: this route never goes
+        # through ``_spawn``, so nothing consulted the lane. Unpark is the choke
+        # point — a parked mount refuses axis motion at the driver — so guarding
+        # it is what makes that sentence true rather than aspirational.
+        _refuse_if_lane_blocked("goto")
         try:
             tel = hub.require("telescope")
             await tel.unpark()
@@ -3751,7 +3915,16 @@ def create_app() -> FastAPI:
         """Manual park-and-close: a motion-committing action (it moves the mount),
         so it reuses CAP_CONTROL_MOUNT (D4). Fence in-flight gotos, park under the
         motion lock, THEN close via the tested ordering guard (close_observatory),
-        which re-confirms parked and REFUSES rather than crush the mount."""
+        which re-confirms parked and REFUSES rather than crush the mount.
+
+        Runs in its OWN "dome" lane. It used to run in "goto" — which was not
+        laziness, it is genuinely mount motion — but that made the roof invisible
+        as a roof: `busy_lanes` reported a slew, so "Close roof now" was dead
+        during every unrelated goto and its disabled reason described somebody
+        else's operation. The exclusion that made "goto" correct is preserved by
+        `_LANE_SUPERSEDES` (see it): the close still cancels an in-flight slew,
+        and a slew POSTed while the roof is travelling is now refused with a
+        reason about the roof."""
         dome = hub.devices.get("dome")
         if dome is None or not getattr(dome, "connected", False):
             raise _err(DeviceError("no dome connected"))
@@ -3765,7 +3938,10 @@ def create_app() -> FastAPI:
                     await tel.park()
                 from ..sequence.roof import close_observatory
                 return await close_observatory(dome, tel, log=bus.log)
-        return _spawn("goto", _run(), replace=True)
+        # replace=True is UNCHANGED behaviour for a second close arriving while
+        # one is in flight (it supersedes it), just now against the dome lane
+        # rather than the mount's.
+        return _spawn("dome", _run(), replace=True)
 
     # -------------------------------------------------------------- focuser
 
@@ -4519,19 +4695,51 @@ def create_app() -> FastAPI:
 
     # -------------------------------------------------------------- polar align
 
+    def _publish_polar_lane() -> None:
+        """Put the polar session's OWN task in ``hub._busy`` under "polar".
+
+        ``busy_lanes()`` — the list every control reads to answer "is MY
+        operation still running" — is built from ``_busy``, and ``_busy`` is
+        populated only by ``_spawn``. A polar session does not go through
+        ``_spawn``: it owns its task so ``pause``/``resume``/``stop`` can drive
+        it. So ``useBusy("polar")`` was false for the whole of a five-minute
+        alignment, and PolarView had to infer liveness from the event stream
+        (see its comment) — which cannot distinguish "still running" from "the
+        socket dropped forty minutes ago".
+
+        The SESSION'S REAL TASK is registered, not a wrapper around it, because
+        that is what makes the lane mean something: it ends exactly when the
+        driver ends, including when the driver is cancelled out from under us.
+
+        Safe against ``_busy``'s other reader, ``hub._teardown``, which cancels
+        everything in the map: it already awaits ``polar.stop()`` (hub.py:980)
+        BEFORE that sweep, so the task is finished by the time the sweep reaches
+        it and the cancel is a no-op. This is NOT the ``_spawn_connect`` hazard —
+        a polar session never tears the rig down, so it can never be the task
+        cancelling itself."""
+        task = getattr(hub.polar, "_task", None)
+        if task is not None:
+            hub._busy["polar"] = task
+
     @app.post("/api/polar/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"PolarSession.start"})
     async def polar_start():
         try:
             await hub.polar.start()
         except RuntimeError as e:
-            raise HTTPException(409, str(e))
+            raise _lane_409(str(e), code="lane_busy", lane="polar")
+        _publish_polar_lane()
         return {"started": True, "source": hub.polar.state["source"]}
 
     @app.post("/api/polar/stop", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT)
     async def polar_stop():
         await hub.polar.stop()
+        # Drop the finished task rather than leave it as a done entry: nothing
+        # reads it (``_live_lanes`` filters done tasks) but ``_teardown`` would
+        # cancel it, and a map that only ever grows is how a stale lane
+        # eventually gets published by a future reader that forgets to filter.
+        hub._busy.pop("polar", None)
         return {"ok": True}
 
     @app.post("/api/polar/pause", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
