@@ -158,6 +158,48 @@ async def test_the_cap_boundary_is_the_documented_constant():
                                 _Hub())
 
 
+# ------------------------------------------- the arc is projected forward in time
+
+async def test_the_arc_is_projected_where_the_sky_WILL_be_not_where_it_is():
+    """The arc is not instantaneous: two slews plus two expose/solve cycles.
+
+    For a WESTERN arc the sidereal clock pushes hour angle the same way the step
+    does, so checking all three altitudes at "now" is optimistic exactly where
+    the guard matters. This proves the projection actually advances time rather
+    than passing a decorative argument: with the per-leg cost inflated to an
+    hour, a geometry that is comfortably legal right now must be refused.
+    """
+    from astrodeck.polar.native import _refuse_low_arc
+
+    hub = _Hub()
+    # A western start (positive HA) high enough to pass instantly, and a Dec low
+    # enough that an hour of extra sky rotation matters.
+    ra = _ra_at_hour_angle(2.0, _LON)
+    result = type("R", (), {"ra_hours": ra, "dec_deg": 5.0})()
+    step = _ra_step_hours(hub, ra)
+    assert step < 0, "precondition: a western start must step west"
+
+    # PRECONDITION: legal as measured right now, so the refusal below can only
+    # come from the time advance.
+    _refuse_low_arc(hub, result, step)
+
+    import astrodeck.polar.native as nat
+    original = nat._ARC_LEG_SECONDS
+    try:
+        nat._ARC_LEG_SECONDS = 3600.0
+        with pytest.raises(DeviceError) as e:
+            _refuse_low_arc(hub, result, step)
+    finally:
+        nat._ARC_LEG_SECONDS = original
+    assert "too low" in str(e.value).lower(), str(e.value)
+
+
+async def test_the_leg_estimate_is_the_documented_constant():
+    """Pinned because it came from measured rig timings, not a guess."""
+    from astrodeck.polar.native import _ARC_LEG_SECONDS
+    assert _ARC_LEG_SECONDS == 45.0
+
+
 async def test_the_southern_hemisphere_axis_is_inverted_correctly():
     """error_det flips the altitude sign below the equator (alt_err = pole -
     axis_alt). Reading it with the northern formula would refuse a good southern
