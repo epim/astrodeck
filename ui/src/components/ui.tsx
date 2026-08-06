@@ -247,10 +247,16 @@ export function Stepper({
    - setPointerCapture on pointerdown so finger drift / glove jitter does not
      cancel; release before 100% cancels.
    - Fill overlay (--danger-ink) is the non-color progress signal.
-   - Persistent "HOLD TO …" affordance via render-prop bind.hintLabel.
+   - Persistent "HOLD TO …" affordance via render-prop bind.hintLabel; while the
+     keyboard two-step is armed the SAME slot switches to "PRESS AGAIN TO …",
+     because at that point "HOLD TO ABORT" is instructing the user to do the one
+     thing the keyboard path ignores (`e.repeat`).
    - navigator.vibrate(30) on fire.
-   - Honest keyboard two-step: Enter/Space arms (label -> "PRESS … AGAIN",
-     aria-live assertive); second press within 3s confirms; Escape disarms. */
+   - Honest keyboard two-step: Enter/Space arms (hintLabel -> "PRESS AGAIN TO …",
+     aria-live assertive); second press within 3s confirms; Escape disarms.
+   - A hold must be WITNESSED, not inferred from two clock readings: unwatched
+     time buys no progress (HOLD_MAX_FRAME_CREDIT_MS) and the tab going away
+     cancels the hold outright. Nothing here fires without a finger on glass. */
 
 export type HoldBind = {
   onPointerDown: (e: RPointerEvent) => void;
@@ -259,9 +265,20 @@ export type HoldBind = {
   onKeyUp: (e: RKeyboardEvent) => void;
   progress: number;   // 0..1 fill
   armed: boolean;     // pointer-holding OR keyboard-armed
-  hintLabel: string;  // persistent "HOLD TO …"
+  hintLabel: string;  // "HOLD TO …", or "PRESS AGAIN TO …" while kb-armed
   "aria-label": string;
 };
+
+/** Most credit one animation frame can add to a hold. The progress used to be
+ *  `now - start`, which measures the CLOCK, not a finger: rAF does not run at
+ *  all while the tab is hidden, and a GC pause or a heavy re-render can starve
+ *  it for the better part of a second — after which the first frame back sees
+ *  `now - start >= holdMs` and fires a confirm nobody held through. Capping the
+ *  per-frame credit means unwatched time buys nothing, while a stall on a slow
+ *  tablet only makes the hold take a little longer (it must never CANCEL a
+ *  legitimate hold either — that would be its own broken promise). ~4 frames at
+ *  60Hz, so ordinary jank costs nothing. */
+const HOLD_MAX_FRAME_CREDIT_MS = 70;
 
 export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, children }: {
   onConfirm: () => void;
@@ -274,11 +291,19 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
   const [holding, setHolding] = useState(false);
   const [kbArmed, setKbArmed] = useState(false);
   const raf = useRef<number | null>(null);
-  const start = useRef(0);
+  /** ms of hold we have actually WATCHED elapse (see HOLD_MAX_FRAME_CREDIT_MS). */
+  const held = useRef(0);
+  const lastTick = useRef(0);
   const fired = useRef(false);
   const kbTimer = useRef<number | null>(null);
 
-  const hintLabel = `HOLD TO ${label.toUpperCase()}`;
+  // The persistent affordance has to describe the gesture the control is
+  // actually waiting for. Armed by keyboard it is waiting for a SECOND PRESS —
+  // telling that user to "HOLD TO ABORT" sends them into the one input the
+  // handler drops (`e.repeat`), after which the caption silently reverts.
+  const hintLabel = kbArmed
+    ? `PRESS AGAIN TO ${label.toUpperCase()}`
+    : `HOLD TO ${label.toUpperCase()}`;
 
   const fire = () => {
     if (fired.current) return;
@@ -292,7 +317,10 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
   };
 
   const tick = () => {
-    const p = Math.min(1, (performance.now() - start.current) / holdMs);
+    const now = performance.now();
+    held.current += Math.min(now - lastTick.current, HOLD_MAX_FRAME_CREDIT_MS);
+    lastTick.current = now;
+    const p = Math.min(1, held.current / holdMs);
     setProgress(p);
     if (p >= 1) { stopRaf(); setHolding(false); fire(); setProgress(0); return; }
     raf.current = requestAnimationFrame(tick);
@@ -301,7 +329,8 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
   const beginHold = () => {
     if (disabled) return;
     fired.current = false;
-    start.current = performance.now();
+    held.current = 0;
+    lastTick.current = performance.now();
     setHolding(true);
     setProgress(0);
     stopRaf();
@@ -345,6 +374,31 @@ export function HoldButton({ onConfirm, label, holdMs = 700, disabled = false, c
     }
   };
   const onKeyUp = (e: RKeyboardEvent) => { /* keyboard path is two discrete presses, not a hold */ void e; };
+
+  // The hold is bound to a finger that is on the glass NOW. If the tab is
+  // backgrounded, the app switched away from, or the OS steals focus mid-press,
+  // no pointerup or pointercancel is guaranteed to arrive — and the hold would
+  // otherwise sit there and complete itself on the next frame the browser
+  // schedules, firing Abort / "Connect this rig" / a permanent purge with the
+  // screen not even visible. Same guard SlewPad.tsx:173-188 puts on a held slew,
+  // for the same reason. A keyboard arming is dropped too: a two-step confirm
+  // whose first step happened in another context is not a confirmation.
+  useEffect(() => {
+    const cancel = () => {
+      if (raf.current != null) { cancelAnimationFrame(raf.current); raf.current = null; }
+      setHolding(false);
+      setProgress(0);
+      setKbArmed(false);
+      if (kbTimer.current != null) { clearTimeout(kbTimer.current); kbTimer.current = null; }
+    };
+    const onVis = () => { if (document.visibilityState === "hidden") cancel(); };
+    window.addEventListener("blur", cancel);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("blur", cancel);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   useEffect(() => () => { stopRaf(); if (kbTimer.current != null) clearTimeout(kbTimer.current); }, []);
 

@@ -31,7 +31,7 @@
 //    the button and the wire cannot disagree without a bug in one shared
 //    function.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { JSX } from "react";
 import { ApiError } from "../api";
 import { listFrames, listNights, listTrash, trashFrames } from "../api/gallery";
@@ -93,6 +93,14 @@ export default function GalleryView(): JSX.Element {
   /** Bumped to force a re-read after anything mutates the library. */
   const [gen, setGen] = useState(0);
   const refresh = useCallback(() => setGen((g) => g + 1), []);
+  /** Bumped on every listing REQUEST. The effect below has its own `alive`
+   *  flag, but "Load more" is fired from a click and outlives no effect, so it
+   *  needs this: it APPENDS, so a page fetched under the previous filter does
+   *  not merely paint stale tiles, it concatenates them onto the new grid AND
+   *  replaces `page` — the object `total`/`bytes` come from, which the select-
+   *  all count and the download button's stated price are computed from and
+   *  which the .zip href does not share. */
+  const listReq = useRef(0);
 
   // ---- search debounce -----------------------------------------------------
   useEffect(() => {
@@ -104,6 +112,7 @@ export default function GalleryView(): JSX.Element {
   useEffect(() => {
     if (!canBrowse) return;
     let alive = true;
+    listReq.current += 1;
     setLoading(true);
     setErr(null);
     // A changed filter is a changed set, so both selections stop meaning what
@@ -233,12 +242,18 @@ export default function GalleryView(): JSX.Element {
   }
 
   async function onLoadMore(): Promise<void> {
+    // The page this click is asking for belongs to the filter that is on screen
+    // NOW; if that moves while the request is in flight the answer is about a
+    // set nobody is looking at any more (see `listReq`).
+    const req = listReq.current;
     setLoadingMore(true);
     try {
       const p = await listFrames({ q, nightFrom, nightTo, offset: rows.length, limit: PAGE });
+      if (req !== listReq.current) return;
       setRows((r) => [...r, ...p.frames]);
       setPage(p);
     } catch (e) {
+      if (req !== listReq.current) return;
       enqueueToast({
         level: "error",
         title: "Couldn't load more frames",
@@ -559,9 +574,12 @@ export default function GalleryView(): JSX.Element {
                   <button
                     className={`btn ${actionBtn}`}
                     onClick={() => void onLoadMore()}
-                    disabled={loadingMore}
+                    // `loading` too: while a changed filter is being re-read the
+                    // grid still shows the OLD rows, so this button would be
+                    // asking for the next page of a set that is on its way out.
+                    disabled={loadingMore || loading}
                   >
-                    {loadingMore
+                    {loadingMore || loading
                       ? "Loading…"
                       : `Load ${fmtCount(Math.min(PAGE, page.total - rows.length))} more`}
                   </button>

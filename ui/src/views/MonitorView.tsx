@@ -95,6 +95,12 @@ function loadThumbBrightness(night: boolean): number {
   return night ? THUMB_BRIGHTNESS_NIGHT_DEFAULT : 1;
 }
 
+// ---------------------------------------------------------------- pause phase
+/** How long after an exposure ends the frame can still be downloading/saving —
+ *  the window in which "finishing this frame" is still true even though the
+ *  shutter has closed. Only a backstop; `frames_done` advancing is the signal. */
+const FRAME_BANK_GRACE_S = 30;
+
 // ---------------------------------------------------------------- 1s page tick
 // A single coarse ticker for the NON-leaf liveness text ("last frame N ago",
 // STALE chips, stall detection). Leaf countdowns own their own tick; this one
@@ -346,8 +352,57 @@ export default function MonitorView() {
   });
   const stoppedByUser = state === "aborted" && !!endDiag.userInitiated;
 
-  // ----- stall detection (resolves A5; gated to running-only — R3-MON-01) -----
+  // ----- PAUSE IS NOT INSTANT (UX-2026-08-05 #5) -----
+  // `engine.pause()` sets state="paused" the moment the route is called, but the
+  // engine only reads the flag at the top of the frame loop (`_checkpoint`), so
+  // the sub already in flight runs to completion — up to ten minutes of open
+  // shutter under a PAUSED badge, which is the state someone uncaps the scope or
+  // walks back out with a head-torch in. Hold a distinct PAUSING phase from the
+  // instant the pause lands until that frame is banked, and keep the sub-frame
+  // bar up for the whole of it: the bar is the only thing on this screen that
+  // says the shutter is still open.
+  //
+  // The pause POST itself publishes a fresh progress snapshot, so
+  // `server_now_ms - frame_started_at_ms` read at that moment is the frame's
+  // TRUE age even for a client that opened the dashboard mid-sub; the client
+  // clock carries it from there (same anchor idiom as SubFrameBar below).
   const curExp = progress?.current_exposure_s ?? 0;
+  const frameElapsedS =
+    progress?.frame_started_at_ms != null
+      ? Math.max(0, ((progress.server_now_ms ?? progress.frame_started_at_ms)
+          - progress.frame_started_at_ms) / 1000)
+        + Math.max(0, now - etaAnchorRef.current.receivedAtMs) / 1000
+      : null;
+  // Set while a pause is waiting on the frame that was in flight when it landed;
+  // null when the pause was clean (it arrived between frames) or has completed.
+  const pausingRef = useRef<{ framesDone: number; untilMs: number } | null>(null);
+  const wasPausedRef = useRef(paused);
+  if (paused !== wasPausedRef.current) {
+    wasPausedRef.current = paused;
+    const remainS = curExp > 0 && frameElapsedS != null ? curExp - frameElapsedS : 0;
+    pausingRef.current =
+      paused && progress != null && remainS > 0
+        ? {
+            framesDone: progress.frames_done,
+            // frames_done advancing is the real terminal signal. This is only
+            // the backstop for the cases where it never does — a frame the
+            // quality gate rejects in accepted-count mode, or a snapshot lost
+            // with the socket — because a claim about the shutter must not
+            // outlive the evidence for it.
+            untilMs: Date.now() + (remainS + FRAME_BANK_GRACE_S) * 1000,
+          }
+        : null;
+  }
+  const pausing =
+    paused
+    && pausingRef.current != null
+    && progress != null
+    && progress.frames_done === pausingRef.current.framesDone
+    && now < pausingRef.current.untilMs;
+  const pauseFrameRemainingS =
+    pausing && frameElapsedS != null ? Math.max(0, curExp - frameElapsedS) : null;
+
+  // ----- stall detection (resolves A5; gated to running-only — R3-MON-01) -----
   const stallLvl = stallLevel(state, frameAgeS, curExp);
   const stallSoft = stallLvl !== "none";
   const stallHard = stallLvl === "red";
@@ -369,7 +424,12 @@ export default function MonitorView() {
   // failed/timed-out POST there is invisible. Send over a plain fetch (with a 4s
   // timeout), check res.ok, and enqueue a CLIENT-side toast on both outcomes so
   // confirm-to-act is never silent.
-  const sendControl = (label: string, path: string) => {
+  //
+  // `ok` overrides the success copy. "Pause sent" was true about the REQUEST and
+  // false about the rig: the route returns the instant the flag is set, while
+  // the exposure it interrupts keeps running (see the PAUSING phase above), so
+  // the toast said green-and-done over an open shutter.
+  const sendControl = (label: string, path: string, ok?: { title: string; detail?: string }) => {
     const toast = useStore.getState().enqueueToast;
     void (async () => {
       try {
@@ -384,7 +444,7 @@ export default function MonitorView() {
           toast({ level: "error", title: `${label} failed (${res.status})` });
           return;
         }
-        toast({ level: "success", title: `${label} sent` });
+        toast({ level: "success", title: ok?.title ?? `${label} sent`, detail: ok?.detail });
       } catch {
         toast({ level: "error", title: `${label} failed — link may be down` });
       }
@@ -499,7 +559,10 @@ export default function MonitorView() {
         <header className="col-span-full sticky top-0 z-10 panel p-3 sm:p-4 backdrop-blur">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <div className="min-w-0 flex flex-col gap-1">
-              <StateBadge state={state} reducedMotion={reducedMotion} />
+              {/* PAUSING is a phase the wire has no word for — the server says
+                  "paused" from the moment the flag is set. StateBadge only
+                  speaks the server's five states, so the phase renders here. */}
+              {pausing ? <PausingBadge /> : <StateBadge state={state} reducedMotion={reducedMotion} />}
               <div className="flex items-center gap-2 min-w-0 text-xs text-dim">
                 {live && (
                   <span
@@ -541,15 +604,27 @@ export default function MonitorView() {
               </div>
             </div>
 
-            {/* Finish clock = largest header text (>=20px). Hidden unless a run. */}
+            {/* Finish clock = largest header text (>=20px). Hidden unless a run.
+                While PAUSING the finish clock has nothing honest to say (LiveTimer
+                prints "PAUSED"), so the slot carries the number that matters
+                instead: how long until the shutter actually closes. */}
             {(running || paused) && (
               <div className="data-dim">
-                <LiveTimer
-                  etaS={etaAnchorRef.current.etaS}
-                  receivedAtMs={etaAnchorRef.current.receivedAtMs}
-                  confident={progress?.eta_confident}
-                  paused={paused}
-                />
+                {pausing ? (
+                  <div className="flex flex-col items-end leading-tight">
+                    <span className="mono text-[20px] text-warn tabular-nums">
+                      {pauseFrameRemainingS != null ? fmtCountdown(pauseFrameRemainingS) : "—:—"}
+                    </span>
+                    <span className="label !text-[10px]">shutter open — this frame first</span>
+                  </div>
+                ) : (
+                  <LiveTimer
+                    etaS={etaAnchorRef.current.etaS}
+                    receivedAtMs={etaAnchorRef.current.receivedAtMs}
+                    confident={progress?.eta_confident}
+                    paused={paused}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -580,7 +655,11 @@ export default function MonitorView() {
                 <PauseButton
                   paused={paused}
                   disabled={!canRun}
-                  onPause={() => sendControl("Pause", "/api/sequence/pause")}
+                  onPause={() => sendControl("Pause", "/api/sequence/pause", {
+                    title: "Pausing",
+                    detail: "Any exposure already in flight finishes first — "
+                      + "the run stops at the next frame boundary.",
+                  })}
                   onResume={() => sendControl("Resume", "/api/sequence/resume")}
                 />
                 <HoldButton
@@ -687,8 +766,11 @@ export default function MonitorView() {
                       <div className="progress-fill" style={{ width: `${progress.percent}%` }} />
                     </div>
 
-                    {/* sub-frame bar — client-interpolated; freezes+greys on stall */}
-                    {running && curExp > 0 && progress.frame_started_at_ms != null && (
+                    {/* sub-frame bar — client-interpolated; freezes+greys on stall.
+                        Kept up through PAUSING: the frame the pause interrupted is
+                        still being taken, and this bar is the only thing on the
+                        screen that shows it running down. */}
+                    {(running || pausing) && curExp > 0 && progress.frame_started_at_ms != null && (
                       <SubFrameBar
                         startedAtMs={progress.frame_started_at_ms}
                         serverNowMs={progress.server_now_ms}
@@ -950,6 +1032,25 @@ export default function MonitorView() {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------- pausing badge
+/** The badge for the phase the wire has no state for: the run is committed to
+ *  stopping, and the shutter is still open. Same typography as StateBadge — the
+ *  header must not visibly change shape when the phase hands over to PAUSED —
+ *  with the pause glyph and the warn tone, because "not stopped yet" is the
+ *  whole message. */
+function PausingBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-xs font-display font-semibold
+        tracking-[0.2em] uppercase text-warn"
+      role="status"
+    >
+      <Icon name="pause" size={15} />
+      PAUSING
+    </span>
   );
 }
 
