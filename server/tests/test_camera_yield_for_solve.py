@@ -399,6 +399,17 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
 
     monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)
 
+    # Neutralise the low-arc refusal, which is about GEOMETRY and would decide
+    # this test by the wall clock. The sim rig points at its default (roughly
+    # M42), and _refuse_low_arc projects the arc's altitude from the SOLVED
+    # position at the CURRENT time — so the same test passes at 02:00, when M42
+    # is up, and fails at 13:30, when it is 84 degrees under the Earth and the
+    # driver rightly refuses to drive there. Found exactly that way.
+    # The subject here is the ORDERING of the camera yield against the first
+    # mount motion; the guard has its own tests in test_polar_meridian_guard.py
+    # and test_tppa_procedure.py, so removing it here costs no coverage.
+    monkeypatch.setattr(nat, "_refuse_low_arc", lambda hub, result, step: None)
+
     # Stub the FIT as well as the rotation. The real engine rejects three solves
     # that landed on the same sky ("mount did not move between points"), which is
     # how this test stops the run — but it is a Rust wheel that CI's `server` job

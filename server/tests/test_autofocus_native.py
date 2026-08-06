@@ -170,3 +170,157 @@ async def test_a_merely_sparse_field_still_sweeps(monkeypatch):
     finally:
         bus.unsubscribe(q)
     assert res.success, res.message
+
+
+# ------------------------------------------------- the rejected fit's own data
+
+def _drain_logs(q):
+    """All ``log`` events currently queued, oldest first."""
+    out = []
+    while not q.empty():
+        ev = q.get_nowait()
+        if ev.type == "log":
+            out.append(ev.data)
+    return out
+
+
+def test_vcurve_report_carries_every_step_and_the_flat_tip():
+    """``not_enough_spread`` is a one-word verdict on a curve nobody can see.
+    The report has to carry the series it was measured from AND the statistic
+    that rejected it — here the engine's 0.1 flat-tip band, which is what
+    "no spread" actually means (trendline.rs ``fit_star_hfr``)."""
+    from astrodeck.focus.native import vcurve_report
+    points = [(9585, 3.55, 0.05), (9760, 3.57, 0.05), (9935, 3.56, 0.05),
+              (10110, 3.58, 0.05), (10285, 3.60, 0.05)]
+    counts = [42, 51, 60, 55, 47]
+    assert len(points) == len(counts)          # precondition: parallel series
+
+    r = vcurve_report(points, counts)
+
+    for (p, h, _s), n in zip(points, counts):
+        assert f"{p}:{h:.2f}/{n}" in r, r      # every step, positions included
+    assert "span 0.05" in r, r                 # the whole curve is 0.05 tall
+    assert "min at 9585" in r, r
+    # ... which is inside the 0.1 band, so BOTH trendlines are starved. That is
+    # the failure, stated in the engine's own terms.
+    assert "flat tip" in r and "5 of 5" in r, r
+    assert "0 left / 0 right" in r, r
+
+
+def test_vcurve_report_quotes_the_r_squared_gate_it_failed():
+    """``r_squared_below_threshold`` without the R² is unfalsifiable. Quote
+    every fit's number and the gate they were measured against."""
+    from astrodeck.focus.native import (R_SQUARED_THRESHOLD, CURVE_FITTING,
+                                        vcurve_report)
+    # Deliberately not a V: a rising line with a kink, which fits nothing well.
+    points = [(9000, 4.0, 0.1), (9350, 4.9, 0.1), (9700, 4.2, 0.1),
+              (10050, 5.6, 0.1), (10400, 4.4, 0.1), (10750, 6.1, 0.1)]
+    r = vcurve_report(points, [30] * len(points))
+
+    assert "R²" in r, r
+    assert CURVE_FITTING in r, r
+    assert f"{R_SQUARED_THRESHOLD:.2f}" in r, r
+    # a real number for the gated fit, not a placeholder
+    import re
+    m = re.search(rf"{CURVE_FITTING} (\d\.\d+)", r)
+    assert m, r
+    assert 0.0 <= float(m.group(1)) <= 1.0, r
+
+
+def test_vcurve_report_never_replaces_the_failure_it_describes(monkeypatch):
+    """This only ever runs while recording a failure that already happened, so
+    a fit that will not compute must degrade to a note, never to an exception."""
+    import astrodeck.focus.native as N
+
+    def _boom(*a, **kw):
+        raise ValueError("not enough points")
+    monkeypatch.setattr(N._native, "fit_focus_curve", _boom)
+
+    r = N.vcurve_report([(9000, 4.0, 0.1)], [12])
+    assert "9000:4.00/12" in r, r
+    assert "R² unavailable" in r and "not enough points" in r, r
+    # and the empty case is a sentence, not an IndexError
+    assert N.vcurve_report([], []) == "V-curve: no measurable points"
+
+
+async def test_a_flat_sweep_logs_the_series_that_failed(monkeypatch):
+    """END TO END, the thing the rig could not do: a sweep that fails the fit
+    must leave its own per-step data in the log.
+
+    Twelve of thirteen autofocus attempts on the real rig failed with a
+    one-word reason and "V-curve" appeared ZERO times in the entire log
+    history, so every diagnosis needed a repeat run on the sky to observe."""
+    import astrodeck.focus.native as N
+    _rig, cam, foc = await _connected_sim()
+    # A metric that reads the same at every position: no spread, by
+    # construction, which is the failure family being instrumented.
+    monkeypatch.setattr(N, "native_sweep_metric", lambda data: (5.0, 50))
+
+    q = bus.subscribe()
+    try:
+        res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                           step=350, steps_each_side=4,
+                                           binning=1)
+        logs = _drain_logs(q)
+    finally:
+        bus.unsubscribe(q)
+
+    assert res.success is False
+    assert res.message == "not_enough_spread", res.message
+    vlines = [l for l in logs if l["message"].startswith("V-curve")]
+    assert len(vlines) == 1, [l["message"] for l in logs]
+    line = vlines[0]
+    assert line["level"] == "warning" and line["source"] == "focus"
+    # every position it measured, with its size and star count
+    assert res.points, "precondition: the sweep measured nothing"
+    for pos, _hfr in res.points:
+        assert f"{pos}:5.00/50" in line["message"], line["message"]
+    assert "flat tip" in line["message"], line["message"]
+
+
+async def test_a_runaway_sweep_publishes_points_the_chart_can_read(monkeypatch):
+    """The leash abort published raw ``(position, hfr, sigma)`` TUPLES while
+    every other exit publishes ``{position, hfr, sigma}`` dicts, and the UI's
+    VCurve reads ``p.position``/``p.hfr`` off them
+    (ui/src/components/graphs.tsx) — so the one failure whose entire story is
+    the shape of the curve was the one that drew an empty chart."""
+    import astrodeck.focus.native as N
+    _rig, cam, foc = await _connected_sim()
+
+    class _RunawaySweep:
+        """One honest point, then a step far outside the requested window."""
+        def __init__(self, config, start_position):
+            self.start = int(start_position)
+            self.n = 0
+
+        def next(self):
+            self.n += 1
+            if self.n == 1:
+                return {"action": "move_to", "position": self.start}
+            return {"action": "move_to", "position": self.start - 1_000_000}
+
+        def add_measurement(self, *a, **kw):
+            pass
+
+    monkeypatch.setattr(N._native, "FocusSweep", _RunawaySweep)
+
+    q = bus.subscribe()
+    try:
+        res = await N.run_native_autofocus(cam, foc, exposure_s=0.05, gain=200,
+                                           step=350, steps_each_side=4,
+                                           binning=1)
+        events = _drain_focus(q)
+    finally:
+        bus.unsubscribe(q)
+
+    assert res.success is False
+    assert "outside the window" in res.message, res.message
+    assert res.points, "precondition: nothing measured, so nothing to publish"
+    # the result's contract: (position, hfr), same as every other exit
+    assert all(len(p) == 2 for p in res.points), res.points
+    failed = [e for e in events if e.get("state") == "failed"]
+    assert failed, events
+    pts = failed[-1]["points"]
+    assert pts, "precondition: the failed event published no points"
+    assert all(isinstance(p, dict) and "position" in p and "hfr" in p
+               for p in pts), pts

@@ -61,7 +61,8 @@ class FakeEafSdk:
     raisables, and a call log."""
 
     def __init__(self, *, count=1, name="EAF", max_step=60000, position=18128,
-                 moving_seq=None, temp=11.5, firmware_="3.3.8", raise_on=None):
+                 moving_seq=None, temp=11.5, firmware_="3.3.8", raise_on=None,
+                 refuse_moves=0):
         self._count = count
         self._name, self._max = name, max_step
         self.position = position
@@ -69,6 +70,10 @@ class FakeEafSdk:
         self.temp = temp
         self._fw = firmware_
         self.raise_on = dict(raise_on or {})   # method -> ZwoSdkError
+        #: How many EAFMove calls to refuse with MOVING (code 5) before
+        #: accepting one — what the real SDK does while the motor is running.
+        self._refuse_moves = int(refuse_moves)
+        self.refusals = 0
         self.calls: list[str] = []
 
     def _log(self, m):
@@ -87,7 +92,12 @@ class FakeEafSdk:
     def get_property(self, d):
         self._log("get_property"); return self._name, self._max
     def move(self, d, step):
-        self._log("move"); self.target = step
+        self._log("move")
+        if self._refuse_moves > 0:
+            self._refuse_moves -= 1
+            self.refusals += 1
+            raise ZwoSdkError(zu.MOVING_ERROR_CODE, "EAFMove")
+        self.target = step
     def stop(self, d):
         self._log("stop"); self.moving_seq = []
     def is_moving(self, d):
@@ -101,6 +111,8 @@ class FakeEafSdk:
         return False, False
     def get_position(self, d):
         self._log("get_position"); return self.position
+    def reset_position(self, d, step):
+        self._log("reset_position"); self.position = step
     def get_temp(self, d):
         self._log("get_temp"); return self.temp
     def firmware(self, d):
@@ -180,6 +192,151 @@ async def test_eaf_sdk_error_surfaces_named():
     await f.connect()
     with pytest.raises(DeviceError, match="EAFMove"):
         await f.move_to(20000)
+
+
+# ------------------------------------------- EAFMove (MOVING, code 5), 2026-07-29
+
+class BusyEafSdk(FakeEafSdk):
+    """The EAF as it really behaves: EAFMove is REFUSED with MOVING while the
+    motor is running, and the motor runs for ``travel_polls`` EAFIsMoving polls
+    after each accepted move.
+
+    The scripted ``moving_seq`` double above cannot show this defect, because
+    its ``move`` accepts unconditionally — which is exactly why the driver went
+    to the rig believing overlapping moves were fine and came back with five
+    ``EAFMove failed (MOVING, code 5)`` errors in one night."""
+
+    def __init__(self, *, travel_polls=3, **kw):
+        super().__init__(**kw)
+        self._travel = int(travel_polls)
+        self._remaining = 0
+
+    def move(self, d, step):
+        self._log("move")
+        if self._remaining > 0:
+            self.refusals += 1
+            raise ZwoSdkError(zu.MOVING_ERROR_CODE, "EAFMove")
+        self.target = step
+        self._remaining = self._travel
+
+    def is_moving(self, d):
+        self._log("is_moving")
+        if self._remaining > 0:
+            self._remaining -= 1
+            if self._remaining == 0:          # motion completed on this poll
+                self.position = getattr(self, "target", self.position)
+            return True, False
+        return False, False
+
+    def stop(self, d):
+        self._log("stop"); self._remaining = 0
+
+
+async def test_two_overlapping_moves_are_queued_not_collided():
+    """THE 2026-07-29 defect. Two moves in flight at once — a sweep step and the
+    restore that follows it, or a sequence and the UI's Go button — used to put
+    the second EAFMove on the wire while the motor was still running, and the
+    SDK refused it outright.
+
+    The proof is that the DEVICE never had to refuse anything: serialising is
+    not the same as retrying until it sticks."""
+    sdk = BusyEafSdk(travel_polls=3)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+
+    first = asyncio.create_task(f.move_to(20000))
+    await asyncio.sleep(0)                    # let the first claim the device
+    second = asyncio.create_task(f.move_to(25000))
+    await asyncio.gather(first, second)
+
+    assert sdk.refusals == 0, "a move was issued into another move"
+    assert sdk.calls.count("move") == 2, "one EAFMove per move_to, no retries"
+    assert await f.get_position() == 25000    # and they ran in order
+
+
+async def test_a_move_refused_as_moving_waits_and_goes_out():
+    """Motion this driver did NOT issue — the hand controller, or the tail of a
+    halt we just sent — still meets an EAFMove that the SDK refuses. Wait it out
+    and send the move, rather than failing the whole sweep on it."""
+    sdk = FakeEafSdk(refuse_moves=2, moving_seq=[True, False])
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+
+    await f.move_to(20000)
+
+    assert sdk.refusals == 2
+    assert sdk.calls.count("move") == 3, "refused twice, accepted on the third"
+    assert await f.get_position() == 20000
+
+
+async def test_a_move_refused_forever_names_the_real_cause(monkeypatch):
+    """"EAFMove failed (MOVING, code 5)" tells the owner nothing they can act
+    on. When the wait runs out, say what is actually true: the focuser is being
+    driven by something that is not AstroDeck."""
+    monkeypatch.setattr(zu, "MOVE_BUSY_TIMEOUT_S", 0.05)
+    sdk = FakeEafSdk(refuse_moves=10_000)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+
+    with pytest.raises(DeviceError) as e:
+        await f.move_to(20000)
+
+    msg = str(e.value)
+    assert "20000" in msg, msg                       # which move was refused
+    assert "already moving" in msg, msg
+    assert "hand controller" in msg, msg             # the real cause, named
+    assert "code 5" not in msg, msg                  # not the SDK's own words
+    assert sdk.refusals > 1, "gave up without retrying"
+    # And it does NOT halt. The module's rule is that a WAITING move halts on
+    # any abnormal exit — this move never started, and the motion it collided
+    # with belongs to whoever is holding the hand controller. Stopping their
+    # move because ours was refused is a side effect nobody asked for.
+    assert "stop" not in sdk.calls, sdk.calls
+
+
+async def test_a_queued_move_that_never_gets_its_turn_says_so(monkeypatch):
+    """A queue that can wait forever is a sequence that hangs forever. The
+    timeout names the move it was stuck behind, not just the clock."""
+    monkeypatch.setattr(zu, "MOVE_QUEUE_TIMEOUT_S", 0.05)
+    sdk = FakeEafSdk(moving_seq=[True] * 10_000)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+
+    stuck = asyncio.create_task(f.move_to(30000))
+    await asyncio.sleep(0.02)
+    try:
+        with pytest.raises(DeviceError) as e:
+            await f.move_to(31000)
+        assert "30000" in str(e.value), str(e.value)   # what it waited behind
+        assert "31000" in str(e.value), str(e.value)   # what never went out
+        assert "never sent" in str(e.value), str(e.value)
+    finally:
+        stuck.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stuck
+
+
+async def test_setting_the_position_reference_is_refused_while_a_move_is_queued():
+    """``is_moving()`` cannot see a move that has been commanded but whose motor
+    has not engaged, so it is the wrong guard on its own — re-anchoring in that
+    window writes a reference for a position the drawtube is about to leave.
+    The queue knows, so ask the queue."""
+    sdk = BusyEafSdk(travel_polls=4)
+    f = zu.EafFocuser(sdk, 10)
+    await f.connect()
+
+    moving = asyncio.create_task(f.move_to(20000))
+    await asyncio.sleep(0)
+    try:
+        with pytest.raises(DeviceError) as e:
+            await f.set_position_reference(500)
+        assert "20000" in str(e.value), str(e.value)
+        assert "reset_position" not in sdk.calls
+    finally:
+        await moving
+    # and once the queue is clear it works
+    await f.set_position_reference(500)
+    assert await f.get_position() == 500
 
 
 async def test_eaf_temp_none_on_error():

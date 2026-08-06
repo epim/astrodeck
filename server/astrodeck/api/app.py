@@ -68,6 +68,7 @@ from .. import __version__
 from ..update.state import update_state
 from ..update.service import UpdateError, get_service as get_update_service
 from ..dawn_park import DawnPark
+from ..sun_watch import SunWatch
 from ..devices import alpaca as alpaca_backend
 from ..devices.base import DeviceError, TRACKING_RATES
 from ..devices.nina import discover_nina
@@ -137,6 +138,13 @@ trash_keeper = gallery_module.TrashKeeper()
 # question is whether a run is in progress, because the engine owns wind-down
 # then and racing it is worse than not acting.
 dawn_park = DawnPark(hub, engine)
+
+# Sun watch (task #150). The complement to ``Hub._check_solar``, which is a
+# PRE-SLEW gate and can only ever refuse a destination: this one samples where
+# the tube IS against where the Sun is going to be, so the Sun arriving at a
+# stationary tube is noticed rather than discovered in the morning. Takes the
+# engine for the same reason dawn park does — a live run owns its own aborts.
+sun_watch = SunWatch(hub, engine)
 
 def _resolve_ui_dist() -> Path:
     """Where the built SPA lives, across every way AstroDeck is shipped.
@@ -327,6 +335,12 @@ async def _lifespan(app: "FastAPI"):
     # re-reads the site and the Sun, so it costs one trig evaluation on a rig
     # that never needs it and is armed the moment one does.
     dawn_park.start()
+    # Sun watch — its own 60 s asyncio loop, the net under a tube the Sun is
+    # coming TO rather than one being slewed at it. Started UNCONDITIONALLY for
+    # the same reason: a tick with the mount disconnected or the sky elsewhere
+    # costs one device read and a handful of trig, and it is armed the moment a
+    # mount is connected and left somewhere.
+    sun_watch.start()
     # W3 scope-side relay dial-out (OPT-IN). Launches ONLY when
     # ``RemoteConfig.enabled`` and a ``relay_url`` are set, so the default config
     # does NOTHING (LAN-only is byte-for-byte today). ISOLATED: the client's run
@@ -382,6 +396,7 @@ async def _lifespan(app: "FastAPI"):
         await resume_arm.stop()
         await trash_keeper.stop()
         await dawn_park.stop()
+        await sun_watch.stop()
         await dispatcher.stop()
         task.cancel()
         try:
