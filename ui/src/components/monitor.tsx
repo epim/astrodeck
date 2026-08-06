@@ -208,6 +208,7 @@ export function HoldButton({
             onPointerCancel={bind.onPointerUp}
             onKeyDown={bind.onKeyDown}
             onKeyUp={bind.onKeyUp}
+                  onBlur={bind.onBlur}
             disabled={disabled}
             className={`relative overflow-hidden inline-flex flex-col items-center justify-center
               min-h-[48px] min-w-[88px] px-4 select-none touch-none
