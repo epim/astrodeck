@@ -5,11 +5,13 @@
 // ported from SkyCanvas (drag-pan, native non-passive wheel trap, keyboard).
 // Night mode: the tile layer gets filter var(--img-filter) directly, exactly
 // as survey imagery is dimmed (index.css:115). Broken tiles hide themselves
-// (B thumb-fallback idiom), but a per-layer health badge (loading… / updated
-// Nm ago / tiles unavailable) always surfaces the current state — a blank
-// layer must never read as clear sky (R2-WEA-04), and a healthy layer must
-// stay visible too, so a later silent failure isn't indistinguishable from
-// healthy-and-quiet (R3-MON-03). Controls are word-labeled — never hue alone.
+// (B thumb-fallback idiom), but a per-layer health badge (no observing site /
+// loading… / fetched Nm ago / tiles unavailable) always surfaces the current
+// state — a blank layer must never read as clear sky (R2-WEA-04), a healthy
+// layer must stay visible too so a later silent failure isn't
+// indistinguishable from healthy-and-quiet (R3-MON-03), and a map with nothing
+// to centre on must say THAT rather than "loading…" forever. Controls are
+// word-labeled — never hue alone.
 //
 // Site fix source (2026-07-17 decisions wave I2): useSite() (status/config)
 // is view.site_precise-gated and comes back WITHOUT latitude/longitude for an
@@ -26,7 +28,7 @@ import type {
   PointerEvent as RPointerEvent,
 } from "react";
 import { useSite, useStore, useWeather } from "../../store";
-import { Panel, Stepper } from "../ui";
+import { LockedChip, Panel, Stepper } from "../ui";
 import { Icon } from "../icons";
 import { u } from "../../lib/base";
 import { fmtDuration } from "../../lib/eta";
@@ -77,7 +79,21 @@ export default function RadarMap() {
   const [layer, setLayer] = useState<Layer>("radar");
   const [zoom, setZoom] = useState(7);
   const [center, setCenter] = useState<{ lat: number; lon: number } | null>(null);
-  const [bust, setBust] = useState(() => Math.floor(Date.now() / (RADAR_TTL_S * 1000)));
+  // The tile URLs' cache-buster AND the instant this imagery was asked for.
+  //
+  // It used to be a 240 s BUCKET INDEX, which made `refresh` a no-op for up to
+  // four minutes at a time: inside one bucket the recomputed value was
+  // identical, so every tile's `key` and `src` were unchanged, React never
+  // remounted an <img>, and no `onLoad` fired — while the `setTileStatus({})`
+  // beside it had just thrown away the health of a map that was already
+  // painted. The badge then sat on "loading…" over correct imagery until
+  // something else moved. A refresh has to CHANGE this, so it is a plain
+  // timestamp; the TTL drives a timer below instead of a bucket.
+  const [bust, setBust] = useState(() => Date.now());
+  // A slow tick, purely so the freshness readout counts up. It is derived from
+  // `bust`, and nothing else here re-renders on a schedule — without this the
+  // badge would freeze at whatever it read when the last pan or zoom happened.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [width, setWidth] = useState(0);
   // Per-tile-id health (R2-WEA-04): "ok" once the <img> fires onLoad, "broken"
   // once it fires onError. Ids embed layer/zoom/x/y/bust so a layer switch,
@@ -86,11 +102,6 @@ export default function RadarMap() {
   // switch/refresh below to keep the map bounded during a long pan session.
   const [tileStatus, setTileStatus] = useState<Record<string, "ok" | "broken">>({});
   const boxRef = useRef<HTMLDivElement>(null);
-  // Positive-health timestamp (R3-MON-03): when the tile-health badge last
-  // recovered to "ok", so the badge can read "updated Nm ago" while healthy
-  // instead of disappearing — see the derivation below for why.
-  const prevTileHealthRef = useRef<"loading" | "unavailable" | "ok" | null>(null);
-  const paintedAtRef = useRef<number | null>(null);
 
   // Center defaults to the site; the recenter button returns to it (spec §11).
   useEffect(() => {
@@ -98,6 +109,19 @@ export default function RadarMap() {
       setCenter({ lat: siteLat, lon: siteLon });
     }
   }, [center, siteLat, siteLon]);
+
+  // Roll the buster on the server's radar TTL, so a panel left open all night
+  // keeps showing current imagery. Radar that is silently an hour stale looks
+  // exactly like radar that is current, and this panel is consulted to decide
+  // whether a cell is going to reach the site.
+  useEffect(() => {
+    const t = setInterval(() => setBust((b) => Math.max(Date.now(), b + 1)), RADAR_TTL_S * 1000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
 
   // Track the rendered width (mosaic cells are fluid).
   useEffect(() => {
@@ -245,6 +269,11 @@ export default function RadarMap() {
   // never silently read as clear sky. Recomputed from the live viewport ids,
   // so panning/zooming/switching layers into fresh tiles goes back to
   // "loading…" until they resolve, rather than carrying a stale "ok".
+  //
+  // "no site" is a fourth state, not a flavour of loading: with no coordinates
+  // there is no centre, no tile is ever requested, and the panel used to sit at
+  // "loading…" over an empty box forever, next to a bare-disabled `recenter`.
+  // Nothing was loading. Nothing was going to.
   let okCount = 0;
   let brokenCount = 0;
   for (const t of tiles) {
@@ -252,29 +281,24 @@ export default function RadarMap() {
     if (st === "ok") okCount++;
     else if (st === "broken") brokenCount++;
   }
-  const tileHealth: "loading" | "unavailable" | "ok" =
-    tiles.length === 0 ? "ok"
+  const noSite = siteLat === null || siteLon === null;
+  const tileHealth: "no-site" | "loading" | "unavailable" | "ok" =
+    noSite ? "no-site"
+      : tiles.length === 0 ? "loading"
       : brokenCount === tiles.length ? "unavailable"
       : okCount === 0 ? "loading"
       : "ok";
 
-  // Timestamp of the last transition INTO "ok" (R3-MON-03): the badge must
-  // stay visible even when healthy, so "loading…"/"tiles unavailable" alone
-  // isn't enough — a later silent failure needs a positive "updated Nm ago"
-  // baseline to go quiet FROM. We anchor on the last recovery into "ok"
-  // rather than the raw `bust` tick because `bust` only rolls on the TTL/
-  // refresh click, not on a layer switch or an actual confirmed paint — this
-  // is the simplest signal that's still truthful about when the operator's
-  // current view was last confirmed loaded. The vacuous tiles.length===0
-  // "ok" (no viewport yet) is excluded so it can't stamp a false paint time.
-  // Mutated during render, same idiom as lastHfrId/lastEtaSentinel in
-  // MonitorView — a plain transition detector, not a state derivation.
-  if (tiles.length > 0) {
-    if (tileHealth === "ok" && prevTileHealthRef.current !== "ok") {
-      paintedAtRef.current = Date.now();
-    }
-    prevTileHealthRef.current = tileHealth;
-  }
+  // Freshness is stamped at FETCH time (`bust`), not at paint time. It used to
+  // be the instant the health flag last recovered into "ok" — which is a fact
+  // about this component's state machine, not about the weather: a layer switch
+  // or a pan restamped it, so imagery four minutes old could read "updated 2s
+  // ago". `bust` is when these exact tile URLs were requested, which is the
+  // closest thing to the imagery's age that the client can actually know (the
+  // server holds each tile for RADAR_TTL_S on top, and IEM's radar is ~5 min
+  // behind — the caption below says so). The badge stays visible while healthy
+  // on purpose (R3-MON-03): a later silent failure needs a positive baseline to
+  // go quiet from.
 
   // ---- overlay projection (px within the box) ----
   const toPx = (lat: number, lon: number): { x: number; y: number } | null => {
@@ -331,25 +355,38 @@ export default function RadarMap() {
             type="button"
             className="btn !py-0.5 text-[11px]"
             onClick={() => {
-              setBust(Math.floor(Date.now() / (RADAR_TTL_S * 1000)));
+              // `b + 1` is the floor, not a nicety: two taps inside one
+              // millisecond would otherwise produce the same URLs, which is the
+              // small version of the bucket bug this replaced.
+              setBust((b) => Math.max(Date.now(), b + 1));
               setTileStatus({});
             }}
           >
             <Icon name="refresh" size={11} className="inline mr-1" />
             refresh
           </button>
-          <button
-            type="button"
-            className="btn !py-0.5 text-[11px]"
-            disabled={siteLat === null}
-            onClick={() => {
-              if (siteLat !== null && siteLon !== null) {
-                setCenter({ lat: siteLat, lon: siteLon });
-              }
-            }}
-          >
-            recenter
-          </button>
+          {/* Bare `disabled` said only "no" — house rule §11.8 wants the reason
+              on the control, and LockedChip is where the app puts it. */}
+          {noSite ? (
+            <LockedChip
+              reason="There is nothing to centre on: this rig has no observing site saved. An admin can set the coordinates under Settings → Observing Site."
+              className="btn !py-0.5 text-[11px]"
+            >
+              recenter
+            </LockedChip>
+          ) : (
+            <button
+              type="button"
+              className="btn !py-0.5 text-[11px]"
+              onClick={() => {
+                if (siteLat !== null && siteLon !== null) {
+                  setCenter({ lat: siteLat, lon: siteLon });
+                }
+              }}
+            >
+              recenter
+            </button>
+          )}
           {/* Visible zoom control (R2-WEA-05) — same clampZoom(3-11) the wheel
               handler uses below, so keyboard/touch users get an affordance
               equal to the mouse-wheel gesture, not just a hidden one. */}
@@ -407,14 +444,32 @@ export default function RadarMap() {
               quiet from — R3-MON-03). */}
           <div
             className={`absolute top-2 right-2 px-2 py-0.5 text-[11px] mono border pointer-events-none
-              ${tileHealth === "unavailable" ? "text-warn bg-black/60 border-warn/50" : "text-dim bg-black/60 border-line2"}`}
+              ${tileHealth === "unavailable" || tileHealth === "no-site"
+                ? "text-warn bg-black/60 border-warn/50"
+                : "text-dim bg-black/60 border-line2"}`}
           >
-            {tileHealth === "unavailable"
-              ? "tiles unavailable"
-              : tileHealth === "ok" && paintedAtRef.current != null
-                ? `updated ${fmtDuration((Date.now() - paintedAtRef.current) / 1000)} ago`
-                : "loading…"}
+            {tileHealth === "no-site"
+              ? "no observing site"
+              : tileHealth === "unavailable"
+                ? "tiles unavailable"
+                : tileHealth === "ok"
+                  ? `fetched ${fmtDuration((nowMs - bust) / 1000)} ago`
+                  : "loading…"}
           </div>
+
+          {/* The map is centred on the scope; with no coordinates there is
+              nothing to centre on and nothing to fetch, so say that in the
+              empty box rather than leaving a black rectangle under a badge. */}
+          {noSite && (
+            <div className="absolute inset-0 flex items-center justify-center p-4">
+              <p className="text-[11px] text-dim text-center max-w-[36ch] leading-snug">
+                The radar centres on the observing site, and this rig has no
+                coordinates saved yet. An admin can set them under
+                Settings → Observing Site; until then there is nothing to
+                centre the map on.
+              </p>
+            </div>
+          )}
 
           {/* scope location + orientation overlay (spec §11) */}
           <svg

@@ -428,9 +428,18 @@ export function PreviewStage(props: Props) {
 
   const starsAvailable = !!preview?.star_list && preview.star_list.length > 0;
   const tiltAvailable = !!preview?.tilt;
+  // A selected star belongs to ONE exposure: its HFR describes that frame and
+  // its ring is drawn from that frame's star_list. Carried across a frame swap
+  // it became a chip quoting a star that is no longer on screen, with no ring
+  // under it and no way to get rid of it. So: drop the selection when the frame
+  // does, and never show the readout outside the overlay that produced it —
+  // turning Stars off now also clears it, which is the dismiss path the chip
+  // never had. (Re-tapping the same ring still toggles it off — StarOverlay.)
+  useEffect(() => { setSelectedStar(null); }, [preview?.id]);
+  const starChip = overlays.stars && starsAvailable ? selectedStar : null;
   // bottom-left chip stack: selected-star readout, then the tilt verdict, then the
   // per-sub SNR chip — each one lifts the next by a row so they never overlap.
-  const chipRows = (selectedStar ? 1 : 0) + (overlays.tilt && tiltAvailable ? 1 : 0);
+  const chipRows = (starChip ? 1 : 0) + (overlays.tilt && tiltAvailable ? 1 : 0);
   const snrChipPos = chipRows >= 2 ? "bottom-20" : chipRows === 1 ? "bottom-11" : "bottom-2";
 
   // The loupe is sized from the MEASURED stage, not a viewport media query — the
@@ -660,9 +669,18 @@ export function PreviewStage(props: Props) {
 
           The scope explanation is a `Tooltip`, not a raw `title=`: title never
           fires on touch, and a tablet at the scope is the primary field device,
-          so on the device that matters most the nuance simply did not exist. */}
+          so on the device that matters most the nuance simply did not exist.
+
+          `data-no-pan` on the WRAPPER, here and on every other tappable chip
+          below, is what makes that tooltip reachable. The gesture layer listens
+          for pointerdown natively on the stage element, so a tap on a chip
+          bubbled into it and counted towards the double-tap accelerator: asking
+          a chip what it meant zoomed the preview to 100% instead of answering.
+          usePreviewGestures already skips a press inside [data-no-pan] —
+          StarOverlay marks its rings that way — and every chip the user is
+          invited to touch needs the same mark, not just the stars. */}
       {clipActive && (
-        <div className={`absolute top-2 left-2 ${preview.bayer_pattern ? "mt-14" : ""}`}>
+        <div data-no-pan className={`absolute top-2 left-2 ${preview.bayer_pattern ? "mt-14" : ""}`}>
           <Tooltip
             content={
               clipCropPixels
@@ -701,10 +719,10 @@ export function PreviewStage(props: Props) {
       })()}
 
       {/* selected star readout */}
-      {selectedStar && (
+      {starChip && (
         <div className="absolute bottom-2 left-2 preview-chip mono" aria-live="polite">
-          HFR {selectedStar.hfr.toFixed(2)} px
-          {preview.pixel_scale_arcsec != null && ` · ${(selectedStar.hfr * preview.pixel_scale_arcsec).toFixed(2)}″`}
+          HFR {starChip.hfr.toFixed(2)} px
+          {preview.pixel_scale_arcsec != null && ` · ${(starChip.hfr * preview.pixel_scale_arcsec).toFixed(2)}″`}
         </div>
       )}
 
@@ -719,9 +737,9 @@ export function PreviewStage(props: Props) {
       {overlays.tilt && tiltAvailable && (() => {
         const s = tiltSummary(preview.tilt!);
         const tint = s.tone === "good" ? "!text-good" : s.tone === "warn" ? "!text-warn" : "!text-bad";
-        const pos = selectedStar ? "bottom-11" : "bottom-2";
+        const pos = starChip ? "bottom-11" : "bottom-2";
         return (
-          <div className={`absolute ${pos} left-2`}>
+          <div data-no-pan className={`absolute ${pos} left-2`}>
             <Tooltip content={s.advice}>
               <span className={`preview-chip flex items-center gap-1 ${tint}`}>
                 Field: {s.label}
@@ -736,6 +754,7 @@ export function PreviewStage(props: Props) {
           no trusted star flux — zero novice clutter, never a fabricated number.
           Width-capped so it wraps instead of sliding under the loupe. */}
       <div
+        data-no-pan
         className={`absolute ${snrChipPos} left-2`}
         style={{ maxWidth: `calc(100% - ${chipReserve}px)` }}
       >
@@ -771,7 +790,7 @@ export function PreviewStage(props: Props) {
           just pressed must never silently do nothing (§11.8) — Icon + WORD, with
           the full reason on a tap/hover/focus path. */}
       {loupeOn && linearEnabled && !compact && loupeBox === 0 && (
-        <div className="absolute bottom-2 right-2">
+        <div data-no-pan className="absolute bottom-2 right-2">
           <Tooltip content="A 1:1 view needs about 320 px of preview width to show enough sensor pixels to judge focus. Rotate the device, or open the preview in a wider panel.">
             <span className="preview-chip flex items-center gap-1">
               <Icon name="lock" size={11} /> Magnifier hidden
@@ -788,7 +807,7 @@ export function PreviewStage(props: Props) {
           they never were, and an instrument that lies about a lie is worse than
           no instrument. `dimsMismatch` implies curDims, but TS wants it named. */}
       {dimsMismatch && curDims && (
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2">
+        <div data-no-pan className="absolute bottom-2 left-1/2 -translate-x-1/2">
           <Tooltip
             content={`Frame #${preview.id} was published as ${metaW}×${metaH} display pixels; the bytes served for it decode as ${curDims.w}×${curDims.h}. The picture, the star marks, the reticle and the scale bar are all drawn from the measured size, so they agree with each other. What cannot be checked here is whether these bytes are frame #${preview.id} at all — the usual cause is the browser answering from its cache with an older frame that reused this number (the counter restarts when the server restarts), which would put an earlier exposure under this frame's stars and HFR. Reload the page to clear that. The saved FITS is written from the raw frame and is unaffected.`}
           >
@@ -804,7 +823,9 @@ export function PreviewStage(props: Props) {
       {pinned && (
         <div className="absolute inset-0 flex items-start justify-center pointer-events-none">
           <div className="absolute inset-0 bg-black/35" />
-          <div className="relative mt-3 panel px-3 py-2 flex items-center gap-3 pointer-events-auto" aria-live="polite">
+          {/* data-no-pan for the same reason as the chips: two quick taps on
+              "Return to Live" must not also be read as a double-tap zoom. */}
+          <div data-no-pan className="relative mt-3 panel px-3 py-2 flex items-center gap-3 pointer-events-auto" aria-live="polite">
             <span className="text-xs text-ink">
               Viewing frame #{preview.id}
               {newSincePinned > 0 && <span className="text-accent"> · {newSincePinned} new</span>}
