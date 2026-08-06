@@ -30,6 +30,18 @@ SETTLE_DEG = 0.05
 SETTLE_POLL_S = 0.5
 #: Poll cadence while waiting for a park to complete.
 PARK_POLL_S = 1.0
+#: Per-attempt cap on the park poll. Two attempts, so the worst case is twice
+#: this. Was a bare 60.0 inline; named because the retry has to quote it.
+PARK_WAIT_S = 60.0
+#: How long ``_park_now`` waits for a halt window to close before it starts.
+#: Bounded, and NOT a grace period: the window ends on EVIDENCE (see
+#: ``_note_halt``, which refuses to invent a settling time because nobody has
+#: measured how long an AM5 takes to stop from an R8 slew). This is only the
+#: point at which waiting for that evidence stops being worth it — after it,
+#: the park is attempted anyway, because an unparked mount is worse than a
+#: slow one. Generous, because the alternative to waiting is the failure this
+#: exists to prevent: the lost emergency park of 2026-08-06.
+HALT_DRAIN_TIMEOUT_S = 30.0
 
 #: |rate deg/s| upper bound -> LX200 rate index command.
 #: CALIBRATED ON HARDWARE 2026-07-20 (dec-axis nudges): the AM5 R-indices are
@@ -386,17 +398,29 @@ class ZwoAm5Telescope(Telescope):
         # standing between the sun and the optics — hit exactly this case and
         # failed. It was found by test-firing a dawn failsafe rather than
         # trusting that it would work.
-        try:
-            if await self.get_tracking():
-                await self.set_tracking(False)
-                # The mount needs a moment to actually stop before it will
-                # honour a park; polling Gps immediately reads the old state.
-                await asyncio.sleep(1.0)
-        except Exception:  # noqa: BLE001
-            # A mount that cannot report or stop tracking still gets the park
-            # attempt — refusing to try would be worse than trying and timing
-            # out, and this path is the last thing protecting the optics.
-            pass
+        # DRAIN A HALT WINDOW FIRST. Reproduced on hardware 2026-08-06:
+        # goto -> stop -> park left the mount unparked and TRACKING, with
+        # "park did not complete within 60s". The identical park from an idle
+        # mount succeeded in ~12 s. ``stop`` sends :Q# and the axes have mass,
+        # so the tracking-off command below lands in the window ``_note_halt``
+        # exists to describe — where the mount is least able to answer, and an
+        # ack-class send (:Td#) times out. That timeout used to be swallowed
+        # whole (see below), leaving tracking ON for the :hP# that follows,
+        # which is the one state this driver KNOWS makes park a silent no-op.
+        #
+        # stop-then-park is the EMERGENCY shape: safety abort, dawn park, the
+        # sun watchdog, any aborted session. So it is the sequence that must
+        # work, not the one to leave as an at-scope runbook item.
+        await self._drain_halt()
+
+        # STOP TRACKING, AND VERIFY IT. The old code wrapped this in a bare
+        # ``except Exception: pass``. The instinct was right — a mount that
+        # cannot stop tracking must still get its park attempt, because this
+        # path is the last thing standing between the sun and the optics — but
+        # swallowing the failure ALSO threw away the knowledge that the park
+        # about to be sent was the known-silent one. Retry, then let the
+        # failure inform the error at the end rather than vanish.
+        tracking_off = await self._tracking_off_verified()
         # COMPLETION SIGNAL: the parked flag, which is the hardware-verified
         # one (:Gps# flips to '2' ~1s after :hP#). It is trustworthy at every
         # call site because no call site reaches here with the mount already
@@ -408,16 +432,75 @@ class ZwoAm5Telescope(Telescope):
         # was solving a problem the wrong ordering had created, and it could
         # not work: a mount that never moved reports a perfectly stable
         # position, so a refused :hP# read as a completed home.
+        if await self._send_park_and_wait(PARK_WAIT_S):
+            return
+
+        # ONE RETRY, and only because the first failure is diagnostic rather
+        # than mysterious: a :hP# that goes unanswered for PARK_WAIT_S with
+        # tracking still on IS the documented silent no-op. Re-assert
+        # tracking-off now that the halt window is long over, and send it
+        # again. A mount that ignores the second one has a real problem worth
+        # reporting; a mount that only ever needed the drive stopped is parked.
+        still_tracking = not await self._tracking_off_verified()
+        if await self._send_park_and_wait(PARK_WAIT_S):
+            return
+        why = (" — tracking is still on, and this mount accepts :hP# and does "
+               "nothing while it is" if still_tracking or not tracking_off
+               else "")
+        raise DeviceError(
+            f"{self.name}: park did not complete within "
+            f"{PARK_WAIT_S * 2:.0f}s across two attempts (mount still reports "
+            f"unparked){why}")
+
+    async def _send_park_and_wait(self, timeout_s: float) -> bool:
+        """One ``:hP#`` and a bounded poll of the parked flag. True when parked."""
         await self._link.request("hP", reply="none")
-        deadline = asyncio.get_running_loop().time() + 60.0
-        while True:
-            if asyncio.get_running_loop().time() > deadline:
-                raise DeviceError(
-                    f"{self.name}: park did not complete within 60s "
-                    "(mount still reports unparked)")
+        deadline = asyncio.get_running_loop().time() + timeout_s
+        while asyncio.get_running_loop().time() <= deadline:
             await asyncio.sleep(PARK_POLL_S)
             if await self.is_parked():
-                return
+                return True
+        return False
+
+    async def _drain_halt(self) -> None:
+        """Wait out a halt this driver opened, before commanding anything that
+        needs the mount to answer.
+
+        Best-effort and bounded. ``_halting`` is cleared by EVIDENCE inside
+        ``get_position`` — two post-halt reads within ``SETTLE_DEG`` — so this
+        only has to keep asking. It invents no grace period, for the same
+        reason ``_note_halt`` refuses to: nobody has measured how long an AM5
+        takes to stop from an R8 slew. If the window never closes, fall through
+        and try the park anyway: an unparked mount is worse than a slow one."""
+        if not self._halting:
+            return
+        deadline = asyncio.get_running_loop().time() + HALT_DRAIN_TIMEOUT_S
+        while self._halting and asyncio.get_running_loop().time() <= deadline:
+            try:
+                await self.get_position()
+            except Exception:  # noqa: BLE001 — a mount mid-halt may not answer
+                pass
+            if self._halting:
+                await asyncio.sleep(PARK_POLL_S)
+
+    async def _tracking_off_verified(self) -> bool:
+        """Stop the drive and CONFIRM it stopped. True when tracking reads off.
+
+        Never raises: every caller is on the path that protects the optics, and
+        a mount that will not talk still gets its park attempt."""
+        for attempt in range(2):
+            try:
+                if not await self.get_tracking():
+                    return True
+                await self.set_tracking(False)
+                # The mount needs a moment to actually stop before it will
+                # honour a park; polling Gps immediately reads the old state.
+                await asyncio.sleep(1.0)
+                if not await self.get_tracking():
+                    return True
+            except Exception:  # noqa: BLE001 — see the docstring
+                await asyncio.sleep(1.0 if attempt == 0 else 0.0)
+        return False
 
     async def get_tracking(self) -> bool:
         return (await self._get("GAT")).startswith("1")
