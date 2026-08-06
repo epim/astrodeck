@@ -59,6 +59,25 @@ win.Element.prototype.hasPointerCapture = function (this: any, id: number) {
   return captures.some((c) => c.node === this && c.id === id);
 };
 
+// Count the window-level release listeners the pad is allowed to fall back on
+// when capture is refused. Two things need measuring and neither is visible in
+// the DOM: that a press which got NO capture bound itself to something, and
+// that whatever it bound is GONE once the press ends. An unbounded pile of
+// stale listeners on window, each holding a pointerId and a closure over the
+// controller, is its own defect.
+let windowPointerListeners = 0;
+const origAdd = win.addEventListener.bind(win);
+const origRemove = win.removeEventListener.bind(win);
+const counted = (t: string) => t === "pointerup" || t === "pointercancel";
+win.addEventListener = (type: string, fn: any, opts?: any) => {
+  if (counted(type)) windowPointerListeners++;
+  return origAdd(type, fn, opts);
+};
+win.removeEventListener = (type: string, fn: any, opts?: any) => {
+  if (counted(type)) windowPointerListeners--;
+  return origRemove(type, fn, opts);
+};
+
 const g = globalThis as any;
 for (const k of [
   "window", "document", "navigator", "HTMLElement", "Element", "Node", "Event",
@@ -109,6 +128,12 @@ seed(45);
 const container = win.document.getElementById("root") as any;
 const root = createRoot(container);
 act(() => { root.render(createElement(SlewPad)); });
+
+// Whatever the mounted pad registered on window at mount time (nothing, today —
+// its safety effect listens for `blur`, not pointerup). Taken here so the
+// assertions below measure the DELTA a press causes rather than an absolute
+// that a future listener elsewhere would silently invalidate.
+const listenerBaseline = windowPointerListeners;
 
 const arrow = (label: string) => container.querySelector(`[aria-label="slew ${label}"]`);
 /** The 2 s status frame, which is what made this hazard fire in the field. */
@@ -274,6 +299,108 @@ test("locking mid-press does not leave the pad dead for the rest of the night", 
       "the pad rejected a fresh press after unlock — activePointerId still owns the id of a " +
       "finger that is long gone, so every arrow animates and the mount never moves");
   });
+});
+
+// ------------------------------------- CAPTURE THAT WAS NEVER TAKEN
+// The pad has no onPointerLeave by design (R3): pointer capture is the ONLY
+// thing that keeps a hold bound once the thumb slides off a 56px button. It was
+// claimed optionally and swallowed —
+//
+//     try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); }
+//     catch { /* capture unsupported — pointerup still fires on the element */ }
+//
+// — and that comment is only true while the finger is still ON the element,
+// which is the one case capture is not needed for. If the optional call
+// no-opped, or threw NotFoundError, the code went on to ctrl.beginPress anyway
+// and the slew was bound to nothing: the release landed on some other element,
+// endPress never ran, and the 600ms keepalive kept feeding the server's 1200ms
+// deadman. jsdom implements no pointer capture at all, which is exactly what
+// makes "capture refused" cheap to stage here.
+//
+// The tests below dispatch the release on document.body — not on the button —
+// because that is where a real pointerup lands when nothing captured it.
+
+/** Run `body` with setPointerCapture replaced, restoring it whatever happens. */
+function withCapture(stub: (this: any, id: number) => void, body: () => void): void {
+  const real = win.Element.prototype.setPointerCapture;
+  win.Element.prototype.setPointerCapture = stub;
+  try { body(); }
+  finally { win.Element.prototype.setPointerCapture = real; }
+}
+
+/** Press north, assert the press is genuinely bound to nothing capture-wise,
+ *  then lift the finger somewhere else entirely. */
+function refusedCapturePress(id: number): void {
+  captures.length = 0;
+  const node = arrow("north");
+  act(() => { node.dispatchEvent(pointer("pointerdown", id)); });
+
+  // PRECONDITIONS. Each one, if false, would make the release assertion below
+  // pass for a reason that has nothing to do with the fix.
+  assert(captures.length === 0,
+    "the stub still recorded a capture — this press is not the refused-capture case");
+  assert(!node.hasPointerCapture(id),
+    "the node reports holding the capture it was refused — the fixture is lying");
+  assert(/border-accent/.test(node.className),
+    "the press started no hold, so 'nothing is held afterwards' would prove nothing");
+  assert(windowPointerListeners > listenerBaseline,
+    "the press took no capture AND registered no fallback release — the slew is bound to " +
+    "nothing, and the only thing that will stop the mount is the STOP bar");
+
+  // The finger slid off the 56px button before lifting. With capture the
+  // browser would route this to the button; without it, this is the truth.
+  act(() => { win.document.body.dispatchEvent(pointer("pointerup", id)); });
+
+  const stillHeld = ["north", "south", "east", "west"]
+    .map(arrow)
+    .filter((el: any) => el && /border-accent/.test(el.className));
+  assert(stillHeld.length === 0,
+    `${stillHeld.length} arrow(s) still show the held state after the finger lifted off the ` +
+    "button — endPress never ran, the keepalive is still feeding the deadman, and the mount " +
+    "is still slewing");
+  assert(windowPointerListeners === listenerBaseline,
+    "the fallback release listeners outlived the press they were armed for");
+}
+
+test("a press whose capture is silently refused still stops when the finger lifts elsewhere", () => {
+  // An engine with no pointer capture: the optional call resolves to a no-op
+  // and nothing anywhere reports a problem.
+  withCapture(function () { /* no-op: this engine has no pointer capture */ },
+    () => refusedCapturePress(31));
+});
+
+test("a capture that THROWS is treated as refused, not as taken", () => {
+  // The real-browser version of the same hole: setPointerCapture raises
+  // NotFoundError when the pointer is already up by the time it is claimed.
+  withCapture(function () {
+    const e: any = new Error("no active pointer with the given id");
+    e.name = "NotFoundError";
+    throw e;
+  }, () => refusedCapturePress(33));
+});
+
+test("the pad still takes a new press after a fallback release", () => {
+  // The fallback has to clear activePointerId as well, or the pad is dead for
+  // the rest of the night in exactly the way finding 38 described.
+  captures.length = 0;
+  press(arrow("south"), 35, () => {
+    assert(captures.length === 1,
+      "a fresh press took no capture — the fallback release never cleared activePointerId");
+  });
+});
+
+test("a press that DID take the capture arms no window fallback", () => {
+  // Otherwise the fallback is paid for on every press and the 'removed on
+  // release' assertions above are measuring the wrong thing.
+  captures.length = 0;
+  const node = arrow("west");
+  press(node, 37, () => {
+    assert(captures.length === 1, "precondition: the capture was not taken, so this proves nothing");
+    assert(windowPointerListeners === listenerBaseline,
+      "a captured press also bound window-level listeners — capture already routes the release " +
+      "to this node, so these are a second handler for the same event");
+  });
+  assert(windowPointerListeners === listenerBaseline, "listeners left behind by a captured press");
 });
 
 // ------------------------------------------------------------------- report
