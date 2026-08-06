@@ -23,6 +23,21 @@ from ..zwo_sdk import ZwoSdkError
 POLL_S = 0.5
 #: Wall-clock cap on a focuser move (Rotator uses its base MOVE_TIMEOUT_S=180).
 EAF_MOVE_TIMEOUT_S = 120.0
+#: EAF_focuser.h / ERROR_NAMES[5]: the SDK refuses EAFMove outright while the
+#: motor is running. This is the code behind the five
+#: "autofocus failed: EAFMove failed (MOVING, code 5)" errors of 2026-07-29.
+MOVING_ERROR_CODE = 5
+#: How long a move waits for motion THIS DRIVER DID NOT ISSUE to finish before
+#: it gives up. Our own moves cannot collide (they queue on ``_move_lock``), so
+#: whatever is running when the SDK refuses is the hand controller, another
+#: program holding the device, or the tail of a halt we just sent — a couple of
+#: seconds in the last case. 15 s is long enough to absorb a halt and a short
+#: hand-controller nudge, short enough that a sequence gets an answer.
+MOVE_BUSY_TIMEOUT_S = 15.0
+#: How long a queued move waits for the one in front of it. A move already in
+#: flight is itself bounded by EAF_MOVE_TIMEOUT_S, so past that plus slack the
+#: queue is wedged, and saying so beats hanging a sequence forever.
+MOVE_QUEUE_TIMEOUT_S = EAF_MOVE_TIMEOUT_S + 30.0
 #: How close counts as arrived. The EAF is an exact-step device, so this is a
 #: guard against an off-by-one in the SDK's read-back, not a real tolerance.
 ARRIVAL_TOLERANCE_STEPS = 2
@@ -65,6 +80,17 @@ class EafFocuser(Focuser):
         self._sdk = sdk
         self._id = dev_id
         self._lock = asyncio.Lock()
+        #: ONE move at a time, per device. The SDK lock above only serialises
+        #: individual C calls; it is released between the EAFMove and the
+        #: arrival poll, so without this a second caller could issue its move
+        #: into the middle of the first one and the SDK would refuse it with
+        #: MOVING (code 5) — which is what happened on 2026-07-29, five times,
+        #: when a sweep's move and its restore-to-start overlapped. Held for
+        #: the WHOLE move: issue, poll, arrive.
+        self._move_lock = asyncio.Lock()
+        #: Where the in-flight move is going, so a caller that gives up waiting
+        #: can say what it was waiting for instead of just "timed out".
+        self._move_target: int | None = None
         self.firmware = ""
         #: The rig's configured travel limit, re-applied on every connect
         #: (driver `extra.max_step`). None = leave whatever the device holds.
@@ -80,12 +106,17 @@ class EafFocuser(Focuser):
         self._power_off_reason: int | None = None
         self._reports_diagnostics = False
 
-    async def _call(self, fn, *args, what: str):
+    async def _call_sdk(self, fn, *args):
+        """One SDK call under the device lock, with the raw ``ZwoSdkError``
+        left intact — for the one caller that has to branch on the code."""
         async with self._lock:
-            try:
-                return await asyncio.to_thread(fn, self._id, *args)
-            except ZwoSdkError as exc:
-                raise _sdk_guard(exc, self.name, what) from exc
+            return await asyncio.to_thread(fn, self._id, *args)
+
+    async def _call(self, fn, *args, what: str):
+        try:
+            return await self._call_sdk(fn, *args)
+        except ZwoSdkError as exc:
+            raise _sdk_guard(exc, self.name, what) from exc
 
     async def _complaint(self) -> str:
         """What the device says is wrong, as a trailing clause for an error
@@ -300,13 +331,86 @@ class EafFocuser(Focuser):
     async def get_position(self) -> int:
         return int(await self._call(self._sdk.get_position, what="get position"))
 
+    async def _send_move(self, position: int) -> None:
+        """EAFMove, resolving the SDK's own "already moving" refusal.
+
+        The SDK — not a poll of ours — is the authority on whether the motor is
+        running: EAFMove returns MOVING (code 5) and does nothing. So this asks
+        it again rather than consulting a proxy signal, which is deliberate.
+        Audit findings #15 and #17 are both the same mistake made two different
+        ways: a wait whose evidence cannot tell "has not started yet" from
+        "already finished". `EAFIsMoving` reading false has exactly that
+        ambiguity; `EAFMove` returning 0 does not, because a 0 means the device
+        ACCEPTED this move.
+
+        Only our own moves are serialised (``_move_lock``), so anything still
+        running here came from outside this driver — or is the tail of a halt
+        we sent ourselves, which is the common case and clears in a poll or two.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + MOVE_BUSY_TIMEOUT_S
+        began = loop.time()
+        refusals = 0
+        while True:
+            try:
+                await self._call_sdk(self._sdk.move, position)
+            except ZwoSdkError as exc:
+                if exc.code != MOVING_ERROR_CODE:
+                    raise _sdk_guard(exc, self.name, "EAFMove") from exc
+                refusals += 1
+                if loop.time() >= deadline:
+                    where = ""
+                    try:
+                        pos = await self._call_sdk(self._sdk.get_position)
+                        where = f" (it is at {int(pos)})"
+                    except Exception:  # noqa: BLE001 - decorating an error
+                        pass
+                    raise DeviceError(
+                        f"{self.name}: the focuser refused a move to {position} "
+                        f"because it is already moving, and it was still moving "
+                        f"{MOVE_BUSY_TIMEOUT_S:.0f}s later{where}. AstroDeck "
+                        f"queues its own moves, so something else is driving it "
+                        f"— the EAF hand controller, or another program with the "
+                        f"device open." + await self._complaint()) from exc
+                await asyncio.sleep(POLL_S)
+                continue
+            if refusals:
+                # Absorbed, but say so: a rig whose focuser is being nudged by
+                # hand mid-sequence should leave a trace, not just run slower.
+                from ...events import bus
+                bus.log("info",
+                        f"{self.name}: the focuser was still moving when the "
+                        f"move to {position} was sent; it went out "
+                        f"{loop.time() - began:.1f}s later "
+                        f"({refusals} refusal{'' if refusals == 1 else 's'})",
+                        "focuser")
+            return
+
     async def move_to(self, position: int) -> None:
         position = int(position)
         if not (0 <= position <= self.max_position):
             raise DeviceError(
                 f"{self.name}: target {position} out of range 0..{self.max_position}")
+        # QUEUE, don't collide. A second move arriving mid-move waits for the
+        # first to finish rather than being fired at an SDK that will refuse it.
+        try:
+            await asyncio.wait_for(self._move_lock.acquire(),
+                                   MOVE_QUEUE_TIMEOUT_S)
+        except (asyncio.TimeoutError, TimeoutError):
+            raise DeviceError(
+                f"{self.name}: a move to {self._move_target} is still in flight "
+                f"after {MOVE_QUEUE_TIMEOUT_S:.0f}s, so the move to {position} "
+                f"was never sent") from None
+        self._move_target = position
+        try:
+            await self._move_to_locked(position)
+        finally:
+            self._move_target = None
+            self._move_lock.release()
+
+    async def _move_to_locked(self, position: int) -> None:
         start = await self._call(self._sdk.get_position, what="read position")
-        await self._call(self._sdk.move, position, what="EAFMove")
+        await self._send_move(position)
         deadline = asyncio.get_running_loop().time() + EAF_MOVE_TIMEOUT_S
         try:
             # ARRIVAL, not absence-of-motion.
@@ -376,19 +480,29 @@ class EafFocuser(Focuser):
         """Tell the EAF it is at ``position``. Moves nothing.
 
         Refused mid-move on purpose: re-anchoring while the tube is travelling
-        writes a number that is already stale by the time it lands."""
-        if await self.is_moving():
+        writes a number that is already stale by the time it lands. Refused
+        outright while a DRIVER move is queued or running, rather than polling
+        for it — the is_moving() check below cannot see a move that has been
+        commanded but whose motor has not engaged yet, and that window is
+        precisely where the reference would be written for a position the
+        drawtube is about to leave."""
+        if self._move_lock.locked():
             raise DeviceError(
-                f"{self.name}: the focuser is moving — wait for it to stop "
-                "before setting its position")
-        position = int(position)
-        if not (0 <= position <= self.max_position):
-            raise DeviceError(
-                f"{self.name}: position {position} is outside "
-                f"0..{self.max_position}")
-        await self._call(self._sdk.reset_position, position,
-                         what="EAFResetPostion")
-        self._remember(position)
+                f"{self.name}: a move to {self._move_target} is in flight — "
+                "wait for it to finish before setting the position")
+        async with self._move_lock:
+            if await self.is_moving():
+                raise DeviceError(
+                    f"{self.name}: the focuser is moving — wait for it to stop "
+                    "before setting its position")
+            position = int(position)
+            if not (0 <= position <= self.max_position):
+                raise DeviceError(
+                    f"{self.name}: position {position} is outside "
+                    f"0..{self.max_position}")
+            await self._call(self._sdk.reset_position, position,
+                             what="EAFResetPostion")
+            self._remember(position)
         from ...events import bus
         bus.log("info", f"{self.name}: position reference set to {position} "
                         "— the drawtube did not move", "focuser")
