@@ -1678,14 +1678,36 @@ class Hub:
 
     # ----------------------------------------------------------- reliability
 
+    def _live_lanes(self) -> set[str]:
+        """Every long operation in flight RIGHT NOW, by its own lane name.
+
+        The one source both `busy_label` (which collapses it to a word) and
+        `busy_lanes` (which does not) read, so the coarse answer and the precise
+        one can never disagree about what is running.
+        """
+        live = {n for n, t in self._busy.items() if t and not t.done()}
+        if self.looping:
+            live.add("looping")
+        return live
+
+    def busy_lanes(self) -> list[str]:
+        """The live lane names, sorted — "goto", "solve", "autofocus", "polar".
+
+        What a UI control needs to answer "is MY operation still running", which
+        `busy_label` cannot: it maps goto/solve/autofocus/capture and four more
+        onto four words. Sorted so the status payload is stable and a diff of two
+        frames means something.
+        """
+        return sorted(self._live_lanes())
+
     @property
     def busy_label(self) -> str | None:
         """One word for the current long backend op (or None). Drives the
         telemetry-stale suppression — a slew/solve/AF/capture legitimately
-        starves the 2s status poll, so "busy" means "not stalled"."""
-        live = {n for n, t in self._busy.items() if t and not t.done()}
-        if self.looping:
-            live.add("looping")
+        starves the 2s status poll, so "busy" means "not stalled".
+
+        Deliberately lossy; see `busy_lanes` for the unreduced set."""
+        live = self._live_lanes()
         for name, label in (("goto", "slewing"), ("solve", "solving"),
                             ("autofocus", "focusing"), ("focuser", "focusing"),
                             ("filter_offsets", "focusing"),
@@ -4280,6 +4302,26 @@ class Hub:
                        "horizon_min_deg": s["horizon_min_deg"]}
         out["optics"] = self.effective_optics()        # in-process, no device I/O
         out["busy"] = self.busy_label                  # reliability: busy-aware stale
+        # The SAME set busy_label collapses into one word, published unreduced.
+        #
+        # `busy` answers "is the rig doing something long" — enough to suppress a
+        # stale-telemetry banner, which is all it was built for. It cannot answer
+        # "is THIS button's operation still running", because it maps goto ->
+        # "slewing", solve -> "solving", autofocus/focuser/filter_offsets ->
+        # "focusing" and four more onto "capturing". A UI control that owns one
+        # lane needs the lane.
+        #
+        # Without it, ~20 controls audited on 2026-08-05 derived their in-flight
+        # state from the POST promise instead — and those routes are `_spawn`,
+        # which returns {"started": name} the instant the task is CREATED. So
+        # "Solving…" flickered for 40ms while ASTAP ground for 30s, and the
+        # button sat there looking ready and re-pressable. The truth was already
+        # on the wire every 2s; it was just reduced past the point of use.
+        # monitor_snapshot has published exactly this list since 2026-07-30 —
+        # it simply never rode the status frame every client already receives.
+        #
+        # Additive: old clients ignore an unknown key.
+        out["busy_lanes"] = self.busy_lanes()
         # boot-LED grid that survives a page reload (W1.6): the retained per-role
         # tri-state + a single boot-failure flag, riding the existing 2s WS push.
         out["backend_links"] = self.backend_links()
