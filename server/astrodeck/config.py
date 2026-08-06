@@ -210,6 +210,15 @@ class EscalationConfig(BaseModel):
     no_progress_watchdog_s: int = 0        # 0 = off
     reconnect_resume: bool = False         # Alpaca-only; off by default (C2-15)
     reconnect_retries: int = 1
+    # Armed safety with NO monitor assigned. A registered-but-disconnected
+    # monitor already fails CLOSED; an ABSENT one used to fail open, and the two
+    # are the same situation to an operator. Default False because a monitor is
+    # not part of a working rig and the shipped default is safety.enabled=True
+    # with nothing assigned — failing closed here would refuse to image out of
+    # the box. Off, the gap is now SAID (per run, and in pre-flight) instead of
+    # silently permitted. On, an absent monitor is treated exactly like a
+    # disconnected one, which is what an unattended night wants.
+    require_safety_monitor: bool = False
 
 
 class AlertSink(BaseModel):
