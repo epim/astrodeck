@@ -8,8 +8,12 @@
 // The Upgrade action passes the server's rig-idle SAFETY GATE: when a sequence is
 // running or the mount is slewing/exposing, `can_apply` is false and the button is
 // disabled with the reason shown — an update can never interrupt active work.
+// That gate arrives only on the GET (the `update` WS event carries the pipeline
+// snapshot, which does not include it), so the panel both REMEMBERS the last
+// answer and re-derives the rig half of it from the live status frame; see the
+// block around `rigBlocker` for why each half is needed.
 
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { UpdateConfig } from "../../types";
 import {
   applyUpdate,
@@ -17,8 +21,9 @@ import {
   setUpdateConfig,
 } from "../../api/backends";
 import { ApiError } from "../../api";
-import { useConfig, useStore, useUpdate } from "../../store";
+import { useConfig, useSequence, useStatus, useStore, useUpdate } from "../../store";
 import { useCan } from "../../lib/caps";
+import { useBusyOrPending } from "../../lib/useBusy";
 import { confirmDialog } from "../ConfirmDialog";
 import { Panel, Field, Toggle } from "../ui";
 import { Segmented } from "../Segmented";
@@ -67,7 +72,82 @@ export default function UpdatePanel(): JSX.Element {
   }, [uc?.channel, uc?.auto_check, uc?.check_interval_hours, uc?.signing_pubkey]);
 
   const active = status?.phase && status.phase in PHASE_LABEL;
-  const blockedReason = status?.apply_blocked_reason ?? "";
+
+  // ------------------------------------------------------- the apply SAFETY GATE
+  // `can_apply` / `apply_blocked_reason` / `supervised` are stamped on by GET
+  // /api/update/status. They are NOT part of `update_state.snapshot()`, which is
+  // what the `update` WS event carries — and the store REPLACES the whole slice
+  // on that event. So every phase frame and every poller check arrived with
+  // those three keys absent: reading them straight off `status` re-armed Upgrade
+  // in the middle of a sequence and deleted both the blocked-reason line and the
+  // unsupervised warning. Two things keep the gate honest here.
+  //
+  // (1) Remember the last frame that CARRIED the gate, and re-ask the route once
+  //     when a partial one lands, so a WS frame can no longer erase it.
+  const [gate, setGate] = useState<{
+    supervised?: boolean; canApply?: boolean; reason: string;
+  } | null>(null);
+  const askedRef = useRef(false);
+  useEffect(() => {
+    if (!status) return;
+    if (status.can_apply !== undefined) {
+      askedRef.current = false;
+      setGate({
+        supervised: status.supervised,
+        canApply: status.can_apply,
+        reason: status.apply_blocked_reason ?? "",
+      });
+      return;
+    }
+    // A partial frame. Ask the one route that computes the gate — but only once
+    // per partial, so a server that never sends it cannot start a fetch loop.
+    if (askedRef.current) return;
+    askedRef.current = true;
+    void useStore.getState().loadUpdate();
+  }, [status]);
+
+  // Re-read the gate when the panel opens: it is computed per-request, so at
+  // mount the newest answer is whatever WS-connect fetched, possibly hours ago.
+  useEffect(() => { void useStore.getState().loadUpdate(); }, []);
+
+  // (2) `apply_preconditions` has five checks. Four are configuration (subsystem
+  //     disabled, not supervised, no signing key pinned, no update available)
+  //     and hold until something is edited. The fifth is `hub.restart_blocker`,
+  //     which is true only for as long as the run it names — so the snapshot's
+  //     copy of it is a photograph, while the same two inputs ride the 2 s
+  //     status frame: `status.busy` IS `hub.busy_label`, and the engine's state
+  //     is the `sequence` slice. Read those live and block on them first.
+  //
+  //     The sequence is tested before `busy` (the server tests them the other
+  //     way) only so the sentence holds still: inside a run, busy_label
+  //     flickers between "capturing" and null between subs. The verdict is the
+  //     same either way. A paused sequence still owns the engine task.
+  const rig = useStatus();
+  const seqState = useSequence().state;
+  const rigBlocker =
+    seqState === "running" || seqState === "paused"
+      ? "a sequence is running"
+      : rig?.busy
+        ? `rig is ${rig.busy}`
+        : null;
+  const supervised = status?.supervised ?? gate?.supervised;
+  const serverCanApply = status?.can_apply ?? gate?.canApply;
+  const serverReason = status?.apply_blocked_reason ?? gate?.reason ?? "";
+  const serverBlocked =
+    serverCanApply === false
+      ? serverReason || "the server won't install an update right now"
+      : null;
+  // Live first — but never DROP the server's block just because this client
+  // can't see the run it names (a client that connected mid-sequence has no
+  // sequence event yet). An out-of-date rig reason is instead retired by the
+  // refetch below, so the button can go stale-blocked but never stale-armed.
+  const blockedReason = rigBlocker ?? serverBlocked ?? "";
+  const staleRigBlock =
+    serverBlocked !== null &&
+    (serverReason.startsWith("rig is") || serverReason === "a sequence is running");
+  useEffect(() => {
+    if (rigBlocker === null && staleRigBlock) void useStore.getState().loadUpdate();
+  }, [rigBlocker, staleRigBlock]);
 
   const onCheck = async () => {
     if (checking || busy) return;
@@ -83,8 +163,16 @@ export default function UpdatePanel(): JSX.Element {
     }
   };
 
+  // POST /api/update/apply `_spawn`s the pipeline and returns the moment the
+  // task is CREATED, so its promise resolving means "accepted", not "installed":
+  // the button went live again for the length of the GitHub release lookup, and
+  // a second press answered `'system.update' is already running`. `arm()` covers
+  // the <=2 s before the next status frame; the `system.update` lane covers the
+  // rest of the pipeline, and the latch expires if the lane never appears.
+  const { busy: applying, arm } = useBusyOrPending("system.update");
+
   const onUpgrade = async () => {
-    if (busy || !status?.latest || !status.update_available) return;
+    if (busy || applying || !status?.latest || !status.update_available) return;
     const ok = await confirmDialog({
       title: `Update to ${status.latest}?`,
       body: (
@@ -104,7 +192,9 @@ export default function UpdatePanel(): JSX.Element {
     setBusy(true);
     try {
       await applyUpdate();
-      // progress now streams over the `update` WS event into the store slice.
+      // Accepted — hand the button to the lane; progress then streams over the
+      // `update` WS event into the store slice.
+      arm();
     } catch (e) {
       const msg =
         e instanceof ApiError
@@ -179,7 +269,7 @@ export default function UpdatePanel(): JSX.Element {
           <div className="min-w-0 text-xs text-dim">
             Last checked: <span className="text-ink">{fmtTime(status?.last_check_ts)}</span>
             {status?.channel ? ` · ${status.channel}` : ""}
-            {status && status.supervised === false && (
+            {supervised === false && (
               <span className="block text-warn mt-1">
                 Not running under the supervisor — you can check for updates, but
                 installing requires the supervised launcher.
@@ -210,10 +300,15 @@ export default function UpdatePanel(): JSX.Element {
                 type="button"
                 className="btn btn-accent min-h-[44px] sm:min-h-0 inline-flex items-center gap-2"
                 onClick={onUpgrade}
-                disabled={busy || !!active || status.can_apply === false || !canUpdate}
+                aria-busy={busy || applying || undefined}
+                disabled={busy || applying || !!active || !!blockedReason || !canUpdate}
               >
                 <Icon name="arrow-down" size={15} />
-                {busy ? "Starting…" : "Upgrade"}
+                {active && status.phase !== "checking"
+                  ? "Updating…"
+                  : busy || applying
+                    ? "Starting…"
+                    : "Upgrade"}
               </button>
             </div>
             {status.notes_md && (
@@ -221,7 +316,7 @@ export default function UpdatePanel(): JSX.Element {
                 {status.notes_md}
               </div>
             )}
-            {status.can_apply === false && blockedReason && (
+            {blockedReason && (
               <p className="text-[11px] text-warn inline-flex items-center gap-1.5 mt-2">
                 <Icon name="alert" size={13} className="shrink-0" />
                 Can't install now: {blockedReason}

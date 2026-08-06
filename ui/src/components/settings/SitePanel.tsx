@@ -9,7 +9,7 @@
 // saved location may CARRY a horizon_min_deg, applied through PUT /api/site
 // only when the principal holds config.safety (§4). The saved-locations row
 // renders only for config.site_optics holders (the routes 403 otherwise).
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { SavedLocation, Site } from "../../types";
 import {
   deleteLocation,
@@ -62,6 +62,9 @@ export default function SitePanel(): JSX.Element {
   const [lonHemi, setLonHemi] = useState<"E" | "W">("E");
   const [elev, setElev] = useState("");
   const [busy, setBusy] = useState(false);
+  // which action owns `busy` right now ("geo", "gps", "preset", "delete"), so
+  // the button that was pressed is the one that says it is working.
+  const [busyWhat, setBusyWhat] = useState<string | null>(null);
 
   // Saved-locations row state.
   const [locations, setLocations] = useState<SavedLocation[]>([]);
@@ -139,9 +142,15 @@ export default function SitePanel(): JSX.Element {
 
   // A generic action runner (DriversPanel idiom): busy + optional success toast,
   // 403 -> capability message. Save has its own handler (409 is special).
-  const run = async (fn: () => Promise<unknown>, okMsg?: string) => {
+  //
+  // `what` names the action that is in flight so the button that started it can
+  // say so. One shared `busy` flag dims every button in the panel, which reads
+  // as "the panel is thinking" rather than "your press landed" — and browser
+  // geolocation can take the full 10 s timeout before anything at all happens.
+  const run = async (fn: () => Promise<unknown>, okMsg?: string, what?: string) => {
     if (busy) return;
     setBusy(true);
+    setBusyWhat(what ?? null);
     try {
       await fn();
       if (okMsg) showToast("success", okMsg);
@@ -157,6 +166,7 @@ export default function SitePanel(): JSX.Element {
       showToast("error", msg);
     } finally {
       setBusy(false);
+      setBusyWhat(null);
     }
   };
 
@@ -180,12 +190,22 @@ export default function SitePanel(): JSX.Element {
   const lonSigned = toSigned(toNum(lonMag), lonHemi);
   const coordsEntered =
     validateLat(toNum(latMag)) === null && validateLon(toNum(lonMag)) === null;
-  const [hint, setHint] = useState<string | null>(null);
-  const [hintSunAlt, setHintSunAlt] = useState<number | null>(null);
+  // The answer is STAMPED WITH THE COORDINATES IT DESCRIBES. Without that, the
+  // 350ms debounce plus the round trip left the previous point's sentence on
+  // screen — so correcting a hemisphere and pressing Set site immediately read
+  // back the hemisphere you had just corrected away from, and the confirmation
+  // toast named it too. A hint whose key doesn't match the fields is not a hint
+  // about these fields; it is the pending state.
+  const coordKey = `${latSigned},${lonSigned}`;
+  const [hintAt, setHintAt] = useState<{
+    key: string; place: string | null; sunAlt: number | null;
+  } | null>(null);
+  const fresh = hintAt && hintAt.key === coordKey ? hintAt : null;
+  const hint = fresh?.place ?? null;
+  const hintSunAlt = fresh?.sunAlt ?? null;
   useEffect(() => {
     if (!canSeePrecise || !coordsEntered) {
-      setHint(null);
-      setHintSunAlt(null);
+      setHintAt(null);
       return;
     }
     let dead = false;
@@ -198,13 +218,15 @@ export default function SitePanel(): JSX.Element {
         )
         .then((s) => {
           if (dead) return;
-          setHint(s.place_hint ?? null);
-          setHintSunAlt(typeof s.sun_alt_deg === "number" ? s.sun_alt_deg : null);
+          setHintAt({
+            key: `${latSigned},${lonSigned}`,
+            place: s.place_hint ?? null,
+            sunAlt: typeof s.sun_alt_deg === "number" ? s.sun_alt_deg : null,
+          });
         })
         .catch(() => {
           if (dead) return;
-          setHint(null);
-          setHintSunAlt(null);
+          setHintAt(null);
         });
     }, 350);
     return () => {
@@ -243,9 +265,21 @@ export default function SitePanel(): JSX.Element {
     // the principal holds config.safety; otherwise omit (server preserves stored).
     const horizon =
       canSafety && appliedHorizon !== null ? appliedHorizon : undefined;
+    // Describe WHAT WAS SENT, not what the read-back happened to be showing.
+    // `hint` is the answer for one particular pair of coordinates; pressing Set
+    // site inside the 350ms debounce meant the toast confirmed the point you
+    // had just corrected away from — the one message whose whole job is to make
+    // a flipped sign catchable. The hemispheres are known here without asking
+    // anyone, so fall back to them when the server's fuller sentence (which
+    // also names the region) isn't in hand for these exact coordinates.
+    const body = buildSite();
+    const where =
+      hintAt && hintAt.key === `${body.latitude},${body.longitude}` && hintAt.place
+        ? hintAt.place
+        : `${latHemi} hemisphere · ${lonHemi} longitude`;
     setBusy(true);
     try {
-      await saveSite(buildSite(), config?.version ?? null, horizon);
+      await saveSite(body, config?.version ?? null, horizon);
       // The ONE post-save refresh — and it must stay this call, not a local
       // setState: loadConfig() refreshes BOTH the persisted `config` this panel
       // seeds from AND the `site` slice every other consumer reads (the
@@ -256,7 +290,7 @@ export default function SitePanel(): JSX.Element {
       setJustLoaded(false); // R3-SITE-02: Set site pressed — the loaded preset is now active
       // #12: never a bare cheerful "Site saved" — say WHERE it saved to, so a
       // wrong hemisphere is still catchable one second after the press.
-      showToast("success", hint ? `Site saved — ${hint}` : "Site saved");
+      showToast("success", `Site saved — ${where}`);
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         await loadConfig();
@@ -281,29 +315,63 @@ export default function SitePanel(): JSX.Element {
     window.isSecureContext &&
     "geolocation" in navigator;
 
-  const useMyLocation = () => {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const la = fromSigned(pos.coords.latitude, "lat");
-        const lo = fromSigned(pos.coords.longitude, "lon");
-        setLatMag(formatCoord(la.magnitude));
-        setLatHemi(la.hemisphere as "N" | "S");
-        setLonMag(formatCoord(lo.magnitude));
-        setLonHemi(lo.hemisphere as "E" | "W");
-        if (typeof pos.coords.altitude === "number")
-          setElev(String(Math.round(pos.coords.altitude)));
-        showToast("success", "Filled from browser location — review and save");
-      },
-      (e) => showToast("error", e.message || "Couldn't get browser location"),
-      { enableHighAccuracy: true, timeout: 10000 },
+  // What the form holds RIGHT NOW, readable from inside a callback that was
+  // created up to ten seconds ago (a state variable captured at request time
+  // would be the stale value we are trying not to trust).
+  const formRef = useRef("");
+  const formSig = `${latMag}|${latHemi}|${lonMag}|${lonHemi}|${elev}`;
+  useEffect(() => { formRef.current = formSig; }, [formSig]);
+
+  // A GPS fix can take the full 10s timeout. Two things were wrong with firing
+  // it bare: the button looked untouched the whole time (so it invited a second
+  // press), and a fix that arrived late overwrote whatever had been typed or
+  // loaded from a preset in the meantime — silently, and with no way to tell
+  // afterwards which set of coordinates you were looking at.
+  const useMyLocation = () =>
+    run(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const askedAt = formRef.current;
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              if (formRef.current !== askedAt) {
+                showToast(
+                  "info",
+                  "Browser location arrived after you changed the coordinates — kept yours",
+                );
+                resolve();
+                return;
+              }
+              const la = fromSigned(pos.coords.latitude, "lat");
+              const lo = fromSigned(pos.coords.longitude, "lon");
+              setLatMag(formatCoord(la.magnitude));
+              setLatHemi(la.hemisphere as "N" | "S");
+              setLonMag(formatCoord(lo.magnitude));
+              setLonHemi(lo.hemisphere as "E" | "W");
+              if (typeof pos.coords.altitude === "number")
+                setElev(String(Math.round(pos.coords.altitude)));
+              showToast("success", "Filled from browser location — review and save");
+              resolve();
+            },
+            (e) => reject(new Error(e.message || "Couldn't get browser location")),
+            { enableHighAccuracy: true, timeout: 10000 },
+          );
+        }),
+      undefined,
+      "geo",
     );
-  };
 
   const useMountGps = () =>
     run(async () => {
+      const askedAt = formRef.current;
       const g = await getMountGps();
       if (!g.available) {
         showToast("info", g.detail ?? "Mount GPS unavailable");
+        return;
+      }
+      // same late-answer guard as the browser fix above.
+      if (formRef.current !== askedAt) {
+        showToast("info", "Mount GPS arrived after you changed the coordinates — kept yours");
         return;
       }
       const la = fromSigned(g.latitude as number, "lat");
@@ -315,7 +383,7 @@ export default function SitePanel(): JSX.Element {
       if (typeof g.elevation_m === "number")
         setElev(String(Math.round(g.elevation_m)));
       showToast("success", "Filled from mount GPS — review and save");
-    });
+    }, undefined, "gps");
 
   // ---- saved-locations actions --------------------------------------------
 
@@ -345,7 +413,7 @@ export default function SitePanel(): JSX.Element {
     setSelectedId(id || null);
   };
 
-  const submitSaveCurrent = async (locName: string) => {
+  const saveCurrentLocation = async (locName: string) => {
     const err = validate();
     if (err) {
       showToast("error", err);
@@ -412,8 +480,17 @@ export default function SitePanel(): JSX.Element {
     }
   };
 
+  // Both saved-location writes go through `run()` — their buttons already read
+  // `busy`, but nothing ever set it, so the guard was decorative: a double-tap
+  // on Save minted the preset twice (or accused you of duplicating the one your
+  // own first tap had just made), and on Delete the second request 404'd as
+  // "Delete failed" for a preset that had in fact been deleted. The confirm
+  // dialogs run INSIDE `run` too, so the second tap can't queue a second one.
+  const submitSaveCurrent = (locName: string) =>
+    run(() => saveCurrentLocation(locName), undefined, "preset");
+
   const deleteSelected = () =>
-    void (async () => {
+    void run(async () => {
       const loc = locations.find((l) => l.id === selectedId);
       if (!loc) return;
       const ok = await confirmDialog({
@@ -422,6 +499,9 @@ export default function SitePanel(): JSX.Element {
         confirmLabel: "Delete",
       });
       if (!ok) return;
+      // named only now: "Deleting…" while the confirm dialog is still open
+      // would be a button describing something the user has not agreed to yet.
+      setBusyWhat("delete");
       try {
         await deleteLocation(loc.id);
         await refreshLocations();
@@ -432,7 +512,7 @@ export default function SitePanel(): JSX.Element {
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "Delete failed");
       }
-    })();
+    });
 
   // All four seeded fields (name/lat/lon/elevation) are strippable for
   // principals lacking view.site_precise — gate every placeholder, not just
@@ -558,9 +638,11 @@ export default function SitePanel(): JSX.Element {
                 <p className="text-[13px] text-ink leading-snug">{hint}</p>
               ) : (
                 <p className="text-[12px] text-dim leading-snug">
-                  {coordsEntered
-                    ? "checking…"
-                    : "Enter a latitude and longitude to check the hemisphere."}
+                  {!coordsEntered
+                    ? "Enter a latitude and longitude to check the hemisphere."
+                    : fresh
+                      ? "Nothing recognisable at this point — open ocean, or a hemisphere is wrong."
+                      : "checking…"}
                 </p>
               )}
               {hint && hintSunAlt !== null && (
@@ -607,9 +689,10 @@ export default function SitePanel(): JSX.Element {
                 type="button"
                 className="btn"
                 disabled={busy}
-                onClick={useMyLocation}
+                aria-busy={busyWhat === "geo" || undefined}
+                onClick={() => void useMyLocation()}
               >
-                Use my location
+                {busyWhat === "geo" ? "Locating…" : "Use my location"}
               </button>
             ) : (
               <p className="text-[11px] text-dim self-center">
@@ -621,9 +704,10 @@ export default function SitePanel(): JSX.Element {
               type="button"
               className="btn"
               disabled={busy}
+              aria-busy={busyWhat === "gps" || undefined}
               onClick={() => void useMountGps()}
             >
-              Use mount GPS
+              {busyWhat === "gps" ? "Asking the mount…" : "Use mount GPS"}
             </button>
           </div>
         )}
@@ -670,9 +754,10 @@ export default function SitePanel(): JSX.Element {
                   type="button"
                   className="btn btn-danger"
                   disabled={busy || !selectedId}
+                  aria-busy={busyWhat === "delete" || undefined}
                   onClick={deleteSelected}
                 >
-                  Delete
+                  {busyWhat === "delete" ? "Deleting…" : "Delete"}
                 </button>
               </div>
             </Field>
@@ -706,9 +791,10 @@ export default function SitePanel(): JSX.Element {
                   type="button"
                   className="btn btn-accent"
                   disabled={busy || savingName.trim() === ""}
+                  aria-busy={busyWhat === "preset" || undefined}
                   onClick={() => void submitSaveCurrent(savingName)}
                 >
-                  Save
+                  {busyWhat === "preset" ? "Saving…" : "Save"}
                 </button>
                 <button
                   type="button"

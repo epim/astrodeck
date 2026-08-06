@@ -30,7 +30,7 @@
 
 import { useCallback, useEffect, useState, type JSX, type ReactNode } from "react";
 import { api } from "../../api";
-import { useStore } from "../../store";
+import { useSequence, useStatus, useStore } from "../../store";
 import { Panel, HonestButton, LockedNote, LOCKED_CLASS } from "../ui";
 import { Icon } from "../icons";
 import { confirmDialog } from "../ConfirmDialog";
@@ -69,6 +69,15 @@ function human(bytes: number): string {
 }
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Make a rig-busy reason read as a clause after "while".
+ *
+ *  The server hands back two shapes — "rig is capturing" and "a sequence is
+ *  running" — and only the first wants an article. The old copy hard-coded one
+ *  for both and printed "Not while the a sequence is running." */
+function clause(reason: string): string {
+  return reason.startsWith("rig ") ? `the ${reason}` : reason;
 }
 
 /** Wipe THIS browser's AstroDeck state. A blanket clear on purpose: the app owns
@@ -151,7 +160,43 @@ export default function FactoryResetPanel(): JSX.Element {
       setLoadErr(e instanceof Error ? e.message : "couldn't read the reset scope");
     }
   }, [canAdmin]);
-  useEffect(() => { void refresh(); }, [refresh]);
+
+  // ---------------------------------------------------------- the rig-idle gate
+  // The server refuses a reset while the rig is working (`hub.restart_blocker`)
+  // and the preview GET carries that answer — but the GET runs ONCE, at mount.
+  // So the panel showed whatever was true when Settings opened: a sequence that
+  // ended ten minutes ago still refused, and one that started since walked into
+  // a 409 on press. `restart_blocker` is exactly
+  //     busy_label ? f"rig is {busy_label}" : engine.running ? "a sequence is running"
+  // and BOTH inputs already ride the 2 s status frame — `status.busy` IS
+  // busy_label, and the engine's state is the `sequence` slice — so derive it
+  // live and the button tracks the rig instead of the page load. The snapshot's
+  // can_reset stays the fallback for the moment before the first frame lands.
+  //
+  // The sequence is tested FIRST (the server tests busy_label first) purely so
+  // the sentence on screen holds still: inside a run, busy_label flickers
+  // between "capturing" and null between subs, and the verdict is "blocked"
+  // either way — only the reason named would have jittered. A paused sequence
+  // still owns the engine task, so it blocks too.
+  const rig = useStatus();
+  const seqState = useSequence().state;
+  const rigBlocker = rig
+    ? seqState === "running" || seqState === "paused"
+      ? "a sequence is running"
+      : rig.busy
+        ? `rig is ${rig.busy}`
+        : null
+    : snap && !snap.can_reset
+      ? snap.blocked_reason || "the rig is busy"
+      : null;
+
+  // Re-count when the rig goes idle (and once at mount). Keyed on the BOOLEAN,
+  // not the sentence: during a run the reason can change wording without the
+  // verdict changing, and each refresh walks the whole capture tree. The run
+  // that was blocking the reset is also what changed the frame counts, so this
+  // is the moment they most need re-measuring.
+  const rigIdle = rigBlocker == null;
+  useEffect(() => { void refresh(); }, [refresh, rigIdle]);
 
   // ------------------------------------------------------------ honest gating
   // A non-admin gets the panel DIMMED with a stated reason, never a dead grey
@@ -160,7 +205,7 @@ export default function FactoryResetPanel(): JSX.Element {
   const blocked =
     capReason ??
     (loadErr ? `Can't read what a reset would clear — ${loadErr}` : null) ??
-    (snap && !snap.can_reset ? `Not while the ${snap.blocked_reason}.` : null) ??
+    (rigBlocker ? `Can't reset while ${clause(rigBlocker)}.` : null) ??
     (!confirmWordOk(typed)
       ? `Type ${RESET_WORD} in the box above to arm this.`
       : null);
