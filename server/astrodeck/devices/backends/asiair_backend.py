@@ -1096,6 +1096,23 @@ class AsiairCamera(_AsiairDevice, Camera):
         await self._set_control("AntiDewHeater", 1 if int(power) > 0 else 0,
                                 required=True)
 
+    async def get_dew_heater(self) -> int | None:
+        """What the box is holding right now: 0 or 100, because ``AntiDewHeater``
+        is a 0/1 control.
+
+        So ``set_dew_heater(50)`` reads back as 100 rather than 50 -- and that is
+        the honest answer, not a rounding artifact: the setter already states
+        that any level above zero turns this heater fully on. The read-back is
+        what the camera is doing; the slider position was only ever a request."""
+        if not self.has_dew_heater:
+            return None
+        try:
+            v = await self._link.call(self._link.client.camera.get_control,
+                                      "AntiDewHeater", what="read dew heater")
+        except DeviceError:
+            return None
+        return 100 if int(v) > 0 else 0
+
     # -- exposure ----------------------------------------------------------
 
     async def expose(self, seconds: float, gain: int, offset: int,

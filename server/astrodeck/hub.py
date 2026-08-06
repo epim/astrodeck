@@ -220,6 +220,71 @@ PREVIEW_DISPLAY_KEEP = 8
 PREVIEW_THUMB_KEEP = 50
 PREVIEW_LINEAR_KEEP = 2
 
+#: lane -> the word ``busy_label`` (and therefore ``status.busy``) shows while
+#: that lane is live. ORDERED: the first live lane wins, so the most
+#: consequential operations come first and a run that is slewing between subs
+#: says "slewing" rather than "capturing".
+#:
+#: A lane in this table blocks a restart (``restart_blocker`` is built from it),
+#: suppresses the stale-telemetry banner and buys the NINA link its health grace.
+#: That is a lot of meaning for a name in a tuple, and on 2026-08-05 it was
+#: bought accidentally: ``POST /api/dome/close`` ran in the ``goto`` lane, so a
+#: roof close inherited all three. Splitting the roof onto its own lane kept the
+#: mutual exclusion (``_LANE_SUPERSEDES`` in api/app.py) and silently dropped
+#: these — measured on the sim: a close in flight left ``restart_blocker`` None
+#: and ``GET /api/system/factory-reset`` answering ``can_reset: true``, i.e. a
+#: reset (and, on a supervised box, an update restart) accepted WHILE the
+#: shutter travelled over a just-parked mount.
+BUSY_LANE_LABELS: tuple[tuple[str, str], ...] = (
+    ("goto", "slewing"),
+    # The roof: the longest device-blocking operation the rig performs, and it
+    # parks the mount first, so it is mount motion wearing another name.
+    ("dome", "closing the roof"),
+    # A polar run drives the mount to three positions and solves between them.
+    # It has only had a lane since the same 2026-08-05 change (the session owns
+    # its task, so nothing published it), which is why it was never in here.
+    ("polar", "polar aligning"),
+    ("solve", "solving"),
+    ("autofocus", "focusing"),
+    ("focuser", "focusing"),
+    ("filter_offsets", "focusing"),
+    ("capture", "capturing"),
+    ("looping", "capturing"),
+    ("egain", "capturing"),
+)
+
+#: Lanes deliberately left OUT of ``BUSY_LANE_LABELS``, each with the reason.
+#:
+#: The point is that "not in the table" stops being indistinguishable from "we
+#: forgot". A lane in NEITHER table is a bug, and
+#: ``tests/test_busy_lanes_routes.py`` reads every ``_spawn("...")`` literal out
+#: of api/app.py and fails on one that appears in neither — which is the check
+#: that would have caught the roof the day the lane moved.
+UNLABELLED_LANES: dict[str, str] = {
+    "system.update": (
+        "the update's OWN task runs in this lane, and apply() re-reads "
+        "restart_blocker at its point of no return (update/service.py:191). "
+        "Labelling it would make every update abort itself."),
+    "rotator": (
+        "accessory motion. A restart does not leave it unsupervised the way a "
+        "moving mount does — it is driving to an absolute mechanical angle and "
+        "arrives with or without us."),
+    "rotate_to_pa": "as `rotator` — the same device, resolved to a sky angle.",
+    "filterwheel": (
+        "as `rotator`: a slot change is seconds long and self-completing. "
+        "(`filter_offsets` IS labelled: that one runs a focus sweep per "
+        "filter.)"),
+    "guide": (
+        "guiding is a control loop, not a committed motion: losing it costs "
+        "the frames in flight, which the update/reset already destroys by "
+        "restarting. A sequence that is guiding is blocked by `engine.running` "
+        "anyway."),
+    "dither": "as `guide` — a sub-arcminute settle inside that same loop.",
+    "guide_assistant": (
+        "a measurement run: it watches the guider, it does not command the "
+        "mount."),
+}
+
 
 def precess_j2000_to_jnow(ra_hours: float, dec_deg: float,
                           when: float | None = None) -> tuple[float, float]:
@@ -1702,17 +1767,16 @@ class Hub:
 
     @property
     def busy_label(self) -> str | None:
-        """One word for the current long backend op (or None). Drives the
-        telemetry-stale suppression — a slew/solve/AF/capture legitimately
-        starves the 2s status poll, so "busy" means "not stalled".
+        """A short phrase for the current long backend op (or None). Drives the
+        telemetry-stale suppression — a slew/solve/AF/capture/roof-close
+        legitimately starves the 2s status poll, so "busy" means "not stalled" —
+        and, through `restart_blocker`, the update/factory-reset idle gate.
 
-        Deliberately lossy; see `busy_lanes` for the unreduced set."""
+        Deliberately lossy; see `busy_lanes` for the unreduced set. The mapping
+        (and the list of lanes deliberately left out of it) is
+        ``BUSY_LANE_LABELS`` / ``UNLABELLED_LANES`` at the top of this module."""
         live = self._live_lanes()
-        for name, label in (("goto", "slewing"), ("solve", "solving"),
-                            ("autofocus", "focusing"), ("focuser", "focusing"),
-                            ("filter_offsets", "focusing"),
-                            ("capture", "capturing"), ("looping", "capturing"),
-                            ("egain", "capturing")):
+        for name, label in BUSY_LANE_LABELS:
             if name in live:
                 return label
         return None
@@ -1721,13 +1785,28 @@ class Hub:
     def restart_blocker(self) -> "str | None":
         """A human reason the controller must NOT restart right now, or None when
         idle. The self-update safety gate consults this so an update can never
-        interrupt an exposure, slew, or running sequence (spec section 6)."""
+        interrupt an exposure, slew, roof close, or running sequence (spec
+        section 6); ``/api/system/factory-reset`` reuses it for the same reason,
+        and its POST additionally tears the rig down on the way past."""
         label = self.busy_label
         if label is not None:
             return f"rig is {label}"
         eng = self.engine
         if eng is not None and getattr(eng, "running", False):
             return "a sequence is running"
+        # The backstop for motion that has NO lane. ``_motion_lock`` is held for
+        # exactly as long as a device-level motion command is on the wire, by
+        # every path that moves the mount — including the ones that publish no
+        # lane at all: the dawn-park daemon holds it across its whole park (up to
+        # PARK_TIMEOUT_S), and ``/api/mount/move`` holds it across each jog
+        # dispatch. It is a fact read off the hub rather than a name in a table,
+        # so unlike the labels above it cannot be dropped by a lane rename.
+        #
+        # Last, so every sentence above it is unchanged: a lane or a run always
+        # gets to describe itself in its own words.
+        lock = getattr(self, "_motion_lock", None)
+        if lock is not None and lock.locked():
+            return "the mount is moving"
         return None
 
     async def _nina_heartbeat(self) -> None:
@@ -4521,6 +4600,24 @@ class Hub:
                     "egain_learned": {str(g): v
                                       for g, v in self._egain_learned.items()},
                 }
+                # Dew-heater LEVEL, in its own try for the same reason the warm
+                # block below is outside this one: it is the newest and least
+                # supported reading here, and it must never be able to cost the
+                # temperature and geometry the Monitor is actually watching.
+                #
+                # ABSENT means "this camera cannot be asked", and that is not the
+                # same as 0. The heater was write-only, so the Capture slider had
+                # only its own last write to draw from — 0 in a fresh tab — and
+                # with the heater running at 60% it read 0% and dragging it up
+                # turned the heater DOWN. Publishing 0 as a fallback would move
+                # that same lie server-side, where the client cannot detect it.
+                try:
+                    getd = getattr(cam, "get_dew_heater", None)
+                    dew = await getd() if callable(getd) else None
+                    if dew is not None:
+                        out["camera"]["dew_heater"] = int(dew)
+                except Exception:
+                    pass
                 # Monitor cooler readout — driven by the per-backend get_cooler()
                 # (sim power model, Alpaca coolerpower probe, NINA optional). The
                 # at_target band is the single shared COOLER_AT_TARGET_C so it
