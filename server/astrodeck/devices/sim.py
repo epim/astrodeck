@@ -797,17 +797,36 @@ class SimTelescope(Telescope):
         # Native-TPPA sim path: when a polar misalignment is injected, a slew "in
         # RA" physically rotates the mount's (tilted) RA axis, so advance the
         # traced small-circle phase by one step and report the resulting true
-        # pointing. The commanded target is intentionally ignored for the phase
-        # (a real mount would honor it; the sim models only the CONSEQUENCE — the
-        # optics landing on the next point of the tilted circle) so the three
-        # measuring captures are cleanly spaced regardless of the exact RA step
-        # the provider chooses. Recomputed at ``now`` so the reported RA/Dec is
-        # sidereal-time-consistent with the timestamp the provider records.
+        # pointing. The MAGNITUDE stays ``phase_step_deg`` rather than the exact
+        # commanded step, so the three measuring captures stay cleanly spaced
+        # whatever step the provider picks — the sim models the CONSEQUENCE (the
+        # optics landing on the next point of the tilted circle), not the servo.
+        #
+        # The DIRECTION, however, must follow the command. It used to be
+        # hard-coded to advance, on the reasoning that only the spacing mattered;
+        # that stopped being true once the driver started choosing which way to
+        # step (away from the meridian, so a run never pier-flips mid-measure).
+        # A sim that always went one way reported a westward rotation as an
+        # eastward one, which is a real mount fault — the driver's arrival check
+        # rightly refuses it — so the simulator was manufacturing a failure that
+        # the hardware would not produce. Recomputed at ``now`` so the reported
+        # RA/Dec is sidereal-time-consistent with the timestamp the provider
+        # records.
         if self.rig.polar_misalignment is not None:
             self._slewing = True
             try:
                 await asyncio.sleep(0.05)
-                self.rig._polar_phase_deg += self.rig.polar_misalignment.phase_step_deg
+                # Wrapped: a step across 0h is a small move, not a 23-hour one.
+                delta = ((ra_hours - self.rig.ra_hours + 12.0) % 24.0) - 12.0
+                # MEASURED, not assumed: +phase runs RA DOWN. Rotating the
+                # pointing about the (near-polar) mount axis by +15 deg of phase
+                # moves the reported right ascension by -14.97 deg, because the
+                # right-hand rotation about the north-up axis in PolarMisalignment's
+                # north/east/up frame runs the opposite way to increasing RA. So
+                # the phase sign is the NEGATIVE of the commanded RA direction.
+                sign = 1.0 if delta < 0.0 else -1.0
+                self.rig._polar_phase_deg += (
+                    sign * self.rig.polar_misalignment.phase_step_deg)
                 self.rig._apply_polar_pointing()
             finally:
                 self._slewing = False
