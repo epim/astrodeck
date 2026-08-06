@@ -46,6 +46,89 @@ try:  # pragma: no cover - covered both ways via NATIVE_AVAILABLE monkeypatch
 except ImportError:  # pragma: no cover
     _native = None
 
+#: The engine's own defaults, PINNED here rather than left implicit, because a
+#: rejected fit has to be able to say what it was measured against. See
+#: native/crates/astro-focus/src/config.rs `FocusConfig::default` — these are
+#: the same two values, restated so `vcurve_report` can quote the threshold
+#: instead of guessing it.
+CURVE_FITTING = "hyperbolic"
+R_SQUARED_THRESHOLD = 0.7
+#: The engine's flat-tip band (native/crates/astro-focus/src/trendline.rs
+#: `fit_star_hfr`): a point within 0.1 of the minimum joins NEITHER trendline.
+#: When that swallows a whole side, the sweep fails with `not_enough_spread` —
+#: so this is the number to print beside a flat curve, and 0.1 px of spread on
+#: a metric that ranges 8→110 across a real sweep is the whole diagnosis.
+FLAT_TIP_BAND = 0.1
+
+
+def vcurve_report(points: list[tuple[int, float, float]],
+                  counts: list[int]) -> str:
+    """The sweep's own per-step data plus the statistic that rejected it, as
+    ONE line — what a rejected fit has to leave behind to be diagnosable.
+
+    "V-curve" appeared ZERO times in the rig's entire log history while
+    autofocus failed twelve times in thirteen attempts with a one-word reason
+    (`not_enough_spread`, `r_squared_below_threshold`). A one-word reason names
+    the SHAPE of the failure and nothing about the run that produced it, so
+    every diagnosis needed a repeat run on the sky to observe — the same gap
+    that cost this project a night on polar alignment on 2026-07-30.
+
+    Two statistics, because there are two failures. `r_squared_below_threshold`
+    is answered by re-fitting the collected points and quoting every R² against
+    the gate. `not_enough_spread` is answered by the flat-tip band: how much of
+    the curve sits within FLAT_TIP_BAND of its minimum, and what that leaves on
+    each side of it.
+
+    Never raises. This only ever runs while building the record of a failure
+    that has ALREADY happened, so it must not be able to replace that failure
+    with one of its own.
+    """
+    if not points:
+        return "V-curve: no measurable points"
+    # Pad rather than zip-truncate: a report that silently dropped points would
+    # be the very failure this exists to end.
+    padded = list(counts) + [0] * max(0, len(points) - len(counts))
+    ordered = sorted(zip(points, padded), key=lambda pc: pc[0][0])
+    series = " ".join(f"{p}:{h:.2f}/{n}" for (p, h, _s), n in ordered)
+    vals = [h for (_p, h, _s), _n in ordered]
+    lo, hi = min(vals), max(vals)
+    lo_pos = next(p for (p, h, _s), _n in ordered if h == lo)
+    bits = [f"V-curve ({len(ordered)} pts, position:size/stars): {series}",
+            f"range {lo:.2f}..{hi:.2f} (span {hi - lo:.2f}, min at {lo_pos})"]
+
+    # not_enough_spread, in the engine's own terms. Points inside the band
+    # belong to neither trendline; a side left with nothing is the failure.
+    band = lo + FLAT_TIP_BAND
+    left = sum(1 for (p, h, _s), _n in ordered if h > band and p < lo_pos)
+    right = sum(1 for (p, h, _s), _n in ordered if h > band and p > lo_pos)
+    flat = len(ordered) - left - right
+    bits.append(f"flat tip (within {FLAT_TIP_BAND} of the minimum) holds "
+                f"{flat} of {len(ordered)}, leaving {left} left / {right} right "
+                f"for the trendlines")
+
+    # r_squared_below_threshold: re-fit what we measured and quote every R².
+    # The engine's Failed step carries only the reason label, so the numbers
+    # have to be recovered here — from the same points it rejected.
+    if _native is not None:
+        try:
+            fit = _native.fit_focus_curve(
+                [(float(p), float(h), float(s)) for p, h, s in points],
+                CURVE_FITTING)
+            r2s = fit.get("r2s") or {}
+            # The GATED fit first — it is the one that decided the run. The
+            # others ride along because "hyperbolic 0.68 but quadratic 0.87" is
+            # a different night's work from "everything fits nothing".
+            order = sorted(r2s, key=lambda k: (k != CURVE_FITTING, k))
+            named = ", ".join(
+                f"{k} {r2s[k]:.3f}" for k in order
+                if isinstance(r2s[k], (int, float)))
+            if named:
+                bits.append(f"R² {named} (gate: {CURVE_FITTING} needs "
+                            f"≥ {R_SQUARED_THRESHOLD:.2f})")
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must not throw
+            bits.append(f"R² unavailable ({type(exc).__name__}: {exc})")
+    return " | ".join(bits)
+
 
 def _fit_payload(outcome: dict) -> dict:
     """Shape the engine's ``FitOutcome`` into the additive ``fit`` bus object.
@@ -142,6 +225,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         "step_size": step,
         "offset_steps": steps_each_side,
         "max_position": focuser.max_position,
+        # Both were already the engine's defaults; stated here so the failure
+        # record can quote the gate a rejected fit was measured against rather
+        # than assuming it (see CURVE_FITTING / R_SQUARED_THRESHOLD).
+        "curve_fitting": CURVE_FITTING,
+        "r_squared_threshold": R_SQUARED_THRESHOLD,
     }
 
     # (position, hfr, sigma) — sigma is the standard error of that point's median
@@ -349,10 +437,21 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         "look like an improvement. Check the field is rich "
                         f"enough to measure while defocused, or try {levers}.")
                     bus.log("warning", f"autofocus: {reason}. {advice}", "focus")
-                    bus.publish("focus", state="failed", points=points,
+                    # A search that walked off is the case where the per-step
+                    # series matters most: it shows the metric that inverted.
+                    bus.log("warning", vcurve_report(points, counts), "focus")
+                    # _pts()/_result_pts(), NOT the raw tuples. Every other exit
+                    # from this function publishes {position,hfr,sigma} dicts,
+                    # and the UI's VCurve reads p.position/p.hfr off them
+                    # (ui/src/components/graphs.tsx:78) — publishing 3-tuples
+                    # here made every coordinate NaN, so the one failure whose
+                    # whole story IS the shape of the curve was the one that
+                    # drew an empty chart. Likewise AutofocusResult.points is
+                    # (position, hfr) everywhere else.
+                    bus.publish("focus", state="failed", points=_pts(),
                                 best=None, message=reason, advice=advice)
-                    return AutofocusResult(False, start_pos, None, points,
-                                           reason, advice=advice)
+                    return AutofocusResult(False, start_pos, None,
+                                           _result_pts(), reason, advice=advice)
                 await focuser.move_to(pos)
                 frame = await _expose()
                 attempted += 1
@@ -488,6 +587,10 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             message=reason, advice=advice)
                 bus.log("warning", f"native autofocus failed: {reason}"
                         + (f" — {advice}" if advice else ""), "focus")
+                # The data behind the one-word reason, so the NEXT failure is
+                # diagnosable from the log alone. Second line on purpose: the
+                # verdict stays short and scannable, the evidence sits under it.
+                bus.log("warning", vcurve_report(points, counts), "focus")
                 return AutofocusResult(False, start_pos, None, _result_pts(),
                                        reason, advice=advice)
 
@@ -503,6 +606,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         bus.publish("focus", state="failed", points=_pts(), best=None,
                     message=str(e) or "native autofocus failed",
                     advice=_advice(ok=False))
+        # A sweep killed part-way (a focuser that refused a move, a halt from
+        # the UI) still measured something, and those points are the only
+        # record of it — the publish above reaches a browser that may not be
+        # open, the log reaches the morning.
+        if points:
+            bus.log("warning", vcurve_report(points, counts), "focus")
         # Map engine input rejections to a user-presentable DeviceError.
         if isinstance(e, ValueError):
             raise DeviceError(f"native engine: {e}") from e
