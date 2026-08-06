@@ -8,7 +8,7 @@
 // writes. Not a primary-nav entry (App.tsx VIEWS comment); reached from the
 // SequenceView run-complete link and the NavMoreSheet overflow.
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api";
 import { listReports, getReport, getBundlePreview, materializeBundle } from "../api/reports";
 import { useStore, useLastReportId } from "../store";
@@ -111,14 +111,23 @@ function BundleAdvanced(p: {
   setMaterializing: (v: boolean) => void;
   matResult: BundleMaterializeResult | null;
   setMatResult: (v: BundleMaterializeResult | null) => void;
+  previewLoading: boolean;
+  previewErr: string | null;
+  retryPreview: () => void;
 }) {
   const enqueueToast = useStore((s) => s.enqueueToast);
   const dirs = relayoutDirs(p.preview, p.layout);
   // Honest-disabled (§11.8): "not on the capture box" and "you lack the write
-  // capability" are DIFFERENT truths and each gets its own sentence.
+  // capability" are DIFFERENT truths and each gets its own sentence. A FAILED
+  // preview is a third: `materializeDisabledReason` only knows `preview == null`
+  // and says "Still loading…", which after a dropped request is a wait that
+  // never ends and a button that never comes back (#87 rider) — so the failure
+  // names itself here, next to the Retry that clears it.
   const matReason = !p.canCapture
     ? `Writing to the capture box needs ${accessPhrase("control.capture")}.`
-    : materializeDisabledReason(p.framesCaptured, p.preview);
+    : p.previewErr
+      ? `Couldn't read this session's bundle preview: ${p.previewErr}`
+      : materializeDisabledReason(p.framesCaptured, p.preview);
 
   async function onMaterialize() {
     p.setMaterializing(true);
@@ -223,6 +232,13 @@ function BundleAdvanced(p: {
                   }}
                   aria-label="Keep threshold (normalized weight)"
                 />
+                {/* The kept counts in the group rows and the "N of M rated good"
+                    line are the SERVER's answer for the cutoff it was last asked
+                    about; until the new one lands they describe the previous
+                    number, not the one in this box (#87). */}
+                {p.previewLoading && (
+                  <span className="text-accent" aria-live="polite">recounting…</span>
+                )}
               </span>
               <span>
                 Subs whose weight is below this are marked <span className="mono">keep=false</span>{" "}
@@ -252,7 +268,17 @@ function BundleAdvanced(p: {
               tidy up inside it.
             </span>
           </p>
-          <div className="flex justify-end">
+          <div className="flex justify-end items-center gap-2">
+            {/* The one blocked reason the user can clear from here. */}
+            {matReason && p.previewErr && (
+              <button
+                type="button"
+                className="btn !py-1 !px-2 !text-[11px] min-h-[44px]"
+                onClick={p.retryPreview}
+              >
+                Retry preview
+              </button>
+            )}
             {matReason ? (
               // LockedChip, not a hand-dimmed <span>: it carries the one app-wide
               // dimming token plus tabIndex={0} + aria-disabled + a Tooltip, so a
@@ -320,6 +346,19 @@ export default function ReportView() {
   const [weightAlt, setWeightAlt] = useState(false); // opt-in sin(alt) bundle weighting
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The report INDEX has three outcomes, and "No reports yet" is a positive
+  // claim about the user's data — it must never stand in for "we haven't asked
+  // yet" or "the ask failed" (UX-2026-08-05 #75).
+  const [listLoading, setListLoading] = useState(true);
+  const [listErr, setListErr] = useState<string | null>(null);
+  // Is the bundle preview in flight / did it fail? Both are states the panel has
+  // to be able to say out loud: the kept counts and the "N of M rated good" line
+  // are answers to the PREVIOUS cutoff until a new preview lands (#87), and a
+  // failed preview otherwise leaves the materialize button saying "Still loading
+  // this session's bundle preview." forever with nothing to press.
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [previewGen, setPreviewGen] = useState(0);
 
   // PRO-10 enrichments — all ADVANCED, all default-off, none persisted: the
   // novice one-click .zip below is byte-for-byte the URL it always was.
@@ -340,27 +379,38 @@ export default function ReportView() {
     return () => clearTimeout(t);
   }, [keepParam]);
 
-  // Effect A (mount): list all reports, default to lastReportId or the newest
-  // (the list route is already newest-first — report.py:374-394).
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const l = await listReports();
-        if (cancelled) return;
-        setList(l);
-        setSel((prev) => prev ?? lastReportId ?? l[0]?.id ?? null);
-      } catch {
-        if (!cancelled) enqueueToast({ level: "error", title: "Couldn't load reports" });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // mount-only: a later store `lastReportId` change must not yank the
-    // selection out from under someone browsing an older report.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // A later store `lastReportId` change must not yank the selection out from
+  // under someone browsing an older report, so the loader reads it through a ref
+  // instead of taking it as a dependency — and stays callable from Retry.
+  const lastReportIdRef = useRef(lastReportId);
+  lastReportIdRef.current = lastReportId;
+  const listReq = useRef(0);
+
+  // Load the report index. Defaults to lastReportId or the newest (the list
+  // route is already newest-first — report.py:374-394).
+  const loadList = useCallback(async () => {
+    const req = ++listReq.current;
+    setListLoading(true);
+    try {
+      const l = await listReports();
+      if (req !== listReq.current) return;
+      setList(l);
+      setListErr(null);
+      setSel((prev) => prev ?? lastReportIdRef.current ?? l[0]?.id ?? null);
+    } catch (e) {
+      if (req !== listReq.current) return;
+      // The INDEX failed, which says nothing about the reports themselves. Keep
+      // the store's last known report id selected so the run that just finished
+      // still opens, and state the failure where the list would have been —
+      // never as "No reports yet".
+      setListErr(e instanceof ApiError ? e.message : "couldn't reach the server");
+      setSel((prev) => prev ?? lastReportIdRef.current ?? null);
+    } finally {
+      if (req === listReq.current) setListLoading(false);
+    }
   }, []);
+
+  useEffect(() => { void loadList(); }, [loadList]);
 
   // Effect B (sel): load the full detail. Cancelled-flag guard against
   // out-of-order responses (MonitorView.tsx cold-load pattern). The stacking-
@@ -372,6 +422,13 @@ export default function ReportView() {
       return;
     }
     let cancelled = false;
+    // Clear FIRST (GalleryView.tsx:388's idiom). Holding the outgoing report on
+    // screen while the new one loads left the previous night's title, its
+    // integration, its rejected count, its HFR table and its sparklines fully
+    // rendered above a frames.csv button already pointing at the night that was
+    // just picked — every number on the screen belonging to one session and the
+    // download to another (UX-2026-08-05 #74).
+    setReport(null);
     setLoading(true);
     setErr(null);
     (async () => {
@@ -402,29 +459,60 @@ export default function ReportView() {
   useEffect(() => {
     if (!sel) {
       setPreview(null);
+      setPreviewErr(null);
+      setPreviewLoading(false);
       return;
     }
     let cancelled = false;
     setMatResult(null); // a stale "linked 42" must not outlive its options
+    // The groups, the kept counts and the "N of M rated good" line on screen
+    // right now were computed for the PREVIOUS options. Say so while the new
+    // answer is in flight rather than letting them read as the answer to the
+    // cutoff that was just typed (#87).
+    setPreviewLoading(true);
     (async () => {
       try {
         const p = await getBundlePreview(sel, {
           layout, weightAlt, keepThreshold: keepDebounced,
         });
-        if (!cancelled) setPreview(p);
-      } catch {
-        if (!cancelled) setPreview(null);
+        if (cancelled) return;
+        setPreview(p);
+        setPreviewErr(null);
+      } catch (e) {
+        if (cancelled) return;
+        setPreview(null);
+        setPreviewErr(e instanceof ApiError ? e.message : "couldn't reach the server");
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [sel, layout, weightAlt, keepDebounced]);
+  }, [sel, layout, weightAlt, keepDebounced, previewGen]);
 
   return (
     <div className="px-3 pb-20 sm:px-0 sm:pb-4 flex flex-col gap-3">
       <Panel title="Session Report">
-        {list.length === 0 ? (
+        {listLoading && list.length === 0 ? (
+          <p className="text-dim text-xs">Reading the session index…</p>
+        ) : listErr && list.length === 0 ? (
+          // A dropped request is not an empty library. State which one failed
+          // and offer the retry the empty state could never offer.
+          <div className="flex flex-wrap items-center gap-2 border border-bad/50 bg-bad/5 px-2 py-1.5">
+            <Icon name="alert" size={12} className="text-bad shrink-0" />
+            <span className="text-[11px] text-ink flex-1 min-w-0">
+              Couldn&apos;t read the list of session reports: {listErr}
+            </span>
+            <button
+              type="button"
+              className="btn !py-1 !px-2 !text-[11px] min-h-[44px] sm:min-h-0"
+              onClick={() => void loadList()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : list.length === 0 ? (
           <EmptyState
             icon="plan"
             title="No reports yet"
@@ -446,7 +534,7 @@ export default function ReportView() {
         )}
       </Panel>
 
-      {loading && !report && <p className="text-dim text-xs text-center py-6">loading…</p>}
+      {loading && <p className="text-dim text-xs text-center py-6">loading…</p>}
 
       {err && (
         <Panel>
@@ -566,13 +654,32 @@ export default function ReportView() {
                     frames and a quality score for each photo.
                   </p>
                   {preview && preview.groups.length > 0 && (
-                    <div className="overflow-x-auto">
+                    // Dimmed while a new preview is in flight: these rows still
+                    // carry the counts computed for the PREVIOUS options (#87).
+                    <div className={`overflow-x-auto ${previewLoading ? "opacity-50" : ""}`}>
                       <div className="min-w-[420px]">
                         {preview.groups.map((g, i) => (
                           <BundleGroupRow key={`${g.dir}-${i}`} g={g} />
                         ))}
                       </div>
                     </div>
+                  )}
+                  {previewErr && (
+                    <p className="text-xs text-warn flex flex-wrap items-center gap-1.5">
+                      <Icon name="alert" size={12} className="shrink-0" />
+                      <span className="flex-1 min-w-0">
+                        Couldn&apos;t work out what this session would bundle:{" "}
+                        {previewErr}. The .zip below still streams whatever is on
+                        disk; only the per-group breakdown is missing.
+                      </span>
+                      <button
+                        type="button"
+                        className="btn !py-1 !px-2 !text-[11px] min-h-[44px] sm:min-h-0"
+                        onClick={() => setPreviewGen((g) => g + 1)}
+                      >
+                        Retry
+                      </button>
+                    </p>
                   )}
                   {preview?.warnings.map((w, i) => (
                     <p key={i} className="text-xs text-warn flex items-center gap-1.5">
@@ -584,7 +691,10 @@ export default function ReportView() {
                   {keptSummary(preview) && (
                     <p className="text-xs text-dim flex items-start gap-1.5">
                       <Icon name="info" size={12} className="shrink-0 mt-0.5" />
-                      <span>{keptSummary(preview)}</span>
+                      <span className={previewLoading ? "opacity-50" : ""}>
+                        {keptSummary(preview)}
+                        {previewLoading && " (recounting for the new cutoff…)"}
+                      </span>
                     </p>
                   )}
                   {!reason && (
@@ -606,6 +716,9 @@ export default function ReportView() {
                       setMaterializing={setMaterializing}
                       matResult={matResult}
                       setMatResult={setMatResult}
+                      previewLoading={previewLoading}
+                      previewErr={previewErr}
+                      retryPreview={() => setPreviewGen((g) => g + 1)}
                     />
                   )}
                   <div className="flex justify-end">

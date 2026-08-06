@@ -43,6 +43,18 @@ export default function PlanLibraryPanel() {
   // has no text input). null = closed.
   const [saveAsName, setSaveAsName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // One save at a time (SitePanel's `run()` guard, R5-PLN-01). The POST mints a
+  // plan, so a double-tap is not a wasted request — the first tap creates the
+  // row and the second either mints a SECOND identical plan or trips the
+  // server's name-collision guard, which then accuses you of duplicating the
+  // plan your own first tap just made. The ref is what answers the second tap:
+  // two presses inside one frame share a closure, so the state flag alone is
+  // still the pre-press value when the second handler runs.
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  // Which row is downloading, so a slow export can say so and can't be
+  // double-fired into two downloads of the same file.
+  const [exportingId, setExportingId] = useState<string | null>(null);
 
   // Per-plan headline numbers for the identity block (mirrors SequenceView's
   // plan totals + the server's plans.py::_summarize whole-minute rounding).
@@ -74,6 +86,9 @@ export default function PlanLibraryPanel() {
   // (spec §7). On success the returned row's id becomes the loaded plan and the
   // dirty cue clears. Returns true on a completed save (for the Save-as flow).
   const savePlan = async (planToSave: SequencePlan, id: string | null): Promise<boolean> => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true);
     try {
       const row = await api.post<PlanRow>(
         "/api/plans", id ? { plan: planToSave, id } : { plan: planToSave });
@@ -107,6 +122,9 @@ export default function PlanLibraryPanel() {
       }
       showToast("error", (e as Error).message);
       return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
@@ -167,18 +185,39 @@ export default function PlanLibraryPanel() {
     }
   };
 
-  const exportRow = (row: PlanRow) => {
-    // anchor download: Content-Disposition names the file; cookie auth rides
-    // along on the same-origin navigation.
-    const a = document.createElement("a");
-    a.href = `${BASE}/api/plans/${row.id}/export`;
-    a.download = "";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  const exportRow = async (row: PlanRow) => {
     // R2-PLN-03: exporting gave zero confirmation — the download can land
-    // silently in the browser's download tray with no on-screen feedback.
-    showToast("success", `Exported ${planExportFilename(row.name)}`);
+    // silently in the browser's download tray with no on-screen feedback. But
+    // the toast used to fire from the anchor CLICK, which knows nothing about
+    // what came back: a deleted plan (404) or an expired session (401) produced
+    // the same green "Exported NGC7000.astroplan.json" as a real download.
+    // Fetch it (ProfileList.exportRow's idiom), then save the bytes we actually
+    // hold — and name the file here, so the name in the toast is the name on
+    // disk rather than a second guess at the server's Content-Disposition.
+    if (exportingId) return;
+    setExportingId(row.id);
+    const filename = planExportFilename(row.name);
+    try {
+      const res = await fetch(`${BASE}/api/plans/${row.id}/export`);
+      if (!res.ok) {
+        throw new Error(res.status === 404
+          ? "that plan is no longer on the server"
+          : `server said ${res.status}`);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showToast("success", `Exported ${filename}`);
+    } catch (e) {
+      showToast("error", `Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExportingId(null);
+    }
   };
 
   const importFile = async (file: File) => {
@@ -222,12 +261,15 @@ export default function PlanLibraryPanel() {
             <button
               className="btn btn-accent tap min-h-[44px] !px-3 !text-[11px] inline-flex items-center gap-1"
               onClick={save}
+              disabled={saving}
+              aria-busy={saving}
             >
-              <Icon name="check" size={13} /> Save
+              <Icon name="check" size={13} /> {saving ? "Saving…" : "Save"}
             </button>
             <button
               className="btn tap min-h-[44px] !px-3 !text-[11px]"
               onClick={() => setSaveAsName(plan.name.trim() || "New plan")}
+              disabled={saving}
             >
               Save as…
             </button>
@@ -270,10 +312,11 @@ export default function PlanLibraryPanel() {
             />
             <button
               className="btn btn-accent tap min-h-[44px] !px-3 !text-[11px]"
-              disabled={saveAsName.trim() === ""}
+              disabled={saving || saveAsName.trim() === ""}
+              aria-busy={saving}
               onClick={() => void submitSaveAs(saveAsName)}
             >
-              Save copy
+              {saving ? "Saving…" : "Save copy"}
             </button>
             <button
               className="btn tap min-h-[44px] !px-3 !text-[11px]"
@@ -367,9 +410,11 @@ export default function PlanLibraryPanel() {
                         </button>
                         <button
                           className="tap min-h-[44px] !px-2 !text-[11px] text-dim hover:text-accent"
-                          onClick={() => exportRow(r)}
+                          onClick={() => void exportRow(r)}
+                          disabled={exportingId != null}
+                          aria-busy={exportingId === r.id}
                         >
-                          export
+                          {exportingId === r.id ? "exporting…" : "export"}
                         </button>
                         {canWrite && (
                           <button
