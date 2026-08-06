@@ -86,7 +86,6 @@ export default function DriversPanel(): JSX.Element {
     setBusy(true);
     try {
       await fn();
-      await reload();
       if (okMsg) showToast("success", okMsg);
     } catch (e) {
       const msg =
@@ -99,6 +98,14 @@ export default function DriversPanel(): JSX.Element {
             : "driver operation failed";
       showToast("error", msg);
     } finally {
+      // RE-LIST EVEN ON FAILURE. `fn` is not always one write: "Add all" adds a
+      // driver per device, so a batch that dies on the fourth has still created
+      // three — and reloading only on success left the list showing NONE of
+      // them. The rows still offered "Add", `hwAlreadyConfigured` still said no,
+      // and the obvious response to a red toast — tap it again — created a
+      // second driver for the same physical device. Whatever happened, the list
+      // now shows what the server actually holds.
+      await reload();
       setBusy(false);
     }
   };
@@ -162,8 +169,20 @@ export default function DriversPanel(): JSX.Element {
       // Sequential, not Promise.all: each add mints a server-side id off the
       // current config file — concurrent POSTs racing that read-modify-write
       // is the kind of thing worth just not risking.
+      let added = 0;
       for (const f of toAdd) {
-        await addDriverForHardware(f);
+        try {
+          await addDriverForHardware(f);
+        } catch (e) {
+          // Name what DID land. `run` re-lists either way now, so the created
+          // rows come back as "already configured" — but a bare "failed" beside
+          // three new rows is the kind of report that gets re-tapped.
+          throw new Error(
+            `Added ${added} of ${toAdd.length}, then ${f.name} failed: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        added++;
       }
     }, `${toAdd.length} driver(s) added`);
   };
