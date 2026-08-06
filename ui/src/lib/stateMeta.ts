@@ -26,6 +26,10 @@ export interface StateMeta {
 const MAP: Record<SequenceState["state"], StateMeta> = {
   running: { icon: "monitor", label: "RUNNING", tone: "good", blinkable: true },
   paused: { icon: "pause", label: "PAUSED", tone: "warn", blinkable: false },
+  // Still LIVE — the teardown is running and the rig has not stopped. It blinks
+  // for the same reason RUNNING does: something is still happening. Without this
+  // entry the fallback below reads IDLE over a rig that is winding down.
+  aborting: { icon: "stop", label: "ABORTING", tone: "warn", blinkable: true },
   complete: { icon: "check", label: "COMPLETE", tone: "accent", blinkable: false },
   aborted: { icon: "stop", label: "ABORTED", tone: "bad", blinkable: false },
   error: { icon: "alert", label: "ERROR", tone: "bad", blinkable: false },

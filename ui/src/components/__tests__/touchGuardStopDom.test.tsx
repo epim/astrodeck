@@ -209,6 +209,85 @@ await scenario().catch((e: unknown) => {
   failures.push(`x the scenario could not be driven to the end: ${(e as Error).message}`);
 });
 
+// ------------------------------------------- THE TEARDOWN (review #9b)
+// /api/sequence/abort AWAITS the whole wind-down — abort the exposure, stop the
+// guider, panel/cover off, finalize, drain the thumbnails — up to ~210 s against
+// api.ts's 15 s cap. So on any real teardown this button's abort comes back
+// REJECTED, and this overlay is the only surface a locked screen has: it read
+// "STOP DID NOT LAND" over a rig that was stopping exactly as asked, at 3am, on
+// the control someone presses when something is already wrong.
+//
+// The wire mock resolves rather than throwing, so the timeout is injected the
+// way api.ts actually produces one: the global DOMException it tests with.
+let timeoutMatch: string | null = null;
+const calls: string[] = [];
+const baseFetch = g.fetch;
+g.fetch = (url: string, init?: any) => {
+  calls.push(String(url));
+  if (timeoutMatch != null && String(url).includes(timeoutMatch)) {
+    return Promise.reject(new DOMException("Timeout", "TimeoutError"));
+  }
+  return baseFetch(url, init);
+};
+
+async function teardownScenario(): Promise<void> {
+  timeoutMatch = "/api/sequence/abort";
+  buzzes.length = 0;
+  press(stopBtn());
+  await flush();
+  answer("/api/mount/stop", "ok");
+  await flush();
+
+  test("an abort that outlives the request budget is not a stop that did not land", () => {
+    const t = overlayText();
+    assert(/DID NOT LAND/i.test(t) === false,
+      `the lock screen reports a failure over an abort that is running exactly as ` +
+      `asked: ${t.slice(0, 200)}`);
+    assert(/stopped/i.test(t),
+      `PRECONDITION: the press produced no answer at all: ${t.slice(0, 200)}`);
+    assert(buzzes.includes(ERROR_PATTERN) === false,
+      `the error pattern buzzed for a teardown in progress (${buzzes.join(" ")})`);
+  });
+
+  // The engine's own frame lands: the teardown is running, the rig has NOT
+  // stopped. This screen is read before someone walks out to the scope.
+  act(() => {
+    useStore.setState({ sequence: { state: "aborting", plan_name: "Tonight" } } as never);
+  });
+
+  test("while the engine says aborting, the lock screen does not claim it is done", () => {
+    const t = overlayText();
+    assert(/still stopping/i.test(t),
+      `the lock screen says the teardown is over while it is running: ${t.slice(0, 220)}`);
+    assert(/sequence aborted\./i.test(t) === false,
+      "the overlay claims the sequence is aborted while the guider is still guiding " +
+      "and the flat panel is still lit");
+  });
+
+  test("a second press does not fire a second abort at a teardown in flight", () => {
+    calls.length = 0;
+    press(stopBtn());
+    // The MOUNT stop must still go every time — it is idempotent and it is the
+    // reason this control exists.
+    assert(calls.some((c) => c.includes("/api/mount/stop")),
+      "the second press stopped sending the motion stop — the one thing this " +
+      "button must always do");
+    assert(calls.some((c) => c.includes("/api/sequence/abort")) === false,
+      "a second abort went out at a task already inside its own cancellation " +
+      "handler: the re-cancel severs the wind-down after abort_exposure, so the " +
+      "guider is never stopped and the report is never finalized");
+  });
+  await flush();
+  answer("/api/mount/stop", "ok");
+  await flush();
+  timeoutMatch = null;
+}
+
+await teardownScenario().catch((e: unknown) => {
+  failed++;
+  failures.push(`x the teardown scenario could not be driven to the end: ${(e as Error).message}`);
+});
+
 // ------------------------------------------------------------------- report
 act(() => { root.unmount(); });
 const total = passed + failed;

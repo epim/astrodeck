@@ -55,6 +55,10 @@ function SeqStateBadge({ state }: { state: string }) {
     // channel that survives a red-light screen where hue barely reads.
     pausing: { icon: "pause", cls: "text-warn blink", word: "PAUSING" },
     paused: { icon: "pause", cls: "text-warn", word: "PAUSED" },
+    // ABORTING is an engine state and it is NOT terminal: the wind-down is
+    // running and the rig has not stopped. Warn tone + blink, like PAUSING —
+    // the danger tone belongs to the state where it has actually stopped.
+    aborting: { icon: "stop", cls: "text-warn blink", word: "ABORTING" },
     complete: { icon: "check", cls: "text-good", word: "COMPLETE" },
     error: { icon: "x", cls: "text-bad", word: "ERROR" },
     aborted: { icon: "stop", cls: "text-bad", word: "ABORTED" },
@@ -313,7 +317,14 @@ export default function SequenceView() {
     return act(() => api.post("/api/sequence/start", { ...plan, force }));
   };
 
-  const running = sequence.state === "running" || sequence.state === "paused";
+  // "aborting" IS LIVE (types.ts): the engine publishes it for the whole
+  // ~210 s wind-down, and this predicate gates the panel, the badge and the
+  // Abort control itself. Reading it as not-running unmounted all three over a
+  // rig that was still stopping — worse than the stale RUNNING panel it
+  // replaced. Same fold as PolarView's "pausing".
+  const serverAborting = sequence.state === "aborting";
+  const running = sequence.state === "running" || sequence.state === "paused"
+    || serverAborting;
   // THE GAP PAUSE CANNOT CLOSE. `engine.pause()` clears an asyncio.Event and
   // publishes state="paused" in the same breath, but the run loop only rechecks
   // that flag at the top of the next frame (`_checkpoint`) — so the shutter open
@@ -363,15 +374,23 @@ export default function SequenceView() {
   const [aborting, setAborting] = useState(false);
   useEffect(() => {
     if (!aborting) return;
-    if (!running) { setAborting(false); return; }   // the engine reported a terminal state
+    // `running` now includes "aborting", so this only fires on a genuinely
+    // TERMINAL state. It used to fire on the engine's first "aborting" frame —
+    // deleting the label the instant the server started agreeing with it.
+    if (!running) { setAborting(false); return; }
     // ...and expire, so a dropped socket cannot leave the row dead. Re-posting is
     // safe: abort on a finished task just republishes "aborted".
     const t = window.setTimeout(() => setAborting(false), 60_000);
     return () => clearTimeout(t);
   }, [aborting, running]);
+  // The local latch covers the gap before the first "aborting" frame lands (and
+  // an old server that never sends one); the server frame covers a teardown that
+  // outlives the 60 s expiry above, and a client that arrived mid-teardown and
+  // never saw the press. Either one means: a teardown is in flight.
+  const abortInFlight = aborting || serverAborting;
 
   const abortSequence = async () => {
-    if (aborting) return;
+    if (abortInFlight) return;
     setAborting(true);
     try {
       await api.post("/api/sequence/abort");
@@ -772,10 +791,10 @@ export default function SequenceView() {
             <div className="flex flex-wrap gap-2 mt-3">
               {!canRun && running && <ReadOnlyBadge />}
               {canRun && sequence.state === "running" && (
-                <button className="btn tap min-h-[44px]" disabled={aborting}
+                <button className="btn tap min-h-[44px]" disabled={abortInFlight}
                   onClick={() => act(() => api.post("/api/sequence/pause"))}>Pause</button>
               )}
-              {canRun && sequence.state === "paused" && !aborting && (
+              {canRun && sequence.state === "paused" && !abortInFlight && (
                 // While PAUSING the pause has not taken effect, so this button
                 // does not resume anything — it CANCELS the pause and the run
                 // never stops. Saying "Resume" there would have claimed a
@@ -792,23 +811,23 @@ export default function SequenceView() {
                 // Abort stops an unattended multi-hour run — non-urgent destructive,
                 // so it's a hold-to-confirm (spec §1c). Motion stops (STOP/Halt) stay
                 // single-tap; Abort is not a motion stop.
-                <HoldButton label="Abort sequence" disabled={aborting}
+                <HoldButton label="Abort sequence" disabled={abortInFlight}
                   onConfirm={() => { void abortSequence(); }}>
                   {(bind) => (
                     <button
                       type="button"
                       className={`btn btn-danger tap min-h-[44px] relative overflow-hidden select-none
-                        ${aborting ? "opacity-60" : ""}`}
+                        ${abortInFlight ? "opacity-60" : ""}`}
                       style={{ touchAction: "none" }}
                       // Hard-disabled, not merely relabelled: HoldButton's own
                       // `disabled` has already made the handlers inert, and a
                       // button that looks pressable while it is not is the exact
                       // dishonesty this row is being fixed for.
-                      disabled={aborting}
-                      aria-label={aborting
-                        ? "Aborting the sequence — stopping the run and parking"
+                      disabled={abortInFlight}
+                      aria-label={abortInFlight
+                        ? "Aborting the sequence — ending the exposure and stopping the guider"
                         : bind["aria-label"]}
-                      aria-busy={aborting || undefined}
+                      aria-busy={abortInFlight || undefined}
                       onPointerDown={bind.onPointerDown}
                       onPointerUp={bind.onPointerUp}
                       onPointerCancel={bind.onPointerUp}
@@ -833,10 +852,10 @@ export default function SequenceView() {
                           instead, and reports what is slow about it. */}
                       <span className="relative flex flex-col items-center leading-tight"
                         aria-live="polite">
-                        <span>{aborting ? "Aborting…" : bind.armed ? bind.hintLabel : "Abort"}</span>
-                        {aborting ? (
+                        <span>{abortInFlight ? "Aborting…" : bind.armed ? bind.hintLabel : "Abort"}</span>
+                        {abortInFlight ? (
                           <span className="text-[9px] tracking-wider normal-case opacity-75">
-                            stopping the run and parking
+                            ending the exposure and the guider
                           </span>
                         ) : !bind.armed && (
                           <span className="text-[9px] tracking-wider normal-case opacity-75">hold to confirm</span>

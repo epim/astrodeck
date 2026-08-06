@@ -312,9 +312,15 @@ def get_service() -> UpdateService:
         from ..hub import hub
         _service = UpdateService(
             cfg_getter=lambda: config_store.cfg().update, hub=hub)
+        # Every ``update`` WS frame IS update_state.snapshot(), so the apply gate
+        # has to be answerable from there or each frame erases it on the client
+        # (see UpdateState.bind_gate). Bound to the singleton only -- a service
+        # a test builds by hand stays out of the process-wide state.
+        update_state.bind_gate(_service)
     return _service
 
 
 def reset_service() -> None:  # test seam
     global _service
     _service = None
+    update_state.bind_gate(None)

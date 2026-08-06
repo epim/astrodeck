@@ -1699,7 +1699,12 @@ export const useStore = create<AppState>((set, get) => ({
           } else if (runBanner) {
             runBanner = { ...runBanner, percent };
           }
-        } else if (seq.state === "paused") {
+        } else if (seq.state === "paused" || seq.state === "aborting") {
+          // "aborting" is NOT terminal: the engine publishes it for the whole
+          // wind-down (types.ts). Clearing the banner there took the run off
+          // every other screen — and the banner is the only thing outside the
+          // Monitor that says a run is happening — while the rig was still
+          // stopping. It clears when "aborted" lands, which is when it is true.
           if (runBanner) runBanner = { ...runBanner, percent };
         } else {
           // idle / complete / aborted / error / nina_native → clear the banner.

@@ -473,7 +473,17 @@ export interface SequenceProgress {
 
 export interface SequenceState {
   // "nina_native" lets the Monitor show the honest "NINA is driving" state.
-  state: "idle" | "running" | "paused" | "complete" | "aborted" | "error" | "nina_native";
+  //
+  // "aborting" IS STILL A LIVE RUN. POST /api/sequence/abort awaits the whole
+  // wind-down — abort the exposure, stop the guider, panel/cover off, finalize
+  // the report, drain the thumbnails — which is ~210 s worst case against a 15 s
+  // request cap, so the engine publishes it the moment the teardown starts and
+  // only says "aborted" once the rig has actually stopped (sequence/engine.py,
+  // same two-step as polar's pausing/paused). Every is-live predicate must
+  // include it: a client that treats it as terminal blanks the run panel and
+  // the Abort control over a rig that is still moving.
+  state: "idle" | "running" | "paused" | "aborting" | "complete" | "aborted"
+    | "error" | "nina_native";
   detail?: string;
   target?: string;
   target_index?: number;
