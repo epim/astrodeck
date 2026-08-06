@@ -554,7 +554,7 @@ export function podSlotStyle(p: {
 export function FocusPodArc({
   actions, exposureS, nextExposure, step, nextStep, looping,
   radius = POD_CHIP_R, badgeRadius = POD_BADGE_R,
-  onExposure, onStep, slot, onPress, arcRef, onKeyDown,
+  onExposure, onStep, slot, onPress, arcRef, onKeyDown, exposureReason = null,
 }: {
   actions: PodAction[];
   exposureS: number | null;
@@ -562,6 +562,11 @@ export function FocusPodArc({
   step: number;
   nextStep: number;
   looping: boolean;
+  /** Why the exposure cannot be changed, or null. Over a RUNNING loop this
+   *  badge does not merely write a number into a box — it restarts the loop —
+   *  so when that restart is refused the badge must be refused with it, or it
+   *  goes on printing an exposure the camera is not using. */
+  exposureReason?: string | null;
   /** Chip and badge radii for this stage, already clamped by `podLayout`. */
   radius?: number;
   badgeRadius?: number;
@@ -623,7 +628,17 @@ export function FocusPodArc({
   // SHOOT's angle and the step badge sits between − and +, which is the same
   // minus·value·plus silhouette the rail's thumb row already has, so the two
   // read as the same control in two places.
-  const exposureBadge = (
+  const exposureBadge = exposureReason ? (
+    // Same locked treatment as a blocked chip (header note 3), and the same
+    // sentence the rail's presets carry — a badge that stayed live over a
+    // refused restart would light up for an exposure the loop is not using.
+    <LockedChip
+      reason={exposureReason}
+      className="btn mono !normal-case justify-center !px-2 min-w-[44px] min-h-[44px]"
+    >
+      <span className="text-[11px]">{exposureS == null ? "—" : `${exposureS}s`}</span>
+    </LockedChip>
+  ) : (
     <button
       type="button"
       role="menuitem"
@@ -724,6 +739,9 @@ export interface FocusPodProps extends PodActionInputs {
   /** The rail's own `applyPreset` — which RESTARTS a running loop, because
    *  hub.start_loop closes over the exposure it was handed. */
   onExposure: (s: number) => void;
+  /** …and the rail's own reason for refusing that restart, so the badge and the
+   *  five presets two inches away are blocked by one sentence or by neither. */
+  exposureReason?: string | null;
   /** The rail's own `setStep`, so the dial in the panel and the badge here are
    *  one value and cannot drift apart. */
   onStep: (v: number) => void;
@@ -935,6 +953,7 @@ export default function FocusPod(props: FocusPodProps): JSX.Element {
             radius={layout.radius}
             badgeRadius={layout.badgeRadius}
             onExposure={onExposure}
+            exposureReason={props.exposureReason ?? null}
             onStep={onStep}
             slot={slot}
             onPress={close}

@@ -1,6 +1,7 @@
 // focusMove.test.ts — pressing Go must never look identical to not pressing Go.
 import {
-  ARRIVAL_TOLERANCE_STEPS, STALL_GRACE_MS, anchorBlocker, moveProgress,
+  ARRIVAL_TOLERANCE_STEPS, ARRIVED_LINGER_MS, MOVE_IN_FLIGHT_REASON,
+  STALL_GRACE_MS, STALL_LINGER_MS, anchorBlocker, moveProgress, retireAfterMs,
   type FocuserCommand,
 } from "../focusMove";
 
@@ -81,6 +82,72 @@ test("position 0 is a real position, not a missing one", () => {
   const p = moveProgress(cmd({ target: 5000 }), 0, false, T0 + 60_000, T0);
   ok(p != null, "0 must not be treated as absent");
   eq(p!.tone, "warn");
+});
+
+// ------------------------------------------------------ retiring the command
+// A command held forever is why the NEXT motion of the focuser — a sweep, a
+// coarse walk, the sequencer — was narrated as the user's last Go and ended in
+// an orange "not moving, asked for 22000" about a move that finished minutes
+// earlier. The Focus page's own version of this is asserted end-to-end in
+// views/__tests__/focusHonesty.test.tsx; the DELAYS are here, because a test
+// cannot sit through 90 seconds of them.
+
+const retire = (over: Partial<Parameters<typeof retireAfterMs>[0]> = {}) =>
+  retireAfterMs({ settled: false, tone: "info", sweepOwnsFocuser: false,
+                  sequenceRunning: false, ...over });
+
+test("a move still under way is not retired", () => {
+  eq(retire(), null);
+});
+
+test("an arrived move lingers long enough to read, then goes", () => {
+  eq(retire({ settled: true, tone: "good" }), ARRIVED_LINGER_MS);
+  ok(ARRIVED_LINGER_MS >= 5000, "too short to read after looking at the image");
+});
+
+test("a REFUSED move outstays a confirmation — it is the fault report", () => {
+  const warn = retire({ settled: true, tone: "warn" });
+  eq(warn, STALL_LINGER_MS);
+  ok(warn! > ARRIVED_LINGER_MS,
+     "the 'stopped at 360, asked for 22000' line must outlive an 'at 22000'");
+});
+
+test("a sweep taking the focuser retires it immediately, mid-move or not", () => {
+  // The numbers are the sweep's now — every frame we keep the old target is a
+  // frame that reports somebody else's motion as ours.
+  eq(retire({ sweepOwnsFocuser: true }), 0);
+  eq(retire({ settled: true, tone: "warn", sweepOwnsFocuser: true }), 0);
+});
+
+test("a running sequence retires a FINISHED command but never a live one", () => {
+  // Nudging during a run is allowed, and a nudge with no narration is the
+  // failure this whole file exists to fix. What must not survive is the
+  // finished target, which the run's own next refocus would be reported as.
+  eq(retire({ sequenceRunning: true }), null, "an in-flight nudge lost its narration");
+  eq(retire({ settled: true, tone: "good", sequenceRunning: true }), 0);
+});
+
+test("a REFUSED move keeps its fault report even under a running sequence", () => {
+  // The case the first cut of the sequence gate erased. A run does not take the
+  // focuser away from the operator — the docstring above says nudging during
+  // one is allowed — so the nudge that the firmware REFUSES happens under a
+  // sequence as readily as without one. Retiring at 0 there clears `cmd` in the
+  // same commit that first renders "not moving — stopped at 360, asked for
+  // 22000": the one line this module exists to print, deleted on the frame it
+  // appears, leaving the tap looking exactly like not having tapped.
+  //
+  // Only the ARRIVED confirmation is expendable to a run — "at 22000" has
+  // already been believed by then, and what it costs to keep is the run's next
+  // refocus being narrated as the user's Go.
+  const warn = retire({ settled: true, tone: "warn", sequenceRunning: true });
+  ok(warn !== 0, "the refusal was erased on the frame it appeared");
+  eq(warn, STALL_LINGER_MS, "a refusal under a run gets the same linger as one without");
+});
+
+test("the in-flight refusal names the way out", () => {
+  // A second move is a 409 off the `focuser` lane; Halt is the only way to end
+  // the first one early, and it is the button directly beside the refusal.
+  ok(/halt/i.test(MOVE_IN_FLIGHT_REASON), MOVE_IN_FLIGHT_REASON);
 });
 
 // ------------------------------------------------------- re-anchoring guard

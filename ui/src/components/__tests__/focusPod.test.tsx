@@ -701,6 +701,26 @@ test("open arc: the exposure badge warns that a preset RESTARTS a running loop",
   assert(idle.includes("Use 5s for the next frame"), "an idle rig gets the plain phrasing");
 });
 
+test("open arc: a refused restart locks the exposure badge, with the rail's reason", () => {
+  // The badge does not merely write a number into a box over a running loop —
+  // it restarts the loop. When the rig will not take that restart (a sweep owns
+  // the camera, a half-typed gain, a read-only session) a live badge would go on
+  // offering an exposure the camera is not going to use, which is the same
+  // broken promise the rail's five presets carry when they light up for a
+  // dropped restart (FocusView #48).
+  const reason = "Autofocus owns the camera until the sweep finishes";
+  const html = renderToStaticMarkup(arcEl(
+    { looping: true, nextExposure: 5, exposureReason: reason }, { looping: true }));
+  assert(html.includes(reason), "the blocked badge does not carry the rail's sentence");
+  assert(!html.includes("Restart the loop at 5s"),
+    "the badge still promises a restart the rig has already refused");
+  assert(html.includes('aria-disabled="true"'),
+    "the blocked badge is not marked aria-disabled");
+  // Still shows the exposure in force: a locked control that also hides the
+  // value would cost the user the one fact they came to the corner to read.
+  assert(html.includes("3s"), "the locked badge dropped the current exposure");
+});
+
 test("open arc: the step badge names the value it will move to", () => {
   const html = renderToStaticMarkup(arcEl({ step: 10, nextStep: 100 }));
   assert(html.includes("Focuser step 10 — tap for 100"),
