@@ -39,14 +39,29 @@ export interface VisibilityPanelProps {
   /** horizon limit (default 30); ties to the future per-site horizon setting. */
   altLimit?: number;
   /** lets the parent (AtlasView) lift the night so the Mosaic reality-check
-   *  (Owner C) can cross-reference best_window / set time. */
-  onNight?: (night: VisibilityNight | null) => void;
+   *  (Owner C) can cross-reference best_window / set time.
+   *
+   *  `forCenter` is the (rounded) point the night was computed for, and it is
+   *  not decoration: this panel debounces 300 ms and then waits on an astropy
+   *  round trip, so for most of a drag the newest night the parent holds still
+   *  describes where the frame USED to be. Stamping it lets the parent tell
+   *  "tonight, here" from "tonight, back there" instead of assuming the two are
+   *  the same because the callback was the most recent one. */
+  onNight?: (
+    night: VisibilityNight | null,
+    forCenter: { ra_hours: number; dec_deg: number },
+  ) => void;
 }
 
 type LoadState =
   | { kind: "loading" }
+  // `ra`/`dec` are the rounded key the night was fetched for. The previous
+  // chart is deliberately left up while the next one is computed (blanking it
+  // on every pointer-move of a drag is worse), so the panel has to be able to
+  // notice that what is on screen answers for a different point than the one
+  // the frame is on now — see `stale` below.
   | { kind: "error"; message: string }
-  | { kind: "ok"; night: VisibilityNight };
+  | { kind: "ok"; night: VisibilityNight; ra: number; dec: number };
 
 export const VisibilityPanel = memo(function VisibilityPanel({
   ra_hours,
@@ -96,15 +111,15 @@ export const VisibilityPanel = memo(function VisibilityPanel({
         .get<VisibilityNight>(url)
         .then((night) => {
           if (!alive) return;
-          setState({ kind: "ok", night });
-          onNight?.(night);
+          setState({ kind: "ok", night, ra: keyRa, dec: keyDec });
+          onNight?.(night, { ra_hours: keyRa, dec_deg: keyDec });
         })
         .catch((e) => {
           if (!alive) return;
           const message =
             e instanceof ApiError ? e.message : "couldn't compute visibility";
           setState({ kind: "error", message });
-          onNight?.(null);
+          onNight?.(null, { ra_hours: keyRa, dec_deg: keyDec });
         });
     }, 300);
     return () => {
@@ -116,6 +131,15 @@ export const VisibilityPanel = memo(function VisibilityPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyRa, keyDec, altLimit, reloadKey]);
 
+  // On screen, but computed for a point the frame has already left. Every
+  // number below — transit, best window, hours above the limit, moon separation
+  // — is a claim about a specific patch of sky, and a chart that keeps making
+  // them about the last patch while the user drags is the most confident kind
+  // of wrong. Dim it and say so, rather than blanking it (which flickers the
+  // whole panel once per settle) or leaving it (which lies).
+  const stale =
+    state.kind === "ok" && (state.ra !== keyRa || state.dec !== keyDec);
+
   return (
     <Panel title="Tonight">
       {state.kind === "loading" && <VisLoading />}
@@ -126,7 +150,14 @@ export const VisibilityPanel = memo(function VisibilityPanel({
         />
       )}
       {state.kind === "ok" && (
-        <VisChart night={state.night} nowUnix={nowRef.current} />
+        <div aria-busy={stale || undefined} className={stale ? "opacity-60" : undefined}>
+          <VisChart night={state.night} nowUnix={nowRef.current} />
+        </div>
+      )}
+      {stale && (
+        <p className="mt-2 text-[12px] text-dim leading-snug" aria-live="polite">
+          Recomputing for the new centre — everything above is still the last one.
+        </p>
       )}
       {/* The chart above answers for ONE point. A mosaic is up to a hundred
           pointings spread across the sky, and until this landed the page said
