@@ -880,3 +880,133 @@ async def test_park_stays_idempotent(fixed_env):
     fl.sent.clear()
     await tel.park()
     assert "hP" not in fl.sent
+
+
+# ------------------------------------------- park after a stop (rig 2026-08-06)
+#
+# REPRODUCED ON HARDWARE. goto -> stop -> park logged "park did not complete
+# within 60s (mount still reports unparked)" and left the mount UNPARKED and
+# TRACKING in daylight. The identical park from an idle mount succeeded in about
+# 12 s, so the defect is specifically park-issued-into-a-halt-window: :Q# is
+# fire-and-forget, the axes have mass, and the ack-class :Td# that park sends
+# first lands where the mount is least able to answer. That timeout was
+# swallowed by a bare ``except Exception: pass``, leaving tracking ON for the
+# :hP# that followed — the one state this driver already knows makes park a
+# silent no-op.
+#
+# stop-then-park is the EMERGENCY shape: safety abort, dawn park, the sun
+# watchdog, any aborted session.
+
+
+def _park_script(**over):
+    """Connect script for an UNPARKED, TRACKING mount that parks when asked."""
+    s = _connect_script(Gps="0", GAT="1")
+    s.update(over)
+    return s
+
+
+async def test_park_waits_out_a_halt_before_commanding_anything(fixed_env, monkeypatch):
+    """The regression proper. After :Q#, park must not talk to the mount until
+    the halt window has closed on EVIDENCE — two settled position reads."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    # Position moves for two reads, then settles: the mount coasting to a stop.
+    positions = ["10:00:00", "10:00:30", "11:00:00", "11:00:00", "11:00:00"]
+    decs = ["+40*00:00", "+41*00:00", "+45*00:00", "+45*00:00", "+45*00:00"]
+    fl = FakeLink(_park_script(GR=list(positions), GD=list(decs),
+                               Gps=["0", "0", "2"], Td="1", GAT=["1", "0"]))
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+
+    await tel.stop()                       # :Q# — opens the halt window
+    assert tel._halting is True, "precondition: the halt window must be open"
+    fl.sent.clear()
+
+    await tel.park()
+
+    # The park must come AFTER the reads that proved the mount stopped moving,
+    # and after the drive was stopped. Order is the whole subject here.
+    assert "hP" in fl.sent, f"the park was never sent: {fl.sent}"
+    park_at = fl.sent.index("hP")
+    assert fl.sent.index("Td") < park_at, \
+        f"tracking must be stopped BEFORE :hP#, got {fl.sent}"
+    assert fl.sent[:park_at].count("GR") >= 2, (
+        "park sent :hP# without waiting for two settled position reads — this "
+        f"is the 2026-08-06 failure: {fl.sent}")
+    assert tel._halting is False
+
+
+async def test_a_park_that_is_ignored_with_tracking_on_is_retried(fixed_env, monkeypatch):
+    """The documented silent no-op: :hP# with tracking on is accepted and does
+    nothing. One retry, after re-asserting tracking-off, must recover it."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    monkeypatch.setattr(am5, "PARK_WAIT_S", 0.05)
+    # The mount reports parked ONLY after a second :hP#, which is precisely
+    # "the first park was accepted and did nothing". Driven off the sent log
+    # rather than a fixed list so the test states the behaviour it means and
+    # cannot be broken by an extra poll.
+    fl: FakeLink
+    fl = FakeLink(_park_script(
+        GAT="1",                                    # tracking never reads off
+        Gps=lambda _cmd: "2" if fl.sent.count("hP") >= 2 else "0",
+        Td="1"))
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+
+    await tel.park()
+
+    assert fl.sent.count("hP") == 2, \
+        f"a park ignored with tracking on must be retried once: {fl.sent}"
+    assert fl.sent.count("Td") >= 2, \
+        f"the retry must re-assert tracking-off first: {fl.sent}"
+
+
+async def test_a_park_that_never_lands_says_tracking_is_why(fixed_env, monkeypatch):
+    """When both attempts fail AND tracking is still on, the error must name it
+    — that is the difference between a diagnosable failure and a mystery."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    monkeypatch.setattr(am5, "PARK_WAIT_S", 0.05)
+    fl = FakeLink(_park_script(GAT="1", Gps="0", Td="1"))   # never stops, never parks
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+
+    with pytest.raises(DeviceError) as e:
+        await tel.park()
+    msg = str(e.value)
+    assert "two attempts" in msg, msg
+    assert "tracking is still on" in msg, \
+        f"the error must name the cause it knows about: {msg}"
+
+
+async def test_a_mount_that_will_not_talk_still_gets_its_park_attempt(fixed_env, monkeypatch):
+    """The instinct in the old bare ``except`` was right and is preserved: this
+    path is the last thing between the sun and the optics, so a mount that
+    cannot report or stop tracking must still be SENT the park."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    monkeypatch.setattr(am5, "PARK_WAIT_S", 0.05)
+    # GAT unscripted -> LinkError on every read, exactly like a silent mount.
+    s = _park_script(Gps=["0", "0", "2"])
+    s.pop("GAT")
+    fl = FakeLink(s)
+    tel = am5.ZwoAm5Telescope(fl)
+    tel._connected = True                  # skip connect: it reads GAT
+    await tel.park()
+    assert "hP" in fl.sent, \
+        f"a mount that will not answer must still be sent the park: {fl.sent}"
+
+
+async def test_the_halt_drain_is_bounded_not_indefinite(fixed_env, monkeypatch):
+    """A halt window that never closes must not hang the park forever — an
+    unparked mount is worse than a slow one."""
+    monkeypatch.setattr(am5, "PARK_POLL_S", 0.0)
+    monkeypatch.setattr(am5, "PARK_WAIT_S", 0.05)
+    monkeypatch.setattr(am5, "HALT_DRAIN_TIMEOUT_S", 0.05)
+    # Position never settles: every read is different, so _halting never clears.
+    ras = [f"{h:02d}:00:00" for h in range(24)] * 20
+    fl = FakeLink(_park_script(GR=ras, Gps=["0", "0", "2"], Td="1", GAT=["1", "0"]))
+    tel = am5.ZwoAm5Telescope(fl)
+    await tel.connect()
+    await tel.stop()
+    assert tel._halting is True
+
+    await asyncio.wait_for(tel.park(), 10.0)     # must not hang
+    assert "hP" in fl.sent
