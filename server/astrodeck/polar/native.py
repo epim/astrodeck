@@ -82,6 +82,22 @@ _DONE_THRESHOLD_ARCMIN = 1.0
 _ADJUST_INTERVAL_S = 1.0
 _MAX_ADJUST_UPDATES = 240
 
+#: Consecutive failed live updates after which the displayed number is treated
+#: as stale rather than current. At the 1 s cadence this is under a minute — long
+#: enough to ride out a passing cloud, short enough that "alignment session
+#: ended" never means "the panel froze while you were turning a bolt".
+_STALE_UPDATE_LIMIT = 30
+
+#: Seconds one leg of the measurement arc takes: slew, settle, expose, solve.
+#:
+#: Used ONLY to project where the sky will be when each point is actually
+#: reached. The arc is not instantaneous, and for a western arc the sidereal
+#: clock pushes hour angle the SAME way the step does, so projecting all three
+#: points at "now" makes the altitude check optimistic exactly where it matters.
+#: Measured on the rig 2026-08-06: consecutive point log lines 19 s apart on a
+#: clean run, 43 s on one that included a re-slew. Rounded up.
+_ARC_LEG_SECONDS = 45.0
+
 #: Log the measured position-angle spread once it exceeds this. The three frames
 #: are supposed to differ by a pure RA rotation; a spread this large means the
 #: camera/pier angle moved between them (a meridian flip, a rotator step), and
@@ -293,6 +309,7 @@ async def _drive(session: Any, hub: Any) -> None:
 
     # ---- PHASE adjusting: live re-scale while the user turns the knobs -----
     updates_published = 0
+    stale_updates = 0
     for _ in range(_MAX_ADJUST_UPDATES):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
@@ -315,8 +332,10 @@ async def _drive(session: Any, hub: Any) -> None:
             # A degenerate live update (parallel correction lines / collapsed
             # leg) must not kill the session — surface it and keep going.
             bus.log("warning", f"native TPPA update skipped: {e}", "polar")
+            stale_updates += 1
             continue
         updates_published += 1
+        stale_updates = 0
         done = err["total_arcmin"] <= _DONE_THRESHOLD_ARCMIN
         _publish_error(session, err, phase="adjusting", point_index=2,
                        progress=1.0 if done else 0.85,
@@ -327,13 +346,27 @@ async def _drive(session: Any, hub: Any) -> None:
             return
 
     # Safety cap reached (session left running): settle on a terminal state
-    # rather than spin. The last published error stands — UNLESS there is no
-    # such thing, because every update failed. Reporting "done" for a phase that
-    # produced nothing tells the operator their adjustment was tracked when the
-    # panel was frozen on the initial fit the whole time.
-    if updates_published:
+    # rather than spin. The last published error stands — UNLESS the number on
+    # screen is not live. Reporting "done" for a phase whose panel is frozen
+    # tells the operator their adjustment was tracked when it was not.
+    #
+    # Keyed on RECENCY, not on "did one ever succeed". Counting successes alone
+    # meant a single update landing in the first second and the next 239 all
+    # failing was indistinguishable, on screen, from a session that followed the
+    # knobs the whole way — the same defect one notch weaker.
+    if updates_published and stale_updates < _STALE_UPDATE_LIMIT:
         session._publish(state="done", source="native", phase="adjusting",
                          progress=1.0, message="alignment session ended")
+    elif updates_published:
+        bus.log("warning", f"native TPPA: the last {stale_updates} live updates "
+                "failed — the number on screen is stale", "polar")
+        session._publish(
+            state="error", source="native", phase="adjusting", progress=1.0,
+            message=f"the live error stopped updating: the last {stale_updates} "
+                    "measurements failed, so the number on screen is older than "
+                    "your most recent adjustment and does not reflect it. Check "
+                    "that the sky is clear and the camera is still solving, then "
+                    "run the alignment again.")
     else:
         bus.log("warning", "native TPPA: every live update failed — the panel "
                 "never moved off the initial fit", "polar")
@@ -544,10 +577,16 @@ def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
     The meridian is the highest point of any track, so the arc — which always
     steps AWAY from the meridian — always descends. Projected from the SOLVED
     first point, not the mount's claim. See :data:`MIN_MEASUREMENT_ALT_DEG`."""
+    import time as _time
+
     from ..catalog.coords import altaz
     lat = float(hub.site["latitude"])
     lon = float(hub.site["longitude"])
-    alts = [altaz(result.ra_hours + step_hours * n, result.dec_deg, lat, lon)[0]
+    now = _time.time()
+    # Each point is projected at the time it will actually be REACHED, not at
+    # "now" — see _ARC_LEG_SECONDS.
+    alts = [altaz(result.ra_hours + step_hours * n, result.dec_deg, lat, lon,
+                  now + _ARC_LEG_SECONDS * n)[0]
             for n in range(3)]
     lowest = min(alts)
     if lowest >= LOW_MEASUREMENT_ALT_DEG:
