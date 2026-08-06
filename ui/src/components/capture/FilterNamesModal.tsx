@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 import { useFilterOffsetsLearn } from "../../store";
 import { nameForOpaqueToggle } from "../../lib/filterSlots";
+import { HonestButton } from "../ui";
+import { Icon } from "../icons";
 
 /** Slot to pre-select as the offset reference: an L/Lum/Clear slot when the
  *  wheel has one (case-insensitive), else the wheel's current position. Mirrors
@@ -64,6 +66,11 @@ export function FilterNamesModal({
   const [err, setErr] = useState<string | null>(null);
   const [learnOpen, setLearnOpen] = useState(false);
   const [refSlot, setRefSlot] = useState(0);
+  // Set by a press on the blocked Start. The reason is on screen either way
+  // (see the line under the button); this only raises its voice for the person
+  // who pressed, because a press that produced nothing at all is what got this
+  // control cited in the first place.
+  const [askedWhy, setAskedWhy] = useState(false);
   const learn = useFilterOffsetsLearn();
 
   // Re-seed the drafts from the live wheel each time the modal opens.
@@ -74,6 +81,7 @@ export function FilterNamesModal({
     setDraftOpaque(names.map((_, i) => !!opaque[i]));
     setRefSlot(defaultRefSlot(names, position, opaque));
     setErr(null);
+    setAskedWhy(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -318,17 +326,32 @@ export function FilterNamesModal({
                   <p className="text-[10px] text-dim">
                     Offsets are measured relative to this filter (it stays at 0).
                   </p>
-                  <button
-                    type="button"
-                    className={`btn self-start ${learnDisabledReason ? "opacity-50 cursor-default" : ""}`}
-                    aria-disabled={learnDisabledReason ? true : undefined}
-                    title={learnDisabledReason ? `Unavailable — ${learnDisabledReason}` : undefined}
-                    onClick={learnDisabledReason || !onLearn ? undefined : () => {
+                  {/* Start used to dim itself and keep the whole reason in a
+                      `title=`, which a fingertip never fires — so on the tablet
+                      it was a pale button that depressed under a thumb and did
+                      nothing, forever, with no way to ask why. HonestButton
+                      (house rule §11.8) keeps it focusable and pressable and
+                      routes the press to a reason; the line below states the
+                      same reason to somebody who never presses it, exactly as
+                      the egain twin on the Capture screen does. */}
+                  <HonestButton
+                    className="btn self-start"
+                    reason={onLearn ? (learnDisabledReason ?? null)
+                                    : "this build has no learn handler wired"}
+                    onExplain={() => setAskedWhy(true)}
+                    onClick={() => {
                       setErr(null);
-                      onLearn(effectiveRef).catch((e) => setErr((e as Error).message));
+                      setAskedWhy(false);
+                      onLearn?.(effectiveRef).catch((e) => setErr((e as Error).message));
                     }}>
                     Start
-                  </button>
+                  </HonestButton>
+                  {learnDisabledReason && (
+                    <p role={askedWhy ? "alert" : undefined}
+                      className={`text-[11px] inline-flex items-center gap-1.5 ${askedWhy ? "text-warn" : "text-dim"}`}>
+                      <Icon name="lock" size={11} aria-hidden /> Unavailable — {learnDisabledReason}.
+                    </p>
+                  )}
                   {learn?.state === "running" && (
                     <p className="text-[11px] text-accent" role="status">
                       Focusing {learn.name ?? `slot ${(learn.slot ?? 0) + 1}`}
