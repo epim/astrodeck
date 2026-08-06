@@ -24,7 +24,10 @@ export type NarrationTone = "good" | "warn" | "bad" | "neutral";
 export interface GuideNarration {
   phaseText: string;         // "Guiding well — you can relax"
   tone: NarrationTone;       // colors both the phase line and the verdict
-  verdict: string | null;    // "0.7 px ≈ 1.1″ — good for 3-minute subs" | null
+  /** The second line under the stats: normally the honest-units RMS verdict
+   *  ("0.7 px ≈ 1.1″ — good for 3-minute subs"), or — on a terminal phase the
+   *  user has to act on — what to do next. null when there is nothing to add. */
+  verdict: string | null;
 }
 
 const PRIME = "″"; // ″  (matches GuideView.tsx:51 UX-35)
@@ -56,7 +59,19 @@ export function guideNarration(i: GuideNarrationInput): GuideNarration {
 
   const p = i.phase;
   if (p === "lost") {
-    return { phaseText: "Lost the guide star — trying to recover", tone: "bad", verdict: null };
+    // "lost" is TERMINAL, not transient. The native guider latches `_lost` only
+    // once the reacquire budget is spent, or on a fatal lock loss / wedged
+    // guide camera — and the same latch stops the loop (`_active` goes false,
+    // `_stop` is set). So nothing is "trying to recover": the old wording
+    // described a retry that had already been given up on, and it stayed on
+    // screen indefinitely, since the latch clears only on the next start.
+    // Say what happened and what to do about it instead.
+    return {
+      phaseText: "Guiding stopped — lost the guide star",
+      tone: "bad",
+      verdict: "Nothing is guiding now — the event log says what went wrong. "
+        + "Fix it, then Start Guiding again.",
+    };
   }
   if (p === "finding") {
     return { phaseText: "Finding a guide star…", tone: "neutral", verdict: null };
