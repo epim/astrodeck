@@ -176,6 +176,21 @@ export default function MountView() {
   // because the server 409s a second `goto` outright (it spawns without replace).
   const laneBusy = motionLane.busy || motion != null;
 
+  // ------------------------------------------------------ tracking, in flight
+  // `/api/mount/tracking` is NOT one of the `_spawn` routes, so `useBusy` would
+  // answer false forever here and a control wired to it would never look busy.
+  // The honest in-flight signal is the POST itself — the route awaits the
+  // device, and on a serial LX200 mount that is a real round trip, not a
+  // microtask. `pending` is that signal, named so the row can say which command
+  // is on the wire instead of only dimming (finding 88).
+  const trackingSending = pending === "tracking";
+  // The `goto` lane IS a useBusy lane, and it is the one that matters to this
+  // switch: it carries park, home and goto, and park's entire job is to stop
+  // tracking. A tracking command sent into a committed park is a command
+  // fighting the rig, from a control that looked completely idle — so the lane
+  // takes the switch out of service, with the reason in the row beside it.
+  const trackingBlocked = !canMount || !m || pending !== null || laneBusy;
+
   /** Fire one of the three motions that share the `goto` lane.
    *
    *  `arm()` runs only AFTER the server accepts: the local latch exists to cover
@@ -322,13 +337,33 @@ export default function MountView() {
           </div>
           <div className="mt-4 border-t border-line pt-3 flex flex-col gap-3">
             <div className="flex items-center gap-3">
-              <Toggle checked={!!tracking.value} disabled={!canMount || !m || pending !== null}
+              <Toggle checked={!!tracking.value} disabled={trackingBlocked}
                 onChange={(v) => {
+                  // Guard BEFORE the optimistic paint. `disabled` is what makes
+                  // this unreachable today, but `act()` also silently answers
+                  // false while another command is in flight — and reaching
+                  // `tracking.show(v)` first would flip the switch and flip it
+                  // straight back. A control that visibly moves and then undoes
+                  // itself is worse than one that does not move.
+                  if (trackingBlocked) return;
                   tracking.show(v);
                   void act("tracking", () => api.post(`/api/mount/tracking?on=${v}`))
                     .then((ok) => { if (!ok) tracking.revert(); });
                 }} label="Tracking" />
-              <span className="label">tracking</span>
+              {/* The switch's own state is visible; what is NOT visible is
+                  whether the mount has answered yet, and why the control is
+                  dead when it is. That is what this line carries — so it is a
+                  live region, because a screen-reader user gets nothing at all
+                  from a switch that merely dims. (The `Toggle` primitive takes
+                  no aria-busy and is shared by thirty call sites; the reason
+                  belongs beside this control, not inside the primitive.) */}
+              <span className="label" aria-live="polite">
+                {trackingSending
+                  ? (tracking.value ? "starting…" : "stopping…")
+                  : laneBusy
+                    ? (parking ? "parking" : homing ? "going home" : "mount is moving")
+                    : "tracking"}
+              </span>
               <div className="flex-1" />
               {/* Home — the reference position you START from, and the missing
                   third of this row. Park says "stop and stay stopped"; Home says
@@ -380,7 +415,10 @@ export default function MountView() {
                 <SegmentedControl<"sidereal" | "lunar" | "solar">
                   options={TRACKING_RATE_OPTIONS}
                   value={trackingRate.value}
-                  disabled={!canMount || !m || pending !== null}
+                  // Same gate as the switch above it, for the same reason: a
+                  // rate change is a tracking command, and the row above states
+                  // why both are out of service.
+                  disabled={trackingBlocked}
                   ariaLabel="Tracking rate"
                   onChange={(v) => {
                     trackingRate.show(v);
