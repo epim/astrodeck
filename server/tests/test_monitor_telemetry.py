@@ -356,3 +356,56 @@ def test_monitor_snapshot_carries_a_polar_refusal_across_a_reload(tmp_path,
     finally:
         loop.run_until_complete(hub_module.hub.disconnect_all())
         loop.close()
+
+
+# ---------------------------------------------------------------- busy lanes
+# `busy` is one word (it exists to suppress a stale-telemetry banner) and maps
+# goto/solve/autofocus/capture and four more onto four labels. A UI control that
+# owns ONE lane cannot use it, which is why ~20 controls timed their own HTTP
+# request instead and reported the request rather than the rig (audit
+# 2026-08-05). `busy_lanes` is the same set unreduced.
+
+def test_busy_lanes_names_the_lane_not_the_label():
+    """The distinction the whole fix rests on: two different lanes that collapse
+    to the SAME word must stay distinguishable."""
+    from astrodeck.hub import Hub
+    h = Hub.__new__(Hub)
+    h._busy = {}
+    h._loop_task = None          # `looping` is a read-only property over this
+
+    class _Live:
+        def done(self): return False
+
+    h._busy = {"autofocus": _Live()}
+    assert h.busy_label == "focusing"
+    assert h.busy_lanes() == ["autofocus"]
+
+    h._busy = {"filter_offsets": _Live()}
+    assert h.busy_label == "focusing", "both still collapse to one word"
+    assert h.busy_lanes() == ["filter_offsets"], (
+        "but the lane is what tells a control whether ITS operation is running")
+
+
+def test_busy_lanes_drops_finished_work_and_sorts():
+    from astrodeck.hub import Hub
+    h = Hub.__new__(Hub)
+    h._loop_task = None
+    class _T:
+        def __init__(self, d): self._d = d
+        def done(self): return self._d
+
+    h._busy = {"solve": _T(False), "goto": _T(True), "polar": _T(False)}
+    assert h.busy_lanes() == ["polar", "solve"], "a finished task is not busy"
+
+
+def test_busy_lanes_includes_looping_like_the_label_does():
+    """Looping is not in _busy but IS a long capture operation; the two readers
+    must not disagree about it."""
+    from astrodeck.hub import Hub
+    h = Hub.__new__(Hub)
+    h._busy = {}
+    class _Running:
+        def done(self): return False
+    h._loop_task = _Running()    # what `looping` actually reads
+    assert h.busy_label == "capturing"
+    assert h.busy_lanes() == ["looping"]
