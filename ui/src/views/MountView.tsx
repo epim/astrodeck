@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useStore, useStatus } from "../store";
-import { Panel, Stat, Toggle, IconButton, SegmentedControl } from "../components/ui";
+import { Panel, Stat, Toggle, IconButton, LockedNote, SegmentedControl } from "../components/ui";
 import { confirmDialog } from "../components/ConfirmDialog";
 import SlewPad from "../components/SlewPad";
 import { Icon } from "../components/icons";
 import { useCanControlMount } from "../lib/caps";
+import { useBusyOrPending } from "../lib/useBusy";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
-import type { CatalogEntry, PreflightAlt } from "../types";
+import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 
 /** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7). */
 function AltGlyph({ alt }: { alt: number }) {
@@ -35,9 +36,49 @@ const TRACKING_RATE_OPTIONS: { value: "sidereal" | "lunar" | "solar"; label: str
   { value: "solar", label: "Solar" },
 ];
 
+/** Show what the user just chose until the rig's own telemetry says the same.
+ *
+ *  Tracking and tracking-rate are answered by the device the moment the command
+ *  lands, but everything this view RENDERS comes off the 2 s status frame — so
+ *  the switch sat visibly unmoved for up to two seconds after a deliberate
+ *  press, which is exactly how a control teaches you to press it twice. The
+ *  chosen value paints immediately and is dropped the moment the mount reports
+ *  the same thing, on `revert()` when the POST is refused, or after `timeoutMs`
+ *  — so a mount that never adopts it cannot strand a value on screen that no
+ *  hardware agrees with. */
+function usePendingValue<T>(actual: T | undefined, timeoutMs = 6000) {
+  const [pending, setPending] = useState<T | null>(null);
+  useEffect(() => {
+    if (pending == null) return;
+    if (actual === pending) { setPending(null); return; }
+    const t = setTimeout(() => setPending(null), timeoutMs);
+    return () => clearTimeout(t);
+  }, [pending, actual, timeoutMs]);
+  return {
+    value: pending ?? actual,
+    pending: pending != null,
+    show: (v: T) => setPending(() => v),
+    revert: () => setPending(null),
+  };
+}
+
+/** The newest line the solver wrote, or null.
+ *
+ *  Read imperatively out of the store rather than subscribed: this view has no
+ *  reason to re-render on every log line, it only needs to know what a solve
+ *  left behind when its lane retired. */
+function newestSolveLine(): LogLine | null {
+  const logs = useStore.getState().logs;
+  for (let i = logs.length - 1; i >= 0; i--) {
+    if (logs[i].data.source === "solve") return logs[i];
+  }
+  return null;
+}
+
 export default function MountView() {
   const status = useStatus();
   const showToast = useStore((s) => s.showToast);
+  const enqueueToast = useStore((s) => s.enqueueToast);
   const openFraming = useStore((s) => s.openFraming);
   const canMount = useCanControlMount(); // viewer => pointing visible, controls read-only
   const [query, setQuery] = useState("");
@@ -46,14 +87,115 @@ export default function MountView() {
 
   const m = status?.mount;
 
-  // UX-16: in-flight guard — disables mutating controls during the POST round-trip
-  // so a slow action (esp. Solve & Sync) can't be double-fired and doesn't read dead.
-  const [busy, setBusy] = useState(false);
-  const act = async (fn: () => Promise<unknown>) => {
-    if (busy) return;
-    setBusy(true);
-    try { await fn(); } catch (e) { showToast("error", (e as Error).message); }
-    finally { setBusy(false); }
+  // ---------------------------------------------------------- in-flight state
+  // TWO KINDS OF ROUTE, TWO KINDS OF TRUTH.
+  //
+  // tracking / tracking_rate / unpark answer when the DEVICE answers, so their
+  // POST promise is an honest source of in-flight state — that is what `pending`
+  // covers, and threading it into the disabled expressions is what stops a
+  // repeat tap being swallowed by the guard with no feedback at all.
+  //
+  // park / home / goto / solve_sync do NOT. They `_spawn` a background task and
+  // return {"started": …} the instant it is CREATED, so `await api.post(…)`
+  // resolves in ~40 ms while ASTAP is still solving and the mount is still
+  // swinging. One flag off those promises is how Solve & Sync read ready and
+  // re-pressable for a whole solve, and how "Solving…" appeared over an Unpark.
+  // Those four read the rig's own lanes instead (lib/useBusy.ts), below.
+  const [pending, setPending] = useState<string | null>(null);
+  const act = async (what: string, fn: () => Promise<unknown>): Promise<boolean> => {
+    if (pending) return false;
+    setPending(what);
+    try { await fn(); return true; }
+    catch (e) { showToast("error", (e as Error).message); return false; }
+    finally { setPending(null); }
+  };
+
+  // The mount's own answer, shown at once instead of two seconds later.
+  const tracking = usePendingValue<boolean>(m?.tracking);
+  const trackingRate = usePendingValue<"sidereal" | "lunar" | "solar">(m?.tracking_rate);
+
+  // ---- Solve & Sync: driven by the rig's `solve` lane, not by the request ----
+  const solve = useBusyOrPending("solve");
+  const solving = solve.busy || pending === "solve";
+  // Which line the solver had last written when we asked. The FAILURE half of a
+  // solve already reaches the user — `_spawn` logs "solve failed: …" at error
+  // level and the store toasts every error line — but a solve that WORKED only
+  // ever wrote an info line into the collapsed log drawer, so success and
+  // "nothing happened" looked identical. Comparing line IDENTITY rather than a
+  // timestamp is what stops an old success line being re-announced when a
+  // request never reached the lane at all. `undefined` = not ours to report.
+  const solveAskedFrom = useRef<LogLine | null | undefined>(undefined);
+  const solveLaneWasBusy = useRef(false);
+  useEffect(() => {
+    if (solving) { solveLaneWasBusy.current = true; return; }
+    if (!solveLaneWasBusy.current) return;
+    solveLaneWasBusy.current = false;
+    const before = solveAskedFrom.current;
+    if (before === undefined) return;
+    solveAskedFrom.current = undefined;
+    const line = newestSolveLine();
+    if (line && line !== before && line.data.message.startsWith("solved & synced")) {
+      enqueueToast({
+        level: "success",
+        title: "Solved & synced",
+        detail: "The mount's model now agrees with where the camera is actually pointing.",
+      });
+    }
+  }, [solving, enqueueToast]);
+
+  // ---- park / home / goto: ONE server lane, three controls ----
+  // All three `_spawn("goto", …)`, and park/home do it with replace=True — a
+  // second press CANCELS the operation in flight and starts it over, which on a
+  // park is another 30–60 s of travel. So the lane drives the in-flight state,
+  // and `motion` remembers which of the three THIS tablet asked for: the lane
+  // name cannot tell a park from a slew, and neither can `m.slewing`, which the
+  // native AM5 leaves reading IDLE for the whole park.
+  const motionLane = useBusyOrPending("goto");
+  const [motion, setMotion] = useState<{ kind: "park" | "home" | "goto"; id?: string } | null>(null);
+  const motionLaneWasBusy = useRef(false);
+  useEffect(() => {
+    if (motionLane.busy) { motionLaneWasBusy.current = true; return; }
+    if (!motionLaneWasBusy.current) return;
+    motionLaneWasBusy.current = false;
+    setMotion(null);
+  }, [motionLane.busy]);
+
+  const parking = motion?.kind === "park";
+  const homing = motion?.kind === "home";
+  const slewingTo = motion?.kind === "goto" ? motion.id : null;
+  const mountState = !m ? "—"
+    : parking ? "PARKING"
+      : homing ? "HOMING"
+        : m.parked ? "PARKED"
+          : (m.slewing || slewingTo) ? "SLEWING"
+            : m.tracking ? "TRACKING" : "IDLE";
+  const mountStateTone: "warn" | "good" | undefined =
+    mountState === "PARKING" || mountState === "HOMING" || mountState === "SLEWING" ? "warn"
+      : mountState === "TRACKING" ? "good" : undefined;
+  // Any motion on the shared lane — ours or another client's — blocks a GOTO,
+  // because the server 409s a second `goto` outright (it spawns without replace).
+  const laneBusy = motionLane.busy || motion != null;
+
+  /** Fire one of the three motions that share the `goto` lane.
+   *
+   *  `arm()` runs only AFTER the server accepts: the local latch exists to cover
+   *  the ≤2 s before the first status frame carries the lane, and arming it on a
+   *  REFUSAL (below-horizon, sun cone, 409) would leave every mount control dead
+   *  for the latch's six seconds over a request the rig never took. */
+  const runMotion = async (
+    kind: "park" | "home" | "goto", id: string | undefined,
+    url: string, body?: unknown,
+  ): Promise<boolean> => {
+    setMotion({ kind, id });
+    try {
+      await api.post(url, body);
+      motionLane.arm();
+      return true;
+    } catch (e) {
+      setMotion(null);
+      showToast("error", (e as Error).message);
+      return false;
+    }
   };
 
   // Same debounce as the Atlas's CatalogSearch, and it had the same race:
@@ -84,6 +226,7 @@ export default function MountView() {
   //   unknown-> default site / fetch issue: OK/Cancel "slew anyway"
   const doGoto = async (r: CatalogEntry) => {
     if (!canMount) return; // viewer: GOTO is read-only (buttons are disabled too)
+    if (laneBusy) return;  // the lane is taken; the button is disabled to match
     let pf: PreflightAlt | null = null;
     try {
       pf = await api.get<PreflightAlt>(
@@ -126,10 +269,23 @@ export default function MountView() {
       if (!ok) return;
     }
 
-    await act(() => api.post("/api/mount/goto", {
+    const ok = await runMotion("goto", r.id, "/api/mount/goto", {
       ra_hours: r.ra_hours, dec_deg: r.dec_deg, center,
       force: pf?.verdict === "low",
-    }));
+    });
+    // Say what the rig accepted and what it will do next, the way the Atlas's
+    // identical handoff does. Without it a GOTO that worked and a GOTO that was
+    // never sent looked the same: the row went back to normal and the mount, on
+    // a mount that reports IDLE while it slews, said nothing either.
+    if (ok) {
+      enqueueToast({
+        level: "success",
+        title: `Slewing to ${r.id}`,
+        detail: center
+          ? "It will centre itself on the target when it arrives."
+          : "Centre-after-slew is off, so it will stop wherever the mount thinks the target is.",
+      });
+    }
   };
 
   // BOTH tracks must be `minmax(0,…)`. An implicit/`1fr` grid track floors at
@@ -158,14 +314,20 @@ export default function MountView() {
             <Stat label="Altitude" value={m ? `${m.alt}°` : "—"}
               tone={m && m.alt < 20 ? "warn" : undefined} />
             <Stat label="Azimuth" value={m ? `${m.az}°` : "—"} />
-            <Stat label="State"
-              value={m ? (m.parked ? "PARKED" : m.slewing ? "SLEWING" : m.tracking ? "TRACKING" : "IDLE") : "—"}
-              tone={m?.parked ? undefined : m?.slewing ? "warn" : m?.tracking ? "good" : undefined} />
+            {/* The lane-derived states come FIRST. A native AM5 leaves
+                `slewing` false for the whole park and the whole home walk, so
+                this stat read IDLE while the mount was physically travelling —
+                the same lie the Park button beside it used to tell. */}
+            <Stat label="State" value={mountState} tone={mountStateTone} />
           </div>
           <div className="mt-4 border-t border-line pt-3 flex flex-col gap-3">
             <div className="flex items-center gap-3">
-              <Toggle checked={!!m?.tracking} disabled={!canMount || !m}
-                onChange={(v) => act(() => api.post(`/api/mount/tracking?on=${v}`))} label="Tracking" />
+              <Toggle checked={!!tracking.value} disabled={!canMount || !m || pending !== null}
+                onChange={(v) => {
+                  tracking.show(v);
+                  void act("tracking", () => api.post(`/api/mount/tracking?on=${v}`))
+                    .then((ok) => { if (!ok) tracking.revert(); });
+                }} label="Tracking" />
               <span className="label">tracking</span>
               <div className="flex-1" />
               {/* Home — the reference position you START from, and the missing
@@ -178,17 +340,35 @@ export default function MountView() {
               {m?.can_find_home && (
                 <button
                   className="btn tap min-h-[44px]"
-                  disabled={!canMount || !!m?.slewing}
-                  title="Slew to the mount's home position and leave it ready to use"
-                  onClick={() => act(() => api.post("/api/mount/home"))}
+                  // Hard-disabled while OUR home is running, not merely
+                  // relabelled: the route spawns with replace=True, so a second
+                  // press cancels the walk in progress and starts another one.
+                  disabled={!canMount || homing || !!m?.slewing}
+                  aria-busy={homing || undefined}
+                  title={homing
+                    ? "On its way home — pressing again would cancel this and start over"
+                    : "Slew to the mount's home position and leave it ready to use"}
+                  onClick={() => void runMotion("home", undefined, "/api/mount/home")}
                 >
-                  Home
+                  {homing ? "Homing…" : "Home"}
                 </button>
               )}
               {m?.parked ? (
-                <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/unpark"))}>Unpark</button>
+                <button className="btn tap min-h-[44px]" disabled={!canMount || pending !== null}
+                  onClick={() => void act("unpark", () => api.post("/api/mount/unpark"))}>Unpark</button>
               ) : (
-                <button className="btn tap min-h-[44px]" disabled={!canMount} onClick={() => act(() => api.post("/api/mount/park"))}>Park</button>
+                // Disabled only while THIS park is running. It stays live during a
+                // slew on purpose — park is the server's motion-committing abort
+                // (replace=True cancels an in-flight goto and stows the mount),
+                // and taking that away would remove a way to stop a bad slew.
+                <button className="btn tap min-h-[44px]" disabled={!canMount || parking}
+                  aria-busy={parking || undefined}
+                  title={parking
+                    ? "Parking — 30–60 s. Pressing again would cancel this park and start another."
+                    : "Stop tracking and stow the mount at its park position"}
+                  onClick={() => void runMotion("park", undefined, "/api/mount/park")}>
+                  {parking ? "Parking…" : "Park"}
+                </button>
               )}
             </div>
             {/* Tracking rate (2026-07-21): only mounts that support it advertise
@@ -199,10 +379,14 @@ export default function MountView() {
                 <div className="flex-1" />
                 <SegmentedControl<"sidereal" | "lunar" | "solar">
                   options={TRACKING_RATE_OPTIONS}
-                  value={m?.tracking_rate}
-                  disabled={!canMount || !m}
+                  value={trackingRate.value}
+                  disabled={!canMount || !m || pending !== null}
                   ariaLabel="Tracking rate"
-                  onChange={(v) => act(() => api.post(`/api/mount/tracking_rate?rate=${v}`))}
+                  onChange={(v) => {
+                    trackingRate.show(v);
+                    void act("tracking_rate", () => api.post(`/api/mount/tracking_rate?rate=${v}`))
+                      .then((ok) => { if (!ok) trackingRate.revert(); });
+                  }}
                 />
               </div>
             )}
@@ -217,8 +401,28 @@ export default function MountView() {
               visible read-only affordance. */}
           <SlewPad />
           <div className="flex items-center justify-center gap-2 mt-4 border-t border-line pt-3">
-            <button className="btn tap min-h-[44px]" disabled={!canMount || busy} onClick={() => act(() => api.post("/api/mount/solve_sync"))}>
-              {busy ? "Solving…" : <><Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Solve &amp; Sync</>}
+            <button className="btn tap min-h-[44px]" disabled={!canMount || solving}
+              aria-busy={solving || undefined}
+              title={solving ? "Exposing and solving — this takes a few seconds" : undefined}
+              onClick={() => {
+                if (pending || solving) return;
+                solveAskedFrom.current = newestSolveLine();
+                setPending("solve");
+                // NOT routed through `act`: the handover has to be ordered.
+                // `arm()` must take over BEFORE the request flag is dropped, or
+                // there is a render in between where the button is neither
+                // sending nor busy — and that momentary "idle" is read as the
+                // solve having finished, which retires the completion report
+                // for a solve that has not started yet.
+                api.post("/api/mount/solve_sync")
+                  .then(() => solve.arm())
+                  .catch((e) => {
+                    solveAskedFrom.current = undefined;
+                    showToast("error", (e as Error).message);
+                  })
+                  .finally(() => setPending(null));
+              }}>
+              {solving ? "Solving…" : <><Icon name="align" size={14} className="inline -mt-0.5 mr-1" />Solve &amp; Sync</>}
             </button>
           </div>
           <p className="text-[12px] text-dim text-center mt-2">
@@ -244,6 +448,22 @@ export default function MountView() {
         <input className="field mb-3" placeholder="Search — M42, Andromeda, nebula, galaxy…"
           aria-label="Search the catalog by name, catalogue id or object type"
           value={query} onChange={(e) => setQuery(e.target.value)} />
+        {/* Why every GOTO in the table is inert, and when it stops being. The
+            server spawns `goto` without replace, so a second one is refused
+            outright — and the refusal ("'goto' is already running") is the kind
+            of sentence nobody should have to read. Names the target when the
+            slew is ours, because "already moving" is not an answer to "moving
+            where?". */}
+        {canMount && laneBusy && (
+          <LockedNote className="mb-3" reason={
+            slewingTo
+              ? `Slewing to ${slewingTo} — GOTO comes back when the mount stops.`
+              : parking
+                ? "Parking — GOTO comes back when the mount stops."
+                : homing
+                  ? "Going home — GOTO comes back when the mount stops."
+                  : "The mount is already moving — GOTO comes back when it stops."} />
+        )}
         {/* `overflow-x-auto` is load-bearing on a phone. The catalog table has
             six columns and a min-content of ~423px, and a container that only
             scrolls VERTICALLY still propagates that min-content outward — so
@@ -297,7 +517,17 @@ export default function MountView() {
                         label={`Frame ${r.id} in the Sky Atlas`}
                         onClick={() => openFraming(r)}
                       />
-                      <button className="btn tap min-h-[44px] !px-3" disabled={!canMount || !m}
+                      {/* The label stays four characters in every state on
+                          purpose: this column is the one the tablet-portrait
+                          work above fought for, and a wider in-flight word
+                          ("SLEWING") pushes the table's min-content back past
+                          the space that exists. The row still says it — accent
+                          chrome plus aria-busy — and the line above the table
+                          says it in words, including which target. */}
+                      <button className={`btn tap min-h-[44px] !px-3
+                          ${slewingTo === r.id ? "!border-accent !text-accent bg-accent/10" : ""}`}
+                        disabled={!canMount || !m || laneBusy}
+                        aria-busy={slewingTo === r.id || undefined}
                         onClick={() => doGoto(r)}>
                         GOTO
                       </button>

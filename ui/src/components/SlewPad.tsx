@@ -172,6 +172,13 @@ export default function SlewPad() {
   // tearing down, there's no UI left to toast an error to.
   useEffect(() => {
     const panicStop = () => {
+      // Release the pad along with the mount. `activePointerId` is what makes a
+      // press exclusive (F-A4), and a panic stop happens while a finger is very
+      // much still down — the pointerup that would normally clear it is either
+      // never delivered (tab hidden) or arrives at a pad that has already
+      // stopped. Left set, it rejects EVERY later press at the guard: the pad
+      // looks alive, the arrows still depress, and nothing moves.
+      activePointerId.current = null;
       ctrl.forceStop();
       api.post("/api/mount/stop").catch(() => {});
     };
@@ -192,7 +199,14 @@ export default function SlewPad() {
   // path's authoritative /api/mount/stop is already covered by store.setLocked —
   // do NOT duplicate it here (F-S8 note).
   useEffect(() => {
-    if (locked) ctrl.forceStop();
+    if (locked) {
+      // Same reason as the panic path above: the lock overlay swallows the
+      // pointerup for the press it interrupted, so without this the pointer id
+      // of a finger that is long gone owns the pad forever and every press
+      // after unlock is silently rejected while still animating (audit #38).
+      activePointerId.current = null;
+      ctrl.forceStop();
+    }
   }, [locked, ctrl]);
 
   // F-S7: a pad that transitions to parked/disconnected mid-hold must release the
