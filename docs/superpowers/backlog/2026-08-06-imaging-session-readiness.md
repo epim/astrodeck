@@ -206,11 +206,67 @@ tracking guard, but no photons.
 - Polar adjust phase (§9)
 - Plate-solve-dependent centring at the session level
 
-## Open questions for the owner
+## Hardware validation results, 2026-08-06 (daylight, cap on, Dark filter closed)
 
-1. **What is the guide scope's focal length in mm?** Blocks §1 entirely.
-2. Guiding tonight: attempt a first-light guide calibration, or run unguided
-   short subs and defer guiding to a dedicated session?
-3. Meridian flip: enable it, or plan tonight's target to avoid the meridian?
-4. Cooling setpoint for this camera?
-5. Filters tonight: L only (simplest), or a multi-filter run that needs offsets?
+### Solar avoidance on slews: PASSES, including the disarm
+
+Run against the live mount with the opaque Dark filter selected. Sun was at
+alt +67.7. Four legs, all as they should be:
+
+| Leg | Result |
+|---|---|
+| goto AT the sun, cone armed | **409 refused** |
+| goto 20 deg from the sun (inside the 30 deg cone), armed | **409 refused** |
+| goto 43 deg away (positive control) | **200 accepted** |
+| the SAME inside-cone goto with `solar_avoidance: false` | **200 accepted** |
+| re-armed | **409 refused** again |
+
+The positive control is what makes this meaningful: without it a refusal proves
+only that something was refused, not that the cone is what refused it. The
+disarm works end to end, so solar astronomy remains possible.
+
+This covers owner requirement 5(a) and 5(c). **5(b) — the sun arriving at a
+stationary tube — is not covered by anything and is being built (task #150).**
+
+### Park fails when issued straight after a stop: REPRODUCED
+
+Falling out of the test above, and more serious than the thing it was testing.
+
+```
+[mount] mount unparked
+[goto]  goto cancelled            <- stop
+[goto]  goto cancelled
+[goto]  goto failed: ZWO AM5 (native serial): park did not complete
+        within 60s (mount still reports unparked)
+```
+
+The mount was left unparked and tracking. The identical park from an IDLE mount
+succeeded in about 12 s (Dec 90.000, parked, tracking off), so the defect is
+specifically *park issued while the tube is still decelerating* — the window
+zwo_am5.py already documents ("the AM5 has NO BRAKE"; a cancelled goto stops
+being `slewing` by the driver's bookkeeping several seconds before it stops by
+physics).
+
+stop-then-park is the EMERGENCY shape: safety abort, dawn park, the sun watchdog
+being built, and any aborted session. Tracked as task #151, along with the
+second defect on the same path — `POST /api/mount/park` returns
+`200 {"started":"goto"}` and the failure reaches the operator only as a log line.
+
+## Owner decisions, 2026-08-06
+
+1. **Guide scope focal length: 150 mm** (ZWO 30 mm f/5 guider). Unblocks §1.
+2. **Guiding tonight: attempt first-light calibration.** After polar alignment,
+   run a real calibration and a short closed loop.
+3. **Meridian flip: enable, but validate in daylight first** — confirm
+   `pier_side` reporting works and the flip executes before trusting it on sky.
+4. **Daylight scope: all four** — dark-frame sequence, autofocus EAFMove fix +
+   V-curve instrumentation, cooling cool/hold/warm, and watchdog/alerts/deadman.
+5. **NEW REQUIREMENT — validate solar avoidance on the real hardware**, with the
+   lens cap on AND the opaque Dark filter selected:
+   - a) slew TOWARD the sun and confirm the guard refuses the slew;
+   - b) park the tube where the sun will shortly be, and confirm the rig moves
+        the scope AWAY rather than waiting to be cooked;
+   - c) confirm the whole behaviour can be DISABLED — solar astronomy is a
+        legitimate use of this software.
+   (b) is the one to check for existence first: refusing a slew into the cone is
+   not the same feature as noticing the sun coming to a stationary tube.
