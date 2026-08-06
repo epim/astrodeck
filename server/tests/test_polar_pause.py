@@ -67,8 +67,13 @@ class _Frame:
 
 
 class _Solve:
-    """A plate solve 70 deg from the pole, so the pole guard lets it through."""
-    dec_deg = 20.0
+    """A plate solve 25 deg from the pole, so the pole guard lets it through.
+
+    High declination on purpose. Against ``_Hub``'s latitude of 62 this target
+    never drops below about 37 deg altitude at ANY hour angle, so the driver's
+    low-arc refusal cannot fire — these tests are about pause semantics and must
+    not depend on what sidereal time the suite happens to run at."""
+    dec_deg = 65.0
     rotation_deg = 0.0
     success = True
 
@@ -102,8 +107,10 @@ class _Hub:
         self._tel = _Tel(self.slews)
         # A northern site, as the real Hub always carries one: the driver reads
         # longitude to pick the RA step direction (away from the meridian) and
-        # latitude to sanity-check the fitted axis against the horizon.
-        self.site = {"latitude": 45.0, "longitude": -122.0, "elevation_m": 0.0}
+        # latitude both to sanity-check the fitted axis against the horizon and
+        # to project the measurement arc's altitude. Paired with _Solve's Dec 65
+        # so the arc is high at every hour angle — see _Solve.
+        self.site = {"latitude": 62.0, "longitude": -122.0, "elevation_m": 0.0}
 
     def require(self, role):
         return self._tel if role == "telescope" else _Cam()
@@ -153,7 +160,13 @@ async def native_rig(monkeypatch):
         rig.captures.append(len(rig.captures) + 1)
         if rig.pause_on_capture == len(rig.captures):
             await rig.session.pause()
-        return _Frame(), _Solve(5.0 + 0.8 * len(rig.captures)), (1.55, 1024.0, 768.0)
+        # The solve reports where the TELESCOPE is, not a fixed march up in RA.
+        # A hard-coded +0.8h per capture assumed the driver always steps east;
+        # it now steps away from the meridian, so on half the sidereal clock the
+        # fake solve contradicted the slew it had just been given and tripped
+        # the driver's did-the-mount-arrive check. Following the mount makes
+        # this fake agree with itself whichever way the arc runs.
+        return _Frame(), _Solve(hub._tel._ra), (1.55, 1024.0, 768.0)
 
     monkeypatch.setattr(nat, "_capture_and_solve", _fake_capture)
     yield rig

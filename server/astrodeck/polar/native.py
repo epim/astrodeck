@@ -110,6 +110,47 @@ _PA_SPREAD_WARN_DEG = 5.0
 #: "adjust the mount" instruction sends someone out to turn a bolt 121 degrees.
 MAX_PLAUSIBLE_ERROR_DEG = 30.0
 
+#: The arc actually achieved between two measurement points, as a fraction of
+#: the rotation that was commanded, outside which the run is a failed
+#: measurement rather than a result.
+#:
+#: A mount that ACCEPTS a goto and does not honour it is the quietest way this
+#: routine can lie. The AM5's settle loop compares each position sample to the
+#: PREVIOUS one, never to the commanded target, so a mount that never moves
+#: satisfies "stopped moving" in about 1.5 s and the slew returns success. Two
+#: of three points then land on the same sky position, the engine fits them
+#: happily (it refuses only the all-three-identical case), and the operator is
+#: shown 0.00' and "polar aligned" on a mount that was never measured. That is
+#: the 2026-08-06 failure with the sign flipped: a confident PERFECT number
+#: instead of a confident huge one, and far more likely to be believed.
+#:
+#: The driver is the only layer that CAN catch this, because it is the only one
+#: that knows a rotation was commanded between two frames. The bounds are wide
+#: on purpose: the fit itself stays sound down to roughly 2-5 degrees of arc, so
+#: this is a "did the mount do roughly what it was told" test, not a precision
+#: one. The upper bound catches the opposite failure — an overshoot or a slew
+#: that took a completely different path.
+MIN_ARC_FRACTION = 0.5
+MAX_ARC_FRACTION = 1.5
+
+#: Refuse to MEASURE below this altitude.
+#:
+#: The meridian is the highest point of any track, so stepping AWAY from it —
+#: which _ra_step_hours now always does — descends in both directions. That
+#: makes a low start deterministic rather than unlucky: from 8.9 degrees, the
+#: two 12-degree steps land at 1.1 degrees and then 6.1 degrees BELOW the
+#: horizon, and nothing else in the polar path looks at altitude
+#: (hub._check_horizon's only caller is the user-initiated goto).
+#:
+#: Set at the altitude where a frame stops being worth measuring rather than at
+#: the horizon itself: differential refraction and extinction near the horizon
+#: corrupt the very field centres the fit is built from. Kept low enough not to
+#: refuse runs that would have worked.
+MIN_MEASUREMENT_ALT_DEG = 10.0
+
+#: Log a warning, but do not refuse, between here and MIN_MEASUREMENT_ALT_DEG.
+LOW_MEASUREMENT_ALT_DEG = 20.0
+
 
 async def run_native(session: Any, hub: Any) -> None:
     """Drive the native TPPA procedure for ``session`` on ``hub``.
@@ -177,12 +218,24 @@ async def _drive(session: Any, hub: Any) -> None:
     # and we abandon rather than keep slewing a mount someone just halted.
     epoch = getattr(hub, "_motion_epoch", 0)
 
+    # Sidereal tracking must be RUNNING before the first frame. tppa_update
+    # attributes every bit of field motion to the operator's knobs, so with
+    # tracking off the sky's own 0.25 deg/minute drift is reported as polar
+    # error that grows without limit — measured at 2x to 15x truth within an
+    # hour, with no warning, because the update's quality flags are frozen from
+    # the initial fit and structurally cannot fire. Every other motion path in
+    # the server already asserts this before slewing; this one never did, and
+    # park / find_home both LEAVE tracking off, which is exactly the state a
+    # mount is in when someone reaches for Align.
+    await _ensure_tracking(tel)
+
     session._publish(state="running", source="native", phase="measuring",
                      progress=0.0, message="native TPPA: measuring point 1/3")
     bus.log("info", "native TPPA started (measuring)", "polar")
 
     # ---- PHASE measuring: 3 × capture → solve → (rotate in RA) -------------
     solves: list[dict] = []
+    step_hours: float | None = None
     for i in range(3):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
@@ -191,6 +244,14 @@ async def _drive(session: Any, hub: Any) -> None:
             # The authoritative check: where the sky says we are, not where the
             # mount claims. Costs one exposure that was being taken anyway.
             await _refuse_near_pole(result.dec_deg, "the plate solve puts you")
+            # Now that the SOLVED position is known, project the whole arc and
+            # refuse before committing the mount to it.
+            step_hours = _ra_step_hours(hub, result.ra_hours)
+            _refuse_low_arc(hub, result, step_hours)
+        else:
+            # The mount was told to rotate before this frame. Verify it did,
+            # against the sky rather than against the mount's own report.
+            _refuse_if_it_did_not_arrive(solves[-1], result, step_hours, i)
         solves.append({
             "ra_hours": result.ra_hours,
             "dec_deg": result.dec_deg,
@@ -207,7 +268,7 @@ async def _drive(session: Any, hub: Any) -> None:
             # did not ask for — the one irreversible thing this loop does. The
             # motion-epoch fence inside _rotate_in_ra still raises independently.
             await wait_if_paused(session)
-            await _rotate_in_ra(hub, tel, epoch, result)
+            await _rotate_in_ra(hub, tel, epoch, result, step_hours)
 
     # ---- fit the axis + initial error -------------------------------------
     opts = _options(hub, geom)
@@ -223,10 +284,15 @@ async def _drive(session: Any, hub: Any) -> None:
             f"(az {err['az_arcmin']:.1f}', alt {err['alt_arcmin']:.1f}')", "polar")
     _log_pa_spread(err)
     _reject_implausible_fit(err, hub)  # raises rather than publish a wrong number
+    # "adjust the mount" on a fit that is ALREADY inside the aligned threshold
+    # sends someone to the bolts to chase a number the same routine would call
+    # done one second later, when the adjust loop applies the same comparison.
+    already = err["total_arcmin"] <= _DONE_THRESHOLD_ARCMIN
     _publish_error(session, err, phase="adjusting", point_index=2, progress=0.6,
-                   message="adjust the mount")
+                   message="polar aligned" if already else "adjust the mount")
 
     # ---- PHASE adjusting: live re-scale while the user turns the knobs -----
+    updates_published = 0
     for _ in range(_MAX_ADJUST_UPDATES):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
@@ -250,6 +316,7 @@ async def _drive(session: Any, hub: Any) -> None:
             # leg) must not kill the session — surface it and keep going.
             bus.log("warning", f"native TPPA update skipped: {e}", "polar")
             continue
+        updates_published += 1
         done = err["total_arcmin"] <= _DONE_THRESHOLD_ARCMIN
         _publish_error(session, err, phase="adjusting", point_index=2,
                        progress=1.0 if done else 0.85,
@@ -260,9 +327,23 @@ async def _drive(session: Any, hub: Any) -> None:
             return
 
     # Safety cap reached (session left running): settle on a terminal state
-    # rather than spin. The last published error stands.
-    session._publish(state="done", source="native", phase="adjusting",
-                     progress=1.0, message="alignment session ended")
+    # rather than spin. The last published error stands — UNLESS there is no
+    # such thing, because every update failed. Reporting "done" for a phase that
+    # produced nothing tells the operator their adjustment was tracked when the
+    # panel was frozen on the initial fit the whole time.
+    if updates_published:
+        session._publish(state="done", source="native", phase="adjusting",
+                         progress=1.0, message="alignment session ended")
+    else:
+        bus.log("warning", "native TPPA: every live update failed — the panel "
+                "never moved off the initial fit", "polar")
+        session._publish(
+            state="error", source="native", phase="adjusting", progress=1.0,
+            message="the live error could not be updated: every measurement "
+                    "during adjustment failed, so the number on screen is still "
+                    "the original fit and does not reflect anything you changed. "
+                    "Check that the sky is clear and the camera is still "
+                    "solving, then run the alignment again.")
 
 
 async def _capture_and_solve(hub: Any, solver: Any):
@@ -333,13 +414,22 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float) -> float:
     return -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
 
 
-async def _rotate_in_ra(hub: Any, tel: Any, epoch: int, result: Any) -> None:
+async def _rotate_in_ra(hub: Any, tel: Any, epoch: int, result: Any,
+                        step: float | None = None) -> None:
     """Rotate the mount in RA by one step, safety-gated. Never slews through the
     sun cone; never walks across the meridian (:func:`_ra_step_hours`); abandons
-    if the motion fence advanced (an abort/STOP landed)."""
+    if the motion fence advanced (an abort/STOP landed).
+
+    ``step`` is decided ONCE from the first solved position and passed in, so
+    every leg of the arc goes the same way. Re-deciding per leg would let a run
+    that started beside the meridian reverse direction halfway — walking back
+    over the point it came from and collapsing the arc — because the hour angle
+    is re-read each time. Defaults to deciding from the mount's current position
+    for callers that have no arc in progress."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
-    step = _ra_step_hours(hub, cur_ra)
+    if step is None:
+        step = _ra_step_hours(hub, cur_ra)
     target_ra = (cur_ra + step) % 24.0
     # Sun-exclusion cone: refuse to rotate into a daytime pointing (defense in
     # depth — the same guard the hub's motion paths use). Raises DeviceError,
@@ -380,6 +470,104 @@ def _options(hub: Any, geom: tuple) -> dict:
     if getattr(hub, "mode", None) == "sim":
         opts["pressure_hpa"] = 0.0
     return opts
+
+
+async def _ensure_tracking(tel: Any) -> None:
+    """Start sidereal tracking if it is not already running.
+
+    Best-effort: a mount that cannot report or set tracking is not a reason to
+    refuse an alignment, and several supported drivers are quiet about it. The
+    failure this prevents is silent, not loud — see the call site."""
+    try:
+        if await tel.get_tracking():
+            return
+    except Exception:  # noqa: BLE001 — a mount that will not say is not a refusal
+        return
+    try:
+        await tel.set_tracking(True)
+        bus.log("info",
+                "native TPPA: sidereal tracking was off — started it, because "
+                "the live error would otherwise measure the sky turning rather "
+                "than the mount's axis", "polar")
+    except Exception as e:  # noqa: BLE001
+        bus.log("warning",
+                f"native TPPA: could not start tracking ({e}); the live error "
+                "during adjustment will drift if the mount is not tracking",
+                "polar")
+
+
+def _ra_wrap_hours(delta: float) -> float:
+    """An RA difference wrapped into (-12, 12] hours, so an arc across 0h is not
+    read as a 23-hour jump."""
+    return ((delta + 12.0) % 24.0) - 12.0
+
+
+def _refuse_if_it_did_not_arrive(previous: dict, result: Any,
+                                 step_hours: float | None, index: int) -> None:
+    """Verify the mount actually made the rotation it was told to make.
+
+    Compares consecutive SOLVED positions, not the mount's own report: a mount
+    that accepts a goto and ignores it also reports arriving. See
+    :data:`MIN_ARC_FRACTION` for why the driver is the only layer that can see
+    this and what it costs when nobody does.
+    """
+    if not step_hours:
+        return
+    achieved = _ra_wrap_hours(result.ra_hours - previous["ra_hours"])
+    fraction = achieved / step_hours          # signed: negative = went the wrong way
+    if MIN_ARC_FRACTION <= fraction <= MAX_ARC_FRACTION:
+        return
+    moved_deg = abs(achieved) * 15.0
+    asked_deg = abs(step_hours) * 15.0
+    if fraction < 0:
+        what = (f"moved {moved_deg:.2f}° the WRONG WAY in right ascension")
+    elif abs(achieved) < 1e-4:
+        what = "did not move at all"
+    elif fraction < MIN_ARC_FRACTION:
+        what = f"moved only {moved_deg:.2f}° of the {asked_deg:.1f}° it was asked for"
+    else:
+        what = f"moved {moved_deg:.2f}°, far past the {asked_deg:.1f}° it was asked for"
+    raise DeviceError(
+        f"the mount accepted the rotation before point {index + 1} and then "
+        f"{what}. Three-point alignment measures the axis from how the sky moves "
+        "as the mount turns, so a rotation that did not happen is not a small "
+        "error — the points collapse together and the fit reports a confident "
+        "number for a mount it never measured (a stuck mount reads as a perfect "
+        "0.00'). Nothing has been reported. Check that the mount is unparked, "
+        "tracking, clear of its limits, and that no other slew is competing, "
+        "then run the alignment again.")
+
+
+def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
+    """Refuse a measurement arc that would drive the tube into the ground.
+
+    The meridian is the highest point of any track, so the arc — which always
+    steps AWAY from the meridian — always descends. Projected from the SOLVED
+    first point, not the mount's claim. See :data:`MIN_MEASUREMENT_ALT_DEG`."""
+    from ..catalog.coords import altaz
+    lat = float(hub.site["latitude"])
+    lon = float(hub.site["longitude"])
+    alts = [altaz(result.ra_hours + step_hours * n, result.dec_deg, lat, lon)[0]
+            for n in range(3)]
+    lowest = min(alts)
+    if lowest >= LOW_MEASUREMENT_ALT_DEG:
+        return
+    track = " → ".join(f"{a:.1f}°" for a in alts)
+    if lowest >= MIN_MEASUREMENT_ALT_DEG:
+        bus.log("warning",
+                f"native TPPA: the arc runs low ({track} altitude). Refraction "
+                "and extinction near the horizon move the field centres this "
+                "fit is built from, so treat the result as coarse.", "polar")
+        return
+    raise DeviceError(
+        f"this alignment would drive the telescope too low: the three "
+        f"measurement points sit at {track} altitude, and below "
+        f"{MIN_MEASUREMENT_ALT_DEG:.0f}° a plate solve is measuring refraction "
+        "as much as it is measuring the sky. The arc always moves AWAY from the "
+        "meridian (crossing it would flip the mount mid-measurement), and away "
+        "from the meridian is always downhill toward the horizon — so the fix "
+        "is to start closer to it. Point at something within an hour or so of "
+        "the meridian, at least 20° from the pole, and start again.")
 
 
 def _log_measurement(hub: Any, index: int, result: Any, frame: Any) -> None:
