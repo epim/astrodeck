@@ -368,11 +368,38 @@ export default function PolarView() {
                     nothing to the person crouched at the mount; HonestButton
                     (house rule §11.8) stays focusable and pressable and STATES
                     which of the two refusals applies. */}
+                {/* THE LATCH IS RELEASED BY THE STOP THAT LANDED, NOT BY THE
+                    PRESS. `setStarting(false)` used to run synchronously in
+                    this handler — before /api/polar/stop had been sent, let
+                    alone answered — and on that one frame the whole screen
+                    un-committed itself over a rig that was still moving: the
+                    accent Start button came back to life reading "Start
+                    Alignment", the header chip dropped from a blinking
+                    "starting" to a grey "idle", the readout reverted to "Not
+                    started — press Start Alignment to measure.", and this red
+                    button dimmed to its locked face whose stated reason is "No
+                    alignment is running — nothing to stop." If the stop then
+                    never landed (403, 409, a dropped relay), nothing restored
+                    any of it: the Start press the re-enabled button invited was
+                    answered 409 "polar alignment is already running", and a
+                    second press of THIS button no longer re-sent the stop — it
+                    toasted "nothing to stop" at someone whose hands were about
+                    to go on the bolts. Keeping the latch until the POST
+                    resolves means a refused or lost stop leaves Stop armed and
+                    re-pressable, which is the one behaviour this control exists
+                    for. (Deliberately not routed through the `starting` expiry
+                    effect above: that only hands over on a LIVE state, and a
+                    stop that works publishes "idle".) */}
                 <HonestButton
                   className="btn btn-danger"
                   reason={stopReason}
                   onExplain={(r) => showToast("info", r)}
-                  onClick={() => { setStarting(false); void run(() => api.post("/api/polar/stop")); }}
+                  onClick={() => {
+                    void run(async () => {
+                      await api.post("/api/polar/stop");
+                      setStarting(false);
+                    });
+                  }}
                 >
                   Stop
                 </HonestButton>

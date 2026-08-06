@@ -217,11 +217,12 @@ test("the readout is gated on the overlay that produced it", () => {
 });
 
 // ============================================================ PreviewToolbar
-function toolbar(p: PreviewInfo | null): any {
+function toolbar(p: PreviewInfo | null, over: Record<string, any> = {}): any {
   return createElement(PreviewToolbar, {
     preview: p, overlays, setOverlays: () => {}, scalePct: 100,
     onZoomIn: () => {}, onZoomOut: () => {}, onFit: () => {}, onHundred: () => {},
     starsAvailable: true, clipAvailable: true, linkDown: false, stretch,
+    ...over,
   });
 }
 /** `liveId` is what the toolbar measures frame age against. */
@@ -323,6 +324,99 @@ test("a blocked annotation row states its reason where a finger can see it", () 
     "tapping a blocked annotation row produced no toast — the reason reaches a mouse hover only");
   assert(/tilt data/i.test(toasts[0].title || ""),
     `the toast must carry the row's own reason — got ${JSON.stringify(toasts[0].title)}`);
+});
+
+test("an annotation the frame cannot draw reads OFF, not engaged-and-greyed", () => {
+  setLive(20);
+  // PRECONDITION, in two halves: the preference IS on, and while the frame can
+  // support it the row is genuinely engaged. Without this half, "nothing is
+  // selected afterwards" would prove nothing at all.
+  assert(overlays.stars === true, "the fixture no longer has Stars switched on, so this proves nothing");
+  mount(toolbar(frame()));
+  const picker = [...container.querySelectorAll("button")]
+    .find((b: any) => /Annotations/.test(b.getAttribute("aria-label") || ""));
+  assert(picker != null, "no Annotations picker rendered");
+  click(picker);
+  const starsRow = () => [...container.querySelectorAll('[role="option"]')]
+    .find((o: any) => (o.textContent || "").includes("Stars"));
+  assert(starsRow() != null, "no Stars row in the annotations picker");
+  assert(starsRow().getAttribute("aria-selected") === "true",
+    "the Stars row is not engaged on a frame that HAS stars — the fixture is wrong, not the component");
+  assert(/4 on/.test(picker.getAttribute("aria-label") || ""),
+    `four overlays are on and drawable, so the summary must say so — got ${picker.getAttribute("aria-label")}`);
+
+  // Now the same preference over a frame with no star list: PreviewStage draws
+  // no rings (it gates on starsAvailable), so the picker must not claim it does.
+  rerender(toolbar(frame({ star_list: undefined }), { starsAvailable: false }));
+  assert(starsRow() != null, "the Stars row vanished — it should read OFF, not disappear");
+  assert(starsRow().getAttribute("aria-disabled") === "true",
+    "the Stars row is not disabled on a frame with no star list, so this proves nothing");
+  assert(starsRow().getAttribute("aria-selected") === "false",
+    "the Stars row is engaged AND greyed at once — a selection assertion about an overlay the stage refuses to draw, " +
+    "and one the user cannot clear: PickerButton blocks a disabled row before onPick");
+  assert(!(starsRow().textContent || "").includes("•"),
+    "the • bullet is still on a row whose data is missing — the only channel a night-mode eye has left");
+  assert(/3 on/.test(picker.getAttribute("aria-label") || ""),
+    `the summary still counts an overlay nothing is drawing — got ${picker.getAttribute("aria-label")}`);
+});
+
+test("the Download panel cannot outlive the trigger that opened it", () => {
+  setLive(20);
+  mount(toolbar(frame()));
+  const btn = dlButton();
+  assert(btn != null, "the Download trigger is locked on the live frame, so this proves nothing");
+  click(btn);
+  assert(container.querySelector('[role="group"]') != null,
+    "the panel did not open — its dismissal cannot be tested");
+  assert(container.querySelectorAll("a[download]").length > 0,
+    "the open panel offers no live download links, so withdrawing them proves nothing");
+
+  // The link drops. The trigger is replaced by a locked chip saying downloads
+  // are unavailable — the panel underneath must not still be offering them.
+  rerender(toolbar(frame(), { linkDown: true }));
+  const locked = [...container.querySelectorAll('span[role="button"]')]
+    .find((n: any) => /Download/.test(n.textContent || ""));
+  assert(locked != null, "the trigger did not lock when the link dropped, so this proves nothing");
+  assert(container.querySelector('[role="group"]') == null,
+    "the Download panel is still open underneath a control that says downloads are unavailable");
+  assert(container.querySelectorAll("a[download]").length === 0,
+    "the withdrawn downloads are still live <a download> links — a tap on one 404s and reports nothing at all");
+
+  // …and it must not spring back open by itself when the link returns.
+  rerender(toolbar(frame()));
+  assert(container.querySelector('[role="group"]') == null,
+    "the panel re-opened on its own when the link came back — the user closed nothing and asked for nothing");
+});
+
+test("locking the trigger hands the keyboard user the reason, not <body>", () => {
+  setLive(20);
+  mount(toolbar(frame()));
+  const btn = dlButton();
+  assert(btn != null, "the Download trigger is locked already, so this proves nothing");
+  act(() => { btn.focus(); });
+  assert(win.document.activeElement === btn,
+    "the trigger never took focus, so losing it proves nothing");
+  rerender(toolbar(frame(), { linkDown: true }));
+  const locked = [...container.querySelectorAll('span[role="button"]')]
+    .find((n: any) => /Download/.test(n.textContent || ""));
+  assert(locked != null, "no locked Download stand-in rendered");
+  assert(win.document.activeElement === locked,
+    "the trigger unmounted under the user's focus and dropped it on <body> — the keyboard user is at the top of the " +
+    "document with no statement of why the control vanished");
+});
+
+test("…and it never STEALS focus from somewhere else in the toolbar", () => {
+  // The other half of the handoff above: if the user's focus was never in the
+  // download region, locking it must not yank them across the toolbar.
+  setLive(20);
+  mount(toolbar(frame()));
+  const fit = [...container.querySelectorAll("button")].find((b: any) => (b.textContent || "").trim() === "Fit");
+  assert(fit != null, "no Fit button rendered, so this proves nothing");
+  act(() => { fit.focus(); });
+  assert(win.document.activeElement === fit, "Fit never took focus, so this proves nothing");
+  rerender(toolbar(frame(), { linkDown: true }));
+  assert(win.document.activeElement === fit,
+    "locking the Download control pulled focus off an unrelated button the user was on");
 });
 
 // ------------------------------------------------------------------- report

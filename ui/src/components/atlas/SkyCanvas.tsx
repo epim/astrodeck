@@ -394,6 +394,16 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     startRotation: number;
   }>({ mode: null, startX: 0, startY: 0, startCenter: center, startAngle: 0, startRotation: rotationDeg });
 
+  // The live drag mode ALSO lives in state, not only in the ref. The ref is what
+  // the move handler reads (mutating it per move must not re-render the sky),
+  // but the CURSOR is rendered — so a release that only mutated the ref
+  // repainted nothing, and the canvas went on advertising `grabbing` until some
+  // unrelated render happened along (a telemetry tick, ~2 s away with the socket
+  // up, and never with it down). State is what makes press and release each
+  // schedule exactly one render, so the cursor is never a claim about a gesture
+  // that ended.
+  const [dragMode, setDragMode] = useState<"pan" | "rotate" | null>(null);
+
   // Convert a CSS-px delta into a new center via tangent-plane offset.
   const panTo = useCallback(
     (dxPx: number, dyPx: number, startCenter: { ra_hours: number; dec_deg: number }) => {
@@ -407,9 +417,49 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
     [cssPerDeg, onCenterChange],
   );
 
+  // The ONE exit from a held drag. EVERY path that can end one routes through
+  // here — pointerup, pointercancel, lost capture, the window going away, the
+  // tab being hidden, and a hover that arrives with no button held — because a
+  // drag that is never ended keeps panning or rotating the sky on a bare mouse
+  // move, with nothing pressed. The rotate half is the expensive one: a
+  // rotation nobody is holding rewrites the PA this page posts to the rotator
+  // on the next "Go to this target". Same guard SlewPad.tsx:173-195 and
+  // HoldButton (ui.tsx:378-401) install on their held controls, for the reason
+  // both of them state: no pointerup is guaranteed to arrive.
+  const endDrag = useCallback((pointerId?: number) => {
+    if (pointerId != null) {
+      try {
+        boxRef.current?.releasePointerCapture(pointerId);
+      } catch {
+        /* ok */
+      }
+    }
+    dragRef.current.mode = null;
+    setDragMode(null); // no-op re-render when already null (React bails out)
+  }, []);
+
+  // Window/tab exits. setPointerCapture (below) covers releasing OUTSIDE the
+  // canvas, but not the case where the gesture is taken away without any
+  // pointer event at all: alt-tab, an OS app switch, a screen timeout.
+  useEffect(() => {
+    const onWinBlur = () => endDrag();
+    const onVis = () => {
+      if (document.visibilityState === "hidden") endDrag();
+    };
+    window.addEventListener("blur", onWinBlur);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("blur", onWinBlur);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [endDrag]);
+
   const onPointerDown = (e: RPointerEvent<HTMLDivElement>) => {
     const el = boxRef.current;
     if (!el) return;
+    // Primary button only. A right/middle press started a drag whose release
+    // the native context menu eats, so nothing ever ended it.
+    if (e.button !== 0) return;
     const rect = el.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
@@ -435,11 +485,21 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
       startAngle: Math.atan2(py - rect.height / 2, px - rect.width / 2),
       startRotation: rotationDeg,
     };
+    setDragMode(onHandle ? "rotate" : "pan");
   };
 
   const onPointerMove = (e: RPointerEvent<HTMLDivElement>) => {
     const d = dragRef.current;
     if (!d.mode) return;
+    // Self-heal. A mouse/pen move with NO button held cannot belong to a drag,
+    // so a latch left by a release we never saw ends on the first hover rather
+    // than sliding the sky under an unpressed pointer. Touch is exempt: a
+    // finger reports buttons=1 only while it is down and sends no hover moves
+    // at all, so the exits above are what serve it.
+    if (e.buttons === 0 && e.pointerType !== "touch") {
+      endDrag(e.pointerId);
+      return;
+    }
     const el = boxRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
@@ -457,12 +517,7 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
   };
 
   const onPointerUp = (e: RPointerEvent<HTMLDivElement>) => {
-    try {
-      boxRef.current?.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ok */
-    }
-    dragRef.current.mode = null;
+    endDrag(e.pointerId);
   };
 
   // ---- wheel zoom (native, non-passive) ----
@@ -616,9 +671,15 @@ export function SkyCanvas(props: SkyCanvasProps): JSX.Element {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        // Capture can be revoked without a pointerup (another element takes it,
+        // the node moves in the DOM); idempotent with the two handlers above.
+        onLostPointerCapture={() => endDrag()}
         onKeyDown={onKeyDown}
         style={{
-          cursor: dragRef.current.mode === "rotate" ? "grabbing" : "grab",
+          // `grabbing` for EITHER drag: a pan is the gesture this canvas is
+          // named for, and it used to be the one that never showed a held
+          // cursor at all.
+          cursor: dragMode ? "grabbing" : "grab",
           touchAction,
           // The 720px cap, plus a viewport-height cap the square never had.
           // The canvas is square and width-driven, so in LANDSCAPE it grew to

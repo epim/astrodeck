@@ -67,8 +67,13 @@ export default function UpdatePanel(): JSX.Element {
     setAutoCheck(!!uc.auto_check);
     setIntervalH(uc.check_interval_hours ?? 24);
     setPubkey(uc.signing_pubkey ?? "");
-    setSavedAt(null);
     setErr(null);
+    // NOT `setSavedAt(null)`. This effect's deps are the SERVER's update block,
+    // so the one moment it is guaranteed to fire is immediately after our own
+    // save changed that block — and nulling `savedAt` there raced the
+    // `setSavedAt` at the end of onSave, so the confirmation a successful save
+    // had earned could be swallowed before it ever painted. What actually has to
+    // be true for "Saved" to be honest is `!dirty`, which is where it is gated.
   }, [uc?.channel, uc?.auto_check, uc?.check_interval_hours, uc?.signing_pubkey]);
 
   const active = status?.phase && status.phase in PHASE_LABEL;
@@ -439,7 +444,20 @@ export default function UpdatePanel(): JSX.Element {
               <Icon name="check" size={15} />
               {busy ? "Saving…" : "Save settings"}
             </button>
-            {savedAt && !busy && !err && (
+            {/* `!dirty` is the load-bearing clause, and it is why the two chips
+                are mutually exclusive. `savedAt` is only ever cleared by the
+                seed effect above, which fires on a SERVER config change and
+                never on a local edit — so editing the signing key or the check
+                interval brought the Save button back to life with a green
+                "Saved" still sitting beside it: the panel claiming the settings
+                are stored and offering to store them in the same breath, on the
+                one field that decides whether a release is genuinely yours.
+                Same shape as OpticsPanel:415-422 / EscalationPanel:359 /
+                SafetyLimitsPanel:724 / CalibrationTolerancesPanel:177. */}
+            {dirty && !busy && (
+              <span className="text-[11px] text-warn">Unsaved changes</span>
+            )}
+            {savedAt && !dirty && !busy && !err && (
               <span className="text-[11px] text-good inline-flex items-center gap-1.5">
                 <Icon name="check" size={13} /> Saved
               </span>

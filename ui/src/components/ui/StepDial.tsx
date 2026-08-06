@@ -43,6 +43,7 @@ export default function StepDial({
   const pressY = useRef<number | null>(null);
   const moved = useRef(false);
   const btn = useRef<HTMLButtonElement>(null);
+  const root = useRef<HTMLDivElement>(null);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -58,6 +59,35 @@ export default function StepDial({
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
+  // TAP-AWAY, FOR TAPS THE BACKDROP CANNOT SEE. The backdrop below is
+  // `fixed inset-0`, and this control lives inside the Focuser `.panel`, whose
+  // `backdrop-filter: blur(14px)` makes a fixed descendant resolve against the
+  // PANEL box rather than the viewport (measured in this repo — index.css
+  // §overlay: "a `fixed inset-0` probe inside a panel resolves to 700x1515, not
+  // the viewport"). So the backdrop covers the Focuser panel and nothing else:
+  // a tap on the live preview, the Camera panel or the page gutter left the arc
+  // open with the trigger still wearing its engaged `border-accent text-accent`,
+  // four floating option buttons sitting over the position/max/temp stats — and
+  // the next stray tap on one of them silently re-sized the step, so the NEXT
+  // press of +/- moved the focuser by a magnitude nobody chose. Escape already
+  // covers a keyboard; a phone in the dark had no way out at all.
+  //
+  // Window-level and CAPTURE-phase, so no stopPropagation between here and the
+  // document can hide the press from us. Anything inside our own subtree (the
+  // trigger, the option buttons, the backdrop) is handled by the handlers that
+  // own it — this only closes for presses that land somewhere else entirely,
+  // which also makes it immune to the press that opened the arc.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: Event) => {
+      const t = e.target as Node | null;
+      if (t && root.current?.contains(t)) return;
+      close();
+    };
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
   }, [open, close]);
 
   const begin = (clientY: number) => {
@@ -100,7 +130,7 @@ export default function StepDial({
     // vertical-drag control here sets it the same way (SlewPad.tsx:314,
     // TouchGuard.tsx:166, StretchHistogram.tsx:232). Found while building the
     // Focus pod, where the same control sits over a live image.
-    <div className="relative select-none" style={{ touchAction: "none" }}>
+    <div ref={root} className="relative select-none" style={{ touchAction: "none" }}>
       {/* The arc. Opens UPWARD so the thumb never covers the options it is
           choosing between, and is aria-hidden because the button below is the
           real control — a listbox here would announce twice. */}
@@ -152,9 +182,12 @@ export default function StepDial({
       >
         {value}
       </button>
-      {/* Backdrop: a tap anywhere else dismisses the open arc without
-          committing. Rendered AFTER the button so it cannot swallow the press
-          that opened it. */}
+      {/* Backdrop: a tap anywhere ELSE IN THIS PANEL dismisses the open arc
+          without committing, and is swallowed rather than passed through, so a
+          dismissing tap cannot also press Halt or a nudge button underneath.
+          Rendered AFTER the button so it cannot swallow the press that opened
+          it. It reaches only as far as the panel (see the window listener
+          above, which covers everything outside it). */}
       {open && (
         <div className="fixed inset-0 z-20" aria-hidden onPointerDown={close} />
       )}

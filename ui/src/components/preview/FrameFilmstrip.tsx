@@ -44,7 +44,31 @@ export function FrameFilmstrip({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastTouch = useRef(0);
-  const following = shownId == null || shownId === liveId;
+
+  // WHICH TILE THE STAGE IS ACTUALLY PAINTING — not which id was last pinned.
+  //
+  // `shownId` is the pin (store.selectedPreviewId), and a pin can be STRANDED:
+  // the ring holds PREVIEW_CAP frames, so a frame pinned from this strip is
+  // trimmed out after that many more arrive — about two minutes on a 5 s focus
+  // loop. The pin itself is not cleared, so `useLivePreview`'s newest-first scan
+  // (store.ts) finds nothing for that id and LivePreview falls back to painting
+  // the newest ring entry — while this strip was still handed the dead id. No
+  // tile matched it, so a `role="listbox"` rendered with EVERY option
+  // aria-selected="false" over a stage that was plainly showing one of them, and
+  // one of those tiles was even wearing its LIVE chip. Auto-follow died with it
+  // (`following` was false forever), so the live end of the strip scrolled away
+  // and was never returned to.
+  //
+  // Mirror the stage's own precedence instead of trusting the id blindly: the
+  // pin if the ring still holds it, else live, else the newest frame we have.
+  // This is defensive on purpose — the strip is the one component here that can
+  // SEE that an id names no frame, so it should never assert a selection it
+  // cannot point at.
+  const held = (id: number | null): boolean => id != null && previews.some((p) => p.id === id);
+  const newestId = previews.length ? previews[previews.length - 1].id : null;
+  const stageId = held(shownId) ? shownId : held(liveId) ? liveId : newestId;
+  // Auto-scroll follows the LIVE end, so a stranded pin has to resume it.
+  const following = stageId == null || stageId === newestId;
 
   // auto-scroll to end when following live + no recent user interaction
   useEffect(() => {
@@ -72,7 +96,7 @@ export function FrameFilmstrip({
       aria-label="Frame history"
     >
       {previews.map((p) => {
-        const isShown = p.id === shownId || (shownId == null && p.id === liveId);
+        const isShown = p.id === stageId;
         const isLive = p.id === liveId;
         const g = hfrGlyph(p.hfr, hfrGood, hfrWarn);
         return (

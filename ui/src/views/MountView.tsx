@@ -163,14 +163,28 @@ export default function MountView() {
   const parking = motion?.kind === "park";
   const homing = motion?.kind === "home";
   const slewingTo = motion?.kind === "goto" ? motion.id : null;
+  // MOTION THIS TAB DID NOT START. `motion` is a per-tab memory of which of the
+  // three we asked for, and it is gone the moment the tab reloads — so after a
+  // reload mid-park, or on a second tablet, or when the sequencer parks, every
+  // control below fell back to the mount's own flags, and the native AM5 leaves
+  // `slewing` false and `parked` false for the WHOLE park. State read IDLE over
+  // a mount that was travelling, and Home offered itself normally over a
+  // `replace=True` route that would have cancelled the park mid-walk.
+  //
+  // The lane is the rig's own answer and it survives a reload. What it cannot
+  // say is WHICH of park/home/goto is on it — so nothing here may claim
+  // "parking"; it says "moving", which is the part that is certainly true.
+  const foreignMotion = motionLane.busy && motion == null;
   const mountState = !m ? "—"
     : parking ? "PARKING"
       : homing ? "HOMING"
         : m.parked ? "PARKED"
           : (m.slewing || slewingTo) ? "SLEWING"
-            : m.tracking ? "TRACKING" : "IDLE";
+            : foreignMotion ? "MOVING"
+              : m.tracking ? "TRACKING" : "IDLE";
   const mountStateTone: "warn" | "good" | undefined =
-    mountState === "PARKING" || mountState === "HOMING" || mountState === "SLEWING" ? "warn"
+    mountState === "PARKING" || mountState === "HOMING" || mountState === "SLEWING"
+      || mountState === "MOVING" ? "warn"
       : mountState === "TRACKING" ? "good" : undefined;
   // Any motion on the shared lane — ours or another client's — blocks a GOTO,
   // because the server 409s a second `goto` outright (it spawns without replace).
@@ -378,11 +392,23 @@ export default function MountView() {
                   // Hard-disabled while OUR home is running, not merely
                   // relabelled: the route spawns with replace=True, so a second
                   // press cancels the walk in progress and starts another one.
-                  disabled={!canMount || homing || !!m?.slewing}
+                  //
+                  // …and while ANY motion holds the shared lane, ours or not.
+                  // Home is not an abort — Park is, which is why Park stays live
+                  // below and this does not. `find_home()` is unpark → park →
+                  // unpark, so a replace=True cancel landing mid-sequence leaves
+                  // the mount PARKED: the button looks like it worked and the
+                  // next slew is refused, which is the exact trap that function's
+                  // own docstring says it exists to avoid.
+                  disabled={!canMount || homing || laneBusy || !!m?.slewing}
                   aria-busy={homing || undefined}
                   title={homing
                     ? "On its way home — pressing again would cancel this and start over"
-                    : "Slew to the mount's home position and leave it ready to use"}
+                    : (laneBusy || m?.slewing)
+                      ? "The mount is already moving — Home comes back when it stops. "
+                        + "Homing unparks, walks to the sensor and unparks again, and "
+                        + "interrupting that can leave the mount parked."
+                      : "Slew to the mount's home position and leave it ready to use"}
                   onClick={() => void runMotion("home", undefined, "/api/mount/home")}
                 >
                   {homing ? "Homing…" : "Home"}
@@ -398,9 +424,24 @@ export default function MountView() {
                 // and taking that away would remove a way to stop a bad slew.
                 <button className="btn tap min-h-[44px]" disabled={!canMount || parking}
                   aria-busy={parking || undefined}
+                  // The one control here that must NOT go quiet on a motion it
+                  // did not start: park is the abort. But it may not go on
+                  // presenting itself as a fresh, consequence-free action
+                  // either — if the motion already on the lane IS a park (a
+                  // reload, the other tablet, the dawn-park daemon), this press
+                  // cancels it and starts the travel over. Said in the
+                  // accessible name as well as the tooltip, because `title`
+                  // never fires on the tablet this rig is driven from.
+                  aria-label={!parking && foreignMotion
+                    ? "Park — the mount is already moving. Parking takes that move over; "
+                      + "if it is itself a park, this restarts it."
+                    : undefined}
                   title={parking
                     ? "Parking — 30–60 s. Pressing again would cancel this park and start another."
-                    : "Stop tracking and stow the mount at its park position"}
+                    : foreignMotion
+                      ? "The mount is already moving. Park takes that move over and stows it — "
+                        + "and if the move is itself a park, this restarts it."
+                      : "Stop tracking and stow the mount at its park position"}
                   onClick={() => void runMotion("park", undefined, "/api/mount/park")}>
                   {parking ? "Parking…" : "Park"}
                 </button>
@@ -527,8 +568,25 @@ export default function MountView() {
             </thead>
             <tbody>
               {results.map((r) => (
-                <tr key={r.id} className="border-t border-line/60 hover:bg-raise/80 transition-colors">
-                  <td className="mono py-2 pr-3 text-accent whitespace-nowrap">{r.id}</td>
+                // THE ROW CARRIES THE SLEW, not just the button in it. While a
+                // slew runs every GOTO in the table is `disabled` and painted at
+                // 0.35 opacity (index.css:407), and the target's own button was
+                // marked only by accent border + accent text — two colour
+                // channels, both multiplied by that 0.35 against a near-black
+                // panel, which crushes the border's 3.17:1 step to 1.39:1. Under
+                // :root.night everything in play is red, so the row being slewed
+                // to looked exactly like the twenty rows merely blocked behind
+                // it. index.css:154-157 states the rule: any status that must
+                // survive night mode needs a NON-HUE channel. Three, here — a
+                // 2px bar in the margin, a ▸ before the id, and a fill — none of
+                // which the disabled button's opacity applies to, because none
+                // of them are on the button.
+                <tr key={r.id} className={`border-t border-line/60 hover:bg-raise/80 transition-colors
+                  ${slewingTo === r.id ? "border-l-2 border-l-accent bg-accent/10" : ""}`}>
+                  <td className="mono py-2 pr-3 text-accent whitespace-nowrap">
+                    {slewingTo === r.id && <span aria-hidden className="mr-1">▸</span>}
+                    {r.id}
+                  </td>
                   {/* Type + Mag fold into the Name cell below lg so the
                       information is not LOST by the column collapse — it just
                       stops occupying two columns the GOTO button needs. */}
@@ -562,8 +620,15 @@ export default function MountView() {
                           the space that exists. The row still says it — accent
                           chrome plus aria-busy — and the line above the table
                           says it in words, including which target. */}
+                      {/* `!` on both, and none to give: index.css carries no
+                          @layer wrapper, so `.btn`'s unlayered
+                          `background: var(--bg-raise)` beats any Tailwind
+                          background utility from @layer utilities no matter the
+                          specificity. The `bg-accent/10` that used to sit here
+                          never rendered a pixel; the row above carries the fill
+                          instead, where nothing unlayered is competing. */}
                       <button className={`btn tap min-h-[44px] !px-3
-                          ${slewingTo === r.id ? "!border-accent !text-accent bg-accent/10" : ""}`}
+                          ${slewingTo === r.id ? "!border-accent !text-accent" : ""}`}
                         disabled={!canMount || !m || laneBusy}
                         aria-busy={slewingTo === r.id || undefined}
                         onClick={() => doGoto(r)}>

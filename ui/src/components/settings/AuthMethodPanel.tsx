@@ -138,6 +138,34 @@ export default function AuthMethodPanel(): JSX.Element {
   ];
   const openWarning = methods.length === 0;
 
+  // ---- IS THIS PANEL A DRAFT, AND DOES IT SAY SO? ----------------------------
+  // Every switch below looks and moves exactly like the immediate-write switches
+  // elsewhere in Settings (SkyAtlasPanel:108, WcsStampPanel:87, DriversPanel:566,
+  // SafetyPanel's roof flags) — but nothing here reaches the server until "Save
+  // methods". This was the only draft panel in Settings with no dirty signal at
+  // all: no chip, and a Save button gated on `busy` alone, so it never greyed out
+  // when clean. Worse, `savedAt` is only ever SET (in `save`) and never cleared,
+  // so once any save had happened in this mount the green "✓ Saved" sat beside
+  // the button no matter what was flipped afterwards.
+  //
+  // The scenario that matters: an admin hardening the box turns "Trust loopback
+  // as admin" OFF, sees the switch read OFF beside a green "Saved", and walks
+  // away. Loopback is still trusted as admin on the server. None of the existing
+  // safety nets cover it — both open-server banners below are gated on
+  // `openWarning`, i.e. they only render with NO method enabled, and
+  // setupCard.ts:45 keys the guided card on the SERVER-persisted methods. So
+  // with sign-in already on there is no banner, no card and (until now) no chip.
+  const seedTtlH = Math.max(1, Math.round((auth.session_ttl_s ?? 28800) / 3600));
+  const sortedMethods = (m: string[]) => [...m].sort().join(",");
+  const dirty =
+    sortedMethods(methods) !== sortedMethods(auth.methods ?? []) ||
+    ttlH !== seedTtlH ||
+    firstRun !== (auth.local_enabled_first_run ?? true) ||
+    trustLoopback !== (auth.trust_loopback ?? true) ||
+    defaultRole !== ((auth.default_role as PrincipalRole) ?? "deny") ||
+    JSON.stringify(allowlist) !==
+      JSON.stringify(Object.entries(auth.role_allowlist ?? {}));
+
   // I4 guided card: keyed off the SERVER-persisted methods (not the draft
   // toggles above) so the card doesn't vanish the instant an admin flips a
   // checkbox that hasn't been saved yet — see setupCard.ts's doc comment.
@@ -570,12 +598,21 @@ export default function AuthMethodPanel(): JSX.Element {
             type="button"
             className={`btn min-h-[44px] sm:min-h-0 inline-flex items-center gap-2 ${openWarning ? "btn-danger" : "btn-accent"}`}
             onClick={save}
-            disabled={busy}
+            disabled={busy || !dirty}
           >
             <Icon name="check" size={15} />
             {busy ? "Saving…" : openWarning ? "Save (open the server)" : "Save methods"}
           </button>
-          {savedAt && !busy && !err && (
+          {/* The house pair (OpticsPanel:415-422 / EscalationPanel:357 /
+              SafetyLimitsPanel:722 / CalibrationTolerancesPanel:175): mutually
+              exclusive, so a switch showing a state the server does not hold is
+              visibly a draft, and "Saved" can never outlive the save it names. */}
+          {dirty && !busy && (
+            <span className="text-[11px] text-warn">
+              Unsaved changes — these switches are not on the server yet
+            </span>
+          )}
+          {savedAt && !dirty && !busy && !err && (
             <span className="text-[11px] text-good inline-flex items-center gap-1.5">
               <Icon name="check" size={13} /> Saved
             </span>
