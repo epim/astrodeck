@@ -96,6 +96,38 @@ export default function SlewPad() {
   // while we're already holding. Null when no press owns the pad.
   const activePointerId = useRef<number | null>(null);
 
+  // WHAT BINDS A SLEW TO A FINGER — AND WHAT USED TO HAPPEN WHEN NOTHING DID.
+  //
+  // This pad has no onPointerLeave by design (R3), so pointer capture is the
+  // ONLY thing keeping a hold bound once the thumb slides off the 56px button.
+  // It was claimed optionally and swallowed:
+  //
+  //     try { el.setPointerCapture?.(id); }
+  //     catch { /* capture unsupported — pointerup still fires on the element */ }
+  //
+  // That comment is true only while the finger is still ON the element, which
+  // is the single case capture is not needed for. When the optional call
+  // no-opped (an engine without capture) or threw NotFoundError (the pointer is
+  // already up), the code went on to beginPress anyway: the release landed on
+  // whatever element the thumb had drifted onto, endPress never ran, and the
+  // 600ms keepalive kept feeding the server's 1200ms deadman. The mount kept
+  // slewing and every arrow went dead until the STOP bar.
+  //
+  // So the capture is now VERIFIED, and a press that did not get it falls back
+  // to window: a pointerup/pointercancel listener for that exact pointerId,
+  // removed the moment the press ends. Refusing to start a continuous hold at
+  // all was the other option and was rejected — it kills the pad's headline
+  // gesture on precisely the engines that already give the user least, whereas
+  // the fallback is the SAME release path sourced from a node no finger can
+  // slide off.
+  const releaseFallback = useRef<(() => void) | null>(null);
+  // Stable identity (it only dereferences a ref), so effects can close over it
+  // without rebuilding on every render.
+  const clearFallback = useRef(() => {
+    releaseFallback.current?.();
+    releaseFallback.current = null;
+  }).current;
+
   const m = status?.mount;
   const mode = status?.mode;
   const isNina = mode === "nina";
@@ -179,6 +211,7 @@ export default function SlewPad() {
       // stopped. Left set, it rejects EVERY later press at the guard: the pad
       // looks alive, the arrows still depress, and nothing moves.
       activePointerId.current = null;
+      clearFallback();
       ctrl.forceStop();
       api.post("/api/mount/stop").catch(() => {});
     };
@@ -192,7 +225,7 @@ export default function SlewPad() {
       document.removeEventListener("visibilitychange", onVis);
       panicStop();
     };
-  }, [ctrl]);
+  }, [ctrl, clearFallback]);
 
   // Locking mid-hold must stop the slew (setLocked also forceStops in the store,
   // but the pad's own controller instance needs to release too). NOTE: the lock
@@ -205,9 +238,10 @@ export default function SlewPad() {
       // of a finger that is long gone owns the pad forever and every press
       // after unlock is silently rejected while still animating (audit #38).
       activePointerId.current = null;
+      clearFallback();
       ctrl.forceStop();
     }
-  }, [locked, ctrl]);
+  }, [locked, ctrl, clearFallback]);
 
   // F-S7: a pad that transitions to parked/disconnected mid-hold must release the
   // slew, mirroring the `locked` effect above. Bounded by the deadman either way,
@@ -215,12 +249,38 @@ export default function SlewPad() {
   useEffect(() => {
     if (padDisabled) {
       activePointerId.current = null;
+      clearFallback();
       ctrl.forceStop();
     }
-  }, [padDisabled, ctrl]);
+  }, [padDisabled, ctrl, clearFallback]);
 
   const curRate = SLEW_RATES[rateIdx];
   const holdDisabledForRate = curRate.rateDegS <= 0 || isNina;
+
+  /** Bind this press's release to `window` because the element could not hold
+   *  it. Listens in the CAPTURE phase so nothing between the finger and the
+   *  window can swallow the release with stopPropagation, and filters on the
+   *  pointerId so a second, unrelated pointer cannot end this slew. */
+  const armFallbackRelease = (id: number, axis: Axis, dir: Dir) => {
+    const release = (stop: () => void) => (ev: Event) => {
+      if ((ev as PointerEvent).pointerId !== id) return;
+      clearFallback();
+      // The element's own handler may have got there first (the finger never
+      // left the button). Whoever clears the id owns the release; the other
+      // returns here, so endPress runs exactly once.
+      if (activePointerId.current !== id) return;
+      activePointerId.current = null;
+      stop();
+    };
+    const onUp = release(() => ctrl.endPress(axis, dir));
+    const onCancel = release(() => ctrl.forceStop());
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onCancel, true);
+    releaseFallback.current = () => {
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onCancel, true);
+    };
+  };
 
   const handlers = (axis: Axis, dir: Dir) => ({
     onPointerDown: (e: RPointerEvent) => {
@@ -230,12 +290,21 @@ export default function SlewPad() {
       // the single-axis controller state and strand the first axis. The first
       // pointer keeps the slew; the second is a no-op.
       if (activePointerId.current != null || ctrl.isHolding()) return;
-      activePointerId.current = e.pointerId;
+      const el = e.currentTarget as HTMLElement;
+      const id = e.pointerId;
+      activePointerId.current = id;
+      let captured = false;
       try {
-        (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+        el.setPointerCapture?.(id);
+        // ASK, don't assume. The optional call above silently resolves to
+        // undefined on an engine with no capture, and hasPointerCapture is the
+        // only thing that can tell "bound" from "quietly not bound".
+        captured = el.hasPointerCapture?.(id) ?? false;
       } catch {
-        /* capture unsupported — pointerup still fires on the element */
+        captured = false; // NotFoundError: that pointer is already gone
       }
+      clearFallback();
+      if (!captured) armFallbackRelease(id, axis, dir);
       ctrl.beginPress(axis, dir);
     },
     onPointerUp: (e: RPointerEvent) => {
@@ -243,6 +312,7 @@ export default function SlewPad() {
       // Ignore an up from any pointer that doesn't own the active press.
       if (activePointerId.current !== e.pointerId) return;
       activePointerId.current = null;
+      clearFallback();
       try {
         (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
       } catch {
@@ -253,11 +323,13 @@ export default function SlewPad() {
     onPointerCancel: (e: RPointerEvent) => {
       if (activePointerId.current !== e.pointerId) return;
       activePointerId.current = null;
+      clearFallback();
       ctrl.forceStop();
     },
     onLostPointerCapture: (e: RPointerEvent) => {
       if (activePointerId.current !== e.pointerId) return;
       activePointerId.current = null;
+      clearFallback();
       ctrl.forceStop();
     },
     // F-ctxmenu: a desktop right-click during a hold would otherwise pop the
@@ -455,6 +527,7 @@ export default function SlewPad() {
               haptics.stop();
               ctrl.forceStop();
               activePointerId.current = null;
+              clearFallback();
               // F-B1: assertive announce, mirroring haptics.stop(). Re-arm each
               // press (clear then set) so a second STOP still re-announces.
               setStopAnnounce("");

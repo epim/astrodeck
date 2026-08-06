@@ -2,7 +2,8 @@
 // { message, code, id } triple for api.ts's req(). Kept dependency-free (no
 // lib/base.ts import, which reads `window.location` at module-load time) so
 // it can be unit-tested under plain Node/tsx — see
-// lib/__tests__/apiError.test.ts.
+// lib/__tests__/apiError.test.ts. The one import, lib/humanize.ts, has no
+// imports of its own and touches no globals, so that stays true.
 //
 // FastAPI's `HTTPException(status, detail={"detail": "...", "code": "..."})`
 // idiom (used throughout the server for machine-readable error codes, e.g.
@@ -28,6 +29,19 @@
 // explicit check it fell into the nested-custom-shape branch, found no
 // `.detail`, and stringified the whole raw array into the toast message.
 // Surface the first item's `msg` (+ the field name from `loc`) instead.
+import { humanizeLaneConflict } from "./humanize";
+
+/** Last stop before a server string becomes a red toast.
+ *
+ *  Applied to every branch below rather than to the one that produces lane
+ *  refusals today, because which branch that is depends on how the route was
+ *  written: `_spawn`'s 409 is a bare string detail, but any route that grows a
+ *  machine-readable `code` for the same refusal moves it into the nested shape.
+ *  One funnel means a lane name cannot reappear by being raised differently. */
+function forHumans(message: string): string {
+  return humanizeLaneConflict(message) ?? message;
+}
+
 function messageFromValidationErrors(items: unknown[]): string {
   const first = items[0];
   if (first && typeof first === "object") {
@@ -53,22 +67,22 @@ export function parseApiError(
     if (Array.isArray(detail)) {
       // plain pydantic 422 validation-error array — never the custom
       // {detail, code} shape, and never JSON.stringify'd raw into the UI.
-      return { message: messageFromValidationErrors(detail) };
+      return { message: forHumans(messageFromValidationErrors(detail)) };
     }
     if (detail && typeof detail === "object") {
       // nested: HTTPException(status, detail={"detail": "...", "code": "..."})
       const d = detail as Record<string, unknown>;
       return {
-        message: typeof d.detail === "string" ? d.detail : JSON.stringify(detail),
+        message: forHumans(typeof d.detail === "string" ? d.detail : JSON.stringify(detail)),
         code: typeof d.code === "string" ? d.code : undefined,
         id: typeof d.id === "string" ? d.id : undefined,
       };
     }
     return {
-      message: typeof detail === "string" ? detail : JSON.stringify(detail ?? j),
+      message: forHumans(typeof detail === "string" ? detail : JSON.stringify(detail ?? j)),
       code: typeof j.code === "string" ? j.code : undefined,
       id: typeof j.id === "string" ? j.id : undefined,
     };
   }
-  return { message: fallback };
+  return { message: forHumans(fallback) };
 }
