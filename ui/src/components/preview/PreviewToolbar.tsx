@@ -7,7 +7,8 @@
 //    a check glyph (NOT color-only — §11.1). Locked honestly when the data can't
 //    support them (no stars / NINA clip) via the house `LockedChip`.
 //  - Download ▾: FITS only if saved_local (else locked + lock glyph + reason);
-//    stretched PNG; raw/lossless PNG (when has_lossless). §12.5 — never a 404.
+//    stretched PNG; raw/lossless PNG (when has_lossless). §12.5 — never a 404,
+//    which means age as well as capability: see DISPLAY_KEEP / LINEAR_KEEP.
 //
 // FONT-SIZE TRAP — why the `!` on every `!text-[11px]` below is load-bearing.
 // `.btn` sets font-size:12px in index.css, and index.css has NO @layer wrapper,
@@ -51,10 +52,26 @@ import { InfoDot, LockedChip } from "../ui";
 import { u } from "../../lib/base";
 import { shareQuery } from "../../lib/share";
 import { isExactWysiwyg, renderPath } from "../../lib/renderLevels";
+import { useLivePreviewId, useStore } from "../../store";
 
 /** Shared chrome for a locked toolbar affordance (LockedChip draws its own lock
  *  glyph, so callers pass only the label). */
 const LOCKED_BTN = "btn !px-2.5 !text-[11px]";
+
+// WHAT THE RIG STILL HAS. `hub._trim_previews` enforces three memory caps on a
+// Pi: the whole ring entry is dropped once a frame is PREVIEW_DISPLAY_KEEP
+// behind the newest (from then on the display bytes, /png, /share.jpg and /fits
+// all 404), and the heavy lossless/linear arrays are freed far sooner, at
+// PREVIEW_LINEAR_KEEP.
+//
+// Every capability flag on a PreviewInfo — `has_lossless`, `data_is_linear`,
+// `saved_local` — is stamped when the frame was CAPTURED and never revised, so
+// a pinned frame went on offering Full-res, Lossless and Stretched PNG long
+// after the bytes behind them were freed. An `<a download>` that 404s reports
+// nothing at all: the tap just does nothing. Mirroring the two constants here
+// is the only way the toolbar can tell; keep them in step with hub.py.
+const DISPLAY_KEEP = 8; // hub.PREVIEW_DISPLAY_KEEP
+const LINEAR_KEEP = 2; // hub.PREVIEW_LINEAR_KEEP
 
 /* The ENABLED controls had the same touch gap the locked ones had. Every
    `title=` below is still there for a mouse, but a fingertip never fires it —
@@ -214,6 +231,12 @@ export function PreviewToolbar({
 }) {
   const [dlOpen, setDlOpen] = useState(false);
   const dlRef = useRef<HTMLDivElement>(null);
+  const dlBtnRef = useRef<HTMLButtonElement>(null);
+  // Self-subscribed rather than passed down (SnrChip's idiom): the toolbar's
+  // caller has no reason to know about the server's frame ring, and a blocked
+  // annotation row has to be able to say so somewhere the user is looking.
+  const showToast = useStore((s) => s.showToast);
+  const liveId = useLivePreviewId();
 
   // Annotations, as one picker. `bahtinov` is opt-OUT (undefined reads as on),
   // so the toggle cannot be a plain boolean flip like the others.
@@ -244,23 +267,53 @@ export function PreviewToolbar({
     const onDoc = (e: Event) => {
       if (dlRef.current && !dlRef.current.contains(e.target as Node)) setDlOpen(false);
     };
+    // Escape closes it and hands focus back to the trigger. This was the one
+    // popover in the app that Escape would not close — PickerButton and Tooltip
+    // both pair the outside-press listener with a key listener, and a keyboard
+    // user who opened this had no way out except tabbing through every item.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setDlOpen(false);
+      dlBtnRef.current?.focus();
+    };
     document.addEventListener("pointerdown", onDoc);
-    return () => document.removeEventListener("pointerdown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [dlOpen]);
 
   const id = preview?.id;
   const savedLocal = !!preview?.saved_local;
   const hasLossless = !!preview?.has_lossless;
+  // How far behind the newest frame this one is — the second half of "will this
+  // download work", next to the capture-time capability flags. `liveId` is the
+  // newest frame THIS browser has seen, so a client that missed frames can only
+  // ever UNDER-estimate the gap: it may still offer a download that 404s, but it
+  // can never hide one that would have worked.
+  const behind = id != null && liveId != null ? Math.max(0, liveId - id) : 0;
+  const entryDropped = behind >= DISPLAY_KEEP;
+  const heavyFreed = behind >= LINEAR_KEEP;
+  /** The reason a full-quality export is gone, in the user's terms. */
+  const heavyFreedReason = (what: string) =>
+    `${what} needs the full-quality copy of frame #${id}, and the rig keeps that ` +
+    `for the latest ${LINEAR_KEEP} frames only — this one is ${behind} frames back. ` +
+    `Return to Live to export the current frame.`;
   // §12.5 — never offer a download that will 404. The "Stretched PNG" route
-  // (/api/preview/{id}/png) only serves a real PNG when a lossless base is held
-  // OR the frame's own bytes are already PNG. For NINA (JPEG, no lossless) it
-  // 404s, so gate the menuitem and render the disabled+lock variant when false,
-  // mirroring the FITS item's honest-disabled treatment.
-  const pngAvailable = hasLossless || preview?.mime === "image/png";
+  // (/api/preview/{id}/png) only serves a real PNG when a lossless base is still
+  // held OR the frame's own bytes are already PNG. For NINA (JPEG, no lossless)
+  // it 404s from the start, and for a linear frame it starts 404-ing once the
+  // lossless base is freed — so gate on both, and render the disabled+lock
+  // variant with whichever reason applies.
+  const pngCapable = hasLossless || preview?.mime === "image/png";
+  const pngAvailable = (hasLossless && !heavyFreed) || preview?.mime === "image/png";
   // /render.png bakes the retained LINEAR array at explicit levels, so it exists
-  // only on the linear path (NINA/pre-stretched frames 404). Same capability gate
-  // as the client LUT canvas and the clip mask — one truth, honestly disabled.
-  const renderAvailable = !!preview?.data_is_linear && !preview?.is_stretched;
+  // only on the linear path (NINA/pre-stretched frames 404) and only while that
+  // array is still held. Same capability gate as the client LUT canvas and the
+  // clip mask — one truth, honestly disabled.
+  const renderCapable = !!preview?.data_is_linear && !preview?.is_stretched;
+  const renderAvailable = renderCapable && !heavyFreed;
   // WYSIWYG honesty (Decision A1): in Auto with neutral Brightness the server
   // reproduces the on-screen stretch EXACTLY (it replays preview.auto_levels).
   // In Manual — or Auto with a Brightness nudge — the on-screen image is a
@@ -273,7 +326,16 @@ export function PreviewToolbar({
     : "Full sensor resolution at your current levels. Your Manual stretch is baked as a very close match — not pixel-identical to the screen.";
   // UX-49: honest-disabled for the Download control (the file's own §11.8 rule —
   // dim token + lock + title, not native `disabled` which greys with no reason).
-  const dlDisabled = id == null || linkDown;
+  // Once the ring entry is gone EVERY item behind this button 404s — including
+  // "Save first light" and FITS, which have no capability flag of their own —
+  // so the honest place to say so is the button, not five separate rows.
+  const dlDisabled = id == null || linkDown || entryDropped;
+  const dlReason = linkDown
+    ? "Link down — downloads unavailable"
+    : entryDropped
+      ? `Frame #${id} is no longer on the rig: only the last ${DISPLAY_KEEP} frames stay in memory, ` +
+        `and this one is ${behind} back. Return to Live, or open the saved sub from the Gallery.`
+      : "No frame to download yet";
 
   return (
     <div className="preview-toolbar">
@@ -346,12 +408,17 @@ export function PreviewToolbar({
           states how many are on, so the glance still works; the options open
           on demand and the per-overlay explanations ride each row's title
           instead of a legend that was always on screen. */}
+      {/* onBlocked is why the per-row `disabledReason` above is worth writing.
+          Without it a dimmed row gave a tap NOTHING — no bullet, no toast, not
+          even a press depression — and the reason reached a mouse hover only.
+          Both CaptureView call sites already wire it this way. */}
       <PickerButton
         label="Annotations"
         summary={annotationSummary}
         options={annotationOptions}
         selected={annotationSelected}
         onPick={(id) => toggleOverlay(id)}
+        onBlocked={(r) => showToast("warning", r)}
         multi
       />
 
@@ -360,31 +427,39 @@ export function PreviewToolbar({
       {/* download */}
       <div className="relative" ref={dlRef}>
         {dlDisabled ? (
-          <LockedChip
-            reason={linkDown ? "Link down — downloads unavailable" : "No frame to download yet"}
-            className={LOCKED_BTN}
-          >
+          <LockedChip reason={dlReason} className={LOCKED_BTN}>
             Download
           </LockedChip>
         ) : (
           <button
+            ref={dlBtnRef}
             type="button"
             className="btn !px-2.5 min-h-11 inline-flex items-center gap-1 !text-[11px]"
-            aria-haspopup="menu"
             aria-expanded={dlOpen}
             onClick={() => setDlOpen((v) => !v)}
           >
             <Icon name="arrow-down" size={12} /> Download ▾
           </button>
         )}
+        {/* A DISCLOSURE, not a menu. It used to declare role="menu" with
+            role="menuitem" children, which promises the ARIA menu keyboard
+            model — roving focus, arrow keys, Home/End, type-ahead — none of
+            which is implemented here; and two of the rows are LockedChips,
+            which are not menuitems at all. What this actually is: a group of
+            download links and a few honest stand-ins for the ones that are
+            unavailable. Links are focusable and Tab-navigable natively, so
+            saying that plainly is both true and usable. */}
         {dlOpen && id != null && (
-          <div role="menu" className="panel absolute right-0 top-full mt-1 z-50 p-1 w-48 flex flex-col gap-0.5">
+          <div
+            role="group"
+            aria-label={`Download frame ${id}`}
+            className="panel absolute right-0 top-full mt-1 z-50 p-1 w-48 flex flex-col gap-0.5"
+          >
             {/* The primary "give me the picture" export: full NATIVE resolution,
                 baked server-side at the levels currently on screen. Every other
                 item here is either the ≤1400px display encode or the raw FITS. */}
             {renderAvailable ? (
               <a
-                role="menuitem"
                 href={u(renderPath(id, stretch, preview))}
                 download={`astrodeck_${id}.png`}
                 title={renderTitle}
@@ -395,14 +470,15 @@ export function PreviewToolbar({
               </a>
             ) : (
               <LockedChip
-                reason="Full-res export needs linear data — this frame came from NINA already stretched."
+                reason={renderCapable
+                  ? heavyFreedReason("A full-res export")
+                  : "Full-res export needs linear data — this frame came from NINA already stretched."}
                 className="btn !justify-start !px-2 text-[11px] w-full"
               >
                 Full-res PNG
               </LockedChip>
             )}
             <a
-              role="menuitem"
               href={u(`/api/preview/${id}/share.jpg${shareQuery(shareMeta?.target, shareMeta?.subs)}`)}
               download={`firstlight_${id}.jpg`}
               className="btn btn-accent !justify-start !px-2 !py-1.5 text-[11px] inline-flex items-center gap-1"
@@ -412,7 +488,6 @@ export function PreviewToolbar({
             </a>
             {pngAvailable ? (
               <a
-                role="menuitem"
                 href={u(`/api/preview/${id}/png`)}
                 download={`preview_${id}.png`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
@@ -422,15 +497,23 @@ export function PreviewToolbar({
               </a>
             ) : (
               <LockedChip
-                reason="This frame is JPEG-only — no lossless source to export a PNG from."
+                reason={pngCapable
+                  ? heavyFreedReason("A PNG export")
+                  : "This frame is JPEG-only — no lossless source to export a PNG from."}
                 className="btn !justify-start !px-2 text-[11px] w-full"
               >
                 Stretched PNG
               </LockedChip>
             )}
-            {hasLossless && (
+            {hasLossless && (heavyFreed ? (
+              <LockedChip
+                reason={heavyFreedReason("The lossless copy")}
+                className="btn !justify-start !px-2 text-[11px] w-full"
+              >
+                Lossless PNG
+              </LockedChip>
+            ) : (
               <a
-                role="menuitem"
                 href={u(`/api/preview/${id}/lossless.png`)}
                 download={`preview_${id}_lossless.png`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"
@@ -438,10 +521,9 @@ export function PreviewToolbar({
               >
                 Lossless PNG
               </a>
-            )}
+            ))}
             {savedLocal ? (
               <a
-                role="menuitem"
                 href={u(`/api/preview/${id}/fits`)}
                 download={`preview_${id}.fits`}
                 className="btn !justify-start !px-2 !py-1.5 text-[11px]"

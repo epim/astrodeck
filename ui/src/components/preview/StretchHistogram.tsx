@@ -34,6 +34,121 @@ const H = 72;
 const NINA_LOCK_REASON =
   "Black, mid and white are fixed at the source — NINA pre-stretched this frame, so only the display can be adjusted.";
 
+type Which = "black" | "mid" | "white";
+
+/** Handle colours on the linear path (NINA pins all three to --text-faint). */
+const NORMAL_COLOR: Record<Which, string> = {
+  black: "#9aa7bd",
+  mid: "var(--accent)",
+  white: "#e8eefc",
+};
+
+/** One level handle: the line, the grip cap, and whichever chip is hanging off
+ *  it. HOISTED to module scope on purpose — declared inside the component body
+ *  it was a NEW component type on every render, so React tore each handle's DOM
+ *  down and rebuilt it after every `onStretch`. That drops keyboard focus, so
+ *  the SECOND arrow key of a nudge went to the body and did nothing, and it
+ *  would have destroyed any pointer capture held here mid-drag. Same defect
+ *  class as SlewPad's inline `Arrow`. */
+function Handle({
+  which, v, color, active, isNina, clipped, onKeyDown,
+}: {
+  which: Which;
+  v: number;
+  color: string;
+  active: Which | null;
+  isNina: boolean;
+  clipped: boolean;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+}) {
+  const pct = v * 100;
+  const adu = Math.round(v * 65535);
+  const isActive = active === which;
+  const isClip = which === "white" && clipped;
+  // Where a chip hangs off this handle. MEASURED (Chromium + WebKit, real app
+  // shell, frame seeded into the store): a `left-1/2 -translate-x-1/2` chip is
+  // centred on the handle's value, so at white=1.0 — the DEFAULT in Auto mode,
+  // i.e. the ordinary case — half of it lands outside the track. With the
+  // "⚠ CLIPPED" tag (68px) that was 34px past the track and 17px past the
+  // panel's border on a 364px panel; main's `overflow-x:hidden` then SLICED it,
+  // which is the half of the report you can see ("I can't see controls") while
+  // the other half (`main.scrollWidth` 1px over `clientWidth` in the
+  // single-column layouts) is the page trying to widen.
+  //
+  // Fix: anchor the chip AT the value and let it grow inward — right edge on
+  // the value near the top of the range, left edge on the value near the
+  // bottom, centred in between. The handle box is 32px wide with the value at
+  // its centre, so "16px in from the box's right edge" IS the value; hence
+  // right-4 / left-4 rather than right-0 / left-0.
+  //
+  // 25/75 and not 5/95: the widest chip here is the drag readout
+  // ("100% · 65535", ~84px, so ~42px of half-width) and the narrowest track we
+  // render into is the panel's 194px min-content floor (~162px of track), where
+  // 25% is 40px. Any looser and the centred form would still hang out at the
+  // ends of a narrow panel.
+  const chipAnchor =
+    pct >= 75 ? "right-4" : pct <= 25 ? "left-4" : "left-1/2 -translate-x-1/2";
+  return (
+    <div
+      role="slider"
+      // `data-handle` is how the track's pointerdown tells a GRAB (press landed
+      // on this handle — the value must not jump under the finger) from the
+      // scrub-nearest gesture (press landed on bare track).
+      data-handle={which}
+      // UX #24 (the remainder). `tabIndex={-1}` on the NINA-locked handle was
+      // the native `disabled` defect wearing a different hat: it took the
+      // control OUT of the tab order, so the one user who cannot see the
+      // dimming — a keyboard/screen-reader user — could never land on it and
+      // hear why it does nothing. `aria-disabled` alone is the house idiom
+      // (ui.tsx UI-LOCKED): stay reachable, and SAY the reason. The reason
+      // rides in the accessible name because there is no `title=` here on
+      // purpose — title never fires on touch, and the tablet at the scope is
+      // the primary field device. `handleKey`/`onTrackPointerDown` already
+      // return early on `isNina`, so being focusable changes nothing about
+      // what the handle can DO.
+      tabIndex={0}
+      aria-label={isNina ? `${which} point — unavailable. ${NINA_LOCK_REASON}` : `${which} point`}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(pct)}
+      aria-disabled={isNina}
+      onKeyDown={onKeyDown}
+      className="absolute top-0 bottom-0 outline-none"
+      style={{ left: `calc(${pct}% - 16px)`, width: 32, cursor: isNina ? "not-allowed" : "ew-resize" }}
+    >
+      {/* the visible thin line */}
+      <span
+        className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2"
+        style={{
+          width: isActive ? 3 : 1.5,
+          background: color,
+          boxShadow: "0 0 0 1px var(--halo)",
+        }}
+      />
+      {/* grip cap (enlarges when active) */}
+      <span
+        className="absolute left-1/2 -translate-x-1/2 -top-1 border"
+        style={{
+          width: isActive ? 14 : 9,
+          height: isActive ? 14 : 9,
+          background: color,
+          borderColor: "var(--halo)",
+        }}
+      />
+      {isClip && (
+        <span className={`absolute -top-5 ${chipAnchor} whitespace-nowrap preview-chip text-warn flex items-center gap-0.5`}>
+          <Icon name="alert" size={10} /> CLIPPED
+        </span>
+      )}
+      {isActive && (
+        <span className={`absolute -bottom-5 ${chipAnchor} whitespace-nowrap preview-chip mono`}>
+          {Math.round(pct)}% · {adu}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function StretchHistogram({
   preview,
   stretch,
@@ -46,7 +161,7 @@ export function StretchHistogram({
   onDragChange?: (dragging: boolean) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [active, setActive] = useState<"black" | "mid" | "white" | null>(null);
+  const [active, setActive] = useState<Which | null>(null);
 
   const isNina = !!preview?.is_stretched;
   const domain = preview?.histogram_domain ?? "display";
@@ -104,7 +219,7 @@ export function StretchHistogram({
     return Math.min(1, Math.max(0, (clientX - r.left) / r.width));
   };
 
-  const nearestHandle = (v: number): "black" | "mid" | "white" => {
+  const nearestHandle = (v: number): Which => {
     const db = Math.abs(v - lv.black);
     const dm = Math.abs(v - lv.mid);
     const dw = Math.abs(v - lv.white);
@@ -113,7 +228,24 @@ export function StretchHistogram({
     return "mid";
   };
 
-  const moveHandle = (which: "black" | "mid" | "white", v: number) => {
+  /** The handle a press LANDED ON, or null for a press on bare track.
+   *
+   *  The handle boxes are 32px wide, are drawn OVER the histogram, and are not
+   *  children of the <svg> — so while the pointer handlers lived on the svg,
+   *  every press that hit a handle reached nothing at all. Each level line was
+   *  a 32px dead column down the middle of its own control, and the only way to
+   *  move a level was to press beside it and let scrub-nearest teleport it
+   *  there. The handlers now sit on the box that contains BOTH the svg and the
+   *  handles, and this is what tells the two presses apart: on a handle is a
+   *  grab (the value must not jump under the finger), on bare track is the
+   *  scrub-nearest gesture §11.5 documents. */
+  const grabbedHandle = (target: EventTarget | null): Which | null => {
+    const el = (target as Element | null)?.closest?.("[data-handle]") ?? null;
+    const which = el?.getAttribute("data-handle");
+    return which === "black" || which === "mid" || which === "white" ? which : null;
+  };
+
+  const moveHandle = (which: Which, v: number) => {
     // grabbing any handle flips Auto -> Manual (sticky, clearly labeled)
     const next: Partial<StretchParams> = stretch.auto ? { auto: false, ...lv } : {};
     if (which === "black") next.black = Math.min(v, lv.white - 0.01);
@@ -125,11 +257,17 @@ export function StretchHistogram({
   const onTrackPointerDown = (e: React.PointerEvent) => {
     if (isNina) return;
     const v = xToVal(e.clientX);
-    const which = nearestHandle(v);
+    const grabbed = grabbedHandle(e.target);
+    const which = grabbed ?? nearestHandle(v);
     setActive(which);
     onDragChange?.(true);
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-    moveHandle(which, v);
+    // Capture on the CONTAINER (currentTarget), never on e.target: the target
+    // may be a handle, and the handles are re-rendered on every `onStretch` —
+    // and a capture is only worth having on a node that outlives the drag.
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    // Grabbing a handle must not shift it: the press is anywhere in its 32px
+    // box, which is up to 6% of the track away from the value it is holding.
+    if (!grabbed) moveHandle(which, v);
   };
   const onTrackPointerMove = (e: React.PointerEvent) => {
     if (!active) return;
@@ -142,7 +280,7 @@ export function StretchHistogram({
     }
   };
 
-  const handleKey = (which: "black" | "mid" | "white") => (e: React.KeyboardEvent) => {
+  const handleKey = (which: Which) => (e: React.KeyboardEvent) => {
     if (isNina) return;
     const step = e.shiftKey ? 0.05 : 0.01;
     let d = 0;
@@ -156,91 +294,6 @@ export function StretchHistogram({
   if (!preview) {
     return <p className="text-dim text-xs">Awaiting first frame.</p>;
   }
-
-  const Handle = ({ which, v, color }: { which: "black" | "mid" | "white"; v: number; color: string }) => {
-    const pct = v * 100;
-    const adu = Math.round(v * 65535);
-    const isActive = active === which;
-    const isClip = which === "white" && clipped;
-    // Where a chip hangs off this handle. MEASURED (Chromium + WebKit, real app
-    // shell, frame seeded into the store): a `left-1/2 -translate-x-1/2` chip is
-    // centred on the handle's value, so at white=1.0 — the DEFAULT in Auto mode,
-    // i.e. the ordinary case — half of it lands outside the track. With the
-    // "⚠ CLIPPED" tag (68px) that was 34px past the track and 17px past the
-    // panel's border on a 364px panel; main's `overflow-x:hidden` then SLICED it,
-    // which is the half of the report you can see ("I can't see controls") while
-    // the other half (`main.scrollWidth` 1px over `clientWidth` in the
-    // single-column layouts) is the page trying to widen.
-    //
-    // Fix: anchor the chip AT the value and let it grow inward — right edge on
-    // the value near the top of the range, left edge on the value near the
-    // bottom, centred in between. The handle box is 32px wide with the value at
-    // its centre, so "16px in from the box's right edge" IS the value; hence
-    // right-4 / left-4 rather than right-0 / left-0.
-    //
-    // 25/75 and not 5/95: the widest chip here is the drag readout
-    // ("100% · 65535", ~84px, so ~42px of half-width) and the narrowest track we
-    // render into is the panel's 194px min-content floor (~162px of track), where
-    // 25% is 40px. Any looser and the centred form would still hang out at the
-    // ends of a narrow panel.
-    const chipAnchor =
-      pct >= 75 ? "right-4" : pct <= 25 ? "left-4" : "left-1/2 -translate-x-1/2";
-    return (
-      <div
-        role="slider"
-        // UX #24 (the remainder). `tabIndex={-1}` on the NINA-locked handle was
-        // the native `disabled` defect wearing a different hat: it took the
-        // control OUT of the tab order, so the one user who cannot see the
-        // dimming — a keyboard/screen-reader user — could never land on it and
-        // hear why it does nothing. `aria-disabled` alone is the house idiom
-        // (ui.tsx UI-LOCKED): stay reachable, and SAY the reason. The reason
-        // rides in the accessible name because there is no `title=` here on
-        // purpose — title never fires on touch, and the tablet at the scope is
-        // the primary field device. `handleKey`/`onTrackPointerDown` already
-        // return early on `isNina`, so being focusable changes nothing about
-        // what the handle can DO.
-        tabIndex={0}
-        aria-label={isNina ? `${which} point — unavailable. ${NINA_LOCK_REASON}` : `${which} point`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(pct)}
-        aria-disabled={isNina}
-        onKeyDown={handleKey(which)}
-        className="absolute top-0 bottom-0 outline-none"
-        style={{ left: `calc(${pct}% - 16px)`, width: 32, cursor: isNina ? "not-allowed" : "ew-resize" }}
-      >
-        {/* the visible thin line */}
-        <span
-          className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2"
-          style={{
-            width: isActive ? 3 : 1.5,
-            background: color,
-            boxShadow: "0 0 0 1px var(--halo)",
-          }}
-        />
-        {/* grip cap (enlarges when active) */}
-        <span
-          className="absolute left-1/2 -translate-x-1/2 -top-1 border"
-          style={{
-            width: isActive ? 14 : 9,
-            height: isActive ? 14 : 9,
-            background: color,
-            borderColor: "var(--halo)",
-          }}
-        />
-        {isClip && (
-          <span className={`absolute -top-5 ${chipAnchor} whitespace-nowrap preview-chip text-warn flex items-center gap-0.5`}>
-            <Icon name="alert" size={10} /> CLIPPED
-          </span>
-        )}
-        {isActive && (
-          <span className={`absolute -bottom-5 ${chipAnchor} whitespace-nowrap preview-chip mono`}>
-            {Math.round(pct)}% · {adu}
-          </span>
-        )}
-      </div>
-    );
-  };
 
   return (
     <div className="flex flex-col gap-2">
@@ -281,16 +334,28 @@ export function StretchHistogram({
           — this is the guarantee that no future chip, handle or longer readout can
           push the page sideways again. */}
       <div className="-mx-4 px-4 overflow-x-clip overflow-y-visible">
-        <div className="relative select-none" style={{ touchAction: "none" }}>
+        {/* The pointer handlers live HERE, not on the <svg>, because the handles
+            are drawn over the svg as siblings of it — an event on a handle
+            never reached a listener on the svg, so pressing a level line did
+            nothing at all (see `grabbedHandle`). This box is the svg's exact
+            box, so nothing new becomes pressable except the handles that were
+            always meant to be. `touch-action:none` here still covers them: the
+            browser intersects the property with every ancestor up to the
+            scroller, so a drag that starts on a handle does not scroll the
+            page. */}
+        <div
+          className="relative select-none"
+          style={{ touchAction: "none" }}
+          onPointerDown={onTrackPointerDown}
+          onPointerMove={onTrackPointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
           <svg
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
             className="w-full block bg-black/40 border border-line"
             style={{ height: H }}
-            onPointerDown={onTrackPointerDown}
-            onPointerMove={onTrackPointerMove}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
           >
             {histPath && <path d={histPath} fill="var(--accent)" opacity={0.7} />}
             {clipped && (
@@ -307,9 +372,20 @@ export function StretchHistogram({
               handles (honors the component's "fixed at the source" contract — P2-4). */}
           {stretch.advancedOpen && (
             <>
-              <Handle which="black" v={isNina ? 0 : lv.black} color={isNina ? "var(--text-faint)" : "#9aa7bd"} />
-              <Handle which="mid" v={isNina ? 0.5 : lv.mid} color={isNina ? "var(--text-faint)" : "var(--accent)"} />
-              <Handle which="white" v={isNina ? 1 : lv.white} color={isNina ? "var(--text-faint)" : "#e8eefc"} />
+              {(["black", "mid", "white"] as const).map((which) => (
+                <Handle
+                  key={which}
+                  which={which}
+                  v={isNina
+                    ? { black: 0, mid: 0.5, white: 1 }[which]
+                    : lv[which]}
+                  color={isNina ? "var(--text-faint)" : NORMAL_COLOR[which]}
+                  active={active}
+                  isNina={isNina}
+                  clipped={clipped}
+                  onKeyDown={handleKey(which)}
+                />
+              ))}
             </>
           )}
         </div>
