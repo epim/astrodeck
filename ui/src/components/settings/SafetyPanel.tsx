@@ -68,7 +68,17 @@ export default function SafetyPanel(): JSX.Element {
   const [err, setErr] = useState<{ where: "solar" | "roof"; msg: string } | null>(
     null,
   );
-  const [savedAt, setSavedAt] = useState<number | null>(null);
+  // TAGGED FOR THE SAME REASON `err` IS. There is one panel here but two
+  // independent writes — the sun-exclusion cone and the roof interlocks — and a
+  // single unlabelled "✓ Saved" at the foot of the panel could not tell them
+  // apart. Toggling "Close roof at end-of-night" (which persists immediately)
+  // put that green line up; changing the exclusion angle from 30 to 45 then left
+  // it showing under a live "Save angle" button, and the user walked away
+  // believing the cone was 45° while the mount still enforced 30°. Each write
+  // now confirms itself AT ITS OWN CONTROL, and the solar one is `!dirty`-gated
+  // like its four siblings (OpticsPanel:418, EscalationPanel:359,
+  // SafetyLimitsPanel:724, CalibrationTolerancesPanel:177).
+  const [savedAt, setSavedAt] = useState<{ where: "solar" | "roof"; at: number } | null>(null);
 
   // Re-seed from the server. `solar_*` are additive on the backend, so a legacy
   // config without them deserializes ON @ 30 — but guard for an older UI payload
@@ -79,7 +89,12 @@ export default function SafetyPanel(): JSX.Element {
     setAvoidance(seedAvoidance);
     setConeDeg(seedCone);
     setErr(null);
-    setSavedAt(null);
+    // This effect deliberately does NOT clear `savedAt`. It fires exactly when a
+    // solar value LANDS from the server — which is the moment our own save
+    // succeeded — so nulling it here raced the `setSavedAt` in `persist` and
+    // could swallow the confirmation the save had just earned. The chip is gated
+    // on `!dirty` instead, which is what actually has to be true for "Saved" to
+    // be an honest thing to say.
   }, [seedAvoidance, seedCone]);
 
   // --- observatory roof / dome (PRO-4) ----------------------------------------
@@ -192,7 +207,7 @@ export default function SafetyPanel(): JSX.Element {
       await setSafetyConfig(body);
       // Re-hydrate the config slice so this panel + any cone banner re-seed.
       await useStore.getState().loadConfig();
-      setSavedAt(Date.now());
+      setSavedAt({ where: "solar", at: Date.now() });
       return true;
     } catch (e) {
       // Keep the typed CONE draft so the user sees what they tried -- never
@@ -252,7 +267,7 @@ export default function SafetyPanel(): JSX.Element {
       const body: SafetyConfig = { ...safety, ...patch };
       await setSafetyConfig(body);
       await useStore.getState().loadConfig();
-      setSavedAt(Date.now());
+      setSavedAt({ where: "roof", at: Date.now() });
       return true;
     } catch (e) {
       const msg =
@@ -487,6 +502,25 @@ export default function SafetyPanel(): JSX.Element {
             <Icon name="check" size={15} />
             {busy ? "Saving…" : "Save angle"}
           </button>
+          {/* The unsaved signal used to be the button un-greying and nothing
+              else. It names the SERVER's number because that is the fact the
+              user cannot get any other way and the one the failure turns on:
+              the box on screen reads 45 while the mount is still refusing at 30.
+              Suppressed while avoidance is off, where the note below is the
+              truthful answer instead ("nothing to save"). */}
+          {dirty && !busy && avoidance && canOverride && (
+            <span className="text-[11px] text-warn">
+              Unsaved — the mount still has {seedCone}°
+            </span>
+          )}
+          {/* Plain "Saved", like the four sibling panels: it sits against its own
+              Save button, which is what gives it its subject. (The roof's
+              confirmation is NOT beside a button, so that one spells itself out.) */}
+          {savedAt?.where === "solar" && !dirty && !busy && err?.where !== "solar" && (
+            <span className="text-[11px] text-good inline-flex items-center gap-1.5">
+              <Icon name="check" size={13} /> Saved
+            </span>
+          )}
           {/* The field stays live while avoidance is off, so the greyed button
               beside it read as a bug. It is not — there is no cone to size while
               the guard is disarmed, and re-arming writes whatever is typed here,
@@ -660,6 +694,15 @@ export default function SafetyPanel(): JSX.Element {
           </p>
         )}
 
+        {/* ...and an ACCEPTED one confirms itself here, beside the switches it
+            was about. These three write immediately, so there is no draft to be
+            dirty against — the confirmation is simply that the server took it. */}
+        {savedAt?.where === "roof" && !busy && err?.where !== "roof" && (
+          <p className="text-[11px] text-good inline-flex items-center gap-1.5 mt-2">
+            <Icon name="check" size={13} /> Roof settings saved
+          </p>
+        )}
+
         {!canSafety ? (
           <div className="flex items-center gap-3 border border-line2 bg-raise/40 px-3 py-2 text-xs mt-3">
             <Icon name="lock" size={14} className="text-dim shrink-0" />
@@ -713,11 +756,11 @@ export default function SafetyPanel(): JSX.Element {
         </div>
       </div>
 
-      {savedAt && !busy && !err && (
-        <p className="text-[11px] text-good inline-flex items-center gap-1.5 mt-3">
-          <Icon name="check" size={13} /> Saved
-        </p>
-      )}
+      {/* NOTE: there is deliberately no panel-wide "Saved" line here any more.
+          It was set by BOTH the solar write and the roof writes, said neither,
+          and sat below the whole roof block — so a roof toggle's confirmation
+          appeared under an exclusion angle that had not been saved. Each write
+          now confirms itself at its own control (see above). */}
     </Panel>
   );
 }

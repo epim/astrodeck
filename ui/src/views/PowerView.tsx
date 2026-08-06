@@ -203,20 +203,44 @@ export default function PowerView() {
             // prefers-reduced-motion kills it, so the arrow has to be the fact.
             const state = p.value > 0 ? "ON" : "OFF";
             return (
+              // A mains outlet is a SWITCH, and its engaged look already follows
+              // `p.value` (device truth, not the tap). What was missing was the
+              // declaration: with no role and no aria-checked, the only state
+              // channel was name-from-content, so the outlet's ON/OFF arrived as
+              // a CHANGED NAME — and mid-walk the pending aria-label took the
+              // name over, so the control's identity swapped channels in the
+              // middle of the interaction ("Bench light ON" -> "Bench light —
+              // switching off…" -> "Bench light OFF"). Voice control aims at a
+              // name that moves out from under the utterance.
+              //
+              // `role="switch" + aria-checked` (the house Toggle's shape, ui.tsx:149,
+              // and the MountView tracking toggle's — also hardware on/off with an
+              // in-flight walk), a STATIC name, and the ON/OFF word aria-hidden
+              // like Toggle's own showState span. State lives in aria-checked;
+              // the walk lives in aria-busy.
               <button key={p.id}
-                disabled={!canControl}
+                role="switch"
+                aria-checked={p.value > 0}
+                aria-label={p.name}
+                // §11.8, the rule this file states verbatim 50 lines below for
+                // the dimmer sliders: `disabled` strips the control AND its
+                // reason out of the a11y tree, so for a VIEWER the outlet rows
+                // left the tab order entirely and ReadOnlyBadge's explanation
+                // became unreachable by control navigation. The handler is made
+                // inert instead (setPort also refuses without the capability).
                 aria-disabled={!canControl || undefined}
                 aria-busy={pending || undefined}
-                aria-label={pending
-                  ? `${p.name} — switching ${p.value > 0 ? "off" : "on"}, waiting for the power box`
-                  : undefined}
-                onClick={() => setPort(p.id, p.value > 0 ? 0 : 1)}
+                aria-describedby={pending ? `port-${p.id}-pending` : undefined}
+                onClick={canControl ? () => setPort(p.id, p.value > 0 ? 0 : 1) : undefined}
                 className={`flex items-center gap-3 border px-3 py-3 transition-all text-left
                   ${canControl ? "cursor-pointer" : "cursor-default opacity-60"}
                   ${p.value > 0 ? "border-accent2 bg-accent/5" : "border-line bg-bg/60 " + (canControl ? "hover:border-line2" : "")}`}>
                 <Led on={p.value > 0} />
                 <span className="text-sm flex-1">{p.name}</span>
-                <span className={`label ${pending ? "text-accent blink" : p.value > 0 ? "text-good" : ""}`}>
+                <span
+                  id={`port-${p.id}-pending`}
+                  aria-hidden={!pending || undefined}
+                  className={`label ${pending ? "text-accent blink" : p.value > 0 ? "text-good" : ""}`}>
                   {pending ? `→ ${p.value > 0 ? "OFF" : "ON"}` : state}
                 </span>
               </button>

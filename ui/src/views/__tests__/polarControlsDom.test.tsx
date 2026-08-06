@@ -51,11 +51,27 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 // decide when the promise settles, independently of when the driver speaks.
 const posts: string[] = [];
 let hold: null | (() => void) = null;
+// The STOP route's two interesting shapes, for the latch tests at the foot of
+// this file: a request that has not answered yet (`stopHold`), and one the
+// server refuses (`stopFails` — 409 "polar alignment is not running", or the
+// same thing arriving as a dropped relay). Both are states in which the run is
+// still live, so both must leave the screen saying so.
+let stopHold: null | (() => void) = null;
+let stopFails = false;
 g.fetch = async (url: string, init?: any) => {
   const path = String(url);
   if ((init?.method ?? "GET") === "POST") posts.push(path);
   if (hold && path.includes("/api/polar/pause")) {
     await new Promise<void>((r) => { hold = r; });
+  }
+  if (path.includes("/api/polar/stop")) {
+    if (stopHold) await new Promise<void>((r) => { stopHold = r; });
+    if (stopFails) {
+      return {
+        ok: false, status: 409, statusText: "Conflict",
+        json: async () => ({ detail: "polar alignment is not running" }),
+      } as any;
+    }
   }
   return {
     ok: true, status: 200, statusText: "OK",
@@ -225,6 +241,86 @@ test("a run that ended before any measurement says exactly that", () => {
   assert(/before any error was measured/.test(text()),
     "nothing distinguishes 'no measurement' from a measurement of zero");
 });
+
+// ------------------------------- STOP INSIDE THE START LATCH (button-rest #11)
+// Press Start, then press Stop in the ~1 s before the driver's first publish.
+// Stop's handler used to call setStarting(false) SYNCHRONOUSLY — before
+// /api/polar/stop had been sent, let alone answered — so on that single frame
+// the screen un-committed itself over a mount that was still moving: Start came
+// back to life, the header chip dropped to a grey "idle", the readout reverted
+// to "Not started", and the red Stop dimmed to its locked face whose stated
+// reason is "No alignment is running — nothing to stop."
+await publish("idle");
+{
+  const before = posts.length;
+  await click(byText(/Start Alignment/));
+  await settle();
+  test("precondition: the start latch is on and the screen reads the run as live", () => {
+    assert(posts.slice(before).some((p) => p.includes("/api/polar/start")),
+      "the press never reached the start route, so there is no latch to release");
+    assert(/Starting/.test(text()), "nothing says the alignment is starting");
+    assert(byText(/Starting|Start Alignment/).disabled === true, "Start is not locked out");
+    assert(!inert(byText(/^Stop$/)), "Stop is not armed, so pressing it proves nothing");
+  });
+}
+
+stopHold = () => {};   // the stop request hangs until this test releases it
+{
+  const before = posts.length;
+  await click(byText(/^Stop$/));
+  test("Stop does not un-commit the screen before the rig has answered", () => {
+    // PRECONDITION: the stop really is still in flight. Without it this passes
+    // on a build where the request finished before the assertion ran.
+    assert(typeof stopHold === "function" && posts.slice(before).some((p) => p.includes("/api/polar/stop")),
+      "the stop request is not actually in flight, so nothing is being proven");
+    const start = byText(/Starting|Start Alignment/);
+    assert(start != null && start.disabled === true,
+      "Start went live again on the PRESS of Stop — before the stop was sent. The press " +
+      "it now invites is answered 409 'polar alignment is already running', which is the " +
+      "exact failure the starting latch exists to remove");
+    assert(!inert(byText(/^Stop$/)),
+      "the red Stop dimmed to 'No alignment is running — nothing to stop.' while its own " +
+      "request was still in flight and the mount was still moving");
+    assert(!/Not started/.test(text()),
+      "the readout went back to 'Not started — press Start Alignment to measure.' over an " +
+      "alignment the rig has not been told to stop yet");
+  });
+}
+if (typeof stopHold === "function") (stopHold as () => void)();
+stopHold = null;
+await settle(10);
+
+test("…and the stop that LANDED is what releases the latch", () => {
+  const start = byText(/Start Alignment/);
+  assert(start != null && start.disabled === false,
+    "Start is still locked out after a stop the server accepted — the latch must hand " +
+    "over on the resolved stop, not wait out its 6s expiry");
+});
+
+// A REFUSED STOP IS NOT A STOP. 409, 403 or a dropped relay all mean the run is
+// still going; the escape hatch has to stay armed so the next press re-sends.
+stopFails = true;
+await click(byText(/Start Alignment/));
+await settle();
+{
+  const armed = /Starting/.test(text());
+  await click(byText(/^Stop$/));
+  await settle(10);
+  const before = posts.length;
+  await click(byText(/^Stop$/));
+  await settle(10);
+  test("a stop the server refuses leaves the alignment on screen — and re-pressable", () => {
+    assert(armed, "the start latch was never on, so the refusal below proves nothing");
+    const start = byText(/Starting|Start Alignment/);
+    assert(start != null && start.disabled === true,
+      "a REFUSED stop re-enabled Start over a run that is still going");
+    assert(posts.slice(before).some((p) => p.includes("/api/polar/stop")),
+      "the second Stop press never reached the rig: the button had already dimmed to its " +
+      "locked face, and HonestButton keeps that face pressable, so the retry only toasted " +
+      "'No alignment is running — nothing to stop.' at someone whose alignment is running");
+  });
+}
+stopFails = false;
 
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });

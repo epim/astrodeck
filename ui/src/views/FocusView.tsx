@@ -305,6 +305,73 @@ export default function FocusView() {
 
   // A frame landed: whatever single exposure we were waiting on is done.
   useEffect(() => { setShotAt(null); }, [liveId]);
+
+  // ------------------------------------------------- the frame that never came
+  // The tap, narrated: "exposing · 3s left" → "reading out…" → the verdict that
+  // it is gone. Computed HERE rather than beside the paragraph that prints it,
+  // because three other things need the verdict and one of them is a control.
+  const frameWait = frameWaitNote({ startedAt: shotAt, exposureS: capExposureS, now });
+  // THE FAILURE PATH, which this screen had none of. `shotAt` is cleared by a
+  // new preview id and by Stop — the frame ARRIVING, or the user giving up. When
+  // the frame simply never comes (USB drop, an aborted exposure, a camera error)
+  // neither ever happens, so the Single button sat on `btn-accent` /
+  // aria-pressed / "Exposing…" and the pod's SHOOT chip went on refusing with
+  // "A frame is already exposing — press Stop to abandon it" for the rest of the
+  // night, over a camera that had dropped the frame minutes earlier.
+  //
+  // The verdict already existed and was only ever PRINTED: `frameWaitNote` turns
+  // `warn` once the frame is later than the exposure plus a full readout grace
+  // (lib/focusCapture FRAME_READOUT_GRACE_MS, the same 60s as CaptureView's
+  // DOWNLOAD_WATCHDOG_MS) and says "the camera may have dropped it". So the
+  // screen computed that the frame was lost, said so, drew the pod ring's
+  // dashed stalled signature for it — and went on refusing the one tap that
+  // answers it. This applies that same verdict to the CONTROLS, and to nothing
+  // else: the sentence and the stalled ring stay exactly as they are, because
+  // they were the two things that were already right.
+  //
+  // `shotAt` itself is deliberately NOT cleared. Clearing it would take the
+  // sentence and the ring away at the exact moment they became true and hand
+  // back a Single button with no explanation of why the last one produced
+  // nothing.
+  const frameLost = frameWait?.tone === "warn";
+  const exposing = shotAt != null && !frameLost;
+
+  // ------------------------------------------- what the CAMERA is exposing at
+  // `capExposure` is a box on this screen. It is seeded to "2" and never seeded
+  // from the rig — so the moment a loop is running that this box did not just
+  // start, the lit preset and the pod's exposure badge are claims about the
+  // CAMERA made out of a local draft. Start a 10s loop on the Capture screen and
+  // switch here, or simply reload the tab mid-loop, and "2s" renders filled with
+  // aria-pressed=true while the provenance line two rows below reads "last frame
+  // 10s · gain …" — two contradictory claims about one camera in one panel. This
+  // file's own comment already states the invariant (applyPreset, below): "a lit
+  // preset over a running loop is a claim about the camera, not about what is
+  // typed in a box".
+  //
+  // So while a loop runs, the rig's own frames decide. `loopWanted` is the one
+  // exception, and it is not a draft: a preset tap RESTARTS the loop, and once
+  // the server has accepted that restart the loop IS at that exposure — it is
+  // the frame already in flight that still carries the old length. It is dropped
+  // the moment a frame agrees, when the loop stops, when the rig refuses the
+  // restart, and after a grace, so a restart that never took cannot strand a
+  // number nothing is shooting.
+  const [loopWanted, setLoopWanted] = useState<number | null>(null);
+  const loopExposureS = looping ? liveFrame?.exposure_s ?? null : null;
+  useEffect(() => {
+    if (loopWanted == null) return;
+    if (!looping || loopExposureS === loopWanted) { setLoopWanted(null); return; }
+    // Long enough for the frame already in flight to land and the first frame of
+    // the restarted loop to follow it; short enough that a loop somebody else
+    // has restarted since cannot keep claiming our number.
+    const t = setTimeout(() => setLoopWanted(null), Math.max(15_000, (loopWanted + 20) * 1000));
+    return () => clearTimeout(t);
+  }, [loopWanted, looping, loopExposureS]);
+  // The exposure this screen may claim the camera is using, or null when it
+  // cannot honestly claim one: a loop is running and no frame of it has landed
+  // yet, or the box is empty or not a number.
+  const shownExposureS = looping
+    ? loopWanted ?? loopExposureS
+    : capExposureInvalid ? null : capExposureS;
   // Frames that have reached THIS screen since the current sweep began. If a
   // four-minute sweep leaves this at 0, the empty stage does not mean the
   // camera is idle, and the panel has to say which of the two it is.
@@ -344,11 +411,14 @@ export default function FocusView() {
   }, [cmd, retire]);
   // ONE second-hand for the whole view: the in-flight move AND the in-flight
   // exposure both need `now` to advance, and neither needs its own interval.
+  // It stops once the frame has been declared lost as well as when one lands —
+  // otherwise a dropped frame left a 1s timer running until the tab was closed,
+  // counting up a number nobody is waiting on.
   useEffect(() => {
-    if (!waiting && shotAt == null) return; // settled: stop burning a timer
+    if (!waiting && (shotAt == null || frameLost)) return; // settled: stop burning a timer
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [waiting, shotAt]);
+  }, [waiting, shotAt, frameLost]);
 
   // -------------------------------------------------------- #113 shutter
   // The POST returns before the shutter opens, so nothing is claimed until the
@@ -366,6 +436,11 @@ export default function FocusView() {
         exposureS: capExposureS, gain: capGainNum, binning: Number(capBin) || 1,
       }));
       if (kind === "single") { setShotAt(Date.now()); setNow(Date.now()); }
+      // The loop is now running at OUR exposure — the server took it — but its
+      // first frame is a whole exposure away, and until one lands nothing else
+      // on this screen can say what the camera is set to. Same claim, same
+      // expiry, as a preset restart.
+      else setLoopWanted(capExposureS);
     } catch (e) {
       showToast("error", (e as Error).message);
     } finally {
@@ -426,8 +501,14 @@ export default function FocusView() {
   const applyPreset = (s: number) => {
     if (presetReason) { showToast("warning", presetReason); return; }
     const was = capExposure;
+    const wasWanted = loopWanted;
     setCapExposure(String(s));
     if (!looping) return;
+    // The restart is issued, so this IS what the loop is shooting from here on;
+    // the frame still in flight carries the old length, and a highlight that
+    // waited for the rig's next frame would sit on the previous exposure for
+    // seconds after a deliberate tap.
+    setLoopWanted(s);
     void api.post("/api/capture/loop", focusCaptureBody({
       exposureS: s, gain: capGainNum, binning: Number(capBin) || 1,
     })).catch((e: Error) => {
@@ -435,6 +516,7 @@ export default function FocusView() {
       // to saying so — a lit preset over a running loop is a claim about the
       // camera, not about what is typed in a box.
       setCapExposure(was);
+      setLoopWanted(wasWanted);
       showToast("error", e.message);
     });
   };
@@ -648,7 +730,6 @@ export default function FocusView() {
     ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
   }));
 
-  const frameWait = frameWaitNote({ startedAt: shotAt, exposureS: capExposureS, now });
   // The SAME classifier FocusVerdict runs on the same frame, hoisted so the pod
   // is gated by it too. Handing the pod the HFR was never enough to keep the
   // corner and the header from disagreeing: past detect_stars' 15px box the
@@ -759,10 +840,14 @@ export default function FocusView() {
                 exposureNote={frameWait?.text ?? null}
                 exposureNoteTone={frameWait?.tone ?? null}
                 captureBlocked={captureReason}
-                // null = the box is empty or not a number. The badge then reads
-                // "—" and its first tap writes a real preset into the box —
+                // The exposure the CAMERA is using, not the one in the box —
+                // the badge sits over the picture, which makes it the most
+                // load-bearing claim on the screen. null = nothing can be
+                // claimed (the box is empty or not a number, or a loop is
+                // running whose first frame has not landed); the badge then
+                // reads "—" and its first tap writes a real preset into the box,
                 // which is also the repair for the blocker that state causes.
-                exposureS={capExposureInvalid ? null : capExposureS}
+                exposureS={shownExposureS}
                 exposurePresets={FOCUS_EXPOSURE_PRESETS}
                 stepValues={STEP_VALUES}
                 onExposure={applyPreset}
@@ -770,7 +855,11 @@ export default function FocusView() {
                 onStep={setStep}
                 looping={looping}
                 starting={capPending}
-                exposing={shotAt != null}
+                // `exposing`, not `shotAt != null`: past the readout grace the
+                // frame is gone and the chip must hand the shutter back. The
+                // ring keeps its `stalled` signature (it reads `shotAt` through
+                // exposureProgress above) so the fault stays visible.
+                exposing={exposing}
                 step={step}
                 shootReason={singleReason}
                 loopReason={captureReason}
@@ -935,7 +1024,12 @@ export default function FocusView() {
           {readOnlyReason && <LockedNote reason={readOnlyReason} className="mb-3" />}
           <div className="grid grid-cols-5 gap-1 mb-3">
             {FOCUS_EXPOSURE_PRESETS.map((s) => {
-              const on = Number(capExposure) === s;
+              // `shownExposureS`, not the box: while a loop runs, a filled,
+              // aria-pressed preset is a claim about the camera (see the block
+              // beside `loopWanted`). When nothing can be claimed — a loop
+              // running whose first frame has not landed — NONE of the five
+              // lights up, which is the honest answer to "what is it shooting?".
+              const on = shownExposureS != null && shownExposureS === s;
               // The hint changes with the loop, and the difference is the whole
               // point: "use it for the next frame" vs "restart what is running".
               const pa = presetAction(looping, s);
@@ -995,7 +1089,12 @@ export default function FocusView() {
                 aria-label="Waiting for the camera to accept this exposure — no frame has started yet">
                 Starting…
               </button>
-            ) : shotAt != null ? (
+            ) : exposing ? (
+              // `exposing`, not `shotAt != null` — see `frameLost` above. This
+              // branch used to have no exit but a frame or a deliberate Stop, so
+              // a dropped frame left it here all night with aria-pressed on an
+              // inert button, while the warn line two rows down already said the
+              // camera had lost it.
               <button className="btn btn-accent border-accent tap min-h-[48px]"
                 aria-disabled aria-pressed
                 aria-label="A frame is already exposing — press Stop to abandon it">

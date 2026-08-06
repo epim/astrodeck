@@ -452,6 +452,87 @@ await test("a REFUSED move hands the buttons straight back", async () => {
   failing.delete("/api/focuser/move");
 });
 
+// ------------------------------- what the CAMERA is exposing at, over a loop
+/** A frame as the preview ring holds it. Only exposure_s/gain/binning are under
+ *  test; the rest is filled so PreviewStage and FrameStats have a real record to
+ *  render rather than a stub that throws inside a commit. */
+function FRAME(id: number, exposureS: number): any {
+  return {
+    id,
+    stats: { min: 0, max: 65535, mean: 1000, median: 900, std: 50 },
+    histogram: new Array(64).fill(0),
+    histogram_domain: "display",
+    exposure_s: exposureS, gain: 200, binning: 1,
+    data_width: 1000, data_height: 1000, display_width: 500, display_height: 500,
+    mime: "image/jpeg", source: "sim",
+    is_stretched: false, data_is_linear: true, has_lossless: false, full_well: null,
+    auto_levels: { black: 0, mid: 0.5, white: 1 },
+    hfr: 3.2, stars: 500,
+  };
+}
+async function pushFrame(id: number, exposureS: number): Promise<void> {
+  await act(async () => { (useStore.getState() as any).pushPreview(FRAME(id, exposureS)); });
+}
+
+await test("a loop this screen did not start owns the exposure claim", async () => {
+  // `capExposure` is seeded to "2" and never seeded from the rig, so any loop
+  // this box did not just start — one from the Capture screen, one from another
+  // tablet, one that outlived a reload — leaves a filled, aria-pressed preset
+  // making a claim about the CAMERA out of a local draft.
+  assert(preset(3).getAttribute("aria-pressed") === "true",
+    "the 3s preset is not lit going in, so 'it stops being lit' proves nothing");
+  await statusFrame({ looping: true });
+  assert(preset(3).getAttribute("aria-pressed") !== "true",
+    "the box still claims the camera over a loop nothing on this screen started — and the "
+    + "pod's badge over the picture repeats it");
+  assert(![1, 2, 3, 5, 10].some((s) => preset(s).getAttribute("aria-pressed") === "true"),
+    "some preset is lit while nothing on this screen knows what the loop is shooting");
+
+  // …and the rig's own first frame settles it.
+  await pushFrame(1, 10);
+  assert(preset(10).getAttribute("aria-pressed") === "true",
+    "the lit preset does not follow the exposure the loop is actually delivering");
+  assert(preset(3).getAttribute("aria-pressed") !== "true",
+    "two presets claim the camera at once");
+  assert(/last frame 10s/.test(text()),
+    "the panel's own provenance line does not say 10s — the fixture is wrong");
+  await statusFrame({ looping: false });
+});
+
+// ------------------------------------------- the frame that never came (#B)
+await test("a dropped frame hands the shutter back instead of latching Exposing…", async () => {
+  await statusFrame({ busyLanes: [], moving: false });
+  assert(byText(/^Single$/) != null,
+    "no live Single button — every assertion below would be about the wrong element");
+
+  // The only lever a unit test has on a sixty-second readout grace: have the
+  // server accept the exposure in the past. `shoot` stamps `shotAt` with
+  // Date.now() at acceptance and the narrator compares it against this view's
+  // own one-second clock, which is restored to real time before it next ticks.
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() - 200_000;
+    click(byText(/^Single$/));
+    await flush();
+  } finally { Date.now = realNow; }
+  assert(posts.filter((p) => p.path.endsWith("/api/capture")).length === 1,
+    "the tap never reached the rig");
+  assert(byText(/Exposing…/) != null,
+    "the accepted exposure is not shown as in flight — the precondition for the rest of this");
+
+  // One tick of the view's own second-hand later, with no frame in sight. Only
+  // a new preview id or a deliberate Stop ever cleared `shotAt`, and on a USB
+  // drop, an aborted exposure or a camera error neither ever happens.
+  await act(async () => { await new Promise((r) => setTimeout(r, 1200)); });
+  assert(/may have dropped it/.test(text()),
+    "the screen never reaches its own dropped-frame verdict — the fixture is wrong");
+  assert(byText(/Exposing…/) == null,
+    "the Single button is still latched on 'Exposing…', aria-pressed and inert, for a frame "
+    + "the screen has ALREADY declared lost two lines below it");
+  assert(byText(/^Single$/) != null,
+    "the shutter was never handed back — the only way out was Stop or navigating away");
+});
+
 // ------------------------------------------------------------------- report
 await act(async () => { root.unmount(); });
 const total = passed + failed;
