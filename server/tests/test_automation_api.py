@@ -247,10 +247,12 @@ def test_post_preflight_warns_for_always_below_floor_target(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is False
-    assert len(body["warnings"]) == 1
-    w = body["warnings"][0]
-    assert w["target"] == "FarSouth"
-    assert w["kind"] == "never_rises"
+    # This client has no rig, so armed-safety-with-no-monitor also warns
+    # (no_safety_source). Filter to the warning under test rather than
+    # counting, so this stays about the altitude floor.
+    rises = [w for w in body["warnings"] if w["kind"] == "never_rises"]
+    assert len(rises) == 1, body
+    assert rises[0]["target"] == "FarSouth"
 
 
 def test_post_preflight_no_warnings_on_default_site(client):
@@ -258,9 +260,12 @@ def test_post_preflight_no_warnings_on_default_site(client):
     # default (un-configured) site => never warn (we don't trust the location).
     r = c.post("/api/sequence/preflight", json=_below_floor_plan())
     assert r.status_code == 200
+    body = r.json()
     # ``blocked`` is the additive UX-review flag (a blocking warning is present);
-    # nothing to warn about here, so it is False alongside the original shape.
-    assert r.json() == {"ok": True, "warnings": [], "blocked": False}
+    # the only warning here is the non-blocking no_safety_source one this
+    # rig-less client always earns, so nothing blocks.
+    assert body["blocked"] is False
+    assert [w["kind"] for w in body["warnings"]] == ["no_safety_source"], body
 
 
 def test_get_and_post_preflight_coexist(client):
@@ -274,4 +279,6 @@ def test_get_and_post_preflight_coexist(client):
 
     p = c.post("/api/sequence/preflight", json={"name": "x", "targets": []})
     assert p.status_code == 200
-    assert p.json() == {"ok": True, "warnings": [], "blocked": False}
+    body = p.json()
+    assert body["blocked"] is False
+    assert [w["kind"] for w in body["warnings"]] == ["no_safety_source"], body

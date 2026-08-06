@@ -264,6 +264,10 @@ class SequenceEngine:
         self._report_finalized = False      # idempotency guard (P3-18)
         self._unsafe_streak = 0
         self._safe_streak = 0
+        # "armed safety, no monitor" is said once per RUN; initialised here too
+        # because _safety_gate is reachable on an engine that was constructed
+        # but never started.
+        self._warned_no_safety_source = False
         self._last_frame_at = 0.0           # wall time of the last recorded frame
         # Watchdog gate: True ONLY while frames are expected to be flowing (inside
         # the active capture loop). During a slew/center/AF setup, a scheduled
@@ -376,6 +380,7 @@ class SequenceEngine:
         self._report_finalized = False
         self._unsafe_streak = 0
         self._safe_streak = 0
+        self._warned_no_safety_source = False
         self._last_frame_at = self._started_at
         self._progress_expected = False
         self._frozen = {}
@@ -1862,32 +1867,40 @@ class SequenceEngine:
             return
 
         mon = self.hub.devices.get("safety")
-        if mon is not None:
-            if not getattr(mon, "connected", False):
-                await self._on_unsafe("safety monitor disconnected", stale=True,
+        if mon is None:
+            # ARMED WITH NOTHING BEHIND IT. This branch did not exist: the whole
+            # monitor block hung off `mon is not None`, so safety.enabled=True +
+            # on_unsafe="pause" permitted everything on a rig with no monitor
+            # assigned — which is the shipped default and the state this rig is
+            # in. A monitor that EXISTS and is disconnected fails closed one
+            # branch below. Absent and disconnected are the same situation to an
+            # operator and were opposite situations to this code.
+            await self._no_safety_source(target)
+        elif not getattr(mon, "connected", False):
+            await self._on_unsafe("safety monitor disconnected", stale=True,
+                                  target=target)
+        else:
+            reading = await self._read_safety()
+            if reading is None or reading.stale:
+                await self._on_unsafe("safety read stale/unavailable", stale=True,
                                       target=target)
-            else:
-                reading = await self._read_safety()
-                if reading is None or reading.stale:
-                    await self._on_unsafe("safety read stale/unavailable", stale=True,
+            elif not reading.is_safe:
+                # Debounce at the SAFETY-POLLER cadence, NOT the frame cadence.
+                # This gate only runs once per frame boundary, and a light sub
+                # is minutes long — so counting one unsafe reading per frame
+                # meant ``unsafe_consecutive`` FRAMES (10+ min of rain on open
+                # gear) before acting, not the few seconds of glitch-absorption
+                # it was meant to be. Confirm the verdict by re-sampling the
+                # hub's own-cadence cache ``unsafe_consecutive`` times at the
+                # poll cadence right here, so ~N × poll seconds of sustained
+                # unsafe (not N frames) trips the action.
+                if await self._confirm_unsafe(cfg):
+                    await self._on_unsafe(reading.reason or reading.source or
+                                          "unsafe condition reported",
                                           target=target)
-                elif not reading.is_safe:
-                    # Debounce at the SAFETY-POLLER cadence, NOT the frame cadence.
-                    # This gate only runs once per frame boundary, and a light sub
-                    # is minutes long — so counting one unsafe reading per frame
-                    # meant ``unsafe_consecutive`` FRAMES (10+ min of rain on open
-                    # gear) before acting, not the few seconds of glitch-absorption
-                    # it was meant to be. Confirm the verdict by re-sampling the
-                    # hub's own-cadence cache ``unsafe_consecutive`` times at the
-                    # poll cadence right here, so ~N × poll seconds of sustained
-                    # unsafe (not N frames) trips the action.
-                    if await self._confirm_unsafe(cfg):
-                        await self._on_unsafe(reading.reason or reading.source or
-                                              "unsafe condition reported",
-                                              target=target)
-                else:
-                    self._unsafe_streak = 0
-                    self._safe_streak += 1
+            else:
+                self._unsafe_streak = 0
+                self._safe_streak += 1
 
         # The mount limits — floor, horizon, no-go wedges, pier collision and
         # the zenith keep-out. Enforced on every slew independently of the
@@ -1896,6 +1909,50 @@ class SequenceEngine:
         # monitor gate is off.
         if context == "slew" and target is not None:
             await self._enforce_mount_floor(projected=True, target=target)
+
+    async def _no_safety_source(self, target: Target | None) -> None:
+        """Armed safety with no monitor assigned at all.
+
+        ``escalation.require_safety_monitor`` decides which of the two honest
+        answers this rig wants:
+
+        * ON — an absent monitor is a disconnected monitor, drives ``on_unsafe``
+          exactly like one, and an unattended night stops rather than running
+          unguarded. This is what an operator reading "safety: enabled, on
+          unsafe: pause" already believes is happening.
+        * OFF (the default) — the run proceeds, because a weather monitor is not
+          part of a working rig and the shipped default arms safety with nothing
+          assigned; failing closed here would refuse to image out of the box.
+          But it is SAID, once per run, at warning level and through the alert
+          sinks, instead of being silently permitted. A gate that reads as
+          protection and permits everything is worse than no gate.
+
+        Once per run, not per frame: this is a configuration fact, not an event,
+        and it does not change between frames. Repeating it every boundary would
+        bury the night's real warnings.
+
+        WARNING level, deliberately, not error. A log alert carries the level as
+        its alert TYPE, and the default sink subscribes to
+        ``run_start/run_end/safety/error`` — so error here would page every
+        default install that simply has no weather monitor, every run. The three
+        surfaces that do carry it are the night's log, the pre-flight go/no-go
+        screen, and ``require_safety_monitor`` for an operator who wants it
+        enforced rather than reported. Anyone who wants it pushed adds
+        ``warning`` to their sink's events list, which is an existing knob."""
+        cfg = self._cfg
+        if cfg is not None and cfg.escalation.require_safety_monitor:
+            await self._on_unsafe(
+                "no safety monitor is assigned, and require_safety_monitor is on",
+                stale=True, target=target)
+            return
+        if self._warned_no_safety_source:
+            return
+        self._warned_no_safety_source = True
+        bus.log("warning",
+                "safety is armed but no monitor is assigned — nothing is watching "
+                "the weather for this run. Assign a safety monitor, or turn safety "
+                "off so the run does not claim a guard it does not have.",
+                "safety")
 
     async def _read_safety(self):
         """The cached SafetyReading from the hub's own-cadence poller. When the

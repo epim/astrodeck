@@ -4618,7 +4618,22 @@ def create_app() -> FastAPI:
         # so a user who deliberately turned safety off is not nagged.
         if cfg.safety.enabled and plan.safety_check:
             mon = hub.devices.get("safety")
-            if mon is not None and getattr(mon, "connected", False):
+            if mon is None or not getattr(mon, "connected", False):
+                # An ARMED safety config with nothing behind it used to produce a
+                # clean, unqualified green here — the one omission this route's
+                # own docstring calls worse than no screen. Blocking only when
+                # the operator asked for enforcement; otherwise it is said, not
+                # imposed, because the shipped default arms safety on a rig that
+                # has no monitor.
+                require = bool(cfg.escalation.require_safety_monitor)
+                what = ("no safety monitor is assigned" if mon is None
+                        else "the safety monitor is disconnected")
+                warnings.append({
+                    "target": "", "kind": "no_safety_source",
+                    "blocking": require,
+                    "message": (f"safety is armed but {what} — nothing will watch "
+                                f"the weather for this run")})
+            else:
                 reading = await hub.safety_reading()
                 if reading is None or reading.stale:
                     warnings.append({
