@@ -161,6 +161,14 @@ export interface RigStatus {
   meridian?: MeridianInfo;
   // --- reliability (additive; old clients ignore) ---
   busy?: "slewing" | "solving" | "focusing" | "capturing" | null;
+  //: Every long operation in flight right now, by LANE name — "goto", "solve",
+  //: "autofocus", "polar", "capture", "looping", "system.update"... `busy` above
+  //: is the same set collapsed to one word for the stale-telemetry banner, which
+  //: is all it was built for; it cannot tell one control's operation from
+  //: another's. Use `useBusy(lane)` (lib/useBusy.ts) rather than reading this
+  //: directly. Absent on a server older than 2026-08-05 — treat as unknown, not
+  //: as idle.
+  busy_lanes?: string[];
   nina_link?: {
     active: boolean;
     last_ok_age_s: number | null;   // seconds since last successful NINA HTTP call
