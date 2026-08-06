@@ -1481,6 +1481,19 @@ class SequenceEngine:
             # _panel_off_safe never runs and the panel would burn through every
             # following target's frames.
             try:
+                key = f"{target.id}:{step.id}"
+                # A calibration step carries a filter exactly like a light step
+                # does, and this call used to live in _run_step ALONE — so for
+                # the one target type calibration frames are actually shot
+                # through, none of it reached the wheel: per-filter flats all
+                # went through whichever slot happened to be loaded, and darks
+                # and bias never drove to the blackout slot that exists for
+                # them. Placed ahead of the flat metering below, because a trial
+                # exposure solved through the wrong filter solves the wrong
+                # filter. Skipped for a step a resume has already finished, so
+                # recovery does not move the wheel for frames it will not shoot.
+                if self._done.get(key, 0) < step.count:
+                    await self._apply_filter(step)
                 if flat_auto and "covercalibrator" in self.hub.devices:
                     if step.panel_brightness is not None:
                         await _bounded(self.hub.calibrator_on(step.panel_brightness),
@@ -1492,7 +1505,6 @@ class SequenceEngine:
                                            CALIBRATOR_CMD_TIMEOUT_S, "open cover")
                     self._set_state(detail=f"{target.name}: solving flat exposure")
                     solved_exp, _ = await self._solve_flat_exposure(step, target)
-                key = f"{target.id}:{step.id}"
                 for i in range(self._done.get(key, 0), step.count):
                     await self._checkpoint()
                     # CALIBRATION HAS A STOP BOUNDARY TOO (§1.6). Same per-FRAME
