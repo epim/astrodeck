@@ -228,7 +228,64 @@ disarm works end to end, so solar astronomy remains possible.
 This covers owner requirement 5(a) and 5(c). **5(b) — the sun arriving at a
 stationary tube — is not covered by anything and is being built (task #150).**
 
-### Park fails when issued straight after a stop: REPRODUCED
+### Sun watch: BUILT, and it moved the tube on hardware (0.2.48)
+
+Requirement 5(b). `Hub._check_solar` is a pre-slew gate, so nothing watched the
+Sun arrive at a stationary tube. `sun_watch.py` now samples pointing against the
+projected solar position every 60 s, 30 minutes ahead, and parks.
+
+FIRST HARDWARE TEST WAS MINE AND IT WAS WRONG, which is worth recording. I
+pointed a TRACKING tube 35 deg from the Sun and expected the watchdog to fire,
+inferring a "cone + 7.5 deg" threshold from a comment. It did nothing, correctly:
+the trigger is "does the Sun get inside the 30 deg cone within the next 30
+minutes", and a tracking tube holds its RA/Dec, so its separation stays 35 deg
+indefinitely. The 7.5 deg in the docstring is what the 30-minute lead buys for a
+tube that is NOT tracking (1800 s x 15 deg/hr), not a second threshold.
+
+The real hazard is a STOPPED, UNPARKED mount, and the second test used it:
+
+```
+target: 32.96 deg from the Sun now
+  if STOPPED : closest approach 25.79 deg in 1800 s   <- triggers
+  if TRACKING: closest approach 32.96 deg             <- correctly ignored
+```
+
+Tube parked at 33 deg out, tracking stopped, hands off. RA drifted 6.833 ->
+6.836 -> 6.839 (about 15 deg/hr, as predicted) and at the next tick:
+
+```
+[error] SUN WATCH: the tube is pointing where the Sun will be in 30 min
+        (26 deg at closest, exclusion 30 deg, tracking is OFF so the sky is
+        turning the tube toward it at 15 deg/h). Parking now.
+[error] SUN WATCH: mount parked, pointing at the celestial pole. Check the
+        optics and the dust cap before the next session
+```
+
+Parked in about 40 s. Disarm sabotage-checked separately: forcing
+`safety.solar_avoidance` past the check turns
+`test_a_deliberate_solar_session_disarms_it` red, so 5(c) holds.
+
+### Park fails when issued straight after a stop: REPRODUCED, then FIXED (0.2.48)
+
+Fixed and re-verified on hardware. The identical sequence that failed
+(goto -> stop -> park, no pause) now parks in 15 s:
+
+```
+STOP        : 200
+PARK (immediately, no pause) : 200
+  +  5s  parked False tracking False lanes [goto]
+  + 15s  RA 3.693 Dec 90.00  parked True  tracking False  lanes []
+```
+
+Root cause was a chain, not a single mistake: `:Q#` is fire-and-forget and the
+axes have mass, so park's own tracking-off (`:Td#`, ack-class) landed in the
+halt window where the mount cannot answer; that timeout was swallowed by a bare
+`except Exception: pass`; and the `:hP#` that followed went out with tracking
+still ON, which this driver already knew from 2026-07-30 makes park a silent
+no-op. Fix: drain the halt window on evidence, verify tracking actually stopped,
+and retry the park once, naming tracking in the error when both attempts fail.
+
+#### The original failure, for the record
 
 Falling out of the test above, and more serious than the thing it was testing.
 
