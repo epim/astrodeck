@@ -271,7 +271,7 @@ export default function EscalationPanel(): JSX.Element {
         <div className="grid gap-3 sm:grid-cols-2">
           <Field
             label="No-progress watchdog (minutes)"
-            hint="End the run if no frame has been saved for this long. Catches the silent hangs a per-failure rule cannot see — a wedged filter wheel, a mount that never finishes slewing. 0 turns it off."
+            hint="Treat the run as unsafe if no frame has been saved for this long. Catches the silent hangs a per-failure rule cannot see — a wedged filter wheel, a mount that never finishes slewing. What happens next is whatever your “When conditions are unsafe” action says, so a stall pauses, parks or aborts the same way rain does. 0 turns it off."
           >
             <input
               className="field"
@@ -292,7 +292,7 @@ export default function EscalationPanel(): JSX.Element {
           <div className="flex items-end pb-1">
             <p className="text-[11px] text-dim">
               {draft.no_progress_watchdog_s > 0
-                ? `Ends the run after ${Math.round(draft.no_progress_watchdog_s / 60)} min with nothing saved.`
+                ? `${Math.round(draft.no_progress_watchdog_s / 60)} min with nothing saved counts as unsafe, and your unsafe action takes it from there.`
                 : "Off — a wedged run waits until you notice."}
             </p>
           </div>
