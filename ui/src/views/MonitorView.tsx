@@ -301,7 +301,14 @@ export default function MonitorView() {
   const state = seq.state;
   const running = state === "running";
   const paused = state === "paused";
-  const runActive = running || paused;
+  // "aborting" IS LIVE (types.ts): the engine publishes it for the whole ~210 s
+  // wind-down — the exposure is being aborted, the guider stopped, the flat
+  // panel switched off — and only says "aborted" once the rig has stopped.
+  // Excluding it from `runActive` unmounted the controls row (with the Abort
+  // button in it), the health strip's run context and the meridian chip over a
+  // rig that was still moving. Same fold as PolarView's "pausing".
+  const aborting = state === "aborting";
+  const runActive = running || paused || aborting;
   const finished = state === "complete";
   const failed = state === "aborted" || state === "error";
   const ninaNative = state === "nina_native";
@@ -607,10 +614,19 @@ export default function MonitorView() {
             {/* Finish clock = largest header text (>=20px). Hidden unless a run.
                 While PAUSING the finish clock has nothing honest to say (LiveTimer
                 prints "PAUSED"), so the slot carries the number that matters
-                instead: how long until the shutter actually closes. */}
-            {(running || paused) && (
+                instead: how long until the shutter actually closes. Same for the
+                teardown: the run has been cancelled, so the engine stops sending
+                an ETA and the last one it did send is a countdown to a completion
+                that will never arrive — the slot says what is actually happening
+                instead of going blank, which would read as "over". */}
+            {runActive && (
               <div className="data-dim">
-                {pausing ? (
+                {aborting ? (
+                  <div className="flex flex-col items-end leading-tight">
+                    <span className="mono text-[20px] text-warn tabular-nums">—:—</span>
+                    <span className="label !text-[10px]">stopping — no finish time</span>
+                  </div>
+                ) : pausing ? (
                   <div className="flex flex-col items-end leading-tight">
                     <span className="mono text-[20px] text-warn tabular-nums">
                       {pauseFrameRemainingS != null ? fmtCountdown(pauseFrameRemainingS) : "—:—"}
@@ -652,9 +668,12 @@ export default function MonitorView() {
           {runActive && (
             <>
               <div className="flex items-center gap-2 mt-3">
+                {/* A teardown is not pausable and not resumable — the engine
+                    refuses both while it winds down (sequence/engine.py), so the
+                    button must not offer them. */}
                 <PauseButton
                   paused={paused}
-                  disabled={!canRun}
+                  disabled={!canRun || aborting}
                   onPause={() => sendControl("Pause", "/api/sequence/pause", {
                     title: "Pausing",
                     detail: "Any exposure already in flight finishes first — "
@@ -662,13 +681,19 @@ export default function MonitorView() {
                   })}
                   onResume={() => sendControl("Resume", "/api/sequence/resume")}
                 />
+                {/* THE ABORT STAYS ON SCREEN FOR THE WHOLE TEARDOWN — it is how
+                    the operator knows the press landed — but it reports instead
+                    of inviting a second hold. The engine no-ops a second abort
+                    now; before that, a re-press cancelled a task already inside
+                    its own cancellation handler and severed the wind-down. */}
                 <HoldButton
-                  face="Abort"
+                  face={aborting ? "Aborting…" : "Abort"}
                   label="Abort sequence"
                   danger
-                  disabled={!canRun}
+                  disabled={!canRun || aborting}
                   onConfirm={abort}
-                  hint={!wsConnected && canRun ? "link down — sending anyway" : undefined}
+                  hint={aborting ? "ending the exposure and the guider"
+                    : !wsConnected && canRun ? "link down — sending anyway" : undefined}
                 />
               </div>
               {!canRun && (
