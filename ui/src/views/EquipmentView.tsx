@@ -7,7 +7,7 @@
 // failure honesty: sticky assignments, per-row RoleResult errors, an
 // unreachable-driver banner, and a /api/drivers refetch after a failed
 // connect (probe-cache honesty, spec §3.2/§5).
-import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import type {
   ConnectRigResult,
   DriverInfo,
@@ -62,6 +62,11 @@ import TasksPanel from "../components/equipment/TasksPanel";
 import { DEFAULT_PROVIDERS } from "../lib/providerWrite";
 import RotatorCard from "../components/equipment/RotatorCard";
 import BackendLinkGrid from "../components/settings/BackendLinkGrid";
+// One implementation of "wait for a profile connect to actually land" — see
+// ProfileList, which owns profile semantics and explains why this is a poll and
+// not `useBusy` (the activate lane is the one long op the rig publishes no lane
+// for).
+import { waitForProfileActive } from "../components/settings/ProfileList";
 import { ROLE_LABEL } from "../components/settings/backendMeta";
 import { EmptyState, Field, HonestButton, InfoDot, Led, Panel } from "../components/ui";
 import { Icon } from "../components/icons";
@@ -76,6 +81,96 @@ const SLOT_WORD: Record<string, { word: string; tone: string }> = {
   // offers the assigned device (e.g. a camera unplugged mid-session).
   "device-missing": { word: "DEVICE MISSING", tone: "text-warn" },
 };
+
+// ------------------------------------------------- is THIS pick what is running?
+//
+// `status.connected` is `{role: Device.describe()}` verbatim — hub.summary()
+// ["devices"] straight into poll_status — so it carries more than `DeviceInfo`
+// declares: the Alpaca addressing a ConnSpec was built from (`dev_type` /
+// `dev_num`), plus host/port/role/backend. DeviceInfo names only the three
+// fields every other surface reads, so the extra keys are narrowed HERE, once,
+// with their provenance written down beside them.
+//
+// Every field is optional on purpose. A server too old to publish a key, or a
+// backend that simply has no addressing, must read as "I don't know" — never as
+// "a different device".
+type LiveDevice = {
+  name?: string;
+  connected?: boolean;
+  dev_type?: string;
+  dev_num?: number;
+};
+
+/** Driver types whose `ConnSpec.extra['name']` provably reaches the device the
+ *  server then describes back to us — i.e. whose `get_device` reads it. Each
+ *  one was read, not assumed: `NativeSession.get_device` (`name = (conn.extra
+ *  or {}).get("name") …`, which is also what ascom-local delegates to),
+ *  zwo_am5, zwo_usb, zwo_asi, player_one, wanderer_snowflake, asiair_backend.
+ *
+ *  Deliberately NOT `sim`: `SimSession.get_device` documents `conn` as
+ *  "accepted for interface parity but unused", so the offer this page stores
+ *  ("Simulated camera") is described back as "Sim Camera 533MM" — comparing
+ *  those two strings is what reported an eleven-role simulator rig as eleven
+ *  pending edits. NOT `nina` either: its session is bound at `open()` and the
+ *  names come from NINA's own equipment info, not from us. NOT `phd2` (no
+ *  device at all).
+ *
+ *  Unlisted means NOT TRUSTED. A backend earns a place here by round-tripping
+ *  the name, never by being new — the failure this list exists to prevent is a
+ *  fabricated "(N changed)", and that is what an unvetted default would bring
+ *  back. */
+const NAME_ROUND_TRIPS = new Set([
+  "alpaca", "ascom-local", "zwo-am5", "zwo-usb", "zwo-asi", "player-one",
+  "wanderer-snowflake", "asiair",
+]);
+
+/** "same" / "different" / "unknown" — three answers, because two would force a
+ *  guess. Only "different" un-adopts a role, so an identity we cannot establish
+ *  never manufactures a disagreement. */
+export type IdentityVerdict = "same" | "different" | "unknown";
+
+/** Does the device the server reports for a role match the pick on this screen?
+ *
+ *  Compared on the identity the server actually ROUND-TRIPS. The Alpaca lane
+ *  (native / ascom-local) echoes `dev_type` + `dev_num` back through
+ *  `describe()` exactly as the ConnSpec sent them, so that is authoritative
+ *  when either side carries it — including when only ONE side does, which is
+ *  itself evidence: an Alpaca-addressed pick cannot be the device filling this
+ *  role if that device reports no Alpaca addressing (and vice versa).
+ *
+ *  The display name is corroboration, not identity: it decides only when
+ *  neither side is Alpaca-addressed AND the pick's driver is one that provably
+ *  round-trips it (`NAME_ROUND_TRIPS`) — which is how a "ZWO AM5N" pick is
+ *  still told apart from a live "Sim Mount EQ6-R" on the USB/serial on-ramp,
+ *  where offers carry no addressing at all.
+ *
+ *  `live == null` or a `dev_type` key the server never sent leaves us with
+ *  nothing to compare, and the answer is "unknown". Liveness is the CALLER's
+ *  question (the guider is an engine with no `connected` entry at all). */
+export function compareRoleIdentity(
+  a: Assignment,
+  live: LiveDevice | null | undefined,
+  driverType?: string,
+): IdentityVerdict {
+  const pinned = a.devType != null || a.devNum != null;
+  // `"dev_type" in live` distinguishes "the server says this device has no
+  // Alpaca addressing" (real information: sim, nina, serial hardware) from "the
+  // server never told us" (an older build) — the second must not read as a
+  // contradiction, or every role on it would report a pending edit forever.
+  const addrKnown = !!live && "dev_type" in live;
+  const liveType = (live?.dev_type ?? "").trim();
+  if (addrKnown && (pinned || liveType)) {
+    if (!pinned || !liveType) return "different";
+    return liveType === (a.devType ?? "").trim() && (live?.dev_num ?? 0) === (a.devNum ?? 0)
+      ? "same"
+      : "different";
+  }
+  const want = (a.name ?? "").trim();
+  const have = (live?.name ?? "").trim();
+  if (want && have && driverType && NAME_ROUND_TRIPS.has(driverType))
+    return want === have ? "same" : "different";
+  return "unknown";
+}
 
 export default function EquipmentView(): JSX.Element {
   const status = useStore((s) => s.status);
@@ -95,7 +190,7 @@ export default function EquipmentView(): JSX.Element {
   // label without changing what gets disabled (`busy` is still every one of
   // them; two rig actions must never overlap).
   const [busyWhat, setBusyWhat] = useState<
-    null | "connect" | "scan" | "disconnect" | "save"
+    null | "connect" | "scan" | "disconnect" | "save" | "load" | "activate"
   >(null);
   const busy = busyWhat !== null;
   const [profiles, setProfiles] = useState<ProfileRow[] | null>(null);
@@ -175,16 +270,67 @@ export default function EquipmentView(): JSX.Element {
   const dirtyRoles = connectedMap
     ? roles.filter((r) => asgKey(assignments[r]) !== asgKey(connectedMap[r]))
     : [];
+  // What the SERVER reports about the device filling a role — the whole
+  // `describe()` block, not just its display name (see LiveDevice above). The
+  // guider is the exception the whole page keeps running into: it is an engine,
+  // not a device, so it has no `connected` entry at all and its name rides
+  // `status.guider` (see RoleSlot) — with no addressing to compare, which is
+  // exactly the "unknown" compareRoleIdentity is built to return.
+  const liveDeviceOf = (r: string): LiveDevice | null => {
+    const dev = status?.connected?.[r] as LiveDevice | undefined;
+    if (dev?.connected) return dev;
+    if (r === "guider" && linkByRole[r]?.connected)
+      return status?.guider ? { name: status.guider.name, connected: true } : null;
+    return null;
+  };
   // Adopt a rig that was already up when this browser arrived (another tab, a
   // tablet, a resumed session). Without this the button would sit enabled and
   // unexplained after every reload, which is the state it is meant to remove.
+  //
+  // But adoption used to copy the local picks WHOLESALE, and this browser's
+  // localStorage knows nothing about a rig it did not start. A rig brought up
+  // by a boot profile — or the one-tap simulator, or the field tablet — was
+  // therefore reported as "the rig is connected with these exact picks" purely
+  // because the picks existed: the button went dim, its title claimed there was
+  // nothing to apply, and the only way to make it pressable was to spoil a row
+  // and put it back. So a role is adopted as already-running only when the
+  // server CORROBORATES it: same role live, same device identity.
+  //
+  // IDENTITY, NOT DISPLAY NAME (review round 2). Matching on the name alone was
+  // wrong in the direction that costs the most: a simulator rig connected from
+  // this very screen reported ELEVEN pending edits on every reload, because
+  // `SimSession.get_device` ignores `ConnSpec.extra['name']` — the pick we
+  // stored says "Simulated camera" and the device describes itself as "Sim
+  // Camera 533MM". "(N changed)" over a rig that IS those picks is the exact
+  // fabricated number this button family exists to make trustworthy, and the
+  // reconnect it invites tears the whole rig down. compareRoleIdentity compares
+  // what the server round-trips instead, and answers "unknown" rather than
+  // guessing; only a positive "different" un-adopts a role.
+  const adoptRunningMap = (): AssignmentMap => {
+    const out: AssignmentMap = {};
+    for (const r of roles) {
+      const a = assignments[r];
+      if (!a) { out[r] = null; continue; }
+      if (!isRoleLive(r)) { out[r] = null; continue; }
+      const driverType = drivers.find((d) => d.id === a.driverId)?.type;
+      const verdict = compareRoleIdentity(a, liveDeviceOf(r), driverType);
+      out[r] = verdict === "different" ? null : a;
+    }
+    return out;
+  };
   useEffect(() => {
-    if (rigUp && connectedMap === null) setConnectedMap({ ...assignments });
+    // roles.length: /api/drivers and the first status frame race, and adopting
+    // against an empty role list would claim nothing matched. It is also what
+    // keeps `drivers` (read for the driver TYPE, above) fresh without a dep of
+    // its own — both come off the same `data` state, so a non-empty role list
+    // means the driver rows are loaded too.
+    if (rigUp && connectedMap === null && roles.length > 0)
+      setConnectedMap(adoptRunningMap());
     if (!rigUp && connectedMap !== null) setConnectedMap(null);
     // assignments intentionally NOT a dependency: adopting on every keystroke
     // would make an edit look like it was already connected.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rigUp, connectedMap]);
+  }, [rigUp, connectedMap, roles.length]);
   // Roles the server reports as LIVE while this screen holds no assignment for
   // them — the #41 mismatch (a rig connected from anywhere but here).
   const liveUnassignedRoles = roles.filter((r) => isRoleLive(r) && !assignments[r]);
@@ -219,7 +365,21 @@ export default function EquipmentView(): JSX.Element {
       // What is actually RUNNING on the rig now. Everything below compares the
       // live picks against this, so the button can say whether pressing it
       // would change anything.
-      setConnectedMap({ ...map });
+      //
+      // Built from the RESULTS, not from what we asked for (review round 2).
+      // Recording the whole map as connected made a partial connect — focuser
+      // refused, camera and mount up — read "Rig connected", dim, titled "Every
+      // pick above is already what the rig is running", which is #15's literal
+      // complaint: the only way to retry the one role that failed was to spoil
+      // a row and put it back. A role the server did not bring up is not
+      // running, so it stays unclaimed and shows up as the pending edit it is.
+      // (`res.results` covers every role in `map`: buildRigSpec puts each
+      // assigned role in spec.roles, and the orchestrator emits exactly one
+      // RoleResult per requested role.)
+      const landed: AssignmentMap = {};
+      for (const [role, a] of Object.entries(map))
+        landed[role] = resultMap[role]?.ok ? a : null;
+      setConnectedMap(landed);
       const attempted = res.results.filter((r) => r.attempted).length;
       if (okCount === 0 && attempted > 0) {
         showToast("error", "Rig connect attempted but no roles came up — see per-row errors");
@@ -367,10 +527,28 @@ export default function EquipmentView(): JSX.Element {
           return;
         }
         const toAdd = found.filter((f) => !hwAlreadyConfigured(f, drivers));
-        for (const f of toAdd) {
-          // Sequential (see DriversPanel.addAllHw): each add mints a
-          // server-side id off the current config file.
-          await addDriverForHardware(f);
+        let added = 0;
+        try {
+          for (const f of toAdd) {
+            // Sequential (see DriversPanel.addAllHw): each add mints a
+            // server-side id off the current config file.
+            await addDriverForHardware(f);
+            added++;
+          }
+        } catch (e) {
+          // A batch write that fails PART WAY has still created drivers, and
+          // they must appear: bailing to the outer catch left the list showing
+          // none of them, so the next tap of this button — or of Settings →
+          // Backend Drivers' "Add all" — created a second row for the same
+          // physical device. Reload, then say how far it got.
+          await reloadDrivers();
+          showToast(
+            "error",
+            `Added ${added} of ${toAdd.length} driver${toAdd.length === 1 ? "" : "s"}, then ` +
+              `${e instanceof Error ? e.message : "the next one failed"} — the ones that ` +
+              `landed are listed above; re-run the scan to add the rest.`,
+          );
+          return;
         }
         const fresh = await listDrivers();
         setData(fresh);
@@ -550,10 +728,25 @@ export default function EquipmentView(): JSX.Element {
       }
     })();
 
+  // Which row's Load is in flight (for its own label), and which load is the
+  // CURRENT one. Load is three round trips — read the profile, write the task
+  // providers, re-read config — and had no in-flight state at all, so Load A /
+  // Load B was two interleaved sequences racing: B's assignments could land
+  // first and A's provider write last, leaving B's dropdowns above A's task
+  // routing on the server. The generation token is checked before every write
+  // and after every read, so a superseded load stops instead of finishing on
+  // top of the newer one.
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const loadGen = useRef(0);
+
   const doLoadProfile = (id: string) =>
     void (async () => {
+      const gen = ++loadGen.current;
+      setBusyWhat("load");
+      setLoadingId(id);
       try {
         const p = await getProfile(id);
+        if (gen !== loadGen.current) return;
         const next: AssignmentMap = {};
         for (const d of p.devices ?? []) {
           // driver_id is a typed optional field on ProfileDevice (Task 5);
@@ -572,17 +765,26 @@ export default function EquipmentView(): JSX.Element {
         // Restore the profile's task overrides into global config so the Tasks
         // rows and the server's resolution match the loaded snapshot. Viewers
         // (no config.backend) skip this — assignments alone are still useful.
-        if (p.providers && canConfig) {
+        if (p.providers && canConfig && gen === loadGen.current) {
           try {
             await setProvidersConfig({ ...DEFAULT_PROVIDERS, ...p.providers });
+            if (gen !== loadGen.current) return;
             await useStore.getState().loadConfig();
           } catch {
             showToast("warning", "Assignments loaded, but task overrides couldn't be restored");
           }
         }
+        if (gen !== loadGen.current) return;
         showToast("success", `Loaded assignments from "${p.name}" — review, then Connect`);
       } catch (e) {
         showToast("error", e instanceof Error ? e.message : "profile load failed");
+      } finally {
+        // Only the CURRENT load owns the busy flag: a superseded one must not
+        // clear it out from under the load that replaced it.
+        if (gen === loadGen.current) {
+          setBusyWhat(null);
+          setLoadingId(null);
+        }
       }
     })();
 
@@ -602,30 +804,66 @@ export default function EquipmentView(): JSX.Element {
   // render" instinct ProfileList's delete path already uses.
   const doActivateProfile = (row: ProfileRow) =>
     void (async () => {
-      let full: Profile | null = null;
+      // In-flight state, and it lasts as long as the RIG does. Activate was the
+      // one rig action on this screen with no busy state at all: the pre-flight
+      // `getProfile` is a whole round trip before any dialog appears, and the
+      // POST after it `_spawn_connect`s and resolves in ~40ms while the
+      // teardown has not even finished — so the button re-armed instantly
+      // beside a rig that was half-down. Every other control here is already
+      // gated on `busy`, which also makes the row's own "a rig action is
+      // already running" reason (below) reachable for the first time.
+      setBusyWhat("activate");
       try {
-        full = await getProfile(row.id);
-      } catch {
-        /* fall through: still confirm on the teardown, just without the
-           "puts nothing back" escalation we could not verify */
-      }
-      const seqState = useStore.getState().sequence?.state;
-      const spec = profileActivateConfirm({
-        name: row.name,
-        connectsNothing: full ? profileConnectsNothing(full) : false,
-        realMotion: full
-          ? profileResolvesRealMotion(full)
-          : row.mode !== "empty" && row.mode !== "alpaca",
-        liveDevices: connectedCount,
-        sequenceRunning: seqState === "running" || seqState === "paused",
-      });
-      if (spec && !(await confirmDialog(spec))) return;
-      try {
+        let full: Profile | null = null;
+        try {
+          full = await getProfile(row.id);
+        } catch {
+          /* fall through: still confirm on the teardown, just without the
+             "puts nothing back" escalation we could not verify */
+        }
+        const seqState = useStore.getState().sequence?.state;
+        const spec = profileActivateConfirm({
+          name: row.name,
+          connectsNothing: full ? profileConnectsNothing(full) : false,
+          realMotion: full
+            ? profileResolvesRealMotion(full)
+            : row.mode !== "empty" && row.mode !== "alpaca",
+          liveDevices: connectedCount,
+          sequenceRunning: seqState === "running" || seqState === "paused",
+        });
+        if (spec && !(await confirmDialog(spec))) return;
         await activateProfile(row.id);
-        showToast("success", "Profile activating — watch the link grid");
-        void reloadProfiles();
+        showToast("info", `Activating "${row.name}" — connecting the rig…`);
+        const rows = await waitForProfileActive(row.id, setProfiles);
+        if (rows) {
+          showToast("success", `"${row.name}" is active — the link grid has the per-role result`);
+        } else {
+          void reloadProfiles();
+          showToast(
+            "warning",
+            `"${row.name}" is not active yet — the connect is still running, or it ` +
+              `failed. The Link Status grid shows how far it got.`,
+          );
+        }
       } catch (e) {
-        showToast("error", e instanceof Error ? e.message : "activate failed");
+        // Two different 409s reach here. The coded one is the sequence/loop/
+        // polar guard, which `force` bypasses — but forcing aborts a running
+        // sequence, so it is Settings → Profiles (which asks first) that offers
+        // it, not this button. The uncoded one is _spawn_connect's own lane
+        // guard, which force does NOT bypass; saying "already running" raw was
+        // the whole of what the user got.
+        const msg =
+          e instanceof ApiError && e.code === "running"
+            ? "A sequence, capture loop or polar alignment is running — stop it first, " +
+              "or force-activate from Settings → Profiles."
+            : e instanceof ApiError && e.status === 409
+              ? "Another profile is still connecting — wait for it to finish before switching again."
+              : e instanceof Error
+                ? e.message
+                : "activate failed";
+        showToast("error", msg);
+      } finally {
+        setBusyWhat(null);
       }
     })();
 
@@ -775,8 +1013,11 @@ export default function EquipmentView(): JSX.Element {
                   aria-disabled={nothingToDo || undefined}
                   title={rigUp && dirtyRoles.length > 0
                     ? `Will reconnect: ${dirtyRoles.join(", ")}`
-                    : rigUp ? "The rig is connected with these exact picks — change one to re-enable"
-                      : undefined}
+                    : rigUp && assignedCount > 0
+                      ? "Every pick above is already what the rig is running — change one to re-enable"
+                      : rigUp
+                        ? "A rig is connected; nothing is picked here to apply to it"
+                        : undefined}
                   onClick={nothingToDo ? undefined : () => void doConnect()}
                 >
                   <Icon name="link" size={14} className="inline -mt-0.5 mr-1.5" />
@@ -899,7 +1140,7 @@ export default function EquipmentView(): JSX.Element {
                     {p.active && <span className="label text-accent ml-2">ACTIVE</span>}
                   </span>
                   <button type="button" className="btn min-h-11 !py-1 !px-2 text-[10px]" disabled={busy} onClick={() => doLoadProfile(p.id)}>
-                    Load
+                    {loadingId === p.id ? "Loading…" : "Load"}
                   </button>
                   {/* House rule §11.8 again: this one carried a PERMISSION in
                       a native `disabled`, so a viewer got a grey rectangle
@@ -1115,8 +1356,15 @@ function RoleSlot({
       {/* honest per-row failure: connect result error, else live link error.
           Sub-lines are indented to 23px — LED (11px) + gap-3 (12px) — so they
           start on the same column as the role label above them, instead of the
-          old 41.6px that put the guider's second line 19px off the grid (#41). */}
-      {result && result.attempted && !result.ok && result.error && (
+          old 41.6px that put the guider's second line 19px off the grid (#41).
+
+          Gated on `live`, exactly as the LED above already is. `result` is the
+          receipt from the last connect THIS browser ran, and nothing clears it:
+          when the device came up afterwards — a retry from the tablet, a
+          profile activate, the driver's own reconnect — the row switched its
+          LED, its state word and its device name to the live truth and kept
+          printing "camera: connection refused" underneath all three. */}
+      {!live && result && result.attempted && !result.ok && result.error && (
         <p className="mt-1.5 pl-[23px] text-[10px] text-bad">{result.error}</p>
       )}
       {/* UX review #36: per-filter focus offsets — the single most important
@@ -1193,8 +1441,12 @@ function FilterSlotsEditor({
       <button
         type="button"
         className="btn min-h-11 !py-1 !px-3 text-[10px]"
-        // honest-disabled: a read-only session still gets to LOOK at the slots
-        aria-disabled={disabled || undefined}
+        // NOT aria-disabled. It carried one — announcing "dimmed"/unavailable to
+        // every screen reader — while opening a modal that is fully editable
+        // whatever this flag says, and with no dimming at all, so nothing in a
+        // screenshot review could contradict it. The one control the session
+        // really can't drive is Learn offsets, and the modal already states that
+        // reason on the button itself (`learnDisabledReason` below).
         onClick={() => setOpen(true)}
       >
         Filter slots &amp; focus offsets…
