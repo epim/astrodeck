@@ -246,6 +246,26 @@ class NativeCamera(Camera):
     async def cooler_power(self) -> int | None:
         return await asyncio.to_thread(self._a.get_cooler_power)
 
+    async def get_cooler(self) -> dict | None:
+        """Cooler state for the frame header and the Capture panel.
+
+        This did not exist on the native camera at all, only on the Alpaca,
+        NINA, ASIAIR and sim cameras — and the header writer reaches it through
+        ``getattr(cam, "get_cooler", None)``, so on a native rig the attribute
+        was simply absent and every frame this rig has ever written came out
+        with no SET-TEMP. The setpoint is what tells a later calibration match
+        which darks belong to which lights.
+
+        Read back from the camera rather than remembered, so it survives a
+        server restart. ``None`` for a camera with no cooler; unreadable fields
+        stay None rather than being guessed."""
+        if not self._caps or not self._caps.has_cooler:
+            return None
+        on = await asyncio.to_thread(self._a.get_cooler_on)
+        target = await asyncio.to_thread(self._a.get_target_temp)
+        power = await asyncio.to_thread(self._a.get_cooler_power)
+        return {"on": on, "target_c": target, "power": power}
+
     async def set_dew_heater(self, power: int) -> None:
         if not self._caps or not self._caps.has_dew_heater:
             raise DeviceError(f"{self.name} has no dew heater")

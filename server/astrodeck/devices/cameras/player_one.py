@@ -191,6 +191,21 @@ class PlayerOneAdapter(CameraAdapter):
         except Exception:  # noqa: BLE001
             return None
 
+    def get_target_temp(self) -> float | None:
+        # Same c_long read-back path as the dew heater: POA_TARGET_TEMP is not
+        # in _FLOAT_CONFIGS, and the CAMERA is the source of truth — including
+        # across a server restart, which no remembered value survives.
+        try:
+            return float(self._sdk.get_config(self._cam_id, POA_TARGET_TEMP))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def get_cooler_on(self) -> bool | None:
+        try:
+            return bool(self._sdk.get_config(self._cam_id, POA_COOLER))
+        except Exception:  # noqa: BLE001
+            return None
+
     def set_dew_heater(self, power: int) -> None:
         self._sdk.set_config(self._cam_id, POA_HEATER_POWER, int(power))
 
