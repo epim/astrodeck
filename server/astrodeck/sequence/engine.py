@@ -268,6 +268,9 @@ class SequenceEngine:
         # because _safety_gate is reachable on an engine that was constructed
         # but never started.
         self._warned_no_safety_source = False
+        # Set by the no-progress watchdog task, consumed by the RUN task's
+        # safety gate (the watchdog cannot act on its own — see _watchdog_check).
+        self._watchdog_tripped: str | None = None
         self._last_frame_at = 0.0           # wall time of the last recorded frame
         # Watchdog gate: True ONLY while frames are expected to be flowing (inside
         # the active capture loop). During a slew/center/AF setup, a scheduled
@@ -381,6 +384,7 @@ class SequenceEngine:
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._warned_no_safety_source = False
+        self._watchdog_tripped = None
         self._last_frame_at = self._started_at
         self._progress_expected = False
         self._frozen = {}
@@ -1859,6 +1863,13 @@ class SequenceEngine:
         cfg = self._cfg
         if cfg is None:
             return
+        # The no-progress watchdog's trip, consumed in the RUN task so on_unsafe
+        # can actually pause/park/abort (see _watchdog_check). Ahead of the
+        # monitor_armed early-return below: a stall is not a weather verdict, and
+        # a rig with no cloud sensor still wants its stalled night ended.
+        tripped, self._watchdog_tripped = self._watchdog_tripped, None
+        if tripped:
+            await self._on_unsafe(tripped, target=target)
         monitor_armed = bool(cfg.safety.enabled and self.plan
                              and self.plan.safety_check)
         if not monitor_armed:
@@ -2489,14 +2500,36 @@ class SequenceEngine:
         idle = time.time() - self._last_frame_at
         if idle > threshold:
             if not warned:
+                action = (self._cfg.safety.on_unsafe if self._cfg else "warn")
                 bus.log("error",
                         f"no frame in {idle / 60:.0f} min — possible stall",
                         "safety")
                 self.hub.publish_safety(
                     {"is_safe": False,
                      "reason": f"no progress in {idle / 60:.0f} min",
-                     "action": "warn", "stale": False})
-                self._record_safety("no-progress watchdog", "warn")
+                     "action": action, "stale": False})
+                self._record_safety("no-progress watchdog", action)
+                # HAND THE TRIP TO THE RUN TASK. This used to end here: a log, a
+                # warn-shaped publish, and nothing else, whatever on_unsafe said
+                # — while the setting's own UI copy promised "Ends the run after
+                # N min with nothing saved." A stalled unattended night stayed
+                # stalled, tracking, until dawn.
+                #
+                # Set a flag rather than acting here, because acting means
+                # _on_unsafe, and _on_unsafe's pause/abort paths only work from
+                # the run task: SafetyAbort has to reach _run's except chain to
+                # get the shielded park/warm wind-down, and an exception raised
+                # in this background task reaches nobody. The run task consumes
+                # it at the next frame boundary.
+                #
+                # That is sufficient because every device await in the run is
+                # _bounded (P0-2), so a genuinely wedged device surfaces as a
+                # timeout exception rather than an unbounded stall. What this
+                # watchdog is actually for is a loop that keeps cycling without
+                # recording frames — persistent rejects, an accepted-mode quota
+                # clouds will never satisfy — and that loop reaches a boundary
+                # every pass.
+                self._watchdog_tripped = f"no progress in {idle / 60:.0f} min"
             return True
         return False
 

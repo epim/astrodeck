@@ -150,15 +150,18 @@ async def test_watchdog_is_not_started_at_the_rigs_zero_setting(sim_hub):
     assert engine._watchdog_task is None
 
 
-async def test_watchdog_trip_is_warn_only_and_ignores_on_unsafe(sim_hub, monkeypatch):
-    """When it DOES trip, the watchdog logs and publishes a ``warn`` — it never
-    pauses, parks, or aborts, whatever ``safety.on_unsafe`` says.
+async def test_watchdog_trip_hands_the_stall_to_the_run_task(sim_hub, monkeypatch):
+    """WAS A GAP, closed 2026-08-06. The watchdog logged, published a
+    ``warn``-shaped edge, and stopped there whatever ``safety.on_unsafe`` said —
+    against the setting's own UI copy ("Ends the run after N min with nothing
+    saved.", EscalationPanel.tsx). A stalled unattended night stayed stalled and
+    tracking until dawn.
 
-    This is the difference between the setting's UI copy ("Ends the run after N
-    min with nothing saved.", EscalationPanel.tsx) and the code: ``_watchdog_check``
-    raises nothing and returns a latch. A stalled night with a watchdog set stays
-    stalled; the only thing that changes is that a line appears in the log and —
-    IF a sink is configured — an alert goes out."""
+    It still must not raise HERE: ``_watchdog_check`` runs in a background task,
+    and an exception raised there reaches nobody — SafetyAbort has to arrive in
+    ``_run``'s except chain to get the shielded park/warm wind-down. So the trip
+    is handed to the run task as a flag, and the published action is now the
+    action that will actually be taken."""
     engine = SequenceEngine(sim_hub)
     engine._cfg = AppConfig(
         escalation=EscalationConfig(no_progress_watchdog_s=600),
@@ -173,16 +176,66 @@ async def test_watchdog_trip_is_warn_only_and_ignores_on_unsafe(sim_hub, monkeyp
     warned = engine._watchdog_check(600.0, False)    # must not raise
 
     assert warned is True
-    assert engine.paused is False, "watchdog must not pause the run"
-    assert engine.state.get("state") == "running", "watchdog must not end the run"
+    assert engine.state.get("state") == "running", "the background task ends nothing"
     assert len(published) == 1, published
     assert published[0]["is_safe"] is False
-    assert published[0]["action"] == "warn", \
-        "on_unsafe=abort_park_warm is NOT consulted by the watchdog"
-    assert any(lvl == "error" and "no frame in" in msg for lvl, msg, _ in logs), logs
+    assert published[0]["action"] == "abort_park_warm", \
+        "the published action must be the one that will be taken, not 'warn'"
+    assert engine._watchdog_tripped and "no progress" in engine._watchdog_tripped
 
-    # latched: a second evaluation inside the same stall stays silent (one page
-    # per stall, not one every WATCHDOG_TICK_S).
+
+async def test_the_run_task_acts_on_a_watchdog_trip_per_on_unsafe(sim_hub, monkeypatch):
+    """The other half: the run task picks the flag up at its next frame boundary
+    and drives ``on_unsafe``. This is what makes the UI copy true.
+
+    A stall is not a weather verdict, so it is honoured even on a rig whose
+    safety monitor is disarmed — the case this rig is in."""
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(
+        escalation=EscalationConfig(no_progress_watchdog_s=600),
+        safety=SafetyConfig(enabled=False, on_unsafe="abort_park_warm"))
+    engine.plan = light_plan(safety_check=False)
+    engine._watchdog_tripped = "no progress in 60 min"
+
+    with pytest.raises(SafetyAbort, match="no progress in 60 min"):
+        await asyncio.wait_for(engine._safety_gate(context="frame"), timeout=5)
+    assert engine._watchdog_tripped is None, "consumed, so it fires once"
+
+
+async def test_a_watchdog_trip_is_consumed_exactly_once(sim_hub, monkeypatch):
+    """With the gentler ``warn`` action the run carries on — and must not
+    re-raise the same stall at every subsequent frame boundary."""
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(
+        escalation=EscalationConfig(no_progress_watchdog_s=600),
+        safety=SafetyConfig(enabled=False, on_unsafe="warn"))
+    engine.plan = light_plan(safety_check=False)
+    published = capture_safety_publishes(sim_hub, monkeypatch)
+
+    engine._watchdog_tripped = "no progress in 60 min"
+    for _ in range(3):
+        await asyncio.wait_for(engine._safety_gate(context="frame"), timeout=5)
+
+    stalls = [p for p in published if "no progress" in str(p.get("reason"))]
+    assert len(stalls) == 1, published
+    assert stalls[0]["action"] == "warn"
+
+
+async def test_the_watchdog_pages_once_per_stall_not_once_per_tick(sim_hub, monkeypatch):
+    """The latch: a second evaluation inside the same stall stays silent, so a
+    30-minute stall is one page rather than one every WATCHDOG_TICK_S."""
+    engine = SequenceEngine(sim_hub)
+    engine._cfg = AppConfig(
+        escalation=EscalationConfig(no_progress_watchdog_s=600),
+        safety=SafetyConfig(enabled=True, on_unsafe="pause"))
+    engine.state["state"] = "running"
+    engine._progress_expected = True
+    engine._last_frame_at = time.time() - 3600.0
+    published = capture_safety_publishes(sim_hub, monkeypatch)
+    logs = capture_logs(monkeypatch)
+
+    assert engine._watchdog_check(600.0, False) is True
+    assert any(lvl == "error" and "no frame in" in msg for lvl, msg, _ in logs), logs
     assert engine._watchdog_check(600.0, True) is True
     assert len(published) == 1, published
 
