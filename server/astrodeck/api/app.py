@@ -456,7 +456,29 @@ async def _lifespan(app: "FastAPI"):
 #: engine case is pre-existing and unchanged by the split: a manual close during
 #: a run has always been able to race the run's slews, which is why the close
 #: bumps the motion fence.
-_LANE_SUPERSEDES: dict[str, tuple[str, ...]] = {"dome": ("goto",)}
+_LANE_SUPERSEDES: dict[str, tuple[str, ...]] = {
+    "dome": ("goto",),
+    # POLAR AND GOTO ARE MUTUALLY EXCLUSIVE, both directions.
+    #
+    # Three-point alignment's whole premise is that the ONLY thing moving this
+    # mount for the next two minutes is the alignment: it solves three fields
+    # separated by a PURE RA ROTATION and fits a circle through them. Anything
+    # else that slews — or syncs — between those points does not degrade the
+    # answer, it invalidates it, and the fit reports a confident number computed
+    # from three unrelated positions.
+    #
+    # Measured on the rig 2026-08-06: a goto_and_center was still running when
+    # an alignment started. It solved, synced and re-centred TWICE between the
+    # measurement points; the declination moved 1.1 deg between point 1 and
+    # point 2, which a pure RA rotation cannot do. The fit returned 4747' of
+    # total error (79 deg) for a mount whose north leg was on geographic north.
+    # Nothing refused, nothing warned, and the number looked like every other
+    # number this screen prints.
+    #
+    # Both directions, because either order produces the same corruption:
+    "polar": ("goto",),        # a slew is refused while an alignment measures
+    "goto": ("polar",),        # an alignment is refused while a slew is live
+}
 
 #: What to tell the operator when the reverse direction refuses, per superseding
 #: lane. A 409 reading "'goto' is already running" about a ROOF would send
@@ -464,6 +486,12 @@ _LANE_SUPERSEDES: dict[str, tuple[str, ...]] = {"dome": ("goto",)}
 _LANE_BLOCK_REASON: dict[str, str] = {
     "dome": "the roof is closing — the mount was parked so the shutter could "
             "travel over it, and moving it now is how a tube meets a roof",
+    "polar": "polar alignment is measuring — it solves three fields separated "
+             "by a pure rotation in RA, and a slew between them does not blur "
+             "the answer, it invalidates it. Stop the alignment first",
+    "goto": "the mount is still slewing — an alignment started now would "
+            "measure three positions the slew moved between, and report a "
+            "confident number computed from them. Wait for it to settle",
 }
 
 
@@ -4724,6 +4752,13 @@ def create_app() -> FastAPI:
     @app.post("/api/polar/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"PolarSession.start"})
     async def polar_start():
+        # BEFORE the session exists, not after: an alignment that begins while a
+        # slew is still settling measures three positions the slew moved
+        # between, and the circle fit reports a confident number computed from
+        # them (measured 2026-08-06 — 4747' for a mount that was very nearly
+        # aligned). The reverse direction, refusing a slew while this runs, is
+        # the same table read the other way.
+        _refuse_if_lane_blocked("polar")
         try:
             await hub.polar.start()
         except RuntimeError as e:

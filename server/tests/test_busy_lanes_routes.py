@@ -480,3 +480,66 @@ def test_the_connect_driver_stays_out_of_the_cancel_list():
     assert "self._busy.clear()" in teardown, (
         "if this ever stops being true, revisit _spawn_connect's docstring — "
         "the reason the lane cannot live in _busy would have changed")
+
+
+# ------------------------------------------------- polar <-> goto (2026-08-06)
+# Three-point alignment solves three fields separated by a PURE RA rotation. A
+# slew or a sync between those points does not degrade the answer, it
+# invalidates it — measured on the rig: a goto_and_center still running when an
+# alignment started re-centred twice between the measurement points, the
+# declination moved 1.1 deg (which a pure RA rotation cannot do), and the fit
+# reported 4747' of total error for a mount that was very nearly aligned.
+#
+# Driven through the REAL routes, like the roof pair above, so the lane the UI
+# provokes is the lane under test.
+
+def test_a_slew_is_refused_while_an_alignment_is_measuring(client):
+    assert client.post("/api/connect/sim").status_code == 200
+    assert client.post("/api/polar/start").status_code == 200
+    # PRECONDITION: without a live lane a 409 below would prove nothing.
+    assert "polar" in _lanes(client), "precondition: the alignment is measuring"
+
+    r = client.post("/api/mount/goto",
+                    json={"ra_hours": 5.6, "dec_deg": -5.4, "center": False})
+    assert r.status_code == 409, (
+        f"a slew was ACCEPTED during an alignment ({r.status_code}) — it moves "
+        f"the mount between two of the three measured points: {r.text[:200]}")
+    detail = r.json()["detail"]
+    assert detail["blocked_by"] == "polar"
+    assert "alignment" in detail["detail"], (
+        f"the reason must name the alignment, not a bare lane: {detail}")
+    client.post("/api/polar/stop")
+
+
+def test_an_alignment_is_refused_while_the_mount_is_slewing(client):
+    # The goto lane is held OPEN deliberately rather than raced against a sim
+    # slew: the sim finishes in milliseconds, so a version of this that posted a
+    # real goto and hoped to catch the lane skipped itself most runs — and a
+    # test that skips is a test that is not testing. The lane is the contract;
+    # how it got there is not.
+    import asyncio
+    import astrodeck.hub as hub_mod
+
+    async def _held():
+        await asyncio.Event().wait()
+
+    assert client.post("/api/connect/sim").status_code == 200
+    loop = asyncio.new_event_loop()
+    task = loop.create_task(_held())
+    hub_mod.hub._busy["goto"] = task
+    try:
+        # PRECONDITION: the lane is live over the wire, not just in our dict.
+        assert "goto" in _lanes(client), "precondition: the slew lane is live"
+
+        r = client.post("/api/polar/start")
+        assert r.status_code == 409, (
+            f"an alignment STARTED while the mount was slewing ({r.status_code}) "
+            "— this is the exact run that reported 4747' for an aligned mount")
+        detail = r.json()["detail"]
+        assert detail["blocked_by"] == "goto"
+        assert "slew" in detail["detail"], (
+            f"the reason must say a slew is running: {detail}")
+    finally:
+        task.cancel()
+        hub_mod.hub._busy.pop("goto", None)
+        loop.close()
