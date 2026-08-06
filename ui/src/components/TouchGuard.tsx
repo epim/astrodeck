@@ -22,10 +22,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as RPointerEvent, KeyboardEvent as RKeyboardEvent } from "react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { useStore } from "../store";
 import { Icon } from "./icons";
 import { haptics } from "../lib/haptics";
+import { accessPhrase } from "../lib/caps";
 import {
   useLocked,
   useLockAvailable,
@@ -307,13 +308,30 @@ export default function TouchGuard() {
 }
 
 // ----------------------------------------------------------------- locked overlay
+/** What the last EMERGENCY STOP press actually achieved. `sending` while the
+ *  two POSTs are in flight; then the resolved answer, which is what the buzz
+ *  and the line under the button both come from. */
+type StopOutcome =
+  | { phase: "sending" }
+  | { phase: "stopped" }
+  | { phase: "failed"; detail: string };
+
+/** A refusal in words the person holding the tablet can act on. The server's
+ *  own 403 detail is "capability not held", which names nothing. */
+function stopFailureDetail(what: string, err: unknown): string {
+  if (err instanceof ApiError && err.status === 403) {
+    return `${what}: this account can only watch — stopping needs ${accessPhrase("control.mount")}`;
+  }
+  return `${what}: ${err instanceof Error ? err.message : String(err)}`;
+}
+
 // Split out so the focus-trap / ESC / initial-focus hooks (F-A6) only mount while
 // the lock is up. Full-viewport input blocker + opaque chip + keyboard-operable
 // unlock + an always-reachable emergency STOP (F-S9).
 function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: () => void }) {
-  const showToast = useStore((s) => s.showToast);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const unlockBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [stop, setStop] = useState<StopOutcome | null>(null);
 
   // F-A6: set initial focus to the unlock control so a keyboard/switch user lands
   // somewhere actionable the instant the lock engages.
@@ -351,17 +369,49 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
   };
 
   // F-S9: authoritative emergency stop — abort the sequence AND zero both axes.
-  // A viewer (W2.5) lacks control caps, so the server 403s these; swallow that
-  // SILENTLY (a read-only user has nothing of their own to stop, and an error
-  // toast on an emergency-stop tap would be alarming + useless). Any other failure
-  // still surfaces so an operator sees a genuinely-failed stop.
+  //
+  // UX-2026-08-05 #25. Three things were wrong with the old version, all of the
+  // same shape: it reported the PRESS, not the rig.
+  //   * it buzzed the confirming `stop` pattern before either POST had left, so
+  //     a stop that 403'd or never reached the box felt identical to one that
+  //     zeroed both axes;
+  //   * it swallowed 403 silently, which is exactly the case where someone
+  //     stands there believing the mount was told to stop;
+  //   * its error channel was `showToast`, and Toasts is a z-40 layer while this
+  //     input blocker is z-50 over it with `pointerEvents: auto` — so the one
+  //     message on this screen that MUST arrive painted underneath the lock and
+  //     could not be read or dismissed.
+  // The outcome is therefore rendered inside the overlay, and the haptic waits
+  // for the answer: a light `tap` acknowledges the press, `stop` confirms the
+  // rig stopped, `error` says it did not.
+  //
+  // Deliberately NOT disabled while one is in flight — /api/mount/stop is
+  // idempotent, and a 15s timeout on a bad link must never leave the emergency
+  // control unpressable. `stopReq` keeps a slow first press from overwriting the
+  // answer of the one after it.
+  const stopReq = useRef(0);
   const emergencyStop = () => {
-    haptics.stop();
-    const swallow403 = (err: unknown) => {
-      if ((err as { status?: number })?.status !== 403) showToast("error", (err as Error).message);
-    };
-    api.post("/api/mount/stop").catch(swallow403);
-    api.post("/api/sequence/abort").catch(swallow403);
+    haptics.tap();
+    const req = ++stopReq.current;
+    setStop({ phase: "sending" });
+    void (async () => {
+      const [motion, seq] = await Promise.allSettled([
+        api.post("/api/mount/stop"),
+        api.post("/api/sequence/abort"),
+      ]);
+      if (req !== stopReq.current) return;
+      const failures = [
+        motion.status === "rejected" ? stopFailureDetail("mount", motion.reason) : null,
+        seq.status === "rejected" ? stopFailureDetail("sequence", seq.reason) : null,
+      ].filter((s): s is string => s != null);
+      if (failures.length === 0) {
+        haptics.stop();
+        setStop({ phase: "stopped" });
+        return;
+      }
+      haptics.error();
+      setStop({ phase: "failed", detail: failures.join(" · ") });
+    })();
   };
 
   return (
@@ -383,17 +433,34 @@ function LockedOverlay({ seqError, onUnlock }: { seqError: boolean; onUnlock: ()
 
       {/* F-S9: always-visible emergency STOP — reachable WITHOUT completing the
           unlock gesture. ≥56px, authoritative /api/mount/stop + /api/sequence/abort. */}
-      <button
-        type="button"
-        onClick={emergencyStop}
-        aria-label="Emergency stop all motion and abort sequence"
-        className="w-[260px] min-h-[56px] flex items-center justify-center gap-2
-          font-display tracking-[0.2em] text-[14px] text-black/90
-          bg-bad border border-bad active:translate-y-px"
-      >
-        <Icon name="stop" size={18} className="!text-black/90" />
-        EMERGENCY STOP
-      </button>
+      <div className="flex flex-col items-center gap-2 w-[260px]">
+        <button
+          type="button"
+          onClick={emergencyStop}
+          aria-busy={stop?.phase === "sending"}
+          aria-label="Emergency stop all motion and abort sequence"
+          className="w-full min-h-[56px] flex items-center justify-center gap-2
+            font-display tracking-[0.2em] text-[14px] text-black/90
+            bg-bad border border-bad active:translate-y-px"
+        >
+          <Icon name="stop" size={18} className="!text-black/90" />
+          {stop?.phase === "sending" ? "STOPPING…" : "EMERGENCY STOP"}
+        </button>
+        {/* The stop's own answer, in the overlay — see emergencyStop for why it
+            cannot be a toast. `alert` on failure: nothing else on a locked
+            screen will tell them the mount was never told to stop. */}
+        {stop != null && stop.phase !== "sending" && (
+          <p
+            role={stop.phase === "failed" ? "alert" : "status"}
+            className={`text-[11px] leading-snug text-center ${
+              stop.phase === "failed" ? "text-bad" : "text-good"}`}
+          >
+            {stop.phase === "stopped"
+              ? "Motion stopped, sequence aborted."
+              : `STOP DID NOT LAND — ${stop.detail}`}
+          </p>
+        )}
+      </div>
 
       <SlideToUnlock onUnlock={onUnlock} buttonRef={(el) => (unlockBtnRef.current = el)} />
     </div>
