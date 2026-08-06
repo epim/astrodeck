@@ -814,6 +814,7 @@ export default function SequenceView() {
                       onPointerCancel={bind.onPointerUp}
                       onKeyDown={bind.onKeyDown}
                       onKeyUp={bind.onKeyUp}
+                  onBlur={bind.onBlur}
                     >
                       <span
                         aria-hidden

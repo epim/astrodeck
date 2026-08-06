@@ -727,6 +727,7 @@ function ProfileCard({
                 bind.onKeyDown(e);
               }}
               onKeyUp={bind.onKeyUp}
+                  onBlur={bind.onBlur}
             >
               <span
                 aria-hidden
