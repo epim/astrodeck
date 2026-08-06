@@ -63,6 +63,54 @@ const MODE_LABEL: Record<ProfileRow["mode"], string> = {
   empty: "Empty",
 };
 
+/** Wait until the server reports `id` as the ACTIVE profile — i.e. until the
+ *  activate actually landed — re-listing as it goes. Resolves with the rows
+ *  once the pointer moves, or null when the budget runs out.
+ *
+ *  WHY A POLL, in a codebase that just built `useBusy` for exactly this: the
+ *  activate route goes through `_spawn_connect`, which deliberately keeps its
+ *  task OUT of `hub._busy` — a profile connect tears the current rig down
+ *  first, and `disconnect_all()` cancels everything in `_busy`, which is how
+ *  the connect used to cancel its own driver mid-teardown. `busy_lanes` is
+ *  built from `_busy`, so this is the one long operation the rig publishes no
+ *  lane for, and `useBusy("profile")` would be false the entire time.
+ *
+ *  What the rig DOES publish is the result. `connect_profile_id` sets the
+ *  active pointer inside `connect_rigspec`, only on success — so the profile
+ *  list is the answer to "did it land", and the only thing wrong with the old
+ *  code was asking ~40ms after the POST, when the answer is still the previous
+ *  rig's. That is why activating B left A wearing the accent ring, the ACTIVE
+ *  chip and "auto-connects on boot": the re-list was real, it was just early.
+ *
+ *  A failed connect never moves the pointer, so it reads as the timeout — which
+ *  is honest (we cannot tell "still connecting" from "failed" without a lane)
+ *  as long as the caller says so rather than claiming success.
+ *
+ *  Exported: Equipment's own Activate button drives the same route and needs
+ *  the same answer, and two copies of this would drift. */
+export async function waitForProfileActive(
+  id: string,
+  onRows: (rows: ProfileRow[]) => void,
+  budgetMs = 45000,
+  everyMs = 1500,
+): Promise<ProfileRow[] | null> {
+  const until = Date.now() + budgetMs;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, everyMs));
+    let rows: ProfileRow[];
+    try {
+      rows = await listProfiles();
+    } catch {
+      // Mid-teardown the controller can drop a request. A failed poll is not
+      // an answer — keep asking until the budget says otherwise.
+      continue;
+    }
+    onRows(rows);
+    if (rows.some((r) => r.id === id && r.active)) return rows;
+  }
+  return null;
+}
+
 export default function ProfileList(): JSX.Element {
   const showToast = useStore((s) => s.showToast);
   // Every write on this panel is CAP_CONFIG_BACKEND server-side. SettingsView
@@ -73,6 +121,11 @@ export default function ProfileList(): JSX.Element {
   const [rows, setRows] = useState<ProfileRow[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The row whose rig connect is in flight. Separate from `busyId` because it
+  // is the one busy state that is about the RIG rather than about this record —
+  // it labels the button ("Connecting…") and holds every OTHER row's Activate,
+  // since the controller runs exactly one profile connect at a time.
+  const [connectingId, setConnectingId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [captureName, setCaptureName] = useState("");
   const [capturing, setCapturing] = useState(false);
@@ -99,57 +152,102 @@ export default function ProfileList(): JSX.Element {
   // DROPPED, and that is now the primary question. The real-motion check
   // survives as one of three escalations inside `profileActivateConfirm`.
   const onActivate = async (row: ProfileRow) => {
-    // Pull the full profile: it is the only way to know whether anything
-    // reconnects afterwards, and "ask the server, don't trust the render" is
-    // already this panel's rule for the actions that can hurt.
-    let full: Profile | null = null;
-    try {
-      full = await getProfile(row.id);
-    } catch {
-      /* fall back to the row's mode heuristic below */
-    }
-    const live = liveRoleCount(useStore.getState().status);
-    const seqState = useStore.getState().sequence?.state;
-    const spec = profileActivateConfirm({
-      name: row.name,
-      connectsNothing: full ? profileConnectsNothing(full) : false,
-      realMotion: full
-        ? profileResolvesRealMotion(full)
-        : row.mode !== "empty" && row.mode !== "alpaca",
-      liveDevices: live,
-      sequenceRunning: seqState === "running" || seqState === "paused",
-    });
-    if (spec && !(await confirmDialog(spec))) return;
+    // BUSY FIRST, then the round trip. `getProfile` is a network hop and the
+    // dialog is a frame after it — and on a cold rig with a simulator profile
+    // `profileActivateConfirm` returns no dialog at all, so between the tap and
+    // any visible change there was a whole request in which the card was fully
+    // live. On touch that gap is one double-tap wide, and the second tap's
+    // reward was the server's raw "'profile' is already running".
+    if (busyId === row.id) return;
     setBusyId(row.id);
     try {
-      await activateProfile(row.id);
-      showToast("success", `Activating "${row.name}" — connecting…`);
-      await refresh();
-    } catch (e) {
-      if (e instanceof ApiError && e.code === "running") {
-        // A run/connect is in flight; offer a forced activate.
-        const ok = await confirmDialog({
-          title: "Rig is busy",
-          body: "A connect or sequence is already running. Force-activate this profile anyway?",
-          mode: "confirm",
-          tone: "danger",
-          confirmLabel: "Force activate",
-        });
-        if (ok) {
-          try {
-            await activateProfile(row.id, true);
-            showToast("success", `Force-activating "${row.name}"…`);
-            await refresh();
-          } catch (e2) {
-            showToast("error", e2 instanceof Error ? e2.message : "activate failed");
-          }
-        }
-      } else {
-        showToast("error", e instanceof Error ? e.message : "activate failed");
+      // Pull the full profile: it is the only way to know whether anything
+      // reconnects afterwards, and "ask the server, don't trust the render" is
+      // already this panel's rule for the actions that can hurt.
+      let full: Profile | null = null;
+      try {
+        full = await getProfile(row.id);
+      } catch {
+        /* fall back to the row's mode heuristic below */
       }
+      const live = liveRoleCount(useStore.getState().status);
+      const seqState = useStore.getState().sequence?.state;
+      const spec = profileActivateConfirm({
+        name: row.name,
+        connectsNothing: full ? profileConnectsNothing(full) : false,
+        realMotion: full
+          ? profileResolvesRealMotion(full)
+          : row.mode !== "empty" && row.mode !== "alpaca",
+        liveDevices: live,
+        sequenceRunning: seqState === "running" || seqState === "paused",
+      });
+      if (spec && !(await confirmDialog(spec))) return;
+      await activateAndWait(row, false);
     } finally {
       setBusyId(null);
+      setConnectingId(null);
     }
+  };
+
+  // POST the activate, then hold the row until the rig answers. Split out so
+  // the force retry below is the SAME path and not a second copy of it.
+  //
+  // The old code called this done when the POST resolved. That route
+  // `_spawn_connect`s: it returns {"started": "profile"} the instant the task
+  // exists, ~40ms, with the teardown not yet finished — so the follow-up
+  // re-list ran against the previous rig's active pointer and the panel went
+  // on naming the OLD profile as the one that auto-connects on boot, while
+  // re-arming Activate on a rig that was mid-swap.
+  const activateAndWait = async (row: ProfileRow, force: boolean) => {
+    try {
+      await activateProfile(row.id, force);
+    } catch (e) {
+      await onActivateFailed(e, row, force);
+      return;
+    }
+    setConnectingId(row.id);
+    showToast("info", `Activating "${row.name}" — connecting the rig…`);
+    const rows = await waitForProfileActive(row.id, setRows);
+    if (rows) {
+      showToast("success", `"${row.name}" is active — and is what boots next time`);
+    } else {
+      await refresh();
+      showToast(
+        "warning",
+        `"${row.name}" is not active yet — the connect is still running, or it failed. ` +
+          `The card above shows which profile the controller currently has active.`,
+      );
+    }
+  };
+
+  const onActivateFailed = async (e: unknown, row: ProfileRow, wasForced: boolean) => {
+    // The coded 409 is the sequence / capture-loop / polar guard, and `force`
+    // is exactly what bypasses it (it aborts the engine first) — so offer that,
+    // but never twice, or a server that keeps saying "running" becomes a dialog
+    // loop.
+    if (e instanceof ApiError && e.code === "running" && !wasForced) {
+      const ok = await confirmDialog({
+        title: "Rig is busy",
+        body: "A connect or sequence is already running. Force-activate this profile anyway?",
+        mode: "confirm",
+        tone: "danger",
+        confirmLabel: "Force activate",
+      });
+      if (ok) await activateAndWait(row, true);
+      return;
+    }
+    // The UNCODED 409 is `_spawn_connect`'s own lane guard ("'profile' is
+    // already running"), raised before `force` is even looked at — so a force
+    // retry there would 409 again, and the raw quoted lane name is not a
+    // sentence. Say what is happening and what to do about it.
+    if (e instanceof ApiError && e.status === 409) {
+      showToast(
+        "warning",
+        "Another profile connect is still running — wait for it to finish before switching again.",
+      );
+      return;
+    }
+    showToast("error", e instanceof Error ? e.message : "activate failed");
   };
 
   // Rename uses an in-card themed input (no OS window.prompt, which breaks
@@ -202,26 +300,31 @@ export default function ProfileList(): JSX.Element {
     // so deleting B took the plain tap-confirm and said nothing about boot.
     // Same instinct as onActivate pulling the full profile before it decides:
     // on the one irreversible action, ask the server, don't trust the render.
-    let fresh = row;
-    try {
-      const live = await listProfiles();
-      setRows(live);
-      const mine = live.find((r) => r.id === row.id);
-      if (!mine) {
-        showToast("warning", `"${row.name}" is already gone — list refreshed`);
-        return;
-      }
-      fresh = mine;
-    } catch {
-      // Offline / server hiccup: fall through on the last-known row rather
-      // than blocking the delete. The dialog still names the profile and
-      // still states what is lost; only the active-profile escalation may be
-      // missed, and the server is the one that enforces anything real.
-    }
-    const ok = await confirmDialog(profileDeleteConfirm(fresh));
-    if (!ok) return;
+    //
+    // Busy goes up BEFORE that re-list, not after the dialog: the round trip is
+    // dead time in which the card looked completely idle, and the guard at the
+    // top of this function — the one that answers a second tap — reads exactly
+    // this flag.
     setBusyId(row.id);
     try {
+      let fresh = row;
+      try {
+        const live = await listProfiles();
+        setRows(live);
+        const mine = live.find((r) => r.id === row.id);
+        if (!mine) {
+          showToast("warning", `"${row.name}" is already gone — list refreshed`);
+          return;
+        }
+        fresh = mine;
+      } catch {
+        // Offline / server hiccup: fall through on the last-known row rather
+        // than blocking the delete. The dialog still names the profile and
+        // still states what is lost; only the active-profile escalation may be
+        // missed, and the server is the one that enforces anything real.
+      }
+      const ok = await confirmDialog(profileDeleteConfirm(fresh));
+      if (!ok) return;
       await deleteProfile(row.id);
       showToast("success", `Deleted "${row.name}" — the profile only; the rig is untouched`);
       await refresh();
@@ -416,6 +519,8 @@ export default function ProfileList(): JSX.Element {
                 key={row.id}
                 row={row}
                 busy={busyId === row.id}
+                connecting={connectingId === row.id}
+                otherConnecting={connectingId !== null && connectingId !== row.id}
                 renaming={renamingId === row.id}
                 onActivate={() => onActivate(row)}
                 onStartRename={() => setRenamingId(row.id)}
@@ -464,6 +569,8 @@ export default function ProfileList(): JSX.Element {
 function ProfileCard({
   row,
   busy,
+  connecting,
+  otherConnecting,
   renaming,
   onActivate,
   onStartRename,
@@ -476,6 +583,11 @@ function ProfileCard({
 }: {
   row: ProfileRow;
   busy: boolean;
+  /** This profile's rig connect is in flight (server truth: its active pointer
+   *  has not moved yet). */
+  connecting: boolean;
+  /** SOME OTHER profile is connecting — the controller runs one at a time. */
+  otherConnecting: boolean;
   renaming: boolean;
   onActivate: () => void;
   onStartRename: () => void;
@@ -487,6 +599,8 @@ function ProfileCard({
   /** Why this principal cannot delete, or null when they can (lib/profileDelete). */
   deleteLock: string | null;
 }): JSX.Element {
+  // Which input armed the Update hold — see the caption on that button.
+  const [armedByKey, setArmedByKey] = useState(false);
   return (
     <div
       className={`border bg-bg/60 px-3 py-2.5 flex items-center gap-3 flex-wrap
@@ -546,15 +660,26 @@ function ProfileCard({
           — Delete in particular now carries an icon + label like its
           siblings, not a bare icon-only X. */}
       <div className="flex items-center gap-1.5 flex-wrap">
+        {/* The label is the rig's state, not the request's: it stays
+            "Connecting…" until the controller reports this profile active,
+            which on a real rig is seconds of teardown-then-connect, not the
+            ~40ms the POST takes to return. */}
         <button
           type="button"
           className={`btn !py-1 !px-3 text-[11px] ${row.active ? "" : "btn-accent"}`}
-          disabled={busy}
+          disabled={busy || otherConnecting}
+          aria-busy={connecting || undefined}
           onClick={onActivate}
-          title={row.active ? "Reconnect this profile" : "Set active and connect"}
+          title={
+            otherConnecting
+              ? "Another profile is connecting — the controller does one at a time"
+              : row.active
+                ? "Reconnect this profile"
+                : "Set active and connect"
+          }
         >
           <Icon name="play" size={12} className="inline -mt-0.5 mr-1" />
-          {row.active ? "Reconnect" : "Activate"}
+          {connecting ? "Connecting…" : row.active ? "Reconnect" : "Activate"}
         </button>
         <button
           type="button"
@@ -583,10 +708,24 @@ function ProfileCard({
               disabled={busy}
               aria-label={bind["aria-label"]}
               title="Hold to overwrite this profile's devices with the currently connected rig"
-              onPointerDown={bind.onPointerDown}
+              onPointerDown={(e) => {
+                setArmedByKey(false);
+                bind.onPointerDown(e);
+              }}
               onPointerUp={bind.onPointerUp}
               onPointerCancel={bind.onPointerUp}
-              onKeyDown={bind.onKeyDown}
+              onKeyDown={(e) => {
+                // The keyboard path is a two-step PRESS-AGAIN, not a hold, and
+                // `bind.armed` is one flag for both paths — so the caption
+                // below cannot tell them apart on its own. Remember which input
+                // armed it, or a keyboard user reads "HOLD TO …", holds, and
+                // watches nothing happen: HoldButton drops `e.repeat`, so the
+                // hold is literally one keypress and the arming silently lapses
+                // 3s later.
+                if (e.key === "Enter" || e.key === " " || e.key === "Spacebar")
+                  setArmedByKey(true);
+                bind.onKeyDown(e);
+              }}
               onKeyUp={bind.onKeyUp}
             >
               <span
@@ -600,7 +739,11 @@ function ProfileCard({
               />
               <span className="relative inline-flex items-center gap-1">
                 <Icon name="refresh" size={12} />
-                Update
+                {bind.armed
+                  ? armedByKey
+                    ? "Press ↵ again"
+                    : "Hold…"
+                  : "Update"}
               </span>
             </button>
           )}
