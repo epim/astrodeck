@@ -67,6 +67,7 @@ import { Panel, Stat, Stepper, EmptyState, HonestButton, LockedChip } from "../c
 import { Icon } from "../components/icons";
 import { confirmDialog } from "../components/ConfirmDialog";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
+import { useBusyOrPending } from "../lib/useBusy";
 import { api } from "../api";
 
 // Per-image survey brightness (night-adaptation memory, spec §6) persists across
@@ -203,7 +204,22 @@ export default function AtlasView(): JSX.Element {
 
   // Lifted visibility night (VisibilityPanel → here) so the mosaic reality-check
   // can cross-reference best_window / set time (spec §6).
-  const [visNight, setVisNight] = useState<VisibilityNight | null>(null);
+  //
+  // It carries the CENTRE it was computed for. The panel debounces 300 ms and
+  // then waits on an astropy round trip, so for most of a drag the last good
+  // night describes where the frame used to be — and everything built from it
+  // (the below-limit banner, the Send confirmation's peak altitude) said so with
+  // a straight face. Comparing the centre is what makes "tonight" mean tonight
+  // AT THIS POINT; a mismatch is not data, it is a stale answer to a question
+  // nobody is asking any more.
+  const [vis, setVis] = useState<{
+    ra: number; dec: number; night: VisibilityNight | null;
+  }>({ ra: NaN, dec: NaN, night: null });
+  const onVisNight = useCallback(
+    (night: VisibilityNight | null, forCenter: { ra_hours: number; dec_deg: number }) =>
+      setVis({ ra: forCenter.ra_hours, dec: forCenter.dec_deg, night }),
+    [],
+  );
 
   // Survey fetch failure -> degraded (last good frame stays up; SkyCanvas
   // retries with backoff). NEVER flips the view to schematic (wave-1 §1.4).
@@ -278,6 +294,15 @@ export default function AtlasView(): JSX.Element {
 
   const [focalDraft, setFocalDraft] = useState<string>("");
   const [savingFocal, setSavingFocal] = useState(false);
+  // The same in-flight state for the other four optics boxes, which had neither
+  // it nor a revert: a rejected PUT left the typed number sitting in the field
+  // while the rectangle on the sky was still drawn from the stored one.
+  //
+  // Per FIELD rather than one flag for all four, unlike `savingFocal`, because
+  // these commit on blur — which fires as focus lands on the NEXT box. A single
+  // flag would disable the box the user has just tabbed into and eat the digits
+  // they are already typing.
+  const [savingField, setSavingField] = useState<keyof Optics | null>(null);
   // Optics live behind a gear: per-rig facts, not per-session controls.
   const [opticsOpen, setOpticsOpen] = useState(false);
   // The gear's label. It reports the RIG rather than saying "Optics",
@@ -304,8 +329,22 @@ export default function AtlasView(): JSX.Element {
   // In-flight guard for Send-to-Plan — blocks a double-tap from double-adding a
   // single target (the server round-trip is async).
   const [sending, setSending] = useState(false);
-  // In-flight guard for the Atlas → mount handoff (#18), same idiom as `sending`.
-  const [slewing, setSlewing] = useState(false);
+
+  // ---- Atlas → mount handoff in-flight state (#18) ----
+  //
+  // This used to be a plain `slewing` flag set around `await api.post(...)`.
+  // That route `_spawn`s the "goto" lane and returns `{"started": "goto"}` the
+  // instant the task is CREATED, so the promise resolved in ~40 ms and the flag
+  // cleared while the mount was still swinging: the button read "Go to this
+  // target", live and re-pressable, for the whole 30–90 s slew-and-centre. The
+  // tap it invited hit `_spawn`'s 409 and was painted as "Couldn't slew" — a red
+  // error over a slew that was succeeding. Only the rig knows, and it says so on
+  // every 2 s frame; `arm()` covers the gap until the first frame lands.
+  const { busy: gotoBusy, arm: armGoto } = useBusyOrPending("goto");
+  // The preflight GET and its confirm dialog run BEFORE any lane exists, and
+  // that window is two awaits long — long enough for a second tap to get all
+  // the way to the server. This is the guard for that window alone.
+  const [gotoPreparing, setGotoPreparing] = useState(false);
 
   // Seed/refresh the focal draft whenever config optics changes.
   useEffect(() => {
@@ -383,9 +422,19 @@ export default function AtlasView(): JSX.Element {
   // Commit any optics field(s): PUT /api/optics then re-GET config. Empty/0
   // means "use camera" (server merge, config.py). Same optimistic-concurrency
   // version token as the focal committer.
+  //
+  // `revert` restores the draft the patch came from. Without it a rejected save
+  // (403, a version clash, the box offline) left the typed number on screen with
+  // the old one still driving the FOV rectangle beside it — two different
+  // answers to "what is my sensor", one of them fiction. Per-field rather than
+  // reseeding every draft, so a failed pixel-size save cannot also throw away a
+  // sensor width the user has typed but not yet committed.
   const commitOpticsPatch = useCallback(
-    async (patch: Partial<Optics>) => {
+    async (patch: Partial<Optics>, revert: () => void) => {
       if (!optics) return;
+      // Every call site sends exactly one field; this is which box is in flight.
+      const field = Object.keys(patch)[0] as keyof Optics;
+      setSavingField(field);
       try {
         const next: Optics = { ...optics, ...patch };
         await api.put("/api/optics", { optics: next, version: config?.version ?? null });
@@ -396,6 +445,9 @@ export default function AtlasView(): JSX.Element {
           title: "Couldn't save optics",
           detail: (e as Error).message,
         });
+        revert();
+      } finally {
+        setSavingField((f) => (f === field ? null : f));
       }
     },
     [optics, config?.version, loadConfig, enqueueToast],
@@ -412,7 +464,9 @@ export default function AtlasView(): JSX.Element {
       return;
     }
     if (n === (optics?.pixel_size_um ?? 0)) return;
-    void commitOpticsPatch({ pixel_size_um: n });
+    void commitOpticsPatch({ pixel_size_um: n }, () =>
+      setPixelDraft(String(optics?.pixel_size_um || "")),
+    );
   }, [pixelDraft, optics?.pixel_size_um, commitOpticsPatch]);
 
   // Guide-scope focal length (A4): empty commits null ("no guide optics
@@ -426,7 +480,9 @@ export default function AtlasView(): JSX.Element {
       return;
     }
     if (n === (optics?.guide_focal_length_mm ?? null)) return;
-    void commitOpticsPatch({ guide_focal_length_mm: n });
+    void commitOpticsPatch({ guide_focal_length_mm: n }, () =>
+      setGuideFocalDraft(String(optics?.guide_focal_length_mm || "")),
+    );
   }, [guideFocalDraft, optics?.guide_focal_length_mm, commitOpticsPatch]);
 
   const commitSensorW = useCallback(() => {
@@ -437,7 +493,9 @@ export default function AtlasView(): JSX.Element {
       return;
     }
     if (n === (optics?.sensor_width_px ?? 0)) return;
-    void commitOpticsPatch({ sensor_width_px: n });
+    void commitOpticsPatch({ sensor_width_px: n }, () =>
+      setSensorWDraft(String(optics?.sensor_width_px || "")),
+    );
   }, [sensorWDraft, optics?.sensor_width_px, commitOpticsPatch]);
 
   const commitSensorH = useCallback(() => {
@@ -448,7 +506,9 @@ export default function AtlasView(): JSX.Element {
       return;
     }
     if (n === (optics?.sensor_height_px ?? 0)) return;
-    void commitOpticsPatch({ sensor_height_px: n });
+    void commitOpticsPatch({ sensor_height_px: n }, () =>
+      setSensorHDraft(String(optics?.sensor_height_px || "")),
+    );
   }, [sensorHDraft, optics?.sensor_height_px, commitOpticsPatch]);
 
   // "from camera" affordance: config value is 0 AND the live merged readout has a
@@ -495,7 +555,17 @@ export default function AtlasView(): JSX.Element {
   const setCenter = (ra_hours: number, dec_deg: number) =>
     setFraming({ center: { ra_hours: wrapRaHours(ra_hours), dec_deg } });
   const setRotation = (deg: number) => setFraming({ rotation_deg: deg });
-  const setZoom = (deg: number) => setFraming({ fovZoomDeg: deg });
+  // Every zoom that is not the "Match camera" toggle's own — the slider, Fit
+  // object, a pinch, a wheel, +/- — ends the match. Two things had to change
+  // together: the switch went on reading ON over a view that no longer matched
+  // the camera, and `prev_zoom_deg` went on holding the zoom from before the
+  // match, so turning the switch OFF threw away every zoom made since and
+  // teleported the sky back. Clearing both makes the toggle mean what it shows
+  // and makes "off" mean "undo the match", not "undo the last ten minutes".
+  const setZoom = (deg: number) => {
+    setCameraFovLock(false);
+    setFraming({ fovZoomDeg: deg, prev_zoom_deg: undefined });
+  };
   const setSurvey = (s: string) => setFraming({ survey: s });
   const setMosaic = (patch: Partial<typeof mosaic>) =>
     setFraming({ mosaic: { ...mosaic, ...patch } });
@@ -556,7 +626,21 @@ export default function AtlasView(): JSX.Element {
 
   const seqRunning = sequence.state === "running" || sequence.state === "paused";
 
+  // The rounded fetch key VisibilityPanel computes tonight for — mirrored here
+  // (same rounding, wave-1 §2) so the page can tell a night that describes THIS
+  // centre from one that describes where the frame used to be.
+  const visRa = Math.round(center.ra_hours * 1000) / 1000;
+  const visDec = Math.round(center.dec_deg * 100) / 100;
+  const visFresh = vis.ra === visRa && vis.dec === visDec;
+  const visNight = visFresh ? vis.night : null;
+  // We HAD an answer and the frame has since moved off it. Not "unknown" (that
+  // is the first load, where the panel below shows its own skeleton) — this is
+  // the window in which the old numbers would otherwise still be on screen.
+  const visRecomputing = !visFresh && vis.night != null;
+
   // Below-limit / set-time advisory drives the Send override gate (spec §6).
+  // Null night = no claim: during the recompute the banner says it is checking
+  // rather than repeating the last point's verdict about this one.
   const belowLimit = visNight?.never_rises_above_limit ?? false;
   // Group id for mosaic dedupe: a catalog target groups by its id; a free-roam
   // session groups by the stable per-session freeroamId (seeded in openFraming) so
@@ -698,7 +782,22 @@ export default function AtlasView(): JSX.Element {
   // Slews to the framed CENTRE, which is what the overlay on screen shows; for
   // a freshly picked target that is the target's own J2000 position.
   const gotoFraming = async () => {
-    if (!canMount || !mountConnected || slewing) return;
+    if (!canMount || !mountConnected || gotoBusy || gotoPreparing) return;
+    // Set BEFORE the first await, not after the preflight and its dialog: that
+    // gap is a network round trip long, and a second tap inside it used to make
+    // it all the way to the server and come back as a red 409 beside the first
+    // tap's green success.
+    setGotoPreparing(true);
+    try {
+      await runGoto();
+    } finally {
+      setGotoPreparing(false);
+    }
+  };
+
+  // The body, split out only so the `gotoPreparing` try/finally above wraps
+  // every exit from it — including the four early returns the dialogs take.
+  const runGoto = async () => {
     const name = target?.name ?? target?.id ?? "This position";
     let pf: PreflightAlt | null = null;
     try {
@@ -739,7 +838,6 @@ export default function AtlasView(): JSX.Element {
       });
       if (!ok) return;
     }
-    setSlewing(true);
     try {
       await api.post("/api/mount/goto", {
         ra_hours: center.ra_hours,
@@ -753,6 +851,11 @@ export default function AtlasView(): JSX.Element {
         // a readout, and it reports the turn rather than causing the look of one.
         rotation_deg: commandedPaDeg,
       });
+      // The POST resolving means the lane was CREATED, nothing more. Arm the
+      // local latch so the button reads busy for the ≤2 s until the rig's own
+      // status frame names the lane, then the server's answer takes over and
+      // holds it for the real duration of the slew.
+      armGoto();
       enqueueToast({
         level: "success",
         title: `Slewing to ${name}`,
@@ -767,8 +870,6 @@ export default function AtlasView(): JSX.Element {
       });
     } catch (e) {
       enqueueToast({ level: "error", title: "Couldn't slew", detail: (e as Error).message });
-    } finally {
-      setSlewing(false);
     }
   };
 
@@ -790,6 +891,8 @@ export default function AtlasView(): JSX.Element {
     : !canMount
       ? `Slewing the mount needs ${accessPhrase("control.mount")}.`
       : null;
+  // Server truth (the "goto" lane is in flight) OR our own preflight window.
+  const gotoInFlight = gotoBusy || gotoPreparing;
 
   // crosses-the-meridian-ish hint: a wide mosaic near transit. We don't have a
   // per-panel ephemeris here, so this stays advisory text only when a rotation is
@@ -899,7 +1002,7 @@ export default function AtlasView(): JSX.Element {
               step={0.01}
               value={pixelDraft}
               placeholder={pxFromCam ? fmtMicron(liveOptics?.pixel_size_um ?? 0) : undefined}
-              disabled={!optics}
+              disabled={!optics || savingField === "pixel_size_um"}
               onChange={(e) => setPixelDraft(e.target.value)}
               onBlur={commitPixel}
               onKeyDown={(e) => {
@@ -930,7 +1033,7 @@ export default function AtlasView(): JSX.Element {
               step={1}
               value={sensorWDraft}
               placeholder={wFromCam ? String(liveOptics?.sensor_width_px ?? "") : undefined}
-              disabled={!optics}
+              disabled={!optics || savingField === "sensor_width_px"}
               onChange={(e) => setSensorWDraft(e.target.value)}
               onBlur={commitSensorW}
               onKeyDown={(e) => {
@@ -961,7 +1064,7 @@ export default function AtlasView(): JSX.Element {
               step={1}
               value={sensorHDraft}
               placeholder={hFromCam ? String(liveOptics?.sensor_height_px ?? "") : undefined}
-              disabled={!optics}
+              disabled={!optics || savingField === "sensor_height_px"}
               onChange={(e) => setSensorHDraft(e.target.value)}
               onBlur={commitSensorH}
               onKeyDown={(e) => {
@@ -990,7 +1093,7 @@ export default function AtlasView(): JSX.Element {
               step={1}
               value={guideFocalDraft}
               placeholder="optional"
-              disabled={!optics}
+              disabled={!optics || savingField === "guide_focal_length_mm"}
               onChange={(e) => setGuideFocalDraft(e.target.value)}
               onBlur={commitGuideFocal}
               onKeyDown={(e) => {
@@ -1046,23 +1149,44 @@ export default function AtlasView(): JSX.Element {
             type="button"
             className="btn btn-accent btn-touch"
             onClick={() => void gotoFraming()}
-            aria-busy={slewing}
+            // Natively disabled, unlike the §11.8 locks around it: this is not a
+            // standing refusal with a reason to state, it is the rig being busy
+            // doing the thing the button asked for — and the label and the line
+            // beside it both say so while it lasts.
+            disabled={gotoInFlight}
+            aria-busy={gotoInFlight}
           >
             <Icon name="mount" size={14} />
-            <span className="ml-1">{slewing ? "Slewing…" : "Go to this target"}</span>
+            <span className="ml-1">
+              {gotoBusy
+                ? "Slewing…"
+                : gotoPreparing
+                  ? "Checking altitude…"
+                  : "Go to this target"}
+            </span>
           </button>
         )}
-        <p className="text-[12px] text-dim leading-snug min-w-0 flex-1">
-          {gotoReason ?? (
-            <>
-              Points the scope at the framed centre and plate-solves to re-centre
-              when it arrives.
-              {willRotate
-                ? ` PA ${Math.round(commandedPaDeg!)}° goes with it, so the rotator turns on this tap too.`
-                : ""}{" "}
-              Altitude is re-checked at the tap.
-            </>
-          )}
+        <p className="text-[12px] text-dim leading-snug min-w-0 flex-1" aria-live="polite">
+          {gotoReason ??
+            (gotoBusy ? (
+              // Why the button is dead, while it is dead. A slew-and-centre is
+              // 30–90 s of plate-solve-and-correct, and the rig — not this tap —
+              // is what says when it is over.
+              <>
+                The mount is on its way. It plate-solves and corrects when it gets
+                there{willRotate ? `, then turns the camera to PA ${Math.round(commandedPaDeg!)}°` : ""},
+                and this button comes back when the rig reports the move finished.
+              </>
+            ) : (
+              <>
+                Points the scope at the framed centre and plate-solves to re-centre
+                when it arrives.
+                {willRotate
+                  ? ` PA ${Math.round(commandedPaDeg!)}° goes with it, so the rotator turns on this tap too.`
+                  : ""}{" "}
+                Altitude is re-checked at the tap.
+              </>
+            ))}
         </p>
       </div>
 
@@ -1269,8 +1393,16 @@ export default function AtlasView(): JSX.Element {
                 </p>
               ))}
 
-              {/* below-limit reality check from the lifted night */}
-              {belowLimit && (
+              {/* below-limit reality check from the lifted night. While the
+                  centre is moving this says so instead of repeating the verdict
+                  for the point the frame has already left — that verdict was
+                  routinely the opposite one (drag a target down to the horizon
+                  and it kept reading "fine" for the whole drag). */}
+              {visRecomputing ? (
+                <p className="text-[12px] text-dim leading-snug" aria-live="polite">
+                  Checking tonight’s altitude for the new centre…
+                </p>
+              ) : belowLimit ? (
                 <div className="flex items-start gap-1.5 text-[12px] text-warn">
                   <Icon name="alert" size={14} className="shrink-0 mt-0.5" />
                   <span>
@@ -1279,7 +1411,7 @@ export default function AtlasView(): JSX.Element {
                     will ask you to confirm.
                   </span>
                 </div>
-              )}
+              ) : null}
 
               {/* House rule §11.8: the one forward control on this panel used the
                   native `disabled` attribute with its reason only in `title=` —
@@ -1314,10 +1446,10 @@ export default function AtlasView(): JSX.Element {
           {/* ---------- visibility (lifts the night up for the reality check) ---------- */}
           {/* rounded to the panel's own fetch key so pans don't re-render it */}
           <VisibilityPanel
-            ra_hours={Math.round(center.ra_hours * 1000) / 1000}
-            dec_deg={Math.round(center.dec_deg * 100) / 100}
+            ra_hours={visRa}
+            dec_deg={visDec}
             altLimit={site?.horizon_min_deg ?? 30}
-            onNight={setVisNight}
+            onNight={onVisNight}
           />
         </div>
       </div>
