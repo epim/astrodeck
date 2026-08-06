@@ -72,13 +72,30 @@ function respond(body: any, status = 200): any {
 }
 const posts: string[] = [];
 /** How long /api/sequence/preflight takes to answer — the window #81 lives in. */
-let preflightDelayMs = 0;
+// A GATE, not a timer. This used to be `preflightDelayMs = 40` with a real
+// setTimeout, and the test that needs the preflight to still be in flight raced
+// it: on a loaded CI runner the 40ms elapsed INSIDE the `await act(...)`, the
+// button left its "Checking altitude" state, and the precondition guard fired.
+// (It did — CI run 31072587465. The guard doing its job is the only reason this
+// was a red build rather than a test that had quietly stopped testing anything.)
+// A promise the TEST resolves removes the race instead of moving it: the
+// preflight is in flight for exactly as long as the test says.
+let preflightGate: Promise<void> | null = null;
+let openPreflightGate: (() => void) | null = null;
+function holdPreflight(): void {
+  preflightGate = new Promise<void>((r) => { openPreflightGate = r; });
+}
+function releasePreflight(): void {
+  openPreflightGate?.();
+  preflightGate = null;
+  openPreflightGate = null;
+}
 win.fetch = async (url: any, init: any = {}) => {
   const path = String(url);
   const method = (init.method ?? "GET").toUpperCase();
   if (method === "POST") posts.push(path);
-  if (path.includes("/api/sequence/preflight") && preflightDelayMs) {
-    await new Promise((r) => setTimeout(r, preflightDelayMs));
+  if (path.includes("/api/sequence/preflight") && preflightGate) {
+    await preflightGate;
   }
   if (method === "PUT") {
     puts.push({ path, body: init.body ? JSON.parse(init.body) : null });
@@ -398,7 +415,7 @@ await test("a second tap during the altitude check never reaches the mount", asy
   // The guard used to be set AFTER the preflight GET and its dialog, so the tap
   // an unresponsive-looking button invites got all the way to `_spawn`, 409'd,
   // and printed a red "Couldn't slew" beside the first tap's green success.
-  preflightDelayMs = 40;
+  holdPreflight();
   posts.length = 0;
   await act(async () => { click(gotoBtn()); });
   // PRECONDITION: the altitude check really is still in flight. Without this,
@@ -409,13 +426,13 @@ await test("a second tap during the altitude check never reaches the mount", asy
   assert(gotoBtn().disabled === true, "the button stayed live during the altitude check");
 
   await act(async () => { click(gotoBtn()); });   // the impatient second tap
+  releasePreflight();                              // now let the check finish
   await settle();
 
   const gotos = posts.filter((p) => p.includes("/api/mount/goto"));
   assert(gotos.length === 1,
     `${gotos.length} goto POSTs reached the server from two taps — the second one ` +
     "gets _spawn's 409 and is painted as a failed slew");
-  preflightDelayMs = 0;
 });
 
 // ------------------------------- #41b Match camera vs the optics underneath it
