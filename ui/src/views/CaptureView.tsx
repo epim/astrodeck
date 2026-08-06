@@ -28,6 +28,7 @@ import { Icon } from "../components/icons";
 import { FilterNamesModal } from "../components/capture/FilterNamesModal";
 import { filterMotion, type FilterCommand } from "../lib/filterSlots";
 import { warmReadout } from "../lib/cooling";
+import { useBusyLanes } from "../lib/useBusy";
 import { HELP } from "../help";
 
 // ---------------------------------------------------------------- capture phase
@@ -139,8 +140,28 @@ export default function CaptureView() {
   // and is now the thing that's explained, rather than the other way round.
   const [save, setSave] = useState(true);
   const [target, setTarget] = useState("");
-  const [coolerTarget, setCoolerTarget] = useState("-10");
+  // The cooler set-point box. It used to be a hardcoded "-10" that never looked
+  // at the camera: on a rig already holding -20 the panel read "target -20.0"
+  // beside a box saying -10, and Set — which reads as "apply what is shown" —
+  // commanded -10, warming the sensor and buying another ten-minute cool-down
+  // nobody asked for. It now FOLLOWS the device (effect below) until somebody
+  // types in it, the same draft-then-commit shape the dew and power sliders
+  // use: the device wins whenever nobody is editing, and a typed value survives
+  // every 2s status frame until it is sent.
+  const [coolerTarget, setCoolerTargetRaw] = useState("-10");
+  const coolerTargetEdited = useRef(false);
+  const setCoolerTarget = (v: string) => {
+    coolerTargetEdited.current = true;
+    setCoolerTargetRaw(v);
+  };
+  // The dew slider is a COMMAND, not a reading: no camera backend exposes a
+  // dew-heater read-back and the hub publishes only `has_dew_heater`, so the
+  // level after a reload is genuinely unknown. `dewSent` is what THIS browser
+  // last got the server to accept — the only thing this screen can honestly
+  // say about the heater — and the caption below the slider says so.
   const [dew, setDew] = useState(0);
+  const [dewSent, setDewSent] = useState<number | null>(null);
+  const dewDirty = useRef(false); // an edit is pending a release
   const [filterEditOpen, setFilterEditOpen] = useState(false); // UX-05 slot-name modal
   // The filter change this session asked for, and a 1Hz clock to age it.
   // Same shape and the same reason as FocusView's `cmd`: POST
@@ -178,6 +199,17 @@ export default function CaptureView() {
   // Guards the end-of-session "take matching darks?" nudge to once per Light
   // loop batch; reset when a fresh Light loop begins (see onLoop).
   const offeredRef = useRef(false);
+  // Have we SEEN the rig report a capture lane since the exposure now on screen
+  // was accepted? Declared here rather than beside the effect that reads it
+  // (external abort, UX #11) because `arm` below has to clear it — see there.
+  const sawCaptureLane = useRef(false);
+  // The status frame that was on screen when that exposure was accepted, so the
+  // effect can tell "the rig has answered" from "the previous frame's lane is
+  // still standing". Read through a ref, not `arm`'s closure: the POST resolves
+  // ~40 ms later and a frame may have landed in between.
+  const armStatusRef = useRef<unknown>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
 
   const cam = status?.camera;
   // UX-27: offer bins 1..max_bin from the camera's reported ceiling instead of a
@@ -189,6 +221,31 @@ export default function CaptureView() {
   // instantaneous, so the panel has to show it: a Warm button that looks like it
   // did nothing gets pressed again, or gets "fixed" by pressing Cool.
   const warm = warmReadout(cam?.warm);
+  // Track the camera's own set-point while the box is untouched, so what Set
+  // would command and what the camera is holding can never silently disagree.
+  // Rounded to 0.1 °C because that is the precision the Stat beside it prints;
+  // a raw float would put "-19.999999" in an editable field.
+  //
+  // ONLY WHILE THE CAMERA IS ACTUALLY HOLDING THAT NUMBER. `cooler.target_c` is
+  // the DRIVER's live set-point, not the user's intent, and there are two states
+  // where those are different things:
+  //   - during a warm ramp, hub._warm_ramp re-asserts set_cooler(True, setpoint)
+  //     every 15 s while walking the set-point from -20 up to ambient, so an
+  //     unconditional follow drags the box up with it and "Set" — pressed to
+  //     abort the ramp, which hub.py:382 documents as an expected flow — would
+  //     command the ramp's own -3.2 instead of the -20 the user is looking at;
+  //   - after it, the driver keeps reporting the last asserted set-point, so a
+  //     cooler that is OFF at +12 °C would put room temperature in the box and
+  //     "Cool" would switch the TEC on against an above-ambient target. That one
+  //     is persistent — it survives to the next evening.
+  // Following only an ON, not-warming cooler keeps finding #13's case (a rig
+  // actively holding -20) and drops both of these.
+  const deviceTargetC = cooler?.target_c;
+  const coolerHolding = !!cooler?.on && !warm?.active;
+  useEffect(() => {
+    if (coolerTargetEdited.current || deviceTargetC == null || !coolerHolding) return;
+    setCoolerTargetRaw(String(Number(deviceTargetC.toFixed(1))));
+  }, [deviceTargetC, coolerHolding]);
   // UX-28: only send a finite, in-range set-point. Number("") is 0 and
   // Number("x") is NaN (→ null over JSON); guard both so "Cool" never posts
   // target_c:null with on:true.
@@ -344,7 +401,19 @@ export default function CaptureView() {
     } finally {
       setPending(null);
     }
-    if (armGenRef.current === gen) beginExposure(len);
+    if (armGenRef.current !== gen) return;
+    // "We have seen the lane" has to mean "seen it since THIS POST", or the
+    // guard below protects the wrong exposure. A frame that ends the honest way
+    // — a new preview id — never delivers the lane-ABSENT frame that clears the
+    // flag, so it stays set from the frame before; the next status frame that
+    // was serialised before this POST then reads as "the rig stopped capturing"
+    // and kills a bar armed 40 ms ago. Cleared HERE, on acceptance, and not in
+    // beginExposure(): Loop restarts through beginExposure once per frame, and
+    // forgetting the lane between frames would leave a loop stopped on another
+    // device narrating nothing at all.
+    sawCaptureLane.current = false;
+    armStatusRef.current = statusRef.current;
+    beginExposure(len);
   };
 
   // Begin (or restart) the exposing phase. Records the wall-clock start + the frame
@@ -425,6 +494,8 @@ export default function CaptureView() {
   }, [phase]);
 
   // When looping flips OFF (Stop, or sequence end), drop any cycling bar to idle.
+  // Kept for a server too old to publish `busy_lanes`; where the rig can say,
+  // the lane effect below supersedes this and also covers the exposing phase.
   useEffect(() => {
     if (!looping && phase !== "idle") {
       // give the last in-flight frame a beat; if not exposing, just idle.
@@ -432,6 +503,54 @@ export default function CaptureView() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [looping]);
+
+  // ------------------------------------------------- external abort (UX #11)
+  // The bar is armed by OUR POST and retired by a NEW preview id. Neither
+  // happens when the capture is stopped somewhere else — the other tablet, the
+  // phone in a pocket, the rig's own Stop. The POST resolved a minute ago and
+  // no frame will ever arrive, so this screen counted a frame nobody was
+  // taking down to zero, flipped to "downloading…", and sixty seconds later
+  // accused a healthy camera of dropping it.
+  //
+  // The rig publishes the answer on every status frame: `capture` while a
+  // single frame is in flight, `looping` while a loop is (lib/useBusy). Its
+  // DISAPPEARANCE is the honest end of the frame — but only once we have SEEN
+  // it, because a status frame older than our POST says nothing about our POST,
+  // and acting on it would kill the bar we armed 40 ms ago. `undefined` (a
+  // server that does not publish lanes) is an unknown answer, never "idle".
+  //
+  // "Seen" is per-exposure and per-FRAME, which takes two guards, not one:
+  //   - `arm` clears the flag on acceptance, so the lane the PREVIOUS frame was
+  //     seen holding cannot vouch for this one (a frame that ends the honest
+  //     way, via a new preview id, never delivers the lane-absent frame that
+  //     would otherwise clear it);
+  //   - and the status frame that was ALREADY on screen when we posted cannot
+  //     re-arm it. That frame is the previous frame's lane still standing — it
+  //     is 0-2 s stale by construction, and re-running this effect on the phase
+  //     change would otherwise read it as live confirmation of an exposure the
+  //     rig has not answered for yet.
+  // Identity, not a timestamp: handleEvent replaces the whole `status` object by
+  // reference on every status poll and leaves it alone for guide/focus ticks
+  // (store.ts:1918), so `status === armStatusRef.current` is exactly "no status
+  // frame has arrived since the POST was accepted".
+  const lanes = useBusyLanes();
+  const captureLane = lanes == null
+    ? undefined
+    : lanes.includes("capture") || lanes.includes("looping");
+  useEffect(() => {
+    if (captureLane === undefined) return;
+    if (status === armStatusRef.current) return; // predates our POST
+    if (captureLane) { sawCaptureLane.current = true; return; }
+    if (!sawCaptureLane.current) return;
+    sawCaptureLane.current = false;
+    if (phase === "idle") return; // finished the honest way — a frame arrived
+    setPhase("idle");
+    showToast("info",
+      "Capture stopped on the rig — this exposure ended without a frame.");
+    // `status` is a dep so the guard above can tell one frame from the next;
+    // it is one identity compare per 2 s frame.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, captureLane, phase]);
 
   // tear down on unmount
   useEffect(
@@ -489,11 +608,43 @@ export default function CaptureView() {
   // toggling off disarms + stops. Reset clears the accumulator, keeps arming.
   const onLiveView = () => {
     if (captureBlocked || !canCapture || exposureInvalid || gainInvalid || pending) return;
-    if (liveStackOn) { act(() => api.post("/api/capture/livestack/stop")); return; }
+    if (liveStackOn) {
+      // Retire the bar here, the way Stop does: this tap ends the loop, so
+      // letting the lane effect discover it would narrate the user's own press
+      // back at them as "stopped on the rig".
+      armGenRef.current++;
+      setPhase("idle");
+      act(() => api.post("/api/capture/livestack/stop"));
+      return;
+    }
     void arm("live", "/api/capture/livestack/start",
              { ...body, frame_type: "Light", clip_sigma: liveClipSigma }, exposureS);
   };
   const onResetStack = () => { if (canCapture && liveStackOn) act(() => api.post("/api/capture/livestack/reset")); };
+
+  // --- dew heater: draft while dragging, send once on release --------------
+  // The commit used to hang off onMouseUp + onTouchEnd, which between them miss
+  // the keyboard entirely: a user who focused the slider and held Right watched
+  // the number climb to 90 and sent nothing. `onPointerUp` covers mouse, touch
+  // AND pen in one handler and `onKeyUp` covers the arrows — the same pair
+  // PowerView's PWM sliders already use.
+  const commitDew = (v: number) => {
+    if (!canCapture || !dewDirty.current) return; // nothing was edited
+    dewDirty.current = false;
+    act(async () => {
+      await api.post("/api/camera/dew-heater", { power: v });
+      setDewSent(v);
+    });
+  };
+  // An interrupted drag (the browser claiming the gesture for a scroll, the
+  // page being hidden) delivers pointercancel INSTEAD of pointerup, so nothing
+  // is sent. Snap back to the last level that WAS sent rather than leaving the
+  // thumb parked on a number the heater never heard.
+  const cancelDew = () => {
+    if (!dewDirty.current) return;
+    dewDirty.current = false;
+    setDew(dewSent ?? 0);
+  };
 
   const inFlight = phase !== "idle";
   const fillPct = phase === "exposing"
@@ -1213,7 +1364,14 @@ export default function CaptureView() {
                 <button
                   className={`btn tap min-h-[44px] w-full ${cooler?.on ? "btn-accent border-accent" : ""}`}
                   aria-pressed={!!cooler?.on}
-                  onClick={() => act(() => api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum }))}>
+                  onClick={() => act(async () => {
+                    await api.post("/api/camera/cooler", { on: true, target_c: coolerTargetNum });
+                    // Sent: the camera is the authority on this number again, so
+                    // let the box resume tracking it (a driver that clamps the
+                    // request must be able to say so in the field, not only in
+                    // the readout beside it).
+                    coolerTargetEdited.current = false;
+                  })}>
                   {cooler?.on ? "Set" : "Cool"}
                 </button>
               )}
@@ -1290,6 +1448,8 @@ export default function CaptureView() {
               <div className="mt-4 border-t border-line pt-3">
                 <div className="flex justify-between mb-1.5">
                   <span className="label">dew heater</span>
+                  {/* The slider's own position, which is what a slider readout
+                      is for. What it does NOT mean is stated underneath. */}
                   <span className="mono text-xs text-accent">{dew}%</span>
                 </div>
                 {/* A range input has no `readOnly`, and native `disabled` would
@@ -1297,12 +1457,30 @@ export default function CaptureView() {
                     reachable, announce it as disabled, inert its handlers, and
                     state the reason underneath (UX #24). */}
                 <input type="range" min={0} max={100} value={dew}
-                  aria-label="dew heater power"
+                  aria-label="dew heater power to set"
+                  aria-valuetext={`${dew}%`}
                   aria-disabled={!canCapture || undefined}
                   className={`w-full h-11 accent-(--accent) touch-none ${canCapture ? "cursor-pointer" : "opacity-50 cursor-default"}`}
-                  onChange={(e) => { if (canCapture) setDew(Number(e.target.value)); }}
-                  onMouseUp={() => { if (canCapture) act(() => api.post("/api/camera/dew-heater", { power: dew })); }}
-                  onTouchEnd={() => { if (canCapture) act(() => api.post("/api/camera/dew-heater", { power: dew })); }} />
+                  onChange={(e) => {
+                    if (!canCapture) return;
+                    dewDirty.current = true; // released → commitDew sends it
+                    setDew(Number(e.target.value));
+                  }}
+                  onPointerUp={(e) => commitDew(Number(e.currentTarget.value))}
+                  onKeyUp={(e) => commitDew(Number(e.currentTarget.value))}
+                  onPointerCancel={cancelDew} />
+                {/* Said out loud because the silent version cost the user real
+                    dew. Nothing in the stack reports a heater level back — not
+                    the ASIAIR camera, not the native adapters, and the hub
+                    publishes only `has_dew_heater` — so after a reload the thumb
+                    sat at 0 beside a heater still running at 80, and "turning it
+                    on" turned it DOWN. Until the server can answer, the screen
+                    says which of the two things this number is. */}
+                <p className="text-[11px] text-dim mt-1 leading-snug">
+                  {dewSent == null
+                    ? "Your camera doesn't report its heater level, so this starts at zero rather than where the heater is. Nothing is sent until you move it."
+                    : `Last set to ${dewSent}% from this browser. There is no read-back from this camera, so that is what was asked for, not what the heater is doing.`}
+                </p>
                 {readOnlyReason && <LockedNote reason={readOnlyReason} className="mt-1" />}
               </div>
             )}
