@@ -100,6 +100,10 @@ class _Hub:
     def __init__(self):
         self.slews: list = []
         self._tel = _Tel(self.slews)
+        # A northern site, as the real Hub always carries one: the driver reads
+        # longitude to pick the RA step direction (away from the meridian) and
+        # latitude to sanity-check the fitted axis against the horizon.
+        self.site = {"latitude": 45.0, "longitude": -122.0, "elevation_m": 0.0}
 
     def require(self, role):
         return self._tel if role == "telescope" else _Cam()

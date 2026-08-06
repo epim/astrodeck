@@ -34,6 +34,7 @@ from typing import Any
 
 from ..devices.base import DeviceError
 from ..events import bus
+from ..sequence.schedule import hour_angle_h
 from .session import wait_if_paused
 
 # --- guarded native import -------------------------------------------------
@@ -89,6 +90,25 @@ _MAX_ADJUST_UPDATES = 240
 #: (docs/native-parity/algorithms/tppa-polar-alignment.md) — but a headless or
 #: REST operator never sees the flag, so name the number in the log too.
 _PA_SPREAD_WARN_DEG = 5.0
+
+#: Largest polar error this routine will report as a MEASUREMENT rather than a
+#: failed fit.
+#:
+#: The axis fit is a plane through three points on a small circle, and its
+#: conditioning is savage: with the 12 degree step above, the two chords are
+#: nearly parallel, so the plane normal is a small cross product. Measured
+#: numerically against this exact geometry (38 degree pole distance, three 12
+#: degree steps), an out-of-plane error of 0.05 degrees at the MIDDLE point
+#: swings the fitted axis by 2.2 degrees -- a 44x amplification. The fit through
+#: three points is exact by construction, so there are no residuals to check and
+#: nothing inside the engine notices.
+#:
+#: That leaves physical plausibility as the honest test. An altitude/azimuth
+#: bolt has perhaps 15 degrees of travel, and a tripod cannot point its RA axis
+#: into the ground at all. So a fit that lands outside this bound is not a large
+#: error, it is a failed measurement, and reporting it as a number with a
+#: "adjust the mount" instruction sends someone out to turn a bolt 121 degrees.
+MAX_PLAUSIBLE_ERROR_DEG = 30.0
 
 
 async def run_native(session: Any, hub: Any) -> None:
@@ -177,6 +197,7 @@ async def _drive(session: Any, hub: Any) -> None:
             "timestamp_unix_s": frame.timestamp,
             "position_angle_deg": result.rotation_deg or 0.0,
         })
+        _log_measurement(hub, i, result, frame)
         session._publish(state="running", source="native", phase="measuring",
                          progress=0.1 + 0.15 * (i + 1), point_index=i,
                          message=f"native TPPA: measured point {i + 1}/3")
@@ -193,12 +214,17 @@ async def _drive(session: Any, hub: Any) -> None:
     out = _native.tppa_from_three(solves, site, opts)
     model = out["model"]
     err = out["error"]
-    _publish_error(session, err, phase="adjusting", point_index=2, progress=0.6,
-                   message="adjust the mount")
+    # Log the raw fit BEFORE the plausibility gate: when the gate refuses, the
+    # numbers it refused are the evidence for why, and a refusal that throws
+    # away its own inputs is the thing that made the 2026-08-06 run take a
+    # second night to diagnose.
     bus.log("info",
             f"native TPPA solved: total {err['total_arcmin']:.1f}' "
             f"(az {err['az_arcmin']:.1f}', alt {err['alt_arcmin']:.1f}')", "polar")
     _log_pa_spread(err)
+    _reject_implausible_fit(err, hub)  # raises rather than publish a wrong number
+    _publish_error(session, err, phase="adjusting", point_index=2, progress=0.6,
+                   message="adjust the mount")
 
     # ---- PHASE adjusting: live re-scale while the user turns the knobs -----
     for _ in range(_MAX_ADJUST_UPDATES):
@@ -279,17 +305,50 @@ async def _capture_and_solve(hub: Any, solver: Any):
     return frame, result, (float(scale), float(w), float(h))
 
 
+def _ra_step_hours(hub: Any, cur_ra_hours: float) -> float:
+    """One RA step, SIGNED so the measurement arc moves AWAY from the meridian.
+
+    The direction is not cosmetic, it decides whether the run is measurable at
+    all. ``HA = LST - RA``, so stepping RA *up* walks the tube EAST (hour angle
+    falls) and stepping RA *down* walks it WEST. Always stepping up — what this
+    did before — marches a tube that starts west of the meridian straight
+    through it, and a German-equatorial mount answers a meridian crossing with a
+    pier flip. The flip rotates the camera 180 degrees and swings the tube
+    around the mount, so the three frames are no longer related by the pure RA
+    rotation the whole fit is built on.
+
+    Measured on the rig 2026-08-06, LST 19.43h: the run started at HA +0.69h and
+    stepped to -0.12h and -0.92h. The mount flipped between point 1 and point 2,
+    the engine reported a position-angle spread of 179.7 degrees, and the fitted
+    RA axis came out 80.8 degrees BELOW the horizon -- published to the operator
+    as 7271 arcminutes of polar error with a "adjust the mount" instruction.
+
+    So: west of the meridian, keep going west; east of it, keep going east. Two
+    steps span 24 degrees of hour angle, which never reaches the meridian from
+    either side as long as the first step moves away from it.
+    """
+    ha = hour_angle_h(cur_ra_hours, hub.site["longitude"])
+    # HA > 0 => west of the meridian, so step further west, which is RA DOWN.
+    # HA <= 0 => east (or exactly on it), so step further east, which is RA UP.
+    return -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
+
+
 async def _rotate_in_ra(hub: Any, tel: Any, epoch: int, result: Any) -> None:
     """Rotate the mount in RA by one step, safety-gated. Never slews through the
-    sun cone; abandons if the motion fence advanced (an abort/STOP landed)."""
+    sun cone; never walks across the meridian (:func:`_ra_step_hours`); abandons
+    if the motion fence advanced (an abort/STOP landed)."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
-    target_ra = (cur_ra + _RA_STEP_HOURS) % 24.0
+    step = _ra_step_hours(hub, cur_ra)
+    target_ra = (cur_ra + step) % 24.0
     # Sun-exclusion cone: refuse to rotate into a daytime pointing (defense in
     # depth — the same guard the hub's motion paths use). Raises DeviceError,
     # which run_native turns into a terminal error state.
     hub._check_solar(target_ra, cur_dec)
-    bus.log("info", f"native TPPA: rotating RA to {target_ra:.2f}h", "polar")
+    bus.log("info",
+            f"native TPPA: rotating RA to {target_ra:.2f}h "
+            f"({'west' if step < 0 else 'east'}, away from the meridian)",
+            "polar")
     await tel.slew(target_ra, cur_dec)
 
 
@@ -321,6 +380,71 @@ def _options(hub: Any, geom: tuple) -> dict:
     if getattr(hub, "mode", None) == "sim":
         opts["pressure_hpa"] = 0.0
     return opts
+
+
+def _log_measurement(hub: Any, index: int, result: Any, frame: Any) -> None:
+    """Record what a measurement point actually was.
+
+    The fit consumes three solved positions and publishes one number. Until this
+    existed, a run that produced a nonsense number left NO record of the three
+    positions it was computed from, so the only way to tell a bad solve from a
+    mount that never arrived from a genuine misalignment was to run it again and
+    watch. Hour angle is included because the sign of it is what says whether
+    the arc is walking toward the meridian.
+
+    Best-effort by construction. This writes a log line and nothing else, so a
+    missing field or an unreadable timestamp must not abort a run that has
+    already committed the mount to a 24 degree arc — losing the diagnostic is a
+    far smaller loss than losing the alignment it was describing."""
+    try:
+        ha = hour_angle_h(result.ra_hours, hub.site["longitude"], frame.timestamp)
+        bus.log("info",
+                f"native TPPA point {index + 1}/3: RA {result.ra_hours:.4f}h "
+                f"Dec {result.dec_deg:+.3f}° HA {ha:+.3f}h "
+                f"PA {(result.rotation_deg or 0.0):.1f}° "
+                f"({90.0 - abs(result.dec_deg):.1f}° from the pole)", "polar")
+    except Exception:  # noqa: BLE001 — see above; a log line is never worth a run
+        pass
+
+
+def _reject_implausible_fit(err: dict, hub: Any) -> None:
+    """Refuse to report an axis fit that cannot describe a mount on a tripod.
+
+    Raises a user-presentable :class:`DeviceError`, which ``run_native`` turns
+    into a terminal ``polar{state:"error"}``. Two independent tests, both purely
+    physical — neither one needs a tuned threshold to be obviously true:
+
+    * the fitted RA axis is BELOW the horizon (the mount is standing on the
+      ground, so its polar axis points up at roughly the site latitude), and
+    * the total error exceeds :data:`MAX_PLAUSIBLE_ERROR_DEG`, which is far
+      beyond the travel of any altitude/azimuth adjuster.
+
+    See :data:`MAX_PLAUSIBLE_ERROR_DEG` for why "report the big number and let
+    the operator judge" is not an option here: the number is not large-but-real,
+    it is the output of a fit that silently lost conditioning.
+    """
+    lat = float(hub.site["latitude"])
+    alt_err_deg = err["alt_arcmin"] / 60.0
+    total_deg = err["total_arcmin"] / 60.0
+    # error_det.calculate_mount_axis_error: northern alt_err = axis_alt - pole;
+    # southern alt_err = pole - axis_alt. Invert to recover the fitted axis.
+    axis_alt = abs(lat) + alt_err_deg if lat > 0.0 else abs(lat) - alt_err_deg
+    if axis_alt > 0.0 and total_deg <= MAX_PLAUSIBLE_ERROR_DEG:
+        return
+    detail = (f"the fitted axis sits {abs(axis_alt):.1f}° BELOW the horizon"
+              if axis_alt <= 0.0
+              else f"the fit puts the axis {total_deg:.1f}° from the pole")
+    raise DeviceError(
+        f"the three measurements do not describe a rotating mount: {detail}, "
+        "which no tripod can do — so this is a failed fit, not a large polar "
+        "error, and the number it produced is not something to turn a bolt by. "
+        "The usual cause is that the three frames were not a pure rotation in "
+        "RA: the mount flipped sides, never finished a slew, or one frame "
+        "plate-solved to the wrong place. Check the three 'native TPPA point' "
+        "lines in the log — their declinations should be within a degree or so "
+        "of each other and their hour angles should all share one sign — then "
+        "point at least 20° from the pole, well clear of the meridian, and "
+        "start again.")
 
 
 def _log_pa_spread(err: dict) -> None:
