@@ -15,7 +15,8 @@ import numpy as np
 
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
-from ..imaging.stars import focus_size, median_hfr, size_advice, star_size
+from ..imaging.stars import (OVEREXPOSED_FRAC, focus_size, median_hfr,
+                             saturation_fraction, size_advice, star_size)
 
 
 #: A median HFR over fewer than this many stars is one detection's opinion: with
@@ -74,6 +75,27 @@ def sweep_levers(exposure_s: float, binning: int) -> str:
     return (f"a longer exposure than {exposure_s:g}s"
             + (f", bin 1 instead of {binning}" if binning > 1 else "")
             + ", or a richer field")
+
+
+def overexposure_levers(exposure_s: float, gain: int) -> str:
+    """The knobs that bring a clipped frame back on scale — the OPPOSITE
+    direction from ``sweep_levers``, kept beside it so the choice between the
+    two sentences is always made where both are visible. On 2026-08-06 a sweep
+    at 3s/gain 200 saturated a rich field into unmeasurable merged blobs and
+    then advised a longer exposure; the operator's own 2s/gain 120 frame of the
+    same sky held 200 measurable stars."""
+    return f"a shorter exposure than {exposure_s:g}s or less gain than {gain}"
+
+
+def overexposure_phrase(clipped: list[tuple[int, float]]) -> str:
+    """How many dropped frames were actually clipped, with the worst fraction —
+    the evidence that flips the advice from "more light" to "less"."""
+    worst = max(f for _, f in clipped)
+    n = len(clipped)
+    return (f"{n} of the dropped frame{'' if n == 1 else 's'} "
+            f"{'was' if n == 1 else 'were'} overexposed (up to {worst:.1%} of "
+            f"pixels at full scale) — stars merging into saturated blobs, not "
+            f"going missing")
 
 
 def dropped_points_phrase(dropped: list[tuple[int, int]], attempted: int) -> str:
@@ -201,6 +223,10 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
     counts: list[int] = []
     #: (position, star count) for every point too thin to be a measurement.
     dropped: list[tuple[int, int]] = []
+    #: (position, saturated fraction) for the subset of ``dropped`` frames that
+    #: were CLIPPED — stars merged into railed blobs, not missing — which flips
+    #: the advice from "more light" to "less".
+    clipped: list[tuple[int, float]] = []
     #: The size metric's OWN account of the first point it could not measure.
     #: Only the metric knows whether it found nothing at all or found one source
     #: too faint to trust, and that distinction is the difference between "expose
@@ -216,12 +242,19 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         a cause, and a guessed cause is what sent the user out to a clear sky."""
         # The metric's own observation leads: it is the only party that looked
         # at the pixels, so it outranks anything inferred from the star counts.
-        bits = [b for b in (extra, metric_note) if b]
+        # EXCEPT when the pixels were clipped — the metric's "no source rose
+        # above the noise, expose longer" is exactly what a railed frame looks
+        # like from inside a star detector, and repeating it beside the
+        # overexposure finding would hand the user both directions at once.
+        note = None if clipped else metric_note
+        bits = [b for b in (extra, note) if b]
         # Dropped points and thin points are the same shortage seen at two
         # depths, so only the louder one speaks.
         thin = None if dropped else thin_points_phrase(counts)
         if dropped:
             bits.append(dropped_points_phrase(dropped, len(positions)) + ".")
+            if clipped:
+                bits.append(overexposure_phrase(clipped) + ".")
         elif thin:
             bits.append(thin)
         if not bits:
@@ -229,7 +262,12 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
         # Only when the sweep actually ran short of stars: telling someone whose
         # frames were full of them to expose longer is the same wrong turn as
         # telling them to check a clear sky.
-        if dropped:
+        if clipped:
+            # Clipping outranks starvation: on a railed frame "expose longer"
+            # is the one move guaranteed to make the next run worse.
+            bits.append("Try " + overexposure_levers(exposure_s, gain)
+                        + " — more light makes this worse.")
+        elif dropped:
             # Points went missing for want of stars, so the levers ARE the fix.
             bits.append("Try " + sweep_levers(exposure_s, binning) + ".")
         elif thin:
@@ -279,9 +317,17 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                 # same weight as a field full of stars. Remember it so the
                 # failure can say which positions went dark and how thin they were.
                 dropped.append((pos, n_stars))
+                # A railed frame's missing stars MERGED; remember the clipping
+                # so the advice points at less light, not more.
+                sat = saturation_fraction(frame.data)
+                clip_note = ""
+                if sat >= OVEREXPOSED_FRAC:
+                    clipped.append((pos, sat))
+                    clip_note = f", {sat:.1%} of pixels at full scale"
                 bus.log("warning",
-                        f"autofocus: only {n_stars} stars at {pos}, dropping the "
-                        f"point (a curve point needs {MIN_STARS_PER_POINT})", "focus")
+                        f"autofocus: only {n_stars} stars at {pos}{clip_note}, "
+                        f"dropping the point (a curve point needs "
+                        f"{MIN_STARS_PER_POINT})", "focus")
                 continue
             points.append((pos, hfr))
             counts.append(n_stars)
