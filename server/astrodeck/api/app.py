@@ -4397,6 +4397,59 @@ def create_app() -> FastAPI:
         bus.publish("config", config=redacted(cfg))
         return config_store.cfg().guide.model_dump()
 
+    # ---------------------------------------------- guide-camera speed dials
+    # The guide frame's own imaging settings (2026-08-07). Before this the
+    # loop's exposure was a constructor-frozen 2.0 s no UI could reach — when
+    # the guide star fades behind haze the fix is a longer exposure NOW, and
+    # there was no dial to reach for (the same trap the polar solve settings
+    # closed). The native guider reads these per exposure, so a PUT applies
+    # from the next guide frame, mid-calibration or mid-guiding.
+
+    class GuideCameraSettingsBody(BaseModel):
+        exposure_s: float | None = Field(None, gt=0, le=15)
+        gain: int | None = Field(None, ge=0, le=1000)
+        binning: int | None = Field(None, ge=1, le=4)
+
+    @app.get("/api/guide/camera-settings",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def guide_camera_settings_get():
+        g = hub.guider
+        if g is not None and hasattr(g, "camera_settings"):
+            return g.camera_settings()          # the LIVE values, not the file
+        gc = config_store.cfg().guide
+        return {"exposure_s": gc.exposure_s, "gain": gc.gain,
+                "offset": 30, "binning": gc.binning}
+
+    @app.put("/api/guide/camera-settings",
+             dependencies=[Depends(require(CAP_CONTROL_GUIDE))])
+    @declare(CAP_CONTROL_GUIDE)
+    async def guide_camera_settings_put(body: GuideCameraSettingsBody):
+        settings = {k: v for k, v in body.model_dump().items() if v is not None}
+        if not settings:
+            raise HTTPException(422, "nothing to set")
+        # LIVE FIRST, persist second. A binning change under an active session
+        # is refused by the guider (the calibration was measured in the current
+        # binning's pixels) — persisting before asking would leave the file
+        # promising a binning the running guider refused, and the next
+        # construction would apply it silently.
+        g = hub.guider
+        eff = None
+        if g is not None and hasattr(g, "set_camera_settings"):
+            try:
+                eff = g.set_camera_settings(**settings)
+            except DeviceError as e:
+                raise HTTPException(409, str(e))
+        gc = config_store.cfg().guide.model_copy(update=settings)
+        try:
+            cfg = await asyncio.to_thread(config_store.set_guide, gc)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        bus.publish("config", config=redacted(cfg))
+        gc2 = config_store.cfg().guide
+        return eff or {"exposure_s": gc2.exposure_s, "gain": gc2.gain,
+                       "offset": 30, "binning": gc2.binning}
+
     # ---------------------------------------------------- guiding assistant
     # A guided ~1-2 min measurement session (drift / periodic error / seeing +
     # Dec backlash) that RECOMMENDS guide params (design 2026-07-24). Apply is
