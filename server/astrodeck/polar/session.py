@@ -60,6 +60,13 @@ class PolarAlignSession:
         self.hub = hub
         self._task: asyncio.Task | None = None
         self._ws: Any = None
+        # The imaging settings the NATIVE driver's solve frames use, mutable at
+        # any time (a PUT mid-run applies from the next frame — that is the
+        # point: when solves fail behind thin cloud, the fix is a longer
+        # exposure NOW, not after abandoning the session). Read via
+        # ``solve_settings`` below so a missing/partial dict can never take the
+        # capture path down. NINA and the simulator ignore these.
+        self._solve_settings: dict[str, Any] = {}
         # Pause flag polled by the FIRST-PARTY drivers — the native TPPA engine
         # (``polar/native.py``) and ``_run_sim`` below — via ``wait_if_paused``.
         # NINA has its own mechanism (a ws "pause-alignment" action), so this
@@ -75,7 +82,41 @@ class PolarAlignSession:
     @staticmethod
     def _idle() -> dict[str, Any]:
         return {"state": "idle", "az_error": 0.0, "alt_error": 0.0,
-                "total_error": 0.0, "progress": 0.0, "message": "", "source": None}
+                "total_error": 0.0, "progress": 0.0, "message": "", "source": None,
+                # what the run is doing THIS second (exposing | solving | None).
+                # Published by the native driver around each frame so the panel
+                # can show that work is happening without the operator scrolling
+                # to the log — a solve can take 15 s and used to look like a hang.
+                "activity": None}
+
+    #: The native solve frame's imaging defaults — the values that were
+    #: hardcoded at the capture call until 2026-08-07. ``filter`` None means
+    #: "leave the wheel where it is", which is what the code always did.
+    SOLVE_DEFAULTS: dict[str, Any] = {"exposure_s": 0.3, "gain": 200,
+                                      "offset": 30, "binning": 1, "filter": None}
+
+    @property
+    def solve_settings(self) -> dict[str, Any]:
+        """The effective solve-frame settings: defaults overlaid with whatever
+        the operator has set. Always complete — a reader never needs a guard."""
+        return {**self.SOLVE_DEFAULTS,
+                **{k: v for k, v in self._solve_settings.items()
+                   if v is not None}}
+
+    def set_solve_settings(self, **kw: Any) -> dict[str, Any]:
+        """Merge operator-set solve settings (None values clear back to the
+        default) and publish them on the polar event so every client renders
+        the same numbers. Takes effect on the next frame; safe mid-run."""
+        for key, value in kw.items():
+            if key not in self.SOLVE_DEFAULTS:
+                continue
+            if value is None:
+                self._solve_settings.pop(key, None)
+            else:
+                self._solve_settings[key] = value
+        eff = self.solve_settings
+        self._publish(solve_settings=eff)
+        return eff
 
     @property
     def running(self) -> bool:

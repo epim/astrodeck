@@ -237,7 +237,7 @@ class _Rig:
         self.engine: _FakeEngine | None = None
         self._t0 = time.time()
 
-    async def capture(self, hub, solver):
+    async def capture(self, hub, solver, session=None):
         n = len(self.solved) + 1
         hub.events.append("capture")
         ra, dec = await hub.tel.get_position()

@@ -678,7 +678,7 @@ async def driver(monkeypatch):
     hub = _DriverHub()
     state: dict = {"captures": 0, "task": None}
 
-    async def _fake_capture(_hub, _solver):
+    async def _fake_capture(_hub, _solver, _session=None):
         # The solve reports where the MOUNT actually is. That is what makes this
         # a fake telescope rather than a fake sky: the arc the driver verifies
         # against (_refuse_if_it_did_not_arrive) is produced by the slews it
