@@ -549,6 +549,26 @@ interface AppState {
   // GuideView's head-to-head RMS comparison via lib/rmsCompare.ts. Empty
   // until the guide provider resolves AND a "guide" tick lands.
   guideRmsByKind: GuideRmsByKind;
+  // The latest guide-calibration step off the "guide" bus channel (2026-08-07):
+  // {leg, dir, ms, step, walk} where walk is the star's measured displacement
+  // trail from its calibration origin. Only the WALK's cal_step publishes carry
+  // it, and the 2 s status publisher interleaves without it — so it is kept as
+  // its own slice, held while the phase is still "calibrating", and cleared
+  // the moment the phase moves on. Feeds the GuideQuickBar chip + pulse ring
+  // and the calibration walk plot.
+  guideCal:
+    | { leg?: string; dir?: string; ms: number; step: number;
+        walk: [number, number][] }
+    | null;
+  // What the mount's one shared solve path is doing THIS second (2026-08-07):
+  // goto centering, meridian flip, resume re-center all narrate through it.
+  // `stuck` is the centering loop's "the mount is not executing slews" verdict
+  // — sticky until the next goto starts, because it is precisely the state the
+  // operator must not miss.
+  mountOp:
+    | { activity?: "exposing" | "solving" | null; exposure_s?: number;
+        attempt?: number; stuck?: boolean; error_arcmin?: number }
+    | null;
   sequence: SequenceState;
   polar: PolarState;
   logs: LogLine[];
@@ -850,6 +870,8 @@ export const useStore = create<AppState>((set, get) => ({
   egainLearn: null,
   filterOffsetsLearn: null,
   guideRmsByKind: {},
+  guideCal: null,
+  mountOp: null,
   sequence: EMPTY_SEQUENCE,
   polar: EMPTY_POLAR,
   logs: [],
@@ -1657,11 +1679,38 @@ export const useStore = create<AppState>((set, get) => ({
           get().status as (RigStatus & { providers?: ProvidersStatus }) | null
         )?.providers;
         const choice = providers?.guide;
+        // Calibration-walk narration (2026-08-07): only the walk's cal_step
+        // publishes carry `cal`, and the 2 s status publisher interleaves
+        // without it — so the last step is HELD while the phase is still
+        // "calibrating" and cleared the moment the phase moves on. Without the
+        // hold, the chip and walk plot flickered at the status cadence.
+        const cal = (ev.data as { cal?: AppState["guideCal"] }).cal;
         set((s) => ({
           guide: stats,
+          guideCal: cal ?? (stats.phase === "calibrating" ? s.guideCal : null),
           lastGuideAtMs: Date.now(),
           guideRmsByKind: tagGuideRms(s.guideRmsByKind, stats, choice, Date.now()),
         }));
+        break;
+      }
+      case "mount": {
+        // The shared solve path's narration + the centering loop's verdicts
+        // (2026-08-07). `centering_stuck` is sticky: it means the mount is not
+        // executing slews, and it must survive until the next goto proves
+        // otherwise. Every other mount action (slew chatter) is ignored here —
+        // `status.mount.slewing` already covers motion.
+        const d = ev.data as { action?: string; activity?: "exposing" | "solving" | null;
+                              exposure_s?: number; attempt?: number; error_arcmin?: number };
+        if (d.action === "solve_activity") {
+          set((s) => ({ mountOp: { ...(s.mountOp ?? {}), activity: d.activity ?? null,
+                                   exposure_s: d.exposure_s ?? s.mountOp?.exposure_s } }));
+        } else if (d.action === "centering") {
+          set({ mountOp: { attempt: d.attempt, stuck: false } });
+        } else if (d.action === "centered") {
+          set({ mountOp: null });
+        } else if (d.action === "centering_stuck") {
+          set({ mountOp: { stuck: true, error_arcmin: d.error_arcmin, activity: null } });
+        }
         break;
       }
       case "guide_assistant": {

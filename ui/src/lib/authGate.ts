@@ -227,6 +227,11 @@ export interface ClearedRigState {
   lastGuideAtMs: null;
   egainLearn: null;
   filterOffsetsLearn: null;
+  // Both describe what THIS rig is doing right now: the guide calibration
+  // walk (star positions on the guide sensor) and the mount's in-flight
+  // solve/centering narration. A stranger at the sign-in form gets neither.
+  guideCal: null;
+  mountOp: null;
   sequence: SequenceState;
   runBanner: null;
   polar: PolarState;
@@ -294,6 +299,8 @@ export function clearedRigState(): ClearedRigState {
     lastGuideAtMs: null,
     egainLearn: null,
     filterOffsetsLearn: null,
+    guideCal: null,
+    mountOp: null,
     sequence: EMPTY_SEQUENCE,
     runBanner: null,
     polar: EMPTY_POLAR,
