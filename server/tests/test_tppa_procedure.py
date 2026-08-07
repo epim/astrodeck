@@ -233,6 +233,9 @@ class _Rig:
         self.rotation: float | None = 0.0
         self.rotation_by_point: dict[int, float | None] = {}
         self.solved_dec: float | None = None      # override what the SKY says
+        #: per-point override, 1-based like ``rotation_by_point`` — what the sky
+        #: says at ONE point, for the mid-measure axis-moved cases.
+        self.solved_dec_by_point: dict[int, float] = {}
         self.bump_epoch_after: int | None = None
         self.engine: _FakeEngine | None = None
         self._t0 = time.time()
@@ -248,6 +251,7 @@ class _Rig:
             raise DeviceError("polar plate solve failed: not enough stars")
         rot = self.rotation_by_point.get(n, self.rotation)
         solved_dec = self.solved_dec if self.solved_dec is not None else dec
+        solved_dec = self.solved_dec_by_point.get(n, solved_dec)
         return (_Frame(self._t0 + 10.0 * n), _Solve(ra, solved_dec, rot),
                 (1.55, 1024.0, 768.0))
 
@@ -1070,3 +1074,45 @@ async def test_the_adjust_phase_keeps_re_solving_the_live_position(make_rig):
     assert len(rig.solved) == 3 + 3, rig.solved      # 3 measuring + 3 updates
     fed = [s["timestamp_unix_s"] for s in rig.engine.update_calls]
     assert len(set(fed)) == len(fed), fed
+
+
+# --------------------------------------------------- the axis moved mid-measure
+
+async def test_bolts_turned_mid_measure_are_refused_not_fitted(make_rig):
+    """2026-08-06, on the sky: the operator adjusted the alt/az bolts DURING
+    the measuring arc (mistaking it for the adjust phase). Three points
+    determine the axis exactly — no residuals, nothing internal to object — so
+    the fit reported the wreckage as a confident number and the operator spent
+    the next hour chasing it.
+
+    The signature is in the solved declinations: pure RA rotations of a FIXED
+    axis cannot bend the Dec progression faster than eps*(step^2), and a bolt
+    turn between exposures bends it by the whole turn at once."""
+    rig = make_rig(start_ha=-2.0)
+    # Points 1 and 2 agree; the bolts turn 2.5 deg before point 3.
+    rig.solved_dec_by_point = {1: _DEC, 2: _DEC, 3: _DEC + 2.5}
+    await rig.run()
+
+    assert len(rig.solved) == 3, "precondition: all three points were measured"
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "axis moved" in st["message"], st["message"]
+    assert "bolts" in st["message"], st["message"]
+    # the wrecked points never reach the fit, and no error number is published
+    assert rig.engine.from_three_calls == [], \
+        "the wrecked arc was handed to the fit anyway"
+    assert st["total_error"] == 0.0, st
+
+
+async def test_a_smooth_dec_drift_is_the_signal_not_a_wreck(make_rig):
+    """The guard must not eat the measurement: a real axis error MAKES Dec
+    drift across the arc — that drift is the very thing the fit measures. A
+    smooth progression (here ~0.6 deg total, a badly-but-honestly misaligned
+    mount) sails through to the fit."""
+    rig = make_rig(start_ha=-2.0)
+    rig.solved_dec_by_point = {1: _DEC, 2: _DEC + 0.30, 3: _DEC + 0.55}
+    await rig.run()
+
+    assert rig.engine.from_three_calls, "a legitimate smooth arc was refused"
+    decs = [s["dec_deg"] for s in rig.engine.from_three_calls[0][0]]
+    assert decs == [_DEC, _DEC + 0.30, _DEC + 0.55], decs
