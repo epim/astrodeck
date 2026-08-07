@@ -952,6 +952,19 @@ class SwitchBody(BaseModel):
     value: float
 
 
+class PolarSolveSettingsBody(BaseModel):
+    """Imaging settings for the native TPPA's solve frames (PUT
+    /api/polar/solve-settings). All optional: only the fields the client SENDS
+    change, and sending null clears a field back to its default. Bounds match
+    the capture surface's; the exposure ceiling is deliberately low — a polar
+    solve frame past ~30 s is a sign the pointing or the sky is the problem."""
+    exposure_s: float | None = Field(None, gt=0, le=30)
+    gain: int | None = Field(None, ge=0, le=1000)
+    offset: int | None = Field(None, ge=0, le=255)
+    binning: int | None = Field(None, ge=1, le=4)
+    filter: str | None = None
+
+
 class CoolerBody(BaseModel):
     on: bool
     target_c: float | None = None
@@ -4778,6 +4791,31 @@ def create_app() -> FastAPI:
         task = getattr(hub.polar, "_task", None)
         if task is not None:
             hub._busy["polar"] = task
+
+    @app.put("/api/polar/solve-settings",
+             dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
+    @declare(CAP_CONTROL_MOUNT)
+    async def polar_solve_settings(body: PolarSolveSettingsBody):
+        """The native TPPA solve frame's imaging settings — exposure, gain,
+        offset, binning, filter. Accepted at ANY time, including mid-run: the
+        driver reads them per frame, so when solves start failing behind thin
+        cloud the fix is a longer exposure NOW, not a restarted session. A null
+        field clears back to its default. NINA/sim runs ignore these."""
+        settings = body.model_dump(exclude_unset=True)
+        if settings.get("filter"):
+            fw = hub.devices.get("filterwheel")
+            names = list(getattr(fw, "filter_names", []) or []) if fw else []
+            if settings["filter"] not in names:
+                have = ", ".join(names) if names else "no wheel connected"
+                raise HTTPException(422, f"no filter named "
+                                         f"{settings['filter']!r} ({have})")
+        return {"solve_settings": hub.polar.set_solve_settings(**settings)}
+
+    @app.get("/api/polar/solve-settings",
+             dependencies=[Depends(require(CAP_VIEW_STATUS))])
+    @declare(CAP_VIEW_STATUS)
+    async def polar_solve_settings_get():
+        return {"solve_settings": hub.polar.solve_settings}
 
     @app.post("/api/polar/start", dependencies=[Depends(require(CAP_CONTROL_MOUNT))])
     @declare(CAP_CONTROL_MOUNT, reaches={"PolarSession.start"})

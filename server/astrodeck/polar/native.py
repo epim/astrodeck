@@ -395,7 +395,7 @@ async def _drive(session: Any, hub: Any) -> None:
             # state below rather than exposing for another three minutes.
             break
         try:
-            frame, result, _ = await _capture_and_solve(hub, solver)
+            frame, result, _ = await _capture_and_solve(hub, solver, session)
         except asyncio.CancelledError:
             raise
         except DeviceError as e:
@@ -500,7 +500,7 @@ async def _solve_until_it_works(hub: Any, solver: Any, session: Any, epoch: int,
         await wait_if_paused(session)
         attempt += 1
         try:
-            return await _capture_and_solve(hub, solver)
+            return await _capture_and_solve(hub, solver, session)
         except asyncio.CancelledError:
             raise
         except DeviceError as e:
@@ -595,13 +595,63 @@ def _engine_solve(frame: Any, result: Any) -> dict:
     }
 
 
-async def _capture_and_solve(hub: Any, solver: Any):
-    """One short exposure → plate solve (no sync). Returns (frame, SolveResult,
+def _solve_config(session: Any) -> dict:
+    """The session's effective solve-frame settings, or the historical
+    hardcoded values for a caller (tests, mostly) that passes no session."""
+    settings = getattr(session, "solve_settings", None)
+    if isinstance(settings, dict) and settings:
+        return settings
+    return {"exposure_s": _SOLVE_EXPOSURE_S, "gain": 200, "offset": 30,
+            "binning": 1, "filter": None}
+
+
+async def _apply_solve_filter(hub: Any, name: str | None) -> None:
+    """Drive the wheel to the named filter, if there is one and it is not
+    already there. Runs BEFORE the exposure, so a mid-run settings change takes
+    effect on the very next frame — the point of live settings is that when
+    solves fail behind thin cloud, switching to L or a longer exposure fixes
+    the session NOW instead of after abandoning it. Best-effort: a wheel
+    problem must not end an alignment that never needed the wheel."""
+    if not name:
+        return
+    fw = hub.devices.get("filterwheel")
+    if fw is None or not getattr(fw, "connected", False):
+        return
+    try:
+        names = list(getattr(fw, "filter_names", []) or [])
+        if name not in names:
+            return
+        slot = names.index(name)
+        if await fw.get_position() != slot:
+            await fw.set_position(slot)
+    except Exception as e:  # noqa: BLE001 - the solve can proceed either way
+        bus.log("warning", f"native TPPA: could not move the filter wheel to "
+                           f"{name}: {e}", "polar")
+
+
+def _publish_activity(session: Any, activity: str | None) -> None:
+    """What the run is doing THIS second, for the panel's status strip. A solve
+    can take 15 s, and a screen that changes nothing for 15 s reads as hung —
+    the operator has no way to tell 'working' from 'wedged' without scrolling
+    to the log. Tolerant of the bare test sessions that have no _publish."""
+    pub = getattr(session, "_publish", None)
+    if callable(pub):
+        pub(activity=activity)
+
+
+async def _capture_and_solve(hub: Any, solver: Any, session: Any = None):
+    """One exposure → plate solve (no sync). Returns (frame, SolveResult,
     geom) where ``geom`` is (arcsec_per_pixel, width_px, height_px) for the
-    continuous-update image model."""
+    continuous-update image model.
+
+    Imaging settings come from the SESSION (operator-tunable, live) rather
+    than constants: exposure, gain, offset, binning and optionally a filter.
+    Until 2026-08-07 all five were hardcoded here, which on a night of
+    marginal solves left the operator no move at all."""
     from ..hub import CAPTURE_DIR  # lazy: avoid a hub<->polar import cycle
     cam = hub.require("camera")
     tel = hub.require("telescope")
+    cfg = _solve_config(session)
     # Pointing hint (drives ASTAP's near search; lets a refusing SimSolver fail
     # loudly on a real rig instead of inventing a solve). Bring the mount frame
     # back to J2000 like the hub's own solve path (no-op for sim/NINA).
@@ -612,21 +662,32 @@ async def _capture_and_solve(hub: Any, solver: Any):
     except Exception:
         ra_hint = dec_hint = None
 
-    async with hub.exposure_guard("polar solve"):
-        frame = await cam.expose(_SOLVE_EXPOSURE_S, 200, 30, binning=1)
     try:
-        await hub._publish_preview(frame)
-    except Exception:
-        pass
+        await _apply_solve_filter(hub, cfg.get("filter"))
+        _publish_activity(session, "exposing")
+        async with hub.exposure_guard("polar solve"):
+            frame = await cam.expose(float(cfg["exposure_s"]), int(cfg["gain"]),
+                                     int(cfg["offset"]),
+                                     binning=int(cfg["binning"]))
+        try:
+            await hub._publish_preview(frame)
+        except Exception:
+            pass
 
-    tmp = CAPTURE_DIR / "_solve" / "polar.fits"
-    from ..imaging import save_fits
-    await asyncio.to_thread(save_fits, frame, tmp,
-                            ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
-    opt = hub.effective_optics()
-    fov_hint = opt.get("fov_h_deg") or None
-    result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                fov_deg_hint=fov_hint)
+        tmp = CAPTURE_DIR / "_solve" / "polar.fits"
+        from ..imaging import save_fits
+        _publish_activity(session, "solving")
+        await asyncio.to_thread(save_fits, frame, tmp,
+                                ra_hours=ra_hint, dec_deg=dec_hint,
+                                instrument=cam.name)
+        opt = hub.effective_optics()
+        fov_hint = opt.get("fov_h_deg") or None
+        result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                    fov_deg_hint=fov_hint)
+    finally:
+        # Cleared in ALL exits — a failed solve leaving "solving" on screen
+        # would be the exact lie this field exists to remove.
+        _publish_activity(session, None)
     if not result.success:
         raise DeviceError(f"polar plate solve failed: {result.message}")
 

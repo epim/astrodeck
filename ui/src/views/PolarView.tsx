@@ -7,6 +7,7 @@ import { Panel, Led, HonestButton } from "../components/ui";
 import ProviderBadge from "../components/ProviderBadge";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
+import PolarQuickBar from "../components/PolarQuickBar";
 import type { PolarState } from "../types";
 import { useEffect, useState } from "react";
 
@@ -28,6 +29,11 @@ type NativePolar = Omit<PolarState, "state"> & {
   alt_direction?: KnobDir | null;
   flags?: string[];
   position_angle_spread_deg?: number | null;
+  /* what the native driver is doing THIS second — published around each solve
+     frame so 15 s of ASTAP never looks like a hang (2026-08-07). */
+  activity?: "exposing" | "solving" | null;
+  /* the solve frame's live imaging settings, published whenever they change */
+  solve_settings?: import("../components/PolarQuickBar").SolveSettings;
 };
 
 export default function PolarView() {
@@ -142,6 +148,11 @@ export default function PolarView() {
 
   return (
     <div className="flex flex-col gap-4">
+      {/* Always-visible status: activity + the error number + the solve-frame
+          settings fold. The three things this screen made you scroll for
+          (operator feedback 2026-08-07); renders nothing while idle. */}
+      <PolarQuickBar polar={polar} />
+
       {/* Tier-2 (doc 04 §6): a solve/geometry failure is sticky and unmissable —
           shape (square Led) + word, not color alone, so it survives night. */}
       {polar.state === "error" && (
