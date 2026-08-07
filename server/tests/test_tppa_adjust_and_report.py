@@ -961,13 +961,16 @@ async def test_a_reading_that_went_stale_mid_session_is_not_blessed_as_done(
     task = driver["launch"](engine)
     session = driver["session"]
     assert await _wait(task.done), session.state
-    # PRECONDITION: the run really did get past the cap, not stop early.
-    assert engine.update_calls == 8, engine.update_calls
+    # Since review 2026-08-07 [0] the stale limit ENDS the session rather than
+    # letting it grind on to the cap: once the number is unmistakably stale,
+    # every further exposure is spent photographing a fact already known. One
+    # success plus the three failures the limit allows = 4 calls, not 8.
+    assert engine.update_calls == 4, engine.update_calls
 
     assert session.state["state"] == "error", session.state
     msg = session.state["message"]
     assert "stale" in msg or "older" in msg, msg
-    assert "7" in msg, f"the message must say HOW MANY updates failed: {msg}"
+    assert "3" in msg, f"the message must say HOW MANY updates failed: {msg}"
     assert [m for lvl, m, _s in bus_lines
             if lvl == "warning" and "stale" in m], [m for _l, m, _s in bus_lines]
 
