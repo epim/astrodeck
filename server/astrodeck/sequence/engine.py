@@ -74,6 +74,7 @@ SAFETY_SEED_STEP_S = 0.05       # poll-cache step while seeding
 SLEW_PROJECT_S = 180.0          # pre-slew floor projection margin (slew+solve)
 SCHEDULE_WAIT_STEP_S = 5.0      # cancel-responsive sleep while waiting on a window
 WATCHDOG_TICK_S = 10.0          # no-progress watchdog wake cadence
+RECONNECT_BACKOFF_S = 5.0       # between reconnect_resume attempts on one role
 # --- target-jump budget (control-flow expansion) ---------------------------
 # Hard per-run ceiling on EXECUTED run_target/skip_target jumps. This is the
 # real backstop against a mutual-jump cycle (A -> run B, B -> run A, neither
@@ -1538,6 +1539,8 @@ class SequenceEngine:
                     await self._safety_gate(context="frame", target=target)
                     # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
                     await self._frame_alerts_tick()
+                    # heal a dropped device before the exposure that needs it
+                    await self._reconnect_gate()
                     exp = solved_exp if solved_exp is not None else step.exposure_s
                     self._begin_frame(ti, si, exp)
                     self._set_state(state="running",
@@ -1589,6 +1592,8 @@ class SequenceEngine:
             await self._safety_gate(context="frame", target=target)
             # §1.9-F: ping the external dead-man's-switch + heartbeat each frame.
             await self._frame_alerts_tick()
+            # heal a dropped device before the exposure that needs it
+            await self._reconnect_gate()
             await self._maybe_meridian_flip(target, step.exposure_s)
             await self._maybe_recover_guiding()
 
@@ -1920,6 +1925,68 @@ class SequenceEngine:
         # monitor gate is off.
         if context == "slew" and target is not None:
             await self._enforce_mount_floor(projected=True, target=target)
+
+    async def _reconnect_gate(self) -> None:
+        """Heal a device that has dropped out, before the next exposure needs it.
+
+        ``escalation.reconnect_resume`` and ``reconnect_retries`` were stored,
+        echoed by the API, rendered as a working Settings toggle — and read by
+        no production code at all. ``hub.reconnect_role`` had no caller either,
+        and the ``_last_connect`` map was maintained at three sites to feed a
+        method nobody called. The whole feature was a claim nothing kept.
+
+        Runs at the frame boundary rather than in an exception handler: a
+        dropped USB device is visible as ``connected == False`` before the
+        capture that would fail on it, so healing here costs one poll and saves
+        the run, whereas healing after the throw means unwinding a teardown that
+        has already parked the mount.
+
+        Only roles the RUN needs. A rotator that drops out of a plan with no
+        rotation angle must not end the night, and reconnect attempts against a
+        device nothing is going to use are pure delay on the critical path.
+
+        Off by default, and silent when off — the abort path is unchanged for
+        anyone who has not asked for this."""
+        cfg = self._cfg
+        if cfg is None or not cfg.escalation.reconnect_resume:
+            return
+        plan = self.plan
+        needed = ["camera"]
+        if plan is not None:
+            if any(s.filter for t in plan.targets for s in t.steps):
+                needed.append("filterwheel")
+            if plan.guide:
+                needed.append("guider")
+            if plan.autofocus_every or any(t.autofocus_first for t in plan.targets):
+                needed.append("focuser")
+            if any(not t.calibration for t in plan.targets):
+                needed.append("telescope")
+        for role in needed:
+            dev = self.hub.devices.get(role)
+            if dev is None or getattr(dev, "connected", False):
+                continue
+            tries = max(1, cfg.escalation.reconnect_retries)
+            bus.log("warning", f"{role} has dropped out — reconnecting "
+                               f"(up to {tries} attempt{'s' if tries > 1 else ''})",
+                    "sequence")
+            self._set_state(detail=f"reconnecting {role}")
+            for attempt in range(1, tries + 1):
+                await self._checkpoint()
+                bus.publish("reconnect", role=role, attempt=attempt)
+                if await self.hub.reconnect_role(role):
+                    bus.log("info", f"{role} is back after {attempt} "
+                                    f"attempt{'s' if attempt > 1 else ''} — "
+                                    f"the run continues", "sequence")
+                    break
+                if attempt < tries:
+                    await asyncio.sleep(RECONNECT_BACKOFF_S)
+            else:
+                # Out of attempts. Fall through to the ordinary teardown rather
+                # than inventing a second abort path: the run cannot shoot
+                # without this device, and SafetyAbort is what parks and warms.
+                raise SafetyAbort(
+                    f"{role} dropped out and did not come back after {tries} "
+                    f"reconnect attempt{'s' if tries > 1 else ''}")
 
     async def _no_safety_source(self, target: Target | None) -> None:
         """Armed safety with no monitor assigned at all.
