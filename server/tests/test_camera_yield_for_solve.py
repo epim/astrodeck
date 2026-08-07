@@ -389,7 +389,7 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
 
     looping_at_each_rotate = []
 
-    async def watching_rotate(hub, tel, epoch, result, step=None):
+    async def watching_rotate(hub, tel, epoch, step=None):
         # ``step`` is the signed RA step the driver decides once from the first
         # solved point and passes to every leg, so the arc cannot reverse
         # direction halfway. Accepted and ignored: this stub exists to observe
