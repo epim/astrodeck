@@ -810,6 +810,47 @@ def size_advice(size: SourceSize | None, *,
     return None
 
 
+#: A pixel at/above this fraction of the container's ceiling counts as clipped.
+#: 0.98 rather than exact equality so a 12/14-bit sensor left-shifted into a
+#: 16-bit container (rails at 65520/65532, not 65535) still registers.
+SATURATION_LEVEL_FRAC = 0.98
+
+#: Clipped-pixel fraction at/above which a frame is overexposed for star
+#: MEASUREMENT. Metered against every frame this rig captured over two weeks
+#: (rich fields, 10 s exposures, gain 300): the worst healthy frame clipped
+#: 0.0015% of its sampled pixels — bright star cores and nothing else — so
+#: 0.2% sits two orders of magnitude above the healthy side while a frame
+#: whose stars have merged into railed blobs sits far above it. The number a
+#: caller should compare against ``saturation_fraction``.
+OVEREXPOSED_FRAC = 0.002
+
+
+def saturation_fraction(data: np.ndarray) -> float:
+    """Fraction of sampled pixels sitting at the container's ceiling.
+
+    The one question this answers: did the sensor run out of scale? An
+    unmeasurable frame cannot say WHY it is unmeasurable — "0 stars" reads the
+    same off a starless field and off a field so overexposed its stars merged
+    into one railed blob, and on 2026-08-06 that ambiguity told an operator
+    under 200 visible stars to expose LONGER. This is the cheap fact that
+    separates the two, sampled every 8th pixel (~64x cheaper, and clipping
+    that matters is never confined to one pixel in 64).
+    """
+    px = np.asarray(data)[::8, ::8]
+    if px.size == 0:
+        return 0.0
+    if np.issubdtype(px.dtype, np.integer):
+        ceiling = float(np.iinfo(px.dtype).max)
+    else:
+        # Float frames carry no container ceiling. A normalized [0,1] frame
+        # rails at 1.0; anything else can only report pixels at its own max —
+        # which stays 0-ish on healthy frames (a lone hot pixel IS the max).
+        top = float(px.max())
+        ceiling = 1.0 if top <= 1.0 else top
+    return float(np.mean(px.astype(np.float64)
+                         >= SATURATION_LEVEL_FRAC * ceiling))
+
+
 def focus_size(data: np.ndarray, min_stars: int = 3) -> tuple[float | None, int]:
     """``(size in px, sources behind it)`` — the drop-in an autofocus sweep wants.
 
