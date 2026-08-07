@@ -290,6 +290,48 @@ export default function CaptureView() {
   const coolerEditPending =
     coolerHolding && !coolerTargetInvalid && deviceTargetC != null &&
     Math.abs(coolerTargetNum - deviceTargetC) >= 0.05;
+
+  // Cool-down progress (2026-08-07). Cooling has a target and a measurable
+  // rate (this TEC was clocked at ~5 °C/min pulling down), so the ramp is
+  // honestly determinate: fraction of the gap closed since the ramp started,
+  // and an ETA from the rate actually observed over the last minute — never
+  // an assumed one (#154 is what assuming an ambient cost). Client-side ONLY
+  // from numbers the status poll already carries.
+  const coolTemp = cam?.temperature ?? null;
+  const coolingToTarget = !!cooler?.on && !warm?.active && !cooler?.at_target
+    && coolTemp != null && deviceTargetC != null && coolTemp > deviceTargetC + 0.3;
+  const coolHist = useRef<Array<[number, number]>>([]);
+  const coolStartTemp = useRef<number | null>(null);
+  useEffect(() => {
+    if (coolTemp == null) return;
+    const now = Date.now();
+    coolHist.current = [...coolHist.current.filter(([ts]) => now - ts < 120_000),
+                        [now, coolTemp]];
+  }, [coolTemp]);
+  useEffect(() => {
+    if (coolingToTarget && coolStartTemp.current == null) {
+      coolStartTemp.current = coolTemp;
+    } else if (!coolingToTarget) {
+      coolStartTemp.current = null;
+    }
+  }, [coolingToTarget, coolTemp]);
+  let coolPct: number | null = null;
+  let coolEtaMin: number | null = null;
+  if (coolingToTarget && coolTemp != null && deviceTargetC != null) {
+    const start = coolStartTemp.current ?? coolTemp;
+    const span = start - deviceTargetC;
+    if (span > 0.5) {
+      coolPct = Math.max(0, Math.min(100, ((start - coolTemp) / span) * 100));
+    }
+    const h = coolHist.current;
+    const anchor = h.find(([ts]) => Date.now() - ts > 20_000);
+    if (anchor) {
+      const ratePerMin = (coolTemp - anchor[1]) / ((Date.now() - anchor[0]) / 60_000);
+      if (ratePerMin < -0.1) {
+        coolEtaMin = (coolTemp - deviceTargetC) / -ratePerMin;
+      }
+    }
+  }
   const looping = !!status?.looping;
   const liveStackOn = !!status?.live_stack_active; // NOV-1: server truth (survives reload)
   const polarBusy = polar.state === "running" || polar.state === "paused";
@@ -1474,6 +1516,26 @@ export default function CaptureView() {
                   onChange={(e) => setCoolerTarget(e.target.value)} />
               </Field>
             </div>
+
+            {/* The ramp, made determinate: fraction of the gap closed since
+                cooling started + an ETA from the rate actually observed. A
+                cool-down is minutes of nothing visibly changing, and "is it
+                even working" is the question this answers. */}
+            {coolingToTarget && (
+              <div className="mt-2" data-cooling-progress>
+                {coolPct != null && (
+                  <div className="progress-track">
+                    <div className="progress-fill" style={{ width: `${coolPct}%` }} />
+                  </div>
+                )}
+                <p className="text-[10px] text-faint mono mt-1" aria-live="polite">
+                  cooling {coolTemp?.toFixed(1)}° → {deviceTargetC?.toFixed(1)}°
+                  {coolEtaMin != null
+                    ? ` · ~${coolEtaMin < 1.5 ? "a minute" : `${Math.round(coolEtaMin)} min`} left`
+                    : " · measuring the rate…"}
+                </p>
+              </div>
+            )}
             {/* UX #24 — WARM was the finding's named example: natively disabled
                 whenever the cooler is already off, with no aria-label, no title
                 and no visible note. On the tablet it was a dim, dead, silent

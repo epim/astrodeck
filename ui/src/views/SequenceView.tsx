@@ -36,6 +36,7 @@ import {
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import { formatScheduleStatus } from "../lib/scheduleStatus";
 import { fmtCountdown } from "../lib/eta";
+import SequenceRunStrip from "../components/sequence/SequenceRunStrip";
 import type {
   CatalogEntry, ExposureStep, SequencePlan, SequenceProgress, SequenceState, Target,
   VisibilityNight,
@@ -657,6 +658,10 @@ export default function SequenceView() {
   // (700px for the step editor rather than 416px). `min-w-0` on both children
   // stops a grid item's automatic minimum size re-inflating the track.
   return (
+    <div className="flex flex-col gap-3">
+    {/* the running sequence's glance — target, frame i/N, exposure ring, ETA —
+        pinned above whatever the user scrolled to */}
+    <SequenceRunStrip />
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
       <div className="flex flex-col gap-4 min-w-0">
         {/* ----------- one-shot Atlas hand-off banner (panels added from Atlas) */}
@@ -1765,6 +1770,7 @@ export default function SequenceView() {
         onClose={() => setPreflightOpen(false)}
         onProceed={(force) => { void startSequence(force); }}
       />
+    </div>
     </div>
   );
 }

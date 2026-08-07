@@ -34,7 +34,8 @@ import {
 import { isExposureInvalid } from "../lib/exposure";
 import { ProviderBadge } from "../components/ProviderBadge";
 import { PreviewStage } from "../components/preview/PreviewStage";
-import FocusPod, { POD_MIN_STAGE_H } from "../components/focus/FocusPod";
+import FocusPod, { POD_MIN_STAGE_H, nextInCycle } from "../components/focus/FocusPod";
+import ActivityRing from "../components/ui/ActivityRing";
 import { focusState } from "../lib/focusVerdict";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
 import { BahtinovAid } from "../components/preview/BahtinovAid";
@@ -730,6 +731,42 @@ export default function FocusView() {
     ...(afAdvanced && afFilter !== "" ? { filter: Number(afFilter) } : {}),
   }));
 
+  // The sweep's SPEED DIALS (2026-08-07): exposure / gain / binning as
+  // cycling badges on the panel face, so the overexposure fix ("shorter
+  // exposure than 3s, less gain than 200") is actionable in two taps at the
+  // scope instead of a settings dig. A dial edits the SAME advanced state the
+  // typed fields edit — and opens the panel on first touch (seeding it from
+  // the derived values first, exactly as the gear does), because values in a
+  // closed panel are not sent and a dial that changed nothing would be the
+  // looks-applied-but-ignored control this file already deleted once.
+  const AF_DIAL_EXPOSURES = [0.5, 1, 2, 3, 4] as const;
+  const AF_DIAL_GAINS = [100, 200, 300, 400] as const;
+  const afDial = (kind: "exposure" | "gain" | "bin") => {
+    if (!afAdvanced) {
+      setAfExposure(String(afDerived.exposure_s));
+      setAfGain(String(afDerived.gain));
+      setAfStep(String(afDerived.step));
+      setAfBin(String(afDerived.binning));
+      setAfAdvanced(true);
+    }
+    if (kind === "exposure") {
+      setAfExposure(String(nextInCycle(AF_DIAL_EXPOSURES, afParams.exposure_s)));
+    } else if (kind === "gain") {
+      setAfGain(String(nextInCycle(AF_DIAL_GAINS, afParams.gain)));
+    } else {
+      setAfBin(String(nextInCycle(afBinOptions, afParams.binning)));
+    }
+  };
+
+  // The sweep's live narration off the focus bus slice (additive fields the
+  // server publishes since 2026-08-07): what THIS point is doing, and which
+  // point of how many. Cast, not typed — PolarView does the same for its
+  // additive native fields.
+  const fLive = focus as (typeof focus & {
+    activity?: "exposing" | "measuring" | null;
+    point_index?: number | null; points_planned?: number; exposure_s?: number;
+  }) | null;
+
   // The SAME classifier FocusVerdict runs on the same frame, hoisted so the pod
   // is gated by it too. Handing the pod the HFR was never enough to keep the
   // corner and the header from disagreeing: past detect_stars' 15px box the
@@ -1231,6 +1268,53 @@ export default function FocusView() {
                     <Icon name="settings" size={16} />
                   </button>
                 </div>
+                {/* The sweep narrating itself: which point, doing what, with
+                    the exposure's own fill clock. A point is exposure + 2-4 s
+                    of measurement, and a chart that only grows every ~8 s
+                    reads as hung in between. */}
+                {sweeping && fLive?.activity && (
+                  <div className="flex items-center gap-3 mb-2" data-af-activity>
+                    <ActivityRing
+                      mode={fLive.activity === "exposing" ? "fill" : "orbit"}
+                      seconds={fLive.exposure_s ?? afParams.exposure_s}
+                      word={fLive.activity === "exposing" ? "capturing" : "measuring"}
+                      resetKey={`${fLive.activity}-${fLive.point_index ?? "probe"}`}
+                    />
+                    <span className="text-[11px] tracking-widest uppercase text-dim"
+                      aria-live="polite">
+                      {fLive.point_index != null
+                        ? `point ${fLive.point_index + 1} of ~${fLive.points_planned ?? 9}`
+                        : "checking the field"}
+                    </span>
+                  </div>
+                )}
+                {/* Speed dials for the sweep itself — the two-tap path to
+                    "shorter exposure, less gain" when a sweep clips, and to
+                    "longer exposure, bin 1" when a field is thin. Hidden for a
+                    backend (NINA) sweep, which ignores every parameter. */}
+                {afReady.basis !== "backend" && canFocus && (
+                  <div className="flex items-center gap-1.5 mb-2 flex-wrap"
+                    role="group" aria-label="sweep speed dials" data-af-dials>
+                    <button type="button" data-af-dial="exposure"
+                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
+                      aria-label={`Sweep exposure ${afParams.exposure_s} seconds — tap for the next preset`}
+                      onClick={() => afDial("exposure")}>
+                      {afParams.exposure_s}s
+                    </button>
+                    <button type="button" data-af-dial="gain"
+                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
+                      aria-label={`Sweep gain ${afParams.gain} — tap for the next preset`}
+                      onClick={() => afDial("gain")}>
+                      g{afParams.gain}
+                    </button>
+                    <button type="button" data-af-dial="bin"
+                      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
+                      aria-label={`Sweep binning ${afParams.binning}×${afParams.binning} — tap for the next preset`}
+                      onClick={() => afDial("bin")}>
+                      b{afParams.binning}
+                    </button>
+                  </div>
+                )}
                 {/* What the sweep will actually do, BEFORE it is tapped, and
                     where those numbers came from. Two four-minute runs on
                     2026-07-31 swept at 2s / gain 120 / bin 2 — copied from a

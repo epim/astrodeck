@@ -38,6 +38,7 @@ import type {
   CatalogEntry, MosaicPanel, MosaicResult, Optics, PackStatus, PreflightAlt, Target, VisibilityNight,
 } from "../types";
 import { getPackStatus } from "../api/backends";
+import GotoStrip from "../components/GotoStrip";
 import { ARCSEC_PER_RAD, fmtMicron } from "../lib/optics";
 import {
   fovFromOptics,
@@ -927,6 +928,9 @@ export default function AtlasView(): JSX.Element {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* a goto in flight (or a mount that stopped executing slews) narrates
+          itself above the fold on the screen that launched it */}
+      <GotoStrip />
       {/* ----------------------------------------------------------- header
           UX-2026-07-26 #55: this whole cluster (title, focal length, pixel
           size, sensor W/H, guide-scope FL, CALIBRATE) used to sit DIRECTLY on
