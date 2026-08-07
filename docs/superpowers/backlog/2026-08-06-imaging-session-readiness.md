@@ -9,6 +9,37 @@ full unattended session, what would break?*
 
 ---
 
+## STATUS after the 2026-08-06 daylight campaign (0.2.54)
+
+The table below was the 0.2.47 assessment. What changed today, all
+hardware-verified unless marked:
+
+| Link | Then | Now |
+|---|---|---|
+| Sequencer | never run | **ran end to end** — 9-frame dark set, 0 rejects, wound down clean |
+| Cooling | never engaged | **cool + hold + warm ramp all measured** (27→0 °C in 161 s; held −0.2 °C across 9 frames; ramp 2.00 °C/min) |
+| Filter wheel in a sequence | — | **was broken**: calibration targets never changed filter at all. Fixed, proven on the rig (wheel drove L → blackout slot) |
+| FITS headers | — | **SET-TEMP was missing from every native-rig frame ever**. Fixed |
+| Guiding | never run | **was impossible** — `hub.guider` was None. Two defects fixed; a guider now exists. Calibration still needs stars |
+| Meridian flip | believed structurally dead | **`pier_side` works** (ASCOM convention, both sides) and the mount performed a flip. Only the plate-solve half is unproven |
+| Safety armed with no monitor | silently permissive | says so once per run + a pre-flight warning; `require_safety_monitor` enforces |
+| No-progress watchdog | warn-only, ignored `on_unsafe` | drives `on_unsafe` through the run task |
+| Reconnect after a dropout | read by no code | implemented for native drivers; **all five devices survive disconnect→reconnect and still answer** |
+
+Still open and needing sky: guide calibration (#141), polar adjust (#149),
+autofocus V-curve (#143), filter offsets (#148), the flip's solve half (#145).
+
+Still open and needing a decision: alerts + deadman have no destination
+(#146) — without them no unattended failure is observable at all.
+
+Measured and worth knowing: the guide scope has **no cap**, so its sensor
+rails in daylight (uniform 65520). Guide camera is 1920×1080 at 4.0 µm →
+**5.50 arcsec/px at the 150 mm guide FL**. The warm ramp assumes 20 °C
+ambient when today's was 32 °C (#154); the focuser thermometer was measured
+as an alternative and rejected at 43.2 °C.
+
+---
+
 ## The short answer
 
 The imaging chain has never been run end to end on this hardware. Individual
