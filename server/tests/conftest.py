@@ -82,17 +82,31 @@ def _never_touch_the_real_config():
     in several modules; redirecting the PATH is the one move that is correct no
     matter which module a test reaches it through. Tests that want their own
     isolated store keep building one (``ConfigStore(path=tmp_path/...)``) — this
-    only guarantees the shared fallback is never the real file."""
+    only guarantees the shared fallback is never the real file.
+
+    ``CONFIG_DIR`` is repointed too (2026-08-07). The store's path was patched
+    but the DIRECTORY was not, and everything that resolves
+    ``from ..config import CONFIG_DIR`` lazily — guider calibration/PPEC
+    persistence, users.json, session_secret — still read AND WROTE the
+    developer's real ``server/config/``. The observed failure took three weeks
+    to fire: guider tests persisted calibrations into ``config/guider/`` in
+    July; a sim pier-side fix on 2026-08-06 made the calibration-reuse gate
+    match those stale files at some hours of the day and not others; and three
+    convergence tests started failing by wall-clock time of day, in this
+    checkout only, pointing at guiding code that was completely innocent."""
     import tempfile
     import astrodeck.config as config_mod
     real = config_mod.config_store._path
+    real_dir = config_mod.CONFIG_DIR
     with tempfile.TemporaryDirectory(prefix="astrodeck-test-config-") as d:
         config_mod.config_store._path = Path(d) / "astrodeck.json"
         config_mod.config_store._cfg = None      # drop anything already loaded
+        config_mod.CONFIG_DIR = Path(d)
         assert config_mod.config_store._path != real
         yield
     config_mod.config_store._path = real
     config_mod.config_store._cfg = None
+    config_mod.CONFIG_DIR = real_dir
 
 
 @pytest.fixture(autouse=True)
