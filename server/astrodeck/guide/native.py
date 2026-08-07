@@ -157,6 +157,58 @@ def guide_algo_config() -> dict:
         return {}
 
 
+def build_native_guider(guide_camera, telescope, *,
+                        shares_the_imaging_sensor: bool = False):
+    """Assemble a :class:`NativeGuider` over a guide camera and a mount.
+
+    Lifted out of ``native_backend.native_guider`` so a caller that holds the
+    two devices can build one even when they came from DIFFERENT backend
+    sessions. On a real multi-vendor rig they usually did: a ZWO ASI guide
+    camera opens a ``zwo-asi`` session while the mount opens ``zwo-am5``, and a
+    session-local lookup then finds a camera with no mount and gives up. That is
+    why a rig with a guide camera bolted on had no guider at all.
+
+    Returns None when the native engine is unavailable or either device is
+    missing — the same clean degrade the session accessor has always made.
+    SYNC by contract (no I/O; it only instantiates)."""
+    from ..providers import NATIVE_AVAILABLE
+    if not NATIVE_AVAILABLE or guide_camera is None or telescope is None:
+        return None
+    # A real image_scale_arcsec from the configured guide-scope focal length and
+    # the guide camera's pixel size, so on-sky RMS is reported in true arcsec.
+    # Falls back to 1.0 (guiding correctness unaffected — calibration measures
+    # px/ms empirically) when either input is missing. The guide loop runs bin 1.
+    image_scale, image_scale_known = 1.0, False
+    try:
+        # PROFILE > GLOBAL, the same rule every other optics consumer applies
+        # (#129: reading global config here left the GUIDE scale behind a
+        # profile override, silently, because an unset guide FL just degrades).
+        from ..profiles import active_profile, resolve_optics
+        guide_fl = resolve_optics(active_profile()).guide_focal_length_mm
+        px = getattr(guide_camera, "pixel_size_um", None)
+        if guide_fl and guide_fl > 0 and px and px > 0:
+            image_scale = 206.265 * float(px) / float(guide_fl)
+            image_scale_known = True
+    except Exception:  # pragma: no cover - defensive; scale stays 1.0
+        image_scale, image_scale_known = 1.0, False
+
+    # #24: the profile id is read LAZILY. This can run inside connect_profile(),
+    # and set_active_profile lands only AFTER that returns, so an id captured at
+    # construction would be the profile being switched away FROM — which
+    # silently disabled the whole calibration + PPEC persistence layer.
+    def _active_profile_id() -> str | None:
+        from ..profiles import active_profile
+        return getattr(active_profile(), "id", None)
+
+    return NativeGuider(
+        guide_camera, telescope,
+        config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
+                "image_scale_known": image_scale_known,
+                **guide_algo_config()},
+        profile_id_resolver=_active_profile_id,
+        shares_the_imaging_sensor=bool(shares_the_imaging_sensor))
+
+
 class NativeGuider(Guider):
     """The native Rust-engine autoguider (spec §3.2/§5).
 
