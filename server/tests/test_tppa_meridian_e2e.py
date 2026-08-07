@@ -114,7 +114,7 @@ _PRE_FIX_STEP_HOURS = native_mod._RA_STEP_HOURS
 _SHIPPED_RA_STEP = native_mod._ra_step_hours
 
 
-def _pre_fix_ra_step(hub, cur_ra_hours):  # noqa: ARG001 - signature parity
+def _pre_fix_ra_step(hub, cur_ra_hours, pier_side=None):  # noqa: ARG001 - signature parity
     return _PRE_FIX_STEP_HOURS
 
 
@@ -479,12 +479,28 @@ async def _drive_run(monkeypatch, tmp_path, *, start_ha: float,
         except asyncio.CancelledError:
             pass
 
-    # Preconditions. Every assertion below reads three solves and two slews; if
-    # the driver bailed early these would be vacuously true.
-    assert len(solver.results) >= 3, (
-        f"the measuring phase produced {len(solver.results)} solves, not 3")
-    assert mount.slews == 2, (
-        f"the driver commanded {mount.slews} rotations, not 2")
+    # Preconditions, and they depend on whether the run was SUPPOSED to survive.
+    #
+    # A run that flips no longer reaches three points at all: since 2026-08-06
+    # the driver compares consecutive position angles and stops the moment the
+    # mount changes sides, so the arc ends after two solves and one rotation
+    # instead of completing a full arc and handing back a fit nobody can use.
+    # Demanding three solves here would therefore fail every deliberately-broken
+    # run in this file — for the RIGHT reason, which is not a useful test.
+    #
+    # So: a flipped run must stop early and must be an error; an unflipped run
+    # must produce the full three points and two rotations, which is what every
+    # assertion downstream reads.
+    if mount.flips:
+        assert len(solver.results) == 2, (
+            f"a flip must end the arc at the frame that revealed it, but the "
+            f"measuring phase produced {len(solver.results)} solves")
+        assert session.state.get("state") == "error", session.state
+    else:
+        assert len(solver.results) >= 3, (
+            f"the measuring phase produced {len(solver.results)} solves, not 3")
+        assert mount.slews == 2, (
+            f"the driver commanded {mount.slews} rotations, not 2")
     return _Run(session, mount, solver, hub)
 
 
@@ -730,23 +746,23 @@ async def test_the_pre_fix_step_reproduces_the_2026_08_06_rig_failure(
     # The rig's own numbers, to a hundredth of an hour.
     assert has[0] == pytest.approx(0.69, abs=0.02), has
     assert has[1] == pytest.approx(-0.12, abs=0.02), has
-    assert has[2] == pytest.approx(-0.92, abs=0.02), has
     assert has[0] > 0.0 > has[1], f"the arc must cross the meridian: {has}"
-    # The two signatures the production error message tells the operator to look
-    # for in the log: declinations more than a degree apart, hour angles that do
-    # not share a sign.
-    assert max(run.declinations) - min(run.declinations) > 1.0, run.declinations
-    assert len({math.copysign(1.0, h) for h in has}) == 2, has
-    assert run.pa_spread_deg == pytest.approx(180.0, abs=1.0), run.pa_spread_deg
 
-    # And the fit is not merely off -- it is refused, because no tripod can hold
-    # its RA axis where this one landed.
+    # WHAT CHANGED 2026-08-06. The rig's third point (-0.92h), the 179.7 degree
+    # position-angle spread, the axis fitted below the horizon and the 7271
+    # arcminutes are all still in the log of that night — and are now
+    # UNREACHABLE, because the driver compares consecutive position angles and
+    # stops at the frame that reveals the flip. Two solves, one rotation, and a
+    # refusal that names the cause, instead of a full arc spent measuring a
+    # mount that had swung over.
+    assert len(run.solver.results) == 2, run.solver.results
     st = run.state
     assert st["state"] == "error", st
     msg = st["message"].lower()
-    assert "failed fit" in msg, st["message"]
-    assert "below the horizon" in msg, st["message"]
-    assert "flipped sides" in msg, st["message"]
+    assert "camera angle moved" in msg, st["message"]
+    assert "changed sides of the pier" in msg, st["message"]
+    # and it still says which frames, so the log is readable afterwards
+    assert "point 1" in msg and "point 2" in msg, st["message"]
 
 
 @pytest.mark.parametrize("flip_dec_error_deg", [-1.0, -0.5, 0.5, 1.0, 2.0])
@@ -765,17 +781,23 @@ async def test_the_pre_fix_step_wrecks_the_recovered_error(
                            pre_fix_step=True)
     assert run.mount.flips == 1, run.hour_angles
 
+    # NO NUMBER IS PRODUCED AT ALL ANY MORE, at any asymmetry. This test used to
+    # assert that whatever came out was wildly wrong, and had to special-case the
+    # subset that the plausibility gate happened to refuse — because the rest
+    # were PUBLISHED, as an instruction, to an operator with no way to know. The
+    # flip is now caught between the two frames that show it, so every one of
+    # these ends the same way regardless of how bad the collapsed fit would have
+    # been. That is the point: the size of the lie should not decide whether you
+    # are told one.
     st = run.state
-    if st["state"] == "error":
-        # Refused by the plausibility gate -- the fit was SO bad it never got a
-        # number. That is a pass for this test's purpose.
-        assert "failed fit" in st["message"].lower(), st
-        return
-    reported = st["total_error"]
-    assert reported > 10.0 * _INJ_TOTAL, (
-        f"a mid-measurement flip left the reported error at {reported}' vs the "
-        f"injected {_INJ_TOTAL:.2f}' -- if the fit really is that robust to a "
-        f"flip, this whole test file is measuring the wrong thing")
+    assert st["state"] == "error", st
+    assert "changed sides of the pier" in st["message"].lower(), st
+    # 0.0 is the session's seeded default, i.e. no fit was ever published. The
+    # point is that the operator is never handed a non-zero "polar error" to act
+    # on from an arc that flipped.
+    assert st.get("total_error") == 0.0, (
+        f"a refused run must not also leave a number on screen: {st}")
+    assert st.get("phase") == "measuring", "it stopped in the arc, not after it"
 
 
 async def test_the_same_start_is_clean_once_the_step_direction_is_fixed(
@@ -790,6 +812,8 @@ async def test_the_same_start_is_clean_once_the_step_direction_is_fixed(
                              pre_fix_step=False)
     assert (broken.mount.flips, fixed.mount.flips) == (1, 0)
     assert broken.state["state"] == "error", broken.state
+    assert len(broken.solver.results) == 2, "the broken half must stop AT the flip"
+    assert len(fixed.solver.results) >= 3, "the clean half must complete the arc"
     assert fixed.state["state"] != "error", fixed.state
     assert fixed.state["total_error"] == pytest.approx(_INJ_TOTAL, abs=0.5), \
         fixed.state
@@ -825,7 +849,7 @@ async def test_the_driver_starts_tracking_before_it_measures(
 
 # ================================================== characterisation
 
-async def test_a_flip_inside_the_plausible_band_is_published_with_its_flag(
+async def test_a_flip_inside_the_plausible_band_is_refused_not_captioned(
         monkeypatch, tmp_path):
     """CHARACTERISATION. Was: "a mid-measurement pier flip is published as an
     actionable polar error when the collapsed fit lands under 30 degrees",
@@ -854,16 +878,27 @@ async def test_a_flip_inside_the_plausible_band_is_published_with_its_flag(
     run = await _drive_run(monkeypatch, tmp_path, start_ha=0.69,
                            flip_dec_error_deg=-0.2, pre_fix_step=True)
     assert run.mount.flips == 1, run.hour_angles
-    assert run.pa_spread_deg == pytest.approx(180.0, abs=1.0), run.pa_spread_deg
 
+    # WHAT CHANGED 2026-08-06, and why the old answer was not good enough.
+    #
+    # This used to be a small flip displacement (-0.2 deg) chosen so the
+    # collapsed fit landed INSIDE MAX_PLAUSIBLE_ERROR_DEG — around 300
+    # arcminutes, comfortably under the 30 degree bound. The magnitude gate
+    # therefore could not see it, the number was published as "adjust the
+    # mount", and the only thing standing between the operator and a wrecked
+    # alignment was a flag on the payload that they had to notice and interpret.
+    #
+    # On the night of 2026-08-06 that is precisely what happened, twice, and the
+    # caveat did not save it: the operator turned bolts against those numbers
+    # until the mount was degrees out. A caveat beside a confident figure is not
+    # a refusal, and the size of the collapsed fit was never a good reason to
+    # decide whether to hand one over.
+    #
+    # So the run no longer gets that far. The flip is caught between the two
+    # frames that reveal it, whatever it would have fitted to.
     st = run.state
-    # The number really is garbage: wrong by more than an order of magnitude...
-    assert st.get("total_error", 0.0) > 10.0 * _INJ_TOTAL, st
-    # ...and it is under the plausibility bound, so the magnitude gate cannot
-    # see it. (This is the whole reason the caveat channel has to work.)
-    assert st["total_error"] / 60.0 < native_mod.MAX_PLAUSIBLE_ERROR_DEG, st
-    assert st["state"] == "running" and st["message"] == "adjust the mount", st
-
-    # The caveat that has to travel WITH it.
-    assert "position_angle_spread_large" in st.get("flags", []), st
-    assert st["position_angle_spread_deg"] == pytest.approx(180.0, abs=1.0), st
+    assert st["state"] == "error", st
+    assert "changed sides of the pier" in st["message"].lower(), st
+    assert st.get("total_error") == 0.0, (
+        f"a flip inside the plausible band must still not produce a number: {st}")
+    assert len(run.solver.results) == 2, run.solver.results

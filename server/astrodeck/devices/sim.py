@@ -894,7 +894,27 @@ class SimTelescope(Telescope):
         return self.rig.parked
 
     async def pier_side(self) -> PierSide:
-        return PierSide.WEST
+        """The side implied by where this mount is actually pointing.
+
+        Returned a constant ``WEST`` until 2026-08-06, which is the
+        ``SimSolver``-doesn't-solve shape: a device answering a question about
+        its own geometry without consulting it. Anything that reasons from the
+        pier side then works perfectly in the simulator and does the opposite of
+        what it should on sky, in whichever half of the meridian the constant
+        happened to be wrong for. The TPPA step-direction rule reasons from
+        exactly this, so the constant would have aimed its arc at the horizon.
+
+        Standard ASCOM convention, matching what the AM5N was measured to report
+        (2026-08-06, both sides): a target EAST of the meridian is observed with
+        the tube on the WEST side, and vice versa."""
+        try:
+            from ..catalog.coords import lst_hours
+            from ..config import config_store
+            lon = float(config_store.cfg().site.longitude)
+            ha = ((lst_hours(lon) - self.rig.ra_hours + 12.0) % 24.0) - 12.0
+        except Exception:  # noqa: BLE001 - a sim must never fail a geometry query
+            return PierSide.WEST
+        return PierSide.EAST if ha > 0.0 else PierSide.WEST
 
     async def destination_pier_side(self, ra_hours: float, dec_deg: float) -> PierSide:
         """Deterministic pre-slew side: targets in the eastern RA half land EAST,
