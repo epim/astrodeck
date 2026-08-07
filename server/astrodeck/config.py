@@ -449,6 +449,14 @@ class GuideConfig(BaseModel):
     # default so an unset config round-trips byte-identical (no params sent).
     ra_params: GuideAxisParams = GuideAxisParams()
     dec_params: GuideAxisParams = GuideAxisParams()
+    # Guide-camera frame settings (2026-08-07; appended — old configs load
+    # fine). The native guider reads these PER EXPOSURE, so a change applies
+    # from the next guide frame; before this the loop's exposure was a
+    # constructor-frozen 2.0 s no UI could reach — the same no-move-at-all trap
+    # the polar solve settings closed. Defaults match the historical values.
+    exposure_s: float = Field(2.0, gt=0, le=15)
+    gain: int = Field(100, ge=0, le=1000)
+    binning: int = Field(1, ge=1, le=4)
 
 
 class RotatorConfig(BaseModel):
