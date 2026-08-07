@@ -1,27 +1,32 @@
-import { useState } from "react";
 import { api } from "../api";
 import { useStatus, useStore } from "../store";
 import { polarTier } from "./polar";
+import { LockedChip } from "./ui";
+import { nextInCycle } from "./focus/FocusPod";
 import { useCanControlMount } from "../lib/caps";
 
 /* The three things the Align screen made you scroll for, pinned where a thumb
-   and one glance can reach them (operator feedback, 2026-08-07 00:38):
+   and one glance can reach them (operator feedback, 2026-08-07 00:38 and the
+   12:50 refinement):
 
      1. WHAT IS HAPPENING RIGHT NOW. A solve can take 15 s and the reticle
         does not change while it runs, so "working" and "wedged" looked the
-        same. The native driver now publishes `activity` (exposing | solving)
-        around every frame; this strip renders it as a live chip.
+        same. The native driver publishes `activity` (exposing | solving)
+        around every frame; this strip renders it as a live chip, and the
+        reticle wears PolarSolveRing for the same fact where the eye is.
      2. HOW FAR OFF THE MOUNT IS. The five-em number lived in a panel below
         the fold on a phone — the posture this screen is used in is crouched
         at the tripod, phone in one hand, hex key in the other.
-     3. THE SOLVE FRAME'S IMAGING SETTINGS. Exposure/gain/bin/filter were
-        hardcoded server-side until 2026-08-07; on a night of six failed
-        solves in eleven minutes the operator had no move at all. They are
-        live now (a change applies to the NEXT frame, mid-run), but they must
-        not cost screen space when unneeded — so they fold behind one chip.
+     3. THE SOLVE FRAME'S IMAGING SETTINGS, as SPEED DIALS — the Focus pod's
+        cycling-badge idiom (one target, current value on its face, tap for
+        the next preset), one dial each for exposure / gain / binning /
+        filter. The first cut hid these behind a fold; on a night of failing
+        solves the fold was one tap too many, and a dial that shows its value
+        IS the summary the fold's chip was.
 
    The strip only exists while a session is live or has a verdict: an idle
-   Align screen keeps its clean start state. */
+   Align screen keeps its clean start state. The dials only while LIVE — a
+   finished session has no next frame to apply them to. */
 
 type QuickBarPolar = {
   state: string;
@@ -42,7 +47,7 @@ export type SolveSettings = {
   filter: string | null;
 };
 
-/* The server's defaults, mirrored so the dial renders sane values before the
+/* The server's defaults, mirrored so the dials render sane values before the
    first polar event carries `solve_settings` (the session only publishes them
    once something changes them). Kept in ONE place here; the server remains
    the authority the moment it speaks. */
@@ -54,8 +59,16 @@ const EXPOSURES = [0.3, 0.5, 1, 2, 3, 5];
 const GAINS = [100, 200, 300, 400];
 const BINS = [1, 2];
 
+/** The filter dial's ring: as-is (null) first, then every non-opaque slot.
+ *  Opaque slots are carriers with no glass — a solve through one is a dark
+ *  frame — so they exist in the wheel but never in this cycle. */
+export function nextFilter(filters: string[], current: string | null): string | null {
+  const ring: (string | null)[] = [null, ...filters];
+  const i = ring.findIndex((f) => f === current);
+  return ring[(i + 1) % ring.length] ?? null;
+}
+
 export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
-  const [open, setOpen] = useState(false);
   const showToast = useStore((s) => s.showToast);
   const status = useStatus();
   const canMount = useCanControlMount();
@@ -80,9 +93,10 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
     : total >= 60 ? `${(total / 60).toFixed(1)}°` : `${total.toFixed(1)}′`;
 
   /* One activity chip, priority-ordered: the per-frame activity beats the
-     phase, which beats the bare state — each is a finer-grained truth. */
+     phase, which beats the bare state — each is a finer-grained truth.
+     "capturing", not "exposing": the same word the ring under it uses. */
   const activity = polar.activity
-    ? { text: polar.activity === "exposing" ? "exposing…" : "solving…", blink: true }
+    ? { text: polar.activity === "exposing" ? "capturing…" : "solving…", blink: true }
     : measuring
       ? { text: `measuring ${Math.min(3, (polar.point_index ?? -1) + 2)}/3`, blink: true }
       : polar.phase === "adjusting" && polar.state === "running"
@@ -91,8 +105,6 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
 
   const settings = { ...DEFAULTS, ...(polar.solve_settings ?? {}) };
   const wheel = status?.filterwheel;
-  /* Opaque slots are carriers with no glass — a solve through one is a dark
-     frame. They exist in the wheel but not in this picker. */
   const filters = (wheel?.names ?? []).filter(
     (n, i) => n && !(wheel?.opaque?.[i] ?? false));
 
@@ -101,10 +113,35 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
       (e) => showToast("error", (e as Error).message));
   };
 
-  const chip = (active: boolean) =>
-    `px-2 py-1 rounded text-[11px] mono tabular-nums border transition-colors ${
-      active ? "border-accent text-accent bg-accent/10"
-        : "border-line text-dim hover:text-ink"}`;
+  /* The dials — FocusPod's cycling-badge idiom exactly: one target, the
+     current value on its face, a tap moves to the next preset, and a change
+     applies to the NEXT solve frame, including mid-run. `nextInCycle` walks
+     to the next value ABOVE a custom current rather than snapping. */
+  const nextExposure = nextInCycle(EXPOSURES, settings.exposure_s);
+  const nextGain = nextInCycle(GAINS, settings.gain);
+  const nextBin = nextInCycle(BINS, settings.binning);
+  const nextFilt = nextFilter(filters, settings.filter);
+
+  const lockReason = "Changing solve settings needs mount control access.";
+  const dial = (
+    key: string, face: string, aria: string, patch: Partial<SolveSettings>,
+  ) => canMount ? (
+    <button
+      key={key}
+      type="button"
+      data-polar-dial={key}
+      className="btn tap mono !normal-case justify-center px-2 min-h-[40px] min-w-[48px]"
+      aria-label={aria}
+      onClick={() => put(patch)}
+    >
+      {face}
+    </button>
+  ) : (
+    <LockedChip key={key} reason={lockReason}
+      className="btn mono !normal-case justify-center !px-2 min-h-[40px] min-w-[48px]">
+      <span className="text-[11px]">{face}</span>
+    </LockedChip>
+  );
 
   return (
     /* Sticky under the app header; z below toasts/dialogs. backdrop keeps the
@@ -131,78 +168,28 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
               az {Math.abs(polar.az_error).toFixed(1)}′ · alt {Math.abs(polar.alt_error).toFixed(1)}′
             </span>
           )}
-
-          {/* the settings fold */}
-          <button
-            className={`text-[11px] tracking-widest uppercase px-2 py-1 rounded border ${
-              open ? "border-accent text-accent" : "border-line text-dim"}`}
-            aria-expanded={open}
-            onClick={() => setOpen((v) => !v)}>
-            {settings.exposure_s}s · g{settings.gain} · b{settings.binning}
-            {settings.filter ? ` · ${settings.filter}` : ""}
-          </button>
         </div>
 
-        {open && (
-          <div className="mt-2 pt-2 border-t border-line flex flex-col gap-2"
-            role="group" aria-label="solve frame settings">
-            {!canMount && (
-              <p className="text-[11px] text-dim">
-                Changing solve settings needs mount control access.
-              </p>
-            )}
+        {live && (
+          <div className="mt-1.5 pt-1.5 border-t border-line"
+            role="group" aria-label="solve frame speed dials">
             <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="label w-14 shrink-0">Exposure</span>
-              {EXPOSURES.map((e) => (
-                <button key={e} disabled={!canMount}
-                  className={chip(settings.exposure_s === e)}
-                  onClick={() => put({ exposure_s: e })}>
-                  {e}s
-                </button>
-              ))}
+              {dial("exposure", `${settings.exposure_s}s`,
+                `Exposure ${settings.exposure_s} seconds — tap for ${nextExposure}`,
+                { exposure_s: nextExposure })}
+              {dial("gain", `g${settings.gain}`,
+                `Gain ${settings.gain} — tap for ${nextGain}`,
+                { gain: nextGain })}
+              {dial("binning", `b${settings.binning}`,
+                `Binning ${settings.binning}×${settings.binning} — tap for ${nextBin}×${nextBin}`,
+                { binning: nextBin })}
+              {filters.length > 0 && dial("filter", settings.filter ?? "as-is",
+                `Filter ${settings.filter ?? "as-is"} — tap for ${nextFilt ?? "as-is"}`,
+                { filter: nextFilt })}
+              <span className="text-[10px] text-faint leading-tight ml-auto hidden sm:inline">
+                applies from the next frame
+              </span>
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="label w-14 shrink-0">Gain</span>
-              {GAINS.map((g) => (
-                <button key={g} disabled={!canMount}
-                  className={chip(settings.gain === g)}
-                  onClick={() => put({ gain: g })}>
-                  {g}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="label w-14 shrink-0">Binning</span>
-              {BINS.map((b) => (
-                <button key={b} disabled={!canMount}
-                  className={chip(settings.binning === b)}
-                  onClick={() => put({ binning: b })}>
-                  {b}×{b}
-                </button>
-              ))}
-            </div>
-            {filters.length > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="label w-14 shrink-0">Filter</span>
-                <button disabled={!canMount}
-                  className={chip(settings.filter == null)}
-                  onClick={() => put({ filter: null })}>
-                  as-is
-                </button>
-                {filters.map((f) => (
-                  <button key={f} disabled={!canMount}
-                    className={chip(settings.filter === f)}
-                    onClick={() => put({ filter: f })}>
-                    {f}
-                  </button>
-                ))}
-              </div>
-            )}
-            <p className="text-[10px] text-faint leading-relaxed">
-              Applies from the next solve frame — including mid-run. Longer
-              exposure or more gain helps a solve that keeps failing; "as-is"
-              leaves the filter wheel where it sits.
-            </p>
           </div>
         )}
       </div>
