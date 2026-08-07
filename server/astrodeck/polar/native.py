@@ -313,14 +313,19 @@ async def _drive(session: Any, hub: Any) -> None:
             # points are in and the fit is done — so a flip between points 1
             # and 2 cost a full arc, a fit, and an operator's attention before
             # anything said so. Checked here, the run stops one frame later.
-            _refuse_if_it_flipped(pa_raw[-1], result, i)
+            #
+            # Against the last frame that REPORTED an angle, not blindly the
+            # previous frame: a solver that returns no angle for the middle
+            # frame alone would otherwise disable BOTH comparisons (1-2 and
+            # 2-3 each involve frame 2), and a flip between points 1 and 2
+            # would sail through to the fit (review 2026-08-07 [3]). Compared
+            # 1-to-3, the flip is still a ~180° jump and still caught.
+            prev = next(((n, v) for n, v in reversed(list(enumerate(pa_raw)))
+                         if v is not None), None)
+            if prev is not None:
+                _refuse_if_it_flipped(prev[1], prev[0], result, i)
         pa_raw.append(getattr(result, "rotation_deg", None))
-        solves.append({
-            "ra_hours": result.ra_hours,
-            "dec_deg": result.dec_deg,
-            "timestamp_unix_s": frame.timestamp,
-            "position_angle_deg": result.rotation_deg or 0.0,
-        })
+        solves.append(_engine_solve(frame, result))
         _log_measurement(hub, i, result, frame)
         session._publish(state="running", source="native", phase="measuring",
                          progress=0.1 + 0.15 * (i + 1), point_index=i,
@@ -331,7 +336,7 @@ async def _drive(session: Any, hub: Any) -> None:
             # did not ask for — the one irreversible thing this loop does. The
             # motion-epoch fence inside _rotate_in_ra still raises independently.
             await wait_if_paused(session)
-            await _rotate_in_ra(hub, tel, epoch, result, step_hours)
+            await _rotate_in_ra(hub, tel, epoch, step_hours)
 
     # ---- fit the axis + initial error -------------------------------------
     opts = _options(hub, geom)
@@ -347,14 +352,32 @@ async def _drive(session: Any, hub: Any) -> None:
             f"(az {err['az_arcmin']:.1f}', alt {err['alt_arcmin']:.1f}')", "polar")
     _log_pa_spread(err)
     _reject_implausible_fit(err, hub)  # raises rather than publish a wrong number
-    # "adjust the mount" on a fit that is ALREADY inside the aligned threshold
-    # sends someone to the bolts to chase a number the same routine would call
-    # done one second later, when the adjust loop applies the same comparison.
+    # A fit ALREADY inside the aligned threshold is DONE, not the start of an
+    # adjustment. It used to publish "polar aligned" and then enter the adjust
+    # loop anyway, where one second of solve noise (0.8' → 1.1') retracted the
+    # verdict with no physical change — or a cloud stranded a session that had
+    # just announced success (review 2026-08-07 [6]). The adjust loop applies
+    # this same comparison to call itself done; the initial fit gets the same
+    # courtesy.
     already = err["total_arcmin"] <= _DONE_THRESHOLD_ARCMIN
+    if already:
+        _publish_error(session, err, phase="adjusting", point_index=2,
+                       progress=1.0, message="polar aligned", state="done")
+        bus.log("info", "native TPPA complete (already within threshold)",
+                "polar")
+        return
     _publish_error(session, err, phase="adjusting", point_index=2, progress=0.6,
-                   message="polar aligned" if already else "adjust the mount")
+                   message="adjust the mount")
 
     # ---- PHASE adjusting: live re-scale while the user turns the knobs -----
+    #
+    # Failures here are counted, not retried in place. Routing them through the
+    # unbounded measuring-phase retry meant a clouded-out adjust never finished
+    # an iteration: the 240-update safety cap could not tick, the stale-number
+    # terminal state could not fire, and a forgotten session spun forever while
+    # its panel claimed a live number (review 2026-08-07 [0]). A failed solve
+    # now costs one stale count and the next iteration simply tries again — the
+    # same recovery a cloud needs, with a bound.
     updates_published = 0
     stale_updates = 0
     for _ in range(_MAX_ADJUST_UPDATES):
@@ -366,14 +389,24 @@ async def _drive(session: Any, hub: Any) -> None:
         # exposure fires after the user hit Pause, and on a real rig that is a
         # shutter they asked to stop.
         await wait_if_paused(session)
-        frame, result, _ = await _solve_until_it_works(
-            hub, solver, session, epoch, what="live update")
-        solve = {
-            "ra_hours": result.ra_hours,
-            "dec_deg": result.dec_deg,
-            "timestamp_unix_s": frame.timestamp,
-            "position_angle_deg": result.rotation_deg or 0.0,
-        }
+        if stale_updates >= _STALE_UPDATE_LIMIT:
+            # The number on screen is now older than the operator's last
+            # adjustment by an unmistakable margin. Settle on the terminal
+            # state below rather than exposing for another three minutes.
+            break
+        try:
+            frame, result, _ = await _capture_and_solve(hub, solver)
+        except asyncio.CancelledError:
+            raise
+        except DeviceError as e:
+            _check_alive(hub, epoch)
+            stale_updates += 1
+            bus.log("warning",
+                    f"native TPPA live update: {e} — the number on screen is "
+                    f"now {stale_updates} update(s) behind your adjustments",
+                    "polar")
+            continue
+        solve = _engine_solve(frame, result)
         try:
             err = _native.tppa_update(model, solve)
         except Exception as e:
@@ -445,9 +478,22 @@ async def _solve_until_it_works(hub: Any, solver: Any, session: Any, epoch: int,
     park, safety halt or deadman; ``wait_if_paused`` blocks on Pause; and
     ``stop()`` cancels the task outright through the sleep.
 
-    Retries the SOLVE only. The deliberate refusals around it — near the pole,
-    an arc that goes underground, a mount that did not arrive — are not
-    transient and are still raised on the first look."""
+    MEASURING PHASE ONLY. The adjust loop handles its own failures: it counts
+    them against the stale-number budget so its safety cap and terminal states
+    keep working — an unbounded retry inside one of its iterations was how a
+    forgotten session came to spin forever (review 2026-08-07 [0]).
+
+    Retries the SOLVE only, and only while the conditions the arc was vetted
+    under still hold. Waiting is not free of assumptions: the one-shot
+    ``_refuse_low_arc`` projection priced each leg at ~45 s, and a stall long
+    enough breaks it — the field keeps setting while we wait. And a DeviceError
+    is not always weather: a camera whose USB dropped raises exactly like a
+    cloud does. So before every retry, ``_refuse_if_no_longer_measurable``
+    re-checks the devices and the CURRENT altitude, and a failure of either is
+    terminal and correctly attributed, not another patient retry. The
+    deliberate refusals around the solve — near the pole, an arc that goes
+    underground, a mount that did not arrive — are likewise still raised on
+    the first look."""
     attempt = 0
     while True:
         _check_alive(hub, epoch)
@@ -462,6 +508,9 @@ async def _solve_until_it_works(hub: Any, solver: Any, session: Any, epoch: int,
             # Re-checking the fence here keeps a STOP a STOP rather than
             # something this loop politely retries forever.
             _check_alive(hub, epoch)
+            # Raised OUTSIDE the try, so its DeviceError propagates as the
+            # terminal error it is instead of being retried like weather.
+            await _refuse_if_no_longer_measurable(hub, what)
             # NOT prefixed "native TPPA point N/3" — that is the shape of a
             # SUCCESSFUL measurement line, and a retry that looks like a
             # measurement in the log is how you later miscount the arc.
@@ -469,11 +518,81 @@ async def _solve_until_it_works(hub: Any, solver: Any, session: Any, epoch: int,
                     f"native TPPA retry ({what}): {e} — retrying in "
                     f"{_SOLVE_RETRY_S:.0f}s (attempt {attempt} failed). Press "
                     f"Stop if the sky is not coming back.", "polar")
+            # phase="measuring" is correct, not a default: this helper is
+            # measuring-only (see above), and stamping it over an adjust
+            # session was review 2026-08-07 [5].
             session._publish(
                 state="running", source="native", phase="measuring",
                 message=(f"{what}: plate solve failed {attempt}× — still "
                          f"trying. Stop when you want to give up."))
             await asyncio.sleep(_SOLVE_RETRY_S)
+
+
+async def _refuse_if_no_longer_measurable(hub: Any, what: str) -> None:
+    """The retry's licence check: is waiting still a reasonable diagnosis?
+
+    Two ways a retry loop can turn harmful, both found in review 2026-08-07:
+
+    * THE FAULT IS THE RIG, NOT THE SKY. ``cam.expose`` raises DeviceError for
+      a dead USB link exactly like a cloud makes the solver raise, and a loop
+      that retries both tells an operator under a clear sky to wait for
+      weather. ``hub.require`` raises for a device that is gone or
+      disconnected, and that raise propagates from here as the terminal,
+      correctly-named error it always used to be.
+
+    * THE SKY HAS MOVED ON. ``_refuse_low_arc`` vetted the arc's altitude
+      once, pricing each leg at ~45 s. A tracking mount holds RA/Dec while the
+      ground turns underneath, so a leg stalled behind cloud for long enough
+      carries the tube below the altitude the vetting assumed — and refraction
+      near the horizon feeds the fit's 44× amplification. So the CURRENT
+      altitude is re-checked before every retry, against the same floor.
+
+    A mount that will not answer a position query is left to the other guards:
+    inventing an altitude for it would refuse runs on evidence we do not have."""
+    cam = hub.require("camera")
+    tel = hub.require("telescope")
+    if not getattr(cam, "connected", True) or not getattr(tel, "connected", True):
+        raise DeviceError(
+            f"native TPPA {what}: a device dropped out mid-run "
+            f"(camera {'up' if getattr(cam, 'connected', True) else 'DOWN'}, "
+            f"mount {'up' if getattr(tel, 'connected', True) else 'DOWN'}) — "
+            f"this is not the sky. Reconnect the rig and start again.")
+    try:
+        ra, dec = await tel.get_position()
+    except Exception:  # noqa: BLE001 - see docstring
+        return
+    if ra is None or dec is None:
+        return
+    import time as _time
+
+    from ..catalog.coords import altaz
+    alt, _az = altaz(float(ra), float(dec), float(hub.site["latitude"]),
+                     float(hub.site["longitude"]), _time.time())
+    if alt < MIN_MEASUREMENT_ALT_DEG:
+        raise DeviceError(
+            f"native TPPA {what}: while waiting for a solve, the field has set "
+            f"to {alt:.0f}° altitude — below the {MIN_MEASUREMENT_ALT_DEG:.0f}° "
+            f"floor the arc was checked against, where refraction corrupts the "
+            f"fit. The sky moved on while the solve kept failing. Point higher "
+            f"and start again.")
+
+
+def _engine_solve(frame: Any, result: Any) -> dict:
+    """One solved frame in the shape both engine entry points consume
+    (``tppa_from_three`` and ``tppa_update``) — built in exactly one place so
+    the two phases can never drift apart.
+
+    ``rotation_deg or 0.0`` is deliberate: position angle is carried for
+    diagnostics (the spread flag), it is not an input to the axis fit, and the
+    engine takes a float. The RAW angle — where "reported nothing" must stay
+    distinguishable from "reported zero" — is tracked separately by the
+    measuring loop for the flip check."""
+    return {
+        "ra_hours": result.ra_hours,
+        "dec_deg": result.dec_deg,
+        "timestamp_unix_s": frame.timestamp,
+        "position_angle_deg": result.rotation_deg or 0.0,
+    }
 
 
 async def _capture_and_solve(hub: Any, solver: Any):
@@ -522,19 +641,32 @@ async def _pier_side(tel: Any) -> str | None:
     Optional by design: fork mounts answer ``unknown``, some drivers have no
     ``pier_side`` at all, and neither is an error — the caller falls back to the
     hour-angle rule. Never raises, because a mount that cannot answer a question
-    about geometry must not be able to end an alignment run."""
+    about geometry must not be able to end an alignment run.
+
+    But never SILENT about a query that failed. Falling back means the arc
+    direction is decided by the hour-angle rule — the rule that flips a GEM
+    sitting just past the meridian — and a run that flips after a swallowed
+    exception is indistinguishable, in the log, from the pier-side guard never
+    having existed (review 2026-08-07 [4]). The flip detector still catches it
+    one frame later; the warning is what makes the log explain WHY."""
     getter = getattr(tel, "pier_side", None)
     if not callable(getter):
         return None
     try:
         side = await getter()
-    except Exception:  # noqa: BLE001 - unknowable, not fatal
+    except Exception as e:  # noqa: BLE001 - unknowable, not fatal
+        bus.log("warning",
+                f"native TPPA: the mount did not answer a pier-side query "
+                f"({e}) — the arc direction falls back to the hour-angle rule, "
+                f"which cannot see a tube sitting just past the meridian on "
+                f"its pre-flip side", "polar")
         return None
     side = str(getattr(side, "value", side) or "").lower()
     return side if side in ("east", "west") else None
 
 
-def _refuse_if_it_flipped(prev_pa: float | None, result: Any, index: int) -> None:
+def _refuse_if_it_flipped(prev_pa: float | None, prev_index: int,
+                          result: Any, index: int) -> None:
     """Stop the moment the camera angle jumps, instead of fitting three frames
     that are not related by a pure RA rotation.
 
@@ -568,8 +700,8 @@ def _refuse_if_it_flipped(prev_pa: float | None, result: Any, index: int) -> Non
         return
     raise DeviceError(
         f"the camera angle moved {delta:.1f}° between measurement point "
-        f"{index} and point {index + 1}, so those two frames are not one "
-        f"rotation in RA — the mount changed sides of the pier mid-arc. "
+        f"{prev_index + 1} and point {index + 1}, so those two frames are not "
+        f"one rotation in RA — the mount changed sides of the pier mid-arc. "
         f"Fitting them would measure the flip, not your polar error. Point at "
         f"least an hour of RA clear of the meridian, on the side the mount is "
         f"already on, and start again.")
@@ -632,6 +764,18 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> floa
 
     side = str(getattr(pier_side, "value", pier_side) or "").lower()
     if side not in ("east", "west"):
+        if abs(ha) < _MERIDIAN_BAND_H:
+            # This is the one place the hour-angle rule is known to be blind —
+            # a GEM just past the meridian on its pre-flip side — and we are
+            # entering it without the input that sees. The flip detector will
+            # catch a flip one frame in; this line is what makes the log
+            # explain it instead of looking like the guard never ran.
+            bus.log("warning",
+                    f"native TPPA: starting {abs(ha) * 60.0:.0f} min from the "
+                    f"meridian with no pier-side report — if this mount is a "
+                    f"GEM still on its pre-flip side, the first rotation may "
+                    f"flip it. Consider starting an hour of RA clear of the "
+                    f"meridian.", "polar")
         return ha_step
     # west == the side a GEM uses for EASTERN targets, so stay on it by going east.
     pier_step = _RA_STEP_HOURS if side == "west" else -_RA_STEP_HOURS
@@ -654,11 +798,16 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> floa
     return pier_step
 
 
-async def _rotate_in_ra(hub: Any, tel: Any, epoch: int, result: Any,
+async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
                         step: float | None = None) -> None:
     """Rotate the mount in RA by one step, safety-gated. Never slews through the
     sun cone; never walks across the meridian (:func:`_ra_step_hours`); abandons
     if the motion fence advanced (an abort/STOP landed).
+
+    Steps from the MOUNT's own position (``tel.get_position``), which is why
+    there is no solved-position parameter: one used to ride along unread, and a
+    signature that accepts the plate solve invites debugging mount-vs-sky
+    discrepancies in a function the sky never enters.
 
     ``step`` is decided ONCE from the first solved position and passed in, so
     every leg of the arc goes the same way. Re-deciding per leg would let a run

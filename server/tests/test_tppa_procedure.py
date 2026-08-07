@@ -180,12 +180,20 @@ class _Session(PolarAlignSession):
         super()._publish(**kw)
 
 
-#: A small, entirely plausible fit: 0.4 arcmin total, so ``_reject_implausible_fit``
-#: passes and the first live update crosses the 1.0 arcmin "aligned" gate — every
-#: run that gets that far terminates on its own instead of spinning 240 times.
+#: A small, entirely plausible fit: 0.4 arcmin total — under the 1.0 arcmin
+#: "aligned" gate, so the first successful live update terminates the run on
+#: its own instead of spinning 240 times.
 _CLEAN_ERR = {"az_arcmin": 0.24, "alt_arcmin": 0.32, "total_arcmin": 0.4,
               "az_direction": "left_west", "alt_direction": "up",
               "flags": [], "position_angle_spread_deg": 0.0}
+
+#: The INITIAL fit: plausible but ABOVE the aligned gate, so the run actually
+#: enters the adjust phase. Since 2026-08-07 a fit already inside the gate is
+#: DONE at the fit (review [6]) — an initial 0.4' would end every run before
+#: the adjust-phase behaviour these tests exist to grade.
+_INITIAL_ERR = {"az_arcmin": 1.44, "alt_arcmin": 1.92, "total_arcmin": 2.4,
+                "az_direction": "left_west", "alt_direction": "up",
+                "flags": [], "position_angle_spread_deg": 0.0}
 
 
 class _FakeEngine:
@@ -195,6 +203,7 @@ class _FakeEngine:
 
     def __init__(self, error: dict | None = None):
         self.error = dict(error or _CLEAN_ERR)
+        self.initial_error = dict(_INITIAL_ERR)
         self.from_three_calls: list[tuple[list, dict, dict]] = []
         self.update_calls: list[dict] = []
         self.update_raises_first = 0
@@ -202,7 +211,7 @@ class _FakeEngine:
     def tppa_from_three(self, solves, site, opts):
         self.from_three_calls.append(([dict(s) for s in solves], dict(site),
                                       dict(opts)))
-        return {"model": {"fake": True}, "error": dict(self.error)}
+        return {"model": {"fake": True}, "error": dict(self.initial_error)}
 
     def tppa_update(self, model, solve):
         self.update_calls.append(dict(solve))
@@ -583,6 +592,104 @@ async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bu
                if _l == "warning"), msgs
 
 
+# ----------------------------------- the 2026-08-07 review fixes, pinned
+
+
+async def test_a_flip_hidden_behind_a_silent_middle_frame_is_still_caught(make_rig):
+    """Review [3]. A solver that reports no angle for the MIDDLE frame alone
+    used to disable BOTH consecutive comparisons (1-2 and 2-3 each involve
+    frame 2), so a flip between points 1 and 2 sailed through to the fit. The
+    check now compares against the last frame that actually REPORTED, so the
+    flip is caught 1-to-3 — a ~180° jump is a ~180° jump wherever the silent
+    frame sits."""
+    rig = make_rig(start_ha=-2.0)
+    rig.rotation_by_point = {1: 164.5, 2: None, 3: -17.4}
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "changed sides of the pier" in st["message"], st
+    assert "point 1" in st["message"] and "point 3" in st["message"],         f"the message must name the frames actually compared: {st['message']}"
+
+
+async def test_an_initial_fit_already_inside_the_threshold_is_done(make_rig):
+    """Review [6]. "polar aligned" followed by 240 more exposures is not done —
+    the first noisy update (0.8' → 1.1') retracted the verdict with no physical
+    change, or a cloud stranded a session that had just announced success. A
+    fit inside the gate now ends the run at the fit."""
+    rig = make_rig(start_ha=-2.0)
+    rig.engine.initial_error = dict(_CLEAN_ERR)      # 0.4' — under the gate
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] == "done", st
+    assert st["message"] == "polar aligned", st
+    assert rig.engine.update_calls == [],         "an already-aligned fit must not enter the adjust loop"
+
+
+async def test_adjust_phase_solve_failures_end_at_the_stale_limit(
+        make_rig, monkeypatch, bus_lines):
+    """Review [0]. A failed solve in the adjust phase used to retry unboundedly
+    INSIDE one loop iteration, so the 240-update cap never ticked and a
+    clouded-out session spun forever. It now costs one stale count per
+    iteration and the stale limit ends the session with the honest terminal
+    error."""
+    monkeypatch.setattr(nat, "_STALE_UPDATE_LIMIT", 3)
+    rig = make_rig(start_ha=-2.0)
+    # measuring takes attempts 1-3; every adjust-phase solve after that fails
+    rig.fail_solve_on = set(range(4, 60))
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "every measurement during adjustment failed" in st["message"], st
+    assert rig.engine.update_calls == [], rig.engine.update_calls
+    assert len(rig.solved) < 10,         f"the stale limit must bound the exposures, not the 240 cap: {len(rig.solved)}"
+
+
+async def test_a_dropped_device_ends_the_retry_as_a_device_error(
+        make_rig, monkeypatch):
+    """Review [2]. cam.expose raises DeviceError for a dead USB link exactly
+    like a cloud makes the solver raise, and the retry used to treat both as
+    weather — telling an operator under a clear sky to wait. A disconnected
+    device is now terminal and names itself."""
+    rig = make_rig(start_ha=-2.0)
+    rig.fail_solve_on = {2}
+
+    class _DeadCam:
+        name = "cam"
+        connected = False
+
+    real_require = rig.hub.require
+    monkeypatch.setattr(rig.hub, "require",
+                        lambda role: _DeadCam() if role == "camera"
+                        else real_require(role))
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "dropped out mid-run" in st["message"], st
+    assert "camera DOWN" in st["message"], st
+    assert len(rig.solved) == 2,         f"one failure, then the terminal refusal — not more retries: {rig.solved}"
+
+
+async def test_a_stalled_retry_stops_when_the_field_sets(make_rig):
+    """Review [1]. _refuse_low_arc prices each leg at ~45 s; a retry stalled
+    long enough breaks that pricing — the ground keeps turning under a tracking
+    mount. The retry now re-checks the CURRENT altitude before every attempt
+    and refuses below the same floor the arc was vetted against, instead of
+    following the field down to the horizon."""
+    # HA +6.5h at Dec +20 sits at ~+8.9° — below MIN_MEASUREMENT_ALT_DEG.
+    rig = make_rig(start_ha=6.5, dec=_DEC_LOW)
+    rig.fail_solve_on = set(range(1, 30))
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "has set" in st["message"] and "floor" in st["message"], st
+    assert len(rig.solved) == 1,         f"first failure, altitude check, refusal — not a retry march: {rig.solved}"
+
+
 # ------------------------------------------------------- the mid-arc pier flip
 
 async def test_a_flip_between_two_points_stops_the_run_immediately(make_rig):
@@ -871,8 +978,14 @@ async def test_a_missing_rotation_cannot_move_the_number_you_turn_a_bolt_by(
         rig.rotation = 175.0
         rig.rotation_by_point = dict(by_point)
         await rig.run()
-        fit = [p for p in rig.session.published if p.get("progress") == 0.6]
-        assert len(fit) == 1, rig.session.published
+        # The INITIAL-fit publish. Selected by shape, not by progress value:
+        # this rig's truth geometry fits to ~0.0', which since review [6] is
+        # already-aligned and publishes done/1.0 instead of running/0.6 — the
+        # payload (the errors and the spread flag) is the same either way.
+        fit = [p for p in rig.session.published
+               if p.get("phase") == "adjusting" and "az_error" in p]
+        assert len(fit) >= 1, rig.session.published
+        fit = fit[:1]
         both[label] = (fit[0]["az_error"], fit[0]["alt_error"],
                        fit[0].get("position_angle_spread_deg"),
                        tuple(fit[0].get("flags") or ()))
