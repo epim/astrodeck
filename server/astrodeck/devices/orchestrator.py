@@ -132,7 +132,8 @@ def _group(resolved: dict[str, ConnSpec]) -> dict[EndpointKey, list[tuple[str, C
 
 
 def _pick_guider(resolved: dict[str, ConnSpec],
-                 sessions: dict[EndpointKey, BackendSession]) -> object | None:
+                 sessions: dict[EndpointKey, BackendSession],
+                 rig: dict[str, object] | None = None) -> object | None:
     """Return the guider from the GUIDER ROLE's session ``native_guider()``.
 
     The guider session is located via the SAME normalized grouping key ``_group``
@@ -155,12 +156,32 @@ def _pick_guider(resolved: dict[str, ConnSpec],
     built on the imaging camera — and ``plan.guide`` defaults to True, so the
     first target would try to guide with the camera it is imaging through."""
     guider_conn = resolved.get("guider") or resolved.get("guide_camera")
-    if guider_conn is None:
+    if guider_conn is not None:
+        session = sessions.get(_normalize(guider_conn))
+        if session is not None:
+            guider = session.native_guider()
+            if guider is not None:
+                return guider
+
+    # LAST RESORT: build one from the assembled rig. Every session accessor
+    # looks only at ITS OWN devices, and on a multi-vendor rig the guide camera
+    # and the mount are not in the same session — a ZWO ASI guide camera opens
+    # a "zwo-asi" session while the mount opens "zwo-am5", so the camera's
+    # session finds no telescope and gives up. That is the whole reason a rig
+    # with a guide camera bolted on had no guider at all, and no amount of
+    # assigning a `guider` row would have fixed it.
+    #
+    # Uses rig["guide_camera"] only, never the imaging camera: an explicitly
+    # assigned guide camera is the operator saying they intend to guide, while
+    # plan.guide defaults True, so inferring one for every rig would have the
+    # first target try to guide through the sensor it is exposing with.
+    if not rig:
         return None
-    session = sessions.get(_normalize(guider_conn))
-    if session is None:
+    gcam, tel = rig.get("guide_camera"), rig.get("telescope")
+    if gcam is None or tel is None:
         return None
-    return session.native_guider()
+    from ..guide.native import build_native_guider
+    return build_native_guider(gcam, tel, shares_the_imaging_sensor=False)
 
 
 def _pick_solver(camera_conn: ConnSpec | None, camera_dev: object | None,
@@ -272,7 +293,7 @@ async def connect_profile(spec: RigSpec) -> ConnectResult:
 
     # guider: the guider-role session's native guider (resolved via the SAME
     # normalized key, never raw addressing). Only requested roles get a result.
-    guider = _pick_guider(resolved, sessions)
+    guider = _pick_guider(resolved, sessions, rig)
     if "guider" in requested:
         results["guider"] = RoleResult(
             "guider", ok=guider is not None, attempted=True,
