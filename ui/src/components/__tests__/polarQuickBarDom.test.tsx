@@ -6,7 +6,9 @@
 // The strip exists because of three findings from a real alignment night
 // (2026-08-07): no way to tell a 15 s solve from a hang, the error number
 // below the fold on a phone, and no control over the solve frame's imaging
-// settings. Each test here is one of those findings, asserted at the DOM.
+// settings. The 12:50 refinement replaced the settings FOLD with SPEED DIALS —
+// the Focus pod's cycling-badge idiom, one dial per setting, no fold to open.
+// Each test here is one of those findings, asserted at the DOM.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -66,7 +68,7 @@ const assert = {
 
 const { api } = await import("../../api");
 const { useStore } = await import("../../store");
-const { PolarQuickBar } = await import("../PolarQuickBar");
+const { PolarQuickBar, nextFilter } = await import("../PolarQuickBar");
 
 // PUT recorder — the strip's only write path.
 const puts: Array<{ path: string; body: unknown }> = [];
@@ -75,8 +77,8 @@ const puts: Array<{ path: string; body: unknown }> = [];
   return {};
 };
 
-// The filter picker reads the wheel from status; give it a real-shaped one
-// with an opaque Dark slot the picker must NOT offer.
+// The filter dial reads the wheel from status; give it a real-shaped one
+// with an opaque Dark slot the dial's cycle must NOT contain.
 useStore.setState({
   status: {
     filterwheel: {
@@ -85,9 +87,9 @@ useStore.setState({
       opaque: [false, false, false, false, true],
     },
   } as any,
-  // capAllowed fails CLOSED on a null principal, so the settings buttons
-  // would be disabled and their clicks silent — grant mount control the same
-  // way slewPadDom.test.tsx does.
+  // capAllowed fails CLOSED on a null principal, so the dials would render
+  // locked and their clicks silent — grant mount control the same way
+  // slewPadDom.test.tsx does.
   principal: { role: "operator", email: null,
                caps: ["view.status", "control.mount"] },
 } as any);
@@ -97,8 +99,13 @@ const render = (polar: any) =>
   act(() => root.render(React.createElement(PolarQuickBar, { polar })));
 
 const text = () => win.document.body.textContent ?? "";
-const buttons = (): any[] =>
-  Array.from(win.document.querySelectorAll("button"));
+const dial = (key: string): any =>
+  win.document.querySelector(`[data-polar-dial="${key}"]`);
+
+const LIVE = {
+  state: "running", phase: "adjusting",
+  total_error: 4.2, az_error: 4.0, alt_error: 1.3,
+};
 
 // ----------------------------------------------------------------------------
 
@@ -115,6 +122,15 @@ test("a running solve names its activity instead of looking hung", () => {
   assert.match(text(), /solving…/);
 });
 
+test("the capture chip says capturing — the same word the ring uses", () => {
+  render({
+    state: "running", phase: "measuring", point_index: 0,
+    activity: "exposing", total_error: 0, az_error: 0, alt_error: 0,
+  });
+  assert.match(text(), /capturing…/);
+  assert.ok(!/exposing/.test(text()), "the wire word must not leak to the UI");
+});
+
 test("the error number is on the strip, in degrees once it stops being a bolt turn", () => {
   render({
     state: "running", phase: "adjusting",
@@ -122,35 +138,62 @@ test("the error number is on the strip, in degrees once it stops being a bolt tu
   });
   assert.match(text(), /1\.6°/, "96.6' must render as degrees");
 
-  render({
-    state: "running", phase: "adjusting",
-    total_error: 4.2, az_error: 4.0, alt_error: 1.3,
-  });
+  render(LIVE);
   assert.match(text(), /4\.2′/, "bolt-sized errors keep the arcminute");
 });
 
-test("the settings fold PUTs the tapped value and offers no opaque filter", () => {
-  render({
-    state: "running", phase: "adjusting",
-    total_error: 4.2, az_error: 4.0, alt_error: 1.3,
-    solve_settings: { exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null },
-  });
-  // open the fold via its summary chip (reads "0.3s · g200 · b1")
-  const summary = buttons().find((b) => /0\.3s/.test(b.textContent ?? ""));
-  assert.ok(summary, "the settings chip must exist");
-  act(() => summary.click());
+test("the dials are on the strip while live — no fold to open", () => {
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  assert.ok(dial("exposure"), "exposure dial missing");
+  assert.equal(dial("exposure").textContent.trim(), "0.3s");
+  assert.equal(dial("gain").textContent.trim(), "g200");
+  assert.equal(dial("binning").textContent.trim(), "b1");
+  assert.equal(dial("filter").textContent.trim(), "as-is");
+});
 
-  const two = buttons().find((b) => (b.textContent ?? "").trim() === "2s");
-  assert.ok(two, "exposure presets must be offered");
-  act(() => two.click());
+test("a dial tap PUTs the NEXT preset — the speed-dial contract", () => {
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  act(() => dial("exposure").click());
   assert.deepEqual(puts.at(-1), {
-    path: "/api/polar/solve-settings", body: { exposure_s: 2 },
+    path: "/api/polar/solve-settings", body: { exposure_s: 0.5 },
   });
+  act(() => dial("gain").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { gain: 300 },
+  });
+  act(() => dial("binning").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { binning: 2 },
+  });
+});
 
-  const labels = buttons().map((b) => (b.textContent ?? "").trim());
-  assert.ok(labels.includes("L"), "real filters offered");
-  assert.ok(!labels.includes("Dark"),
-    "an opaque slot in the picker would offer a dark frame as a solve");
+test("the filter dial cycles as-is → filters → as-is and never offers Dark", () => {
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  act(() => dial("filter").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { filter: "L" },
+  });
+  // from the LAST real filter the cycle wraps to as-is (null) — the opaque
+  // Dark slot is not in the ring at all, or a solve becomes a dark frame
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: "B" } });
+  act(() => dial("filter").click());
+  assert.deepEqual(puts.at(-1), {
+    path: "/api/polar/solve-settings", body: { filter: null },
+  });
+  assert.deepEqual(
+    ["L", null].concat(),   // spot checks above; the ring itself:
+    [nextFilter(["L", "R", "G", "B"], null), nextFilter(["L", "R", "G", "B"], "B")],
+  );
+});
+
+test("a finished session shows the verdict but no dials — no next frame to apply to", () => {
+  render({ state: "done", total_error: 0.8, az_error: 0.5, alt_error: 0.6 });
+  assert.match(text(), /0\.8′/);
+  assert.ok(!dial("exposure"), "dials must vanish with the session");
 });
 
 // ------------------------------------------------------------------- report

@@ -517,7 +517,11 @@ export function PolarReticle({
   return (
     <>
     <svg viewBox={`0 0 ${size} ${size}`} className="w-full mx-auto block instr-fit"
-      style={{ aspectRatio: "1 / 1", maxWidth: "338px" }}
+      /* 44vh cap: on short phones (SE-class portrait, 667px) a 338px reticle
+         plus its panel chrome pushed the Total-error panel below the fold —
+         the exact scroll the 2026-08-07 feedback is about. 44vh of 667 is
+         ~293px; taller viewports never hit the cap and keep the full 338. */
+      style={{ aspectRatio: "1 / 1", maxWidth: "min(338px, 44vh)" }}
       role="img"
       aria-label={
         active
