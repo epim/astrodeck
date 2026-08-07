@@ -200,9 +200,22 @@ def build_native_guider(guide_camera, telescope, *,
         from ..profiles import active_profile
         return getattr(active_profile(), "id", None)
 
+    # Guide-camera frame settings from the persisted config (2026-08-07): a
+    # frozen constructor 2.0 s was the only exposure this loop could ever use,
+    # and no UI could reach it. Defensive like guide_algo_config — an old
+    # config without the fields degrades to the same historical values.
+    cam_cfg: dict = {"exposure_s": 2.0}
+    try:
+        from ..config import config_store
+        g = config_store.cfg().guide
+        cam_cfg = {"exposure_s": float(g.exposure_s), "gain": int(g.gain),
+                   "binning": int(g.binning)}
+    except Exception:  # pragma: no cover - defensive
+        pass
+
     return NativeGuider(
         guide_camera, telescope,
-        config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
+        config={**cam_cfg, "image_scale_arcsec": image_scale,
                 "image_scale_known": image_scale_known,
                 **guide_algo_config()},
         profile_id_resolver=_active_profile_id,
@@ -318,6 +331,41 @@ class NativeGuider(Guider):
         # default False matches the common GEM. Used by BOTH the guiding-start
         # host contract and the meridian-flip ABC method.
         self._flip_requires_dec_flip = bool(cfg.get("flip_requires_dec_flip", False))
+
+    # ------------------------------------------------------- camera settings
+
+    def camera_settings(self) -> dict:
+        """The LIVE guide-frame settings — what the next exposure will use."""
+        return {"exposure_s": self._exposure_s, "gain": self._gain,
+                "offset": self._offset, "binning": self._binning}
+
+    def set_camera_settings(self, *, exposure_s: float | None = None,
+                            gain: int | None = None,
+                            binning: int | None = None) -> dict:
+        """Apply guide-camera settings to the RUNNING guider.
+
+        Exposure and gain are read per exposure, so they apply from the very
+        next guide frame — mid-calibration, mid-guiding, whenever. That is the
+        point: when the guide star fades behind haze the fix is a longer
+        exposure NOW, not a restarted session.
+
+        Binning is the exception: the calibration measured px/ms in the
+        CURRENT binning's pixels, so changing it under an active session
+        silently rescales every correction. Refused while active; applied
+        freely when idle (the next calibration measures in the new scale).
+        """
+        if binning is not None and int(binning) != self._binning:
+            if self.stats().guiding or self._phase_hint is not None:
+                raise DeviceError(
+                    "stop guiding before changing guide-camera binning — the "
+                    "calibration was measured in the current binning's pixels "
+                    "and every correction would silently rescale")
+            self._binning = int(binning)
+        if exposure_s is not None:
+            self._exposure_s = float(exposure_s)
+        if gain is not None:
+            self._gain = int(gain)
+        return self.camera_settings()
 
     # ------------------------------------------------------------- profile key
 
@@ -624,6 +672,18 @@ class NativeGuider(Guider):
 
             bus.log("info", "native guider calibrating", "guide")
             deadline = time.monotonic() + _CAL_TIMEOUT_S
+            # The walk, NARRATED (2026-08-07): each cal_step below publishes
+            # which leg, which pulse, and where the star has actually walked to
+            # — a ~30-60 s operation that used to render as one busy button.
+            # ``walk`` is the star's measured displacement from its calibration
+            # origin, re-found per frame nearest to its LAST position (a
+            # display-only fix: the engine's own tracking is internal, and a
+            # sorted find could swap stars under noise). The plot this feeds is
+            # how a human sees a bad calibration — an orthogonal L is a mount,
+            # a smeared diagonal is flexure — before the report says so.
+            cal_x, cal_y = x0, y0
+            walk: list[list[float]] = [[0.0, 0.0]]
+            cal_steps = 0
             while True:
                 # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
                 # and before the next exposure, and every leg loops back through
@@ -637,6 +697,22 @@ class NativeGuider(Guider):
                     frame.data, frame.timestamp, self._exposure_s)
                 kind = action["action"]
                 if kind == "cal_step":
+                    cal_steps += 1
+                    with contextlib.suppress(Exception):
+                        found, _m = _native.guide_star_find(frame.data)
+                        if found:
+                            sx, sy = min(
+                                ((float(s["x"]), float(s["y"])) for s in found),
+                                key=lambda p: (p[0] - cal_x) ** 2
+                                              + (p[1] - cal_y) ** 2)
+                            cal_x, cal_y = sx, sy
+                            walk.append([round(sx - x0, 2), round(sy - y0, 2)])
+                    bus.publish("guide", **self.stats().__dict__,
+                                cal={"leg": action.get("leg"),
+                                     "dir": action.get("dir"),
+                                     "ms": int(action.get("ms") or 0),
+                                     "step": cal_steps,
+                                     "walk": walk[-160:]})
                     await self.tel.pulse_guide(action["dir"], int(action["ms"]))
                     continue
                 if kind == "lock_lost":

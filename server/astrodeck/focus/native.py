@@ -259,6 +259,19 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     def _result_pts() -> list[tuple[int, float]]:
         return [(p, h) for p, h, _ in points]
 
+    #: The REQUESTED point count — the engine may extend past it to bracket a
+    #: minimum, so the narration says "point 5 of ~9" honestly as an estimate.
+    points_planned = 2 * steps_each_side + 1
+
+    def _activity(activity: str | None, *, index: int | None = None) -> None:
+        """Narrate what the sweep is doing THIS second (mirrors the polar
+        driver's `activity`, 2026-08-07). Each point is exposure_s of shutter
+        plus 2-4 s of measurement, and a chart that grows every ~8 s reads as
+        hung in between — the same dead air the Align screen had."""
+        bus.publish("focus", state="running", points=_pts(), best=None,
+                    activity=activity, exposure_s=exposure_s,
+                    point_index=index, points_planned=points_planned)
+
     #: The engine needs at least four measurable points to fit a curve, so a
     #: field with fewer stars than that AT BEST FOCUS certainly cannot produce
     #: them — defocusing spreads each star over more pixels and only ever finds
@@ -372,7 +385,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         # prevents is not a crash: it is five minutes of moving the focuser to
         # reach "not_enough_spread", with nothing on screen saying the field was
         # too sparse to measure before it started.
+        _activity("exposing")
         probe = await _expose()
+        _activity("measuring")
         _s, pstats = await asyncio.to_thread(
             _native.detect_and_measure, probe.data, params)
         n0 = int(pstats.get("star_count") or 0)
@@ -490,8 +505,10 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     return AutofocusResult(False, start_pos, None,
                                            _result_pts(), reason, advice=advice)
                 await focuser.move_to(pos)
+                _activity("exposing", index=attempted)
                 frame = await _expose()
                 attempted += 1
+                _activity("measuring", index=attempted - 1)
                 # detect_and_measure releases the GIL but is CPU-heavy; offload it
                 # so focuser/camera awaits and the event stream stay responsive.
                 _stars, stats = await asyncio.to_thread(
@@ -594,7 +611,9 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                 # log that only mentions failures.
                 bus.log("info",
                         f"autofocus: {pos} -> HFR {hfr:.2f} ({n} stars)", "focus")
-                bus.publish("focus", state="running", points=_pts(), best=None)
+                bus.publish("focus", state="running", points=_pts(), best=None,
+                            activity=None, point_index=attempted - 1,
+                            points_planned=points_planned)
 
             elif action == "done":
                 outcome = s.get("outcome") or {}

@@ -3920,31 +3920,44 @@ class Hub:
             # degrees out. The hinted solve had been failing with "no solution"
             # while a hintless run on that identical file solved instantly.
             ra_hint = dec_hint = None
-        async with self.exposure_guard("plate solve"):
-            frame = await cam.expose(exposure_s, 200, 30, binning=2)
-        self.last_frame = frame
-        await self._publish_preview(frame)
-        # Save the captured frame to a temp FITS for the local solver. Works for
-        # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
-        # which is enough for ASTAP star detection, and save_fits writes the
-        # RA/Dec hints into the header. Offloaded so the disk write never freezes
-        # the event loop on the Windows target.
-        tmp = CAPTURE_DIR / "_solve" / "solve.fits"
-        await asyncio.to_thread(
-            save_fits, frame, tmp,
-            ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
-        # FOV hint from the configured optics (bin-1, bin-independent — correct
-        # even though the solve frame is binned 2×). None → ASTAP radius search,
-        # preserving the old behavior when optics aren't known.
-        opt = self.effective_optics()
-        # ASTAP's -fov expects the VERTICAL (height) field, not the diagonal —
-        # the diagonal is ~1.2–1.8× larger and over-widens the scale search.
-        fov_hint = opt["fov_h_deg"] or None
-        bus.log("info",
-                f"plate solving with {solver.name} (fov hint {fov_hint or 'auto'})…",
-                "solve")
-        result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
-                                    fov_deg_hint=fov_hint)
+        # Narrate the frame (2026-08-07, mirrors the polar driver's `activity`):
+        # a centering solve is up to 3 s of shutter and then 5-15 s of ASTAP,
+        # and every goto pays it up to three times — dead air the UI rendered
+        # as a stuck busy button. `solve_activity` rides the `mount` channel so
+        # every consumer of this one solve path (goto centering, meridian flip,
+        # resume re-center) narrates for free. Cleared in the finally: a THROWN
+        # solve must not leave "solving" blinking over an idle rig.
+        bus.publish("mount", action="solve_activity", activity="exposing",
+                    exposure_s=exposure_s)
+        try:
+            async with self.exposure_guard("plate solve"):
+                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            # Save the captured frame to a temp FITS for the local solver. Works for
+            # NINA too: NinaCamera populates ``frame.data`` (a decoded grayscale copy)
+            # which is enough for ASTAP star detection, and save_fits writes the
+            # RA/Dec hints into the header. Offloaded so the disk write never freezes
+            # the event loop on the Windows target.
+            tmp = CAPTURE_DIR / "_solve" / "solve.fits"
+            await asyncio.to_thread(
+                save_fits, frame, tmp,
+                ra_hours=ra_hint, dec_deg=dec_hint, instrument=cam.name)
+            # FOV hint from the configured optics (bin-1, bin-independent — correct
+            # even though the solve frame is binned 2×). None → ASTAP radius search,
+            # preserving the old behavior when optics aren't known.
+            opt = self.effective_optics()
+            # ASTAP's -fov expects the VERTICAL (height) field, not the diagonal —
+            # the diagonal is ~1.2–1.8× larger and over-widens the scale search.
+            fov_hint = opt["fov_h_deg"] or None
+            bus.log("info",
+                    f"plate solving with {solver.name} (fov hint {fov_hint or 'auto'})…",
+                    "solve")
+            bus.publish("mount", action="solve_activity", activity="solving")
+            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                        fov_deg_hint=fov_hint)
+        finally:
+            bus.publish("mount", action="solve_activity", activity=None)
         if not result.success:
             raise DeviceError(f"plate solve failed: {result.message}")
         # ASTAP returns J2000. Sync the mount in the frame IT expects (JNOW for a
