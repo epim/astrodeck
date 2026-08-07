@@ -98,6 +98,11 @@ _STALE_UPDATE_LIMIT = 30
 #: clean run, 43 s on one that included a re-slew. Rounded up.
 _ARC_LEG_SECONDS = 45.0
 
+#: Seconds between plate-solve retries. Long enough that a passing cloud or a
+#: jostled tripod has time to settle and that we are not hammering ASTAP, short
+#: enough that the operator is not left waiting once the sky clears.
+_SOLVE_RETRY_S = 5.0
+
 #: Log the measured position-angle spread once it exceeds this. The three frames
 #: are supposed to differ by a pure RA rotation; a spread this large means the
 #: camera/pier angle moved between them (a meridian flip, a rotator step), and
@@ -255,7 +260,8 @@ async def _drive(session: Any, hub: Any) -> None:
     for i in range(3):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
-        frame, result, geom = await _capture_and_solve(hub, solver)
+        frame, result, geom = await _solve_until_it_works(
+            hub, solver, session, epoch, what=f"point {i + 1}/3")
         if i == 0:
             # The authoritative check: where the sky says we are, not where the
             # mount claims. Costs one exposure that was being taken anyway.
@@ -319,7 +325,8 @@ async def _drive(session: Any, hub: Any) -> None:
         # exposure fires after the user hit Pause, and on a real rig that is a
         # shutter they asked to stop.
         await wait_if_paused(session)
-        frame, result, _ = await _capture_and_solve(hub, solver)
+        frame, result, _ = await _solve_until_it_works(
+            hub, solver, session, epoch, what="live update")
         solve = {
             "ra_hours": result.ra_hours,
             "dec_deg": result.dec_deg,
@@ -377,6 +384,55 @@ async def _drive(session: Any, hub: Any) -> None:
                     "the original fit and does not reflect anything you changed. "
                     "Check that the sky is clear and the camera is still "
                     "solving, then run the alignment again.")
+
+
+async def _solve_until_it_works(hub: Any, solver: Any, session: Any, epoch: int,
+                                *, what: str):
+    """Expose + plate solve, retrying until it succeeds or the operator stops.
+
+    A failed solve used to end the whole session, in both phases. On a real rig
+    the causes are almost always transient and local — a cloud crossing the
+    field, someone knocking the tripod, headlights up the road — and the points
+    already measured are still good, so giving up throws away the entire
+    alignment over a frame that would have solved a minute later. That is
+    exactly what happened here on 2026-08-06: two clean points, a cloud on the
+    third, and the night's alignment gone.
+
+    NO ATTEMPT CAP, by design. Only the operator can see whether the sky is
+    coming back, so only the operator decides when to stop. The loop is exactly
+    as interruptible as the rest of the run: ``_check_alive`` raises on a STOP,
+    park, safety halt or deadman; ``wait_if_paused`` blocks on Pause; and
+    ``stop()`` cancels the task outright through the sleep.
+
+    Retries the SOLVE only. The deliberate refusals around it — near the pole,
+    an arc that goes underground, a mount that did not arrive — are not
+    transient and are still raised on the first look."""
+    attempt = 0
+    while True:
+        _check_alive(hub, epoch)
+        await wait_if_paused(session)
+        attempt += 1
+        try:
+            return await _capture_and_solve(hub, solver)
+        except asyncio.CancelledError:
+            raise
+        except DeviceError as e:
+            # An abort can surface from inside the exposure as a DeviceError.
+            # Re-checking the fence here keeps a STOP a STOP rather than
+            # something this loop politely retries forever.
+            _check_alive(hub, epoch)
+            # NOT prefixed "native TPPA point N/3" — that is the shape of a
+            # SUCCESSFUL measurement line, and a retry that looks like a
+            # measurement in the log is how you later miscount the arc.
+            bus.log("warning",
+                    f"native TPPA retry ({what}): {e} — retrying in "
+                    f"{_SOLVE_RETRY_S:.0f}s (attempt {attempt} failed). Press "
+                    f"Stop if the sky is not coming back.", "polar")
+            session._publish(
+                state="running", source="native", phase="measuring",
+                message=(f"{what}: plate solve failed {attempt}× — still "
+                         f"trying. Stop when you want to give up."))
+            await asyncio.sleep(_SOLVE_RETRY_S)
 
 
 async def _capture_and_solve(hub: Any, solver: Any):
