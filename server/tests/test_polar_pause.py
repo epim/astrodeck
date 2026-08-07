@@ -156,7 +156,7 @@ async def native_rig(monkeypatch):
     h = Hub()                      # for a real PolarAlignSession to hang off
     rig = _Rig(_Hub(), h.polar)
 
-    async def _fake_capture(hub, solver):
+    async def _fake_capture(hub, solver, session=None):
         rig.captures.append(len(rig.captures) + 1)
         if rig.pause_on_capture == len(rig.captures):
             await rig.session.pause()
