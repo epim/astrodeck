@@ -482,50 +482,87 @@ async def test_a_mount_that_stops_arriving_halfway_is_not_reported_as_aligned(
 
 # --------------------------------------------------------- a solve that fails
 
-@pytest.mark.parametrize("point", [1, 2, 3])
-async def test_a_failed_solve_carries_the_point_it_reached(make_rig, point):
-    """CHARACTERISATION. Claim: "a failed plate solve names neither the
-    measurement point nor where it left the mount" — REFUTED, first premise. The
-    ``polar`` event is a MERGED dict, not a fresh one, so the terminal error
-    inherits ``phase``/``point_index``/``progress`` from the last measuring
-    publish: the consumer is told exactly how far the run got. The message text
-    is the solver's own, and does not need to repeat what the payload carries.
+@pytest.fixture(autouse=True)
+def _fast_solve_retry(monkeypatch):
+    """The retry below waits ``_SOLVE_RETRY_S`` between attempts on a real rig.
+    Tests assert the BEHAVIOUR, not the wall clock."""
+    monkeypatch.setattr(nat, "_SOLVE_RETRY_S", 0.0)
 
-    Pinned here so a future refactor that starts publishing a fresh dict — or
-    stops publishing ``point_index`` — is caught, since nothing else in the
-    suite grades the merge."""
+
+@pytest.mark.parametrize("point", [1, 2, 3])
+async def test_a_transient_solve_failure_does_not_end_the_run(make_rig, point):
+    """A failed plate solve used to end the whole session, at any of the three
+    points. It no longer does: it retries.
+
+    The causes are almost always transient and local — a cloud crossing the
+    field, a knocked tripod, headlights up the road — and the points already
+    measured are still good, so abandoning threw away the entire alignment over
+    a frame that would have solved a minute later. That is precisely what
+    happened on 2026-08-06: two clean points, a cloud on the third, night gone.
+
+    The failure is not swallowed: it is logged and published each attempt, so
+    the operator can see it is still trying and decide whether to stop."""
     rig = make_rig(start_ha=-2.0)
     rig.fail_solve_on = {point}
     await rig.run()
 
-    assert len(rig.solved) == point, \
-        f"precondition: the loop had to reach point {point}: {rig.solved}"
+    st = rig.session.state
+    assert st["state"] != "error", (
+        f"a single failed solve at point {point} still ended the run: {st}")
+    assert any("still trying" in m for m in rig.messages), rig.messages
+    # It RETRIED rather than skipping: all three measurement points still land.
+    measured = [m for m in rig.messages if "measured point" in m]
+    assert len(measured) == 3, measured
+
+
+async def test_the_retry_says_which_point_failed_and_how_many_times(
+        make_rig, bus_lines):
+    """The operator has to be able to tell "waiting on the sky" from "hung", and
+    to know which point is stuck. Both the log line and the published message
+    carry the point and the attempt count."""
+    rig = make_rig(start_ha=-2.0)
+    rig.fail_solve_on = {2, 3}          # attempts 2 and 3 both fail: point 2 twice
+    await rig.run()
+
+    st = rig.session.state
+    assert st["state"] != "error", st
+    warns = [m for lvl, m, _s in bus_lines
+             if lvl == "warning" and "retrying" in m]
+    assert len(warns) == 2, warns
+    for w in warns:
+        assert "point 2/3" in w, w
+        assert "plate solve failed" in w and "Press Stop" in w, w
+    assert "attempt 1 failed" in warns[0] and "attempt 2 failed" in warns[1], warns
+    # and the same fact reaches the panel, with a count the operator can watch
+    retry_msgs = [m for m in rig.messages if "still trying" in m]
+    assert any("2×" in m for m in retry_msgs), retry_msgs
+
+
+async def test_a_stop_during_a_retry_still_stops(make_rig):
+    """The retry has NO attempt cap by design — the operator decides when to
+    give up. That is only safe because a STOP still gets out: the motion-epoch
+    fence is re-read at the top of every attempt, so a halted mount never sits
+    in a loop re-exposing forever."""
+    rig = make_rig(start_ha=-2.0)
+    rig.fail_solve_on = {2, 3, 4, 5, 6, 7, 8}   # never recovers on its own
+    rig.bump_epoch_after = 2                    # ... but the user hits Stop
+    await rig.run()
+
     st = rig.session.state
     assert st["state"] == "error", st
-    assert st["source"] == "native", st
-    assert st["message"] == "polar plate solve failed: not enough stars", st
-    # The phase survives the merge, so a consumer can tell a measuring failure
-    # from an adjusting one without parsing prose.
-    assert st["phase"] == "measuring", st
-    if point == 1:
-        # Nothing was measured, so there is no point index to inherit — the
-        # absence is itself the fact ("no point completed").
-        assert "point_index" not in st, st
-        assert st["progress"] == pytest.approx(0.0), st
-    else:
-        # 0-based index of the last point that DID land, i.e. point-1 of 3.
-        assert st["point_index"] == point - 2, st
-        assert st["progress"] == pytest.approx(0.1 + 0.15 * (point - 1)), st
+    assert "fenced by a motion abort" in st["message"], st
+    assert len(rig.solved) < 8, f"kept exposing past the abort: {rig.solved}"
 
 
 async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bus_lines):
-    """CHARACTERISATION. Same claim, second premise — "it does not say where it
-    left the mount" — REFUTED: ``_log_measurement`` writes every solved point
+    """CHARACTERISATION. Claim: "a failed plate solve does not say where it left
+    the mount" — REFUTED: ``_log_measurement`` writes every solved point
     (RA/Dec/HA) and ``_rotate_in_ra`` logs every commanded target, so the last
     "rotating RA to Xh" line IS where the tube was left, to 0.01h.
 
-    The proposal to repeat it in the terminal message was rejected; this pins
-    the channel that actually carries it, so deleting those log lines fails."""
+    Still true now that the solve retries rather than aborting — the diagnosis
+    channel is the same, and a retry that eventually succeeds must not lose the
+    trail of where the tube has been."""
     rig = make_rig(start_ha=-2.0)
     rig.fail_solve_on = {3}
     await rig.run()
@@ -534,7 +571,7 @@ async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bu
         f"precondition: two rotations had to have happened: {rig.hub.slews}"
     msgs = [m for _lvl, m, _src in bus_lines]
     points = [m for m in msgs if "native TPPA point" in m]
-    assert len(points) == 2, points
+    assert len(points) == 3, points
     for n, m in enumerate(points, start=1):
         assert f"point {n}/3" in m, m
         assert "RA " in m and "Dec " in m and "HA " in m, m
@@ -543,7 +580,7 @@ async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bu
     left_at, _dec = rig.hub.slews[-1]
     assert f"rotating RA to {left_at:.2f}h" in rotations[-1], (rotations, left_at)
     assert any("plate solve failed" in m for _l, m, _s in bus_lines
-               if _l == "error"), msgs
+               if _l == "warning"), msgs
 
 
 # ------------------------------------------------------------- the pole guard
