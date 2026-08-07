@@ -583,6 +583,53 @@ async def test_a_failed_solve_leaves_the_mounts_position_in_the_log(make_rig, bu
                if _l == "warning"), msgs
 
 
+# ------------------------------------------------------- the mid-arc pier flip
+
+async def test_a_flip_between_two_points_stops_the_run_immediately(make_rig):
+    """THE 2026-08-06 FAILURE, caught one frame after it happens instead of
+    three frames and a fit later.
+
+    The engine already measures the position-angle spread and raises
+    ``position_angle_spread_large`` — but only AFTER all three points are in and
+    the fit is done, so on the night the operator sat through a full arc twice
+    before anything said the run was worthless. Rig numbers: PA 164.5 -> -17.4
+    between points 1 and 2 (178.2 deg), and 170.7 -> -13.6 on the second
+    occasion (184.3 deg)."""
+    rig = make_rig(start_ha=-2.0)
+    rig.rotation_by_point = {1: 164.5, 2: -17.4, 3: -17.3}
+    await rig.run()
+
+    assert len(rig.solved) == 2,         f"kept measuring after the mount changed sides: {rig.solved}"
+    st = rig.session.state
+    assert st["state"] == "error", st
+    assert "camera angle moved" in st["message"], st
+    assert "changed sides of the pier" in st["message"], st
+
+
+async def test_the_flip_check_tolerates_ordinary_solver_noise(make_rig):
+    """Every clean run on the rig held its position angle inside 1.2 deg across
+    all three frames. A few degrees of solver noise and field rotation must not
+    read as a flip, or the guard costs more runs than it saves."""
+    rig = make_rig(start_ha=-2.0)
+    rig.rotation_by_point = {1: 160.9, 2: 160.3, 3: 159.8}   # the 22:24 clean run
+    await rig.run()
+
+    assert len(rig.solved) >= 3, rig.solved
+    assert rig.session.state["state"] != "error", rig.session.state
+
+
+async def test_a_mount_that_reports_no_angle_is_not_accused_of_flipping(make_rig):
+    """``rotation_deg`` is None on solvers that do not report one, and
+    ``native.py`` already guards that with ``or 0.0``. A run of Nones must read
+    as "no change", not as a 0-to-0 flip or a crash."""
+    rig = make_rig(start_ha=-2.0)
+    rig.rotation = None
+    await rig.run()
+
+    assert len(rig.solved) >= 3, rig.solved
+    assert rig.session.state["state"] != "error", rig.session.state
+
+
 # ------------------------------------------------------------- the pole guard
 
 async def test_a_solved_position_near_the_pole_stops_the_run_after_one_frame(make_rig):
@@ -849,11 +896,14 @@ async def test_a_real_rotation_reaches_the_engine_unchanged(make_rig):
     """The control: when the solver DOES report an angle, it must arrive intact —
     otherwise the test above would pass for the wrong reason."""
     rig = make_rig(start_ha=-2.0)
-    rig.rotation_by_point = {1: 10.0, 2: 11.5, 3: 189.7}
+    # All past 180 so the wrap is still exercised, but consecutive — the
+    # old 11.5 -> 189.7 was a 178 degree jump, which is now (correctly) a
+    # mid-arc pier flip and aborts the run before any fit.
+    rig.rotation_by_point = {1: 185.0, 2: 186.5, 3: 189.7}
     await rig.run()
     assert rig.engine.from_three_calls, "precondition: the fit never ran"
     sent = [s["position_angle_deg"] for s in rig.engine.from_three_calls[0][0]]
-    assert sent == [10.0, 11.5, 189.7], sent
+    assert sent == [185.0, 186.5, 189.7], sent
 
 
 # ------------------------------------------------------------ the adjust phase

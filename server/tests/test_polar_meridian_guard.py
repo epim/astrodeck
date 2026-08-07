@@ -67,6 +67,68 @@ async def test_east_of_the_meridian_steps_further_east(ha):
     assert _ra_step_hours(hub, ra) == _RA_STEP_HOURS
 
 
+# ------------------------------------------------- the pier side, which wins
+# inside the band where the sky and the mount genuinely disagree
+
+async def test_just_past_the_meridian_the_pier_side_decides():
+    """THE 2026-08-06 22:34 FAILURE. The run started at HA +0.057h — three and
+    a half minutes past transit — and the hour-angle rule correctly said "step
+    west". The mount flipped anyway: it had tracked up through the meridian and
+    was still on the side a GEM uses for EASTERN targets, so asking for a target
+    another hour west made it swing over. PA went 164.5 to -17.4 and the fit
+    came out 2368 arcminutes.
+
+    West of the meridian in the SKY, east-side in the MOUNT: the mount is the
+    one that knows, so the step goes back east and the side is preserved."""
+    hub = _Hub()
+    ra = _ra_at_hour_angle(0.057, _LON)
+    assert _ra_step_hours(hub, ra) == -_RA_STEP_HOURS, "precondition: sky says west"
+    assert _ra_step_hours(hub, ra, "west") == _RA_STEP_HOURS
+
+
+async def test_just_before_the_meridian_the_pier_side_decides_too():
+    """The mirror case: a tube approaching transit that has ALREADY flipped
+    early reports the western-target side while the sky still says east."""
+    hub = _Hub()
+    ra = _ra_at_hour_angle(-0.057, _LON)
+    assert _ra_step_hours(hub, ra) == _RA_STEP_HOURS, "precondition: sky says east"
+    assert _ra_step_hours(hub, ra, "east") == -_RA_STEP_HOURS
+
+
+@pytest.mark.parametrize("ha,side", [(2.0, "west"), (-2.0, "east"),
+                                     (5.0, "west"), (-5.0, "east")])
+async def test_far_from_the_meridian_a_contradicting_pier_side_is_ignored(ha, side):
+    """Out here the sky and a CORRECT mount always agree, so a report that
+    contradicts the hour angle is wrong — a fork, a bad driver, or a simulator
+    returning a constant. ``SimTelescope.pier_side`` returned a fixed WEST for
+    exactly this long, and obeying it would have aimed the arc at the horizon.
+
+    The hour-angle rule keeps the tube up, so out here it wins."""
+    hub = _Hub()
+    ra = _ra_at_hour_angle(ha, _LON)
+    expected = -_RA_STEP_HOURS if ha > 0 else _RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, side) == expected
+
+
+@pytest.mark.parametrize("side", [None, "", "unknown", "none"])
+async def test_a_mount_that_will_not_name_a_side_keeps_the_old_rule(side):
+    """Fork mounts answer ``unknown`` and cannot flip anyway, so they lose
+    nothing; anything else that cannot say falls back to what shipped before."""
+    hub = _Hub()
+    ra = _ra_at_hour_angle(0.057, _LON)
+    assert _ra_step_hours(hub, ra, side) == -_RA_STEP_HOURS
+
+
+@pytest.mark.parametrize("ha,side", [(0.2, "east"), (-0.2, "west")])
+async def test_inside_the_band_an_agreeing_pier_side_changes_nothing(ha, side):
+    """Agreement is the common case even close in; it must not be treated as a
+    disagreement and flip the arc around."""
+    hub = _Hub()
+    ra = _ra_at_hour_angle(ha, _LON)
+    expected = -_RA_STEP_HOURS if ha > 0 else _RA_STEP_HOURS
+    assert _ra_step_hours(hub, ra, side) == expected
+
+
 @pytest.mark.parametrize("start_ha", [0.05, 0.69, 1.5, -0.05, -0.69, -1.5])
 async def test_the_whole_three_point_arc_stays_on_one_side(start_ha):
     """The regression proper: walk the ACTUAL loop the driver walks and require
