@@ -138,8 +138,23 @@ def _pick_guider(resolved: dict[str, ConnSpec],
     The guider session is located via the SAME normalized grouping key ``_group``
     produces (hostless host/port -> None applied to ``resolved['guider']`` BEFORE
     keying into ``sessions``), so a stray-addressed sim/phd2-local guider override
-    still finds its session instead of emitting a spurious "no guider"."""
-    guider_conn = resolved.get("guider")
+    still finds its session instead of emitting a spurious "no guider".
+
+    FALLBACK when no guider role is assigned: the GUIDE CAMERA's session. A rig
+    that has a guide camera and a mount already has everything the native guider
+    needs, and requiring a separate ``guider`` row to say so is a trap you can
+    only escape if you know the row exists — the observed cost was a rig with a
+    guide camera bolted on, an unused guide FL setting, and ``hub.guider is
+    None`` forever, so guiding could not be started, calibrated, or even
+    refused with a useful message.
+
+    Deliberately keyed on ``guide_camera`` and not on the imaging camera, even
+    though ``native_guider()`` will fall back to the imaging camera on its own.
+    An explicitly-assigned guide camera is the operator SAYING they intend to
+    guide. Inferring a guider for every rig would hand the sequencer a guider
+    built on the imaging camera — and ``plan.guide`` defaults to True, so the
+    first target would try to guide with the camera it is imaging through."""
+    guider_conn = resolved.get("guider") or resolved.get("guide_camera")
     if guider_conn is None:
         return None
     session = sessions.get(_normalize(guider_conn))
