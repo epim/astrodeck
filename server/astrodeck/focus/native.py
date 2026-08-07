@@ -32,9 +32,10 @@ import numpy as np
 from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
-from ..imaging.stars import focus_size
+from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
 from .autofocus import (MIN_STARS_PER_POINT, AutofocusResult,
-                        dropped_points_phrase, sweep_levers, thin_points_phrase)
+                        dropped_points_phrase, overexposure_levers,
+                        overexposure_phrase, sweep_levers, thin_points_phrase)
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -285,6 +286,11 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: that dropped five of nine points failed for a reason it can NAME.
     dropped: list[tuple[int, int]] = []
     unsized: list[int] = []
+    #: (position, saturated fraction) for the subset of ``dropped`` frames that
+    #: were CLIPPED — the fact that decides which direction the advice points.
+    #: "0 stars" off a railed frame means the stars merged, not that they were
+    #: missing, and the fix runs the opposite way from every other shortage.
+    clipped: list[tuple[int, float]] = []
     attempted = 0
     #: Stars at the start position, and the knobs that would change that number.
     #: Set by the probe below; -1 until then so a failure BEFORE the probe (a
@@ -317,11 +323,16 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         bits: list[str] = []
         if dropped:
             bits.append(dropped_points_phrase(dropped, attempted) + ".")
+            if clipped:
+                # The pixels outrank any inference from the counts: a railed
+                # frame's "0 stars" is merged stars, not missing ones, and the
+                # sparse-field context below would blame the sky for it.
+                bits.append(overexposure_phrase(clipped) + ".")
             # The start count is context FOR THE DROPS, never a finding on its
             # own: a field already thin at best focus had no margin to lose,
             # which is the 24-at-bin-1 → 8-at-bin-2 → 0-further-out shape this
             # warns about. With drops on the record it is measured, not guessed.
-            if 0 <= n0 < SPARSE_FIELD_WARN:
+            elif 0 <= n0 < SPARSE_FIELD_WARN:
                 bits.append(f"The field had only {n0} stars at the start "
                             f"position, so it had nothing to spare as it "
                             f"defocused.")
@@ -344,7 +355,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         # One "change this" at the end. Every starvation fact above has the same
         # three remedies, and repeating them per fact is how specific advice
         # starts reading as the boilerplate it replaces.
-        if dropped:
+        if clipped:
+            # Clipping outranks starvation: on a railed frame "expose longer"
+            # is the one move guaranteed to make the next run worse.
+            bits.append("Try " + overexposure_levers(exposure_s, gain)
+                        + " — more light makes this worse.")
+        elif dropped:
             # Points went missing for want of stars, so the levers ARE the fix.
             bits.append("Try " + levers + ".")
         elif thin:
@@ -360,6 +376,7 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
         _s, pstats = await asyncio.to_thread(
             _native.detect_and_measure, probe.data, params)
         n0 = int(pstats.get("star_count") or 0)
+        probe_sat = saturation_fraction(probe.data)
         bus.log("info", f"autofocus: {n0} stars at the starting position", "focus")
         if n0 < MIN_STARS_TO_SWEEP:
             # Both of these land in the panel — ``reason`` as the verdict chip,
@@ -367,15 +384,27 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
             # two facts, not one fact twice. The chip states what was measured
             # against what a fit needs; the detail states what to CHANGE, and
             # therefore does not repeat the star count it is a response to.
-            reason = (f"only {n0} stars at the current focus — a curve needs at "
-                      f"least {MIN_STARS_TO_SWEEP} measurable points and "
-                      f"defocusing finds fewer, not more")
-            # The fix rides on the RESULT and on the event, not only in the log:
-            # this sentence was already going to the log on 2026-07-31 while the
-            # panel told a user under a clear sky to check the sky. Built here
-            # rather than by _advice, which speaks only from what a SWEEP
-            # measured and this run has not swept.
-            advice = "Try " + levers + "."
+            if probe_sat >= OVEREXPOSED_FRAC:
+                # The pixels say why the stars are missing, and it is not the
+                # sky: on 2026-08-06 this exact frame shape (3s/gain 200 over a
+                # field the operator could SEE 200 stars in) was captioned
+                # "lack of stars" with advice to expose longer — the one change
+                # guaranteed to merge the blobs further.
+                reason = (f"only {n0} measurable stars because the frame is "
+                          f"overexposed — {probe_sat:.1%} of its pixels sit at "
+                          f"full scale, so stars merge into saturated blobs")
+                advice = ("Try " + overexposure_levers(exposure_s, gain)
+                          + " — more light makes this worse.")
+            else:
+                reason = (f"only {n0} stars at the current focus — a curve "
+                          f"needs at least {MIN_STARS_TO_SWEEP} measurable "
+                          f"points and defocusing finds fewer, not more")
+                # The fix rides on the RESULT and on the event, not only in the
+                # log: this sentence was already going to the log on 2026-07-31
+                # while the panel told a user under a clear sky to check the
+                # sky. Built here rather than by _advice, which speaks only
+                # from what a SWEEP measured and this run has not swept.
+                advice = "Try " + levers + "."
             await focuser.move_to(start_pos)
             bus.publish("focus", state="failed", points=[], best=None,
                         message=reason, advice=advice)
@@ -383,7 +412,15 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                     f"autofocus not attempted: {reason}. {advice}", "focus")
             return AutofocusResult(False, start_pos, None, [], reason,
                                    advice=advice)
-        if n0 < SPARSE_FIELD_WARN:
+        if probe_sat >= OVEREXPOSED_FRAC:
+            # Measurable, but on borrowed time: clipped cores read fat and
+            # flat, so the curve's tip is distorted even when the fit succeeds.
+            bus.log("warning",
+                    f"autofocus: {probe_sat:.1%} of the starting frame is at "
+                    f"full scale — star sizes will read fat and the curve tip "
+                    f"may be distorted. Consider "
+                    f"{overexposure_levers(exposure_s, gain)}.", "focus")
+        elif n0 < SPARSE_FIELD_WARN:
             bus.log("warning",
                     f"autofocus: {n0} stars is a sparse field — the sweep may "
                     f"run out of measurable points as it defocuses. If it "
@@ -517,6 +554,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                         dropped.append((pos, n))
                         why = (f"only {n} stars — a fit point needs "
                                f"{MIN_STARS_PER_POINT}")
+                        # A railed frame's missing stars MERGED; remember the
+                        # clipping so the advice points at less light, not more.
+                        sat = saturation_fraction(frame.data)
+                        if sat >= OVEREXPOSED_FRAC:
+                            clipped.append((pos, sat))
+                            why += f", {sat:.1%} of pixels at full scale"
                     else:
                         unsized.append(pos)
                         why = f"{n} stars but no usable size ({hfr!r})"
