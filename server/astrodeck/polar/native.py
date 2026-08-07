@@ -112,6 +112,32 @@ _SOLVE_RETRY_S = 5.0
 #: REST operator never sees the flag, so name the number in the log too.
 _PA_SPREAD_WARN_DEG = 5.0
 
+#: Position-angle change between two CONSECUTIVE measurement frames that means
+#: the mount changed sides of the pier rather than merely rotated in RA.
+#:
+#: A pure RA rotation holds the camera angle fixed; the whole fit assumes it.
+#: Measured on the rig 2026-08-06, the two flipped runs jumped 178.2 and 184.3
+#: degrees between points 1 and 2, while every clean run held inside 1.2. There
+#: is nothing between those populations, so the threshold only has to separate
+#: "a few degrees of solver noise and field rotation" from "the mount swung
+#: over". Wrapped to the shortest angle on the FULL circle: mod 180 would map a
+#: 180 degree flip -- the whole point -- onto zero.
+_PA_FLIP_DEG = 30.0
+
+#: How far past the meridian a mount may still be sitting on its PRE-FLIP side.
+#:
+#: Inside this band the sky and the mount disagree about which side the tube is
+#: on, and only the mount is right: a GEM tracking up through the meridian holds
+#: its original side for a few minutes before a goto makes it choose. Outside it,
+#: a pier-side report that contradicts the hour angle is simply wrong and is
+#: ignored (see _ra_step_hours).
+#:
+#: Measured on the rig 2026-08-06 22:34: the run that flipped started at HA
+#: +0.057h -- three and a half minutes past. 0.5h is nine times that, and still
+#: narrow enough that every arc starting a normal distance from the meridian
+#: keeps the proven hour-angle behaviour untouched.
+_MERIDIAN_BAND_H = 0.5
+
 #: Largest polar error this routine will report as a MEASUREMENT rather than a
 #: failed fit.
 #:
@@ -256,6 +282,10 @@ async def _drive(session: Any, hub: Any) -> None:
 
     # ---- PHASE measuring: 3 × capture → solve → (rotate in RA) -------------
     solves: list[dict] = []
+    #: the RAW per-frame position angles, alongside `solves` which stores the
+    #: engine's coerced `or 0.0` form. The flip check needs to tell "reported
+    #: zero" from "reported nothing"; the engine payload cannot.
+    pa_raw: list[float | None] = []
     step_hours: float | None = None
     for i in range(3):
         _check_alive(hub, epoch)
@@ -267,13 +297,24 @@ async def _drive(session: Any, hub: Any) -> None:
             # mount claims. Costs one exposure that was being taken anyway.
             await _refuse_near_pole(result.dec_deg, "the plate solve puts you")
             # Now that the SOLVED position is known, project the whole arc and
-            # refuse before committing the mount to it.
-            step_hours = _ra_step_hours(hub, result.ra_hours)
+            # refuse before committing the mount to it. The pier side decides
+            # the direction so the arc keeps the side the mount is already on
+            # (see _ra_step_hours); reading it costs one mount query and is what
+            # stops the just-past-the-meridian flip.
+            step_hours = _ra_step_hours(hub, result.ra_hours,
+                                        await _pier_side(tel))
             _refuse_low_arc(hub, result, step_hours)
         else:
             # The mount was told to rotate before this frame. Verify it did,
             # against the sky rather than against the mount's own report.
             _refuse_if_it_did_not_arrive(solves[-1], result, step_hours, i)
+            # ...and that it did it WITHOUT changing sides. The engine already
+            # measures the position-angle spread, but only after all three
+            # points are in and the fit is done — so a flip between points 1
+            # and 2 cost a full arc, a fit, and an operator's attention before
+            # anything said so. Checked here, the run stops one frame later.
+            _refuse_if_it_flipped(pa_raw[-1], result, i)
+        pa_raw.append(getattr(result, "rotation_deg", None))
         solves.append({
             "ra_hours": result.ra_hours,
             "dec_deg": result.dec_deg,
@@ -475,7 +516,66 @@ async def _capture_and_solve(hub: Any, solver: Any):
     return frame, result, (float(scale), float(w), float(h))
 
 
-def _ra_step_hours(hub: Any, cur_ra_hours: float) -> float:
+async def _pier_side(tel: Any) -> str | None:
+    """Which side of the pier the mount reports, or None when it will not say.
+
+    Optional by design: fork mounts answer ``unknown``, some drivers have no
+    ``pier_side`` at all, and neither is an error — the caller falls back to the
+    hour-angle rule. Never raises, because a mount that cannot answer a question
+    about geometry must not be able to end an alignment run."""
+    getter = getattr(tel, "pier_side", None)
+    if not callable(getter):
+        return None
+    try:
+        side = await getter()
+    except Exception:  # noqa: BLE001 - unknowable, not fatal
+        return None
+    side = str(getattr(side, "value", side) or "").lower()
+    return side if side in ("east", "west") else None
+
+
+def _refuse_if_it_flipped(prev_pa: float | None, result: Any, index: int) -> None:
+    """Stop the moment the camera angle jumps, instead of fitting three frames
+    that are not related by a pure RA rotation.
+
+    A pier flip rotates the camera about 180 degrees and swings the tube to the
+    other side of the mount, so the three positions no longer lie on one small
+    circle about the RA axis and the whole fit is meaningless. The engine does
+    notice — it raises ``position_angle_spread_large`` — but only AFTER all
+    three points and the fit, which on 2026-08-06 meant the operator sat through
+    a full arc twice before being told the run was worthless.
+
+    Wrapped to the shortest angle on the FULL circle, not mod 180. Mod 180 is
+    the tempting reduction — position angle is often treated as an axis, not a
+    direction — and it is exactly wrong here: a pier flip is 180 degrees, so
+    mod 180 maps the one thing this function exists to catch onto zero. The
+    first draft did that and the rig's own 164.5 -> -17.4 came out as 1.9.
+
+    Takes the RAW reported angles, not the values stored for the engine. Those
+    are coerced ``rotation_deg or 0.0``, deliberately — position angle is
+    carried for diagnostics and is not an input to the axis fit — so a solver
+    that reports nothing on one frame stores a 0.0 that is indistinguishable
+    from a real one. Comparing against that read a single unreported angle
+    beside a field at PA 175 as a 175 degree flip. A frame that did not say
+    which way it was pointing is not evidence that the mount turned over, so
+    both ends have to have actually reported before this may accuse anything.
+    """
+    pa = getattr(result, "rotation_deg", None)
+    if prev_pa is None or pa is None:
+        return
+    delta = abs((float(pa) - float(prev_pa) + 180.0) % 360.0 - 180.0)
+    if delta <= _PA_FLIP_DEG:
+        return
+    raise DeviceError(
+        f"the camera angle moved {delta:.1f}° between measurement point "
+        f"{index} and point {index + 1}, so those two frames are not one "
+        f"rotation in RA — the mount changed sides of the pier mid-arc. "
+        f"Fitting them would measure the flip, not your polar error. Point at "
+        f"least an hour of RA clear of the meridian, on the side the mount is "
+        f"already on, and start again.")
+
+
+def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> float:
     """One RA step, SIGNED so the measurement arc moves AWAY from the meridian.
 
     The direction is not cosmetic, it decides whether the run is measurable at
@@ -496,11 +596,62 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float) -> float:
     So: west of the meridian, keep going west; east of it, keep going east. Two
     steps span 24 degrees of hour angle, which never reaches the meridian from
     either side as long as the first step moves away from it.
+
+    THAT RULE IS NOT ENOUGH ON ITS OWN, and 2026-08-06 22:34 proved it: a run
+    that started at HA +0.057h — three minutes past the meridian — stepped
+    correctly WEST, and the mount flipped anyway. Position angle went 164.5 to
+    -17.4 between points 1 and 2, a 178.2 degree jump, and the fit came out
+    2368 arcminutes.
+
+    The reason is that "away from the meridian" is a fact about the SKY, and a
+    pier flip is a fact about the MOUNT. A German mount tracking up through the
+    meridian stays on its original side for a while; at HA +0.057h that tube was
+    west of the meridian but still on the side a GEM uses for EASTERN targets.
+    Asking it for a target another hour west is precisely what makes it decide
+    it is on the wrong side and swing over.
+
+    So the deciding input is the PIER SIDE, not the hour angle: step whichever
+    way KEEPS the side the mount is already on, and it has no reason to flip.
+    Convention measured on this AM5 (2026-08-06, both sides, `:Gm#`) and it is
+    the standard ASCOM one — a target EAST of the meridian is observed with
+    ``pier_side == "west"``, a target WEST of it with ``pier_side == "east"``.
+    Hence: on the west side, step east (RA UP); on the east side, step west
+    (RA DOWN). Away from the meridian, that agrees with the hour-angle rule; the
+    two only disagree in the narrow band just past the meridian where the mount
+    has not caught up yet — which is exactly the band that broke.
+
+    A mount that will not report a side (fork mounts, and anything answering
+    ``unknown``) falls back to the hour-angle rule, which is what shipped
+    before and is right everywhere except that band. Fork mounts cannot flip at
+    all, so they lose nothing.
     """
     ha = hour_angle_h(cur_ra_hours, hub.site["longitude"])
     # HA > 0 => west of the meridian, so step further west, which is RA DOWN.
     # HA <= 0 => east (or exactly on it), so step further east, which is RA UP.
-    return -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
+    ha_step = -_RA_STEP_HOURS if ha > 0.0 else _RA_STEP_HOURS
+
+    side = str(getattr(pier_side, "value", pier_side) or "").lower()
+    if side not in ("east", "west"):
+        return ha_step
+    # west == the side a GEM uses for EASTERN targets, so stay on it by going east.
+    pier_step = _RA_STEP_HOURS if side == "west" else -_RA_STEP_HOURS
+    if pier_step == ha_step:
+        return ha_step
+
+    # THEY DISAGREE. Away from the meridian a correct GEM report always agrees
+    # with the sky (west of the meridian IS the east-side region), so a mount
+    # that contradicts it out here is not telling us something we did not know —
+    # it is wrong, or it is a fork, or it is a simulator returning a constant.
+    # ``SimTelescope.pier_side`` returned a fixed WEST for exactly this long, and
+    # trusting it would aim the arc at the horizon. The hour-angle rule keeps the
+    # tube up, so out here it wins.
+    if abs(ha) >= _MERIDIAN_BAND_H:
+        return ha_step
+    # Inside the band, the disagreement is REAL and the pier side is the one that
+    # knows: a mount that has tracked a few minutes past the meridian is west of
+    # it in the sky while still on the pre-flip side, and asking for a target
+    # further west is what makes it swing over. Going back east keeps the side.
+    return pier_step
 
 
 async def _rotate_in_ra(hub: Any, tel: Any, epoch: int, result: Any,
