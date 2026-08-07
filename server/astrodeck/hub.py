@@ -1151,21 +1151,54 @@ class Hub:
 
     async def reconnect_role(self, role: str) -> bool:
         """Best-effort reconnect of one role from the recorded connection intent
-        (Batch 4b escalation ``reconnect_resume`` / a dropped Alpaca link). Only
-        Alpaca roles can be replayed from ``_last_connect``; sim/NINA roles return
-        False (nothing to replay). Never raises — returns success as a bool."""
+        (escalation ``reconnect_resume`` / a dropped link). Never raises —
+        returns success as a bool.
+
+        Two replay shapes, because the two backends lose a device differently:
+
+        * ALPACA — the device is a network client, and the far end may be a
+          restarted process, so the connection is rebuilt from scratch out of
+          the recorded host/port/type/number.
+        * NATIVE (and anything else) — the device object owns an open USB
+          handle. Rebuilding the whole rig to recover one role would drop the
+          guider and reset the cooler for the sake of a filter wheel, so the
+          object re-opens itself: disconnect (best-effort — it is already gone,
+          which is the point) then connect, which every driver implements
+          idempotently. This branch is what makes the setting mean anything on a
+          native rig, and a native rig is what this product is for.
+        """
         info = self._last_connect.get(role)
-        if not info or info.get("backend") != "alpaca":
+        if not info:
+            return False
+        if info.get("backend") == "alpaca":
+            try:
+                await self.connect_alpaca_device(
+                    role, info["host"], info["port"], info["dev_type"],
+                    info["dev_num"], info["name"])
+                bus.log("info", f"reconnected {role} ({info['host']}:{info['port']})",
+                        "hub")
+                return True
+            except Exception as e:
+                bus.log("warning", f"reconnect {role} failed: {e}", "hub")
+                return False
+        dev = self.devices.get(role)
+        if dev is None:
             return False
         try:
-            await self.connect_alpaca_device(
-                role, info["host"], info["port"], info["dev_type"],
-                info["dev_num"], info["name"])
-            bus.log("info", f"reconnected {role} ({info['host']}:{info['port']})", "hub")
-            return True
+            with contextlib.suppress(Exception):
+                await dev.disconnect()
+            await dev.connect()
         except Exception as e:
             bus.log("warning", f"reconnect {role} failed: {e}", "hub")
             return False
+        if not getattr(dev, "connected", False):
+            # A driver that returns without raising and without connecting has
+            # not reconnected. Reporting True here would let the run carry on
+            # into the next exposure against a dead handle.
+            bus.log("warning", f"reconnect {role} did not take", "hub")
+            return False
+        bus.log("info", f"reconnected {role} ({getattr(dev, 'name', role)})", "hub")
+        return True
 
     async def safety_reading(self) -> SafetyReading | None:
         """The latest CACHED SafetyReading from the own-cadence poller — NEVER an

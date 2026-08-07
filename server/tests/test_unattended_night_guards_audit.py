@@ -375,44 +375,42 @@ def _code_name_hits(name: str) -> list[tuple[str, int]]:
     return hits
 
 
-def test_reconnect_resume_and_retries_are_read_by_no_production_code():
-    """GAP — the #14 shape exactly. ``reconnect_resume`` and ``reconnect_retries``
-    exist in the config model, round-trip through ``/api/config``, and are
-    rendered by ``EscalationPanel.tsx`` (with the retries field only shown when
-    the toggle is on). Nothing reads either one.
+def test_reconnect_resume_and_retries_are_read_by_production_code():
+    """WAS THE #14 SHAPE EXACTLY, closed 2026-08-06. Both settings existed in the
+    config model, round-tripped through ``/api/config``, and were rendered by
+    ``EscalationPanel.tsx`` as a working toggle — and nothing read either one, so
+    ``reconnect_retries: 1`` meant nothing at all, not even "one attempt".
 
-    So on this rig ``reconnect_retries: 1`` means nothing at all — not "one
-    retry", not "one attempt". A dropped USB link mid-night is not retried by
-    this setting under any value.
-
-    Delete this test when something consumes them."""
+    Kept as a POSITIVE detector rather than deleted: this is the exact shape the
+    project keeps regrowing, and asserting that a consumer exists outside
+    config.py is what stops it regrowing here. Tokenised, not grepped, so a
+    comment mentioning the name by way of apology would not satisfy it."""
     for name in ("reconnect_resume", "reconnect_retries"):
-        hits = _code_name_hits(name)
-        assert [f for f, _ in hits] == ["config.py"], \
-            f"{name} is now read outside config.py: {hits}"
+        consumers = {f for f, _ in _code_name_hits(name) if f != "config.py"}
+        assert consumers, f"{name} is read by nothing again"
+        assert "sequence/engine.py" in consumers, consumers
 
 
-def test_hub_reconnect_role_has_no_caller():
-    """The machinery the setting would drive exists and is unreachable.
+def test_hub_reconnect_role_is_reachable():
+    """WAS unreachable. ``Hub.reconnect_role`` was documented in three separate
+    comments as the consumer of ``escalation/reconnect_resume``, and the only
+    NAME-token occurrence of it in the whole package was its own ``def``: two
+    halves of a feature with no wire between them.
 
-    ``Hub.reconnect_role`` replays a recorded Alpaca connection and is documented
-    as "consumed by reconnect_role() (escalation/reconnect_resume)" in three
-    separate comments — but the only NAME-token occurrence in the whole package
-    is its own ``def``. Two halves of a feature, no wire between them.
-
-    (Also note the method is Alpaca-only: it returns False for sim/NINA/native
-    roles. This rig is native for every device, so even a wired-up
-    ``reconnect_resume`` would not reconnect any of its six devices.)"""
-    hits = _code_name_hits("reconnect_role")
-    assert len(hits) == 1, f"reconnect_role now has callers: {hits}"
-    assert hits[0][0] == "hub.py"
+    It was also Alpaca-only, returning False for every native role — so even a
+    caller would have reconnected none of this rig's six devices. Both ends are
+    fixed now; this pins the wire."""
+    files = {f for f, _ in _code_name_hits("reconnect_role")}
+    assert "hub.py" in files
+    assert files - {"hub.py"}, "reconnect_role has no caller again"
 
 
-def test_nothing_ever_publishes_the_reconnect_alert_event():
-    """The third dangling end of the same feature. ``AlertDispatcher`` maps a
-    ``reconnect`` bus event to a warning-level alert and lists it in
-    ``_NEVER_DEDUPE`` — "the alert that matters most must always go out". No
-    producer exists: nothing in the package publishes that event type.
+def test_the_reconnect_alert_event_has_a_producer():
+    """The third dangling end of the same feature, now joined up.
+    ``AlertDispatcher`` maps a ``reconnect`` bus event to a warning-level alert
+    and lists it in ``_NEVER_DEDUPE`` — "the alert that matters most must always
+    go out" — and for a long time nothing published that event, so the most
+    important alert could never fire.
 
     (Distinct from ``ResumeArm``, which is real and shipped: that resumes a
     SESSION after a process restart, gated by ``Session.auto_resume``. Nothing
@@ -428,7 +426,8 @@ def test_nothing_ever_publishes_the_reconnect_alert_event():
         if any(tok in p.read_text(encoding="utf-8", errors="ignore")
                for tok in ('publish("reconnect"', "publish('reconnect'"))
     ]
-    assert producers == [], f"a reconnect producer now exists: {producers}"
+    assert producers, "the reconnect alert has a consumer and no producer again"
+    assert "sequence/engine.py" in producers, producers
 
 
 # ============================================================================
