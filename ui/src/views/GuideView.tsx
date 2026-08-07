@@ -27,6 +27,7 @@ import GuideProviderControl from "../components/GuideProviderControl";
 import { compareRmsWindows } from "../lib/rmsCompare";
 import { selectGuideWindows } from "../lib/guideRms";
 import { guideNarration } from "../lib/guideNarration";
+import GuideQuickBar from "../components/GuideQuickBar";
 import {
   RA_GUIDE_ALGORITHMS,
   DEC_GUIDE_ALGORITHMS,
@@ -251,6 +252,10 @@ export default function GuideView() {
   }, [connected, stats?.guiding, guideLaneLive, calTick]);
 
   return (
+    <div className="flex flex-col gap-3">
+    {/* sticky glance + guide-camera speed dials — state, RMS, and the
+        calibration walk, visible from any scroll position */}
+    <GuideQuickBar />
     <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
       <Panel title={`Guide Error · ${unitWord}`}
         right={
@@ -465,6 +470,7 @@ export default function GuideView() {
           onToast={showToast} seed={tuningSeed}
           onCalibrationChanged={refreshCalibration} />
       </div>
+    </div>
     </div>
   );
 }

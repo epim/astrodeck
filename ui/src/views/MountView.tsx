@@ -8,6 +8,7 @@ import { Icon } from "../components/icons";
 import { useCanControlMount } from "../lib/caps";
 import { useBusyOrPending } from "../lib/useBusy";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
+import GotoStrip from "../components/GotoStrip";
 import type { CatalogEntry, LogLine, PreflightAlt } from "../types";
 
 /** Severity glyph for an altitude cell — shape, not colour-only (spec §5 / critique3 #7). */
@@ -332,6 +333,10 @@ export default function MountView() {
   // space that actually exists (376px at 820), and the narrow-width column
   // collapse below (Type/Mag are lg-only) keeps the table itself inside it.
   return (
+    <div className="flex flex-col gap-3">
+    {/* a goto in flight (or a mount that stopped executing slews) narrates
+        itself above the fold on the screen that launched it */}
+    <GotoStrip />
     <div className="grid gap-4 grid-cols-[minmax(0,1fr)]
       md:grid-cols-[minmax(240px,300px)_minmax(0,1fr)]
       lg:grid-cols-[minmax(290px,340px)_minmax(0,1fr)]">
@@ -643,6 +648,7 @@ export default function MountView() {
           {results.length === 0 && <p className="text-dim text-xs py-4">no matches</p>}
         </div>
       </Panel>
+    </div>
     </div>
   );
 }
