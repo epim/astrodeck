@@ -8,6 +8,7 @@ import ProviderBadge from "../components/ProviderBadge";
 import { accessPhrase, useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import PolarQuickBar from "../components/PolarQuickBar";
+import PolarSolveRing from "../components/PolarSolveRing";
 import type { PolarState } from "../types";
 import { useEffect, useState } from "react";
 
@@ -193,73 +194,59 @@ export default function PolarView() {
               </span>
             </div>
           }>
-          <PolarReticle
-            az={az}
-            alt={alt}
-            azDir={polar.az_direction}
-            altDir={polar.alt_direction}
-            active={hasReading}
-          />
+          {/* relative: PolarSolveRing overlays the reticle's top-RIGHT corner
+              (the zoom announce owns the top-left, inside the SVG). The ring
+              is the "why hasn't the error shown up yet" answer, rendered
+              where the eye already is. */}
+          <div className="relative">
+            <PolarReticle
+              az={az}
+              alt={alt}
+              azDir={polar.az_direction}
+              altDir={polar.alt_direction}
+              active={hasReading}
+            />
+            <PolarSolveRing
+              activity={polar.activity}
+              exposureS={polar.solve_settings?.exposure_s ?? 0.3}
+            />
+          </div>
           <p className="text-center text-xs text-dim mt-2 min-h-4">{polar.message || " "}</p>
         </Panel>
 
         <div className="flex flex-col gap-4">
-          {/* Phase wizard: Measure (3 solve tiles) → Adjust */}
-          {showPhase && (
-            <Panel title="Phase" right={sourceLabel && (
-              <span className="text-[11px] tracking-widest uppercase text-dim">{sourceLabel}</span>
-            )}>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5">
-                  {[1, 2, 3].map((n) => {
-                    const filled = measured >= n;
-                    return (
-                      <span key={n}
-                        className={`led-letter ${filled ? "bg-good text-accent-ink" : "border border-line text-faint"}`}
-                        aria-label={`solve ${n} ${filled ? "done" : "pending"}`}>
-                        {n}
-                      </span>
-                    );
-                  })}
-                </div>
-                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-dim" : "text-accent"}`}>
-                  measure
-                </span>
-                <span className="text-faint">→</span>
-                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-accent" : "text-faint"}`}>
-                  adjust
-                </span>
-              </div>
-              {measuring && (
-                <p className="text-xs text-dim mt-2">Plate-solving the mount's axis — hold steady.</p>
-              )}
-            </Panel>
-          )}
-
+          {/* ORDER IS A REACH DECISION (phone-layout rule: order panels by
+              what the user touches). Portrait stacks this column under the
+              reticle, so the error panel — the number the whole screen exists
+              to drive toward — comes FIRST and shares the first screenful
+              with the reticle; the Phase wizard and Control follow. The panel
+              is deliberately COMPACT (one verdict row, tight knob rows): at
+              text-5xl with stacked rows it did not fit beside the reticle on
+              any phone, which is what kept it below the fold. */}
           <Panel title="Total error">
-            <div className="flex items-baseline gap-2 mb-1">
-              <span className={`font-display font-semibold text-5xl mono tabular-nums ${
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className={`font-display font-semibold text-3xl mono tabular-nums ${
                 hasReading ? "text-accent" : "text-faint"}`}>
                 {hasReading ? total.toFixed(1) : "—"}
               </span>
               <span className="text-dim text-sm">arcmin</span>
+              {hasReading && (
+                <span className="flex items-center gap-2 ml-auto">
+                  <Led state={verdict.led} label={verdict.text} />
+                  <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
+                </span>
+              )}
             </div>
 
             {hasReading ? (
-              <>
-                <div className="flex items-center gap-2 mt-2">
-                  <Led state={verdict.led} label={verdict.text} />
-                  <span className={`text-sm font-medium ${verdict.tone}`}>{verdict.text}</span>
-                </div>
-                {/* WHICH ADJUSTMENT, not how good it is — the verdict above
-                    already says that. Its thresholds (30′/10′/1′) are its own
-                    and deliberately do not match the verdict's 2′/10′: above 30′
-                    no bolt has the travel to fix it, so "keep going" would send
-                    the user turning a knob that cannot reach. */}
-                <p className="text-xs text-dim mt-1.5 leading-relaxed">
-                  {polarInstruction(total)}
-                </p>
-              </>
+              /* WHICH ADJUSTMENT, not how good it is — the verdict beside the
+                 number already says that. Its thresholds (30′/10′/1′) are its
+                 own and deliberately do not match the verdict's 2′/10′: above
+                 30′ no bolt has the travel to fix it, so "keep going" would
+                 send the user turning a knob that cannot reach. */
+              <p className="text-xs text-dim mt-1.5 leading-relaxed">
+                {polarInstruction(total)}
+              </p>
             ) : measuring || live ? (
               <div className="flex items-center gap-2 mt-2">
                 <Led state="busy" label="measuring" />
@@ -291,8 +278,8 @@ export default function PolarView() {
 
             {/* Which way to turn each bolt — arrow + magnitude + word, from the
                 native engine's knob labels (fallback: the error's sign). */}
-            <div className="flex flex-col mt-4">
-              <div className="flex items-center gap-3 border-t border-line py-2.5">
+            <div className="flex flex-col mt-2">
+              <div className="flex items-center gap-3 border-t border-line py-1.5">
                 <span className="label w-16">Azimuth</span>
                 <span className="text-accent text-base w-4 text-center">{azHint?.arrow ?? ""}</span>
                 <span className="text-dim text-xs">{azHint?.text ?? "az bolt"}</span>
@@ -300,7 +287,7 @@ export default function PolarView() {
                   {hasReading ? `${Math.abs(az).toFixed(1)}′` : "—"}
                 </span>
               </div>
-              <div className="flex items-center gap-3 border-t border-line py-2.5">
+              <div className="flex items-center gap-3 border-t border-line py-1.5">
                 <span className="label w-16">Altitude</span>
                 <span className="text-accent text-base w-4 text-center">{altHint?.arrow ?? ""}</span>
                 <span className="text-dim text-xs">{altHint?.text ?? "alt bolt"}</span>
@@ -311,11 +298,43 @@ export default function PolarView() {
             </div>
 
             {polar.progress > 0 && polar.progress < 1 && (
-              <div className="progress-track mt-4">
+              <div className="progress-track mt-3">
                 <div className="progress-fill" style={{ width: `${polar.progress * 100}%` }} />
               </div>
             )}
           </Panel>
+
+          {/* Phase wizard: Measure (3 solve tiles) → Adjust */}
+          {showPhase && (
+            <Panel title="Phase" right={sourceLabel && (
+              <span className="text-[11px] tracking-widest uppercase text-dim">{sourceLabel}</span>
+            )}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  {[1, 2, 3].map((n) => {
+                    const filled = measured >= n;
+                    return (
+                      <span key={n}
+                        className={`led-letter ${filled ? "bg-good text-accent-ink" : "border border-line text-faint"}`}
+                        aria-label={`solve ${n} ${filled ? "done" : "pending"}`}>
+                        {n}
+                      </span>
+                    );
+                  })}
+                </div>
+                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-dim" : "text-accent"}`}>
+                  measure
+                </span>
+                <span className="text-faint">→</span>
+                <span className={`text-[11px] tracking-widest uppercase ${adjusting ? "text-accent" : "text-faint"}`}>
+                  adjust
+                </span>
+              </div>
+              {measuring && (
+                <p className="text-xs text-dim mt-2">Plate-solving the mount's axis — hold steady.</p>
+              )}
+            </Panel>
+          )}
 
           <Panel title="Control" right={!canMount && <ReadOnlyBadge />}>
             <p className="text-xs text-dim mb-3 leading-relaxed">
