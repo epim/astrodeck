@@ -134,56 +134,14 @@ class NativeSession:
         tel = self._devices.get("telescope")
         if gcam is None or tel is None:
             return None
-        # Deferred import: keep module load light (the native guider pulls the
-        # guide stack / numpy) and avoid a cycle just to register the backend.
-        from ...guide.native import NativeGuider, guide_algo_config
-        # A4 (P2-T3 review F2, CLOSED): compute a real image_scale_arcsec from
-        # the configured guide-scope focal length + the guide camera's pixel
-        # size, so on-sky RMS is reported in true arcsec. Falls back to 1.0
-        # (the documented default, guiding correctness unaffected — calibration
-        # measures px/ms empirically) when either input is missing. The guide
-        # loop runs at bin 1, so binning = 1 here.
-        image_scale = 1.0
-        image_scale_known = False
-        try:
-            # #129: this read GLOBAL config (config_store.cfg().optics) while
-            # every other optics consumer went through the profile-aware path, so
-            # a profile optics override moved the imaging scale and left the
-            # GUIDE scale behind — silently, because an unset guide focal length
-            # just degrades to the 1"/px pixel fallback. resolve_optics() applies
-            # the same PROFILE > GLOBAL rule the hub applies; active_profile() is
-            # the hub-free reader (a backend session holds no hub handle) and is
-            # defensive enough to return None against a stubbed config store.
-            from ...profiles import active_profile, resolve_optics
-            guide_fl = resolve_optics(active_profile()).guide_focal_length_mm
-            px = getattr(gcam, "pixel_size_um", None)
-            binning = 1
-            if guide_fl and guide_fl > 0 and px and px > 0:
-                image_scale = 206.265 * float(px) / float(guide_fl) * binning
-                image_scale_known = True  # real arcsec/px → RMS reported in arcsec
-        except Exception:  # pragma: no cover - defensive; scale stays 1.0
-            image_scale = 1.0
-            image_scale_known = False
-        # #24: this passed profile_id=None, which switched the guider's WHOLE
-        # calibration + PPEC persistence layer off on every real rig — a fresh
-        # ~20+ s calibration walk at every start and a trained PPEC model
-        # discarded at every stop, silently, because each persistence path
-        # simply returns on a falsy id. The id is read LAZILY, not here: this
-        # runs inside connect_profile(), and set_active_profile lands only
-        # AFTER that returns (hub.py:754 then :771), so an id captured at
-        # construction is the profile being switched away FROM. None-safe — a
-        # rig with no active profile keeps exactly today's behaviour (it guides,
-        # it just persists nothing).
-        def _active_profile_id() -> str | None:
-            from ...profiles import active_profile
-            return getattr(active_profile(), "id", None)
-
-        self._guider = NativeGuider(
+        # Deferred import: keep module load light (the guide stack pulls numpy)
+        # and avoid a cycle just to register the backend. The assembly itself
+        # lives in guide/native.py so the ORCHESTRATOR can build the same guider
+        # when the camera and the mount opened separate sessions — which is the
+        # normal shape of a multi-vendor rig, and used to mean no guider at all.
+        from ...guide.native import build_native_guider
+        self._guider = build_native_guider(
             gcam, tel,
-            config={"exposure_s": 2.0, "image_scale_arcsec": image_scale,
-                    "image_scale_known": image_scale_known,
-                    **guide_algo_config()},
-            profile_id_resolver=_active_profile_id,
             # This function is the only place that knows the OAG fallback was
             # taken. The guider needs it so its idle preview does not keep
             # re-exposing the imaging sensor mid-sequence — see guide_frame.
