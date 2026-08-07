@@ -181,10 +181,19 @@ def _guide_preview_encoded_defect(
     except Exception:  # noqa: BLE001 — our blindness is not the guider's defect
         return "", None
     if lo == hi:
-        return (f"{source_name} returned an image in which every pixel reads "
-                f"{lo} — no variation at all, so there is no guide field in it. "
-                f"This panel only forwards {source_name}'s own view, so what is "
-                f"wrong is visible in {source_name}, not here."), (lo, hi)
+        # Do NOT read meaning into the LEVEL. These are post-stretch display
+        # values, and a stretch with no dynamic range collapses to 0 whatever
+        # the sensor did — so a guide camera staring at a bright daylight sky
+        # with every pixel railed at saturation arrives here reading 0, and the
+        # old wording ("every pixel reads 0") sent you looking for a dead camera
+        # or a closed shutter. Measured on the rig 2026-08-06: raw frame was a
+        # uniform 65520 (4095 << 4, i.e. full-scale), reported here as 0.
+        return (f"{source_name} returned a uniform image — every pixel identical "
+                f"after stretching, so there is no guide field in it. A capped "
+                f"scope, a sensor saturated by daylight or a stray light source, "
+                f"and a camera returning nothing all look like this. This panel "
+                f"only forwards {source_name}'s own view, so what is wrong is "
+                f"visible in {source_name}, not here."), (lo, hi)
     return "", (lo, hi)
 
 

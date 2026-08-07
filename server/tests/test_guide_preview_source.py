@@ -649,8 +649,14 @@ async def test_a_guider_that_returns_a_blank_image_is_refused_like_the_camera(bu
 
     png, reason = await hub.guide_preview_png()
     assert png is None, "an image with no variation is not a guide field"
-    assert "PHD2" in reason and "no variation" in reason
-    assert "reads 0" in reason
+    assert "PHD2" in reason and "uniform image" in reason
+    # The refusal must NOT name a brightness. These are post-stretch display
+    # values, and a stretch with no dynamic range collapses to 0 whatever the
+    # sensor did — measured on the rig 2026-08-06, a guide camera railed at
+    # saturation (raw 65520 everywhere, an uncapped scope in daylight) arrived
+    # here reading 0, and "every pixel reads 0" sent you hunting a dead camera.
+    assert "reads 0" not in reason
+    assert "saturated" in reason and "capped" in reason
     guide_lines = [m for _lvl, m, src in bus_lines if src == "guide"]
     assert guide_lines, "the guider path used to leave no trace at all"
 
@@ -666,7 +672,7 @@ async def test_a_blank_guider_image_never_publishes_that_a_frame_arrived():
     await hub.guide_preview_png()
     gc = (await hub.poll_status())["guide_camera"]
     assert "preview_ok" not in gc
-    assert "no variation" in gc["preview_reason"]
+    assert "uniform image" in gc["preview_reason"]
 
 
 async def test_a_guider_image_with_a_star_in_it_is_served_and_vouched_for(bus_lines):
