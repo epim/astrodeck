@@ -339,6 +339,10 @@ async def _drive(session: Any, hub: Any) -> None:
             await _rotate_in_ra(hub, tel, epoch, step_hours)
 
     # ---- fit the axis + initial error -------------------------------------
+    # Last gate before the fit: three points determine the axis EXACTLY, so a
+    # wrecked input produces a confident number, never a bad residual. This is
+    # the only layer that can still tell.
+    _refuse_if_the_axis_moved(solves)
     opts = _options(hub, geom)
     out = _native.tppa_from_three(solves, site, opts)
     model = out["model"]
@@ -986,6 +990,48 @@ def _refuse_if_it_did_not_arrive(previous: dict, result: Any,
         "0.00'). Nothing has been reported. Check that the mount is unparked, "
         "tracking, clear of its limits, and that no other slew is competing, "
         "then run the alignment again.")
+
+
+#: How much the solved-declination progression may BEND across the three
+#: points, in degrees. A fixed axis traces a cone: Dec along the arc runs like
+#: ε·cos(θ) (ε = the axis error), so its second difference over two equal RA
+#: steps is at most ε·Δθ² — with Δθ = 12° (0.209 rad) that is 0.044·ε, under
+#: 0.5° for any axis error up to ~11° and under this threshold up to ~17°.
+#: No mount anyone roughly aimed at the pole is 17° out, so a bend past this
+#: is not geometry: it is the axis MOVING between exposures. On 2026-08-06 an
+#: operator adjusted the bolts during the measuring arc (mistaking it for the
+#: adjust phase) and the fit — exact through any three points, with no
+#: residuals to object — reported the wreckage as a confident number.
+_AXIS_MOVED_DEC_BEND_DEG = 0.75
+
+
+def _refuse_if_the_axis_moved(solves: list[dict]) -> None:
+    """Refuse a measuring arc whose three points do not lie on ONE cone.
+
+    The three points are pure RA rotations of a rigid axis: the solved Dec may
+    drift smoothly across them — that drift IS the axis error being measured —
+    but its progression cannot bend faster than the geometry allows (see
+    :data:`_AXIS_MOVED_DEC_BEND_DEG`). A bend past that means the axis itself
+    moved between exposures: bolts turned mid-measurement, a tripod leg
+    settling, a cable snag. Three points determine the fit exactly, so nothing
+    downstream can notice — this is the only place the wreck is visible."""
+    if len(solves) < 3:
+        return
+    d1 = float(solves[1]["dec_deg"]) - float(solves[0]["dec_deg"])
+    d2 = float(solves[2]["dec_deg"]) - float(solves[1]["dec_deg"])
+    bend = abs(d2 - d1)
+    if bend <= _AXIS_MOVED_DEC_BEND_DEG:
+        return
+    raise DeviceError(
+        f"the mount's axis moved while it was being measured: declination "
+        f"stepped {d1 * 60:+.1f}' then {d2 * 60:+.1f}' across two identical "
+        f"RA rotations, a bend of {bend * 60:.0f}' that no fixed axis can "
+        f"produce. Alignment measures the axis by rotating it and watching "
+        f"the sky — anything that moves the axis mid-measurement (the "
+        f"alt/az bolts, a settling tripod leg, a snagged cable) wrecks all "
+        f"three points at once, and the fit would have reported the wreck "
+        f"as a confident number. Leave the bolts alone until the run says "
+        f"\"adjust the mount\", then run the alignment again.")
 
 
 def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:

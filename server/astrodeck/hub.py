@@ -221,6 +221,18 @@ CAPTURE_DIR = Path(_CAPTURE_ENV) if _CAPTURE_ENV else (Path(__file__).resolve().
 TOUCH_MAX_RATE_DEG_S = 0.6
 MOVE_DEADMAN_MS = 1200
 
+#: Centering "the mount did not move" guard (2026-08-06, on the sky: attempt 1
+#: 33.7' off, attempt 2 33.7' off — bit-identical, because the correction slew
+#: was not being executed, and the loop burned its remaining attempts saying
+#: nothing). If a re-slew changed the pointing by less than this, it did not
+#: happen: a correction commands the FULL remaining error and solve noise is
+#: arcseconds, so consecutive residuals this close mean the mount is inert.
+CENTERING_STUCK_ARCMIN = 0.5
+#: ...but only accuse when the commanded correction was LARGE. Near the
+#: tolerance a mount legitimately hovers (mechanics are ~arcmin), so the guard
+#: stays quiet unless the remaining error is at least this many tolerances.
+CENTERING_STUCK_MIN_ERR_FACTOR = 5.0
+
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
@@ -4151,11 +4163,31 @@ class Hub:
                 return {"centered": False, "error_arcmin": None,
                         "attempts": attempt, "solve_failed": True} | _rot_keys
             err = _ang_sep_deg(solved["ra_hours"], solved["dec_deg"], ra_hours, dec_deg)
-            last_err = err
             bus.log("info", f"centering attempt {attempt}: {err * 60:.1f}' off target", "solve")
             if err <= tolerance_deg:
                 bus.publish("mount", action="centered", error_arcmin=err * 60)
                 return {"centered": True, "error_arcmin": err * 60, "attempts": attempt} | _rot_keys
+            # The correction slew commanded the FULL remaining error; if the
+            # pointing barely changed, the slew did not happen. Iterating on an
+            # inert mount converges on nothing — and syncs a growing pile of
+            # identical solves into it while looking like honest work. Stop and
+            # say what is actually wrong (2026-08-06: two bit-identical 33.7'
+            # residuals, and this loop's own log was the only witness).
+            if (last_err is not None
+                    and err > CENTERING_STUCK_MIN_ERR_FACTOR * tolerance_deg
+                    and abs(err - last_err) * 60.0 < CENTERING_STUCK_ARCMIN):
+                bus.log("warning",
+                        f"centering: the correction slew changed nothing "
+                        f"({last_err * 60:.1f}' → {err * 60:.1f}' off target) — "
+                        f"the mount is not executing slews. Stopping rather "
+                        f"than repeating. Check it is unparked, tracking, and "
+                        f"clear of its limits; a mount that refuses motion in "
+                        f"its current state looks exactly like this.", "solve")
+                bus.publish("mount", action="centering_stuck",
+                            error_arcmin=err * 60)
+                return {"centered": False, "error_arcmin": err * 60,
+                        "attempts": attempt, "did_not_move": True} | _rot_keys
+            last_err = err
         return {"centered": False, "error_arcmin": (last_err or 0) * 60,
                 "attempts": max_attempts} | _rot_keys
 
