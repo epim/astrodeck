@@ -1,7 +1,6 @@
 import { api } from "../api";
 import { useStatus, useStore } from "../store";
 import { polarTier } from "./polar";
-import { LockedChip } from "./ui";
 import { nextInCycle } from "./focus/FocusPod";
 import { useCanControlMount } from "../lib/caps";
 
@@ -76,7 +75,13 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
   const live = polar.state === "running" || polar.state === "paused"
     || polar.state === "pausing";
   const hasVerdict = polar.state === "done" || polar.state === "error";
-  if (!live && !hasVerdict) return null;
+  /* The dials are for the NEXT frame, and the next frame includes the first
+     one: the whole point is setting 2 s BEFORE the run, not after six failed
+     solves (2026-08-07 19:53 — the first cut hid them until a session was
+     live, which is the Guide screen's own lesson applied backwards). So an
+     OPERATOR sees the bar, dials always; a viewer's idle screen stays clean —
+     locked dials on a screen they cannot start anything from are furniture. */
+  if (!live && !hasVerdict && !canMount) return null;
 
   const measuring = polar.phase === "measuring";
   const total = polar.total_error;
@@ -122,10 +127,11 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
   const nextBin = nextInCycle(BINS, settings.binning);
   const nextFilt = nextFilter(filters, settings.filter);
 
-  const lockReason = "Changing solve settings needs mount control access.";
+  /* Only ever rendered inside the canMount-gated row below — a viewer's bar
+     carries the status and the number, never dead controls. */
   const dial = (
     key: string, face: string, aria: string, patch: Partial<SolveSettings>,
-  ) => canMount ? (
+  ) => (
     <button
       key={key}
       type="button"
@@ -136,11 +142,6 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
     >
       {face}
     </button>
-  ) : (
-    <LockedChip key={key} reason={lockReason}
-      className="btn mono !normal-case justify-center !px-2 min-h-[40px] min-w-[48px]">
-      <span className="text-[11px]">{face}</span>
-    </LockedChip>
   );
 
   return (
@@ -170,7 +171,7 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
           )}
         </div>
 
-        {live && (
+        {canMount && (
           <div className="mt-1.5 pt-1.5 border-t border-line"
             role="group" aria-label="solve frame speed dials">
             <div className="flex items-center gap-1.5 flex-wrap">
