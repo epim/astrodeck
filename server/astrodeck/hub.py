@@ -3434,6 +3434,23 @@ class Hub:
                 state["elapsed_s"] = elapsed
                 state["eta_s"] = max(0.0, (ambient_c - setpoint) / rate * 60.0)
                 if setpoint >= ambient_c - 1e-6:
+                    # An ASSUMED ambient the sensor is still tracking was simply
+                    # too low — extend and let the lead check above end the ramp
+                    # at the real air temperature, instead of switching the TEC
+                    # off here and handing the sensor the rest of the climb in
+                    # one jump (measured 2026-08-06: assumed 20 °C, air 32 °C).
+                    higher = cooling.warm_extend_ambient_c(
+                        ambient_c, ambient_from, temp, setpoint)
+                    if higher is not None:
+                        if ambient_from == "assumed":
+                            bus.log("info",
+                                    f"warm ramp: the sensor is still following "
+                                    f"at {temp:.1f} °C, so the assumed "
+                                    f"{ambient_c:.0f} °C ambient is low — "
+                                    f"climbing to {higher:.0f} °C", "camera")
+                        ambient_c = higher
+                        state["ambient_c"] = ambient_c
+                        continue
                     if temp is None or temp >= ambient_c - cooling.WARM_MAX_LEAD_C:
                         break
                     # setpoint is at ambient but the sensor is still well below
