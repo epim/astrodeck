@@ -269,6 +269,8 @@ class SequenceEngine:
         # because _safety_gate is reachable on an engine that was constructed
         # but never started.
         self._warned_no_safety_source = False
+        #: "nothing can report a failure" is said once per RUN, same as above.
+        self._warned_no_destination = False
         # Set by the no-progress watchdog task, consumed by the RUN task's
         # safety gate (the watchdog cannot act on its own — see _watchdog_check).
         self._watchdog_tripped: str | None = None
@@ -385,6 +387,7 @@ class SequenceEngine:
         self._unsafe_streak = 0
         self._safe_streak = 0
         self._warned_no_safety_source = False
+        self._warned_no_destination = False
         self._watchdog_tripped = None
         self._last_frame_at = self._started_at
         self._progress_expected = False
@@ -947,6 +950,7 @@ class SequenceEngine:
         # semantics depend on the plan index). ``_done`` itself is keyed by
         # "<target.id>:<step.id>" (id-keyed, not by this index).
         index_of = {id(t): i for i, t in enumerate(plan.targets)}
+        self._warn_if_nothing_can_report_a_failure()
         run_start = time.time()
         order = schedule.schedule_order(plan.targets, site, twilight, run_start)
         remaining = list(order)
@@ -1987,6 +1991,50 @@ class SequenceEngine:
                 raise SafetyAbort(
                     f"{role} dropped out and did not come back after {tries} "
                     f"reconnect attempt{'s' if tries > 1 else ''}")
+
+    def _warn_if_nothing_can_report_a_failure(self) -> None:
+        """Say, at run start, when a failure tonight would reach nobody.
+
+        Same shape and the same reasoning as ``_no_safety_source`` below: the
+        run proceeds, because an unattended destination is not part of a working
+        rig and refusing to image without one would be absurd — but it is SAID,
+        once, instead of being silently permitted.
+
+        This is the gap the unattended-guards audit put first: "alerts + deadman
+        first, because without them no other failure is even observable". The
+        dispatcher, the sinks and the wall-clock dead-man's-switch are all built
+        and running; the rig simply has ``alerts: []`` and an empty
+        ``deadman_url``, so every escalation path this engine can take ends in a
+        log line on a machine nobody is looking at.
+
+        The watchdog is named separately because it is a different silence: 0
+        means the no-progress task is never even started, so a run that quietly
+        stops producing frames is not merely unreported, it is undetected.
+
+        WARNING, not error, for the reason spelled out in ``_no_safety_source``:
+        the level IS the alert type, and a default install with no sinks must not
+        page itself about having no sinks.
+        """
+        cfg = self._cfg
+        if cfg is None or self._warned_no_destination:
+            return
+        self._warned_no_destination = True
+        esc = cfg.escalation
+        sinks = [s for s in (getattr(cfg, "alerts", None) or [])
+                 if getattr(s, "enabled", True)]
+        deadman = (getattr(esc, "deadman_url", "") or "").strip()
+        if sinks or deadman:
+            return
+        watchdog_s = int(getattr(esc, "no_progress_watchdog_s", 0) or 0)
+        extra = ("" if watchdog_s else
+                 " The no-progress watchdog is also off (0), so a run that "
+                 "stops producing frames will not even be noticed.")
+        bus.log("warning",
+                "nothing can report a failure tonight: no alert sinks are "
+                "configured and no dead-man's-switch URL is set, so if this run "
+                "aborts, stalls or is paused by weather, it will say so only in "
+                "this log." + extra,
+                "alert")
 
     async def _no_safety_source(self, target: Target | None) -> None:
         """Armed safety with no monitor assigned at all.
