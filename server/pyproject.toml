@@ -1,6 +1,6 @@
 [project]
 name = "astrodeck"
-version = "0.2.64"
+version = "0.2.65"
 description = "Open, vendor-neutral astrophotography controller for your whole imaging rig"
 requires-python = ">=3.11"
 dependencies = [
@@ -110,4 +110,9 @@ astrodeck = [
     # build — so the glob must not assume a `.so` suffix comes last.
     "vendor/*/linux-*/*",
     "vendor/*/macos/*",
+    # The deep-sky catalogue (OpenNGC extract, tools/build_ngc_catalog.py).
+    # objects.py reads it relative to its own __file__ and degrades to the 64
+    # curated rows if it is missing — which is a silent, invisible failure for
+    # anyone searching a name that used to work, so it must ship.
+    "catalog/data/*.tsv",
 ]

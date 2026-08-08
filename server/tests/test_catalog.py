@@ -5,8 +5,8 @@ from astrodeck.catalog import (CATALOG, altaz, format_dec, format_ra,
                                parse_dec, parse_ra, search_catalog)
 
 
-def _ids(query):
-    return [r["id"] for r in search_catalog(query)]
+def _ids(query, limit=25):
+    return [r["id"] for r in search_catalog(query, limit)]
 
 
 def test_search_by_id_and_name():
@@ -28,7 +28,14 @@ def test_search_by_id_and_name():
     ("Sh2-155", "Sh2-155"), ("sh2 155", "Sh2-155"), ("sh2155", "Sh2-155"),
 ])
 def test_designation_search_ignores_spacing_and_case(query, expected):
-    assert _ids(query) == [expected]
+    # FIRST, not ONLY. This asserted a one-element list while the catalogue was
+    # 64 hand-written rows; with the real NGC/IC catalogue behind it (2026-08-07)
+    # "IC 434" is also a prefix of IC 4345/4346/4348 and "M3" of M30..M38, and
+    # those are legitimate neighbours to offer. What must never change is that
+    # the designation the user typed comes back at the TOP — that is what
+    # RANK_EXACT beating RANK_PREFIX is for, and it is the actual claim here.
+    ids = _ids(query)
+    assert ids and ids[0] == expected, ids[:5]
 
 
 def test_every_catalog_id_is_findable_spaced_and_unspaced():
@@ -55,16 +62,33 @@ def test_name_and_type_search_still_substring():
 
 
 def test_short_and_punctuation_queries_do_not_match_everything():
-    # "m3" is a genuine prefix of three ids and must keep matching all three;
-    # a punctuation-only query squashes to "" and must NOT match every object.
-    assert set(_ids("m3")) == {"M3", "M31", "M33"}
+    # "m3" is a genuine prefix of every M3x id and must keep matching them —
+    # with the exact M3 first (see the designation test above for why this
+    # stopped being an equality once the real catalogue landed).
+    m3 = _ids("m3", limit=99)
+    assert m3[0] == "M3", m3[:5]
+    assert {"M31", "M33"} <= set(m3), m3[:10]
+    # …and a punctuation-only query matches NOTHING, on either field. This
+    # stays an equality — it is the guard against a query that matches the
+    # whole catalogue, and a bigger catalogue only makes it matter more.
+    #
+    # "/" used to return NGC 2264, whose name is "Cone Nebula / Xmas Tree", and
+    # that was asserted deliberately. It stops being true here on purpose: a
+    # query with no letter or digit in it names nothing, and against the real
+    # catalogue "-" alone was pulling back "Eight-Burst Nebula", "ESO208-021"
+    # and twenty others. A row you reached by typing a slash is not a search
+    # result, it is an accident with a coordinate attached.
     assert _ids("-") == []
-    assert _ids("/") == ["NGC 2264"]  # matches the NAME "Cone Nebula / Xmas Tree"
+    assert _ids("/") == []
     # An empty query still browses the DEEP-SKY catalog and nothing else: the
     # 241 named stars are all brighter than every object in it and a planet's
     # position is only true for the instant it was computed, so neither belongs
     # in a "what shall I image tonight?" browse. Both answer typed queries.
-    assert len(search_catalog("", limit=99)) == len(CATALOG)
+    # (…and it is bounded by `limit`, which is the only thing standing between
+    # a browse and the whole catalogue now that the catalogue is real.)
+    browse = search_catalog("", limit=99)
+    assert len(browse) == min(99, len(CATALOG))
+    assert all(r["kind"] == "dso" for r in browse), "a browse is deep-sky only"
 
 
 def test_parse_ra_formats():

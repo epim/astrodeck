@@ -287,6 +287,9 @@ async def _drive(session: Any, hub: Any) -> None:
     #: zero" from "reported nothing"; the engine payload cannot.
     pa_raw: list[float | None] = []
     step_hours: float | None = None
+    #: The declination the WHOLE arc is commanded at, captured once beside
+    #: ``step_hours`` — see the call to ``_rotate_in_ra`` below and its docstring.
+    arc_dec: float | None = None
     for i in range(3):
         _check_alive(hub, epoch)
         await wait_if_paused(session)
@@ -303,6 +306,16 @@ async def _drive(session: Any, hub: Any) -> None:
             # stops the just-past-the-meridian flip.
             step_hours = _ra_step_hours(hub, result.ra_hours,
                                         await _pier_side(tel))
+            # The declination the arc is pinned to, read ONCE, here — the same
+            # discipline as step_hours and for the same reason. Every leg is
+            # then commanded to this exact value, so the arc is a pure RA
+            # rotation no matter what the mount claims later. Re-reading it per
+            # leg is what bent the arc on 2026-08-06/07; see _rotate_in_ra.
+            #
+            # None (a mount that will not report) leaves _rotate_in_ra on its
+            # old per-leg behaviour, which is no worse than before and better
+            # than refusing a run over a quiet mount.
+            arc_dec = await _mount_dec(tel)
             _refuse_low_arc(hub, result, step_hours)
         else:
             # The mount was told to rotate before this frame. Verify it did,
@@ -326,7 +339,7 @@ async def _drive(session: Any, hub: Any) -> None:
                 _refuse_if_it_flipped(prev[1], prev[0], result, i)
         pa_raw.append(getattr(result, "rotation_deg", None))
         solves.append(_engine_solve(frame, result))
-        _log_measurement(hub, i, result, frame)
+        await _log_measurement(hub, tel, i, result, frame)
         session._publish(state="running", source="native", phase="measuring",
                          progress=0.1 + 0.15 * (i + 1), point_index=i,
                          message=f"native TPPA: measured point {i + 1}/3")
@@ -336,7 +349,7 @@ async def _drive(session: Any, hub: Any) -> None:
             # did not ask for — the one irreversible thing this loop does. The
             # motion-epoch fence inside _rotate_in_ra still raises independently.
             await wait_if_paused(session)
-            await _rotate_in_ra(hub, tel, epoch, step_hours)
+            await _rotate_in_ra(hub, tel, epoch, step_hours, arc_dec)
 
     # ---- fit the axis + initial error -------------------------------------
     # Last gate before the fit: three points determine the axis EXACTLY, so a
@@ -864,7 +877,8 @@ def _ra_step_hours(hub: Any, cur_ra_hours: float, pier_side: Any = None) -> floa
 
 
 async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
-                        step: float | None = None) -> None:
+                        step: float | None = None,
+                        dec: float | None = None) -> None:
     """Rotate the mount in RA by one step, safety-gated. Never slews through the
     sun cone; never walks across the meridian (:func:`_ra_step_hours`); abandons
     if the motion fence advanced (an abort/STOP landed).
@@ -879,21 +893,41 @@ async def _rotate_in_ra(hub: Any, tel: Any, epoch: int,
     that started beside the meridian reverse direction halfway — walking back
     over the point it came from and collapsing the arc — because the hour angle
     is re-read each time. Defaults to deciding from the mount's current position
-    for callers that have no arc in progress."""
+    for callers that have no arc in progress.
+
+    ``dec`` GETS THE SAME DISCIPLINE, AND FOR A HARDER-WON REASON. A goto moves
+    BOTH axes. This used to re-read the mount's declination on every leg and
+    command a goto to whatever it said, so any gap between the mount's claimed
+    Dec and where it had actually arrived became a REAL declination move — and
+    the next leg read the new position and did it again, compounding. Measured
+    on the sky 2026-08-06/07: one run stepped Dec -361.6' and then +176.1' (a
+    538' bend across two rotations that were supposed to be pure RA), while the
+    very next run on the same sky held Dec flat to 2.5'. TPPA was moving the
+    declination axis itself, and then ``_refuse_if_the_axis_moved`` correctly
+    refused the arc — accusing the operator of the driver's own motion.
+
+    So the caller captures the declination ONCE when the arc begins and passes
+    that same value on every leg; the arc is then a pure RA rotation by
+    construction rather than by hoping the mount arrives. ``None`` falls back to
+    the mount's current declination, for callers with no arc in progress (and
+    for a mount too quiet to have given the caller a value to pin)."""
     _check_alive(hub, epoch)
     cur_ra, cur_dec = await tel.get_position()
     if step is None:
         step = _ra_step_hours(hub, cur_ra)
+    target_dec = cur_dec if dec is None else float(dec)
     target_ra = (cur_ra + step) % 24.0
     # Sun-exclusion cone: refuse to rotate into a daytime pointing (defense in
     # depth — the same guard the hub's motion paths use). Raises DeviceError,
-    # which run_native turns into a terminal error state.
-    hub._check_solar(target_ra, cur_dec)
+    # which run_native turns into a terminal error state. Checked against the
+    # declination actually being COMMANDED, not the one being left behind.
+    hub._check_solar(target_ra, target_dec)
     bus.log("info",
             f"native TPPA: rotating RA to {target_ra:.2f}h "
-            f"({'west' if step < 0 else 'east'}, away from the meridian)",
+            f"({'west' if step < 0 else 'east'}, away from the meridian) "
+            f"holding Dec {target_dec:+.3f}°",
             "polar")
-    await tel.slew(target_ra, cur_dec)
+    await tel.slew(target_ra, target_dec)
 
 
 def _check_alive(hub: Any, epoch: int) -> None:
@@ -998,10 +1032,13 @@ def _refuse_if_it_did_not_arrive(previous: dict, result: Any,
 #: steps is at most ε·Δθ² — with Δθ = 12° (0.209 rad) that is 0.044·ε, under
 #: 0.5° for any axis error up to ~11° and under this threshold up to ~17°.
 #: No mount anyone roughly aimed at the pole is 17° out, so a bend past this
-#: is not geometry: it is the axis MOVING between exposures. On 2026-08-06 an
+#: is not geometry: something moved between exposures that the fit — exact
+#: through any three points, with no residuals to object — would report as a
+#: confident number. Seen twice, from opposite directions: on 2026-08-06 an
 #: operator adjusted the bolts during the measuring arc (mistaking it for the
-#: adjust phase) and the fit — exact through any three points, with no
-#: residuals to object — reported the wreckage as a confident number.
+#: adjust phase), and on 2026-08-06/07 the DRIVER moved the declination axis
+#: itself, goto by goto, and this guard then refused the run for it. Hence a
+#: message that reports the observation and leaves the cause open.
 _AXIS_MOVED_DEC_BEND_DEG = 0.75
 
 
@@ -1011,10 +1048,20 @@ def _refuse_if_the_axis_moved(solves: list[dict]) -> None:
     The three points are pure RA rotations of a rigid axis: the solved Dec may
     drift smoothly across them — that drift IS the axis error being measured —
     but its progression cannot bend faster than the geometry allows (see
-    :data:`_AXIS_MOVED_DEC_BEND_DEG`). A bend past that means the axis itself
-    moved between exposures: bolts turned mid-measurement, a tripod leg
-    settling, a cable snag. Three points determine the fit exactly, so nothing
-    downstream can notice — this is the only place the wreck is visible."""
+    :data:`_AXIS_MOVED_DEC_BEND_DEG`). A bend past that means the geometry the
+    fit assumes was not the geometry that happened: the mount not arriving in
+    declination where it was sent, a cable or tripod leg settling, an alt/az
+    adjustment made mid-run. Three points determine the fit exactly, so nothing
+    downstream can notice — this is the only place the wreck is visible.
+
+    THE MESSAGE STATES THE OBSERVATION, NEVER A DIAGNOSIS. It used to open with
+    "the mount's axis moved while it was being measured" and close by telling the
+    operator to leave the bolts alone — and on 2026-08-06/07 it fired run after
+    run on a rig nobody had touched, because the DRIVER was commanding the
+    declination motion itself (see :func:`_rotate_in_ra`). A refusal that names a
+    cause it cannot know sends the one person who could have diagnosed it looking
+    at the wrong thing, and there is no evidence here that distinguishes the
+    causes: this check sees three declinations and nothing else."""
     if len(solves) < 3:
         return
     d1 = float(solves[1]["dec_deg"]) - float(solves[0]["dec_deg"])
@@ -1023,15 +1070,15 @@ def _refuse_if_the_axis_moved(solves: list[dict]) -> None:
     if bend <= _AXIS_MOVED_DEC_BEND_DEG:
         return
     raise DeviceError(
-        f"the mount's axis moved while it was being measured: declination "
-        f"stepped {d1 * 60:+.1f}' then {d2 * 60:+.1f}' across two identical "
-        f"RA rotations, a bend of {bend * 60:.0f}' that no fixed axis can "
-        f"produce. Alignment measures the axis by rotating it and watching "
-        f"the sky — anything that moves the axis mid-measurement (the "
-        f"alt/az bolts, a settling tripod leg, a snagged cable) wrecks all "
-        f"three points at once, and the fit would have reported the wreck "
-        f"as a confident number. Leave the bolts alone until the run says "
-        f"\"adjust the mount\", then run the alignment again.")
+        f"the three measurement points do not lie on one circle: declination "
+        f"stepped {d1 * 60:+.1f}' then {d2 * 60:+.1f}' across two equal RA "
+        f"rotations, a bend of {bend * 60:.0f}' that no fixed axis can produce, "
+        f"so the fit would have reported the wreck as a confident number. "
+        f"Nothing has been reported. That bend can come from the mount not "
+        f"arriving in declination where it was sent, from a cable or a tripod "
+        f"leg settling, or from an alt/az adjustment made during the measuring "
+        f"arc. Run the alignment again — if it repeats, the mount is not "
+        f"holding declination across gotos.")
 
 
 def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
@@ -1072,8 +1119,9 @@ def _refuse_low_arc(hub: Any, result: Any, step_hours: float) -> None:
         "the meridian, at least 20° from the pole, and start again.")
 
 
-def _log_measurement(hub: Any, index: int, result: Any, frame: Any) -> None:
-    """Record what a measurement point actually was.
+async def _log_measurement(hub: Any, tel: Any, index: int, result: Any,
+                           frame: Any) -> None:
+    """Record what a measurement point actually was — from BOTH witnesses.
 
     The fit consumes three solved positions and publishes one number. Until this
     existed, a run that produced a nonsense number left NO record of the three
@@ -1082,17 +1130,36 @@ def _log_measurement(hub: Any, index: int, result: Any, frame: Any) -> None:
     watch. Hour angle is included because the sign of it is what says whether
     the arc is walking toward the meridian.
 
-    Best-effort by construction. This writes a log line and nothing else, so a
-    missing field or an unreadable timestamp must not abort a run that has
-    already committed the mount to a 24 degree arc — losing the diagnostic is a
-    far smaller loss than losing the alignment it was describing."""
+    THE SOLVED POSITION ALONE IS NOT ENOUGH, and 2026-08-06/07 is the proof: the
+    log showed declination stepping hundreds of arcminutes across an arc that was
+    supposed to be a pure RA rotation, and nothing in it could say whether the
+    DRIVER had commanded that motion or the MOUNT had wandered off a Dec it was
+    told to hold. Diagnosing it cost a night and a rig-side reproduction. With
+    the mount's own claim beside the sky's, the next occurrence separates itself
+    on sight: a mount claiming a constant Dec while the sky dips is a mount that
+    is not arriving where it was sent; a mount claiming the dip too is a
+    declination the driver commanded.
+
+    Best-effort by construction, and the mount read especially so. This writes a
+    log line and nothing else, so a missing field, an unreadable timestamp, or a
+    mount that will not answer a position query must not abort a measurement
+    that already SUCCEEDED — losing the diagnostic is a far smaller loss than
+    losing the alignment it was describing."""
+    try:
+        m_ra, m_dec = await tel.get_position()
+        claimed = ("the mount would not say where it is"
+                   if m_ra is None or m_dec is None else
+                   f"mount says RA {float(m_ra):.4f}h Dec {float(m_dec):+.3f}°")
+    except Exception:  # noqa: BLE001 — see above
+        claimed = "the mount would not say where it is"
     try:
         ha = hour_angle_h(result.ra_hours, hub.site["longitude"], frame.timestamp)
         bus.log("info",
-                f"native TPPA point {index + 1}/3: RA {result.ra_hours:.4f}h "
-                f"Dec {result.dec_deg:+.3f}° HA {ha:+.3f}h "
-                f"PA {(result.rotation_deg or 0.0):.1f}° "
-                f"({90.0 - abs(result.dec_deg):.1f}° from the pole)", "polar")
+                f"native TPPA point {index + 1}/3: solved RA "
+                f"{result.ra_hours:.4f}h Dec {result.dec_deg:+.3f}° "
+                f"HA {ha:+.3f}h PA {(result.rotation_deg or 0.0):.1f}° "
+                f"({90.0 - abs(result.dec_deg):.1f}° from the pole); "
+                f"{claimed}", "polar")
     except Exception:  # noqa: BLE001 — see above; a log line is never worth a run
         pass
 

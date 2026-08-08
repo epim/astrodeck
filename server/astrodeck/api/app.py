@@ -889,6 +889,11 @@ class RotateToPaBody(BaseModel):
     exposure_s: float = 3.0
 
 
+class RotatorSyncBody(BaseModel):
+    """Sky-sync the rotator (no motion). Only the solve frame's exposure."""
+    exposure_s: float = Field(3.0, gt=0, le=60)
+
+
 class AutofocusBody(BaseModel):
     exposure_s: float = 2.0
     gain: int = 120
@@ -4190,6 +4195,20 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "this rotator does not support reverse")
         await rot.set_reverse(body.reverse)
         return {"reverse": body.reverse}
+
+    @app.post("/api/rotator/sync-to-sky",
+              dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
+    @declare(CAP_CONTROL_CAPTURE)
+    async def rotator_sync_to_sky(body: RotatorSyncBody):
+        """Measure the sky position angle and tell the rotator where it is.
+        MOVES NOTHING. Before this the only way to establish the sky↔mechanical
+        offset was to command a rotation (2026-08-07)."""
+        try:
+            hub.require("rotator")
+            hub.require("camera")
+        except DeviceError as e:
+            raise _err(e)
+        return _spawn("rotate_to_pa", hub.sync_rotator_to_sky(body.exposure_s))
 
     @app.post("/api/rotator/rotate-to-pa",
               dependencies=[Depends(require(CAP_CONTROL_CAPTURE))])
