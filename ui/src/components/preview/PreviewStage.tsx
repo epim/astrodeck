@@ -63,6 +63,15 @@ interface Props {
    *  The ratio still wins wherever it gives more, so this only bites on narrow
    *  screens — which is exactly where it is needed. */
   minHeight?: number;
+  /** Height, in px, of a sibling overlay parked over the stage's BOTTOM-RIGHT
+   *  corner that this component cannot see.
+   *
+   *  FocusView lays its pod disc there (POD_BOTTOM_PX + POD_DISC_PX), and on a
+   *  compact stage that is the corner the loupe would otherwise reach into from
+   *  the top. Declared by the caller rather than imported from the focus feature
+   *  because the stage is shared chrome: it has no business knowing what Focus
+   *  draws on it, only how much room it has been left. */
+  bottomRightReserve?: number;
   // expose gesture controls to a parent toolbar
   onControls?: (c: StageControls) => void;
 }
@@ -105,6 +114,7 @@ export function PreviewStage(props: Props) {
     stretchDragging = false,
     compact = false,
     minHeight,
+    bottomRightReserve = 0,
     onControls,
   } = props;
   const stageMinH = minHeight ?? (compact ? undefined : 380);
@@ -447,12 +457,38 @@ export function PreviewStage(props: Props) {
   // 0 == even the minimum useful 1:1 window would crowd this stage; we then say
   // so where the loupe would have been instead of dropping the toggle on the
   // floor. (lib/cropRoi.loupeBoxSize documents the scale-vs-suppress reasoning.)
-  const loupeBox = loupeBoxSize(stageSize.w);
-  const loupeShown = loupeOn && linearEnabled && !compact && loupeBox > 0;
+  //
+  // WHICH CORNER. Bottom-right normally. On a `compact` stage that corner is
+  // spoken for — FocusView parks its pod disc there — so the loupe takes the
+  // TOP-right instead, which on a compact stage is empty precisely because the
+  // scale bar is already suppressed there (see `!compact` below). Either way it
+  // is a corner: the loupe samples the VIEWPORT CENTRE, so it must never be the
+  // thing covering the pixels it is magnifying.
+  const loupeCorner: "top-right" | "bottom-right" = compact ? "top-right" : "bottom-right";
+  // …and how much of the stage's height it may reach into. The stage cannot see
+  // its own siblings, so the caller declares what one of them owns along the
+  // bottom edge (`bottomRightReserve`); the loupe, pinned to the top on a
+  // compact stage, gets what is left. 0 while unmeasured, which loupeBoxSize
+  // reads as "not measured yet, assume it fits".
+  const loupeUsableH = Math.max(0, stageSize.h - (compact ? bottomRightReserve : 0));
+  const loupeBox = loupeBoxSize(stageSize.w, loupeUsableH, compact);
+  // THE MAGNIFIER IS NOT A DESKTOP FEATURE. It used to be gated on `!compact`,
+  // which meant it could not appear on the Focus screen at all — the one screen
+  // whose entire job is judging focus, on the device (a phone at the eyepiece)
+  // where you most want to pixel-peep. That gate was about real estate, and real
+  // estate is what `loupeBoxSize` is for.
+  const loupeShown = loupeOn && linearEnabled && loupeBox > 0;
   // Horizontal room the bottom-left chips must leave for the loupe panel (its
   // own 8px inset + chrome + an 8px gap). Without this the untruncated SNR chip
-  // ran straight under the loupe on a phone.
-  const chipReserve = loupeShown ? loupeBox + LOUPE_CHROME_PX + 24 : 16;
+  // ran straight under the loupe on a phone. Only when the loupe is actually
+  // sharing the bottom edge with them.
+  const loupeAtBottom = loupeShown && loupeCorner === "bottom-right";
+  const chipReserve = loupeAtBottom ? loupeBox + LOUPE_CHROME_PX + 24 : 16;
+  // …and the mirror of it along the TOP edge: the Bahtinov verdict is centred up
+  // there, so when the loupe holds the top-right the verdict centres in what is
+  // left of the row rather than sliding under it.
+  const topRightReserve =
+    loupeShown && loupeCorner === "top-right" ? loupeBox + LOUPE_CHROME_PX + 24 : 0;
 
   // NINA / pre-stretched path: Brightness/Contrast are display-only and MUST
   // visibly act on the rendered <img> (honesty rule #6 — no fake control). We
@@ -707,13 +743,23 @@ export function PreviewStage(props: Props) {
         const tint = v.tone === "good" ? "!text-good"
           : v.tone === "bad" ? "!text-bad" : v.tone === "warn" ? "!text-warn" : "";
         return (
+          // Centred in the row MINUS whatever the loupe holds on the right, not
+          // in the whole row: on a 324px compact stage a centred "Not yet — turn
+          // in" reaches x=227 and the top-right loupe starts at x=208, so the
+          // verdict slid underneath it. Padding the flex row shifts the chip
+          // instead of narrowing it, so it never wraps to two lines either.
           <div
-            className={`absolute top-2 left-1/2 -translate-x-1/2 preview-chip flex items-center gap-1 ${tint}`}
-            role="status"
-            aria-live="polite"
+            className="absolute top-2 left-0 right-0 flex justify-center pointer-events-none"
+            style={{ paddingLeft: 8, paddingRight: 8 + topRightReserve }}
           >
-            <Icon name={v.tone === "good" ? "check" : "focus"} size={11} />
-            {v.headline}
+            <div
+              className={`preview-chip flex items-center gap-1 ${tint}`}
+              role="status"
+              aria-live="polite"
+            >
+              <Icon name={v.tone === "good" ? "check" : "focus"} size={11} />
+              {v.headline}
+            </div>
           </div>
         );
       })()}
@@ -761,18 +807,29 @@ export function PreviewStage(props: Props) {
         <SnrChip preview={preview} />
       </div>
 
-      {/* decimation disclosure — lifted clear of the loupe when it's open */}
+      {/* decimation disclosure — lifted clear of the loupe when the two share
+          the bottom-right corner (they do not on a compact stage, where the
+          loupe rides at the top). */}
       {overlays.stars && starsAvailable && decimated && decimated.shown < decimated.total && (
-        <div className="absolute right-2 preview-chip" style={{ bottom: loupeShown ? loupeBox + 52 : 8 }}>
+        <div className="absolute right-2 preview-chip" style={{ bottom: loupeAtBottom ? loupeBox + 52 : 8 }}>
           Showing {decimated.shown}/{decimated.total} stars
         </div>
       )}
 
       {/* ADVANCED: sensor-1:1 loupe (opt-in; the toolbar's "1:1" toggle). Reuses
           the debounced crop the zoom layer already fetched — Decision D. Sized to
-          the measured stage; see loupeBoxSize. */}
+          the measured stage; see loupeBoxSize.
+
+          `data-no-pan` for the same reason every other tappable thing over this
+          stage carries it: the gesture layer binds pointerdown natively on the
+          stage root, so two presses on "Copy region" counted as a double tap and
+          flipped the zoom instead of copying twice. */}
       {loupeShown && (
-        <div className="absolute bottom-2 right-2">
+        <div
+          data-no-pan
+          data-loupe={loupeCorner}
+          className={`absolute right-2 ${loupeCorner === "top-right" ? "top-2" : "bottom-2"}`}
+        >
           <LoupePanel
             url={crop.url}
             roi={crop.roi}
@@ -781,17 +838,21 @@ export function PreviewStage(props: Props) {
             previewId={preview.id}
             loading={crop.loading}
             size={loupeBox}
+            dense={compact}
           />
         </div>
       )}
 
-      {/* …and when the stage is too narrow to host even the minimum useful 1:1
-          window, say that where the loupe would have been. A toggle the user
-          just pressed must never silently do nothing (§11.8) — Icon + WORD, with
-          the full reason on a tap/hover/focus path. */}
-      {loupeOn && linearEnabled && !compact && loupeBox === 0 && (
-        <div data-no-pan className="absolute bottom-2 right-2">
-          <Tooltip content="A 1:1 view needs about 320 px of preview width to show enough sensor pixels to judge focus. Rotate the device, or open the preview in a wider panel.">
+      {/* …and when the stage cannot host even the minimum useful 1:1 window, say
+          that where the loupe would have been. A toggle the user just pressed
+          must never silently do nothing (§11.8) — Icon + WORD, with the full
+          reason on a tap/hover/focus path. */}
+      {loupeOn && linearEnabled && loupeBox === 0 && (
+        <div
+          data-no-pan
+          className={`absolute right-2 ${loupeCorner === "top-right" ? "top-2" : "bottom-2"}`}
+        >
+          <Tooltip content="A 1:1 view needs about 200 px of preview width, and enough height for the window plus its caption, to show sensor pixels you could judge focus from. Rotate the device, or open the preview in a wider panel.">
             <span className="preview-chip flex items-center gap-1">
               <Icon name="lock" size={11} /> Magnifier hidden
             </span>
