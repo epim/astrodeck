@@ -43,6 +43,12 @@ g.requestAnimationFrame = (cb: (t: number) => void) =>
   setTimeout(() => cb(win.performance.now()), 0) as unknown as number;
 g.cancelAnimationFrame = (id: number) => clearTimeout(id as unknown as NodeJS.Timeout);
 g.IS_REACT_ACT_ENVIRONMENT = true;
+// React's ChangeEventPlugin falls back to an IE8 polyfill (`attachEvent`) unless
+// it can see `oninput` on the document, and jsdom does not expose it. Opening
+// OFFSET now puts focus in its field, so every later event reached for a method
+// that has not existed since 2011 and printed a stack trace over a passing run.
+// This is a faithful shim, not a workaround — every real browser has it.
+if (!("oninput" in win.document)) win.document.oninput = null;
 // The dial sizes its arc from a ResizeObserver; jsdom has none. Report a stage
 // big enough for the full radius so `fits` is true.
 g.ResizeObserver = class {
@@ -79,6 +85,7 @@ const CameraDial = (await import("../ui/CameraDial")).default;
 const { dialPolar, dialRadius, dialFractions } =
   await import("../ui/CameraDial");
 const { cameraDialCategories } = await import("../ui/CameraPickers");
+const { ARC_MAX_OPTIONS } = await import("../../lib/ringDial");
 
 // A FRESH MOUNT PER CASE. The dial owns `open`/`openCat` internally, so
 // re-rendering into a shared root carries the previous case's ring state into
@@ -94,25 +101,37 @@ const items = (): string[] =>
 
 // The calls the dial makes, in order.
 const calls: string[] = [];
-const cats = cameraDialCategories({
-  values: { exposure_s: 2, gain: 120, binning: 1, offset: 30, filter: null },
-  filters: ["L", "R"],
-  currentFilter: "L",
-  onExposure: (s) => calls.push(`exposure=${s}`),
-  onGain: (v) => calls.push(`gain=${v}`),
-  onBinning: (b) => calls.push(`binning=${b}`),
-  onOffset: (o) => calls.push(`offset=${o}`),
-  onFilter: (f) => calls.push(`filter=${f}`),
-});
+const mkCats = (o: { exposures?: number[]; filters?: string[] } = {}) =>
+  cameraDialCategories({
+    values: { exposure_s: 2, gain: 120, binning: 1, offset: 30, filter: null },
+    exposures: o.exposures,
+    filters: o.filters ?? ["L", "R"],
+    currentFilter: "L",
+    onExposure: (s) => calls.push(`exposure=${s}`),
+    onGain: (v) => calls.push(`gain=${v}`),
+    onBinning: (b) => calls.push(`binning=${b}`),
+    onOffset: (o2) => calls.push(`offset=${o2}`),
+    onFilter: (f) => calls.push(`filter=${f}`),
+  });
+const cats = mkCats();
 
-const render = () => {
+const render = (c: any = cats) => {
   if (root) act(() => root!.unmount());
   win.document.getElementById("root").innerHTML = "";
   root = createRoot(win.document.getElementById("root"));
   act(() => root!.render(React.createElement(CameraDial, {
-    categories: cats, label: "Camera settings", summary: "2s g120",
+    categories: c, label: "Camera settings", summary: "2s g120",
   })));
 };
+
+const ring = (): any => win.document.querySelector("[data-ring-picker]");
+const seats = (): string[] =>
+  Array.from(win.document.querySelectorAll("[data-dial-slot]"))
+    .map((d: any) => d.getAttribute("data-dial-seat"));
+const key = (el: any, k: string) =>
+  act(() => { el.dispatchEvent(new win.KeyboardEvent("keydown",
+    { key: k, bubbles: true, cancelable: true })); });
+const focused = (): any => win.document.activeElement;
 
 // --------------------------------------------------------------- pure geometry
 
@@ -218,6 +237,237 @@ test("tapping the disc again closes everything", () => {
   act(() => item("binning").click());
   act(() => disc().click());
   assert.equal(items().length, 0);
+});
+
+// ═══════════════════════════════════ the ring, and the seat Back used to steal
+//
+// Reported 2026-08-08: "the exposures are too densely populated. I can't
+// actually read any of them", and separately that FILT read "R G B S H O" with
+// no L. Both are geometry. The arithmetic is pinned in lib/__tests__/
+// ringDial.test.ts (chords, seats, reach); what is pinned HERE is that the
+// component actually routes to the layout that arithmetic chose, and that the
+// first option of a second ring exists and has a seat nobody else is standing on.
+
+test("BACK HAS ITS OWN SEAT — it used to sit on the first option and hide it", () => {
+  // The exact reported shape: a filter ring whose first entry is L. Four
+  // filters plus Back is the arc's five seats, so this is the INLINE path —
+  // the one that was broken, and the one the overlay does not cover.
+  render(mkCats({ filters: ["L", "R", "G", "B"] }));
+  act(() => disc().click());
+  act(() => item("filter").click());
+  assert.ok(item("L"), "L is missing from the filter ring");
+  assert.deepEqual(items(), ["L", "R", "G", "B", "__back"]);
+
+  const s = seats();
+  assert.equal(s.length, 5, `expected 5 seats, got ${s.join("|")}`);
+  assert.equal(new Set(s).size, s.length,
+    `two chips share a seat: ${s.join("|")} — this is exactly the bug that ate L`);
+  // …and the one that was collided with, named: Back keeps frac 0, the option
+  // that used to be under it does not.
+  assert.equal(
+    win.document.querySelector('[data-dial-item="__back"]')
+      .closest("[data-dial-slot]").getAttribute("data-dial-seat"), "0");
+  assert.ok(
+    item("L").closest("[data-dial-slot]").getAttribute("data-dial-seat") !== "0",
+    "the first option is still standing on Back's seat");
+});
+
+test("every category's FIRST option is reachable, not just the filters", () => {
+  // The collision ate index 0 of whatever the second ring held, so the check is
+  // over every category that has one — the shortest exposure, the lowest gain,
+  // bin 1, the first filter.
+  const first: Record<string, string> = {
+    exposure: "0.3", gain: "0", binning: "1", filter: "L",
+  };
+  render(mkCats({ filters: ["L", "R", "G", "B"] }));
+  for (const [cat, id] of Object.entries(first)) {
+    render(mkCats({ filters: ["L", "R", "G", "B"] }));
+    act(() => disc().click());
+    act(() => item(cat).click());
+    assert.ok(item(id), `${cat}: first option "${id}" is not in the tree`);
+    const box = item(id).closest("[data-dial-slot]");
+    if (box) {
+      assert.ok(box.getAttribute("data-dial-seat") !== "0",
+        `${cat}: first option is on Back's seat`);
+    }
+  }
+});
+
+test("four options stay on the arc; five open the ring", () => {
+  // The threshold, at the component. Four is the arc's capacity once Back has
+  // taken a seat (ARC_MAX_OPTIONS), so it is the last count that stays put.
+  assert.equal(ARC_MAX_OPTIONS, 4);
+
+  render(mkCats({ exposures: [1, 2, 5, 10] }));
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  assert.ok(!ring(), "four options must NOT pop a dialog — the arc holds them");
+  assert.deepEqual(items(), ["1", "2", "5", "10", "__back"]);
+
+  render(mkCats({ exposures: [1, 2, 5, 10, 15] }));
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  assert.ok(ring(), "five options must open the ring — the arc cannot seat them");
+});
+
+test("thirteen exposures open a ring with the icon in the middle", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  assert.ok(ring(), "the reported case must not stay on the arc");
+  assert.equal(ring().querySelector("[data-ring-fit]").getAttribute("data-ring-fit"),
+    "ring", "a stage this size must get the ring, not the small-screen fallback");
+
+  const hub = win.document.querySelector("[data-ring-hub]");
+  assert.ok(hub, "no hub — the operator asked for the icon in the middle");
+  assert.ok(/EXP/.test(hub.textContent), "the hub must name the category");
+  assert.ok(/2s/.test(hub.textContent),
+    "and carry the current value, so it is readable without hunting the ring");
+  assert.ok(/back/i.test(hub.getAttribute("aria-label")),
+    "the hub is the way back and must say so");
+  assert.equal(hub.getAttribute("data-dial-item"), "__back");
+
+  // Every value present, first and last included, each saying what it SETS.
+  const ids = items();
+  assert.ok(ids.includes("0.3"), `shortest exposure missing: ${ids.join(",")}`);
+  assert.ok(ids.includes("300"), `longest exposure missing: ${ids.join(",")}`);
+  assert.equal(ids.length, 14, "13 exposures + the hub");
+  assert.equal(item("30").getAttribute("aria-label"), "EXP 30s",
+    "an item must name what it sets, not just its own face");
+
+  // The current value is the one the ring is anchored on, and it is marked.
+  assert.ok(/text-accent/.test(item("2").getAttribute("class")),
+    "the value in force must be findable without reading every label");
+});
+
+test("gain goes to the ring too — ten is over the line", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("gain").click());
+  assert.ok(ring(), "ten gains overlap on the arc");
+  assert.equal(items().length, 11, "10 gains + the hub");
+  calls.length = 0;
+  act(() => item("400").click());
+  assert.deepEqual(calls, ["gain=400"]);
+  assert.ok(!ring(), "picking a value dismisses the dialog");
+});
+
+test("the ring is not a one-way door, and Back lands you where you were", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  assert.ok(ring());
+  act(() => win.document.querySelector("[data-ring-hub]").click());
+  assert.ok(!ring(), "the hub must close the ring");
+  assert.deepEqual(items(), ["exposure", "gain", "binning", "offset", "filter"]);
+  assert.equal(focused(), item("exposure"),
+    "focus must return to the chip you opened, not to <body>");
+});
+
+test("a screen too small for a legible ring DEGRADES, it does not vanish", () => {
+  // A ring of 13 needs a 298px square (lib/ringDial.ringMinViewport). Below
+  // that it must not draw a tighter ring — a tighter ring IS the bug — so the
+  // same chips come back as a list. Every value must still be there and still
+  // say what it sets.
+  const w = win.innerWidth, h = win.innerHeight;
+  Object.defineProperty(win, "innerWidth", { value: 280, configurable: true });
+  Object.defineProperty(win, "innerHeight", { value: 260, configurable: true });
+  try {
+    render();
+    act(() => disc().click());
+    act(() => item("exposure").click());
+    assert.ok(ring(), "the dialog must still open");
+    assert.equal(ring().querySelector("[data-ring-fit]").getAttribute("data-ring-fit"),
+      "list", "a 280px screen cannot hold a 298px ring and must say so");
+    assert.equal(items().length, 14, "no value may be dropped to make it fit");
+    assert.equal(item("300").getAttribute("aria-label"), "EXP 5m");
+    assert.ok(win.document.querySelector("[data-ring-hub]"), "still a way back");
+  } finally {
+    Object.defineProperty(win, "innerWidth", { value: w, configurable: true });
+    Object.defineProperty(win, "innerHeight", { value: h, configurable: true });
+  }
+});
+
+// ------------------------------------------------------------ the keyboard
+
+test("arrows walk the ring, and the roving tabindex follows", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  // Focus opens on the CURRENT value (2s), not on the first chip.
+  assert.equal(focused(), item("2"), "focus must start on the value in force");
+  assert.equal(item("2").getAttribute("tabindex"), "0");
+  assert.equal(item("0.3").getAttribute("tabindex"), "-1",
+    "only one chip may be in the tab order");
+
+  key(focused(), "ArrowRight");
+  assert.equal(focused(), item("5"), "ArrowRight goes one stop LONGER");
+  key(focused(), "ArrowLeft");
+  key(focused(), "ArrowLeft");
+  assert.equal(focused(), item("1"), "ArrowLeft goes one stop shorter");
+  key(focused(), "Home");
+  assert.equal(focused(), item("0.3"));
+  key(focused(), "ArrowLeft");
+  assert.equal(focused(), item("300"), "a circle has no first item — it wraps");
+  key(focused(), "ArrowRight");
+  assert.equal(focused(), item("0.3"), "…and no last item either");
+  key(focused(), "End");
+  assert.equal(focused(), item("300"));
+});
+
+test("Tab stays inside the ring — the page behind it is not reachable", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  const hub = win.document.querySelector("[data-ring-hub]");
+  assert.equal(focused(), item("2"));
+  key(focused(), "Tab");
+  assert.equal(focused(), hub, "Tab must reach the way out, not the page behind");
+  key(focused(), "Tab");
+  assert.equal(focused(), item("2"),
+    "…and come back, rather than walking onto a page under a full-screen scrim");
+});
+
+test("Escape backs out one ring at a time and hands the disc back", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  assert.ok(ring());
+
+  key(win, "Escape");
+  assert.ok(!ring(), "Escape must leave the ring");
+  assert.deepEqual(items(), ["exposure", "gain", "binning", "offset", "filter"]);
+
+  key(win, "Escape");
+  assert.equal(items().length, 0, "a second Escape closes the dial");
+  assert.equal(focused(), disc(),
+    "focus must land on the disc or the next Tab restarts at the top of the page");
+});
+
+test("dismissing the ring by tapping outside also restores focus", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("gain").click());
+  const scrim = ring().querySelector("[aria-hidden]");
+  act(() => scrim.dispatchEvent(new win.MouseEvent("pointerdown", { bubbles: true })));
+  assert.equal(items().length, 0, "tapping off the ring closes the whole dial");
+  assert.equal(focused(), disc());
+});
+
+test("the ring is a menu of menuitems, and the scrim is not a control", () => {
+  render();
+  act(() => disc().click());
+  act(() => item("exposure").click());
+  const menu = ring().querySelector('[role="menu"]');
+  assert.ok(menu, "no menu role");
+  assert.ok(/EXP/.test(menu.getAttribute("aria-label")),
+    `the menu must name the category: ${menu.getAttribute("aria-label")}`);
+  const buttons = Array.from(ring().querySelectorAll("button"));
+  assert.ok(buttons.length > 0);
+  assert.ok(buttons.every((b: any) => b.getAttribute("role") === "menuitem"),
+    "every control in the ring must be a menuitem");
+  assert.ok(buttons.every((b: any) => (b.getAttribute("aria-label") ?? "").length > 0),
+    "an unnamed control in the dark is an unnamed control");
 });
 
 // ------------------------------------------------------------------- report
