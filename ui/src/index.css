@@ -983,3 +983,16 @@ nav.fixed[aria-label="Primary"] { padding-bottom: env(safe-area-inset-bottom, 0p
 }
 .stepper:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .stepper:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ============================================================= RETICLE CAP
+   The Align reticle's size ceiling. 338px is the full instrument; the
+   viewport-height term keeps the Total-error panel on the FIRST screenful of
+   a phone in portrait — the 2026-08-07 complaint, twice: SE-class phones
+   (short vh) and then a S25 Ultra, where 44vh never bit because vh ignores
+   the browser chrome. dvh tracks the visible viewport; the plain-vh rule is
+   the fallback for engines without it. Must come AFTER .instr-fit (both are
+   single-class max-width rules; source order decides). */
+.reticle-cap { max-width: min(338px, 42vh); }
+@supports (height: 1dvh) {
+  .reticle-cap { max-width: min(320px, 40dvh); }
+}
