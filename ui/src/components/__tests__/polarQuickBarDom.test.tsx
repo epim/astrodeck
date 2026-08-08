@@ -233,6 +233,40 @@ test("the filter menu offers as-is and every real slot — never Dark", () => {
   });
 });
 
+test("an open menu is nudged back inside the viewport", () => {
+  /* 2026-08-07 20:53, on a real S25 Ultra: the right-aligned FILT picker sits
+     near the LEFT edge of a phone, so `right-0` hung its 190px panel off the
+     left of the window — the operator saw an empty black rectangle, because
+     every option's text was outside the screen. PickerButton now measures
+     after paint and translates the minimum amount to fit. */
+  render({ ...LIVE, solve_settings: {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null } });
+  // jsdom reports zero-size rects, so the panel's geometry is stubbed at the
+  // PROTOTYPE (React mounts a fresh node on every open, so a per-node stub
+  // would measure the previous panel). 120px off the left edge + the 8px
+  // margin = a 128px correction.
+  const realRect = win.Element.prototype.getBoundingClientRect;
+  win.Element.prototype.getBoundingClientRect = function () {
+    if (this.getAttribute?.("role") === "listbox") {
+      return { left: -120, right: 70, top: 44, bottom: 300,
+               width: 190, height: 256, x: -120, y: 44 };
+    }
+    return realRect.call(this);
+  };
+  try {
+    const filt = picker("FILT");
+    assert.ok(filt, "no filter picker");
+    act(() => filt.click());
+    const panel = win.document.querySelector("[role='listbox']");
+    assert.ok(panel, "the menu never opened");
+    assert.equal(panel.style.transform, "translateX(128px)",
+      "a menu hanging off the left edge must be pushed back inside");
+    act(() => filt.click());          // close
+  } finally {
+    win.Element.prototype.getBoundingClientRect = realRect;
+  }
+});
+
 test("a finished session keeps the verdict AND the pickers — the next run starts here", () => {
   render({ state: "done", total_error: 0.8, az_error: 0.5, alt_error: 0.6 });
   assert.match(text(), /0\.8′/);

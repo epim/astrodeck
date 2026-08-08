@@ -155,26 +155,31 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
         {canMount && (
           <div className="mt-1.5 pt-1.5 border-t border-line"
             role="group" aria-label="solve frame settings">
-            <div className="flex items-center gap-1.5 flex-wrap">
+            {/* FOUR EQUAL COLUMNS, not a wrapping flex row: on a 412px phone
+                the flex row broke FILT onto a second line by itself. A grid
+                keeps one tidy row of thumb-sized buttons at every width. */}
+            <div className={`grid gap-1.5 ${filters.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}>
               <PickerButton
                 label="EXP"
                 summary={fmtExp(settings.exposure_s)}
+                className="w-full !justify-center"
+                columns={3}
                 options={EXPOSURES.map((e) => ({ id: String(e), label: fmtExp(e) }))}
                 selected={[String(settings.exposure_s)]}
                 onPick={(id) => put({ exposure_s: Number(id) })}
               >
                 {/* narrowband-over-OSC rigs need values no list predicts */}
-                <div className="border-t border-line mt-1 pt-1.5 px-1 pb-1 flex items-center gap-1.5">
+                <div className="col-span-3 border-t border-line mt-1 pt-2 flex items-center gap-1.5">
                   <input
                     ref={customExp}
-                    className="field !w-20 mono text-xs"
+                    className="field flex-1 min-w-0 mono text-xs"
                     inputMode="decimal"
                     placeholder="custom s"
                     aria-label="Custom exposure in seconds"
                     defaultValue=""
                     onKeyDown={(e) => { if (e.key === "Enter") applyCustomExposure(); }}
                   />
-                  <button type="button" className="btn min-h-[36px] text-[11px] !px-3"
+                  <button type="button" className="btn min-h-[40px] text-[11px] !px-3"
                     onClick={applyCustomExposure}>
                     Set
                   </button>
@@ -183,6 +188,8 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
               <PickerButton
                 label="GAIN"
                 summary={String(settings.gain)}
+                className="w-full !justify-center"
+                columns={3}
                 options={GAINS.map((v) => ({ id: String(v), label: String(v) }))}
                 selected={[String(settings.gain)]}
                 onPick={(id) => put({ gain: Number(id) })}
@@ -190,6 +197,8 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
               <PickerButton
                 label="BIN"
                 summary={`${settings.binning}×${settings.binning}`}
+                className="w-full !justify-center"
+                columns={2}
                 options={BINS.map((b) => ({ id: String(b), label: `${b}×${b}` }))}
                 selected={[String(settings.binning)]}
                 onPick={(id) => put({ binning: Number(id) })}
@@ -198,7 +207,9 @@ export function PolarQuickBar({ polar }: { polar: QuickBarPolar }) {
                 <PickerButton
                   label="FILT"
                   summary={settings.filter ?? "as-is"}
+                  className="w-full !justify-center"
                   align="right"
+                  columns={2}
                   options={[
                     { id: "", label: "as-is",
                       hint: "leave the filter wheel where it sits" },
