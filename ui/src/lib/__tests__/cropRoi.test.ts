@@ -9,7 +9,10 @@ import {
   LOUPE_BOX_MAX,
   LOUPE_BOX_MIN,
   LOUPE_CHROME_PX,
-  LOUPE_STAGE_FRACTION,
+  LOUPE_CHROME_V_DENSE_PX,
+  LOUPE_CHROME_V_PX,
+  LOUPE_INSET_PX,
+  LOUPE_STAGE_FRACTION_MAX,
   loupeBoxSize,
   quantizeRoi,
   shouldCrop,
@@ -112,15 +115,64 @@ test("loupeBoxSize: full size on a roomy stage, unmeasured assumed roomy", () =>
 test("loupeBoxSize: scales down on a phone stage instead of suppressing", () => {
   // The reported regression: a 172px panel on a 360px stage was ~48% of it.
   eq(loupeBoxSize(360), 108, "360px stage");
-  eq(loupeBoxSize(320), LOUPE_BOX_MIN, "320px stage lands on the floor");
+  eq(loupeBoxSize(390), 120, "390px stage");
+  eq(loupeBoxSize(412), 128, "412px stage");
+  eq(loupeBoxSize(430), 132, "430px stage");
   eq((360 - (108 + LOUPE_CHROME_PX)) > 0, true, "still leaves room for the chip stack");
 });
 
-test("loupeBoxSize: suppresses (0) only below the usable floor", () => {
-  eq(loupeBoxSize(318), LOUPE_BOX_MIN, "last width that still fits the floor");
-  eq(loupeBoxSize(317), 0, "one px narrower suppresses");
-  eq(loupeBoxSize(280), 0, "tiny stage");
+// THE 2026-08-08 DEFECT, as arithmetic. `main` pads 16, `.panel` pads 16 and
+// draws a 1px border, so a phone hands the stage its viewport width minus 66.
+// The old rule was `floor(stageW * 0.34) - 12`, suppressed below a 96px floor:
+//   390px phone -> 324px stage -> 98  (survived by ONE pixel)
+//   384px phone -> 318px stage -> 96  (survived by ZERO)
+//   360px phone -> 294px stage -> 87  -> SUPPRESSED, on the device it is for.
+// A 1:1 window is a pixel RATIO, so the answer is a smaller window, not none.
+test("loupeBoxSize: the phone stages a 390/384/360px device actually produces", () => {
+  eq(loupeBoxSize(324), 96, "390px phone, full stage");
+  eq(loupeBoxSize(318), 96, "384px phone (Galaxy S25 Ultra), full stage");
+  eq(loupeBoxSize(294), 88, "360px phone — was 0 before, and must never be again");
+  eq(loupeBoxSize(254), 88, "320px phone, the narrowest device we lay out for");
+});
+
+test("loupeBoxSize: suppresses (0) only when the corner cannot hold the floor", () => {
+  // The hard limit is a SHARE of the stage, not a fixed width: past half the
+  // stage the loupe has stopped being an inset and become a split screen.
+  const cut = Math.ceil((LOUPE_BOX_MIN + LOUPE_CHROME_PX) / LOUPE_STAGE_FRACTION_MAX);
+  eq(cut, 200, "the suppression width, derived rather than chosen");
+  eq(loupeBoxSize(200), LOUPE_BOX_MIN, "last width that still fits the floor");
+  eq(loupeBoxSize(199), 0, "one px narrower suppresses");
   eq(loupeBoxSize(1), 0, "degenerate stage");
+});
+
+test("loupeBoxSize: HEIGHT suppresses too — the panel is taller than it is wide", () => {
+  // A compact stage is 3:2 and floored at 230px, so on Focus the binding
+  // constraint is vertical. Full layout needs box + 62 of chrome + 2x8 inset…
+  eq(loupeBoxSize(800, 166), LOUPE_BOX_MIN, "exactly enough height for the floor");
+  eq(loupeBoxSize(800, 165), 0, "one px shorter suppresses");
+  eq(LOUPE_BOX_MIN + LOUPE_CHROME_V_PX + 2 * LOUPE_INSET_PX, 166, "…and that 166 is derived");
+  // …and the DENSE layout (compact stage: the window is its own copy target,
+  // the ROI is one line) needs 30px less, which is the whole reason it exists.
+  eq(loupeBoxSize(800, 136, true), LOUPE_BOX_MIN, "dense fits where full does not");
+  eq(loupeBoxSize(800, 136, false), 0, "the same height cannot hold the full layout");
+  eq(loupeBoxSize(800, 135, true), 0, "one px shorter suppresses the dense one too");
+  eq(LOUPE_BOX_MIN + LOUPE_CHROME_V_DENSE_PX + 2 * LOUPE_INSET_PX, 136, "…derived too");
+  // Unmeasured height must not suppress — ResizeObserver has not fired yet.
+  eq(loupeBoxSize(800, 0), LOUPE_BOX_MAX, "unmeasured height assumed roomy");
+});
+
+// The real Focus-on-a-phone geometry, end to end: a 390px phone gives a 324px
+// stage; `compact` floors it at POD_MIN_STAGE_H = 230; FocusView declares that
+// the pod disc owns the bottom 94px (POD_BOTTOM_PX + POD_DISC_PX), so the loupe
+// gets 136px of height at the top. This is the number the whole fix turns on.
+test("loupeBoxSize: a phone Focus stage, with the pod's corner reserved", () => {
+  const stageW = 324, stageH = 230, podReserve = 38 + 56;
+  const box = loupeBoxSize(stageW, stageH - podReserve, true);
+  eq(box, LOUPE_BOX_MIN, "88px of real sensor pixels beats no magnifier at all");
+  // …and the panel it sizes ends clear of the disc rather than on top of it.
+  const panelBottom = LOUPE_INSET_PX + box + LOUPE_CHROME_V_DENSE_PX;
+  eq(panelBottom <= stageH - podReserve, true,
+    `panel bottom ${panelBottom} must clear the pod's top edge ${stageH - podReserve}`);
 });
 
 test("loupeBoxSize: monotonic, never over the stage budget, never a peephole", () => {
@@ -133,11 +185,19 @@ test("loupeBoxSize: monotonic, never over the stage budget, never a peephole", (
     eq(s <= LOUPE_BOX_MAX, true, `w=${w} never exceeds the full size`);
     if (s > 0) {
       eq(s % 4, 0, `w=${w} sits on the 4px lattice (whole-pixel crosshair)`);
-      // the whole PANEL (box + chrome) stays inside the stage-share budget
-      eq(s + LOUPE_CHROME_PX <= Math.floor(w * LOUPE_STAGE_FRACTION), true,
-        `w=${w} panel ${s + LOUPE_CHROME_PX} within budget`);
+      // the whole PANEL (box + chrome) stays inside the hard share ceiling
+      eq(s + LOUPE_CHROME_PX <= Math.floor(w * LOUPE_STAGE_FRACTION_MAX), true,
+        `w=${w} panel ${s + LOUPE_CHROME_PX} within the share ceiling`);
     }
     eq(s >= prev, true, `w=${w} never shrinks as the stage grows`);
+    prev = s;
+  }
+  // …and monotonic in HEIGHT as well, at a width that is never the binding one.
+  prev = 0;
+  for (let h = 1; h <= 600; h++) {
+    const s = loupeBoxSize(1200, h);
+    eq(s === 0 || s >= LOUPE_BOX_MIN, true, `h=${h} size=${s} is 0 or usable`);
+    eq(s >= prev, true, `h=${h} never shrinks as the stage grows`);
     prev = s;
   }
 });

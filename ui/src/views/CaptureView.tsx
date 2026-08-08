@@ -5,6 +5,8 @@ import {
   usePhotometry, usePreview, useEgainLearn,
 } from "../store";
 import { LivePreview } from "../components/preview/LivePreview";
+import CameraDial from "../components/ui/CameraDial";
+import { cameraDialCategories } from "../components/ui/CameraPickers";
 import GuideFramePreview from "../components/GuideFramePreview";
 import {
   Field, Led, LockedChip, LockedNote, Panel, SegmentedControl, Stat, Toggle,
@@ -234,6 +236,22 @@ export default function CaptureView() {
   // hardcoded [1,2,4]. Clamp to a sane 1–8 in case a backend reports garbage.
   const maxBin = Math.min(8, Math.max(1, cam?.max_bin ?? 4));
   const binOptions = Array.from({ length: maxBin }, (_, i) => i + 1);
+  // The fan-out dial over the preview edits the SAME four boxes the Exposure
+  // panel below does — one builder, one set of presets (components/ui/
+  // CameraPickers). Offset is a text entry there too, because its useful
+  // values are a continuum a preset ring cannot cover.
+  const captureDial = cameraDialCategories({
+    values: {
+      exposure_s: Number(exposure) || 2, gain: Number(gain) || 0,
+      binning: Number(binning) || 1, offset: Number(offset) || 0,
+    },
+    maxBin: cam?.max_bin ?? 4,
+    onExposure: (v) => setExposure(String(v)),
+    onGain: (v) => setGain(String(v)),
+    onBinning: (v) => setBinning(String(v)),
+    onOffset: (v) => setOffset(String(v)),
+  });
+
   const cooler = cam?.cooler; // CoolerInfo | undefined (older status / no cooler)
   // Warm-down ramp (2026-08-04). Warming now takes ~10 minutes instead of being
   // instantaneous, so the panel has to show it: a Warm button that looks like it
@@ -837,7 +855,18 @@ export default function CaptureView() {
   return (
     <div className="grid gap-4 md:grid-cols-[1fr_320px] xl:grid-cols-[1fr_360px]">
       {/* live-preview overhaul: stage + zoom/pan + stretch + overlays + filmstrip */}
-      <LivePreview />
+      <div className="relative">
+        <LivePreview />
+        {/* Camera settings where the thumb is while the eye is on the frame —
+            the same dial the Align reticle and the Focus stage carry. */}
+        {canCapture && (
+          <CameraDial
+            label="Camera settings"
+            summary={`${exposure}s g${gain}`}
+            categories={captureDial}
+          />
+        )}
+      </div>
 
       <div className="flex flex-col gap-4">
         {/* ------------------------------------------------- exposure ctl */}

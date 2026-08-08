@@ -83,8 +83,11 @@ export const POD_RIGHT_PX = 12;
  *  parks its star-decimation disclosure at `right-2 / bottom: 8`
  *  (PreviewStage.tsx:736), ~22px tall, and "Showing 240/2100 stars" is exactly
  *  the chip a focuser wants to read: it is how you know the overlay is thinning
- *  what you are judging. (The loupe, the other bottom-right tenant, cannot
- *  appear here at all — `loupeShown` is gated on `!compact`.) */
+ *  what you are judging. (The loupe used to be the other bottom-right tenant,
+ *  and used to be excluded from a compact stage outright. It is not any more —
+ *  it takes the TOP-right here, and FocusView tells PreviewStage how much of the
+ *  bottom edge this disc owns, `bottomRightReserve`, so the two are sized apart
+ *  rather than one being deleted.) */
 export const POD_BOTTOM_PX = 38;
 /** Chip footprint. 48 is the spec's minimum, above the app's 44px tap floor
  *  because these are aimed at over a live image rather than in a settled list. */

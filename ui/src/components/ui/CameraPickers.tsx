@@ -18,6 +18,7 @@
    layout for free. */
 import type { JSX } from "react";
 import PickerButton from "./PickerButton";
+import type { DialCategory } from "./CameraDial";
 import { useStatus } from "../../store";
 
 /** Every exposure a frame-shooting screen offers, in seconds.
@@ -215,4 +216,91 @@ export function FilterPicker({
       </div>
     </PickerButton>
   );
+}
+
+/* ======================================================= the radial dial's menu
+
+   The SAME settings, as the fan-out dial's two rings (components/ui/CameraDial).
+   One builder, so a surface that shows the dial and a surface that shows the
+   flat pickers cannot drift into offering different presets or different words
+   for the same thing — which is exactly what happened before CameraPickers
+   existed, when three screens grew three vocabularies for four controls.
+
+   `filters` is passed in rather than read from the store here: a caller with no
+   wheel (the guide camera) must not be handed one, and the ring must never
+   offer an opaque slot — a solve or focus frame through a carrier with no glass
+   is a dark frame. */
+export interface CameraDialValues {
+  exposure_s: number;
+  gain: number;
+  binning?: number;
+  offset?: number;
+  filter?: string | null;
+}
+
+export function cameraDialCategories(p: {
+  values: CameraDialValues;
+  exposures?: readonly number[];
+  gains?: readonly number[];
+  maxBin?: number;
+  filters?: readonly string[];
+  /** The filter actually in the beam, so FILT names a real filter rather than
+   *  an abstraction (2026-08-07: "as-is" described our bookkeeping, not the
+   *  rig). */
+  currentFilter?: string | null;
+  onExposure: (s: number) => void;
+  onGain: (g: number) => void;
+  onBinning?: (b: number) => void;
+  onOffset?: (o: number) => void;
+  onFilter?: (name: string | null) => void;
+}): DialCategory[] {
+  const exposures = p.exposures ?? EXPOSURE_PRESETS_S;
+  const gains = p.gains ?? GAIN_PRESETS;
+  const bins = BIN_PRESETS.filter((b) => b <= (p.maxBin ?? 4));
+  const out: DialCategory[] = [
+    {
+      id: "exposure", label: "EXP", icon: "capture",
+      options: exposures.map((s) => ({ id: String(s), label: fmtExposure(s) })),
+      selected: String(p.values.exposure_s),
+      onPick: (id) => p.onExposure(Number(id)),
+    },
+    {
+      id: "gain", label: "GAIN",
+      options: gains.map((g) => ({ id: String(g), label: String(g) })),
+      selected: String(p.values.gain),
+      onPick: (id) => p.onGain(Number(id)),
+    },
+  ];
+  if (p.onBinning) {
+    out.push({
+      id: "binning", label: "BIN",
+      options: bins.map((b) => ({ id: String(b), label: `${b}×${b}` })),
+      selected: String(p.values.binning ?? 1),
+      onPick: (id) => p.onBinning!(Number(id)),
+    });
+  }
+  if (p.onOffset) {
+    // A CONTINUUM, not a list: offset's useful values depend on the sensor and
+    // it is set once and then forgotten, so a preset ring would be both wrong
+    // and in the way. `kind: "entry"` renders one field and a Set button.
+    out.push({
+      id: "offset", label: "OFFS", kind: "entry",
+      value: String(p.values.offset ?? 30),
+      placeholder: "offset",
+      hint: "ADU pedestal — set once per camera.",
+      onSubmit: (text) => {
+        const v = Number(text);
+        if (Number.isFinite(v) && v >= 0) p.onOffset!(Math.round(v));
+      },
+    });
+  }
+  if (p.onFilter && (p.filters?.length ?? 0) > 0) {
+    out.push({
+      id: "filter", label: "FILT",
+      options: (p.filters ?? []).map((f) => ({ id: f, label: f })),
+      selected: p.values.filter ?? p.currentFilter ?? undefined,
+      onPick: (id) => p.onFilter!(id),
+    });
+  }
+  return out;
 }

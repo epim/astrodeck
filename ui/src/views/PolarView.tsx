@@ -1,5 +1,5 @@
 import { api } from "../api";
-import { useStore, usePolar, useProviders } from "../store";
+import { useStore, usePolar, useProviders, useStatus } from "../store";
 import { PolarReticle, knobHint, polarTier, polarInstruction, type KnobDir } from "../components/polar";
 import GuideFramePreview from "../components/GuideFramePreview";
 import { Icon } from "../components/icons";
@@ -9,6 +9,8 @@ import { accessPhrase, useCanControlMount } from "../lib/caps";
 import ReadOnlyBadge from "../components/ReadOnlyBadge";
 import PolarQuickBar from "../components/PolarQuickBar";
 import PolarSolveRing from "../components/PolarSolveRing";
+import CameraDial from "../components/ui/CameraDial";
+import { cameraDialCategories } from "../components/ui/CameraPickers";
 import type { PolarState } from "../types";
 import { useEffect, useState } from "react";
 
@@ -142,6 +144,32 @@ export default function PolarView() {
   // — 40 ms of it, or several seconds on a phone over a relay — the thing that
   // disabled the red button while the mount was still swinging. A stop is
   // idempotent server-side, so there is nothing here worth guarding against.
+  /* The solve frame's live settings + the dial that edits them. The values
+     come from the polar session (the server publishes them on the polar
+     event); the categories/presets come from the SHARED builder, so the dial
+     over the reticle and the pickers in the sticky bar can never offer
+     different numbers for the same setting. */
+  const solveSettings = {
+    exposure_s: 0.3, gain: 200, offset: 30, binning: 1, filter: null as string | null,
+    ...(polar.solve_settings ?? {}),
+  };
+  const wheel = useStatus()?.filterwheel;
+  const putSolve = (patch: Record<string, unknown>) => {
+    void api.put("/api/polar/solve-settings", patch)
+      .catch((e) => showToast("error", (e as Error).message));
+  };
+  const solveDial = cameraDialCategories({
+    values: solveSettings,
+    filters: (wheel?.names ?? []).filter((n, i) => n && !(wheel?.opaque?.[i] ?? false)),
+    currentFilter: typeof wheel?.position === "number"
+      ? wheel?.names?.[wheel.position] ?? null : null,
+    onExposure: (s) => putSolve({ exposure_s: s }),
+    onGain: (g) => putSolve({ gain: g }),
+    onBinning: (b) => putSolve({ binning: b }),
+    onOffset: (o) => putSolve({ offset: o }),
+    onFilter: (f) => putSolve({ filter: f }),
+  });
+
   const stopReason: string | null =
     !canMount ? `Stopping an alignment needs ${accessPhrase("control.mount")}.`
       : !live ? "No alignment is running — nothing to stop."
@@ -210,6 +238,18 @@ export default function PolarView() {
               activity={polar.activity}
               exposureS={polar.solve_settings?.exposure_s ?? 0.3}
             />
+            {/* The solve frame's settings, as the app's one fan-out dial —
+                the same control the preview surfaces carry (2026-08-08).
+                Tap the disc, the categories bloom, tap one and its values
+                replace them. Offset is a text box because its useful values
+                are a continuum. */}
+            {canMount && (
+              <CameraDial
+                label="Solve frame settings"
+                summary={`${solveSettings.exposure_s}s g${solveSettings.gain}`}
+                categories={solveDial}
+              />
+            )}
           </div>
           <p className="text-center text-xs text-dim mt-2 min-h-4">{polar.message || " "}</p>
         </Panel>

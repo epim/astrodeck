@@ -33,11 +33,13 @@ import {
 } from "../lib/focusCapture";
 import { isExposureInvalid } from "../lib/exposure";
 import { ProviderBadge } from "../components/ProviderBadge";
-import { PreviewStage } from "../components/preview/PreviewStage";
-import FocusPod, { POD_MIN_STAGE_H } from "../components/focus/FocusPod";
+import { PreviewStage, type StageControls } from "../components/preview/PreviewStage";
+import FocusPod, { POD_BOTTOM_PX, POD_DISC_PX, POD_MIN_STAGE_H } from "../components/focus/FocusPod";
 import ActivityRing from "../components/ui/ActivityRing";
+import CameraDial from "../components/ui/CameraDial";
 import {
   BinningPicker, ExposurePicker, FilterPicker, GainPicker,
+  cameraDialCategories,
 } from "../components/ui/CameraPickers";
 import { focusState } from "../lib/focusVerdict";
 import { FocusVerdict, AutofocusVerdict } from "../components/preview/FocusVerdict";
@@ -148,9 +150,13 @@ export default function FocusView() {
   const linkDown = useLinkDown();
   const setViewport = useStore((s) => s.setViewport);
   const selectPreview = useStore((s) => s.selectPreview);
-  const focusControls = useRef<{ fit: () => void; hundred: () => void; zoomIn: () => void; zoomOut: () => void } | null>(
-    null,
-  );
+  const focusControls = useRef<StageControls | null>(null);
+  // The 1:1 magnifier's state LIVES in PreviewStage (crop+render Decision F —
+  // ephemeral view state, no store slice). Mirrored here for the same reason
+  // LivePreview mirrors it: the toolbar toggle has to render its pressed and
+  // its honest-disabled state. The guard is what stops an unchanged controls
+  // callback from looping.
+  const [loupe, setLoupe] = useState({ on: false, available: false });
   const pinned = selectedId != null && selectedId !== liveId;
   const prevFrame = useMemo(() => {
     if (!shown) return null;
@@ -760,6 +766,26 @@ export default function FocusView() {
     else setAfBin(String(value));
   };
 
+  // The dial over the preview edits exactly what the panel's pickers edit —
+  // one builder, one set of presets, two places to reach them.
+  const afDialCategories = cameraDialCategories({
+    values: {
+      exposure_s: afParams.exposure_s, gain: afParams.gain,
+      binning: afParams.binning, offset: 30,
+      filter: afFilter === "" ? null : filterNames[Number(afFilter)] ?? null,
+    },
+    maxBin: afMaxBin,
+    filters: filterNames.filter(Boolean),
+    onExposure: (s) => afSet("exposure", s),
+    onGain: (g) => afSet("gain", g),
+    onBinning: (b) => afSet("bin", b),
+    onFilter: (name) => {
+      afOpenAdvanced();
+      const i = name == null ? -1 : filterNames.indexOf(name);
+      setAfFilter(i >= 0 ? String(i) : "");
+    },
+  });
+
   // The sweep's live narration off the focus bus slice (additive fields the
   // server publishes since 2026-08-07): what THIS point is doing, and which
   // point of how many. Cast, not typed — PolarView does the same for its
@@ -851,6 +877,12 @@ export default function FocusView() {
                 // floor only bites below ~410px of viewport; above that 3:2
                 // already gives more and the ratio wins as before.
                 minHeight={POD_MIN_STAGE_H}
+                // …and the stage cannot see the pod that sits on top of it, so
+                // the strip its disc owns along the bottom edge is declared
+                // here. The magnifier takes the TOP-right of a compact stage
+                // and is sized to stop above that strip, which is what lets
+                // both exist on a 390px phone at all.
+                bottomRightReserve={POD_BOTTOM_PX + POD_DISC_PX}
                 preview={shown}
                 viewport={viewport}
                 setViewport={setViewport}
@@ -863,7 +895,14 @@ export default function FocusView() {
                 pinned={pinned}
                 newSincePinned={pinned && selectedId != null ? previews.filter((p) => p.id > selectedId).length : 0}
                 onReturnToLive={() => selectPreview(null)}
-                onControls={(c) => (focusControls.current = c)}
+                onControls={(c) => {
+                  focusControls.current = c;
+                  setLoupe((p) =>
+                    p.on === c.loupeOn && p.available === c.loupeAvailable
+                      ? p
+                      : { on: c.loupeOn, available: c.loupeAvailable },
+                  );
+                }}
               />
               {/* Every prop below is state or a handler this screen ALREADY
                   owns. The pod adds no capability — it is the same shutter, the
@@ -911,12 +950,55 @@ export default function FocusView() {
                 onNudge={(d) => moveTo(pos + d)}
                 onAutofocus={runAutofocus}
               />
+              {/* THE SWEEP'S CAMERA SETTINGS, over the frame they produce
+                  (2026-08-08). The same fan-out dial the Align reticle
+                  carries, fed by the same builder — tap the disc, the
+                  categories bloom, tap one and its values replace them;
+                  offset is a field because its useful values are a continuum.
+                  Parked on the LEFT so it cannot collide with the FocusPod
+                  disc in the lower-right corner. */}
+              {canFocus && afReady.basis !== "backend" && (
+                <CameraDial
+                  label="Sweep settings"
+                  summary={`${afParams.exposure_s}s g${afParams.gain}`}
+                  side="left"
+                  right={12}
+                  bottom={38}
+                  categories={afDialCategories}
+                />
+              )}
             </div>
             <div className="flex items-center gap-1 preview-toolbar">
               <button className="btn !px-2.5 min-h-11" aria-label="Zoom out" onClick={() => focusControls.current?.zoomOut()}>−</button>
               <button className="btn !px-2.5 min-h-11" aria-label="Zoom in" onClick={() => focusControls.current?.zoomIn()}>+</button>
               <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={() => focusControls.current?.fit()}>Fit</button>
               <button className="btn !px-2.5 min-h-11 text-[11px]" onClick={() => focusControls.current?.hundred()}>100%</button>
+              {/* THE MAGNIFIER, on the screen it is for. This row had −, +, Fit
+                  and 100% and nothing else, so the sensor-1:1 view — the only
+                  honest read on whether a star is actually sharp, since "100%"
+                  here is 100% of a preview downscaled to 1400px — existed on
+                  Capture and not on Focus. Same toggle, same state (it lives in
+                  PreviewStage), and honest-disabled with its reason when the
+                  frame carries no linear data to crop. */}
+              {loupe.available ? (
+                <button
+                  type="button"
+                  aria-pressed={loupe.on}
+                  title="Magnifier — real sensor pixels at the centre of the view (the true focus check; 1:1)"
+                  onClick={() => focusControls.current?.setLoupeOn(!loupe.on)}
+                  className={`btn !px-2.5 min-h-11 inline-flex items-center gap-1 !text-[11px] ${loupe.on ? "btn-accent" : ""}`}
+                >
+                  <Icon name={loupe.on ? "check" : "focus"} size={12} />
+                  Magnifier
+                </button>
+              ) : (
+                <LockedChip
+                  reason="The magnifier needs linear data — this frame came from NINA already stretched."
+                  className="btn !px-2.5 !text-[11px]"
+                >
+                  Magnifier
+                </LockedChip>
+              )}
             </div>
             {/* A four-minute sweep exposes continuously, and on 2026-07-31 this
                 stage said "No capture yet" for every second of it — the sweep's
@@ -1294,6 +1376,10 @@ export default function FocusView() {
                     "shorter exposure, less gain" when a sweep clips, and to
                     "longer exposure, bin 1" when a field is thin. Hidden for a
                     backend (NINA) sweep, which ignores every parameter. */}
+                {/* The flat pickers stay on the PANEL (a settled list, read at
+                    a glance); the same settings are also on the fan-out dial
+                    over the preview, which is where a thumb is while focusing.
+                    One builder feeds both — see components/ui/CameraPickers. */}
                 {afReady.basis !== "backend" && canFocus && (
                   <div className={`grid gap-1.5 mb-2 ${filterNames.length > 0 ? "grid-cols-4" : "grid-cols-3"}`}
                     role="group" aria-label="sweep settings" data-af-dials>
