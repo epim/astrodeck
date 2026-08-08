@@ -109,9 +109,22 @@ const LIVE = {
 
 // ----------------------------------------------------------------------------
 
-test("idle renders nothing — the start screen stays clean", () => {
+test("idle shows the dials to an operator — the FIRST frame is settable too", () => {
+  /* 2026-08-07 19:53: the first cut hid the dials until a session was live,
+     so setting 2 s BEFORE the run — the whole point on a night of failing
+     solves — took six failures to reach. */
+  render({ state: "idle", total_error: 0, az_error: 0, alt_error: 0 });
+  assert.ok(dial("exposure"), "an operator's idle Align screen must offer the dials");
+  assert.match(text(), /idle/i);
+});
+
+test("a viewer's idle screen stays clean — no dead controls", () => {
+  const prev = useStore.getState().principal;
+  useStore.setState({ principal: { role: "viewer", email: null,
+                                   caps: ["view.status"] } } as any);
   render({ state: "idle", total_error: 0, az_error: 0, alt_error: 0 });
   assert.equal(win.document.getElementById("root").children.length, 0);
+  useStore.setState({ principal: prev } as any);
 });
 
 test("a running solve names its activity instead of looking hung", () => {
@@ -190,10 +203,11 @@ test("the filter dial cycles as-is → filters → as-is and never offers Dark",
   );
 });
 
-test("a finished session shows the verdict but no dials — no next frame to apply to", () => {
+test("a finished session keeps the verdict AND the dials — the next run starts here", () => {
   render({ state: "done", total_error: 0.8, az_error: 0.5, alt_error: 0.6 });
   assert.match(text(), /0\.8′/);
-  assert.ok(!dial("exposure"), "dials must vanish with the session");
+  assert.ok(dial("exposure"),
+    "the re-run after a verdict is exactly when the settings get changed");
 });
 
 // ------------------------------------------------------------------- report
