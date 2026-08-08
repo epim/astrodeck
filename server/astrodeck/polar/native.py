@@ -422,6 +422,7 @@ async def _drive(session: Any, hub: Any) -> None:
                     f"native TPPA live update: {e} — the number on screen is "
                     f"now {stale_updates} update(s) behind your adjustments",
                     "polar")
+            _publish_stale(session, stale_updates)
             continue
         solve = _engine_solve(frame, result)
         try:
@@ -431,9 +432,14 @@ async def _drive(session: Any, hub: Any) -> None:
             # leg) must not kill the session — surface it and keep going.
             bus.log("warning", f"native TPPA update skipped: {e}", "polar")
             stale_updates += 1
+            _publish_stale(session, stale_updates)
             continue
         updates_published += 1
-        stale_updates = 0
+        was_stale, stale_updates = stale_updates, 0
+        if was_stale:
+            # Say so when it CATCHES UP too. A warning that only ever appears
+            # and never clears trains the operator to ignore it.
+            _publish_stale(session, 0)
         done = err["total_arcmin"] <= _DONE_THRESHOLD_ARCMIN
         _publish_error(session, err, phase="adjusting", point_index=2,
                        progress=1.0 if done else 0.85,
@@ -1217,6 +1223,28 @@ def _log_pa_spread(err: dict) -> None:
             "three measurement frames, so they were not a pure RA rotation and "
             "this fit is not trustworthy — re-run without a meridian crossing "
             "before turning a bolt", "polar")
+
+
+def _publish_stale(session: Any, stale_updates: int) -> None:
+    """Tell the panel how far behind the displayed number is, AS IT HAPPENS.
+
+    The adjust loop already counted consecutive failed live updates, but the
+    count only reached the operator when the session ended — up to 30 failures
+    and half a minute later. In between, the panel showed a confident number
+    that had quietly stopped answering the bolts, which is the one thing an
+    adjust phase must never do: the whole interaction is "turn, watch it move".
+
+    Deliberately its own publish rather than a field on ``_publish_error``: a
+    failed update has no new error to publish, and inventing one to carry the
+    staleness would republish a stale reading as though it were fresh.
+
+    ``0`` is published on recovery, so the warning clears itself."""
+    session._publish(state="running", source="native", phase="adjusting",
+                     point_index=2, progress=0.85,
+                     message=("adjust the mount" if not stale_updates else
+                              f"not updating — {stale_updates} measurement(s) "
+                              f"did not solve"),
+                     stale_updates=stale_updates)
 
 
 def _publish_error(session: Any, err: dict, *, phase: str, point_index: int,

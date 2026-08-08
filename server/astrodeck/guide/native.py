@@ -76,10 +76,38 @@ _CAL_TARGET_STEPS = 12
 _CAL_MS_MIN = 300
 _CAL_MS_MAX = 2500
 
-# Generous wall-clock cap for a full calibration walk (~6 legs). The sim's
-# pulse_guide sleeps for the pulse duration, so a real calibration is tens of
-# seconds; this only guards a wedged mount that never moves the star.
-_CAL_TIMEOUT_S = 180.0
+# Wall-clock backstop for a full calibration walk (~6 legs).
+#
+# This was 180 s, chosen against the SIM, whose ``pulse_guide`` merely sleeps
+# for the pulse duration — "a real calibration is tens of seconds" was true
+# there and false on hardware. Measured on the rig 2026-08-08 (AM5N, ASI guide
+# camera at 2 s, 5.5"/px, Deneb):
+#
+#     go_west         19 steps  ->  -25.8 px      2.36 s per step
+#     go_east         19 steps  ->  back to 0.1 px
+#     clear_backlash   6 steps
+#     go_north        25 steps  ->  +27.5 px
+#     go_south        7 of ~25  ->  TIMED OUT at 180 s, 76 pulses in
+#
+# A step costs one exposure plus its pulse, so a full walk is ~94 steps and
+# ~220 s at a 2 s guide exposure — and longer at the minute-class exposures a
+# faint field needs. The old cap could not fit a healthy calibration on real
+# hardware, and it killed a textbook one: an orthogonal L, both RA legs
+# returning to the origin.
+#
+# It is a BACKSTOP now, not a progress check. ``_CAL_STARLESS_S`` below is what
+# catches a walk that has actually stopped getting anywhere, in 30 s and with
+# the numbers attached, so this can be generous without hiding a stuck rig.
+_CAL_TIMEOUT_S = 600.0
+
+# How long the calibration walk may stand still with no star before it says so.
+# The engine does not advance its state machine on a frame where the star is not
+# found, so a star that goes for good leaves the host exposing until the wall
+# clock above — measured on the rig 2026-08-08 as 174 s of silence after three
+# good steps. 30 s is several guide frames at any sane exposure, so a genuine
+# flicker still rides through, and a star that is gone is named while the
+# operator is still standing at the scope.
+_CAL_STARLESS_S = 30.0
 
 # Consecutive ``star_lost`` frames tolerated before the loop reports itself
 # inactive (so the sequence engine's _maybe_recover_guiding sees is_active go
@@ -684,6 +712,20 @@ class NativeGuider(Guider):
             cal_x, cal_y = x0, y0
             walk: list[list[float]] = [[0.0, 0.0]]
             cal_steps = 0
+            # THE STAR-LOST BOUND (2026-08-08, measured on the rig). The engine
+            # returns Idle and does NOT advance the state machine on a frame
+            # where the calibration star is not found (engine.rs
+            # ``ingest_calibrating``: ``star.filter(|s| s.found)`` -> Idle),
+            # which mirrors upstream. Neither side bounded how long that could
+            # go on: a real calibration took three steps in 11 s and then spun
+            # silently for 174 s on Idle until the deadline, and reported
+            # "calibration timed out" — a sentence with none of that in it.
+            # Waiting a few frames is right (a star does flicker); waiting three
+            # minutes is not, and the difference has to be a named failure.
+            last_progress = time.monotonic()
+            starless = 0
+            last_leg: str | None = None
+            last_dir: str | None = None
             while True:
                 # THE WALK IS INTERRUPTIBLE. This runs before the deadline test
                 # and before the next exposure, and every leg loops back through
@@ -691,13 +733,20 @@ class NativeGuider(Guider):
                 # the mount stops moving and no guide loop is ever armed.
                 self._abort_if_stopped("during the calibration walk")
                 if time.monotonic() > deadline:
-                    raise DeviceError("native guider: calibration timed out")
+                    raise DeviceError(
+                        "native guider: calibration timed out — "
+                        + self._cal_evidence(cal_steps, walk, starless,
+                                             last_leg, last_dir))
                 frame = await self._expose()
                 action = self._engine.process(
                     frame.data, frame.timestamp, self._exposure_s)
                 kind = action["action"]
                 if kind == "cal_step":
                     cal_steps += 1
+                    last_progress = time.monotonic()
+                    starless = 0
+                    last_leg = action.get("leg") or last_leg
+                    last_dir = action.get("dir") or last_dir
                     with contextlib.suppress(Exception):
                         found, _m = _native.guide_star_find(frame.data)
                         if found:
@@ -723,10 +772,29 @@ class NativeGuider(Guider):
                 # Cal is stored — the engine has already transitioned into its
                 # guiding phase (continuous star tracking is kept across the
                 # boundary). An Idle with no valid Cal is a momentary lost star
-                # mid-leg; keep exposing.
+                # mid-leg; keep exposing, but only for _CAL_STARLESS_S.
                 cal = self._engine.dump_calibration()
                 if cal and cal.get("is_valid"):
                     break
+                starless += 1
+                stalled = time.monotonic() - last_progress
+                # Narrate the wait as it happens. A calibration that is standing
+                # still looked exactly like one that was working: the walk plot
+                # kept its last point and no tick said otherwise.
+                if starless == 1 or starless % 5 == 0:
+                    bus.publish("guide", **self.stats().__dict__,
+                                cal={"leg": last_leg, "dir": last_dir,
+                                     "ms": 0, "step": cal_steps,
+                                     "starless": starless,
+                                     "walk": walk[-160:]})
+                if stalled > _CAL_STARLESS_S:
+                    raise DeviceError(
+                        "native guider: lost the calibration star — "
+                        + self._cal_evidence(cal_steps, walk, starless,
+                                             last_leg, last_dir)
+                        + ". A longer guide exposure or more gain is the usual "
+                          "fix; check the guide scope's focus if raising both "
+                          "does not find one")
             for msg in (self._engine.calibration_advisories() or []):
                 bus.log("warning", f"native guider calibration: {msg}", "guide")
             bus.log("info", "native guider calibration complete", "guide")
@@ -738,6 +806,27 @@ class NativeGuider(Guider):
             # session — and GuideView dims Start, Force Recalibrate and Stop on
             # that hint, so the two buttons that recover the rig went with it.
             self._phase_hint = None
+
+    @staticmethod
+    def _cal_evidence(steps: int, walk: list[list[float]], starless: int,
+                      leg: str | None, direction: str | None) -> str:
+        """What the calibration actually measured, as one sentence.
+
+        Written because the rig's failure said "calibration timed out" and
+        nothing else, while the loop was holding every number needed to
+        diagnose it: how many pulses landed, which leg they were on, how far
+        the star had walked, and how many frames in a row had no star at all.
+        Those four separate the real causes from each other — no pulses at all
+        is a mount that will not move, pulses with no walk is a mount that
+        moves nothing, and a walk that stops with a starless run is what we
+        actually had.
+        """
+        dx, dy = (walk[-1] if walk else [0.0, 0.0])
+        moved = math.hypot(float(dx), float(dy))
+        where = f" on the {leg}/{direction} leg" if leg else ""
+        return (f"{steps} pulse(s){where}, the star walked {moved:.1f}px from "
+                f"where it started, and the last {starless} frame(s) found no "
+                f"star")
 
     async def _apply_scope_pointing(self) -> None:
         """Discharge OBLIGATION (e): stamp the mount's real declination + pier

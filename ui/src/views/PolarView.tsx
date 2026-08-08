@@ -32,6 +32,11 @@ type NativePolar = Omit<PolarState, "state"> & {
   alt_direction?: KnobDir | null;
   flags?: string[];
   position_angle_spread_deg?: number | null;
+  /* consecutive failed live updates during the adjust phase — how far behind
+     the displayed number is right now. Published as it happens (2026-08-08);
+     before that the count only reached the log, so a panel could sit frozen
+     for half a minute while someone turned a bolt against it. */
+  stale_updates?: number;
   /* what the native driver is doing THIS second — published around each solve
      frame so 15 s of ASTAP never looks like a hang (2026-08-07). */
   activity?: "exposing" | "solving" | null;
@@ -123,6 +128,20 @@ export default function PolarView() {
   // the bolt, or they turn it on a reading that isn't real.
   const paSpreadLarge = polar.flags?.includes("position_angle_spread_large") ?? false;
   const paSpread = polar.position_angle_spread_deg;
+
+  // The engine's OTHER warning, which used to arrive on the wire and go
+  // nowhere: the starting error was large enough that the small-angle model the
+  // live re-scale uses does not hold, so the number moves the wrong distance per
+  // turn of the bolt. The pole guard already refuses the truly absurd case; this
+  // is the band where the fit is real but the ADJUST phase is not reliable, and
+  // it looked exactly like a trustworthy one.
+  const initialErrorLarge = polar.flags?.includes("initial_error_large") ?? false;
+
+  // How far behind the number on screen is. The adjust loop counts consecutive
+  // failed live updates and used to keep them to the log until the session
+  // ended — so a panel could sit frozen for half a minute while someone turned
+  // a bolt against a reading that had stopped responding to them.
+  const staleUpdates = polar.stale_updates ?? 0;
 
   const sourceLabel = src === "nina" ? "NINA TPPA"
     : src === "native" ? "AstroDeck native"
@@ -313,6 +332,28 @@ export default function PolarView() {
                 measured that motion too and the numbers below are not trustworthy. Re-run the
                 alignment without a meridian crossing (and without moving the rotator) before you
                 turn a bolt.
+              </p>
+            )}
+
+            {initialErrorLarge && (
+              <p className="text-xs text-warn mt-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2"
+                data-polar-initial-large role="alert">
+                The starting error was large enough that the live number below re-scales
+                approximately — it will move, but not by the amount you actually turned. Get the
+                bolts roughly right, then re-run the alignment to refine from a smaller error.
+              </p>
+            )}
+
+            {/* STALENESS, WHILE IT IS HAPPENING. This used to be log-only until
+                the session ended, so the panel could sit frozen for half a
+                minute while someone turned a bolt against a number that had
+                stopped answering them. */}
+            {staleUpdates > 0 && (
+              <p className="text-xs text-warn mt-3 leading-relaxed border border-warn/40 bg-warn/5 px-2.5 py-2"
+                data-polar-stale role="alert">
+                Not updating — the last {staleUpdates} measurement{staleUpdates === 1 ? "" : "s"} did
+                not solve, so the number below is older than your most recent adjustment. Wait for it
+                to catch up before turning anything else.
               </p>
             )}
 

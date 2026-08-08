@@ -233,6 +233,17 @@ CENTERING_STUCK_ARCMIN = 0.5
 #: stays quiet unless the remaining error is at least this many tolerances.
 CENTERING_STUCK_MIN_ERR_FACTOR = 5.0
 
+#: How much a rotate attempt must IMPROVE the position-angle error to earn
+#: another attempt. ``rotate_to_pa`` is a solve→move→solve loop with no damping,
+#: so an attempt that does not shrink the error is evidence the correction is
+#: being applied wrongly (sign, wrap, or mechanical-vs-sky frame), and repeating
+#: it just turns the camera further. Measured on the rig 2026-08-08 while
+#: slewing to M52: five attempts, error 56.8° -> 76.4°, the camera physically
+#: swept a full turn and about half of another, and nothing was reported until
+#: the loop gave up. 0.5° sits above plate-solve rotation noise so a genuine
+#: slow approach is not mistaken for divergence.
+ROTATE_MIN_GAIN_DEG = 0.5
+
 #: how many full display frames the ring keeps (memory cap on the Pi), how many
 #: tiny thumbnails it keeps for the filmstrip, and how many linear arrays it
 #: retains for /crop and /render (a 6200 frame is ~125 MB, so only the latest
@@ -3682,8 +3693,40 @@ class Hub:
                     bus.log("error", f"loop capture failed: {e}", "capture")
                     await asyncio.sleep(1)
 
+        # The settings, ON THE HUB and not only in the closure above.
+        # ``yield_camera_for`` documents "restarting is not reliably possible:
+        # the loop's exposure/gain/offset/binning live in the ``start_loop``
+        # closure, not on the hub, so 'resume what was running' would mean
+        # inventing settings". This is that objection answered — nothing
+        # resumes automatically because of it (see ``resume_loop``), but the
+        # one caller that has a good reason to can now do it with the REAL
+        # settings instead of a guess.
+        self._last_loop_settings = {
+            "exposure_s": exposure_s, "gain": gain, "offset": offset,
+            "binning": binning, "frame_type": frame_type,
+        }
         self._loop_task = asyncio.create_task(_loop())
         bus.publish("capture_loop", running=True)
+
+    async def resume_loop(self) -> bool:
+        """Restart the live loop with the settings it was last started with.
+
+        NOT a general undo for ``yield_camera_for``, which stays deliberate
+        about leaving the loop stopped: after a goto the frames would be of a
+        DIFFERENT field, and a silently-resumed Live View would read as the old
+        target drifting. A ROTATE is the case where that reasoning does not
+        apply — the tube has not moved, only the camera angle has, so the
+        frames that come back are the same field the user was already watching,
+        which is precisely what they wanted to see rotate.
+
+        False when there is nothing to resume, so a caller cannot mistake
+        "never had a loop" for "resumed one"."""
+        settings = getattr(self, "_last_loop_settings", None)
+        if not settings:
+            return False
+        await self.start_loop(**settings)
+        bus.log("info", "live view resumed", "capture")
+        return True
 
     def stop_loop(self) -> None:
         if self._loop_task and not self._loop_task.done():
@@ -4048,6 +4091,8 @@ class Hub:
         adjusted_to = None
         moved = False
         error = None
+        prev_error = None
+        trail: list[tuple] = []
         orientation = None
         epoch = self._motion_epoch
         # Same camera conflict as solve_and_sync: every attempt below exposes
@@ -4058,7 +4103,33 @@ class Hub:
         # bumped, and the fence check at the top of the loop would then wave the
         # aborted rotation through. (Normally a no-op: goto_and_center yields the
         # camera before it calls us; this covers the direct /api/rotator route.)
-        await self.yield_camera_for("rotate to PA")
+        # RESUME THE LOOP AFTERWARDS — only when THIS call is what stopped it.
+        # A rotate is the one yield-class caller whose frames afterwards are of
+        # the SAME field: the tube has not moved, only the camera angle has. So
+        # the general "leave it stopped, the field changed" rule in
+        # ``yield_camera_for`` does not apply, and the user watching Live View
+        # rotate should get their view back rather than a dead panel and a
+        # button to re-press. ``stopped_loop`` is False when ``goto_and_center``
+        # already yielded on its way in — that run repoints the tube and owns
+        # the decision not to resume.
+        stopped_loop = await self.yield_camera_for("rotate to PA")
+        try:
+            return await self._rotate_to_pa_attempts(
+                rot, cam, solver, rcfg, target, exposure_s, max_attempts,
+                epoch, adjusted_to, moved, error, prev_error, trail,
+                orientation)
+        finally:
+            if stopped_loop:
+                with contextlib.suppress(Exception):
+                    await self.resume_loop()
+
+    async def _rotate_to_pa_attempts(self, rot, cam, solver, rcfg, target,
+                                     exposure_s, max_attempts, epoch,
+                                     adjusted_to, moved, error, prev_error,
+                                     trail, orientation) -> dict:
+        """The solve→move→solve attempts themselves. Split out only so
+        ``rotate_to_pa`` can wrap them in the loop-resume ``finally`` above
+        without indenting the whole body."""
         for attempt in range(1, max_attempts + 1):
             # This fence gates only the NEXT attempt's dispatch below; it does
             # NOT cancel an in-flight ``rot.move_to`` from a PRIOR attempt —
@@ -4110,9 +4181,26 @@ class Hub:
             distance = _rotation.shortest_rotation(target, orientation,
                                                    rcfg.range_type)
             error = abs(((distance + 90.0) % 180.0) - 90.0)  # mod-180 magnitude
+            # EVERY ATTEMPT, NAMED (2026-08-08). On the rig this loop ran all
+            # five attempts with the error GROWING (56.8° -> 76.4°) and said
+            # only "failed to converge after 5 attempts (last error 76.4°)" —
+            # while physically spinning the camera through a full turn and most
+            # of another. One line per attempt is what makes a sign or wrap
+            # error diagnosable at all: solved PA, where we are trying to get
+            # to, and the move being commanded to close it.
+            bus.log("info",
+                    f"rotator attempt {attempt}/{max_attempts}: solved PA "
+                    f"{orientation:.1f}°, target {target:.1f}°, error "
+                    f"{error:.1f}°, commanding {distance:+.1f}° to "
+                    f"{_rotation.mod360(orientation + distance):.1f}°",
+                    "rotator")
+            trail.append((attempt, round(orientation, 1), round(target, 1),
+                          round(error, 1), round(distance, 1)))
             bus.publish("rotator", action="rotating", attempt=attempt,
                         orientation_deg=round(orientation, 2),
-                        target_deg=round(target, 2))
+                        target_deg=round(target, 2),
+                        error_deg=round(error, 2),
+                        commanded_deg=round(distance, 2))
             if _rotation.angle_equals_mod180(distance, 0.0, rcfg.tolerance_deg):
                 bus.publish("rotator", action="rotated",
                             pa_deg=round(orientation, 2))
@@ -4123,12 +4211,31 @@ class Hub:
                 return {"rotated": True, "pa_deg": orientation,
                         "adjusted_to": adjusted_to, "attempts": attempt,
                         "error_deg": round(error, 2)}
+            # ABANDON ON THE FIRST ATTEMPT THAT DID NOT HELP. This is a
+            # solve→move→solve loop with no damping: if a move does not shrink
+            # the error, repeating it cannot either, and each repeat is a real
+            # rotation of a real camera. The rig's five attempts moved the
+            # camera through more than 360° in total while getting further from
+            # the target every time — an operator watched it happen (2026-08-08,
+            # slewing to M52) and the rig reported nothing until the end.
+            #
+            # Compared against the PREVIOUS attempt's error, not the best-ever:
+            # the question is whether the move we just made helped.
+            if prev_error is not None and error >= prev_error - ROTATE_MIN_GAIN_DEG:
+                raise DeviceError(
+                    f"rotator is not converging, so it has been stopped after "
+                    f"{attempt} attempts rather than turned further: the error "
+                    f"went {prev_error:.1f}° -> {error:.1f}° across the last "
+                    f"move. Attempts (attempt, solved PA, target, error, "
+                    f"commanded): {trail}")
+            prev_error = error
             await rot.move_to(_rotation.mod360(orientation + distance))
             moved = True
         last_error = f"(last error {error:.1f}°)" if error is not None else "(no attempts ran)"
         raise DeviceError(
             f"rotator failed to converge after {max_attempts} attempts "
-            f"{last_error}")
+            f"{last_error}. Attempts (attempt, solved PA, target, error, "
+            f"commanded): {trail}")
 
     async def goto_and_center(self, ra_hours: float, dec_deg: float,
                               tolerance_deg: float = 0.02,

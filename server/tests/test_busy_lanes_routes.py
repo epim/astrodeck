@@ -494,21 +494,40 @@ def test_the_connect_driver_stays_out_of_the_cancel_list():
 # provokes is the lane under test.
 
 def test_a_slew_is_refused_while_an_alignment_is_measuring(client):
-    assert client.post("/api/connect/sim").status_code == 200
-    assert client.post("/api/polar/start").status_code == 200
-    # PRECONDITION: without a live lane a 409 below would prove nothing.
-    assert "polar" in _lanes(client), "precondition: the alignment is measuring"
+    # The polar lane is HELD OPEN, for the reason the sibling test below
+    # already documents: a real /api/polar/start on the sim can finish before
+    # the very next request reads the lane back, and then the precondition
+    # fails and the test proves nothing. It did exactly that in CI on
+    # 2026-08-08 (`assert 'polar' in []`) while passing on every developer
+    # machine — a slower, more loaded runner simply lost the race more often.
+    # The lane is the contract; how it got there is not.
+    import asyncio
+    import astrodeck.hub as hub_mod
 
-    r = client.post("/api/mount/goto",
-                    json={"ra_hours": 5.6, "dec_deg": -5.4, "center": False})
-    assert r.status_code == 409, (
-        f"a slew was ACCEPTED during an alignment ({r.status_code}) — it moves "
-        f"the mount between two of the three measured points: {r.text[:200]}")
-    detail = r.json()["detail"]
-    assert detail["blocked_by"] == "polar"
-    assert "alignment" in detail["detail"], (
-        f"the reason must name the alignment, not a bare lane: {detail}")
-    client.post("/api/polar/stop")
+    async def _held():
+        await asyncio.Event().wait()
+
+    assert client.post("/api/connect/sim").status_code == 200
+    loop = asyncio.new_event_loop()
+    task = loop.create_task(_held())
+    hub_mod.hub._busy["polar"] = task
+    try:
+        # PRECONDITION: without a live lane a 409 below would prove nothing.
+        assert "polar" in _lanes(client), "precondition: the alignment is measuring"
+
+        r = client.post("/api/mount/goto",
+                        json={"ra_hours": 5.6, "dec_deg": -5.4, "center": False})
+        assert r.status_code == 409, (
+            f"a slew was ACCEPTED during an alignment ({r.status_code}) — it moves "
+            f"the mount between two of the three measured points: {r.text[:200]}")
+        detail = r.json()["detail"]
+        assert detail["blocked_by"] == "polar"
+        assert "alignment" in detail["detail"], (
+            f"the reason must name the alignment, not a bare lane: {detail}")
+    finally:
+        hub_mod.hub._busy.pop("polar", None)
+        task.cancel()
+        loop.close()
 
 
 def test_an_alignment_is_refused_while_the_mount_is_slewing(client):

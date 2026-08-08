@@ -33,9 +33,10 @@ from ..devices.base import Camera, DeviceError, Focuser
 from ..events import bus
 from ..providers import NATIVE_AVAILABLE
 from ..imaging.stars import OVEREXPOSED_FRAC, focus_size, saturation_fraction
-from .autofocus import (MIN_STARS_PER_POINT, AutofocusResult,
-                        dropped_points_phrase, overexposure_levers,
-                        overexposure_phrase, sweep_levers, thin_points_phrase)
+from .autofocus import (MAX_DROPS_PER_POSITION, MIN_STARS_PER_POINT,
+                        AutofocusResult, dropped_points_phrase,
+                        overexposure_levers, overexposure_phrase, sweep_levers,
+                        thin_points_phrase)
 
 # Guarded handle to the Rust wheel. ``NATIVE_AVAILABLE`` (the single source of
 # truth) already told us whether the import can succeed; we re-import here only
@@ -305,6 +306,12 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
     #: missing, and the fix runs the opposite way from every other shortage.
     clipped: list[tuple[int, float]] = []
     attempted = 0
+    #: The position the last drop happened at, and how many times in a row.
+    #: The sweep engine advances only when a measurement is ADDED, so a dropped
+    #: point leaves it asking for the same position again — see
+    #: ``MAX_DROPS_PER_POSITION`` for the rig run this spun on forever.
+    drop_pos: int | None = None
+    drops_here = 0
     #: Stars at the start position, and the knobs that would change that number.
     #: Set by the probe below; -1 until then so a failure BEFORE the probe (a
     #: camera that will not expose) says nothing about the field rather than
@@ -585,6 +592,31 @@ async def run_native_autofocus(camera: Camera, focuser: Focuser, *,
                             f"(frame median {float(np.median(px)):.0f}, "
                             f"max {int(px.max())})",
                             "focus")
+                    drops_here = drops_here + 1 if pos == drop_pos else 1
+                    drop_pos = pos
+                    if drops_here >= MAX_DROPS_PER_POSITION:
+                        # The engine will keep asking for this position forever:
+                        # it only advances on a measurement, and this one cannot
+                        # be measured. Fail with what was seen instead of
+                        # re-exposing it until someone notices.
+                        await focuser.move_to(start_pos)
+                        reason = (
+                            f"the sweep could not measure {pos} on "
+                            f"{drops_here} tries in a row ({why}), and the "
+                            f"search cannot move on without it")
+                        advice = (
+                            f"The field through this filter is too thin to "
+                            f"focus on at these settings — {levers}. A "
+                            f"narrowband filter usually needs several times the "
+                            f"exposure a luminance sweep does.")
+                        bus.log("warning",
+                                f"autofocus: {reason}. {advice}", "focus")
+                        bus.log("warning", vcurve_report(points, counts), "focus")
+                        bus.publish("focus", state="failed", points=_pts(),
+                                    best=None, message=reason, advice=advice)
+                        return AutofocusResult(False, start_pos, None,
+                                               _result_pts(), reason,
+                                               advice=advice)
                     continue
 
                 # σ for the fit is the standard error of THIS median, not the raw

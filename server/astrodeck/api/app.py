@@ -932,6 +932,24 @@ class FilterNamesBody(BaseModel):
     opaque: list[bool] | None = None
 
 
+class GuideCameraSettingsBody(BaseModel):
+    """The guide frame's own imaging settings.
+
+    MODULE SCOPE, not ``create_app``'s, and that is the whole point. ``app.py``
+    runs under ``from __future__ import annotations``, so every route signature
+    reaches FastAPI as a STRING that it resolves against this module's globals.
+    A body model declared inside ``create_app`` is not in those globals, so
+    ``body: GuideCameraSettingsBody`` did not resolve to a BaseModel, FastAPI
+    fell back to treating ``body`` as a QUERY parameter, and every PUT answered
+    ``422 {"loc": ["query", "body"], "msg": "Field required"}`` — measured on the
+    rig 2026-08-08, mid-calibration, reaching for the longer exposure this
+    endpoint exists to provide. It was the only body model in the file not
+    declared out here; keep new ones out here too."""
+    exposure_s: float | None = Field(None, gt=0, le=15)
+    gain: int | None = Field(None, ge=0, le=1000)
+    binning: int | None = Field(None, ge=1, le=4)
+
+
 class LearnOffsetsBody(BaseModel):
     """Per-filter AF-offset auto-learn. ``ref_slot`` None -> the hub picks an
     L/Lum/Clear slot when the wheel has one, else the current position."""
@@ -4426,11 +4444,6 @@ def create_app() -> FastAPI:
     # there was no dial to reach for (the same trap the polar solve settings
     # closed). The native guider reads these per exposure, so a PUT applies
     # from the next guide frame, mid-calibration or mid-guiding.
-
-    class GuideCameraSettingsBody(BaseModel):
-        exposure_s: float | None = Field(None, gt=0, le=15)
-        gain: int | None = Field(None, ge=0, le=1000)
-        binning: int | None = Field(None, ge=1, le=4)
 
     @app.get("/api/guide/camera-settings",
              dependencies=[Depends(require(CAP_VIEW_STATUS))])
