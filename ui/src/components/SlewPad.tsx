@@ -16,7 +16,9 @@
 //     "below horizon limit" (R30).
 //   - NINA mode: hold disabled (NINA move_axis raises); tap = small relative GOTO;
 //     a one-line note instead of a dead pad (R8).
-//   - global safety: blur / visibilitychange(hidden) / setLocked(true) forceStop.
+//   - global safety: blur / visibilitychange(hidden) / setLocked(true) forceStop
+//     — but ONLY while this pad actually owns a slew (see the guard at the
+//     effect; an idle pad leaving the screen must not touch the mount at all).
 //
 // Consumes: SlewController + haptics + Icon (icons.tsx) + Toggle (ui.tsx).
 
@@ -202,8 +204,33 @@ export default function SlewPad() {
   // paths ALSO fire the authoritative /api/mount/stop (abort + zero BOTH axes),
   // exactly as the STOP bar and store.setLocked already do. Fire-and-forget: we're
   // tearing down, there's no UI left to toast an error to.
+  //
+  // ...BUT ONLY IF THIS PAD IS ACTUALLY DRIVING SOMETHING (2026-08-07).
+  // /api/mount/stop is not a local control: server-side it calls
+  // hub.bump_motion_epoch(), the GLOBAL motion fence every long-running motion
+  // path re-checks between steps. Fired unconditionally, this effect made
+  // "navigate away from the Mount screen" and "let the phone sleep" into a
+  // remote abort for whatever else the rig was doing. On the night of
+  // 2026-08-07 that killed a running polar alignment — "fenced by a motion
+  // abort" — with the mount not moving and no finger anywhere near the pad;
+  // backgrounding the tab was the entire input. Unmount fires it too, so merely
+  // switching tabs in the app was enough.
+  //
+  // The reflex is still exactly right while the pad OWNS a slew: a finger on an
+  // arrow when the tab disappears must not leave an axis driving, and the
+  // keepalive that feeds the server deadman dies with the timer. So the panic
+  // is gated on ownership and is otherwise a complete no-op — no forceStop, no
+  // POST, nothing for another subsystem to notice.
+  //
+  // Ownership is read LIVE, not from `slewState`: this effect is built once
+  // (deps are ctrl + clearFallback, both stable), so a rendered state value
+  // would be frozen at mount. `activePointerId` is a ref and `ctrl.isHolding()`
+  // asks the controller — the same pair onPointerDown already trusts for the
+  // multi-touch guard.
   useEffect(() => {
     const panicStop = () => {
+      // An idle pad has nothing to stop and no right to fence the rig.
+      if (activePointerId.current == null && !ctrl.isHolding()) return;
       // Release the pad along with the mount. `activePointerId` is what makes a
       // press exclusive (F-A4), and a panic stop happens while a finger is very
       // much still down — the pointerup that would normally clear it is either

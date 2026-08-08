@@ -3972,6 +3972,65 @@ class Hub:
         return {"ra_hours": result.ra_hours, "dec_deg": result.dec_deg,
                 "solver": solver.name, "pixel_scale": result.pixel_scale_arcsec}
 
+    async def sync_rotator_to_sky(self, exposure_s: float = 3.0) -> dict:
+        """Measure the sky position angle and tell the rotator where it is —
+        WITHOUT moving anything.
+
+        The sky↔mechanical offset already existed (``Rotator.sync_offset_deg``)
+        and ``rotate_to_pa`` already established it, but only ever INSIDE a
+        rotation: the four rotator routes were move/halt/reverse/rotate-to-pa,
+        so the only way to learn the current angle was to command a rotation
+        you might not want, and the offset was lost on reconnect with no way to
+        re-establish it (operator, 2026-08-07 22:02).
+
+        Returns the measured sky PA, the mechanical position it corresponds to,
+        and the resulting offset. Raises DeviceError when there is no rotator,
+        no camera, or the sky will not solve — never a silent no-op, because a
+        rotator that quietly stays unsynced points every later framing wrong.
+        """
+        rot = self.require("rotator")
+        cam: Camera = self.require("camera")
+        from . import providers as _providers
+        solver = _providers.pick_solver(self)
+        await self.yield_camera_for("rotator sync")
+        tel = self.devices.get("telescope")
+        ra_hint = dec_hint = None
+        if tel is not None and tel.connected:
+            with contextlib.suppress(Exception):
+                ra_hint, dec_hint = await tel.get_position()
+                if ra_hint is not None:
+                    ra_hint, dec_hint = await self.from_mount_frame(
+                        tel, ra_hint, dec_hint)
+        bus.publish("mount", action="solve_activity", activity="exposing",
+                    exposure_s=exposure_s)
+        try:
+            async with self.exposure_guard("rotator sync"):
+                frame = await cam.expose(exposure_s, 200, 30, binning=2)
+            self.last_frame = frame
+            await self._publish_preview(frame)
+            tmp = CAPTURE_DIR / "_solve" / "rotsync.fits"
+            await asyncio.to_thread(save_fits, frame, tmp, ra_hours=ra_hint,
+                                    dec_deg=dec_hint, instrument=cam.name)
+            opt = self.effective_optics()
+            bus.publish("mount", action="solve_activity", activity="solving")
+            result = await solver.solve(tmp, ra_hint=ra_hint, dec_hint=dec_hint,
+                                        fov_deg_hint=opt["fov_h_deg"] or None)
+        finally:
+            bus.publish("mount", action="solve_activity", activity=None)
+        if not result.success:
+            raise DeviceError(f"rotator sync: plate solve failed: {result.message}")
+        orientation = _rotation.mod360(result.rotation_deg)
+        await rot.sync(orientation)
+        mech = await rot.get_mechanical_position()
+        bus.log("info",
+                f"rotator synced to the sky: PA {orientation:.1f}° at "
+                f"mechanical {mech:.1f}° (offset {rot.sync_offset_deg:.1f}°)",
+                "rotator")
+        bus.publish("rotator", action="synced", pa_deg=orientation,
+                    mechanical_deg=mech, offset_deg=rot.sync_offset_deg)
+        return {"synced": True, "pa_deg": orientation, "mechanical_deg": mech,
+                "offset_deg": rot.sync_offset_deg}
+
     async def rotate_to_pa(self, target_pa_deg: float,
                            exposure_s: float = 3.0,
                            max_attempts: int = 5) -> dict:

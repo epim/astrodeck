@@ -389,12 +389,13 @@ async def test_polar_alignment_takes_the_camera_before_it_rotates_the_mount(
 
     looping_at_each_rotate = []
 
-    async def watching_rotate(hub, tel, epoch, step=None):
-        # ``step`` is the signed RA step the driver decides once from the first
-        # solved point and passes to every leg, so the arc cannot reverse
-        # direction halfway. Accepted and ignored: this stub exists to observe
-        # when the rotation happens relative to the camera handover, not to move
-        # anything.
+    async def watching_rotate(hub, tel, epoch, step=None, dec=None):
+        # ``step`` is the signed RA step and ``dec`` the declination the arc is
+        # pinned to; the driver decides both ONCE from the first solved point and
+        # passes them to every leg, so the arc can neither reverse direction
+        # halfway nor walk the declination axis it is measuring. Accepted and
+        # ignored: this stub exists to observe when the rotation happens relative
+        # to the camera handover, not to move anything.
         looping_at_each_rotate.append(hub.looping)
 
     monkeypatch.setattr(nat, "_rotate_in_ra", watching_rotate)

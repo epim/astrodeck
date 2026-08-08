@@ -650,9 +650,32 @@ export function PolarReticle({
         </text>
       )}
 
-      {/* orientation axis labels (kept minimal so the knob hints stand out) */}
+      {/* ORIENTATION AXIS LABELS (kept minimal so the knob hints stand out) —
+          and WHICH SIDE IS WHICH is not cosmetic here.
+
+          The dot is plotted at dx = cx + eAz·k·scale, and the engine's sign
+          convention (astro-tppa, error_det.rs::azimuth_direction) is that a
+          POSITIVE azimuth error means the mount axis sits EAST of north: +err
+          answers "MoveLeft(West)", i.e. turn the bolt west to correct it. An
+          observer facing north has east on their RIGHT, so the right half of
+          this reticle is east and the dot has always been drawn correctly.
+
+          The single "AZ E" tick used to sit at the LEFT edge, which said the
+          opposite. On 2026-08-07 the operator read that tick, turned the
+          azimuth bolt the way it implied, and watched the error climb from
+          430′ to 500′. Both ends carry a label now: from ONE tick the
+          handedness can be inferred backwards, and it was.
+
+          Altitude keeps its single "ALT −" in the bottom gutter. The matching
+          "+" belongs at (cx, cy − R) — which is exactly where the altitude
+          knob hint is drawn (cy − R + 1, same anchor) — so adding it would put
+          two strings on top of each other whenever there is a reading, and the
+          reading is when the label matters. Left one-sided deliberately; the
+          bottom label plus the hint's own ▲/▼ carry it. */}
       <text x={cx - R + 2} y={cy - 5} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
-        letterSpacing="2" textAnchor="start" style={labelHalo}>AZ E</text>
+        letterSpacing="2" textAnchor="start" style={labelHalo}>AZ W</text>
+      <text x={cx + R - 2} y={cy - 5} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
+        letterSpacing="2" textAnchor="end" style={labelHalo}>AZ E</text>
       <text x={cx} y={cy + R - 1} fill="var(--text-dim)" fontSize={10} fontFamily="IBM Plex Mono"
         letterSpacing="2" textAnchor="middle" style={labelHalo}>ALT −</text>
 

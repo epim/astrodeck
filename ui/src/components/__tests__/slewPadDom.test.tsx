@@ -95,7 +95,15 @@ g.IS_REACT_ACT_ENVIRONMENT = true;   // React 18: makes act() flush updates
 const { createElement, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useStore } = await import("../../store");
+const { api } = await import("../../api");
 const SlewPad = (await import("../SlewPad")).default;
+
+// Every write the pad makes, recorded instead of fetched. jsdom has no server,
+// but the real reason is the panic-stop suite at the bottom of this file: those
+// assertions are ABOUT the posts — including one that must not happen at all,
+// which a swallowed network error would hide.
+const posts: string[] = [];
+(api as any).post = async (path: string) => { posts.push(path); return {}; };
 
 // ------------------------------------------------------------------ harness
 let passed = 0;
@@ -401,6 +409,143 @@ test("a press that DID take the capture arms no window fallback", () => {
       "to this node, so these are a second handler for the same event");
   });
   assert(windowPointerListeners === listenerBaseline, "listeners left behind by a captured press");
+});
+
+// ------------------------------------- THE PANIC STOP THAT FENCED THE RIG
+// blur, visibilitychange→hidden and unmount all run this pad's panic stop, and
+// that panic stop POSTs /api/mount/stop. That route is not a local control:
+// server-side it calls hub.bump_motion_epoch(), the GLOBAL motion fence every
+// long-running motion path re-checks between its steps. Fired from an IDLE pad
+// it is not a safety reflex, it is a remote abort of whatever else the rig is
+// doing — and on 2026-08-07 it killed a running polar alignment ("fenced by a
+// motion abort") with the mount stationary and nobody touching the pad. The
+// operator had navigated off the Mount screen and let the phone sleep; unmount
+// and visibilitychange are both on that path, so switching tabs was enough.
+//
+// Each of the three paths is therefore pinned TWICE. "Posts nothing" alone
+// would be satisfied by deleting the reflex outright, which re-opens the hazard
+// it was written for: a finger on an arrow when the tab vanishes, with the
+// keepalive dying alongside the timer that fed it.
+
+/** Run `body` with document.visibilityState forced. An own property on the
+ *  document shadows jsdom's prototype accessor; deleting it puts the real one
+ *  back, so a throw in `body` cannot leave the document permanently hidden. */
+function withVisibility(state: string, body: () => void): void {
+  Object.defineProperty(win.document, "visibilityState", { value: state, configurable: true });
+  try { body(); }
+  finally { delete win.document.visibilityState; }
+}
+
+const fireBlur = () => { act(() => { win.dispatchEvent(new win.Event("blur")); }); };
+const fireHidden = () => withVisibility("hidden", () => {
+  act(() => {
+    win.document.dispatchEvent(new win.Event("visibilitychange", { bubbles: true }));
+  });
+});
+
+/** Press an arrow and DO NOT release it — the state the panic reflex exists
+ *  for. Returns the node so the caller can assert the hold really started;
+ *  every panic path clears activePointerId itself, so no cleanup is owed. */
+function pressAndHold(node: any, id: number): any {
+  act(() => { node.dispatchEvent(pointer("pointerdown", id)); });
+  assert(/border-accent/.test(node.className),
+    "the press started no hold, so this is not the 'slew in flight' case and a post " +
+    "assertion below would be measuring the wrong thing");
+  return node;
+}
+
+test("an idle pad posts NOTHING when the window loses focus", () => {
+  posts.length = 0;
+  fireBlur();
+  assert(posts.length === 0,
+    `an idle pad posted ${JSON.stringify(posts)} on blur — /api/mount/stop bumps the global ` +
+    "motion epoch, so this fences every other motion the rig has in flight");
+});
+
+test("an idle pad posts NOTHING when the tab is hidden", () => {
+  posts.length = 0;
+  fireHidden();
+  assert(posts.length === 0,
+    `an idle pad posted ${JSON.stringify(posts)} when the phone slept — that is the exact ` +
+    "input that aborted the 2026-08-07 polar alignment");
+});
+
+test("a slew in flight is still stopped by a blur", () => {
+  captures.length = 0;
+  posts.length = 0;
+  pressAndHold(arrow("north"), 41);
+  posts.length = 0;   // drop the move that STARTED the slew; the stop is the subject
+  fireBlur();
+  assert(posts.includes("/api/mount/stop"),
+    "a blur with a finger on an arrow did not fire the authoritative stop — the tab is gone, " +
+    "the keepalive died with it, and the client's own rate-0 is one dropped POST from a mount " +
+    "that never stops");
+});
+
+test("a slew in flight is still stopped when the tab is hidden", () => {
+  captures.length = 0;
+  posts.length = 0;
+  pressAndHold(arrow("south"), 43);
+  posts.length = 0;
+  fireHidden();
+  assert(posts.includes("/api/mount/stop"),
+    "hiding the tab mid-slew did not fire the authoritative stop");
+});
+
+test("the pad still takes a press after a panic stop released it", () => {
+  // The panic path clears activePointerId for the same reason the lock path
+  // does (#38): the pointerup that would normally clear it is never delivered.
+  // Guarded now, that clear only happens on the branch that runs — so the
+  // guard must not have stranded the ref on the way past.
+  captures.length = 0;
+  press(arrow("west"), 45, () => {
+    assert(captures.length === 1,
+      "a fresh press took no capture — the panic stop left activePointerId owning a finger " +
+      "that is long gone, and the pad is dead until STOP");
+  });
+});
+
+/** A SECOND pad on its own root. The unmount tests have to tear a pad down,
+ *  and taking the shared one with them would break every test after it.
+ *  Mounted onto a CONTINUOUS rate because `rateIdx` is per-instance state that
+ *  defaults to the tap-only pulse rate — on which beginPress starts no hold at
+ *  all, so "a slew in flight" could not be staged. */
+function sparePad(): { root: any; el: any; arrow: (label: string) => any } {
+  const el = win.document.createElement("div");
+  win.document.body.appendChild(el);
+  const r = createRoot(el);
+  act(() => { r.render(createElement(SlewPad)); });
+  const rate: any = [...el.querySelectorAll('[role="radio"]')]
+    .find((b: any) => /0\.5/.test(b.textContent || ""));
+  act(() => {
+    rate?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  return { root: r, el, arrow: (label: string) => el.querySelector(`[aria-label="slew ${label}"]`) };
+}
+
+test("an idle pad posts NOTHING when it unmounts", () => {
+  // Navigating from Mount to Align unmounts this pad. That alone used to abort
+  // the alignment the user was navigating TO.
+  const pad = sparePad();
+  posts.length = 0;
+  act(() => { pad.root.unmount(); });
+  pad.el.remove();
+  assert(posts.length === 0,
+    `leaving the Mount screen posted ${JSON.stringify(posts)} — a screen change is not a ` +
+    "reason to fence the rig's motion");
+});
+
+test("a pad unmounted with a slew in flight still stops the mount", () => {
+  const pad = sparePad();
+  const node = pad.arrow("north");
+  assert(node != null, "the spare pad rendered no arrows — the fixture is wrong");
+  pressAndHold(node, 47);
+  posts.length = 0;
+  act(() => { pad.root.unmount(); });
+  pad.el.remove();
+  assert(posts.includes("/api/mount/stop"),
+    "the pad was torn down mid-slew and never fired the authoritative stop — nothing is left " +
+    "on the client to command a rate of 0");
 });
 
 // ------------------------------------------------------------------- report
