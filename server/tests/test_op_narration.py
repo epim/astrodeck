@@ -81,8 +81,15 @@ async def _sim_guider():
     await cam.connect()
     await tel.connect()
     from astrodeck.guide.native import NativeGuider
+    # 0.2 s, matching the other native-guider suites. At 0.05 s the sim's star
+    # is faint enough that the INITIAL star-find intermittently returns nothing
+    # and start_guiding raises "no guide star found" — measured here on
+    # 2026-08-08 at roughly one failure in four runs, on the code BEFORE the
+    # calibration changes as well as after, so it is the fixture and not the
+    # guider. A test that fails a quarter of the time teaches people to re-run
+    # CI instead of reading it.
     g = NativeGuider(cam, tel, config={"image_scale_arcsec": 2.0,
-                                       "exposure_s": 0.05},
+                                       "exposure_s": 0.2},
                      profile_id=None)
     await g.connect()
     return g
@@ -100,7 +107,15 @@ async def test_the_calibration_walk_is_narrated_step_by_step():
         await g.stop_guiding()
         await g.disconnect()
 
-    cals = [e["cal"] for e in _drain(q, "guide") if e.get("cal")]
+    # TWO kinds of `cal` block ride this stream now (2026-08-08). A STEP is a
+    # pulse the engine asked for; a STALL tick carries `starless` and reports
+    # that the walk is standing still because the star cannot be found — it
+    # repeats the step count it is stuck on rather than advancing it. Counting
+    # both as steps made this test fail whenever the sim happened to produce an
+    # unmeasurable frame, which is timing-dependent: it passed alone and failed
+    # in a full parallel run.
+    blocks = [e["cal"] for e in _drain(q, "guide") if e.get("cal")]
+    cals = [c for c in blocks if not c.get("starless")]
     assert cals, "not one calibration step reached the bus"
     first, last = cals[0], cals[-1]
     # each step names its leg, pulse and ordinal — the chip's whole diet
