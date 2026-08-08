@@ -43,6 +43,36 @@ MIN_STARS_PER_POINT = 3
 #: someone is still awake to read the reason.
 MAX_DROPS_PER_POSITION = 3
 
+#: A sweep whose HFR moves less than this FRACTION of its own minimum across the
+#: whole swept range carries no focus information, whichever way the quadratic's
+#: leading coefficient happens to round. 5% is far below any real V — the rig's
+#: own Oiii sweep on 2026-08-08 ran 1.67 to 44.70 px — and far above the noise a
+#: genuine curve shows between neighbouring points.
+FLAT_SWING_FRAC = 0.05
+
+#: Absolute floor for the same test, so a sweep whose minimum HFR is itself tiny
+#: cannot make the relative threshold vanish.
+FLAT_SWING_FLOOR_PX = 0.02
+
+
+def is_flat_sweep(hfrs) -> bool:
+    """Does this sweep carry any focus information at all?
+
+    A PURE FUNCTION on purpose. The end-to-end behaviour it guards is
+    platform-dependent — the quadratic's leading coefficient on flat data rounds
+    negative on one BLAS and positive on another, so a full-sweep test of the
+    flat case passes for free on the machine where it already worked and can
+    only fail on the one where it did not. This is the decision itself, provable
+    anywhere.
+
+    Empty or single-point input is flat: there is nothing to see a V in.
+    """
+    values = [float(h) for h in hfrs]
+    if len(values) < 2:
+        return True
+    swing = max(values) - min(values)
+    return swing <= max(FLAT_SWING_FRAC * min(values), FLAT_SWING_FLOOR_PX)
+
 #: Measured, but from few enough stars to be worth naming in the advice: a run
 #: that "succeeded" on a handful of these is thinner evidence than its R²
 #: suggests. What it means for the FIT depends on the company the point keeps —
@@ -395,13 +425,22 @@ async def run_autofocus(camera: Camera, focuser: Focuser, *,
                 al, bl, cl = np.polyfit(xl, yl, 2, w=ws[i0:i1])
                 if al > 0:
                     a, b, c = al, bl, cl
-        if a <= 0:
+        # THE MEASUREMENT DECIDES, NOT THE FIT'S ROUNDING. ``a <= 0`` alone
+        # rejects a flat curve only when the quadratic's leading coefficient
+        # happens to round negative, and on a genuinely flat dataset that sign
+        # is floating-point noise: the same nine identical points failed here on
+        # Windows and produced a confident minimum of HFR 2.01 — from points
+        # that were all exactly 3.40 — on CI's Linux/BLAS (2026-08-08). A curve
+        # that does not move has no minimum on any platform, so say so from the
+        # spread, which is the evidence the advice below already quotes.
+        span = int(xs.max() - xs.min())
+        swing = float(ys.max() - ys.min())
+        flat = is_flat_sweep(ys)
+        if a <= 0 or flat:
             # Say how flat. A V-curve that barely moves over the whole swept
             # range is either a sweep far too narrow to see the V, or a focuser
             # that reported moves it did not make — and the measured spread
             # distinguishes them, where "flat or inverted fit" never could.
-            span = int(xs.max() - xs.min())
-            swing = float(ys.max() - ys.min())
             advice = _thin_advice(
                 f"HFR changed by only {swing:.2f}px ({swing / max(ys.min(), 1e-6):.0%}) "
                 f"across {span} steps — either the sweep is too narrow to reach "
