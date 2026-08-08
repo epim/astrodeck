@@ -413,6 +413,85 @@ being built, and any aborted session. Tracked as task #151, along with the
 second defect on the same path — `POST /api/mount/park` returns
 `200 {"started":"goto"}` and the failure reaches the operator only as a log line.
 
+
+## NIGHT OF 2026-08-08 — the guider calibrated, and four loops that never ended
+
+**GUIDING WORKS.** First closed loop this rig has ever run.
+
+RA 23h Dec +30 had no guide star the camera could find at ANY setting tried
+(2 s/g100 through 6 s/g80 bin 2; 4 s/g400 saturated). The main camera plate-
+solved that same field in 0.4', so the sky was fine — the guide scope simply
+reaches only bright stars. Moved to **Deneb**, where it calibrated:
+
+```
+go_west         19 steps  ->  -25.8 px
+go_east         19 steps  ->  back to 0.1 px
+clear_backlash   6 steps
+go_north        25 steps  ->  +27.5 px
+go_south/nudge  31 steps  ->  home
+100 steps, orthogonality error 1.81 deg, saved to the profile
+guiding: RMS 1.29" RA / 0.67" Dec / 1.45" total at SNR ~340, steady over 90 s
+```
+
+Advisory raised: "RA and Dec rates vary by an unexpected amount". EXPECTED on
+this mount — pulse-guide is emulated (east = tracking-suspend, west = R2+Mw,
+N/S = R1 moves), so the axes genuinely move at different rates.
+
+**Open for the owner:** the guide scope reaches only bright fields. Either it
+needs focusing, or guide targets must be chosen near a bright star. Deneb worked;
+a mag-5 field did not.
+
+### Filter focus offsets (#148): LRGB measured, narrowband not
+
+`offsets = [L 0, R -59, G -30, B -28, S 0, Ha 0, Oiii 0]` at 10 s / gain 300 /
+bin 2 on a Cygnus field. The three narrowband slots could not be focused and
+KEPT their prior offsets, which the run said out loud ("filter offsets learned
+against L; kept prior for 3 slot(s)"). Oiii's V-curve was actually a clean V
+(HFR 1.67 at 11173 with 321 stars, rising to 44.70 at both ends) and was
+rejected on R^2 0.743 against a 0.70 gate — worth a look under #143, because the
+curve a human would accept was thrown away.
+
+Narrowband offsets need either much longer sweeps or a brighter field.
+
+### Four unbounded loops, all the same shape
+
+Each could neither finish nor fail, and each reported nothing while it hung:
+
+1. **Guide calibration wall clock** was 180 s, sized against the SIM. A real
+   walk is ~94 steps at one exposure-plus-pulse each — ~220 s at a 2 s guide
+   exposure. It killed a healthy calibration 18 steps from the end. Now 600 s.
+2. **Star-lost during calibration**: the engine returns Idle without advancing
+   when the star is not found, and the host kept exposing with no bound —
+   measured at 174 s of silence after three good steps. Bounded at 30 s, and
+   both exits now carry pulses/leg/walk/starless-frames.
+3. **Autofocus at an unmeasurable position**: the sweep engine only advances on
+   a measurement, so a point it cannot measure is re-exposed forever. Seen on
+   the SII slot at position 9077 — fourteen consecutive drops, focuser
+   stationary, and no route that can cancel a `filter_offsets` lane. Bounded at
+   3 tries.
+4. **rotate_to_pa** ran all five attempts with the error GROWING and reported
+   one number at the end (#174). Now abandons on the first non-improving
+   attempt and carries the whole per-attempt trail.
+
+### And the dials never worked at all
+
+`PUT /api/guide/camera-settings` answered `422 {"loc":["query","body"]}` to
+every request ever made to it: its body model was the only one declared inside
+`create_app()`, and under `from __future__ import annotations` FastAPI resolves
+route signatures against MODULE globals, so it never saw a BaseModel. The guide
+dials shipped 2026-08-07 have never once applied a setting. There is now a
+detector that fails if any body model is declared in `create_app` again, and a
+second one asserting every mutating route is named somewhere in `ui/src` — it
+found ten orphans on its first run, five of them real gaps (`/api/auth/revoke`,
+`/api/auth/unrevoke`, and all three `/api/calibrator/*`).
+
+### Config changed on the rig
+
+`escalation.no_progress_watchdog_s` 0 -> **1800**. The watchdog honours
+`on_unsafe` since 0.2.48 but was never armed. Alerts and the dead-man's-switch
+still have NO destination — that needs a channel and a URL from the owner, and
+until then a run now says so at start instead of failing silently.
+
 ## Owner decisions, 2026-08-06
 
 1. **Guide scope focal length: 150 mm** (ZWO 30 mm f/5 guider). Unblocks §1.
