@@ -14,6 +14,7 @@ from astrodeck import providers
 from astrodeck.devices.sim import build_sim_rig
 from astrodeck.events import bus
 from astrodeck.focus import run_autofocus
+from astrodeck.focus.autofocus import MAX_DROPS_PER_POSITION
 from astrodeck.focus.native import run_native_autofocus
 
 pytestmark = pytest.mark.skipif(
@@ -324,3 +325,167 @@ async def test_a_runaway_sweep_publishes_points_the_chart_can_read(monkeypatch):
     assert pts, "precondition: the failed event published no points"
     assert all(isinstance(p, dict) and "position" in p and "hfr" in p
                for p in pts), pts
+
+
+# ----------------------------------------------- the unmeasurable-point stall
+# Measured on the rig 2026-08-08 during a per-filter offset run: the SII slot
+# reached position 9077, could not measure it (frame median 237, max ~310 — a
+# narrowband frame with almost no signal), and re-exposed THAT ONE POSITION
+# indefinitely. Fourteen consecutive "dropping 9077" lines, the focuser
+# stationary, the run unable to finish or fail, and no route that could cancel
+# it.
+#
+# The sweep engine advances only when a measurement is ADDED, and the driver
+# loop is a bare `while True`, so a point that cannot be measured is asked for
+# again forever. The engine reaches that state after some points HAVE been
+# measured (bracketing a minimum demands a specific position); a sweep whose
+# frames are all bad from the start instead fails cleanly on spread — which is
+# why a "make every frame starless" test passes for the WRONG REASON and proves
+# nothing about this guard. These pin the engine to one position on purpose.
+
+
+class _StuckSweep:
+    """A sweep engine that keeps asking for the SAME position, like the rig's.
+
+    Wraps the real engine so everything else in the driver loop is genuine, and
+    simply never lets it move on past `stick_at`.
+    """
+
+    def __init__(self, inner, stick_at: int):
+        self._inner = inner
+        self._stick_at = stick_at
+        self.asks = 0
+
+    def next(self):
+        self.asks += 1
+        return {"action": "move_to", "position": self._stick_at}
+
+    def add_measurement(self, *a, **kw):
+        return self._inner.add_measurement(*a, **kw)
+
+
+def _stick_the_sweep(monkeypatch, stick_at: int):
+    """Point the driver at a sweep that will not advance off `stick_at`."""
+    import astrodeck.focus.native as native_mod
+    real_cls = native_mod._native.FocusSweep
+    made = {}
+
+    def factory(config, start_pos):
+        made["sweep"] = _StuckSweep(real_cls(config, start_pos), stick_at)
+        return made["sweep"]
+
+    monkeypatch.setattr(native_mod._native, "FocusSweep", factory)
+    return made
+
+
+def _starless_once_sweeping(cam, made):
+    """Flat noise, but ONLY after the sweep has started asking for positions.
+
+    Gated on the sweep rather than applied to every frame, and that gate is the
+    point: a pre-flight probe runs first and refuses the whole run when the
+    START position has no stars ("only 0 stars at the current focus"). Blanking
+    that frame too makes every test here pass on the probe's refusal instead of
+    the stall guard — which is what the first draft did, green, proving nothing.
+
+    Flat noise rather than zeros: a live sensor on a field with nothing bright
+    enough to size, which is what the rig had, not a dead camera.
+    """
+    import numpy as np
+    real = cam.expose
+    state = {"n": 0}
+    rng = np.random.default_rng(3)
+
+    async def fake(*a, **kw):
+        frame = await real(*a, **kw)
+        sweep = made.get("sweep")
+        if sweep is None or not sweep.asks:
+            return frame
+        state["n"] += 1
+        data = np.asarray(frame.data)
+        frame.data = rng.integers(230, 250, size=data.shape).astype(data.dtype)
+        return frame
+
+    cam.expose = fake
+    return state
+
+
+async def test_a_position_the_sweep_will_not_leave_fails_instead_of_spinning(
+        monkeypatch):
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    made = _stick_the_sweep(monkeypatch, start + 700)
+    seen = _starless_once_sweeping(cam, made)
+
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=350,
+        steps_each_side=4, binning=1)
+
+    assert not result.success
+    # The bound IS the behaviour: without it this call never returns.
+    assert seen["n"] <= MAX_DROPS_PER_POSITION, (
+        f"the sweep exposed {seen['n']} times at one position — it is still "
+        f"retrying a point it cannot measure")
+
+
+async def test_the_stall_refusal_names_the_position_and_a_lever(monkeypatch):
+    """A refusal at 2am has to say WHERE it stuck and WHAT to change."""
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    made = _stick_the_sweep(monkeypatch, start + 700)
+    _starless_once_sweeping(cam, made)
+
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=350,
+        steps_each_side=4, binning=1)
+
+    assert not result.success
+    blob = f"{result.message} {result.advice or ''}"
+    assert "could not measure" in blob, blob
+    assert str(start + 700) in blob, blob
+    assert "exposure" in blob or "gain" in blob, blob
+
+
+async def test_a_stalled_sweep_puts_the_focuser_back(monkeypatch):
+    """It must not leave the drawtube parked mid-sweep — the next run and any
+    manual recovery both start from wherever this left it."""
+    rig, cam, foc = await _connected_sim()
+    start = await foc.get_position()
+    made = _stick_the_sweep(monkeypatch, start + 700)
+    _starless_once_sweeping(cam, made)
+
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=350,
+        steps_each_side=4, binning=1)
+
+    assert not result.success
+    assert abs(await foc.get_position() - start) <= 1, (
+        "a stalled sweep left the focuser away from where it started")
+
+
+async def test_a_single_bad_frame_does_not_fail_the_sweep():
+    """The positive control. One satellite, gust or cloud on one point must
+    still ride through, or the bound would break every honest sweep and the
+    tests above would still pass."""
+    import numpy as np
+    rig, cam, foc = await _connected_sim()
+    real = cam.expose
+    state = {"n": 0, "blanked": 0}
+    rng = np.random.default_rng(5)
+
+    async def fake(*a, **kw):
+        frame = await real(*a, **kw)
+        state["n"] += 1
+        if state["n"] == 3:            # exactly one unusable frame
+            state["blanked"] += 1
+            data = np.asarray(frame.data)
+            frame.data = rng.integers(230, 250,
+                                      size=data.shape).astype(data.dtype)
+        return frame
+
+    cam.expose = fake
+    result = await run_native_autofocus(
+        cam, foc, exposure_s=0.05, gain=200, step=350,
+        steps_each_side=4, binning=1)
+
+    assert state["blanked"] == 1, "the bad frame never happened"
+    assert result.success, f"one bad frame failed the whole sweep: {result.message}"
